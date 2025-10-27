@@ -1,0 +1,15 @@
+/*
+ * Copyright (c) 2024 Caltech Optical Observatories
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* This devicetree overlay enables the COO template application to run on
+ * QEMU Cortex-M3 emulation. This is useful for testing ARM-specific code,
+ * persistent settings, and watchdog behavior without physical hardware.
+ *
+ * Note: QEMU Cortex-M3 has limited GPIO support, so example_sensor and
+ * blink_led devices are disabled. The main application logic, NVS, and
+ * watchdog can still be tested. For a complete QEMU test with peripherals,
+ * consider native_sim or native_posix targets which have better peripheral
+ * emulation.
+ */

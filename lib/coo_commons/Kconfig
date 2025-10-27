@@ -1,0 +1,68 @@
+# Copyright (c) 2024 Caltech Optical Observatories
+# SPDX-License-Identifier: Apache-2.0
+
+config COO_COMMONS
+	bool "COO common libraries"
+	default y
+	help
+	  Enable COO common libraries including PID controller,
+	  network utilities, JSON helpers, and MQTT client.
+
+if COO_COMMONS
+
+config COO_NETWORK
+	bool "COO network utilities"
+	depends on NETWORKING
+	default n
+	help
+	  Enable COO network utilities for robust socket operations
+	  and connection manager integration. Includes low-level socket
+	  utilities (TCP/UDP create, connect, send/recv) and high-level
+	  network initialization with L4 event monitoring. Requires
+	  networking support.
+
+config COO_JSON
+	bool "COO JSON utilities"
+	depends on JSON_LIBRARY
+	default n
+	help
+	  Enable COO JSON utilities for structured message handling.
+	  Includes telemetry encoding, command parsing, message type
+	  detection, and hierarchical key parsing. Requires Zephyr
+	  JSON library support.
+
+config COO_MQTT
+	bool "COO MQTT client wrapper"
+	depends on MQTT_LIB
+	select COO_NETWORK
+	default n
+	help
+	  Enable COO MQTT client wrapper with automatic retry,
+	  subscription management, and optional TLS support.
+	  Provides a simplified interface over Zephyr's MQTT library
+	  with built-in connection management. Requires MQTT_LIB.
+
+if COO_MQTT
+
+config COO_MQTT_BROKER_HOSTNAME
+	string "MQTT broker hostname"
+	default "test.mosquitto.org"
+	help
+	  Default MQTT broker hostname for DNS resolution.
+
+config COO_MQTT_BROKER_PORT
+	string "MQTT broker port"
+	default "1883"
+	help
+	  Default MQTT broker port (1883 for plain, 8883 for TLS).
+
+config COO_MQTT_PAYLOAD_SIZE
+	int "Maximum MQTT payload size"
+	default 512
+	help
+	  Maximum size for MQTT message payloads. This defines the
+	  size of RX and TX buffers (2x this value total).
+
+endif # COO_MQTT
+
+endif # COO_COMMONS
