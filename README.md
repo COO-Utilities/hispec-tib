@@ -19,8 +19,8 @@ The HiSPEC-TIB controls optical routing, laser calibration sources, and attenuat
 
 ```bash
 # Create workspace
-west init -m https://github.com/mikelangmayr/hispec-tib --mr main my-hispec
-cd my-hispec && west update
+west init -m https://github.com/mikelangmayr/hispec-tib --mr main hispec-zephyr
+cd hispec-zephyr && west update
 
 # Build for W5500-EVB-Pico2
 cd hispec-tib
@@ -272,7 +272,7 @@ hispec-tib/
 
 **Build fails with "Zephyr not found":**
 ```bash
-cd my-hispec
+cd hispec-zephyr
 west update
 west list  # Verify configuration
 ```
