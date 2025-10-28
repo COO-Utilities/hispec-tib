@@ -18,8 +18,12 @@ The HiSPEC-TIB controls optical routing, laser calibration sources, and attenuat
 ## Quick Start
 
 ```bash
-# Install west (if not installed)
-pip3 install west
+# Create and activate virtual environment
+python3 -m venv ~/zephyr-venv
+source ~/zephyr-venv/bin/activate  # On Windows: ~/zephyr-venv/Scripts/activate
+
+# Install west
+pip install west
 
 # Create workspace
 west init -m https://github.com/mikelangmayr/hispec-tib --mr main hispec-zephyr
