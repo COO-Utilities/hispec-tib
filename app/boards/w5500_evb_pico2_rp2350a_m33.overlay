@@ -1,0 +1,199 @@
+/* Include RP2350b pin functions: */
+#include <dt-bindings/pinctrl/rpi-pico-rp2350b-pinctrl.h>
+
+/ {
+	zephyr,user {
+		power-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
+		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
+		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_HIGH>;
+		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_HIGH>;
+		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_HIGH>;
+		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_HIGH>;
+		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_HIGH>;
+		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_HIGH>;
+		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_HIGH>;
+		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_HIGH>;
+		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_HIGH>;
+		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_HIGH>;
+		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_HIGH>;
+		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_HIGH>;
+		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
+		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&pinctrl {  /* Define UART1 pinmux groups */
+//	with the rPI pico2 sdk the pins actually used are
+//	UART_TX_PIN GP8
+//	UART_RX_PIN GP9
+//	I2C0_SDA_PIN GP4
+//	I2C0_SCK_PIN GP5
+//	I2C1_SDA_PIN GP2
+//	I2C1_SCK_PIN GP3
+	uart1_pins: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_P8>;
+		};
+		group2 {
+			pinmux = <UART1_RX_P9>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+	i2c0_pins: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_P4>;
+			input-enable;
+			bias-pull-up;
+		};
+		group2 {
+			pinmux = <I2C0_SCL_P5>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+	i2c1_pins: i2c1_default {
+		group1 {
+			pinmux = <I2C1_SDA_P2>;
+			input-enable;
+			bias-pull-up;
+		};
+		group2 {
+			pinmux = <I2C1_SCL_P3>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+};
+
+
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;                     /* UART baud (optional default) */
+	pinctrl-0 = <&uart1_pins>;
+	pinctrl-names = "default";
+//	rs485-rx-during-tx;                   //we want full duplex
+	/* (No flow control by default; ensure /delete-property/ hw-flow-control if set) */
+
+	modbus0: modbus0 {
+		compatible = "zephyr,modbus-serial";
+		status = "okay";
+// We don't have any "de-gpios" or "re-gpios" since we’re not using RS485 driver-enable
+// Docs say safe to remove: https://docs.zephyrproject.org/latest/samples/subsys/modbus/rtu_client/README.html#modbus-rtu-client
+	};
+};
+
+
+/* Enable and configure I2C0 and I2C1 devices */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-0 = <&i2c0_pins>;
+	pinctrl-names = "default";
+
+	/* DAC7578 at I2C address 0x4C */
+	dac7578: dac7578@4c {
+		status = "okay";
+		compatible = "ti,dac7578";
+		reg = <0x4C>;
+	};
+
+	/* PCAL6416A I/O expander at I2C address 0x20 */
+	pcal6416a: pcal6416a@20 {
+		status = "okay";
+		gpio-controller;
+		compatible = "nxp,pcal6416a";
+		reg = <0x20>;
+		ngpios = <16>;                   /* 16 GPIOs on expander */
+		#gpio-cells=<2>;
+// We don't use any alert or supply pins
+//		int-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;   /* Example: MCU GPIO0.2 as expander interrupt */
+//		reset-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>; /* Example: MCU GPIO0.3 as reset line (if used) */
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-0 = <&i2c1_pins>;
+	pinctrl-names = "default";
+
+	/* ADS1115 ADC at I2C address 0x48 */
+	adc1115: adc1115@48 {
+		status = "okay";
+		compatible = "ti,ads1115";
+		reg = <0x48>;
+		#io-channel-cells = < 1 >;
+		#address-cells = < 1 >;
+		#size-cells = < 0 >;
+
+//		I suspect these aren't necessary as its only boottime config that is irrelevant and code uses adc_channel_setup()
+//		See also: https://github.com/zephyrproject-rtos/zephyr/discussions/61960
+		channel@0 {
+			status = "okay";
+			reg = <0>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>; //128Hz
+			zephyr,resolution = < 16 >;
+			zephyr,input-positive = <0>;
+		};
+		channel@1 {
+			status = "okay";
+			reg = <1>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>; //128Hz
+			zephyr,resolution = < 16 >;
+			zephyr,input-positive = <1>;
+		};
+		channel@2 {
+			status = "okay";
+			reg = <2>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>; //128Hz
+			zephyr,resolution = < 16 >;
+			zephyr,input-positive = <1>;
+		};
+		channel@3 {
+			status = "okay";
+			reg = <3>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>; //128Hz
+			zephyr,resolution = < 16 >;
+			zephyr,input-positive = <1>;
+		};
+// We don't use any alert or supply pins
+//		alert-rdy-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;  /* Example: ALERT/RDY pin to MCU GPIO0.4 */
+//		supply-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;    /* Power switch GPIO controlling ADS1115 Vcc */
+	};
+};
+
+
+/ {
+	chosen {
+		zephyr,flash-controller = &qmi;
+	};
+};
+
+// Need to enable the flash controller
+&qmi {
+	status = "okay";
+};
+
+&flash0 {
+	/* Bind this flash controller to a set of named partitions */
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		storage_partition: partition@1f8000 {
+			label = "storage";
+			reg = <0x001f8000 DT_SIZE_K(32)>;  // last 32 KiB of flash
+		};
+	};
+};

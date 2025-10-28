@@ -1,58 +1,94 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
+ * HiSPEC-TIB Main Application
+ * Copyright (c) 2025 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/sensor.h>
-#include <zephyr/drivers/watchdog.h>
-#include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
-#include <app/drivers/blink.h>
-#include <coo_commons/pid.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/watchdog.h>
+#include <zephyr/net/socket.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/net/mqtt.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/net/net_mgmt.h>
+#include <zephyr/net/net_event.h>
+#include <zephyr/net/net_ip.h>
+#include <zephyr/net/conn_mgr_monitor.h>
+#include <zephyr/net/conn_mgr_connectivity.h>
+
+#include <coo_commons/mqtt_client.h>
+#include <coo_commons/network.h>
+
+#include "devices.h"
+#include "command.h"
+#include "photodiode.h"
+
+/* Overall TODOs
+TODO: Incorporate UUID generation: https://github.com/zephyrproject-rtos/zephyr/tree/main/samples/subsys/uuid
+TODO: Verify how I'm doing logging makes sense: https://github.com/zephyrproject-rtos/zephyr/tree/main/samples/subsys/logging/logger
+TODO: Incorporate settings persistance: https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/subsys/settings/src/main.c#L392
+TODO: Veryfy I'm dealing with networking properly and setup DHCP with fallback to static. see https://github.com/zephyrproject-rtos/zephyr/tree/main/samples/net/common
+*/
+
+// See
+// https://docs.zephyrproject.org/latest/samples/index.html#samples
+// https://docs.zephyrproject.org/latest/develop/application/index.html#application
+// https://docs.zephyrproject.org/latest/build/kconfig/setting.html#initial-conf
+// https://docs.zephyrproject.org/latest/boards/wiznet/w5500_evb_pico2/doc/index.html
+// https://github.com/zephyrproject-rtos/zephyr/tree/main/boards/raspberrypi/rpi_pico
+// https://github.com/zephyrproject-rtos/zephyr/blob/main/boards/wiznet/w5500_evb_pico2/doc/index.rst
 
 #include <app_version.h>
 
-LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
+#define MQTT_CMD_PREFIX "cmd/hsfib-tib/req/"
 
-#define BLINK_PERIOD_MS_STEP 100U
-#define BLINK_PERIOD_MS_MAX  1000U
+/* Thread stack sizes and priorities */
+#define EXECUTOR_STACK_SIZE 1024
+#define EXECUTOR_PRIORITY   5
+#define PHOTODIODE_STACK_SIZE 500
+#define PHOTODIODE_PRIORITY 5
 
 /* Watchdog configuration */
 #define WDT_FEED_INTERVAL_MS 1000
 #define WDT_TIMEOUT_MS       5000
 
-/* Persistent settings storage */
-static unsigned int saved_period_ms = BLINK_PERIOD_MS_MAX;
-
-/* Settings handlers */
-static int period_settings_set(const char *name, size_t len,
-			       settings_read_cb read_cb, void *cb_arg)
+/* Settings Management - Stub for future use */
+static int setting_handler(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
-	const char *next;
-	int rc;
-
-	if (settings_name_steq(name, "period", &next) && !next) {
-		if (len != sizeof(saved_period_ms)) {
-			return -EINVAL;
+	if (strcmp(name, "foo") == 0 && len == sizeof(uint8_t)) {
+		uint8_t val;
+		if (read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
+			printk("Restored foo = %d\n", val);
+			// store to your config struct
 		}
-
-		rc = read_cb(cb_arg, &saved_period_ms, sizeof(saved_period_ms));
-		if (rc >= 0) {
-			LOG_INF("Loaded saved period: %u ms", saved_period_ms);
-			return 0;
-		}
-		return rc;
 	}
-
-	return -ENOENT;
+	return 0;
 }
 
-static struct settings_handler period_conf = {
-	.name = "app",
-	.h_set = period_settings_set,
-};
+SETTINGS_STATIC_HANDLER_DEFINE(myapp, "tib",
+	NULL, //get
+	setting_handler, //set
+	NULL, //commit
+	NULL); //export
+
+/* MQTT Infrastructure */
+static struct mqtt_client client_ctx;
+
+/* Executor thread */
+static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
+static struct k_thread exec_thread_data;
+
+/* Photodiode work */
+static struct k_work_delayable photodiode_publish_work;
+
+/* Photodiode thread */
+K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
+                photodiode_thread, NULL, NULL, NULL,
+                PHOTODIODE_PRIORITY, 0, 0);
 
 /* Watchdog callback (optional - for notification before reset) */
 static void wdt_callback(const struct device *wdt_dev, int channel_id)
@@ -98,128 +134,244 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
+void log_mac_addr(struct net_if *iface)
+{
+	struct net_linkaddr *mac;
+
+	mac = net_if_get_link_addr(iface);
+
+	LOG_INF("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X",
+		mac->addr[0], mac->addr[1], mac->addr[2],
+		mac->addr[3], mac->addr[4], mac->addr[5]);
+}
+
+void executor_thread_fn(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
+
+	struct Command cmd;
+	struct OutMsg om;
+
+	while (1) {
+		/* wait for next command */
+		k_msgq_get(&inbound_queue, &cmd, K_FOREVER);
+
+		/* perform dispatch, get back JSON result string */
+		om = dispatch_command(&cmd);
+
+		/* enqueue for MQTT publish */
+		if (k_msgq_put(&outbound_queue, &om, K_FOREVER) != 0) {
+			LOG_WRN("Outbound queue full; dropping response");
+		}
+	}
+}
+
+static void photodiode_publish_handler(struct k_work *work) {
+	struct OutMsg r;
+
+	while (k_msgq_get(&photodiode_queue, &r, K_NO_WAIT) == 0) {
+		if (k_msgq_put(&outbound_queue, &r, K_NO_WAIT) != 0) {
+			LOG_WRN("Outbound queue full, dropping sample");
+		}
+	}
+
+	// Re-schedule
+	k_work_schedule(&photodiode_publish_work, K_MSEC(10)); // 100 Hz (production rate is 50Hz)
+}
+
+static void mqtt_command_handler(const struct mqtt_publish_param *pub)
+{
+	struct Command cmd = { 0 };
+
+	/* Must start with our prefix */
+	size_t prefix_len = strlen(MQTT_CMD_PREFIX);
+	if (strncmp(pub->message.topic.topic.utf8, MQTT_CMD_PREFIX, prefix_len) != 0) {
+		LOG_WRN("Shouldn't even be getting these messages");
+		return;
+	}
+
+    /* 1) cmd.key ← everything after "cmd/hsfib-tib/req/" */
+    const char *suffix = pub->message.topic.topic.utf8 + prefix_len;
+    size_t suffix_len = strlen(suffix);
+    if (suffix_len == 0 || suffix_len >= MAX_KEY_LEN) {
+    	LOG_WRN("Topic too long, dropping command");
+    	struct OutMsg r = invalid_command_response(&cmd);
+    	k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        return;
+    }
+
+    memcpy(cmd.key, suffix, suffix_len);
+    cmd.key[suffix_len] = '\0';
+
+    /* 2) Copy raw JSON payload */
+    if (pub->message.payload.len >= MAX_PAYLOAD_LEN) {
+        return;
+    }
+    memcpy(cmd.payload, pub->message.payload.data, pub->message.payload.len);
+    cmd.payload[pub->message.payload.len] = '\0';
+
+	// Parse msg type from json payload
+	if (!parse_msg_type_from_payload(cmd.payload, &cmd.msg_type)) {
+		LOG_WRN("No valid msg_type in JSON for %s", cmd.key);
+		struct OutMsg r = invalid_command_response(&cmd);
+		k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+		return;
+	}
+
+	if (!(pub->prop.response_topic.utf8 && pub->prop.response_topic.size < sizeof(cmd.response_topic))) {
+		LOG_WRN("No valid response topic");
+		struct OutMsg r = invalid_command_response(&cmd);
+		k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+		return;
+	}
+	memcpy(cmd.response_topic,
+		   pub->prop.response_topic.utf8,
+		   pub->prop.response_topic.size);
+	cmd.response_topic[pub->prop.response_topic.size] = '\0';
+
+    /* Save the broker's correlation_data so we can echo it back */
+    if (pub->prop.correlation_data.len > 0 &&
+        pub->prop.correlation_data.len < sizeof(cmd.correlation_data)) {
+        memcpy(cmd.correlation_data,
+               pub->prop.correlation_data.data,
+               pub->prop.correlation_data.len);
+        cmd.corr_len = pub->prop.correlation_data.len;
+    }
+
+	if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
+		LOG_WRN("Executor busy; rejecting cmd=%s", cmd.key);
+		/* Optional: send a "busy" NACK immediately */
+		struct OutMsg r = busy_response(&cmd);
+		k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+	}
+}
+
 int main(void)
 {
-	int ret;
-	unsigned int period_ms;
-	const struct device *sensor, *blink;
+	//TODO Outstanding questions:
+	// 1. I need to ensure that things are setup so that DHCP falls back to a static IP and that if the link goes
+	// down (e.g. cable unplug) it comes back up automatically. I'm not clear if I need to use the connection manager to ensure this.
+	// 2. I need to ensure that MQTT properly stops/restarts across link failures.
+
+	int rc;
+	struct net_if *iface;
+	static uint16_t msg_id = 1;
 	const struct device *wdt = NULL;
 	int wdt_channel = -1;
-	struct sensor_value last_val = { 0 }, val;
 	int64_t last_wdt_feed = 0;
 
-	printk("Zephyr COO Template Application %s\n", APP_VERSION_STRING);
-
-	/* Initialize persistent settings */
-	ret = settings_subsys_init();
-	if (ret) {
-		LOG_ERR("Settings init failed (%d)", ret);
-		return 0;
-	}
-
-	ret = settings_register(&period_conf);
-	if (ret) {
-		LOG_ERR("Settings register failed (%d)", ret);
-		return 0;
-	}
-
-	ret = settings_load();
-	if (ret) {
-		LOG_ERR("Settings load failed (%d)", ret);
-	}
-
-	/* Use saved period or default */
-	period_ms = saved_period_ms;
-	LOG_INF("Starting with period: %u ms", period_ms);
+	printk("HiSPEC-TIB Application %s\n", APP_VERSION_STRING);
 
 	/* Initialize watchdog */
 	watchdog_init(&wdt, &wdt_channel);
 
-	sensor = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(example_sensor));
-	if (!sensor || !device_is_ready(sensor)) {
-		LOG_WRN("Sensor not available - continuing without sensor (QEMU mode?)");
-		sensor = NULL;
+	/* Initialize devices */
+	devices_ready();
+	setup_mems_switches_and_routes();
+	setup_attenuators();
+
+    /* Initialize settings (persistent storage) */
+    rc = settings_subsys_init();
+    if (rc) {
+        LOG_ERR("Settings init failed (%d)", rc);
+    } else {
+        settings_load();
+    }
+
+	iface = net_if_get_default();
+	if (iface == NULL) {
+		LOG_ERR("No network interface configured");
+		return -ENETDOWN;
+	} else {
+		log_mac_addr(iface);
 	}
 
-	blink = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(blink_led));
-	if (!blink || !device_is_ready(blink)) {
-		LOG_WRN("Blink LED not available - continuing without LED (QEMU mode?)");
-		blink = NULL;
+	LOG_INF("Bringing up network..");
+
+    /* Bring up all network interfaces managed by conn_mgr */
+    rc = conn_mgr_all_if_up(true);
+    if (rc) {
+        LOG_ERR("conn_mgr_all_if_up() failed (%d)", rc);
+    }
+
+	/* Wait for network using coo-common helper */
+	coo_network_init(NULL);
+	coo_network_wait_ready(0);
+
+	LOG_INF("Network stack ready (DHCP or static IP set).");
+
+	/* Initialize MQTT using coo-common library */
+	rc = coo_mqtt_init(&client_ctx, "hsfib-tib");
+	if (rc != 0) {
+		LOG_ERR("MQTT Init failed [%d]", rc);
+		return rc;
 	}
 
-	/* If neither sensor nor LED are available, just demonstrate NVS/watchdog */
-	if (!sensor && !blink) {
-		LOG_INF("Running in QEMU mode - demonstrating NVS and watchdog only");
-		printk("Use QEMU to test persistent settings and watchdog\n");
-	}
+	coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
+	coo_mqtt_set_message_callback(mqtt_command_handler);
 
-	if (blink) {
-		ret = blink_off(blink);
-		if (ret < 0) {
-			LOG_ERR("Could not turn off LED (%d)", ret);
-			return 0;
-		}
-	}
+	/* Start executor thread */
+	k_thread_create(&exec_thread_data, exec_stack,
+				K_THREAD_STACK_SIZEOF(exec_stack),
+				executor_thread_fn,
+				NULL, NULL, NULL,
+				EXECUTOR_PRIORITY, 0, K_NO_WAIT);
 
-	if (sensor && blink) {
-		printk("Use the sensor to change LED blinking period\n");
-	}
+	/* Start photodiode publisher */
+	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
+	k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
 
+	/* Main loop */
 	while (1) {
-		/* Only read sensor if available */
-		if (sensor) {
-			ret = sensor_sample_fetch(sensor);
-			if (ret < 0) {
-				LOG_ERR("Could not fetch sample (%d)", ret);
-				return 0;
+		/* Block until MQTT connection is up */
+		coo_mqtt_connect(&client_ctx);
+		coo_mqtt_subscribe(&client_ctx);
+
+		/* Thread will primarily remain in this loop */
+		while (coo_mqtt_is_connected()) {
+
+			/* Feed watchdog periodically */
+			if (wdt && (k_uptime_get() - last_wdt_feed) >= WDT_FEED_INTERVAL_MS) {
+				rc = wdt_feed(wdt, wdt_channel);
+				if (rc) {
+					LOG_ERR("Failed to feed watchdog (%d)", rc);
+				}
+				last_wdt_feed = k_uptime_get();
 			}
 
-			ret = sensor_channel_get(sensor, SENSOR_CHAN_PROX, &val);
-			if (ret < 0) {
-				LOG_ERR("Could not get sample (%d)", ret);
-				return 0;
-			}
+			/* 1) drain outbound_queue: publish everything */
+			struct OutMsg om;
+			while (k_msgq_get(&outbound_queue, &om, K_NO_WAIT) == 0) {
 
-			if ((last_val.val1 == 0) && (val.val1 == 1)) {
-				if (period_ms == 0U) {
-					period_ms = BLINK_PERIOD_MS_MAX;
-				} else {
-					period_ms -= BLINK_PERIOD_MS_STEP;
-				}
+				struct mqtt_publish_param param = {
+					.message.topic.qos = om.qos,
+					.message.topic.topic.utf8 = (uint8_t *)om.topic,
+					.message.topic.topic.size = strlen(om.topic),
+					.message.payload.data = (uint8_t *)om.payload,
+					.message.payload.len = om.payload_len,
+					.prop.correlation_data.data = om.correlation_data,
+					.prop.correlation_data.len = om.corr_len,
+					.message_id = msg_id++,
+					.dup_flag = 0,
+					.retain_flag = 0,
+				};
 
-				printk("Proximity detected, setting LED period to %u ms\n",
-				       period_ms);
-
-				if (blink) {
-					blink_set_period_ms(blink, period_ms);
-				}
-
-				/* Save new period to persistent storage */
-				saved_period_ms = period_ms;
-				ret = settings_save_one("app/period", &saved_period_ms,
-							sizeof(saved_period_ms));
-				if (ret) {
-					LOG_WRN("Failed to save period (%d)", ret);
-				} else {
-					LOG_DBG("Saved period: %u ms", period_ms);
+				rc = mqtt_publish(&client_ctx, &param);
+				if (rc != 0) {
+					LOG_ERR("MQTT Publish failed [%d]", rc);
 				}
 			}
 
-			last_val = val;
+			rc = coo_mqtt_process(&client_ctx);
+			if (rc != 0) {
+				break;
+			}
 		}
+		/* Gracefully close connection */
+		mqtt_disconnect(&client_ctx, NULL);
 
-		/* Feed watchdog periodically */
-		if (wdt && (k_uptime_get() - last_wdt_feed) >= WDT_FEED_INTERVAL_MS) {
-			ret = wdt_feed(wdt, wdt_channel);
-			if (ret) {
-				LOG_ERR("Failed to feed watchdog (%d)", ret);
-			}
-			last_wdt_feed = k_uptime_get();
-		}
-
-		k_sleep(K_MSEC(100));
+		LOG_INF("MQTT disconnected, will retry...");
 	}
 
-	return 0;
+	return rc;
 }
-

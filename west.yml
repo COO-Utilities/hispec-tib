@@ -17,6 +17,12 @@ manifest:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
         name-allowlist:
-          - cmsis_6    # required by the ARM port for Cortex-M
-          - hal_nordic # required by the custom_plank board (Nordic based)
-          - hal_stm32  # required by the nucleo_f302r8 board (STM32 based)
+          - cmsis_6      # required by the ARM port for Cortex-M
+          - hal_nordic   # required by the custom_plank board (Nordic based)
+          - hal_stm32    # required by the nucleo_f302r8 board (STM32 based)
+          - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
+    # Out-of-tree DAC Driver for optical attenuators
+    - name: dac7578
+      url: https://github.com/marcrickenbach/dac7578
+      revision: main
+      path: modules/dac/dac7578
