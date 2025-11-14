@@ -93,6 +93,7 @@ K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 /* Watchdog callback (optional - for notification before reset) */
 static void wdt_callback(const struct device *wdt_dev, int channel_id)
 {
+	//TODO Ensure as safe a restart process as possible.
 	LOG_ERR("Watchdog callback triggered - system will reset!");
 }
 
@@ -134,16 +135,6 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
-void log_mac_addr(struct net_if *iface)
-{
-	struct net_linkaddr *mac;
-
-	mac = net_if_get_link_addr(iface);
-
-	LOG_INF("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X",
-		mac->addr[0], mac->addr[1], mac->addr[2],
-		mac->addr[3], mac->addr[4], mac->addr[5]);
-}
 
 void executor_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -169,11 +160,20 @@ void executor_thread_fn(void *p1, void *p2, void *p3)
 static void photodiode_publish_handler(struct k_work *work) {
 	struct OutMsg r;
 
-	while (k_msgq_get(&photodiode_queue, &r, K_NO_WAIT) == 0) {
+	while (k_msgq_peek(&photodiode_queue, &r) == 0) {
 		if (k_msgq_put(&outbound_queue, &r, K_NO_WAIT) != 0) {
-			LOG_WRN("Outbound queue full, dropping sample");
+			break;
+			LOG_WRN("Outbound queue full, will try again");
+		} else {
+			k_msgq_get(&photodiode_queue, &r, K_NO_WAIT);
 		}
 	}
+	// while (k_msgq_get(&photodiode_queue, &r, K_NO_WAIT) == 0) {
+	// 	if (k_msgq_put(&outbound_queue, &r, K_NO_WAIT) != 0) {
+	// 		break;
+	// 		LOG_WRN("Outbound queue full, will tru again sample");
+	// 	}
+	// }
 
 	// Re-schedule
 	k_work_schedule(&photodiode_publish_work, K_MSEC(10)); // 100 Hz (production rate is 50Hz)
@@ -195,6 +195,7 @@ static void mqtt_command_handler(const struct mqtt_publish_param *pub)
     size_t suffix_len = strlen(suffix);
     if (suffix_len == 0 || suffix_len >= MAX_KEY_LEN) {
     	LOG_WRN("Topic too long, dropping command");
+    	//TODO include error message into invalid command response
     	struct OutMsg r = invalid_command_response(&cmd);
     	k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
         return;
@@ -212,6 +213,7 @@ static void mqtt_command_handler(const struct mqtt_publish_param *pub)
 
 	// Parse msg type from json payload
 	if (!parse_msg_type_from_payload(cmd.payload, &cmd.msg_type)) {
+		//TODO include error message into invalid command response
 		LOG_WRN("No valid msg_type in JSON for %s", cmd.key);
 		struct OutMsg r = invalid_command_response(&cmd);
 		k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
@@ -220,6 +222,7 @@ static void mqtt_command_handler(const struct mqtt_publish_param *pub)
 
 	if (!(pub->prop.response_topic.utf8 && pub->prop.response_topic.size < sizeof(cmd.response_topic))) {
 		LOG_WRN("No valid response topic");
+		//TODO include error message into invalid command response
 		struct OutMsg r = invalid_command_response(&cmd);
 		k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
 		return;
@@ -270,29 +273,13 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
-    /* Initialize settings (persistent storage) */
-    rc = settings_subsys_init();
-    if (rc) {
-        LOG_ERR("Settings init failed (%d)", rc);
-    } else {
-        settings_load();
-    }
-
-	iface = net_if_get_default();
-	if (iface == NULL) {
-		LOG_ERR("No network interface configured");
-		return -ENETDOWN;
+	/* Initialize settings (persistent storage) */
+	rc = settings_subsys_init();
+	if (rc) {
+		LOG_ERR("Settings init failed (%d)", rc);
 	} else {
-		log_mac_addr(iface);
+		settings_load();
 	}
-
-	LOG_INF("Bringing up network..");
-
-    /* Bring up all network interfaces managed by conn_mgr */
-    rc = conn_mgr_all_if_up(true);
-    if (rc) {
-        LOG_ERR("conn_mgr_all_if_up() failed (%d)", rc);
-    }
 
 	/* Wait for network using coo-common helper */
 	coo_network_init(NULL);

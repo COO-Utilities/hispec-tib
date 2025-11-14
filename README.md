@@ -1,13 +1,17 @@
-# HiSPEC-TIB - Zephyr RTOS Firmware
+# HISPEC-FIB - Zephyr RTOS Firmware
 
-High-Speed Spectroscopic Camera for Palomar (HiSPEC) - Telescope Interface Box (TIB) firmware built on Zephyr RTOS using the COO (Caltech Optical Observatories) standardized template.
+HISPEC FIB PCB firmware built on Zephyr RTOS using the COO (Caltech Optical Observatories) standardized template.
 
 ## Overview
 
-The HiSPEC-TIB controls optical routing, laser calibration sources, and attenuators for the HiSPEC spectrograph. This firmware runs on a WIZnet W5500-EVB-Pico2 board (RP2350 microcontroller) and provides MQTT-based remote control over Ethernet.
+The HISPEC FIB PCBs control optical routing, laser calibration sources, and attenuators for the HISPEC spectrograph. 
+This firmware provides MQTT-based remote control over ethernet as well as serial commanding.
+
+### Targeted boards
+- WIZnet W5500-EVB-Pico2 (RP2350 microcontroller)
+- Nucleo-ST32xxxx TODO
 
 ### Hardware Features
-
 - **MEMS Optical Switches**: 8 dual-channel fiber switches for beam routing
 - **Maiman Laser Controllers**: Modbus control of calibration laser sources
 - **Optical Attenuators**: DAC-controlled variable optical attenuators with polynomial calibration
@@ -37,16 +41,19 @@ west flash
 
 ## COO Commons Library
 
-This project uses the [lib/coo_commons](lib/coo_commons/) library for production-ready utilities:
+This project uses the [lib/coo_commons](lib/coo_commons/) library to provide the following utilities:
 
 ### MQTT Client
-Production-ready MQTT 5.0 wrapper with automatic retry, subscription management, event callbacks, and QoS support (0, 1, 2).
+Wrapper around Zephyr's MQTT 5.0 functionality.
+
+[TODO verify AI successfully added:] with automatic retry, subscription management, event callbacks, and QoS support (0, 1, 2).
 
 **MQTT Command Interface:**
 - **Subscribe topic**: `cmd/hsfib-tib/req/#`
-- **Response topic**: Provided in MQTT 5.0 `response_topic` property
-- **Broker**: `jebcontrol.caltech.edu:1883`
-
+- **Response topic**: Provided in MQTT 5.0 `response_topic` property [TODO is full string default wise? Follow Amazon AWS-IoT guideance]
+- **Broker**: `jebcontrol.caltech.edu:1883` [TODO The broker needs to be configured at compile time, a fallback via mqtt, and settable via serial]
+- **Published Data**: [TODO]
+- 
 ### Network Stack
 Complete networking support with connection manager integration (L4 events, DHCP with static IP fallback).
 
@@ -57,13 +64,14 @@ Structured message handling for telemetry encoding, command parsing with hierarc
 Reusable proportional-integral-derivative loops for temperature and motion control.
 
 **Usage Example:**
+[TODO lets not wait forever but rather retry periodically to allow servicing commands and testing over serial]
 ```c
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
 
 // Initialize network and MQTT
 coo_network_init(NULL);
-coo_network_wait_ready(K_FOREVER);
+coo_network_wait_ready(K_FOREVER); 
 
 struct mqtt_client client;
 coo_mqtt_init(&client, "hsfib-tib");
@@ -125,7 +133,7 @@ All commands follow a standardized JSON format with MQTT 5.0 properties:
 ```json
 {
   "msg_type": "set|get",
-  "value": <attenuation_in_dB>
+  "value": <attenuation_in_dB_or_volts>
 }
 ```
 

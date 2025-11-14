@@ -4,3 +4,6 @@ west-commands:
       - name: example-west-command
         class: ExampleWestCommand
         help: an example west extension command
+
+
+#[TODO can we add some useful helpers here for e the various PCB shield configurations than need building?]
