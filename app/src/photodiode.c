@@ -31,7 +31,7 @@ static const struct adc_channel_cfg yj_cfg_dt =
     ADC_CHANNEL_CFG_DT(DT_CHILD(DT_NODELABEL(adc1115), channel_0));
 
 static const struct adc_channel_cfg hk_cfg_dt =
-    ADC_CHANNEL_CFG_DT(DT_CHILD(DT_NODELABEL(adc1115), channel_1));
+    ADC_CHANNEL_CFG_DT(DT_CHILD(DT_NODELABEL(adc1115), channel_2));
 
 K_MSGQ_DEFINE(photodiode_queue, sizeof(struct OutMsg), 4, 4);
 
@@ -96,6 +96,7 @@ void photodiode_thread()
         msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),
                                   "{\"yj\":%hd, \"hk\":%hd, \"time\":%lld}",
                                   yj_sample, hk_sample, ts.tv_sec);
+        //TODO time must be in float or in ms
 
         while (k_msgq_put(&photodiode_queue, &msg, K_NO_WAIT) !=0) {
             /* photodiode_queue is full: purge old data & try again */

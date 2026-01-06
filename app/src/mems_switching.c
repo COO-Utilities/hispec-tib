@@ -31,6 +31,7 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
 
 int mems_switch_set_state(struct mems_switch *sw, char state)
 {
+    //TODO make case insensitive
     gpio_pin_t pin;
     if (state == 'A') {
         pin = sw->pin_a;

@@ -71,6 +71,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "atten",      atten_setting_get,  atten_setting_set  },
     { "status",     status_get,       NULL  },
     { "sleep",      NULL,  sleep_set  }, // GET only
+    //todo add reset for system
 };
 
 
@@ -570,7 +571,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
         attenuator_set(&attenuators[laser_id], db, false);
 
-    } else if (strcasecmp(setting, "value")) {
+    } else if (strcasecmp(setting, "value") || strcasecmp(setting, "valuedb") {
 
         struct json_value_float in_data = {0};
         struct json_obj_descr d[] = {
@@ -579,17 +580,8 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d, 1, &in_data) < 0) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
         }
-        attenuator_set(&attenuators[laser_id], in_data.value, true);
 
-    } else if (strcasecmp(setting, "valuedb")) {
-        struct json_value_float in_data = {0};
-        struct json_obj_descr d[] = {
-            JSON_OBJ_DESCR_PRIM(struct json_value_float, value, JSON_TOK_NUMBER)
-        };
-        if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d, 1, &in_data) < 0) {
-            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
-        }
-        attenuator_set(&attenuators[laser_id], in_data.value, false);
+        attenuator_set(&attenuators[laser_id], in_data.value, strcasecmp(setting, "value"));
 
     } else {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
@@ -601,14 +593,14 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
 struct OutMsg status_get(const struct Command *cmd) {
     char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"power\":%s}", power_enabled() ? "true" : "false");
+    snprintf(payload, MAX_PAYLOAD_LEN, "{\"lase_power\":%s}", power_enabled() ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
 
 struct OutMsg power_get(const struct Command *cmd) {
     char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"power\":%s}", power_enabled() ? "true" : "false");
+    snprintf(payload, MAX_PAYLOAD_LEN, "{\"lase_power\":%s}", power_enabled() ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -641,7 +633,7 @@ struct OutMsg sleep_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
     }
 
-    //TODO do anything necessary to grasefully shupdown the lasers.
-    if (args.value) disable_power();
+    //TODO
+
     return _msg_builder(cmd, RESP_ERROR,"{\"status\":\"OK\"}");
 }

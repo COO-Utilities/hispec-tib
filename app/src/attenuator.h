@@ -25,8 +25,9 @@ struct attenuator {
  * Initialize attenuator driver for given DAC channel.
  * @param drv     Pointer to driver instance
  * @param channel DAC channel number
+ * @return true on success, false on error
  */
-void attenuator_init(struct attenuator *drv, uint8_t channel);
+bool attenuator_init(struct attenuator *drv, uint8_t channel);
 
 /**
  * Set output voltage on attenuator (clamped to DAC range).

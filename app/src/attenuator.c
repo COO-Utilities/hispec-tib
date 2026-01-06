@@ -7,6 +7,7 @@
 
 #include "attenuator.h"
 #include "devices.h"
+#include "drivers/dac/dac7578.h"
 LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 
 //See
@@ -16,12 +17,12 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 
 #define DAC_RESOLUTION_BITS  12
 #define DAC_MAX_CODE         ((1 << DAC_RESOLUTION_BITS) - 1)
-#define MAX_VOLTAGE          4.096d
+#define MAX_VOLTAGE          4096.0
 
 // static const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));  //or DEVICE_DT_GET_OR_NULL
 
-void attenuator_init(struct attenuator *drv, uint8_t channel) {
-    drv->voltage = 0.0f;
+bool attenuator_init(struct attenuator *drv, uint8_t channel) {
+    drv->voltage = 0.0;
     drv->cfg.channel_id = channel;
     drv->cfg.resolution = DAC_RESOLUTION_BITS;
 #if defined(CONFIG_DAC_BUFFER_NOT_SUPPORT)
@@ -29,26 +30,6 @@ void attenuator_init(struct attenuator *drv, uint8_t channel) {
 #else
     drv->cfg.buffered = true;
 #endif
-}
-
-bool attenuator_set(struct attenuator *drv, double value, bool raw) {
-    /* Clamp voltage to [0, MAX_VOLTAGE] */
-    double voltage;
-    if (raw) {
-        voltage = value;
-    }
-    else {
-        voltage = drv->coeff_db_to_volt[0]+
-            drv->coeff_db_to_volt[2]*value*value+
-                drv->coeff_db_to_volt[1]*value;
-    }
-
-    if (voltage < 0.0d) {
-        voltage = 0.0d;
-    } else if (voltage > MAX_VOLTAGE) {
-        voltage = MAX_VOLTAGE;
-    }
-    drv->voltage = voltage;
 
     if (!device_is_ready(dac_dev)) {
         LOG_ERR("DAC device %s not ready", dac_dev->name);
@@ -60,7 +41,29 @@ bool attenuator_set(struct attenuator *drv, double value, bool raw) {
         LOG_ERR("DAC channel setup failed: %d", err);
         return false;
     }
+    return true;
+}
 
+bool attenuator_set(struct attenuator *drv, double value, bool raw) {
+    /* Clamp voltage to [0, MAX_VOLTAGE] */
+    double voltage;
+    int err;
+    if (raw) {
+        voltage = value;
+    }
+    else {
+        voltage = drv->coeff_db_to_volt[0]+
+            drv->coeff_db_to_volt[1]*value+
+            drv->coeff_db_to_volt[2]*value*value;
+    }
+
+    if (voltage < 0.0) {
+        voltage = 0.0;
+    } else if (voltage > MAX_VOLTAGE) {
+        voltage = MAX_VOLTAGE;
+    }
+
+    drv->voltage = voltage;
     uint32_t code = (uint32_t)((drv->voltage / MAX_VOLTAGE) * DAC_MAX_CODE);
     err = dac_write_value(dac_dev, drv->cfg.channel_id, code);
     if (err != 0) {
@@ -72,12 +75,18 @@ bool attenuator_set(struct attenuator *drv, double value, bool raw) {
 }
 
 bool attenuator_get(struct attenuator *drv, double *value, bool raw) {
+    //NB Reads the register, no checking for chip power down state
+    uint32_t code;
+    double volt;
+    dac7578_read_value(dac_dev, drv->cfg.channel_id, &code);
+    drv->voltage = ((double) MAX_VOLTAGE/(double) DAC_MAX_CODE)*(double) code;
+    volt = drv->voltage;
     if (raw) {
-        *value = drv->voltage;
+        *value = volt;
     } else {
-        *value = drv->coeff_volt_to_db[0]+
-            drv->voltage*drv->voltage*drv->coeff_volt_to_db[2]+
-                drv->voltage*drv->coeff_volt_to_db[1];
+        *value = drv->coeff_volt_to_db[0] +
+            volt*drv->coeff_volt_to_db[1] +
+            volt*volt*drv->coeff_volt_to_db[2];
     }
 
     return true;

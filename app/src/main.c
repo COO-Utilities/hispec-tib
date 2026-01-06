@@ -13,12 +13,12 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #include <zephyr/net/socket.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/net/mqtt.h>
-#include <zephyr/net/net_if.h>
-#include <zephyr/net/net_mgmt.h>
-#include <zephyr/net/net_event.h>
+// #include <zephyr/net/net_if.h>
+// #include <zephyr/net/net_mgmt.h>
+// #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_ip.h>
-#include <zephyr/net/conn_mgr_monitor.h>
-#include <zephyr/net/conn_mgr_connectivity.h>
+// #include <zephyr/net/conn_mgr_monitor.h>
+// #include <zephyr/net/conn_mgr_connectivity.h>
 
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
@@ -158,6 +158,9 @@ void executor_thread_fn(void *p1, void *p2, void *p3)
 }
 
 static void photodiode_publish_handler(struct k_work *work) {
+	/* Regularly scheduled and executed function to load up outbound q with pd q's data
+	 * until either pd q is empty or out q full. Reschedules itself.
+	 */
 	struct OutMsg r;
 
 	while (k_msgq_peek(&photodiode_queue, &r) == 0) {
@@ -168,19 +171,15 @@ static void photodiode_publish_handler(struct k_work *work) {
 			k_msgq_get(&photodiode_queue, &r, K_NO_WAIT);
 		}
 	}
-	// while (k_msgq_get(&photodiode_queue, &r, K_NO_WAIT) == 0) {
-	// 	if (k_msgq_put(&outbound_queue, &r, K_NO_WAIT) != 0) {
-	// 		break;
-	// 		LOG_WRN("Outbound queue full, will tru again sample");
-	// 	}
-	// }
 
 	// Re-schedule
 	k_work_schedule(&photodiode_publish_work, K_MSEC(10)); // 100 Hz (production rate is 50Hz)
 }
 
-static void mqtt_command_handler(const struct mqtt_publish_param *pub)
-{
+static void mqtt_command_handler(const struct mqtt_publish_param *pub) {
+	/*
+	 *
+	 */
 	struct Command cmd = { 0 };
 
 	/* Must start with our prefix */
@@ -295,7 +294,7 @@ int main(void)
 	}
 
 	coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
-	coo_mqtt_set_message_callback(mqtt_command_handler);
+	coo_mqtt_set_message_callback(mqtt_command_handler); //TODO Shouldn't the callback come first?
 
 	/* Start executor thread */
 	k_thread_create(&exec_thread_data, exec_stack,
