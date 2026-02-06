@@ -189,6 +189,24 @@ The project is designed to create a controller capable of:
 ---
 ## 3. Code Structure
 
+### High-Level Architecture:
+
+| Area                              | Description                                                                                                                                                                     |
+|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `main.c`                          | Initializes hardware, tasks, queues, network and runs MQTT TODO needs tidy and refactor after sorting out libraries                                                             |
+| `command.c`                       | command callbacks, exercising of hardware, where JSON gets parsed and created (mostly), the dispatch system `Command` creation from MQTT is in `main.c` which is rather muddled |
+| `photodiode.c`                    | a zephyr task that continuously reads the ADC to monitor the two photodiods at a fixed rate and ships date to an output queue                                                   |
+| `attenuator.c`                    | functions to init/get/set attenuators                                                                                                                                           |
+| `mems_switching.c`                | MEMS Switch control and a MEMS switch router to manage connecting the light paths                                                                                               |
+| `maiman.cpp`                      | Maiman laser diode driver control                                                                                                                                               |
+| `devices.c`                       |                                                                                                                                                                                 |
+| `coo_commons/json_utils.c`        | JSON parsing and creation (nicer wrapping of Zephyr)                                                                                                                            |
+| `coo_commons/mqtt_client.c`       | nicer mqtt wrapping of zephyr functions                                                                                                                                         |
+| `coo_commons/network.c`           | standardized Zephyer startop (maybe, maybe this is overkill and should just be in the project)                                                                                  |
+| `coo_commons/commanding.c`        | potential Future home for command dispatch                                                                                                                                      |
+| `modules/dac/dac7578` | DAC device driver library, others (e.g. ADS1115 ADC) are mainlined in Zephyr                                                                                                    |
+
+
 ### main.c
  - Some Settings management stubs,  probably GPT via ML.
    - setting_handler(name, size, read_cb, cb_args)
@@ -408,38 +426,100 @@ TODO: Veryfy I'm dealing with networking properly and setup DHCP with fallback t
     - take samples with detections
     - make fit and adopt coeff
 ### mems_switching.c
+- Implements the mems switch and mems router concepts. routes are a series of switches and required states to connect an input to an output.  Multiple paths are not supported. Multiple active routes are.
 - mems_switch struct
   - gpio device and pin A and B
   - char state
   - char name[]
 - mems_route structs 
   - mems_route, mems_route_step|id|key
-  - key: pointers to input and output names
-  - id: char arrays for input and output location names
-  - step: pointer to a switch name and a char state (the required state)
-  - the route itself
+    - key: pointers to input and output names
+    - id: char arrays for input and output location names
+    - step: pointer to a switch name and a char state (the required state)
+    - the route itself
 - mems_router struct
   - *switches[] - pointers to mems switch structs
   - routs[] - array of routes
   - num_switches & num_routes
-- mems_active_routes struct
+- void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev, 
+                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name)
+  - populate the mems_switch struct with the gpio device and pin numbers, set state to 'U'
+  - configure the gpio pins as inactive outputs, presently `GPIO_OUTPUT_INACTIVE`
+    - TODO this needs to be sourcing, active high as it drives a transistor gate
+  - TODO here or elsewhere (decide in concert with all other things), restore last known state of switches on startup
+  - TODO add flag that state has not been set this if state is restored
+- int mems_switch_set_state(struct mems_switch *sw, char state)
+  - pulse the appropriate pin for state A or B and set the state in the struct
+- int mems_switch_get_state(const struct mems_switch *sw, char *out_state)
+  - return by reference a pointer to the present state and return 0 if state is A|B, -1 otherwise (unknown or invalid or the passed pointers are NULL)
 
-#- TODO review rest of code and update what follows
+- void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches)
+  - load the mems_router struct: set the number or routes to zero, num switches, and populate switch pointer array
 
+- struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name)
+  - find a switch by name and return a pointer to it if found, null otherwise
+  
+- int mems_router_define_route(struct mems_router *router, const char *input, const char *output, const struct mems_route_step *steps, uint8_t num_steps)
+  - Populates a route from input to output with a path (sequence of switch/state pairs)
+  - no copies of data, just moving pointers into place
+  - not envisioned for dynamic use 
+
+- const struct mems_route *mems_router_get_route(const struct mems_router *router, const char *input, const char *output)
+  -  find/return the route from input to output and return a pointer to it (or NULL if not found)
+
+- uint8_t mems_router_active_routes(const struct mems_router *router, struct mems_route_key *out_keys, uint8_t max_keys);
+  - List all routes whose switches are ALL in the expected state.
+  - Returns the number of active routes found, up to max_keys.
+  - Each result is a mems_route_key with an (input, output) pair.
+### maiman.c
+- control of the Maiman lasers via modbus
+  - NB Zephyer modbus init (modbus_init_client) is handled in devices.c
+- defines MaimanRegister struct, laser_address type, maiman_driver type (a wrapper around a node id), and a register_table 
+- defines device bitmasts and register addresses
+- defines a function to init the device and read and write registers
+  - TODO need to init with appropriate laser properties
+- defines user interface functions to interact with the device, core functions
+  - maiman_start_device/maiman_stop_device
+  - maiman_set_current/maiman_get_current
+  - maiman_is_operation_started
+  - TODO create a collective status function
+    - see hispec-fib.ait.photonic_testint.photonic_testing.Laser.status() for inspiration 
+  - TODO Make it clear if setting/getting laser current fails e.g. if overcurrent is tripped
+  - TODO still need to actually implment TEC startup and actual command flow as per python test code
+    - get_current_protection_threshold (it is a function of a potentiometer on the device)
+    - flag if OCP value is above LASER_DNE value and warn
+    - set TEC current limit, set current limit to laser DNE w/ safety margin
+    - set the tec pid coeffs to defaults
+    - set the drive current to 0
+    - disable the interlock
+    - start the device
+  - TODO need to reinit the device when the power is turned off
+  - TODO implement power_down of the device
+    - current to 0
+    - stop device
+    - stop tec
+    - enable interlock
+  - TODO add setting current as a percentage of the laser's current
+    - TODO ass LASER properties struct, populate in devices.c (actual lasers are specific to TIB not mainman driver)
+### devices.c
+- instantiates adc, dac, modbus_name, and gpio dev via device tree
+- instantiates attenuators, mems_switches, mems_router
+- defines constants:
+  - switch_names strings
+  - mems_switch_pin_pairs
+- defines
+  - modbus client setup function
+  - attenuators setup function
+  - setup_mems_switches_and_routes
+    - TODO this may well have a stack memory error and really the routes should be defined as a hardcode plus possibly a 
+      macro to ease readability. These routes are fixed in hardware and can not change 
+      - This would eliminate `mems_router_define_route`
+  - devices_ready())
+    - configures power gpio IFF it doesn't report ready
+      - TODO Why is this conditional needed? Document it.
+      - 
 
  
-### High-Level Architecture:
-
-| Area             | Description                                                                                                                                                                     |
-|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `main.c`         | Initializes hardware, tasks, queues, network and runs MQTT TODO needs tidy and refactor after sorting out libraries                                                             |
-| `command.c`      | command callbacks, exercising of hardware, where JSON gets parsed and created (mostly), the dispatch system `Command` creation from MQTT is in `main.c` which is rather muddled |
-| `photodiode.c`     | a zephyr task that continuously reads the ADC to monitor the two photodiods at a fixed rate and ships date to an output queue                                                   |
-| `attenuator.c` | functions to init/get/set attenuators
-| `maiman.cpp`     | A Maiman laser diode object     |
-| `mems_switching.c` |                                                                                                          |
-| `devices.c`     |                                                                                                     |
-
 
 ---
 
