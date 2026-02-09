@@ -17,4 +17,10 @@ target_sources(app PRIVATE
         src/maiman.c
         src/photodiode.c
         src/mems_switching.c
+        src/attenuator.h
+        src/command.h
+        src/devices.h
+        src/maiman.h
+        src/photodiode.h
+        src/mems_switching.h
 )
