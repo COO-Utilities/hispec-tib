@@ -50,10 +50,6 @@ struct mems_route_key {
     const char *output_name;
 };
 
-struct mems_active_routes {
-    const struct mems_route_key *routes;
-};
-
 struct mems_route {
     struct mems_route_key key;
     struct mems_route_step steps[MEMS_ROUTER_MAX_ROUTE_PATH];
@@ -93,20 +89,14 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output);
 
 
-// // Set a switch by name
-// int mems_router_set_switch(struct mems_router *router, const char *name, char state);
-//
-// // Get state of a switch by name
-// int mems_router_get_switch(const struct mems_router *router, const char *name, char *out_state);
-
 // Define a route from input to output with a path (sequence of switch/state pairs)
 int mems_router_define_route(struct mems_router *router,
                             const char *input, const char *output,
                             const struct mems_route_step *steps, uint8_t num_steps);
 
 
-// (Optional) List all active routes
+//  List all active routes
 uint8_t mems_router_active_routes(const struct mems_router *router,
-                                 struct mems_route_key *out_keys, uint8_t max_keys);
+                                  struct mems_route_key *out_keys, uint8_t max_keys);
 
 #endif // MEMS_SWITCHING_H

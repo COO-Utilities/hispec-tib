@@ -98,6 +98,7 @@ int mems_router_define_route(struct mems_router *router,
     route->key.output_name = output;
     route->num_steps = num_steps;
     for (uint8_t i = 0; i < num_steps; ++i) {
+        if (steps[i].switch_name == NULL) return -3;
         route->steps[i] = steps[i];
     }
     router->num_routes += 1;
