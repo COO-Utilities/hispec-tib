@@ -55,7 +55,6 @@ extern const struct gpio_dt_spec mems7_B;
 
 extern struct mems_switch mems_switches[];
 extern struct mems_router router;
-extern struct mems_switch *mems_switch_ptrs[];
 extern struct attenuator attenuators[];
 
 

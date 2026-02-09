@@ -48,33 +48,6 @@ const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
 struct attenuator attenuators[NUM_ATTENUATORS];
 struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 struct mems_router router;
-struct mems_switch *mems_switch_ptrs[MEMS_ROUTER_MAX_SWITCHES];
-
-
-
-bool setup_modbus_client(void) {
-
-    struct modbus_iface_param modbus_cfg = {
-        .mode = MODBUS_MODE_RTU,
-        .serial = {
-            .baud = 115200,
-            .parity = UART_CFG_PARITY_NONE,
-            .stop_bits = UART_CFG_STOP_BITS_1
-        },
-		.rx_timeout = MODBUS_RX_TIMEOUT_MS
-    };
-
-    int client_iface  = modbus_iface_get_by_name(modbus_name);
-    if (modbus_init_client(client_iface, modbus_cfg)==0) {
-        LOG_INF("Modbus client (RTU) initialized on UART1");
-    } else {
-        LOG_ERR("Modbus init failed");
-		return false;
-    }
-	return true;
-}
-
-
 
 
 
@@ -92,15 +65,31 @@ const gpio_pin_t mems_switch_pin_pairs[8][2] = {
 };
 
 
-struct mems_route_step yj_1430_to_yj_ao[] = {
-    {"yj_cal_laser", 'B'},
-    {"yj_forward_retro", 'A'},
-    {"yj_ao_fei", 'A'}
-};
+bool setup_modbus_client(void) {
+
+    struct modbus_iface_param modbus_cfg = {
+        .mode = MODBUS_MODE_RTU,
+        .serial = {
+            .baud = 115200,
+            .parity = UART_CFG_PARITY_NONE,
+            .stop_bits = UART_CFG_STOP_BITS_1
+        },
+        .rx_timeout = MODBUS_RX_TIMEOUT_MS
+    };
+
+    int client_iface  = modbus_iface_get_by_name(modbus_name);
+    if (modbus_init_client(client_iface, modbus_cfg)==0) {
+        LOG_INF("Modbus client (RTU) initialized on UART1");
+    } else {
+        LOG_ERR("Modbus init failed");
+        return false;
+    }
+    return true;
+}
 
 
 void setup_attenuators() {
-    for (int i=0;i<6;++i) {
+    for (int i=0;i<NUM_ATTENUATORS;++i) {
         attenuator_init(&attenuators[i], i);
     }
 }
@@ -108,13 +97,15 @@ void setup_attenuators() {
 
 void setup_mems_switches_and_routes() {
 
+    struct mems_switch *mems_switch_ptrs[MEMS_ROUTER_MAX_SWITCHES];
+
     if (!device_is_ready(gpio_dev)) {
         printk("GPIO expander not ready!\n");
         return;
     }
 
     // Initialize switches and pointer table
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < MEMS_ROUTER_MAX_SWITCHES; ++i) {
         mems_switch_init(&mems_switches[i], gpio_dev, mems_switch_pin_pairs[i][0], mems_switch_pin_pairs[i][1], switch_names[i]);
         mems_switch_ptrs[i] = &mems_switches[i];
     }
