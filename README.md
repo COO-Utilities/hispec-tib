@@ -1,3 +1,12 @@
+    __  ___________ ____  ____________   ______________ 
+   / / / /  _/ ___// __ \/ ____/ ____/  /_  __/  _/ __ )
+  / /_/ // / \__ \/ /_/ / __/ / /  ______/ /  / // __  |
+ / __  // / ___/ / ____/ /___/ /__/_____/ / _/ // /_/ / 
+/_/ /_/___//____/_/   /_____/\____/    /_/ /___/_____/  
+
+
+
+
 # HiSPEC-TIB - Zephyr RTOS Firmware
 
 High-Speed Spectroscopic Camera for Palomar (HiSPEC) - Telescope Interface Box (TIB) firmware built on Zephyr RTOS using the COO (Caltech Optical Observatories) standardized template.
