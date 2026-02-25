@@ -1,0 +1,566 @@
+## Topics (roles)
+
+- **Device subscribes:** `cmd/<device>/req/#` *(all request endpoints live under this prefix)*
+- **Device publishes (responses):** `cmd/<device>/resp/...`
+- **Device publishes (telemetry):** `dt/<device>/...`
+
+### Global (applies to all commands)
+
+- Any response may be: `{"status":"error", "msg":<error message>}`
+
+- Req/resp also use MQTT5 request/response metadata:
+  - **On requests (publisher → device):**
+    - `response_topic`: where the device should publish the response (this doc assumes it’s under `cmd/<device>/resp/...`)
+    - `correlation_data`: opaque bytes echoed back in the response so the requester can match replies to requests
+  - **On responses (device → publisher):**
+    - `correlation_data`: copied from the request
+    - `qos`: response QoS 
+---
+
+## Command Endpoints
+- `help`
+- `memsroute`
+- `mems`
+- `mems/<switchname>`
+- `measure_tput`
+- `laser`
+- `lasersettings`
+- `laserbank/poweron`
+- `laserbank/poweroff`
+- `laserbank/clearfaults`
+- `atten`
+- `attensettings`
+- `pd`
+- `pdsettings`
+- `ip`
+- `time`
+- `temp`
+- `status`
+- `reboot`
+- `split`
+- Telemetry: `yj_tput`, `hk_tput`
+
+---
+
+Each item below is **one request topic** (subscribed by the device) and its **matching response topic** (published by the device).
+
+### `help`
+- **Request topic:** `cmd/<device>/req/help`
+  - No payload
+
+- **Response topic:** `cmd/<device>/resp/help`
+  - Result: `{"help": <a nice string of commands and info, in essence a summary of this file>}`
+
+### `memsroute`
+- **Request topic:** `cmd/<device>/req/memsroute`
+  - Set:
+  ```json
+      {"from": <source>, 
+        "to": <dest>
+      }
+  ```
+  - Query: No payload
+
+- **Response topic:** `cmd/<device>/resp/memsroute`
+  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {"routes": {
+            <source.name>: <dest.name>,
+            "none": [<any dest w/o a source>,...]
+      }
+    }
+     ```
+
+### `mems`
+- **Request topic:** `cmd/<device>/req/mems`
+  - Query: No payload
+- **Response topic:** `cmd/<device>/resp/mems/<switchname>`
+  - Query result: `{<switchname>: <switchstate>, ...}`
+
+### `mems/<switchname>`
+- **Request topic:** `cmd/<device>/req/mems/<switchname>`
+  - Query: No payload
+  - Set: `{"state": "A"|"B"}`
+
+- **Response topic:** `cmd/<device>/resp/mems/<switchname>`
+  - Query result: `{"state": <state>}`
+
+    Where `state` is one of: `"A" | "B" | "A?" | "B?" | "unknown"`, questions mark indicates that the switch has not been set this powerup.
+  - Set result: `{"status": "success"}`
+
+
+### `measure_tput`
+- **Request topic:** `cmd/<device>/req/measure_tput`
+  - Payload:
+    ```json
+    {
+        "autolevel": true,
+        "laser": "<lasername>",
+        "fiber": "<fibername>",
+        "stopafter_s": 300,
+        "format": "json"|"binary"
+      }
+    ```
+    or
+    ```json
+    {
+    "stop": "yj"|"hk"|"all"
+    }
+    ```
+- **Response topic:** `cmd/<device>/resp/measure_tput`
+  - Result: `{"status": "success"}`
+    Causes telemetry to be published on `yj_tput` or `hk_tput` topic (or stops it).
+
+
+**Telemetry topics (published):**
+- `dt/<device>/yj_tput`
+- `dt/<device>/hk_tput`
+
+**Telemetry payload:**
+  ```json
+  {
+    "tp": 0.0,
+    "tp_err": 0.0,
+    "laser": 0.0,
+    "at1": 0.0,
+    "at2": 0.0,
+    "adc": 0.0,
+    "time": 0,
+    "waveelngth_nm": 0.0,
+    "fiber": "M"|"S"
+  }
+  ```
+  or 35 bytes of binary data
+
+  ```binary
+    {
+      float64_t tp,
+      float64_t tp_err,
+      uint16_t laser,
+      uint16_t at1,
+      uint16_t at2,
+      uint16_t adc,
+      uint64_t time,
+      uint16_t wavelength_nm,
+      char fiber
+    }
+  ```
+
+*(The `yj` vs `hk` stream depends on the requested laser.)*
+
+**Notes (behavior):**
+- throughput (tp) is in [0-1], though NaN is offscale, greater than unity would indicate a noise artifact
+- Units for values are TBD
+- Turning on any other laser to that photodiode disables measurement.
+- Switching the MEMS route may impact the measurement but will not stop it.
+- Changing laser power/attenuation disables autolevel; run the command again to re-enable.
+- Powers photodiodes and lasers as needed.
+- Auto-off timing:
+  - PD: updates no sooner than `max(stopafter_s, pd_autooff_s)`
+  - Laserbank: updates no sooner than `max(stopafter_s, laserbank_autooff_s)`
+  - Laser: updates no sooner than `max(stopafter_s, laser_autooff_s)`
+
+### `laser`
+- **Request topic:** `cmd/<device>/req/laser`
+  - Set:
+    ```json
+    {"name": "<lasername>",
+      "level": 0.0,
+      "unit": "mw"
+     }
+    ```
+
+    `unit` is `"mw" | "%"`.
+
+  - Query: `{"name": "<lasername>"}`
+
+- **Response topic:** `cmd/<device>/resp/laser`
+  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {
+    "name": "<lasername>",
+    "powered": true,
+    "timeon_s": 0.0,
+    "totaltimeon_s": 0.0,
+    "timeemitting_s": 0.0,
+    "temp": 0.0,
+    "current_ma": 0.0,
+    "power_%": 0.0,
+    "power_mw": 0.0,
+    "wavelength_nm": 0.0,
+    "attenuated_power_mw": 0.0,
+    "tec_ma": 0.0,
+    "voltage": 0.0,
+    "tec_v": 0.0,
+    "overcurrent_fault": false
+    }
+    ```
+
+- **Notes:** turns on laser (+ laser bank power) as needed; validates range; restarts laser auto-off timer. `timeon_s` is time with TEC running.
+
+
+### `lasersettings`
+- **Request topic:** `cmd/<device>/req/lasersettings`
+  - Set:
+    ```json
+    {     "name": <lasername>,
+          "settings": {
+            "nominal_current_ma": 0.0,
+            "max_current_ma": 0.0,
+            "efficiency_mw_per_ma": 0.0,
+            "wavelength_nm": 0.0,
+            "operating_temp_c": 0.0,
+            "tec_pid": {
+              "p": 0.0,
+              "i": 0.0,
+              "d": 0.0
+            },
+            "dlambda_dT_nm_per_k": 0.0,
+            "dlambda_dA_nm_per_ma": 0.0,
+            "autooff_s": 0.0
+          }
+    }
+    ```
+
+- Query: `{"name": "<lasername>" }`
+
+- **Response topic:** `cmd/<device>/resp/lasersettings`
+  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {
+          "name": "<lasername>",
+          "settings": {
+            "name": "<string>",
+            "model": "<string>",
+            "nominal_current_ma": 0.0,
+            "max_current_ma": 0.0,
+            "dne_current_ma": 0.0,
+            "threshold_current_ma": 0.0,
+            "efficiency_mw_per_ma": 0.0,
+            "wavelength_nm": 0.0,
+            "test_monitor_current_ua": 0.0,
+            "operating_temp_range_c": {
+              "min": 0.0,
+              "max": 0.0
+            },
+            "operating_temp_c": 0.0,
+            "thermistor_kohm": 0.0,
+            "isolation_db": 0.0,
+            "tec_max_current_a": 0.0,
+            "tec_pid": {
+              "p": 0.0,
+              "i": 0.0,
+              "d": 0.0
+            },
+            "ntc_t_coefficient_per_c": 0.0,
+            "dlambda_dT_nm_per_k": 0.0,
+            "dlambda_dA_nm_per_ma": 0.0,
+            "autooff_s": 0.0
+          }
+        }
+    ```
+
+- **Notes:** 
+  - settings are kept in sync with the driver when powered
+  - driver will not be powered just to update settings
+  - some settings require a drive restart (stops emission + any throughput measurement using that laser)
+  - failures to set will leave all settings unchanged
+  - Unsettable (attempts to set are silently ignored):
+    - `name`
+    - `model`
+    - `dne_current_ma`
+    - `threshold_current_ma`
+    - `test_monitor_current_ua`
+    - `operating_temp_range_c`
+    - `thermistor_kohm`
+    - `isolation_db`
+    - `tec_max_current_a`
+    - `ntc_t_coefficient_per_c`
+
+### `laserbank/poweron`
+- **Request topic:** `cmd/<device>/req/laserbank/poweron`
+  - Payload: `{"autooff_s": 0.0}`
+- **Response topic:** `cmd/<device>/resp/laser`
+  - Response: `{"status": "success"}`
+
+- **Notes:** powers on the laser bank + starts TECs; does nothing if already powered (no reinit); restarts laserbank auto-off timer; bank will not power down while a laser is emitting.
+
+### `laserbank/poweroff`
+- **Request topic:** `cmd/<device>/req/laserbank/poweroff`
+- **Response topic:** `cmd/<device>/resp/laser`
+  - Response: `{"status": "success"}`
+
+
+### `laserbank/clearfaults`
+- **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
+- **Response topic:** `cmd/<device>/resp/laser`
+  - Response: `{"status": "success"}`
+
+- **Notes:** cycles power on the laser bank if any drive is in overcurrent protection mode (equivalent to checking each laser for `overcurrent_fault` and, if found, calling poweroff then poweron).
+
+### `atten`
+- **Request topic:** `cmd/<device>/req/atten`
+  - Set:
+    ```json
+    {   "name": "<lasername><optional suffix>",
+        "value": 0.0,
+        "unit": "db"
+    }
+    ```
+  - Query:
+    ```json
+    {   "name": "<lasername>",
+        "unit": "db"
+    }
+    ```
+    Where:
+    - `name` is `<lasername>` + `"" | "1" | "2"` *(or `1|2` in your shorthand)*
+    - `unit` is `"db" | "volt" | "%"` (case-insensitive)
+    - `volt` is an error for *total* attenuation
+    - if the attenuator is unspecified (total), `value` is total
+    
+- **Response topic:** `cmd/<device>/resp/atten`
+  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {    "<lasername>:": 0.0,
+         "<lasername>1": 0.0,
+         "<lasername>2": 0.0,
+         "unit": "db"
+    }
+    ```
+
+
+### `attensettings`
+- **Request topic:** `cmd/<device>/req/attensettings`
+  ```json
+  {
+      "name": "<lasername>1"|"<lasername>2",
+      "settings": {
+        "offset": 0
+      }
+    }
+  ```
+
+- **Response topic:** `cmd/<device>/resp/attensettings`
+  - Response: `{"status": "success"}` 
+
+- **Notes:** unsettable ignored; not all settings required; drive-restart requirements TBD.
+
+### `pd`
+- **Request topic:** `cmd/<device>/req/pd`
+  - Optional payload: `{"unit": "power"}`
+
+    `unit` is `"power" | "volts"` (case-insensitive), defaults to power`.
+
+- **Response topic:** `cmd/<device>/resp/pd`
+  ```json
+  {   "unit": "power",
+      "yjvalue": 0.0,
+      "yjvalue_err": 0.0,
+      "hkvalue": 0.0,
+      "hkvalue_err": 0.0,
+      "time": 0,
+      "uptime": 0
+    }
+  ```
+
+- **Notes:** powers photodiodes as needed; resets photodiode auto-off timer.
+
+### `pdsettings`
+- **Request topic:** `cmd/<device>/req/pdsettings`
+  - Set:
+      ```json
+      {  "autooff_s": 0.0,
+         "yj": {
+           "nep_uwprthz": 7.5e-09,
+           "noise_rms_mV": 3.0,
+           "dark_mv": 0.0,
+           "qe_y": 0.0,
+           "qe_j": 0.0,
+           "qe_yj": 0.0,
+           "qe_1430": 0.0,
+           "qe_1028": 0.0,
+           "qe_1270": 0.0,
+           "saturation_uw": 1.1e-5,
+           "gain_v_p_uw": 47500.0
+         },
+         "hk": {
+           "nep_uwprthz": 2.11e-3,
+           "noise_rms_mV": 1.0,
+           "dark_mw": 0.0,
+           "qe_1430": 0.0,
+           "qe_1510": 0.0,
+           "qe_2330": 0.0,
+           "qe_h": 0.0,
+           "qe_k": 0.0,
+           "qe_hk": 0.0,
+           "saturation_uw": 1.6194331984,
+           "gain_v_p_uw": 3.0875
+         }
+       }
+      ```
+  - Get: No payload
+
+- **Response topic:** `cmd/<device>/resp/pdsettings`
+  - Set result: `{"status": "success"}` 
+  - Get result: Full set of settings as described in set JSON
+
+- **Notes:** not all settings need to be included when setting; failure on any settable setting results in none being set; QE values are in `[0, 1]`.
+
+### `ip`
+- **Request topic:** `cmd/<device>/req/ip`
+  - Set:
+    ```json
+    {   "ip": "<ip>",
+        "ntp": "<ip>",
+        "dns": "<ip>",
+        "subnet": "<subnet>",
+        "gateway": "<gateway>",
+        "trydhcpfirst": true,
+        "preferdhcpntp": true,
+        "preferdhcpdns": true,
+        "persistent": true
+    }
+    ```
+
+    - Query: No payload
+
+- **Response topic:** `cmd/<device>/resp/ip`
+  - Set result:
+     ```json
+     {     "status": "success"|"partial",
+           "ntp": "unsupported",
+           "dns": "unsupported",
+           "dhcp": "unsupported"
+         }
+     ```
+
+  - Query result:
+    ```json
+    {     "preferdhcpntp": true,
+          "preferdhcpdns": true,
+          "source": "<source>",
+          "sourceonnextboot": "<source>",
+          "trydhcpfirst": true,
+          "source_settings": {
+            "<source>": {
+              "ip": "<ip>",
+              "ntp": "<ip>",
+              "dns": "<ip>",
+              "subnet": "<subnet>",
+              "gateway": "<gateway>"
+            }
+          }
+        }
+    ```
+
+- **Notes:** 
+  - unsupported features don’t error; partial config accepted
+  - IP precedence: `temporary_override` → `persistent manual setting` → `dhcp` (if enabled) → `compiled`.
+  - partial comes with keys indicating which settings are not supported.
+  - unsupported have unsupported in place of an ip
+  - source names are: `temporary_override`, `persistent_manual`, `dhcp`, `compiled`.
+
+### `time`
+- **Request topic:** `cmd/<device>/req/time`
+  - Query: No payload
+  - Set: `{"linuxtime_ms": 0}`
+
+- **Response topic:** `cmd/<device>/resp/time`
+  - Query result:
+    ```json
+    {     "utc": 0,
+          "ticks": 0,
+          "uptime": 0
+     }
+    ```
+  - Set result: `{"status": "success"}`
+
+- **Notes:** set time may be overwritten later by NTP if configured and responding.
+
+### `temp`
+- **Request topic:** `cmd/<device>/req/temp`
+  - Query: No payload
+  - Set alarm: `{"alarm_level": 0.0}`
+
+- **Response topic:** `cmd/<device>/resp/temp`
+  - Query result: `{"value_c": 0.0}`
+  - Set result: `{"status": "success"}`
+
+- **Notes:** if above alarm level, all commands except this one return an alarm error.
+
+### `status`
+- **Request topic:** `cmd/<device>/req/status`
+  - Optional payload: 
+    ```json
+    {   "ip": true,
+        "lasers": true,
+        "attens": true
+      }
+    ```
+    - **Note:** ip lasers and attens are not included unless requested, key is not required
+
+- **Response topic:** `cmd/<device>/resp/stauts`
+  ```json
+  {   "fwversion": "<githash>",
+      "bootcount": 0,
+      "ip": "<response of ip command query>",
+      "temp_c": 0.0,
+      "pd_ontime": 0,
+      "pd_offin_s": 0,
+      "laserbank_ontime": 0,
+      "laserbank_offin_s": 0,
+      "lasers": {
+        "<lasername>": {
+          "power_mw": 0.0,
+          "tec_on_time_s": 0,
+          "offin_s": 0
+        }
+      },
+      "attens": {
+        "<attenname>": {
+          "level_%": 0.0
+        }
+      },
+      "lastcommand": {
+        "name": "<cmdname>",
+        "source": "mqtt",
+        "time": 0
+      }
+    }
+  ```
+
+
+### `reboot`
+- **Request topic:** `cmd/<device>/req/reboot`
+- **Response topic:** `cmd/<device>/resp/reboot`
+  - Response: `{"status": "success"}`
+
+### `split`
+- **Request topic:** `cmd/<device>/req/split`
+  - Set:
+    ```json
+    {     "ratio1": 0.0,
+          "ratio2": 0.0,
+          "ratio3": 0.0,
+          "stopafter_s": 0
+        }
+    ```
+  - Query: No payload
+
+- **Response topic:** `cmd/<device>/resp/split`
+  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {     "ratio1": 0.0,
+          "ratio2": 0.0,
+          "ratio3": 0.0,
+          "stopsin_s": 0
+        }
+    ```
+
+- **Notes:** all zeros means light isn’t going to the splitter.

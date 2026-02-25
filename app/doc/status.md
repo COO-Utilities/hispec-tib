@@ -6,7 +6,9 @@ attenuators, and one has both an ADC to readout photodiodes and a MODBUS connect
 See hardware.md for additional hardware details.
 
 The control system roughly follows the AWS IoT guidelines for MQTT-based networked control:
+https://iotatlas.net/en/implementations/aws/command/command1/
 https://docs.aws.amazon.com/iot/latest/developerguide/mqtt.html
+https://docs.aws.amazon.com/whitepapers/latest/designing-mqtt-topics-aws-iot-core/designing-mqtt-topics-aws-iot-core.html
 
 The code emphasizes static memory layout, task separation, clear ownership of devices, and lightweight error
 handling (no runtime exceptions). Networking is DHCP-based with fallback to static and automatically recovers after link loss.
