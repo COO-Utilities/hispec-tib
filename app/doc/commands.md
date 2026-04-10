@@ -1,4 +1,8 @@
-## Topics (roles)
+# Control and Telemetry Interface Specification
+Draft 0.1
+
+
+## MQTT Topics (roles)
 
 - **Device subscribes:** `cmd/<device>/req/#` *(all request endpoints live under this prefix)*
 - **Device publishes (responses):** `cmd/<device>/resp/...`
@@ -15,6 +19,7 @@
   - **On responses (device → publisher):**
     - `correlation_data`: copied from the request
     - `qos`: response QoS 
+- Commands have serial port duals. Format is TBD but different as intended to be lightwight and used by human at serial console
 ---
 
 ## Command Endpoints
@@ -81,12 +86,13 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
 ### `mems/<switchname>`
 - **Request topic:** `cmd/<device>/req/mems/<switchname>`
   - Query: No payload
-  - Set: `{"state": "A"|"B"}`
+  - Set: `{"state": "A"|"B"|"A"+[0.0-1.0], "stopafter_s":0.0}`
+    - will not accept times longer than 8 hours, rerun within interval if you really need longer
 
 - **Response topic:** `cmd/<device>/resp/mems/<switchname>`
   - Query result: `{"state": <state>}`
 
-    Where `state` is one of: `"A" | "B" | "A?" | "B?" | "unknown"`, questions mark indicates that the switch has not been set this powerup.
+    Where `state` is one of: `"A" | "B" | "A?" | "B?" | "unknown" | A#`, questions mark indicates that the switch has not been set this powerup.
   - Set result: `{"status": "success"}`
 
 
@@ -283,23 +289,34 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
 ### `laserbank/poweron`
 - **Request topic:** `cmd/<device>/req/laserbank/poweron`
   - Payload: `{"autooff_s": 0.0}`
-- **Response topic:** `cmd/<device>/resp/laser`
+- **Response topic:** `cmd/<device>/resp/laserbank`
   - Response: `{"status": "success"}`
 
 - **Notes:** powers on the laser bank + starts TECs; does nothing if already powered (no reinit); restarts laserbank auto-off timer; bank will not power down while a laser is emitting.
 
 ### `laserbank/poweroff`
 - **Request topic:** `cmd/<device>/req/laserbank/poweroff`
-- **Response topic:** `cmd/<device>/resp/laser`
+- **Response topic:** `cmd/<device>/resp/laserbank`
   - Response: `{"status": "success"}`
 
 
 ### `laserbank/clearfaults`
 - **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
-- **Response topic:** `cmd/<device>/resp/laser`
+- **Response topic:** `cmd/<device>/resp/laserbank`
   - Response: `{"status": "success"}`
 
 - **Notes:** cycles power on the laser bank if any drive is in overcurrent protection mode (equivalent to checking each laser for `overcurrent_fault` and, if found, calling poweroff then poweron).
+
+
+### `laserbank/autowarm`
+- **Request topic:** `cmd/<device>/req/laserbank/autowarm/[on,off]`
+-   - Payload: `{"alloffabove_ambienttemp": 0.0, "bankonbelow_ambienttemp":0.0,
+                 "auxonbelow_tectemp": 0.0, auxoffabove_tectemp": 0.0, auxonoperating_ambienttemp": 0.0}`
+- **Response topic:** `cmd/<device>/resp/laserbank/autowarm`
+  - Response: `{"status": "success"}`
+  - Response: `{settings...}`
+
+- **Notes:** Maintains power of bank and aux heater to ensure that lasers may be turned on at a moment's notice 
 
 ### `atten`
 - **Request topic:** `cmd/<device>/req/atten`
@@ -438,7 +455,7 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
            "dhcp": "unsupported"
          }
      ```
-
+TODO add diode stabilized flag and time until setting
   - Query result:
     ```json
     {     "preferdhcpntp": true,
@@ -488,10 +505,10 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
   - Set alarm: `{"alarm_level": 0.0}`
 
 - **Response topic:** `cmd/<device>/resp/temp`
-  - Query result: `{"value_c": 0.0}`
+  - Query result: `{"ambient_c": 0.0, "laserbankavg_c": NaN| 0.0, "laser[name]_c": NaN| 0.0}`
   - Set result: `{"status": "success"}`
 
-- **Notes:** if above alarm level, all commands except this one return an alarm error.
+- **Notes:** if above alarm level, all commands except this one return an alarm error. Laserbank temperature is not available if power is off or laser TEC is running.
 
 ### `status`
 - **Request topic:** `cmd/<device>/req/status`

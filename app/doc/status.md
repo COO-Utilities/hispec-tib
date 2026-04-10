@@ -1,11 +1,13 @@
 # HISPEC FIB PCB Controller
+
+## Summary
 This codebase implements a networked embedded controller for the PCBs in HISPEC's FIB switching PCBs. The PCBs principally
 control MEMS fiber switches to route light for the instrument, though they are also variously equipped with 
 attenuators, and one has both an ADC to readout photodiodes and a MODBUS connection to control a calibration laser diode bank.
 
-See hardware.md for additional hardware details.
+hardware.md has hardware details.
 
-The control system roughly follows the AWS IoT guidelines for MQTT-based networked control:
+Commanding is done via MQTT and roughly follows the AWS IoT guidelines for MQTT-based networked control:
 https://iotatlas.net/en/implementations/aws/command/command1/
 https://docs.aws.amazon.com/iot/latest/developerguide/mqtt.html
 https://docs.aws.amazon.com/whitepapers/latest/designing-mqtt-topics-aws-iot-core/designing-mqtt-topics-aws-iot-core.html
@@ -14,16 +16,23 @@ The code emphasizes static memory layout, task separation, clear ownership of de
 handling (no runtime exceptions). Networking is DHCP-based with fallback to static and automatically recovers after link loss.
 
 Command dispatch flows through a central `executor_task`, structured for extensibility. JSON payloads are parsed with
-a friendlified wrapper around the Zephyr JSON parser and done in `TODO XXX`.
+a friendlified wrapper around the Zephyr JSON parser and done in `TODO`.
 
-FIB uses this system in four locations:
+## Background 
+Originally intended for targeting the [W5500-EVB-PICO2 board](https://wiznet.io/products/evaluation-boards/w5500-evb-pico2) using FreeRTOS, the code was retargeted to 
+Zephyr both for its batteries-included development environment and for its broad support for ST32 boards. The FIB PCBs 
+switched to the ST32, specifically the [ST32Nucleaoxxx]() board, as in order to increase overlap with the HISPEC SPEC
+subsystem's temperature controller.
+
+
+HISPEC's FIB system uses these boards in four locations:
 1. The Trunk Interface Box (TIB), which has
    1. MMF Switches (FFLS)
    2. 6 SMF Switches (FFSW)
    3. 12 SMF variable attenuators (2x per laser channel) (FVOA)
    4. 1 off-board 6 laser diode bank controlled via Modbus (Maiman electronics SF8250-ZIF14 + NH8 hub)
-   5. 1 off-board power switch to toggle PD power
-   6. one board power switch to toggle LD bank power
+   5. off-board power relays to toggle PD power and a auxiliary heater for the laser bank
+   6. on board power switch to toggle LD bank power
 2. The Achromatic Splitter
    1. SMF switches (FFSW) for muxing lign in the YJ (3x) and HK (3x) channels
 3. The YJ Calibration switch
@@ -33,15 +42,46 @@ FIB uses this system in four locations:
 4. The HK calibration switch, same as the YJ switch but with a slightly different, but electrically identical
    model of fiber components (FFSW & FVOA).
 
-
-## Background 
-Originally intended for targeting the [W5500-EVB-PICO2 board](https://wiznet.io/products/evaluation-boards/w5500-evb-pico2) using FreeRTOS, the code was retargeted to 
-Zephyr both for its batteries-included development environment and for its broad support for ST32 boards. The FIB PCBs 
-switched to the ST32, specifically the [ST32Nucleaoxxx]() board, as in order to increase overlap with the HISPEC SPEC
-subsystem's temperature controller.
-
 ## Software
 Before making edits understand Zephyr's task structure and device initialization flow.
+
+
+## Direction
+### Architecture:
+
+- System listens for commands over serial and network. There is a serial “ignore network for X after receipt of serial cmd” command which expires X after the last serial command.
+- Expect only a small set of named global scheduled actions (no full scheduler subsystem).
+- Core runtime components: 
+  - watchdog timer, 
+  - network manager, 
+  - command dispatcher, 
+  - MQTT interaction/handler, 
+  - MEMS switch pin toggler task (switch modulation and pin pulses)
+  - photodiode monitoring / output-power-determination task
+  - maybe a housekeeping/current-state task
+- Photodiode monitoring and laser power output-determination are tightly coupled but can be separate tasks.
+- Console/status messages to be published to MQTT (configurable verbosity) and not just serial console
+- Debugging: use onboard ST32 debugger features for learning, development, and possible Grafana integration of telemetry.
+- Implementation target: C (Zephyr). Later port to C++ on zephyer if desired for personal learning and exploration.
+- Avoids “tedious” state machines because of maintenance fragility; lean toward simpler task patterns with explicit housekeeping unless state machine is unavoidable.
+- Many algorithmic details (attenuator linearity, exact control loops, quantization rules) will need lab verification before finalizing implementations.
+
+### Features:
+- Laser bank control: temperature regulation algorithms, output-power control, detected-power auto-level tuning for photodiodes.
+- Switching/splitter control: determine switching frequencies and quantize requested switch frequencies to supported rates.
+- Photodiode handling:
+  - Auto-determination of warm-up behavior and running measurements (e.g., 1 s running average).
+  - Noise/fault detection (e.g., residuals after linear fit indicate photodiode fault).
+  - Decision: dark-level measurement must be an explicit user command (to avoid drift/bias from passive collection). Commands planned: measure dark and store, measure dark without updating stored value, reset lowest-ever dark value.
+  - Maintain stored lowest-ever dark value and a running average; but avoid auto-updating dark from passive data because of long-term bias risks.
+- Calibration:
+  - Auto-calibrate attenuators in loopback mode. Plan to use linear fitting or analytical model parameterization, but must verify attenuator behavior experimentally.
+- Settings persistence:
+  - Persist calibrations and states across reboots; store values and fall back to hard-coded defaults. No additional persistence layers required.
+- Error handling & observability:
+  - Error heuristics: if a command can detect a problem it should do as much safe work as possible and report known failures.
+  - Warnings are to be easy to publish from anywhere in the code as fire-and-forget MQTT messages.
+- Help/UX: if memory permits, include a help command that emits plain-English descriptions of MQTT commands and payloads (not their return values).
 
 ## Unstarted work is principally in
 - persistent settings storage,
@@ -49,10 +89,17 @@ Before making edits understand Zephyr's task structure and device initialization
 - watchdog timer integration,
 - json/MQTT standardization,
 - power management (diodes & laser),
-- and user command coverage.
+- auxiliary heater control,
+- attenuator calibration,
+- and user command coverage.- 
+- porting more advanced python laser code to maiman driver
+
+### Other:
+- Command & control API and code stubs are mostly documented; remaining work is the software architecture and some algorithms.
+- Might try later using AI to auto-generate optional UI module (local display)
 
 
-## Code Structure
+## Present Code Structure
 
 ### High-Level Architecture:
 

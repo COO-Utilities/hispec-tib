@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "laser_properties.h"
 #include <zephyr/modbus/modbus.h>
 
 #define CLIENT_IFACE 0
@@ -86,6 +87,8 @@ bool maiman_get_register_address(const char *name, laser_address_t *address_out)
  */
 typedef struct {
     uint8_t node_id;
+    uint16_t serial_number;
+    laserprops_t lasercfg;
 } maiman_driver_t;
 
 /**
@@ -93,28 +96,6 @@ typedef struct {
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
 
-/**
- * Read a single 16-bit register via Modbus.
- * @param drv     Pointer to driver instance
- * @param address Register address
- * @param value   Out parameter for register value
- * @return true on success, false on error
- */
-bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
-
-/**
- * Write a single 16-bit register via Modbus.
- * @param drv     Pointer to driver instance
- * @param address Register address
- * @param value   Value to write
- * @return true on success, false on error
- */
-bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
-
-/**
- * Convert a raw unsigned 16-bit value to signed.
- */
-int16_t maiman_to_signed(uint16_t value);
 
 /* ----- Measurement getters ----- */
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);

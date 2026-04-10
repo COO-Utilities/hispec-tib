@@ -41,6 +41,13 @@ void maiman_init(maiman_driver_t *drv, uint8_t node_id) {
     drv->node_id = node_id;
 }
 
+/**
+ * Read a single 16-bit register via Modbus.
+ * @param drv     Pointer to driver instance
+ * @param address Register address
+ * @param value   Out parameter for register value
+ * @return true on success, false on error
+ */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value) {
     int err = modbus_read_holding_regs(CLIENT_IFACE,
                                        drv->node_id,
@@ -54,6 +61,13 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value) {
     return true;
 }
 
+/**
+ * Write a single 16-bit register via Modbus.
+ * @param drv     Pointer to driver instance
+ * @param address Register address
+ * @param value   Value to write
+ * @return true on success, false on error
+ */
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value) {
     int err = modbus_write_holding_regs(CLIENT_IFACE,
                                         drv->node_id,
@@ -68,6 +82,9 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value) {
 }
 
 
+/**
+ * Convert a raw unsigned 16-bit value to signed.
+ */
 int16_t maiman_to_signed(uint16_t value) {
     return (int16_t)value;
 }

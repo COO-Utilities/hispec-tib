@@ -21,6 +21,7 @@ target_sources(app PRIVATE
         src/command.h
         src/devices.h
         src/maiman.h
+        src/laser_properties.h
         src/photodiode.h
         src/mems_switching.h
 )

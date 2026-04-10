@@ -23,7 +23,10 @@ See status.md for software details
 
 ### Microcontroller
 - ST Nucleo H563ZI on a STM32H5 Nucleo-144 board (MB1404)
-    - See user manual UM3115
+- STM32H563ZIT6 microcontroller based on the Arm Cortex®-M33 core.
+- 2 MB of flash memory and 640 KB of SRAM
+- See user manual um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf
+- Microcontroller reference manual STM32H563ZI.pdf
 
 ### MEMS Switches
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
@@ -86,7 +89,6 @@ For board files:
 Breadboard Considerations:
 - AF prototype board has 10K pullups, may need to get rid of as LL shifter boards also have pullups
 
-
 ### Laser Diode Control
 MODBUS
 - Use a UART with 485 driver chip (THVD1429DT)
@@ -107,8 +109,11 @@ For board files:
 For board files:
 - Nucleo: CN9 13 D72 IO PB2 -
 
-### off-board power Switch for photodiodes
-- 3.3V, GPIO to opto in AC switch, current-limiting resistor in case of short
+### Off-board power switch for photodiodes and laser bank aux heater
+Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
+- P1 is the power switch for the YJ photodiode
+- P2 is the power switch for the HK photodiode
+- P3 is the power switch for the laser bank aux heater
 
 For board files:
 - Nucleo: CN9 15 D71 IO PE9
