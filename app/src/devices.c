@@ -19,11 +19,7 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 
 #define USER_NODE DT_PATH(zephyr_user)
 
-#if DT_NODE_EXISTS(USER_NODE) && DT_NODE_HAS_PROP(USER_NODE, power_gpios)
 const struct gpio_dt_spec power_gpio = GPIO_DT_SPEC_GET(USER_NODE, power_gpios);
-#else
-const struct gpio_dt_spec power_gpio = {0};
-#endif
 // const struct gpio_dt_spec mems0_A = GPIO_DT_SPEC_GET(USER_NODE, mems0_a_gpios);
 // const struct gpio_dt_spec mems0_B = GPIO_DT_SPEC_GET(USER_NODE, mems0_b_gpios);
 // const struct gpio_dt_spec mems1_A = GPIO_DT_SPEC_GET(USER_NODE, mems1_a_gpios);
@@ -87,10 +83,6 @@ const gpio_pin_t mems_switch_pin_pairs[8][2] = {
 
 
 bool setup_modbus_client(void) {
-#if !DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
-    LOG_WRN("No zephyr,modbus-serial node configured; skipping modbus init");
-    return true;
-#else
 
     struct modbus_iface_param modbus_cfg = {
         .mode = MODBUS_MODE_RTU,
@@ -110,7 +102,6 @@ bool setup_modbus_client(void) {
         return false;
     }
     return true;
-#endif
 }
 
 
@@ -278,31 +269,25 @@ bool devices_ready(void)
         LOG_INF("Modbus online");
     }
 
-    if (dac_dev != NULL) {
-        if (!device_is_ready(dac_dev)) {
-            LOG_ERR("Device %s is not ready", dac_dev->name);
-            rc = false;
-        } else {
-            LOG_INF("Device %s is ready", dac_dev->name);
-        }
+    if (!device_is_ready(dac_dev)) {
+        LOG_ERR("Device %s is not ready", dac_dev->name);
+        rc = false;
+    } else {
+        LOG_INF("Device %s is ready", dac_dev->name);
     }
 
-    if (adc_dev != NULL) {
-        if (!device_is_ready(adc_dev)) {
-            LOG_ERR("Device %s is not ready", adc_dev->name);
-            rc = false;
-        } else {
-            LOG_INF("Device %s is ready", adc_dev->name);
-        }
+    if (!device_is_ready(adc_dev)) {
+        LOG_ERR("Device %s is not ready", adc_dev->name);
+        rc = false;
+    } else {
+        LOG_INF("Device %s is ready", adc_dev->name);
     }
 
-    if (gpio_dev != NULL) {
-        if (!device_is_ready(gpio_dev)) {
-            LOG_ERR("GPIO expander not ready!\n");
-            rc = false;
-        } else {
-            LOG_INF("GIPO expander ready");
-        }
+    if (!device_is_ready(gpio_dev)) {
+        LOG_ERR("GPIO expander not ready!\n");
+        rc = false;
+    } else {
+        LOG_INF("GIPO expander ready");
     }
 
     return rc;

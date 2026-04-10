@@ -1,42 +1,102 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
- * SPDX-License-Identifier: Apache-2.0
+ * HiSPEC-TIB Nucleo-H563ZI overlay
+ *
+ * Matches app/src expectations:
+ * - DT_NODELABEL(adc1115), DT_NODELABEL(dac7578), DT_NODELABEL(pcal6416a)
+ * - DT_PATH(zephyr_user) with power/mems GPIO definitions
+ * - zephyr,modbus-serial node for modbus_iface_get_by_name()
  */
 
-/* This devicetree overlay file will be automatically picked by the Zephyr
- * build system when building the sample for the nucleo_f302r8 board. It shows
- * how the example-application can be built on sample boards already provided
- * by Zephyr.
- */
-//TODO
 / {
-	example_sensor: example-sensor {
-		compatible = "zephyr,example-sensor";
-		input-gpios = <&gpioc 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-	};
+	zephyr,user {
+		power-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
 
-	blink_led: blink-led {
-		compatible = "blink-gpio-led";
-		led-gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>;
-		blink-period-ms = <1000>;
+		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
+		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
+		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_HIGH>;
+		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_HIGH>;
+		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_HIGH>;
+		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_HIGH>;
+		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_HIGH>;
+		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_HIGH>;
+		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_HIGH>;
+		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_HIGH>;
+		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_HIGH>;
+		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_HIGH>;
+		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_HIGH>;
+		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_HIGH>;
+		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
+		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
 	};
 };
 
-&gpioc {
+/* I2C_A on CN7 (PB8/PB9): DAC + ADS1115 */
+&i2c1 {
 	status = "okay";
+	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+	pinctrl-names = "default";
+	clock-frequency = <400000>;
+
+	dac7578: dac7578@4c {
+		compatible = "ti,dac7578";
+		reg = <0x4c>;
+		status = "okay";
+	};
+
+	adc1115: adc1115@48 {
+		compatible = "ti,ads1115";
+		reg = <0x48>;
+		status = "okay";
+		#io-channel-cells = <1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		channel@0 {
+			reg = <0>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>;
+			zephyr,resolution = <16>;
+			zephyr,input-positive = <0>;
+		};
+
+		channel@2 {
+			reg = <2>;
+			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>;
+			zephyr,resolution = <16>;
+			zephyr,input-positive = <2>;
+		};
+	};
 };
 
-/* Define flash partitions for NVS persistent storage */
-&flash0 {
-	partitions {
-		compatible = "fixed-partitions";
-		#address-cells = <1>;
-		#size-cells = <1>;
+/* I2C_B on CN9 (PF1/PF0): PCAL6416A GPIO expander for MEMS drive */
+&i2c2 {
+	status = "okay";
+	pinctrl-0 = <&i2c2_scl_pf1 &i2c2_sda_pf0>;
+	pinctrl-names = "default";
+	clock-frequency = <400000>;
 
-		/* Reserve last 8KB of flash for settings/NVS */
-		storage_partition: partition@3e000 {
-			label = "storage";
-			reg = <0x0003e000 0x00002000>;
-		};
+	pcal6416a: pcal6416a@20 {
+		compatible = "nxp,pcal6416a";
+		reg = <0x20>;
+		status = "okay";
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <16>;
+	};
+};
+
+/* USART2 on CN9 (PD5/PD6, optional RTS PD4) for modbus laser controller */
+&usart2 {
+	status = "okay";
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6 &usart2_rts_pd4>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+
+	modbus0: modbus0 {
+		compatible = "zephyr,modbus-serial";
+		status = "okay";
 	};
 };
