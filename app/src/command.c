@@ -94,7 +94,7 @@ struct OutMsg dispatch_command(const struct Command *cmd) {
     if (!entry) {
         r = unknown_response(cmd);
     } else {
-        DispatchFunc func = (cmd->msg_type == SET) ? entry->set_handler : entry->get_handler;
+        DispatchFunc func = (cmd->msg_type == MSG_SET) ? entry->set_handler : entry->get_handler;
         r = func==NULL ? unsupported_response(cmd) : func(cmd);
     }
     return r;
@@ -151,11 +151,11 @@ bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out
 
     // Case-insensitive check for supported types
     if (strncasecmp(msg.msg_type, "get", 4) == 0) {
-        *msg_type_out = GET;
+        *msg_type_out = MSG_GET;
         return true;
     }
     if (strncasecmp(msg.msg_type, "set", 4) == 0) {
-        *msg_type_out = SET;
+        *msg_type_out = MSG_SET;
         return true;
     }
     return false;
@@ -201,7 +201,7 @@ laser_t get_laser_channel(const char *laser_name) {
     if (strncasecmp(laser_name, "1430yj", 7) == 0) {
         return LASER_1430_YJ;
     }
-    if (strncasecmp(laser_name, "1430yj", 7) == 0) {
+    if (strncasecmp(laser_name, "1430hk", 7) == 0) {
         return LASER_1430_HK;
     }
     if (strncasecmp(laser_name, "1510h", 7) == 0) {
@@ -219,11 +219,18 @@ void wait_laser_boot() {
 }
 
 bool power_enabled() {
+    if (!gpio_is_ready_dt(&power_gpio)) {
+        return false;
+    }
     int val = gpio_pin_get_dt(&power_gpio);
     return val==1;
 }
 
 bool enable_power() {
+    if (!gpio_is_ready_dt(&power_gpio)) {
+        LOG_ERR("POWER_GPIO not ready");
+        return false;
+    }
     if (power_enabled())
         return false;
     int err = gpio_pin_set_dt(&power_gpio, 1);
@@ -234,6 +241,10 @@ bool enable_power() {
 }
 
 bool disable_power() {
+    if (!gpio_is_ready_dt(&power_gpio)) {
+        LOG_ERR("POWER_GPIO not ready");
+        return false;
+    }
     if (!power_enabled())
         return false;
     //TODO set POWER_GPIO low
@@ -498,7 +509,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
     }
 
     char payload[MAX_PAYLOAD_LEN]={0};
-    if (strcasecmp(setting, "coeff")) {
+    if (strcasecmp(setting, "coeff") == 0) {
         snprintf(payload, MAX_PAYLOAD_LEN,
                  "{\"db2volt\":[%.4f,%.4f,%.4f],\"volt2db\":[%.4f,%.4f,%.4f]}",
                  attenuators[laser_id].coeff_db_to_volt[0],
@@ -507,7 +518,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
                  attenuators[laser_id].coeff_volt_to_db[0],
                  attenuators[laser_id].coeff_volt_to_db[1],
                  attenuators[laser_id].coeff_volt_to_db[2]);
-    } else if (strcasecmp(setting, "value") || strcasecmp(setting, "valuedb")) {
+    } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
         double db, voltage;
         attenuator_get(&attenuators[laser_id], &db, false);
         attenuator_get(&attenuators[laser_id], &voltage, true);
@@ -546,7 +557,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         float value;
     };
 
-    if (strcasecmp(setting, "coeff")) {
+    if (strcasecmp(setting, "coeff") == 0) {
 
         struct coeffs parsed_coeffs = {0};
 
@@ -571,7 +582,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
         attenuator_set(&attenuators[laser_id], db, false);
 
-    } else if (strcasecmp(setting, "value") || strcasecmp(setting, "valuedb") {
+    } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
 
         struct json_value_float in_data = {0};
         struct json_obj_descr d[] = {
@@ -581,7 +592,8 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
         }
 
-        attenuator_set(&attenuators[laser_id], in_data.value, strcasecmp(setting, "value"));
+        bool raw_voltage = (strcasecmp(setting, "value") == 0);
+        attenuator_set(&attenuators[laser_id], in_data.value, raw_voltage);
 
     } else {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
@@ -619,7 +631,7 @@ struct OutMsg power_set(const struct Command *cmd) {
 
     if (args.value) enable_power();
     else disable_power();
-    return _msg_builder(cmd, RESP_ERROR,"{\"status\":\"OK\"}");
+    return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
 }
 
 struct OutMsg sleep_set(const struct Command *cmd) {
@@ -635,5 +647,5 @@ struct OutMsg sleep_set(const struct Command *cmd) {
 
     //TODO
 
-    return _msg_builder(cmd, RESP_ERROR,"{\"status\":\"OK\"}");
+    return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
 }
