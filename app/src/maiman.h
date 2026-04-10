@@ -2,6 +2,9 @@
 // Created by Jeb Bailey on 4/28/25.
 //
 
+//todo see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/photonic_testing.py
+//todo see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/maiman_modbus/...
+
 #ifndef MAIMAN_H
 #define MAIMAN_H
 
@@ -95,6 +98,10 @@ typedef struct {
  * Initialize the driver with the target Modbus node ID.
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
+
+/* Rear/write a register */
+bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
+bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
 
 
 /* ----- Measurement getters ----- */

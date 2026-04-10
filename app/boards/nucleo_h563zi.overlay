@@ -8,7 +8,7 @@
  * how the example-application can be built on sample boards already provided
  * by Zephyr.
  */
-
+//TODO
 / {
 	example_sensor: example-sensor {
 		compatible = "zephyr,example-sensor";

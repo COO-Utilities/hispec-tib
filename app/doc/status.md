@@ -388,6 +388,8 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - Each result is a mems_route_key with an (input, output) pair.
 
 ### maiman.c
+- TODO see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/photonic_testing.py
+- TODO see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/maiman_modbus/...
 - control of the Maiman lasers via modbus
   - NB Zephyer modbus init (modbus_init_client) is handled in devices.c
 - defines MaimanRegister struct, laser_address type, maiman_driver type (a wrapper around a node id), and a register_table 

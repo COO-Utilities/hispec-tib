@@ -52,6 +52,13 @@ void photodiode_thread()
 
 	k_sleep(K_MSEC(10));
 
+	if (adc_dev == NULL) {
+		LOG_WRN("No ADC device configured; photodiode thread idle");
+		while (1) {
+			k_sleep(K_SECONDS(1));
+		}
+	}
+
 	while(!device_is_ready(adc_dev)) {
         LOG_ERR("ADS1115 not ready");
 		k_sleep(K_MSEC(10));
@@ -64,7 +71,7 @@ void photodiode_thread()
 		yj_sample = INT16_MIN;
 		hk_sample = INT16_MIN;
 
-        rc_yj = adc_channel_setup(adc_dev, &yj_cfg_dt);
+        rc_yj = adc_channel_setup(adc_dev, &yj_cfg);
         if (rc_yj != 0) {
             LOG_ERR("ADC YJ channel setup failed (%d)", rc_yj);
         } else {
@@ -75,7 +82,7 @@ void photodiode_thread()
             }
 		}
 
-        rc_hk = adc_channel_setup(adc_dev, &hk_cfg_dt);
+        rc_hk = adc_channel_setup(adc_dev, &hk_cfg);
         if (rc_hk != 0) {
             LOG_ERR("ADC HK channel setup failed  (%d)", rc_hk);
         } else {

@@ -6,6 +6,7 @@
 #include <coo_commons/mqtt_client.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/posix/netdb.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(coo_mqtt, LOG_LEVEL_DBG);

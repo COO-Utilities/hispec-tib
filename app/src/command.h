@@ -20,7 +20,7 @@
 #define MAX_PENDING_COMMANDS 2
 
 
-enum MsgType { GET, SET, ACK, RESP_OK, RESP_ERROR };
+enum MsgType { MSG_GET, MSG_SET, ACK, RESP_OK, RESP_ERROR };
 
 struct Command {
 	enum MsgType msg_type;

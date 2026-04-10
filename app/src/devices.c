@@ -19,7 +19,11 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 
 #define USER_NODE DT_PATH(zephyr_user)
 
+#if DT_NODE_EXISTS(USER_NODE) && DT_NODE_HAS_PROP(USER_NODE, power_gpios)
 const struct gpio_dt_spec power_gpio = GPIO_DT_SPEC_GET(USER_NODE, power_gpios);
+#else
+const struct gpio_dt_spec power_gpio = {0};
+#endif
 // const struct gpio_dt_spec mems0_A = GPIO_DT_SPEC_GET(USER_NODE, mems0_a_gpios);
 // const struct gpio_dt_spec mems0_B = GPIO_DT_SPEC_GET(USER_NODE, mems0_b_gpios);
 // const struct gpio_dt_spec mems1_A = GPIO_DT_SPEC_GET(USER_NODE, mems1_a_gpios);
@@ -38,11 +42,28 @@ const struct gpio_dt_spec power_gpio = GPIO_DT_SPEC_GET(USER_NODE, power_gpios);
 // const struct gpio_dt_spec mems7_B = GPIO_DT_SPEC_GET(USER_NODE, mems7_b_gpios);
 
 
+#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
 #define MODBUS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_modbus_serial)
-const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
+static const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(adc1115))
 const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1115));
-const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578)); //or DEVICE_DT_GET_OR_NULL
+#else
+const struct device *adc_dev = NULL;
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(dac7578))
+const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));
+#else
+const struct device *dac_dev = NULL;
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
+#else
+const struct device *gpio_dev = NULL;
+#endif
 
 
 struct attenuator attenuators[NUM_ATTENUATORS];
@@ -66,6 +87,10 @@ const gpio_pin_t mems_switch_pin_pairs[8][2] = {
 
 
 bool setup_modbus_client(void) {
+#if !DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
+    LOG_WRN("No zephyr,modbus-serial node configured; skipping modbus init");
+    return true;
+#else
 
     struct modbus_iface_param modbus_cfg = {
         .mode = MODBUS_MODE_RTU,
@@ -85,6 +110,7 @@ bool setup_modbus_client(void) {
         return false;
     }
     return true;
+#endif
 }
 
 
@@ -245,7 +271,7 @@ bool devices_ready(void)
     }
 
     /* Check readiness only if a real sensor device is present */
-    if (setup_modbus_client() != 0) {
+    if (!setup_modbus_client()) {
         LOG_ERR("Failed to setup modbus");
         rc = false;
     } else {
