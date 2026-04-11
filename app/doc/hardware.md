@@ -28,6 +28,15 @@ See status.md for software details
 - See user manual um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf
 - Microcontroller reference manual STM32H563ZI.pdf
 
+# Board Type Selection
+- 4 solder jumpers (TIB, CAL (blue), CAL (red), AS (Achromatic Splitting))
+- bridged to ground on PCB to say which device is being used, more than one bridged is a fault
+- read as digital inputs with pullups enabled
+
+For board files:
+- Nucleo:
+    - pins TBD, but read directly on Nucleo GPIO (not via an external expander)
+
 ### MEMS Switches
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
 - 3.3V i2c, 5V gpio, 25mA max drive
@@ -47,7 +56,7 @@ At the drive level transistors are
     - 2x each for FFSW
     - 2x 4.7k resistors for pullups
 - DMP3085LSD (for FFSW)
-    - 2x P  MOSFET
+    - 2x P MOSFET
     - 1x each for FFLS
     - 2x 10k resistor for status line (pullup and current limiting)
 
@@ -57,14 +66,25 @@ A pair of DAC7578SPW 8 chan DAC driving OPA2991 2 channel OpAmps
 - Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
 - Use Vcc=3.3 with 1.51x opamp gain to avoid LL shifting
 - OpAmp supplies required current to attenuator.
+- Each laser channel uses a pair of physical attenuators:
+  - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
+  - TIB: 12 DAC channels in use (6 channels x 2 attenuators)
 - I2C addr: 0x48 (channels 1-3) and 0x4A (chan 4-6)  (0x4C floating pin, 0x48 GND, 0x4A VCC)
 - LDAC is tied to ground.
-- Channels: 1=Y, 2=J, 3=YJATC, 4=HKATC, 5=H and CALatten, 6=K
+- Channels: 
+  - 0x48
+    - 1-2: Y atten 1 & 2
+    - 3-4: J atten 1 & 2
+    - 5-6: YJATC atten 1 & 2
+  - 0x4A
+    - 1-2: HK atten 1 & 2
+    - 3-4: H/CAL atten 1 & 2
+    - 5-6: K atten 1 & 2
 
 For board files:
 - Nucleo:
-    - CN7 2 D15 I2C_A_SCL PB8 I2C1_SCL
-    - CN7 4 D14 I2C_A_SDA PB9 I2C1_SDA
+    - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
+    - CN9 21 D68 I2C_B_SDA PF0 I2C2_SDA
 
 Breadboard considerations:
 - Kit board has 10K pullups, do we need to get rid of as have pullups on 3.3v side of LL translation?
@@ -136,4 +156,3 @@ Nucleo board pins in use:
     - PB15 USB differential pair P
     - PB14 USB differential pair M
 - RMII interface for ETH
-

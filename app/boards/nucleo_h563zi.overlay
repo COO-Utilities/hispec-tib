@@ -11,6 +11,14 @@
 	zephyr,user {
 		power-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
 
+		/* Board-type strap inputs: active-low jumpers, pullups enabled.
+		 * TODO: set actual Nucleo GPIO pins once finalized in hardware mapping.
+		 */
+		/* board-type-tib-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
+		/* board-type-cal-blue-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
+		/* board-type-cal-red-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
+		/* board-type-as-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
+
 		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
 		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
 		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_HIGH>;
@@ -30,18 +38,12 @@
 	};
 };
 
-/* I2C_A on CN7 (PB8/PB9): DAC + ADS1115 */
+/* I2C_A on CN7 (PB8/PB9): ADS1115 only */
 &i2c1 {
 	status = "okay";
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
 	clock-frequency = <400000>;
-
-	dac7578: dac7578@4c {
-		compatible = "ti,dac7578";
-		reg = <0x4c>;
-		status = "okay";
-	};
 
 	adc1115: adc1115@48 {
 		compatible = "ti,ads1115";
@@ -71,16 +73,44 @@
 	};
 };
 
-/* I2C_B on CN9 (PF1/PF0): PCAL6416A GPIO expander for MEMS drive */
+/ {
+	/* 1-Wire bus for DS2408-based relay board control (CN9 D71 / PE9). */
+	w1_pd_power: w1-pd-power {
+		compatible = "zephyr,w1-gpio";
+		status = "okay";
+		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+	};
+
+	/* 1-Wire bus for DS18B20 temperature sensor (CN9 D64 / PG1). */
+	w1_temp: w1-temp {
+		compatible = "zephyr,w1-gpio";
+		status = "okay";
+		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+	};
+};
+
+/* I2C_B on CN9 (PF1/PF0): DAC7578 pair + PCAL6416A GPIO expander */
 &i2c2 {
 	status = "okay";
 	pinctrl-0 = <&i2c2_scl_pf1 &i2c2_sda_pf0>;
 	pinctrl-names = "default";
 	clock-frequency = <400000>;
 
-	pcal6416a: pcal6416a@20 {
+	dac7578: dac7578@48 {
+		compatible = "ti,dac7578";
+		reg = <0x48>;
+		status = "okay";
+	};
+
+	dac7578_b: dac7578@4a {
+		compatible = "ti,dac7578";
+		reg = <0x4a>;
+		status = "okay";
+	};
+
+	pcal6416a: pcal6416a@33 {
 		compatible = "nxp,pcal6416a";
-		reg = <0x20>;
+		reg = <0x33>;
 		status = "okay";
 		gpio-controller;
 		#gpio-cells = <2>;
