@@ -6,6 +6,7 @@
 #include <coo_commons/mqtt_client.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/net/net_ip.h>
 #include <zephyr/posix/netdb.h>
 #include <string.h>
 
@@ -37,8 +38,43 @@ static struct mqtt_topic subscriptions[MAX_SUBSCRIPTIONS];
 static int num_subscriptions = 0;
 
 /* Retry configuration */
-#define MSECS_WAIT_RECONNECT   5000
 #define MSECS_NET_POLL_TIMEOUT 30000
+
+static int resolve_broker_addr(void)
+{
+	int rc;
+	char broker_ip[NET_IPV4_ADDR_LEN];
+	struct sockaddr_in *broker4;
+	struct addrinfo *result;
+	const struct addrinfo hints = {
+		.ai_family = AF_INET,
+		.ai_socktype = SOCK_STREAM
+	};
+
+	rc = getaddrinfo(CONFIG_COO_MQTT_BROKER_HOSTNAME,
+			 CONFIG_COO_MQTT_BROKER_PORT, &hints, &result);
+	if (rc != 0) {
+		LOG_ERR("Failed to resolve broker hostname [%s]", gai_strerror(rc));
+		return -EIO;
+	}
+	if (result == NULL) {
+		LOG_ERR("Broker address not found");
+		return -ENOENT;
+	}
+
+	broker4 = (struct sockaddr_in *)&broker;
+	broker4->sin_addr.s_addr = ((struct sockaddr_in *)result->ai_addr)->sin_addr.s_addr;
+	broker4->sin_family = AF_INET;
+	broker4->sin_port = ((struct sockaddr_in *)result->ai_addr)->sin_port;
+	freeaddrinfo(result);
+
+	if (net_addr_ntop(AF_INET, &broker4->sin_addr, broker_ip, sizeof(broker_ip)) == NULL) {
+		snprintk(broker_ip, sizeof(broker_ip), "?.?.?.?");
+	}
+	LOG_INF("MQTT broker resolved: %s:%s", broker_ip, CONFIG_COO_MQTT_BROKER_PORT);
+
+	return 0;
+}
 
 void coo_mqtt_set_message_callback(mqtt_message_cb_t cb)
 {
@@ -98,6 +134,10 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 {
 	int rc;
 	uint8_t payload[CONFIG_COO_MQTT_PAYLOAD_SIZE + 1] = {0};
+	//TODO the line below is a copy	struct wihch deep within has pointers to utf8 strings
+	//   I'd originally had `struct mqtt_publish_param *const publish_param = &evt->param.publish;` which I believe would be more imbedded friendly.
+	// need to review this.
+	struct mqtt_publish_param publish_param = evt->param.publish;
 
 	rc = mqtt_read_publish_payload(client, payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
 	if (rc < 0) {
@@ -111,12 +151,11 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 	LOG_INF("MQTT payload received!");
 	LOG_INF("topic: '%s', payload: %s", evt->param.publish.message.topic.topic.utf8, payload);
 
-	struct mqtt_publish_param *const publish_param = &evt->param.publish;
-	publish_param->message.payload.data = payload;
-	publish_param->message.payload.len = rc;
+	publish_param.message.payload.data = payload;
+	publish_param.message.payload.len = rc;
 
 	if (user_mqtt_cb) {
-		user_mqtt_cb(publish_param);
+		user_mqtt_cb(&publish_param);
 	}
 }
 
@@ -263,7 +302,11 @@ int coo_mqtt_process(struct mqtt_client *client)
 	int rc;
 
 	rc = poll_mqtt_socket(client, mqtt_keepalive_time_left(client));
-	if (rc != 0) {
+	if (rc < 0) {
+		return rc;
+	}
+
+	if (rc > 0) {
 		if (fds[0].revents & ZSOCK_POLLIN) {
 			/* MQTT data received */
 			rc = mqtt_input(client);
@@ -307,66 +350,49 @@ void coo_mqtt_run(struct mqtt_client *client)
 	mqtt_disconnect(client, NULL);
 }
 
-void coo_mqtt_connect(struct mqtt_client *client)
+int coo_mqtt_connect(struct mqtt_client *client)
 {
-	int rc = 0;
+	int rc;
 
 	mqtt_connected = false;
 
-	/* Block until MQTT CONNACK event callback occurs */
-	while (!mqtt_connected) {
-		rc = mqtt_connect(client);
+	// TODO it is unclear if this resolution would work without DNS and certainly will not without POSIX support. That's bad. Fix
+	rc = resolve_broker_addr();
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = mqtt_connect(client);
+	if (rc != 0) {
+		LOG_ERR("MQTT Connect failed [%d]", rc);
+		return rc;
+	}
+
+	/* Poll MQTT socket for CONNACK */
+	rc = poll_mqtt_socket(client, MSECS_NET_POLL_TIMEOUT);
+	if (rc < 0) {
+		mqtt_abort(client);
+		return rc;
+	}
+
+	if (rc > 0) {
+		rc = mqtt_input(client);
 		if (rc != 0) {
-			LOG_ERR("MQTT Connect failed [%d]", rc);
-			k_msleep(MSECS_WAIT_RECONNECT);
-			continue;
-		}
-
-		/* Poll MQTT socket for response */
-		rc = poll_mqtt_socket(client, MSECS_NET_POLL_TIMEOUT);
-		if (rc > 0) {
-			mqtt_input(client);
-		}
-
-		if (!mqtt_connected) {
 			mqtt_abort(client);
+			return rc;
 		}
 	}
+
+	if (!mqtt_connected) {
+		mqtt_abort(client);
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
 int coo_mqtt_init(struct mqtt_client *client, const char *id_str)
 {
-	int rc;
-	uint8_t broker_ip[NET_IPV4_ADDR_LEN];
-	struct sockaddr_in *broker4;
-	struct addrinfo *result;
-	const struct addrinfo hints = {
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_STREAM
-	};
-
-	/* Resolve IP address of MQTT broker */
-	rc = getaddrinfo(CONFIG_COO_MQTT_BROKER_HOSTNAME,
-				CONFIG_COO_MQTT_BROKER_PORT, &hints, &result);
-	if (rc != 0) {
-		LOG_ERR("Failed to resolve broker hostname [%s]", gai_strerror(rc));
-		return -EIO;
-	}
-	if (result == NULL) {
-		LOG_ERR("Broker address not found");
-		return -ENOENT;
-	}
-
-	broker4 = (struct sockaddr_in *)&broker;
-	broker4->sin_addr.s_addr = ((struct sockaddr_in *)result->ai_addr)->sin_addr.s_addr;
-	broker4->sin_family = AF_INET;
-	broker4->sin_port = ((struct sockaddr_in *)result->ai_addr)->sin_port;
-	freeaddrinfo(result);
-
-	/* Log resolved IP address */
-	inet_ntop(AF_INET, &broker4->sin_addr.s_addr, broker_ip, sizeof(broker_ip));
-	LOG_INF("Connecting to MQTT broker @ %s", broker_ip);
-
 	/* MQTT client configuration */
 	strncpy(client_id, id_str, sizeof(client_id) - 1);
 	client_id[sizeof(client_id) - 1] = '\0';

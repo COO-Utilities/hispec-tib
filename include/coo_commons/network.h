@@ -6,118 +6,111 @@
 #ifndef APP_LIB_NETWORK_H_
 #define APP_LIB_NETWORK_H_
 
-#include <zephyr/net/socket.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <zephyr/net/net_ip.h>
 
 /**
  * @file network.h
- * @brief Network utilities for COO applications
- *
- * This module provides helper functions for robust socket setup,
- * connection management, and network diagnostics. Includes both
- * low-level socket utilities and high-level connection manager integration.
+ * @brief Simple IPv4 network bootstrap/config helper.
  */
 
-/* ============================================================================
- * CONNECTION MANAGER - High-level network initialization
- * ============================================================================ */
+typedef void (*network_event_cb_t)(bool connected);
+
+enum network_ipv4_source {
+	NETWORK_IPV4_SOURCE_UNKNOWN = 0,
+	NETWORK_IPV4_SOURCE_COMPILED = 1,
+	NETWORK_IPV4_SOURCE_STATIC = 2,
+	NETWORK_IPV4_SOURCE_FALLBACK = 3,
+	NETWORK_IPV4_SOURCE_DHCP = 4,
+};
+
+struct network_ipv4_profile {
+	char ip[NET_IPV4_ADDR_LEN];
+	char subnet[NET_IPV4_ADDR_LEN];
+	char gateway[NET_IPV4_ADDR_LEN];
+#if defined(CONFIG_NETWORK_HELPER_ENABLE_DNS)
+	char dns[NET_IPV4_ADDR_LEN];
+#endif
+#if defined(CONFIG_NETWORK_HELPER_ENABLE_NTP)
+	char ntp[NET_IPV4_ADDR_LEN];
+#endif
+};
+
+struct network_config {
+	bool try_dhcp_first;
+	bool prefer_dhcp_dns;
+	bool prefer_dhcp_ntp;
+	bool enable_fallback_profile;
+	uint32_t dhcp_timeout_ms;
+	struct network_ipv4_profile static_profile;
+	struct network_ipv4_profile fallback_profile;
+};
 
 /**
- * @brief Network event callback function type
- *
- * Called when network connectivity state changes.
- *
- * @param connected true if network is now connected, false if disconnected
+ * @brief Snapshot of current IPv4 state.
  */
-typedef void (*coo_network_event_cb_t)(bool connected);
+struct network_ipv4_info {
+	bool link_ready;
+	bool has_ipv4;
+	enum network_ipv4_source source;
+	char ip[NET_IPV4_ADDR_LEN];
+	char netmask[NET_IPV4_ADDR_LEN];
+	char gateway[NET_IPV4_ADDR_LEN];
+};
 
 /**
- * @brief Initialize network subsystem
- *
- * Sets up network event callbacks and brings up all network interfaces
- * managed by the connection manager. Supports both DHCP and static IP
- * configurations.
- *
- * @param event_cb Optional callback for network state changes (can be NULL)
- * @return 0 on success, negative error code on failure
+ * @brief Fill config with compile-time defaults.
  */
-int coo_network_init(coo_network_event_cb_t event_cb);
+void network_config_defaults(struct network_config *cfg);
 
 /**
- * @brief Wait for network connectivity
- *
- * Blocks until network is ready (L4 connected). Logs status periodically
- * while waiting.
- *
- * @param timeout_ms Maximum time to wait in milliseconds (0 = wait forever)
- * @return 0 if network is ready, -ETIMEDOUT if timeout occurred
+ * @brief Initialize network monitoring and apply initial config.
  */
-int coo_network_wait_ready(uint32_t timeout_ms);
+int network_init(const struct network_config *cfg, network_event_cb_t event_cb);
 
 /**
- * @brief Check if network is currently connected
+ * @brief Apply/replace config at runtime.
  *
- * @return true if network is ready, false otherwise
+ * This updates active network settings and re-applies addressing.
  */
-bool coo_network_is_ready(void);
+int network_reconfigure(const struct network_config *cfg);
 
 /**
- * @brief Log MAC address of default interface
- *
- * Helper function to print MAC address to console/logs.
+ * @brief Wait for network L4 connectivity.
  */
-void coo_network_log_mac_addr(void);
-
-/* ============================================================================
- * SOCKET UTILITIES - Low-level socket operations
- * ============================================================================ */
+int network_wait_ready(uint32_t timeout_ms);
 
 /**
- * @brief Create and configure a TCP socket
- *
- * @param port Port number to bind to (0 for client sockets)
- * @param is_server True if this is a server socket
- * @return Socket file descriptor, or negative error code
+ * @brief Check if network is currently connected.
  */
-int coo_net_tcp_socket_create(uint16_t port, bool is_server);
+bool network_is_ready(void);
 
 /**
- * @brief Create and configure a UDP socket
- *
- * @param port Port number to bind to
- * @return Socket file descriptor, or negative error code
+ * @brief Read the current IPv4 state.
  */
-int coo_net_udp_socket_create(uint16_t port);
+int network_get_ipv4_info(struct network_ipv4_info *out);
 
 /**
- * @brief Connect to a TCP server with timeout
- *
- * @param sockfd Socket file descriptor
- * @param addr Server address
- * @param timeout_ms Timeout in milliseconds
- * @return 0 on success, negative error code on failure
+ * @brief Return active config copy.
  */
-int coo_net_tcp_connect(int sockfd, const struct sockaddr *addr, int timeout_ms);
+int network_get_active_config(struct network_config *out);
 
 /**
- * @brief Send data with retry logic
- *
- * @param sockfd Socket file descriptor
- * @param buf Buffer containing data to send
- * @param len Length of data
- * @param max_retries Maximum number of retry attempts
- * @return Number of bytes sent, or negative error code
+ * @brief Convert IPv4 source enum to string.
  */
-int coo_net_send_retry(int sockfd, const void *buf, size_t len, int max_retries);
+const char *network_ipv4_source_str(enum network_ipv4_source source);
 
 /**
- * @brief Receive data with timeout
- *
- * @param sockfd Socket file descriptor
- * @param buf Buffer to store received data
- * @param len Maximum bytes to receive
- * @param timeout_ms Timeout in milliseconds
- * @return Number of bytes received, or negative error code
+ * @brief Whether DHCP/DNS/NTP support is compiled in this helper.
  */
-int coo_net_recv_timeout(int sockfd, void *buf, size_t len, int timeout_ms);
+bool network_feature_dhcp_enabled(void);
+bool network_feature_dns_enabled(void);
+bool network_feature_ntp_enabled(void);
+
+/**
+ * @brief Log MAC address of default interface.
+ */
+void network_log_mac_addr(void);
 
 #endif /* APP_LIB_NETWORK_H_ */

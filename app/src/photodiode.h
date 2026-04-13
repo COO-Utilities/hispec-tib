@@ -12,6 +12,6 @@
 
 
 extern struct k_msgq photodiode_queue;
-void photodiode_thread();
+void photodiode_thread(void *p1, void *p2, void *p3);
 
 #endif //PHOTODIODE_H

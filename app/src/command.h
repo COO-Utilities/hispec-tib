@@ -11,7 +11,7 @@
 #include <zephyr/net/mqtt.h>
 #include <string.h>
 
-#define MAX_TOPIC_LEN 64
+#define MAX_TOPIC_LEN 96
 #define MAX_KEY_LEN   48
 #define MAX_REQID_LEN 32
 #define MAX_SESSION_ID_LEN 48
@@ -21,9 +21,12 @@
 
 
 enum MsgType { MSG_GET, MSG_SET, ACK, RESP_OK, RESP_ERROR };
+enum CommandSource { CMD_SRC_MQTT = 0, CMD_SRC_SERIAL = 1 };
+enum OutMsgTarget { OUT_TARGET_MQTT = 0, OUT_TARGET_SERIAL = 1 };
 
 struct Command {
 	enum MsgType msg_type;
+	enum CommandSource source;
 
 	char key[MAX_KEY_LEN];  //topic instead
 	char session_id[MAX_SESSION_ID_LEN]; //maybe or part of Mqtt?
@@ -36,6 +39,7 @@ struct Command {
 
 struct OutMsg {
 	enum MsgType msg_type;  // RES, ACK, ERROR
+	enum OutMsgTarget target;
 	char topic[MAX_TOPIC_LEN];
 	uint8_t qos;
 	size_t payload_len;
@@ -63,6 +67,14 @@ struct DispatchEntry {
 /* Handler prototypes for all commands (get/set where defined) */
 struct OutMsg memsroute_get(const struct Command *cmd);
 struct OutMsg memsroute_set(const struct Command *cmd);
+struct OutMsg help_get(const struct Command *cmd);
+struct OutMsg ip_get(const struct Command *cmd);
+struct OutMsg ip_set(const struct Command *cmd);
+struct OutMsg time_get(const struct Command *cmd);
+struct OutMsg time_set(const struct Command *cmd);
+struct OutMsg reboot_set(const struct Command *cmd);
+struct OutMsg serial_guard_get(const struct Command *cmd);
+struct OutMsg serial_guard_set(const struct Command *cmd);
 
 struct OutMsg mems_get(const struct Command *cmd);
 struct OutMsg mems_set(const struct Command *cmd);

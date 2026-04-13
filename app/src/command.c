@@ -6,12 +6,20 @@
 // #include "devices.h"
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <strings.h>
+#include <zephyr/sys/reboot.h>
+#include <zephyr/sys/util.h>
+#include <app_version.h>
+#include <time.h>
 
 #include "devices.h"
+#include "app_settings.h"
 #include "attenuator.h"
 #include "maiman.h"
 #include "mems_switching.h"
+#include <coo_commons/json_utils.h>
+#include <coo_commons/network.h>
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
 
@@ -34,11 +42,6 @@ extern struct mems_router router;
 
 struct json_value_string {
     char value[MEMS_SWITCH_NAME_LEN];
-};
-
-
-struct json_type_msg {
-    char msg_type[8];
 };
 
 struct json_value_uint16 {
@@ -64,8 +67,13 @@ typedef enum laser_t {
 
 
 const struct DispatchEntry dispatch_table[] = {
+    { "help",      help_get,         NULL             },
+    { "ip",        ip_get,           ip_set           },
+    { "time",      time_get,         time_set         },
+    { "reboot",    NULL,             reboot_set       },
+    { "serialguard", serial_guard_get, serial_guard_set },
     { "memsroute",  memsroute_get,    memsroute_set    },
-    { "mems",       mems_get,    mems_set    },
+    { "mems",       mems_get,         mems_set         },
     { "laser",      laser_setting_get,laser_setting_set},
     { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
@@ -75,14 +83,30 @@ const struct DispatchEntry dispatch_table[] = {
 };
 
 
-const struct DispatchEntry *find_dispatch(const char *key) {
-    //TODO
+const struct DispatchEntry *find_dispatch(const char *key)
+{
+    const struct DispatchEntry *best = NULL;
+    size_t best_len = 0;
+
     for (size_t i = 0; i < ARRAY_SIZE(dispatch_table); ++i) {
-        if (strcmp(dispatch_table[i].key, key) == 0) {
-            return &dispatch_table[i];
+        const char *candidate = dispatch_table[i].key;
+        size_t len = strlen(candidate);
+
+        if (strncmp(key, candidate, len) != 0) {
+            continue;
+        }
+
+        if (key[len] != '\0' && key[len] != '/') {
+            continue;
+        }
+
+        if (len > best_len) {
+            best = &dispatch_table[i];
+            best_len = len;
         }
     }
-    return NULL;
+
+    return best;
 }
 
 
@@ -105,56 +129,23 @@ int parse_key_pair(const char *key,
                    char *out_name, size_t max_name,
                    char *out_setting, size_t max_setting)
 {
-    // Find the first slash
-    const char *slash = strchr(key, '/');
-    if (!slash) {
-        return -1;
-    }
-
-    size_t name_len = slash - key;
-    if (name_len == 0 || name_len >= max_name) {
-        // Name empty or too long for buffer (including null)
-        return -2;
-    }
-
-    // Copy name
-    memcpy(out_name, key, name_len);
-    out_name[name_len] = '\0';
-
-    // Copy setting, up to max_setting-1 characters, null terminated
-    const char *setting_start = slash + 1;
-    size_t setting_len = strcspn(setting_start, "/"); // Up to next '/', or full string
-    if (setting_len == 0 || setting_len >= max_setting) {
-        // Setting empty or too long for buffer
-        return -3;
-    }
-    memcpy(out_setting, setting_start, setting_len);
-    out_setting[setting_len] = '\0';
-
-    return 0;
+    return coo_json_parse_key_pair(key, out_name, max_name, out_setting, max_setting);
 }
 
 
 
 bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out)
 {
-
-    struct json_type_msg msg = {0};
-    const struct json_obj_descr descr[] = {
-        JSON_OBJ_DESCR_PRIM(struct json_type_msg, msg_type, JSON_TOK_STRING)
-    };
-
-    int rc = json_obj_parse((char *) payload, strlen(payload), descr, ARRAY_SIZE(descr), &msg);
-    if (rc < 0) {
+    enum coo_msg_type msg_type;
+    if (!coo_json_parse_msg_type(payload, &msg_type)) {
         return false;
     }
 
-    // Case-insensitive check for supported types
-    if (strncasecmp(msg.msg_type, "get", 4) == 0) {
+    if (msg_type == COO_MSG_GET) {
         *msg_type_out = MSG_GET;
         return true;
     }
-    if (strncasecmp(msg.msg_type, "set", 4) == 0) {
+    if (msg_type == COO_MSG_SET) {
         *msg_type_out = MSG_SET;
         return true;
     }
@@ -164,13 +155,14 @@ bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out
 struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const char *msg) {
     struct OutMsg r = { 0 };
     r.msg_type = msgtyp;
+    r.target = (cmd && cmd->source == CMD_SRC_SERIAL) ? OUT_TARGET_SERIAL : OUT_TARGET_MQTT;
     r.qos = MQTT_QOS_1_AT_LEAST_ONCE;
 
     //        snprintf(r.payload, MAX_PAYLOAD_LEN, "{\"error\":\"Invalid route\"}");
 
 
     // Set default response topic, but override if cmd provides a valid one
-    strncpy(r.topic, "cmd/hsfib-tib/resp", sizeof(r.topic) - 1);
+    snprintk(r.topic, sizeof(r.topic), "cmd/hsfib-tib/resp");
     if (cmd && strlen(cmd->response_topic) > 0 && strlen(cmd->response_topic) < sizeof(r.topic)) {
         strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
     }
@@ -181,8 +173,8 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
         r.corr_len = cmd->corr_len;
     }
 
-    r.payload_len = strlen(msg);
-    strncpy(r.payload, msg, sizeof(r.payload) - 1);
+    snprintk(r.payload, sizeof(r.payload), "%s", msg);
+    r.payload_len = strlen(r.payload);
     return r;
 }
 
@@ -256,6 +248,15 @@ bool disable_power() {
 
 }
 
+static void reboot_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
+static struct k_work_delayable reboot_work;
+static bool reboot_work_initialized;
+
 
 
 
@@ -281,6 +282,191 @@ struct OutMsg unsupported_response(const struct Command *cmd) {
 struct OutMsg busy_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"busy\"}";
     return _msg_builder(cmd, RESP_ERROR,  err);
+}
+
+struct OutMsg help_get(const struct Command *cmd)
+{
+    return _msg_builder(cmd, RESP_OK,
+                        "{\"help\":\"help,ip,time,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
+}
+
+struct OutMsg ip_get(const struct Command *cmd)
+{
+    struct app_ip_settings ip_cfg;
+    struct network_ipv4_info net = {0};
+    char payload[MAX_PAYLOAD_LEN];
+
+    app_settings_get_ip(&ip_cfg);
+    (void)network_get_ipv4_info(&net);
+
+    snprintk(payload, sizeof(payload),
+             "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
+             "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\"},"
+             "\"active\":{\"ready\":%s,\"ip\":\"%s\"}}",
+             network_ipv4_source_str(net.source),
+             ip_cfg.try_dhcp_first ? "true" : "false",
+             ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway,
+             net.link_ready ? "true" : "false",
+             net.ip);
+
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg ip_set(const struct Command *cmd)
+{
+    struct app_ip_settings ip_cfg;
+    char response[MAX_PAYLOAD_LEN];
+    bool persist = false;
+    bool changed = false;
+    bool unsupported_dhcp = false;
+    bool unsupported_dns = false;
+    bool unsupported_ntp = false;
+    char buf[NET_IPV4_ADDR_LEN];
+
+    app_settings_get_ip(&ip_cfg);
+
+    if (coo_json_has_key(cmd->payload, "trydhcpfirst")) {
+        if (!network_feature_dhcp_enabled()) {
+            unsupported_dhcp = true;
+        } else if (coo_json_extract_bool(cmd->payload, "trydhcpfirst", &ip_cfg.try_dhcp_first)) {
+            changed = true;
+        }
+    }
+    if (coo_json_has_key(cmd->payload, "preferdhcpdns")) {
+        if (!network_feature_dns_enabled()) {
+            unsupported_dns = true;
+        } else if (coo_json_extract_bool(cmd->payload, "preferdhcpdns", &ip_cfg.prefer_dhcp_dns)) {
+            changed = true;
+        }
+    }
+    if (coo_json_has_key(cmd->payload, "preferdhcpntp")) {
+        if (!network_feature_ntp_enabled()) {
+            unsupported_ntp = true;
+        } else if (coo_json_extract_bool(cmd->payload, "preferdhcpntp", &ip_cfg.prefer_dhcp_ntp)) {
+            changed = true;
+        }
+    }
+    if (coo_json_extract_string(cmd->payload, "ip", buf, sizeof(buf))) {
+        strncpy(ip_cfg.ip, buf, sizeof(ip_cfg.ip) - 1);
+        ip_cfg.ip[sizeof(ip_cfg.ip) - 1] = '\0';
+        changed = true;
+    }
+    if (coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf))) {
+        strncpy(ip_cfg.subnet, buf, sizeof(ip_cfg.subnet) - 1);
+        ip_cfg.subnet[sizeof(ip_cfg.subnet) - 1] = '\0';
+        changed = true;
+    }
+    if (coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf))) {
+        strncpy(ip_cfg.gateway, buf, sizeof(ip_cfg.gateway) - 1);
+        ip_cfg.gateway[sizeof(ip_cfg.gateway) - 1] = '\0';
+        changed = true;
+    }
+    if (coo_json_has_key(cmd->payload, "dns")) {
+        if (!network_feature_dns_enabled()) {
+            unsupported_dns = true;
+        } else if (coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf))) {
+            strncpy(ip_cfg.dns, buf, sizeof(ip_cfg.dns) - 1);
+            ip_cfg.dns[sizeof(ip_cfg.dns) - 1] = '\0';
+            changed = true;
+        }
+    }
+    if (coo_json_has_key(cmd->payload, "ntp")) {
+        if (!network_feature_ntp_enabled()) {
+            unsupported_ntp = true;
+        } else if (coo_json_extract_string(cmd->payload, "ntp", buf, sizeof(buf))) {
+            strncpy(ip_cfg.ntp, buf, sizeof(ip_cfg.ntp) - 1);
+            ip_cfg.ntp[sizeof(ip_cfg.ntp) - 1] = '\0';
+            changed = true;
+        }
+    }
+    (void)coo_json_extract_bool(cmd->payload, "persistent", &persist);
+
+    if (!changed && !(unsupported_dhcp || unsupported_dns || unsupported_ntp)) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized ip fields\"}");
+    }
+
+    if (changed) {
+        app_settings_update_ip(&ip_cfg, persist);
+    }
+
+    if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
+        snprintk(response, sizeof(response),
+                 "{\"status\":\"partial\",\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\",\"apply\":\"reboot_required\"}",
+                 unsupported_dhcp ? "unsupported" : "ok",
+                 unsupported_dns ? "unsupported" : "ok",
+                 unsupported_ntp ? "unsupported" : "ok");
+        return _msg_builder(cmd, RESP_OK, response);
+    }
+
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reboot_required\"}");
+}
+
+struct OutMsg time_get(const struct Command *cmd)
+{
+    struct timespec ts = {0};
+    uint64_t utc_ms;
+    char payload[MAX_PAYLOAD_LEN];
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+
+    snprintk(payload, sizeof(payload),
+             "{\"utc\":%llu,\"ticks\":%u,\"uptime\":%lld}",
+             (unsigned long long)utc_ms, k_cycle_get_32(), (long long)k_uptime_get());
+
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg time_set(const struct Command *cmd)
+{
+    uint64_t utc_ms = 0;
+    struct timespec ts = {0};
+
+    if (!coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms)) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing linuxtime_ms\"}");
+    }
+
+    ts.tv_sec = utc_ms / 1000ULL;
+    ts.tv_nsec = (utc_ms % 1000ULL) * 1000000ULL;
+
+    if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"clock_settime failed\"}");
+    }
+
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+}
+
+struct OutMsg reboot_set(const struct Command *cmd)
+{
+    if (!reboot_work_initialized) {
+        k_work_init_delayable(&reboot_work, reboot_work_handler);
+        reboot_work_initialized = true;
+    }
+
+    k_work_schedule(&reboot_work, K_MSEC(250));
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+}
+
+struct OutMsg serial_guard_get(const struct Command *cmd)
+{
+    char payload[MAX_PAYLOAD_LEN];
+    snprintk(payload, sizeof(payload), "{\"serialguard_s\":%u}", app_settings_get_serial_holdoff_s());
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg serial_guard_set(const struct Command *cmd)
+{
+    uint32_t holdoff_s = 0;
+    bool persist = false;
+
+    if (!coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s) &&
+        !coo_json_extract_u32(cmd->payload, "value", &holdoff_s)) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing seconds\"}");
+    }
+
+    (void)coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    app_settings_set_serial_holdoff_s(holdoff_s, persist);
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 
@@ -371,6 +557,27 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
 
 struct OutMsg mems_get(const struct Command *cmd) {
 
+
+    if (strcmp(cmd->key, "mems") == 0) {
+        char payload[MAX_PAYLOAD_LEN] = {0};
+        size_t off = 0;
+
+        off += snprintk(payload + off, sizeof(payload) - off, "{");
+        for (uint8_t i = 0; i < router.num_switches; ++i) {
+            char state = 'U';
+
+            if (i > 0U) {
+                off += snprintk(payload + off, sizeof(payload) - off, ",");
+            }
+
+            (void)mems_switch_get_state(router.switches[i], &state);
+            off += snprintk(payload + off, sizeof(payload) - off,
+                            "\"%s\":\"%c\"",
+                            router.switches[i]->name, state);
+        }
+        snprintk(payload + off, sizeof(payload) - off, "}");
+        return _msg_builder(cmd, RESP_OK, payload);
+    }
 
     char name[16], mems_switch[16];
     if  (parse_key_pair(cmd->key, name, 15, mems_switch, 15)!=0) {
@@ -604,15 +811,26 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
 
 struct OutMsg status_get(const struct Command *cmd) {
+    struct network_ipv4_info net = {0};
     char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"lase_power\":%s}", power_enabled() ? "true" : "false");
+
+    (void)network_get_ipv4_info(&net);
+    snprintf(payload, MAX_PAYLOAD_LEN,
+             "{\"fwversion\":\"%s\",\"bootcount\":%u,\"uptime\":%lld,"
+             "\"network_ready\":%s,\"ip\":\"%s\",\"laser_power\":%s}",
+             APP_VERSION_STRING,
+             app_settings_get_boot_count(),
+             (long long)k_uptime_get(),
+             net.link_ready ? "true" : "false",
+             net.ip,
+             power_enabled() ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
 
 struct OutMsg power_get(const struct Command *cmd) {
     char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"lase_power\":%s}", power_enabled() ? "true" : "false");
+    snprintf(payload, MAX_PAYLOAD_LEN, "{\"laser_power\":%s}", power_enabled() ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -620,32 +838,27 @@ struct OutMsg power_get(const struct Command *cmd) {
 
 struct OutMsg power_set(const struct Command *cmd) {
 
-    // Parse values
-    struct json_value_bool args = {.value=false};
-    struct json_obj_descr d[] = {
-        JSON_OBJ_DESCR_PRIM(struct json_value_bool, value, JSON_TOK_TRUE)
-    };
-    if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d,1, &args) < 0) {
+    bool value;
+
+    if (!coo_json_extract_bool(cmd->payload, "value", &value)) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
     }
 
-    if (args.value) enable_power();
+    if (value) enable_power();
     else disable_power();
     return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
 }
 
 struct OutMsg sleep_set(const struct Command *cmd) {
 
-    // Parse values
-    struct json_value_bool args = {.value=false};
-    struct json_obj_descr d[] = {
-        JSON_OBJ_DESCR_PRIM(struct json_value_bool, value, JSON_TOK_TRUE)
-    };
-    if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d,1, &args) < 0) {
+    bool value;
+
+    if (!coo_json_extract_bool(cmd->payload, "value", &value)) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
     }
 
     //TODO
+    ARG_UNUSED(value);
 
     return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
 }

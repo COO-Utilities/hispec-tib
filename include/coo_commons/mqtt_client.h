@@ -33,12 +33,12 @@ int coo_mqtt_init(struct mqtt_client *client, const char *client_id);
 /**
  * @brief Connect to the MQTT broker
  *
- * Blocks until connection is established or fails. Automatically retries
- * on failure with exponential backoff.
+ * Attempts a single connect/handshake sequence.
  *
  * @param client Pointer to initialized MQTT client
+ * @return 0 on success, negative error code on failure
  */
-void coo_mqtt_connect(struct mqtt_client *client);
+int coo_mqtt_connect(struct mqtt_client *client);
 
 /**
  * @brief Add a subscription topic

@@ -36,7 +36,7 @@ static const struct adc_channel_cfg hk_cfg_dt =
 K_MSGQ_DEFINE(photodiode_queue, sizeof(struct OutMsg), 4, 4);
 
 
-void photodiode_thread()
+void photodiode_thread(void *p1, void *p2, void *p3)
 {
     int rc_yj, rc_hk;
     int16_t yj_sample, hk_sample;
@@ -49,6 +49,10 @@ void photodiode_thread()
         .calibrate=false,
 
     };
+
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
 
 	k_sleep(K_MSEC(10));
 
@@ -91,6 +95,7 @@ void photodiode_thread()
         clock_gettime(CLOCK_REALTIME, &ts);
 
         struct OutMsg msg = {0};
+        msg.target = OUT_TARGET_MQTT;
         msg.qos = 0;
         snprintk(msg.topic, sizeof(msg.topic), "dt/hsfib-tib/photodiode");
         msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),

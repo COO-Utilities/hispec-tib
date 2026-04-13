@@ -15,21 +15,93 @@ config COO_NETWORK
 	depends on NETWORKING
 	default n
 	help
-	  Enable COO network utilities for robust socket operations
-	  and connection manager integration. Includes low-level socket
-	  utilities (TCP/UDP create, connect, send/recv) and high-level
-	  network initialization with L4 event monitoring. Requires
-	  networking support.
+	  Enable simple network bootstrap helper with DHCP/static/fallback
+	  IPv4 handling and link-state monitoring.
+
+if COO_NETWORK
+
+config NETWORK_HELPER_ENABLE_DHCP
+	bool "Enable DHCP handling in network helper"
+	depends on NET_DHCPV4
+	default y
+	help
+	  When enabled, network helper can attempt DHCP before static
+	  or after static depending on runtime config.
+
+config NETWORK_HELPER_ENABLE_DNS
+	bool "Expose DNS configuration fields in network helper"
+	depends on DNS_RESOLVER
+	default y
+	help
+	  Enables DNS fields in network helper profiles. The helper itself
+	  does not implement command handling or policy.
+
+config NETWORK_HELPER_ENABLE_NTP
+	bool "Expose NTP configuration fields in network helper"
+	depends on SNTP
+	default y
+	help
+	  Enables NTP fields in network helper profiles. The helper itself
+	  does not implement command handling or policy.
+
+config NETWORK_HELPER_DHCP_TIMEOUT_MS
+	int "DHCP wait timeout (ms)"
+	default 6000
+	help
+	  Timeout used when attempting DHCP before selecting static/fallback
+	  IPv4 profiles. Set to 0 to wait indefinitely.
+
+config NETWORK_HELPER_STATIC_IPV4_ADDR
+	string "Default static IPv4 address"
+	default NET_CONFIG_MY_IPV4_ADDR
+	help
+	  Compile-time static IPv4 address used by network helper.
+
+config NETWORK_HELPER_STATIC_IPV4_NETMASK
+	string "Default static IPv4 netmask"
+	default NET_CONFIG_MY_IPV4_NETMASK
+	help
+	  Compile-time static IPv4 netmask used by network helper.
+
+config NETWORK_HELPER_STATIC_IPV4_GW
+	string "Default static IPv4 gateway"
+	default NET_CONFIG_MY_IPV4_GW
+	help
+	  Compile-time static IPv4 gateway used by network helper.
+
+config NETWORK_HELPER_STATIC_DNS_IPV4_ADDR
+	string "Default static DNS IPv4"
+	default "0.0.0.0"
+	depends on NETWORK_HELPER_ENABLE_DNS
+
+config NETWORK_HELPER_STATIC_NTP_IPV4_ADDR
+	string "Default static NTP IPv4"
+	default "0.0.0.0"
+	depends on NETWORK_HELPER_ENABLE_NTP
+
+config NETWORK_HELPER_FALLBACK_IPV4_ADDR
+	string "Fallback service IPv4 address"
+	default "192.168.88.2"
+	help
+	  Last-resort static address for direct service connectivity.
+
+config NETWORK_HELPER_FALLBACK_IPV4_NETMASK
+	string "Fallback service IPv4 netmask"
+	default "255.255.255.0"
+
+config NETWORK_HELPER_FALLBACK_IPV4_GW
+	string "Fallback service IPv4 gateway"
+	default "0.0.0.0"
+
+endif # COO_NETWORK
 
 config COO_JSON
 	bool "COO JSON utilities"
 	depends on JSON_LIBRARY
 	default n
 	help
-	  Enable COO JSON utilities for structured message handling.
-	  Includes telemetry encoding, command parsing, message type
-	  detection, and hierarchical key parsing. Requires Zephyr
-	  JSON library support.
+	  Enable lightweight JSON helper wrappers used by command handling
+	  (msg_type parsing, keyed primitive extraction, and key splitting).
 
 config COO_MQTT
 	bool "COO MQTT client wrapper"

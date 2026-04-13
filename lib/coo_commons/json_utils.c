@@ -5,78 +5,45 @@
 
 #include <coo_commons/json_utils.h>
 #include <zephyr/data/json.h>
+#include <zephyr/sys/util.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
-
-/* JSON descriptor for telemetry message */
-static const struct json_obj_descr telemetry_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct coo_telemetry_msg, timestamp, JSON_TOK_NUMBER),
-	JSON_OBJ_DESCR_PRIM(struct coo_telemetry_msg, device_id, JSON_TOK_STRING),
-	JSON_OBJ_DESCR_PRIM(struct coo_telemetry_msg, temperature, JSON_TOK_FLOAT),
-	JSON_OBJ_DESCR_PRIM(struct coo_telemetry_msg, status, JSON_TOK_NUMBER),
-};
-
-int coo_json_encode_telemetry(const struct coo_telemetry_msg *msg,
-			       char *buf, size_t buf_size)
-{
-	int ret;
-
-	ret = json_obj_encode_buf(telemetry_descr, ARRAY_SIZE(telemetry_descr),
-				   msg, buf, buf_size);
-	if (ret < 0) {
-		return ret;
-	}
-
-	return ret;
-}
-
-int coo_json_parse_command(const char *json_str, char *cmd_out, size_t cmd_size,
-			    float *value_out)
-{
-	/* Simple JSON parsing - expects format: {"cmd":"<command>","value":<number>} */
-	/* For production, use Zephyr's JSON library with proper descriptors */
-
-	const char *cmd_start, *cmd_end;
-	const char *val_start;
-
-	/* Find command field */
-	cmd_start = strstr(json_str, "\"cmd\":\"");
-	if (cmd_start == NULL) {
-		return -EINVAL;
-	}
-	cmd_start += 7; /* Skip "cmd":" */
-
-	cmd_end = strchr(cmd_start, '\"');
-	if (cmd_end == NULL) {
-		return -EINVAL;
-	}
-
-	size_t cmd_len = cmd_end - cmd_start;
-	if (cmd_len >= cmd_size) {
-		return -ENOMEM;
-	}
-
-	memcpy(cmd_out, cmd_start, cmd_len);
-	cmd_out[cmd_len] = '\0';
-
-	/* Find value field (optional) */
-	if (value_out != NULL) {
-		val_start = strstr(json_str, "\"value\":");
-		if (val_start != NULL) {
-			val_start += 8; /* Skip "value": */
-			*value_out = strtof(val_start, NULL);
-		} else {
-			*value_out = 0.0f;
-		}
-	}
-
-	return 0;
-}
+#include <stdlib.h>
 
 struct json_type_msg {
 	char msg_type[8];
 };
+
+static const char *find_json_key_value(const char *json, const char *key)
+{
+	char token[40];
+	const char *p;
+
+	if (json == NULL || key == NULL) {
+		return NULL;
+	}
+
+	snprintf(token, sizeof(token), "\"%s\"", key);
+	p = strstr(json, token);
+	if (p == NULL) {
+		return NULL;
+	}
+
+	p += strlen(token);
+	while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+		p++;
+	}
+	if (*p != ':') {
+		return NULL;
+	}
+	p++;
+	while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+		p++;
+	}
+
+	return p;
+}
 
 bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_out)
 {
@@ -84,6 +51,10 @@ bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_ou
 	const struct json_obj_descr descr[] = {
 		JSON_OBJ_DESCR_PRIM(struct json_type_msg, msg_type, JSON_TOK_STRING)
 	};
+
+	if (payload == NULL || msg_type_out == NULL) {
+		return false;
+	}
 
 	int rc = json_obj_parse((char *)payload, strlen(payload), descr, ARRAY_SIZE(descr), &msg);
 	if (rc < 0) {
@@ -100,6 +71,91 @@ bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_ou
 		return true;
 	}
 	return false;
+}
+
+bool coo_json_extract_bool(const char *json, const char *key, bool *value)
+{
+	const char *p = find_json_key_value(json, key);
+
+	if (p == NULL || value == NULL) {
+		return false;
+	}
+
+	if (strncmp(p, "true", 4) == 0) {
+		*value = true;
+		return true;
+	}
+	if (strncmp(p, "false", 5) == 0) {
+		*value = false;
+		return true;
+	}
+
+	return false;
+}
+
+bool coo_json_extract_u32(const char *json, const char *key, uint32_t *value)
+{
+	char *end;
+	unsigned long tmp;
+	const char *p = find_json_key_value(json, key);
+
+	if (p == NULL || value == NULL) {
+		return false;
+	}
+
+	tmp = strtoul(p, &end, 10);
+	if (end == p) {
+		return false;
+	}
+
+	*value = (uint32_t)tmp;
+	return true;
+}
+
+bool coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
+{
+	char *end;
+	unsigned long long tmp;
+	const char *p = find_json_key_value(json, key);
+
+	if (p == NULL || value == NULL) {
+		return false;
+	}
+
+	tmp = strtoull(p, &end, 10);
+	if (end == p) {
+		return false;
+	}
+
+	*value = (uint64_t)tmp;
+	return true;
+}
+
+bool coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)
+{
+	const char *p = find_json_key_value(json, key);
+	const char *end;
+	size_t len;
+
+	if (p == NULL || out == NULL || out_len == 0U || *p != '"') {
+		return false;
+	}
+	p++;
+
+	end = strchr(p, '"');
+	if (end == NULL) {
+		return false;
+	}
+
+	len = MIN((size_t)(end - p), out_len - 1U);
+	memcpy(out, p, len);
+	out[len] = '\0';
+	return true;
+}
+
+bool coo_json_has_key(const char *json, const char *key)
+{
+	return find_json_key_value(json, key) != NULL;
 }
 
 int coo_json_parse_key_pair(const char *key,
