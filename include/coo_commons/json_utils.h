@@ -21,16 +21,18 @@ enum coo_msg_type {
 	COO_MSG_SET = 1,
 };
 
+enum coo_json_extract_status {
+	COO_JSON_EXTRACT_MISSING = -1,
+	COO_JSON_EXTRACT_OK = 0,
+	COO_JSON_EXTRACT_ERR = 1,
+};
+
 bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_out);
 
-bool coo_json_extract_bool(const char *json, const char *key, bool *value);
-bool coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
-bool coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
-bool coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
-bool coo_json_has_key(const char *json, const char *key);
-
-int coo_json_parse_key_pair(const char *key,
-			    char *out_name, size_t max_name,
-			    char *out_setting, size_t max_setting);
+/* Return values use enum coo_json_extract_status. */
+int coo_json_extract_bool(const char *json, const char *key, bool *value);
+int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
+int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
+int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 
 #endif /* APP_LIB_JSON_UTILS_H_ */

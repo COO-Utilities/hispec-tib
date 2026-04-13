@@ -7,7 +7,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/net_ip.h>
-#include <zephyr/posix/netdb.h>
+#include <zephyr/sys/util.h>
+#include <stdlib.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(coo_mqtt, LOG_LEVEL_DBG);
@@ -41,20 +42,49 @@ static int num_subscriptions = 0;
 #define MSECS_NET_POLL_TIMEOUT 30000
 
 static int resolve_broker_addr(void)
+//TODO The MQTT broker is to be a persistent setting that will be configured at runtime.
+// The only compile-time default would be for default configuration of app settings by the app. The setting may be an ip or domain name.
+// The command handler will reject domain names if no DNS support compiled
 {
+	const char *port_str = CONFIG_COO_MQTT_BROKER_PORT;
+	char *end = NULL;
+	unsigned long port;
 	int rc;
 	char broker_ip[NET_IPV4_ADDR_LEN];
 	struct sockaddr_in *broker4;
-	struct addrinfo *result;
-	const struct addrinfo hints = {
+	struct zsock_addrinfo *result = NULL;
+	struct in_addr numeric_addr = { 0 };
+	const struct zsock_addrinfo hints = {
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM
 	};
 
-	rc = getaddrinfo(CONFIG_COO_MQTT_BROKER_HOSTNAME,
-			 CONFIG_COO_MQTT_BROKER_PORT, &hints, &result);
+	port = strtoul(port_str, &end, 10);
+	if (end == port_str || *end != '\0' || port > UINT16_MAX) {
+		LOG_ERR("Invalid broker port '%s'", CONFIG_COO_MQTT_BROKER_PORT);
+		return -EINVAL;
+	}
+
+	broker4 = (struct sockaddr_in *)&broker;
+	memset(broker4, 0, sizeof(*broker4));
+
+	if (net_addr_pton(AF_INET, CONFIG_COO_MQTT_BROKER_HOSTNAME, &numeric_addr) == 0) {
+		broker4->sin_family = AF_INET;
+		broker4->sin_port = htons((uint16_t)port);
+		broker4->sin_addr = numeric_addr;
+		goto log_addr;
+	}
+
+	if (!IS_ENABLED(CONFIG_DNS_RESOLVER)) {
+		LOG_ERR("Broker '%s' is not numeric IPv4 and DNS_RESOLVER is disabled",
+			CONFIG_COO_MQTT_BROKER_HOSTNAME);
+		return -ENOTSUP;
+	}
+
+	rc = zsock_getaddrinfo(CONFIG_COO_MQTT_BROKER_HOSTNAME,
+			       CONFIG_COO_MQTT_BROKER_PORT, &hints, &result);
 	if (rc != 0) {
-		LOG_ERR("Failed to resolve broker hostname [%s]", gai_strerror(rc));
+		LOG_ERR("Failed to resolve broker hostname [%s]", zsock_gai_strerror(rc));
 		return -EIO;
 	}
 	if (result == NULL) {
@@ -62,12 +92,12 @@ static int resolve_broker_addr(void)
 		return -ENOENT;
 	}
 
-	broker4 = (struct sockaddr_in *)&broker;
 	broker4->sin_addr.s_addr = ((struct sockaddr_in *)result->ai_addr)->sin_addr.s_addr;
 	broker4->sin_family = AF_INET;
 	broker4->sin_port = ((struct sockaddr_in *)result->ai_addr)->sin_port;
-	freeaddrinfo(result);
+	zsock_freeaddrinfo(result);
 
+log_addr:
 	if (net_addr_ntop(AF_INET, &broker4->sin_addr, broker_ip, sizeof(broker_ip)) == NULL) {
 		snprintk(broker_ip, sizeof(broker_ip), "?.?.?.?");
 	}
@@ -134,9 +164,6 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 {
 	int rc;
 	uint8_t payload[CONFIG_COO_MQTT_PAYLOAD_SIZE + 1] = {0};
-	//TODO the line below is a copy	struct wihch deep within has pointers to utf8 strings
-	//   I'd originally had `struct mqtt_publish_param *const publish_param = &evt->param.publish;` which I believe would be more imbedded friendly.
-	// need to review this.
 	struct mqtt_publish_param publish_param = evt->param.publish;
 
 	rc = mqtt_read_publish_payload(client, payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
@@ -356,7 +383,6 @@ int coo_mqtt_connect(struct mqtt_client *client)
 
 	mqtt_connected = false;
 
-	// TODO it is unclear if this resolution would work without DNS and certainly will not without POSIX support. That's bad. Fix
 	rc = resolve_broker_addr();
 	if (rc != 0) {
 		return rc;

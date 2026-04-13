@@ -129,7 +129,34 @@ int parse_key_pair(const char *key,
                    char *out_name, size_t max_name,
                    char *out_setting, size_t max_setting)
 {
-    return coo_json_parse_key_pair(key, out_name, max_name, out_setting, max_setting);
+    /* Find the first slash */
+    const char *slash = strchr(key, '/');
+    if (!slash) {
+        return -1;
+    }
+
+    size_t name_len = slash - key;
+    if (name_len == 0 || name_len >= max_name) {
+        /* Name empty or too long for buffer (including null) */
+        return -2;
+    }
+
+    /* Copy name */
+    memcpy(out_name, key, name_len);
+    out_name[name_len] = '\0';
+
+    /* Copy setting, up to max_setting-1 characters, null terminated */
+    const char *setting_start = slash + 1;
+    size_t setting_len = strcspn(setting_start, "/"); /* Up to next '/', or full string */
+    if (setting_len == 0 || setting_len >= max_setting) {
+        /* Setting empty or too long for buffer */
+        return -3;
+    }
+    memcpy(out_setting, setting_start, setting_len);
+    out_setting[setting_len] = '\0';
+
+    return 0;
+
 }
 
 
@@ -321,65 +348,111 @@ struct OutMsg ip_set(const struct Command *cmd)
     bool unsupported_dhcp = false;
     bool unsupported_dns = false;
     bool unsupported_ntp = false;
+    int parse_rc;
     char buf[NET_IPV4_ADDR_LEN];
 
     app_settings_get_ip(&ip_cfg);
 
-    if (coo_json_has_key(cmd->payload, "trydhcpfirst")) {
-        if (!network_feature_dhcp_enabled()) {
+    parse_rc = coo_json_extract_bool(cmd->payload, "trydhcpfirst", &ip_cfg.try_dhcp_first);
+    if (!network_feature_dhcp_enabled()) {
+        if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dhcp = true;
-        } else if (coo_json_extract_bool(cmd->payload, "trydhcpfirst", &ip_cfg.try_dhcp_first)) {
+        }
+    } else {
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+        } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid trydhcpfirst\"}");
         }
     }
-    if (coo_json_has_key(cmd->payload, "preferdhcpdns")) {
-        if (!network_feature_dns_enabled()) {
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpdns", &ip_cfg.prefer_dhcp_dns);
+    if (!network_feature_dns_enabled()) {
+        if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
-        } else if (coo_json_extract_bool(cmd->payload, "preferdhcpdns", &ip_cfg.prefer_dhcp_dns)) {
+        }
+    } else {
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+        } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpdns\"}");
         }
     }
-    if (coo_json_has_key(cmd->payload, "preferdhcpntp")) {
-        if (!network_feature_ntp_enabled()) {
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpntp", &ip_cfg.prefer_dhcp_ntp);
+    if (!network_feature_ntp_enabled()) {
+        if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
-        } else if (coo_json_extract_bool(cmd->payload, "preferdhcpntp", &ip_cfg.prefer_dhcp_ntp)) {
+        }
+    } else {
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+        } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpntp\"}");
         }
     }
-    if (coo_json_extract_string(cmd->payload, "ip", buf, sizeof(buf))) {
+
+    parse_rc = coo_json_extract_string(cmd->payload, "ip", buf, sizeof(buf));
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.ip, buf, sizeof(ip_cfg.ip) - 1);
         ip_cfg.ip[sizeof(ip_cfg.ip) - 1] = '\0';
         changed = true;
+    } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ip\"}");
     }
-    if (coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf))) {
+
+    parse_rc = coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf));
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.subnet, buf, sizeof(ip_cfg.subnet) - 1);
         ip_cfg.subnet[sizeof(ip_cfg.subnet) - 1] = '\0';
         changed = true;
+    } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid subnet\"}");
     }
-    if (coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf))) {
+
+    parse_rc = coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf));
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.gateway, buf, sizeof(ip_cfg.gateway) - 1);
         ip_cfg.gateway[sizeof(ip_cfg.gateway) - 1] = '\0';
         changed = true;
+    } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid gateway\"}");
     }
-    if (coo_json_has_key(cmd->payload, "dns")) {
-        if (!network_feature_dns_enabled()) {
+
+    parse_rc = coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf));
+    if (!network_feature_dns_enabled()) {
+        if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
-        } else if (coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf))) {
+        }
+    } else {
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
             strncpy(ip_cfg.dns, buf, sizeof(ip_cfg.dns) - 1);
             ip_cfg.dns[sizeof(ip_cfg.dns) - 1] = '\0';
             changed = true;
+        } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid dns\"}");
         }
     }
-    if (coo_json_has_key(cmd->payload, "ntp")) {
-        if (!network_feature_ntp_enabled()) {
+
+    parse_rc = coo_json_extract_string(cmd->payload, "ntp", buf, sizeof(buf));
+    if (!network_feature_ntp_enabled()) {
+        if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
-        } else if (coo_json_extract_string(cmd->payload, "ntp", buf, sizeof(buf))) {
+        }
+    } else {
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
             strncpy(ip_cfg.ntp, buf, sizeof(ip_cfg.ntp) - 1);
             ip_cfg.ntp[sizeof(ip_cfg.ntp) - 1] = '\0';
             changed = true;
+        } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ntp\"}");
         }
     }
-    (void)coo_json_extract_bool(cmd->payload, "persistent", &persist);
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+    }
 
     if (!changed && !(unsupported_dhcp || unsupported_dns || unsupported_ntp)) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized ip fields\"}");
@@ -421,9 +494,14 @@ struct OutMsg time_set(const struct Command *cmd)
 {
     uint64_t utc_ms = 0;
     struct timespec ts = {0};
+    int parse_rc;
 
-    if (!coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms)) {
+    parse_rc = coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms);
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing linuxtime_ms\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid linuxtime_ms\"}");
     }
 
     ts.tv_sec = utc_ms / 1000ULL;
@@ -458,13 +536,24 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
 {
     uint32_t holdoff_s = 0;
     bool persist = false;
+    int parse_rc_seconds;
+    int parse_rc_value;
+    int parse_rc_persist;
 
-    if (!coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s) &&
-        !coo_json_extract_u32(cmd->payload, "value", &holdoff_s)) {
+    parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
+    parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
+    if (parse_rc_seconds == COO_JSON_EXTRACT_ERR || parse_rc_value == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid seconds\"}");
+    }
+    if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
+        parse_rc_value == COO_JSON_EXTRACT_MISSING) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing seconds\"}");
     }
 
-    (void)coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    parse_rc_persist = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    if (parse_rc_persist == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+    }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
@@ -839,9 +928,14 @@ struct OutMsg power_get(const struct Command *cmd) {
 struct OutMsg power_set(const struct Command *cmd) {
 
     bool value;
+    int parse_rc;
 
-    if (!coo_json_extract_bool(cmd->payload, "value", &value)) {
+    parse_rc = coo_json_extract_bool(cmd->payload, "value", &value);
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting value\"}");
     }
 
     if (value) enable_power();
@@ -852,9 +946,14 @@ struct OutMsg power_set(const struct Command *cmd) {
 struct OutMsg sleep_set(const struct Command *cmd) {
 
     bool value;
+    int parse_rc;
 
-    if (!coo_json_extract_bool(cmd->payload, "value", &value)) {
+    parse_rc = coo_json_extract_bool(cmd->payload, "value", &value);
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting value\"}");
     }
 
     //TODO

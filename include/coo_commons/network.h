@@ -29,10 +29,10 @@ struct network_ipv4_profile {
 	char ip[NET_IPV4_ADDR_LEN];
 	char subnet[NET_IPV4_ADDR_LEN];
 	char gateway[NET_IPV4_ADDR_LEN];
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DNS)
+#if defined(CONFIG_DNS_RESOLVER)
 	char dns[NET_IPV4_ADDR_LEN];
 #endif
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_NTP)
+#if defined(CONFIG_SNTP)
 	char ntp[NET_IPV4_ADDR_LEN];
 #endif
 };

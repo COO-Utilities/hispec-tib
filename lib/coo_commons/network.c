@@ -9,10 +9,12 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_if.h>
+#include <zephyr/net/ethernet.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/net_ip.h>
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 #include <zephyr/net/dhcpv4.h>
 #endif
 #include <errno.h>
@@ -20,7 +22,7 @@
 
 LOG_MODULE_REGISTER(network, LOG_LEVEL_DBG);
 
-static volatile bool network_online;
+static bool network_online;
 static enum network_ipv4_source active_source = NETWORK_IPV4_SOURCE_UNKNOWN;
 static struct network_config active_cfg;
 static network_event_cb_t user_event_cb;
@@ -57,7 +59,6 @@ static bool parse_ipv4(const char *text, struct in_addr *out)
 	return net_addr_pton(AF_INET, text, out) == 0;
 }
 
-//TODO is this really necessary, I'm inclined to axe it and do the check where needed w/o a function call
 static bool profile_has_valid_static_ipv4(const struct network_ipv4_profile *profile)
 {
 	struct in_addr ip = { 0 };
@@ -76,12 +77,24 @@ static bool profile_matches_compiled_static_defaults(const struct network_ipv4_p
 		return false;
 	}
 
-	return strcmp(profile->ip, CONFIG_NETWORK_HELPER_STATIC_IPV4_ADDR) == 0 &&
-	       strcmp(profile->subnet, CONFIG_NETWORK_HELPER_STATIC_IPV4_NETMASK) == 0 &&
-	       strcmp(profile->gateway, CONFIG_NETWORK_HELPER_STATIC_IPV4_GW) == 0;
+#if defined(CONFIG_NET_CONFIG_MY_IPV4_ADDR) && \
+	defined(CONFIG_NET_CONFIG_MY_IPV4_NETMASK) && \
+	defined(CONFIG_NET_CONFIG_MY_IPV4_GW)
+	return strcmp(profile->ip, CONFIG_NET_CONFIG_MY_IPV4_ADDR) == 0 &&
+	       strcmp(profile->subnet, CONFIG_NET_CONFIG_MY_IPV4_NETMASK) == 0 &&
+	       strcmp(profile->gateway, CONFIG_NET_CONFIG_MY_IPV4_GW) == 0;
+#else
+	return false;
+#endif
 }
 
-//TODO intent??
+/* Use the first Ethernet L2 interface; this target has one managed port. */
+static struct net_if *network_iface(void)
+{
+	return net_if_get_first_by_type(&NET_L2_GET_NAME(ETHERNET));
+}
+
+/* Remove all global IPv4 addresses before applying a static profile. */
 static void clear_iface_ipv4(struct net_if *iface)
 {
 	struct in_addr *addr;
@@ -115,7 +128,7 @@ static int apply_static_profile(struct net_if *iface,
 		return -EINVAL;
 	}
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 	net_dhcpv4_stop(iface);
 #endif
 
@@ -142,7 +155,7 @@ static int apply_static_profile(struct net_if *iface,
 	return 0;
 }
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 static int try_dhcp(struct net_if *iface, uint32_t timeout_ms)
 {
 	uint32_t elapsed = 0U;
@@ -269,7 +282,7 @@ static int apply_active_config(struct net_if *iface)
 		return -ENODEV;
 	}
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 	if (active_cfg.try_dhcp_first && network_feature_dhcp_enabled()) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
@@ -299,7 +312,7 @@ static int apply_active_config(struct net_if *iface)
 		LOG_WRN("Fallback profile failed (%d)", rc);
 	}
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 	if (!active_cfg.try_dhcp_first && network_feature_dhcp_enabled()) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
@@ -318,25 +331,35 @@ void network_config_defaults(struct network_config *cfg)
 	}
 
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->try_dhcp_first = true;
+	cfg->try_dhcp_first = IS_ENABLED(CONFIG_NET_DHCPV4);
 	cfg->prefer_dhcp_dns = true;
 	cfg->prefer_dhcp_ntp = true;
 	cfg->enable_fallback_profile = true;
-	cfg->dhcp_timeout_ms = CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS;
-
-	str_set(cfg->static_profile.ip, sizeof(cfg->static_profile.ip),
-		CONFIG_NETWORK_HELPER_STATIC_IPV4_ADDR);
-	str_set(cfg->static_profile.subnet, sizeof(cfg->static_profile.subnet),
-		CONFIG_NETWORK_HELPER_STATIC_IPV4_NETMASK);
-	str_set(cfg->static_profile.gateway, sizeof(cfg->static_profile.gateway),
-		CONFIG_NETWORK_HELPER_STATIC_IPV4_GW);
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DNS)
-	str_set(cfg->static_profile.dns, sizeof(cfg->static_profile.dns),
-		CONFIG_NETWORK_HELPER_STATIC_DNS_IPV4_ADDR);
+	cfg->dhcp_timeout_ms =
+#if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
+		((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U);
+#else
+		6000U;
 #endif
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_NTP)
+
+#if defined(CONFIG_NET_CONFIG_MY_IPV4_ADDR) && \
+	defined(CONFIG_NET_CONFIG_MY_IPV4_NETMASK) && \
+	defined(CONFIG_NET_CONFIG_MY_IPV4_GW)
+	str_set(cfg->static_profile.ip, sizeof(cfg->static_profile.ip), CONFIG_NET_CONFIG_MY_IPV4_ADDR);
+	str_set(cfg->static_profile.subnet, sizeof(cfg->static_profile.subnet), CONFIG_NET_CONFIG_MY_IPV4_NETMASK);
+	str_set(cfg->static_profile.gateway, sizeof(cfg->static_profile.gateway), CONFIG_NET_CONFIG_MY_IPV4_GW);
+#else
+	str_set(cfg->static_profile.ip, sizeof(cfg->static_profile.ip), "0.0.0.0");
+	str_set(cfg->static_profile.subnet, sizeof(cfg->static_profile.subnet), "0.0.0.0");
+	str_set(cfg->static_profile.gateway, sizeof(cfg->static_profile.gateway), "0.0.0.0");
+#endif
+#if defined(CONFIG_DNS_RESOLVER)
+	str_set(cfg->static_profile.dns, sizeof(cfg->static_profile.dns),
+		"0.0.0.0");
+#endif
+#if defined(CONFIG_SNTP)
 	str_set(cfg->static_profile.ntp, sizeof(cfg->static_profile.ntp),
-		CONFIG_NETWORK_HELPER_STATIC_NTP_IPV4_ADDR);
+		"0.0.0.0");
 #endif
 
 	str_set(cfg->fallback_profile.ip, sizeof(cfg->fallback_profile.ip),
@@ -346,7 +369,7 @@ void network_config_defaults(struct network_config *cfg)
 	str_set(cfg->fallback_profile.gateway, sizeof(cfg->fallback_profile.gateway),
 		CONFIG_NETWORK_HELPER_FALLBACK_IPV4_GW);
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 	if (!network_feature_dhcp_enabled()) {
 		cfg->try_dhcp_first = false;
 	}
@@ -371,9 +394,9 @@ int network_get_ipv4_info(struct network_ipv4_info *out)
 	snprintk(out->netmask, sizeof(out->netmask), "0.0.0.0");
 	snprintk(out->gateway, sizeof(out->gateway), "0.0.0.0");
 
-	iface = net_if_get_default();
+	iface = network_iface();
 	if (iface == NULL) {
-		return -ENODEV;
+		return -ENETDOWN;
 	}
 
 	addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
@@ -408,11 +431,11 @@ int network_get_active_config(struct network_config *out)
 
 void network_log_mac_addr(void)
 {
-	struct net_if *iface = net_if_get_default();
+	struct net_if *iface = network_iface();
 	struct net_linkaddr *mac;
 
 	if (!iface) {
-		LOG_WRN("No default network interface");
+		LOG_WRN("No Ethernet network interface");
 		return;
 	}
 
@@ -423,13 +446,11 @@ void network_log_mac_addr(void)
 		mac->addr[3], mac->addr[4], mac->addr[5]);
 }
 
-//TODO doesn't this fucntion ALSO need volatile qualifier given the global's qualifier?
 bool network_is_ready(void)
 {
 	return network_online;
 }
 
-//todo net_if_get_default seems silly.
 int network_reconfigure(const struct network_config *cfg)
 {
 	int rc;
@@ -439,9 +460,9 @@ int network_reconfigure(const struct network_config *cfg)
 		return -EINVAL;
 	}
 
-	iface = net_if_get_default();
+	iface = network_iface();
 	if (iface == NULL) {
-		LOG_ERR("No network interface configured");
+		LOG_ERR("No Ethernet network interface configured");
 		return -ENETDOWN;
 	}
 
@@ -461,9 +482,9 @@ int network_init(const struct network_config *cfg, network_event_cb_t event_cb)
 
 	user_event_cb = event_cb;
 
-	iface = net_if_get_default();
+	iface = network_iface();
 	if (iface == NULL) {
-		LOG_ERR("No network interface configured");
+		LOG_ERR("No Ethernet network interface configured");
 		return -ENETDOWN;
 	}
 
@@ -560,7 +581,7 @@ const char *network_ipv4_source_str(enum network_ipv4_source source)
 
 bool network_feature_dhcp_enabled(void)
 {
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DHCP)
+#if defined(CONFIG_NET_DHCPV4)
 	return true;
 #else
 	return false;
@@ -569,7 +590,7 @@ bool network_feature_dhcp_enabled(void)
 
 bool network_feature_dns_enabled(void)
 {
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DNS)
+#if defined(CONFIG_DNS_RESOLVER)
 	return true;
 #else
 	return false;
@@ -578,7 +599,7 @@ bool network_feature_dns_enabled(void)
 
 bool network_feature_ntp_enabled(void)
 {
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_NTP)
+#if defined(CONFIG_SNTP)
 	return true;
 #else
 	return false;

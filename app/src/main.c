@@ -40,7 +40,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
 #define SERIAL_LINE_MAX 220
 
-#define WDT_FEED_INTERVAL_MS 1000
 #define WDT_TIMEOUT_MS 6000
 
 static struct mqtt_client client_ctx;
@@ -95,12 +94,12 @@ static void load_network_config(struct network_config *cfg)
 	strncpy(cfg->static_profile.gateway, ip_cfg.gateway, sizeof(cfg->static_profile.gateway) - 1U);
 	cfg->static_profile.gateway[sizeof(cfg->static_profile.gateway) - 1U] = '\0';
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_DNS)
+#if defined(CONFIG_DNS_RESOLVER)
 	strncpy(cfg->static_profile.dns, ip_cfg.dns, sizeof(cfg->static_profile.dns) - 1U);
 	cfg->static_profile.dns[sizeof(cfg->static_profile.dns) - 1U] = '\0';
 #endif
 
-#if defined(CONFIG_NETWORK_HELPER_ENABLE_NTP)
+#if defined(CONFIG_SNTP)
 	strncpy(cfg->static_profile.ntp, ip_cfg.ntp, sizeof(cfg->static_profile.ntp) - 1U);
 	cfg->static_profile.ntp[sizeof(cfg->static_profile.ntp) - 1U] = '\0';
 #endif
@@ -453,7 +452,6 @@ int main(void)
 	int rc;
 	const struct device *wdt = NULL;
 	int wdt_channel = -1;
-	int64_t last_wdt_feed = 0;
 	bool mqtt_subscribed = false;
 	struct network_config net_cfg;
 
@@ -474,18 +472,6 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
-	load_network_config(&net_cfg);
-	(void)network_init(&net_cfg, network_event_handler);
-	(void)network_wait_ready(10000); //TODO don't wait until network is ready, come up fully asap so serial debug is immediately possible
-
-	rc = coo_mqtt_init(&client_ctx, MQTT_DEVICE_ID);
-	if (rc != 0) {
-		LOG_ERR("MQTT init failed (%d)", rc);
-		return rc;
-	}
-	coo_mqtt_set_message_callback(mqtt_command_handler);
-	(void)coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
-
 	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
 			executor_thread_fn, NULL, NULL, NULL,
 			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
@@ -497,13 +483,22 @@ int main(void)
 	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
 	k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
 
+	load_network_config(&net_cfg);
+	(void)network_init(&net_cfg, network_event_handler);
+
+	rc = coo_mqtt_init(&client_ctx, MQTT_DEVICE_ID);
+	if (rc != 0) {
+		LOG_ERR("MQTT init failed (%d)", rc);
+		return rc;
+	}
+	coo_mqtt_set_message_callback(mqtt_command_handler);
+	(void)coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
+
 	while (1) {
 		bool mqtt_can_run = network_is_ready() && network_mqtt_allowed();
 
-		//todo just feed the WDT, why the heavens would one guard this externally, the dog won't eat if it doesn't need to!
-		if (wdt && (k_uptime_get() - last_wdt_feed) >= WDT_FEED_INTERVAL_MS) {
+		if (wdt) {
 			(void)wdt_feed(wdt, wdt_channel);
-			last_wdt_feed = k_uptime_get();
 		}
 
 		if (coo_mqtt_is_connected() && !mqtt_can_run) {

@@ -9,40 +9,67 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
-#include <stdlib.h>
 
 struct json_type_msg {
 	char msg_type[8];
 };
 
-static const char *find_json_key_value(const char *json, const char *key)
+/**
+ * @brief Extract one JSON field by key using Zephyr's descriptor parser.
+ *
+ * This helper constructs a one-field descriptor at runtime so callers can
+ * query arbitrary keys while still relying on `json_obj_parse()`.
+ *
+ * @param json Input JSON object string.
+ * @param key Field name to parse.
+ * @param token_type Expected token type for the field.
+ * @param storage Struct or buffer receiving parsed output.
+ * @param storage_size Size of destination field in bytes.
+ * @param storage_offset Offset of destination field within @p storage.
+ * @param align_shift Alignment shift for the storage type.
+ *
+ * @retval COO_JSON_EXTRACT_OK Field exists and was parsed successfully.
+ * @retval COO_JSON_EXTRACT_MISSING Field is not present.
+ * @retval COO_JSON_EXTRACT_ERR Parse failure or invalid arguments.
+ */
+static int find_json_key_value(const char *json,
+			       const char *key,
+			       enum json_tokens token_type,
+			       void *storage,
+			       size_t storage_size,
+			       uint16_t storage_offset,
+			       uint8_t align_shift)
 {
-	char token[40];
-	const char *p;
+	struct json_obj_descr descr;
+	size_t key_len;
+	int64_t rc;
 
-	if (json == NULL || key == NULL) {
-		return NULL;
-	}
-
-	snprintf(token, sizeof(token), "\"%s\"", key);
-	p = strstr(json, token);
-	if (p == NULL) {
-		return NULL;
+	if (json == NULL || key == NULL || storage == NULL) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	p += strlen(token);
-	while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-		p++;
-	}
-	if (*p != ':') {
-		return NULL;
-	}
-	p++;
-	while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-		p++;
+	key_len = strlen(key);
+	if (key_len == 0U || key_len > 127U) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	return p;
+	memset(&descr, 0, sizeof(descr));
+	descr.field_name = key;
+	descr.field_name_len = key_len;
+	descr.align_shift = align_shift;
+	descr.type = token_type;
+	descr.offset = storage_offset;
+	descr.field.size = storage_size;
+
+	rc = json_obj_parse((char *)json, strlen(json), &descr, 1, storage);
+	if (rc < 0) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+	if ((rc & BIT64(0)) == 0) {
+		return COO_JSON_EXTRACT_MISSING;
+	}
+
+	return COO_JSON_EXTRACT_OK;
 }
 
 bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_out)
@@ -73,120 +100,85 @@ bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_ou
 	return false;
 }
 
-bool coo_json_extract_bool(const char *json, const char *key, bool *value)
+int coo_json_extract_bool(const char *json, const char *key, bool *value)
 {
-	const char *p = find_json_key_value(json, key);
+	struct json_bool_field {
+		bool value;
+	} parsed = { 0 };
+	int rc;
 
-	if (p == NULL || value == NULL) {
-		return false;
+	if (value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	if (strncmp(p, "true", 4) == 0) {
-		*value = true;
-		return true;
+	rc = find_json_key_value(json, key,
+				 JSON_TOK_TRUE,
+				 &parsed,
+				 sizeof(parsed.value),
+				 offsetof(struct json_bool_field, value),
+				 Z_ALIGN_SHIFT(struct json_bool_field));
+	if (rc == COO_JSON_EXTRACT_OK) {
+		*value = parsed.value;
 	}
-	if (strncmp(p, "false", 5) == 0) {
-		*value = false;
-		return true;
-	}
-
-	return false;
+	return rc;
 }
 
-bool coo_json_extract_u32(const char *json, const char *key, uint32_t *value)
+int coo_json_extract_u32(const char *json, const char *key, uint32_t *value)
 {
-	char *end;
-	unsigned long tmp;
-	const char *p = find_json_key_value(json, key);
+	struct json_u32_field {
+		uint32_t value;
+	} parsed = { 0 };
+	int rc;
 
-	if (p == NULL || value == NULL) {
-		return false;
+	if (value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	tmp = strtoul(p, &end, 10);
-	if (end == p) {
-		return false;
+	rc = find_json_key_value(json, key,
+				 JSON_TOK_UINT,
+				 &parsed,
+				 sizeof(parsed.value),
+				 offsetof(struct json_u32_field, value),
+				 Z_ALIGN_SHIFT(struct json_u32_field));
+	if (rc == COO_JSON_EXTRACT_OK) {
+		*value = parsed.value;
 	}
-
-	*value = (uint32_t)tmp;
-	return true;
+	return rc;
 }
 
-bool coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
+int coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
 {
-	char *end;
-	unsigned long long tmp;
-	const char *p = find_json_key_value(json, key);
+	struct json_u64_field {
+		uint64_t value;
+	} parsed = { 0 };
+	int rc;
 
-	if (p == NULL || value == NULL) {
-		return false;
+	if (value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	tmp = strtoull(p, &end, 10);
-	if (end == p) {
-		return false;
+	rc = find_json_key_value(json, key,
+				 JSON_TOK_UINT64,
+				 &parsed,
+				 sizeof(parsed.value),
+				 offsetof(struct json_u64_field, value),
+				 Z_ALIGN_SHIFT(struct json_u64_field));
+	if (rc == COO_JSON_EXTRACT_OK) {
+		*value = parsed.value;
 	}
-
-	*value = (uint64_t)tmp;
-	return true;
+	return rc;
 }
 
-bool coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)
+int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)
 {
-	const char *p = find_json_key_value(json, key);
-	const char *end;
-	size_t len;
-
-	if (p == NULL || out == NULL || out_len == 0U || *p != '"') {
-		return false;
-	}
-	p++;
-
-	end = strchr(p, '"');
-	if (end == NULL) {
-		return false;
+	if (out == NULL || out_len == 0U) {
+		return COO_JSON_EXTRACT_ERR;
 	}
 
-	len = MIN((size_t)(end - p), out_len - 1U);
-	memcpy(out, p, len);
-	out[len] = '\0';
-	return true;
-}
-
-bool coo_json_has_key(const char *json, const char *key)
-{
-	return find_json_key_value(json, key) != NULL;
-}
-
-int coo_json_parse_key_pair(const char *key,
-                             char *out_name, size_t max_name,
-                             char *out_setting, size_t max_setting)
-{
-	/* Find the first slash */
-	const char *slash = strchr(key, '/');
-	if (!slash) {
-		return -1;
-	}
-
-	size_t name_len = slash - key;
-	if (name_len == 0 || name_len >= max_name) {
-		/* Name empty or too long for buffer (including null) */
-		return -2;
-	}
-
-	/* Copy name */
-	memcpy(out_name, key, name_len);
-	out_name[name_len] = '\0';
-
-	/* Copy setting, up to max_setting-1 characters, null terminated */
-	const char *setting_start = slash + 1;
-	size_t setting_len = strcspn(setting_start, "/"); /* Up to next '/', or full string */
-	if (setting_len == 0 || setting_len >= max_setting) {
-		/* Setting empty or too long for buffer */
-		return -3;
-	}
-	memcpy(out_setting, setting_start, setting_len);
-	out_setting[setting_len] = '\0';
-
-	return 0;
+	return find_json_key_value(json, key,
+				   JSON_TOK_STRING_BUF,
+				   out,
+				   out_len,
+				   0U,
+				   0U);
 }

@@ -44,6 +44,7 @@ Tasks:
 When validating code changes for this app, use this exact west binary and command shape unless explicitly told otherwise:
 `/Users/jibailey/zephyrproject/.venv/bin/west build --cmake-only --board=nucleo_h563zi/stm32h563xx --build-dir /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/build /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app -- -DCMAKE_MAKE_PROGRAM=/Users/jibailey/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja`
 Then run the same command without `--cmake-only` for a full compile check.
+Always run these two commands sequentially (not in parallel) when using the same `--build-dir`.
 
 ## Prompt: Hardware-to-DTS Mapping Update
 I changed hardware wiring. Update DTS overlay accordingly.
