@@ -105,6 +105,21 @@ static void load_network_config(struct network_config *cfg)
 #endif
 }
 
+static void load_mqtt_config(struct coo_mqtt_broker_config *cfg)
+{
+	struct app_mqtt_settings mqtt_cfg = {0};
+
+	if (cfg == NULL) {
+		return;
+	}
+
+	memset(cfg, 0, sizeof(*cfg));
+	app_settings_get_mqtt(&mqtt_cfg);
+	strncpy(cfg->host, mqtt_cfg.broker_host, sizeof(cfg->host) - 1U);
+	cfg->host[sizeof(cfg->host) - 1U] = '\0';
+	cfg->port = mqtt_cfg.broker_port;
+}
+
 static void wdt_callback(const struct device *wdt_dev, int channel_id)
 {
 	ARG_UNUSED(wdt_dev);
@@ -453,7 +468,9 @@ int main(void)
 	const struct device *wdt = NULL;
 	int wdt_channel = -1;
 	bool mqtt_subscribed = false;
+	uint32_t mqtt_cfg_revision = 0U;
 	struct network_config net_cfg;
+	struct coo_mqtt_broker_config mqtt_cfg;
 
 	printk("HiSPEC-TIB Application %s\n", APP_VERSION_STRING);
 
@@ -491,11 +508,31 @@ int main(void)
 		LOG_ERR("MQTT init failed (%d)", rc);
 		return rc;
 	}
+	load_mqtt_config(&mqtt_cfg);
+	rc = coo_mqtt_set_broker_config(&mqtt_cfg);
+	if (rc != 0) {
+		LOG_ERR("MQTT broker config invalid (%d)", rc);
+		return rc;
+	}
+	mqtt_cfg_revision = app_settings_get_mqtt_revision();
 	coo_mqtt_set_message_callback(mqtt_command_handler);
 	(void)coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
 
 	while (1) {
 		bool mqtt_can_run = network_is_ready() && network_mqtt_allowed();
+		uint32_t current_mqtt_revision = app_settings_get_mqtt_revision();
+
+		if (current_mqtt_revision != mqtt_cfg_revision) {
+			mqtt_cfg_revision = current_mqtt_revision;
+			load_mqtt_config(&mqtt_cfg);
+			rc = coo_mqtt_set_broker_config(&mqtt_cfg);
+			if (rc != 0) {
+				LOG_ERR("MQTT broker reconfigure rejected (%d)", rc);
+			} else if (coo_mqtt_is_connected()) {
+				(void)mqtt_disconnect(&client_ctx, NULL);
+				mqtt_subscribed = false;
+			}
+		}
 
 		if (wdt) {
 			(void)wdt_feed(wdt, wdt_channel);

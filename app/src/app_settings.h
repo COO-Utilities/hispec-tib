@@ -22,16 +22,26 @@ struct app_ip_settings {
 	char ntp[NET_IPV4_ADDR_LEN];
 };
 
+struct app_mqtt_settings {
+	char broker_host[128];
+	uint16_t broker_port;
+};
+
 struct app_settings_snapshot {
 	struct app_ip_settings ip;
+	struct app_mqtt_settings mqtt;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
+	uint32_t mqtt_revision;
 };
 
 int app_settings_init(void);
 void app_settings_get_snapshot(struct app_settings_snapshot *out);
 void app_settings_get_ip(struct app_ip_settings *out);
 void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
+void app_settings_get_mqtt(struct app_mqtt_settings *out);
+void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
+uint32_t app_settings_get_mqtt_revision(void);
 uint32_t app_settings_get_serial_holdoff_s(void);
 void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist);
 uint32_t app_settings_get_boot_count(void);

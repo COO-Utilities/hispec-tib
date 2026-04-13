@@ -7,6 +7,7 @@
 #include "app_settings.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -26,6 +27,8 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_IP_GATEWAY "tib/ip/gateway"
 #define KEY_IP_DNS "tib/ip/dns"
 #define KEY_IP_NTP "tib/ip/ntp"
+#define KEY_MQTT_HOST "tib/mqtt/host"
+#define KEY_MQTT_PORT "tib/mqtt/port"
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -51,6 +54,10 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 
 static void settings_defaults(struct app_settings_snapshot *s)
 {
+	unsigned long broker_port = 1883UL;
+	const char *default_port_str = CONFIG_COO_MQTT_BROKER_PORT;
+	char *end = NULL;
+
 	memset(s, 0, sizeof(*s));
 
 	s->ip.try_dhcp_first = true;
@@ -61,8 +68,15 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	str_set(s->ip.gateway, sizeof(s->ip.gateway), CONFIG_NET_CONFIG_MY_IPV4_GW);
 	str_set(s->ip.dns, sizeof(s->ip.dns), "0.0.0.0");
 	str_set(s->ip.ntp, sizeof(s->ip.ntp), "0.0.0.0");
+	broker_port = strtoul(default_port_str, &end, 10);
+	if (end == NULL || end == default_port_str || *end != '\0' || broker_port > UINT16_MAX) {
+		broker_port = 1883UL;
+	}
+	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
+	s->mqtt.broker_port = (uint16_t)broker_port;
 	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
 	s->boot_count = 0U;
+	s->mqtt_revision = 0U;
 }
 
 static int read_bool(settings_read_cb read_cb, void *cb_arg, bool *out)
@@ -79,6 +93,12 @@ static int read_bool(settings_read_cb read_cb, void *cb_arg, bool *out)
 }
 
 static int read_u32(settings_read_cb read_cb, void *cb_arg, uint32_t *out)
+{
+	int rc = read_cb(cb_arg, out, sizeof(*out));
+	return (rc == sizeof(*out)) ? 0 : -EINVAL;
+}
+
+static int read_u16(settings_read_cb read_cb, void *cb_arg, uint16_t *out)
 {
 	int rc = read_cb(cb_arg, out, sizeof(*out));
 	return (rc == sizeof(*out)) ? 0 : -EINVAL;
@@ -158,6 +178,18 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
+	if (strcmp(name, "mqtt/host") == 0) {
+		(void)read_str(read_cb, cb_arg,
+			       g_settings.snapshot.mqtt.broker_host,
+			       sizeof(g_settings.snapshot.mqtt.broker_host));
+		goto out;
+	}
+
+	if (strcmp(name, "mqtt/port") == 0) {
+		(void)read_u16(read_cb, cb_arg, &g_settings.snapshot.mqtt.broker_port);
+		goto out;
+	}
+
 out:
 	k_mutex_unlock(&g_settings.lock);
 	return 0;
@@ -176,6 +208,11 @@ static void persist_bool(const char *key, bool value)
 }
 
 static void persist_u32(const char *key, uint32_t value)
+{
+	(void)settings_save_one(key, &value, sizeof(value));
+}
+
+static void persist_u16(const char *key, uint16_t value)
 {
 	(void)settings_save_one(key, &value, sizeof(value));
 }
@@ -249,6 +286,45 @@ void app_settings_update_ip(const struct app_ip_settings *ip, bool persist)
 		persist_str(KEY_IP_DNS, ip->dns);
 		persist_str(KEY_IP_NTP, ip->ntp);
 	}
+}
+
+void app_settings_get_mqtt(struct app_mqtt_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.mqtt;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist)
+{
+	if (mqtt == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.mqtt = *mqtt;
+	g_settings.snapshot.mqtt_revision++;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_str(KEY_MQTT_HOST, mqtt->broker_host);
+		persist_u16(KEY_MQTT_PORT, mqtt->broker_port);
+	}
+}
+
+uint32_t app_settings_get_mqtt_revision(void)
+{
+	uint32_t value;
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	value = g_settings.snapshot.mqtt_revision;
+	k_mutex_unlock(&g_settings.lock);
+
+	return value;
 }
 
 uint32_t app_settings_get_serial_holdoff_s(void)

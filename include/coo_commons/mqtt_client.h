@@ -9,6 +9,13 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/kernel.h>
 
+#define COO_MQTT_BROKER_HOST_MAX 128
+
+struct coo_mqtt_broker_config {
+	char host[COO_MQTT_BROKER_HOST_MAX];
+	uint16_t port;
+};
+
 /**
  * @brief MQTT message callback function type
  *
@@ -29,6 +36,14 @@ typedef void (*mqtt_message_cb_t)(const struct mqtt_publish_param *pub);
  * @return 0 on success, negative error code on failure
  */
 int coo_mqtt_init(struct mqtt_client *client, const char *client_id);
+
+/**
+ * @brief Set broker endpoint for subsequent MQTT connect attempts.
+ *
+ * @param cfg Broker hostname or numeric IPv4 and TCP port.
+ * @return 0 on success, negative errno on invalid config.
+ */
+int coo_mqtt_set_broker_config(const struct coo_mqtt_broker_config *cfg);
 
 /**
  * @brief Connect to the MQTT broker

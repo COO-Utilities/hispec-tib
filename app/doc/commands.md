@@ -38,6 +38,7 @@ Draft 0.1
 - `pd`
 - `pdsettings`
 - `ip`
+- `mqtt`
 - `time`
 - `temp`
 - `status`
@@ -481,6 +482,30 @@ TODO add diode stabilized flag and time until setting
   - partial comes with keys indicating which settings are not supported.
   - unsupported have unsupported in place of an ip
   - source names are: `temporary_override`, `persistent_manual`, `dhcp`, `compiled`.
+
+### `mqtt`
+- **Request topic:** `cmd/<device>/req/mqtt`
+  - Set:
+    ```json
+    {
+      "broker": "<ipv4-or-hostname>:<port>>",
+      "persistent": true
+    }
+    ```
+    `host` is accepted as an alias for `broker`.
+  - Query: No payload
+
+- **Response topic:** `cmd/<device>/resp/mqtt`
+  - Set result: `{"status":"success","apply":"reconnect"}`
+  - Query result:
+    ```json
+    {"broker":"<value>:<port>", "dns_supported":true}
+    ```
+
+- **Notes:**
+  - Broker value may be numeric IPv4 or hostname.
+  - If DNS is not compiled in, hostname values are rejected.
+  - Successful set updates runtime settings and triggers MQTT reconnect behavior.
 
 ### `time`
 - **Request topic:** `cmd/<device>/req/time`

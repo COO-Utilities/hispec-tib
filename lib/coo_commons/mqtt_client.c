@@ -8,7 +8,7 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/sys/util.h>
-#include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(coo_mqtt, LOG_LEVEL_DBG);
@@ -19,6 +19,7 @@ static uint8_t tx_buffer[CONFIG_COO_MQTT_PAYLOAD_SIZE];
 
 /* MQTT broker details */
 static struct sockaddr_storage broker;
+static struct coo_mqtt_broker_config active_broker_cfg;
 
 /* Socket descriptor */
 static struct zsock_pollfd fds[1];
@@ -42,14 +43,9 @@ static int num_subscriptions = 0;
 #define MSECS_NET_POLL_TIMEOUT 30000
 
 static int resolve_broker_addr(void)
-//TODO The MQTT broker is to be a persistent setting that will be configured at runtime.
-// The only compile-time default would be for default configuration of app settings by the app. The setting may be an ip or domain name.
-// The command handler will reject domain names if no DNS support compiled
 {
-	const char *port_str = CONFIG_COO_MQTT_BROKER_PORT;
-	char *end = NULL;
-	unsigned long port;
 	int rc;
+	char port_str[6];
 	char broker_ip[NET_IPV4_ADDR_LEN];
 	struct sockaddr_in *broker4;
 	struct zsock_addrinfo *result = NULL;
@@ -59,30 +55,29 @@ static int resolve_broker_addr(void)
 		.ai_socktype = SOCK_STREAM
 	};
 
-	port = strtoul(port_str, &end, 10);
-	if (end == port_str || *end != '\0' || port > UINT16_MAX) {
-		LOG_ERR("Invalid broker port '%s'", CONFIG_COO_MQTT_BROKER_PORT);
+	if (active_broker_cfg.host[0] == '\0' || active_broker_cfg.port == 0U) {
+		LOG_ERR("Broker config missing");
 		return -EINVAL;
 	}
+	(void)snprintk(port_str, sizeof(port_str), "%u", active_broker_cfg.port);
 
 	broker4 = (struct sockaddr_in *)&broker;
 	memset(broker4, 0, sizeof(*broker4));
 
-	if (net_addr_pton(AF_INET, CONFIG_COO_MQTT_BROKER_HOSTNAME, &numeric_addr) == 0) {
+	if (net_addr_pton(AF_INET, active_broker_cfg.host, &numeric_addr) == 0) {
 		broker4->sin_family = AF_INET;
-		broker4->sin_port = htons((uint16_t)port);
+		broker4->sin_port = htons(active_broker_cfg.port);
 		broker4->sin_addr = numeric_addr;
 		goto log_addr;
 	}
 
 	if (!IS_ENABLED(CONFIG_DNS_RESOLVER)) {
 		LOG_ERR("Broker '%s' is not numeric IPv4 and DNS_RESOLVER is disabled",
-			CONFIG_COO_MQTT_BROKER_HOSTNAME);
+			active_broker_cfg.host);
 		return -ENOTSUP;
 	}
 
-	rc = zsock_getaddrinfo(CONFIG_COO_MQTT_BROKER_HOSTNAME,
-			       CONFIG_COO_MQTT_BROKER_PORT, &hints, &result);
+	rc = zsock_getaddrinfo(active_broker_cfg.host, port_str, &hints, &result);
 	if (rc != 0) {
 		LOG_ERR("Failed to resolve broker hostname [%s]", zsock_gai_strerror(rc));
 		return -EIO;
@@ -101,7 +96,20 @@ log_addr:
 	if (net_addr_ntop(AF_INET, &broker4->sin_addr, broker_ip, sizeof(broker_ip)) == NULL) {
 		snprintk(broker_ip, sizeof(broker_ip), "?.?.?.?");
 	}
-	LOG_INF("MQTT broker resolved: %s:%s", broker_ip, CONFIG_COO_MQTT_BROKER_PORT);
+	LOG_INF("MQTT broker resolved: %s:%u", broker_ip, active_broker_cfg.port);
+
+	return 0;
+}
+
+int coo_mqtt_set_broker_config(const struct coo_mqtt_broker_config *cfg)
+{
+	if (cfg == NULL || cfg->host[0] == '\0' || cfg->port == 0U) {
+		return -EINVAL;
+	}
+
+	strncpy(active_broker_cfg.host, cfg->host, sizeof(active_broker_cfg.host) - 1U);
+	active_broker_cfg.host[sizeof(active_broker_cfg.host) - 1U] = '\0';
+	active_broker_cfg.port = cfg->port;
 
 	return 0;
 }
@@ -147,9 +155,9 @@ static inline void on_mqtt_connect(void)
 {
 	mqtt_connected = true;
 	LOG_INF("Connected to MQTT broker!");
-	LOG_INF("Hostname: %s", CONFIG_COO_MQTT_BROKER_HOSTNAME);
+	LOG_INF("Hostname: %s", active_broker_cfg.host);
 	LOG_INF("Client ID: %s", client_id);
-	LOG_INF("Port: %s", CONFIG_COO_MQTT_BROKER_PORT);
+	LOG_INF("Port: %u", active_broker_cfg.port);
 }
 
 static inline void on_mqtt_disconnect(void)

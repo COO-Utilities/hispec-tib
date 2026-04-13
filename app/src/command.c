@@ -12,6 +12,7 @@
 #include <zephyr/sys/util.h>
 #include <app_version.h>
 #include <time.h>
+#include <zephyr/net/net_ip.h>
 
 #include "devices.h"
 #include "app_settings.h"
@@ -69,6 +70,7 @@ typedef enum laser_t {
 const struct DispatchEntry dispatch_table[] = {
     { "help",      help_get,         NULL             },
     { "ip",        ip_get,           ip_set           },
+    { "mqtt",      mqtt_get,         mqtt_set         },
     { "time",      time_get,         time_set         },
     { "reboot",    NULL,             reboot_set       },
     { "serialguard", serial_guard_get, serial_guard_set },
@@ -314,7 +316,7 @@ struct OutMsg busy_response(const struct Command *cmd) {
 struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
-                        "{\"help\":\"help,ip,time,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
+                        "{\"help\":\"help,ip,mqtt,time,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
@@ -472,6 +474,86 @@ struct OutMsg ip_set(const struct Command *cmd)
     }
 
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reboot_required\"}");
+}
+
+static bool mqtt_host_is_numeric_ipv4(const char *host)
+{
+    struct in_addr addr = {0};
+
+    if (host == NULL || host[0] == '\0') {
+        return false;
+    }
+
+    return net_addr_pton(AF_INET, host, &addr) == 0;
+}
+
+struct OutMsg mqtt_get(const struct Command *cmd)
+//TODO update mqtt get/set to drop port: key and convert host to form <host-or-ip>:<port -JIB
+{
+    struct app_mqtt_settings mqtt_cfg = {0};
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    app_settings_get_mqtt(&mqtt_cfg);
+    snprintk(payload, sizeof(payload),
+             "{\"broker\":\"%s\",\"port\":%u,\"dns_supported\":%s}",
+             mqtt_cfg.broker_host,
+             mqtt_cfg.broker_port,
+             network_feature_dns_enabled() ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg mqtt_set(const struct Command *cmd)
+//TODO update mqtt get/set to drop port: key and convert host to form <host-or-ip>:<port -JIB
+{
+    struct app_mqtt_settings mqtt_cfg = {0};
+    char host[sizeof(mqtt_cfg.broker_host)] = {0};
+    uint32_t port = 0U;
+    bool persist = false;
+    bool changed = false;
+    int parse_rc;
+
+    app_settings_get_mqtt(&mqtt_cfg);
+
+    parse_rc = coo_json_extract_string(cmd->payload, "broker", host, sizeof(host));
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        parse_rc = coo_json_extract_string(cmd->payload, "host", host, sizeof(host));
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid broker\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
+        if (!mqtt_host_is_numeric_ipv4(host) && !network_feature_dns_enabled()) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
+        }
+        strncpy(mqtt_cfg.broker_host, host, sizeof(mqtt_cfg.broker_host) - 1U);
+        mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
+        changed = true;
+    }
+
+    parse_rc = coo_json_extract_u32(cmd->payload, "port", &port);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid port\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
+        if (port == 0U || port > UINT16_MAX) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"port out of range\"}");
+        }
+        mqtt_cfg.broker_port = (uint16_t)port;
+        changed = true;
+    }
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+    }
+
+    if (!changed) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized mqtt fields\"}");
+    }
+
+    app_settings_update_mqtt(&mqtt_cfg, persist);
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reconnect\"}");
 }
 
 struct OutMsg time_get(const struct Command *cmd)

@@ -70,6 +70,8 @@ struct OutMsg memsroute_set(const struct Command *cmd);
 struct OutMsg help_get(const struct Command *cmd);
 struct OutMsg ip_get(const struct Command *cmd);
 struct OutMsg ip_set(const struct Command *cmd);
+struct OutMsg mqtt_get(const struct Command *cmd);
+struct OutMsg mqtt_set(const struct Command *cmd);
 struct OutMsg time_get(const struct Command *cmd);
 struct OutMsg time_set(const struct Command *cmd);
 struct OutMsg reboot_set(const struct Command *cmd);
