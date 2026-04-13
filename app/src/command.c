@@ -19,6 +19,7 @@
 #include "attenuator.h"
 #include "maiman.h"
 #include "mems_switching.h"
+#include "sntp_sync.h"
 #include <coo_commons/json_utils.h>
 #include <coo_commons/network.h>
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
@@ -323,20 +324,28 @@ struct OutMsg ip_get(const struct Command *cmd)
 {
     struct app_ip_settings ip_cfg;
     struct network_ipv4_info net = {0};
+    struct sntp_sync_status sntp = {0};
     char payload[MAX_PAYLOAD_LEN];
 
     app_settings_get_ip(&ip_cfg);
     (void)network_get_ipv4_info(&net);
+    sntp_sync_get_status(&sntp);
 
     snprintk(payload, sizeof(payload),
              "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
-             "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\"},"
-             "\"active\":{\"ready\":%s,\"ip\":\"%s\"}}",
+             "\"preferdhcpdns\":%s,\"preferdhcpntp\":%s,"
+             "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"},"
+             "\"active\":{\"ready\":%s,\"ip\":\"%s\"},"
+             "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\"}}",
              network_ipv4_source_str(net.source),
              ip_cfg.try_dhcp_first ? "true" : "false",
-             ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway,
+             ip_cfg.prefer_dhcp_dns ? "true" : "false",
+             ip_cfg.prefer_dhcp_ntp ? "true" : "false",
+             ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway, ip_cfg.dns, ip_cfg.ntp,
              net.link_ready ? "true" : "false",
-             net.ip);
+             net.ip,
+             sntp_sync_source_str(sntp.source),
+             sntp.server);
 
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -345,8 +354,25 @@ struct OutMsg ip_set(const struct Command *cmd)
 {
     struct app_ip_settings ip_cfg;
     char response[MAX_PAYLOAD_LEN];
+#if defined(CONFIG_NET_DHCPV4)
+    const bool dhcp_supported = true;
+#else
+    const bool dhcp_supported = false;
+#endif
+#if defined(CONFIG_DNS_RESOLVER)
+    const bool dns_supported = true;
+#else
+    const bool dns_supported = false;
+#endif
+#if defined(CONFIG_SNTP)
+    const bool ntp_supported = true;
+#else
+    const bool ntp_supported = false;
+#endif
     bool persist = false;
     bool changed = false;
+    bool network_changed = false;
+    bool ntp_changed = false;
     bool unsupported_dhcp = false;
     bool unsupported_dns = false;
     bool unsupported_ntp = false;
@@ -356,39 +382,42 @@ struct OutMsg ip_set(const struct Command *cmd)
     app_settings_get_ip(&ip_cfg);
 
     parse_rc = coo_json_extract_bool(cmd->payload, "trydhcpfirst", &ip_cfg.try_dhcp_first);
-    if (!network_feature_dhcp_enabled()) {
+    if (!dhcp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dhcp = true;
         }
     } else {
         if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+            network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid trydhcpfirst\"}");
         }
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpdns", &ip_cfg.prefer_dhcp_dns);
-    if (!network_feature_dns_enabled()) {
+    if (!dns_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
         }
     } else {
         if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+            network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpdns\"}");
         }
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpntp", &ip_cfg.prefer_dhcp_ntp);
-    if (!network_feature_ntp_enabled()) {
+    if (!ntp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
         }
     } else {
         if (parse_rc == COO_JSON_EXTRACT_OK) {
             changed = true;
+            ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpntp\"}");
         }
@@ -399,6 +428,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         strncpy(ip_cfg.ip, buf, sizeof(ip_cfg.ip) - 1);
         ip_cfg.ip[sizeof(ip_cfg.ip) - 1] = '\0';
         changed = true;
+        network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ip\"}");
     }
@@ -408,6 +438,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         strncpy(ip_cfg.subnet, buf, sizeof(ip_cfg.subnet) - 1);
         ip_cfg.subnet[sizeof(ip_cfg.subnet) - 1] = '\0';
         changed = true;
+        network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid subnet\"}");
     }
@@ -417,12 +448,13 @@ struct OutMsg ip_set(const struct Command *cmd)
         strncpy(ip_cfg.gateway, buf, sizeof(ip_cfg.gateway) - 1);
         ip_cfg.gateway[sizeof(ip_cfg.gateway) - 1] = '\0';
         changed = true;
+        network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid gateway\"}");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf));
-    if (!network_feature_dns_enabled()) {
+    if (!dns_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
         }
@@ -431,13 +463,14 @@ struct OutMsg ip_set(const struct Command *cmd)
             strncpy(ip_cfg.dns, buf, sizeof(ip_cfg.dns) - 1);
             ip_cfg.dns[sizeof(ip_cfg.dns) - 1] = '\0';
             changed = true;
+            network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid dns\"}");
         }
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "ntp", buf, sizeof(buf));
-    if (!network_feature_ntp_enabled()) {
+    if (!ntp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
         }
@@ -446,6 +479,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             strncpy(ip_cfg.ntp, buf, sizeof(ip_cfg.ntp) - 1);
             ip_cfg.ntp[sizeof(ip_cfg.ntp) - 1] = '\0';
             changed = true;
+            ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ntp\"}");
         }
@@ -462,18 +496,33 @@ struct OutMsg ip_set(const struct Command *cmd)
 
     if (changed) {
         app_settings_update_ip(&ip_cfg, persist);
+        if (ntp_changed && ntp_supported) {
+            sntp_sync_schedule_now();
+        }
     }
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
+        const char *apply =
+            network_changed ? "reboot_required" :
+            (ntp_changed ? "immediate" : "none");
         snprintk(response, sizeof(response),
-                 "{\"status\":\"partial\",\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\",\"apply\":\"reboot_required\"}",
+                 "{\"status\":\"partial\",\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\",\"apply\":\"%s\"}",
                  unsupported_dhcp ? "unsupported" : "ok",
                  unsupported_dns ? "unsupported" : "ok",
-                 unsupported_ntp ? "unsupported" : "ok");
+                 unsupported_ntp ? "unsupported" : "ok",
+                 apply);
         return _msg_builder(cmd, RESP_OK, response);
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reboot_required\"}");
+    if (network_changed) {
+        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reboot_required\"}");
+    }
+
+    if (ntp_changed) {
+        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"immediate\"}");
+    }
+
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 static bool mqtt_host_is_numeric_ipv4(const char *host)
@@ -492,13 +541,18 @@ struct OutMsg mqtt_get(const struct Command *cmd)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     char payload[MAX_PAYLOAD_LEN] = {0};
+#if defined(CONFIG_DNS_RESOLVER)
+    const bool dns_supported = true;
+#else
+    const bool dns_supported = false;
+#endif
 
     app_settings_get_mqtt(&mqtt_cfg);
     snprintk(payload, sizeof(payload),
              "{\"broker\":\"%s\",\"port\":%u,\"dns_supported\":%s}",
              mqtt_cfg.broker_host,
              mqtt_cfg.broker_port,
-             network_feature_dns_enabled() ? "true" : "false");
+             dns_supported ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -511,6 +565,11 @@ struct OutMsg mqtt_set(const struct Command *cmd)
     bool persist = false;
     bool changed = false;
     int parse_rc;
+#if defined(CONFIG_DNS_RESOLVER)
+    const bool dns_supported = true;
+#else
+    const bool dns_supported = false;
+#endif
 
     app_settings_get_mqtt(&mqtt_cfg);
 
@@ -522,7 +581,7 @@ struct OutMsg mqtt_set(const struct Command *cmd)
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid broker\"}");
     }
     if (parse_rc == COO_JSON_EXTRACT_OK) {
-        if (!mqtt_host_is_numeric_ipv4(host) && !network_feature_dns_enabled()) {
+        if (!mqtt_host_is_numeric_ipv4(host) && !dns_supported) {
             return _msg_builder(cmd, RESP_ERROR,
                                 "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
         }
@@ -559,15 +618,24 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 struct OutMsg time_get(const struct Command *cmd)
 {
     struct timespec ts = {0};
+    struct sntp_sync_status sntp = {0};
     uint64_t utc_ms;
     char payload[MAX_PAYLOAD_LEN];
 
     clock_gettime(CLOCK_REALTIME, &ts);
+    sntp_sync_get_status(&sntp);
     utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 
     snprintk(payload, sizeof(payload),
-             "{\"utc\":%llu,\"ticks\":%u,\"uptime\":%lld}",
-             (unsigned long long)utc_ms, k_cycle_get_32(), (long long)k_uptime_get());
+             "{\"utc\":%llu,\"ticks\":%u,\"uptime\":%lld,"
+             "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\",\"synced\":%s,"
+             "\"last_sync_utc\":%llu,\"last_error\":%d}}",
+             (unsigned long long)utc_ms, k_cycle_get_32(), (long long)k_uptime_get(),
+             sntp_sync_source_str(sntp.source),
+             sntp.server,
+             sntp.synced ? "true" : "false",
+             (unsigned long long)sntp.last_sync_utc_ms,
+             sntp.last_error);
 
     return _msg_builder(cmd, RESP_OK, payload);
 }

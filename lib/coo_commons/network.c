@@ -283,7 +283,7 @@ static int apply_active_config(struct net_if *iface)
 	}
 
 #if defined(CONFIG_NET_DHCPV4)
-	if (active_cfg.try_dhcp_first && network_feature_dhcp_enabled()) {
+	if (active_cfg.try_dhcp_first) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
 			return 0;
@@ -313,7 +313,7 @@ static int apply_active_config(struct net_if *iface)
 	}
 
 #if defined(CONFIG_NET_DHCPV4)
-	if (!active_cfg.try_dhcp_first && network_feature_dhcp_enabled()) {
+	if (!active_cfg.try_dhcp_first) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
 			return 0;
@@ -331,7 +331,11 @@ void network_config_defaults(struct network_config *cfg)
 	}
 
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->try_dhcp_first = IS_ENABLED(CONFIG_NET_DHCPV4);
+#if defined(CONFIG_NET_DHCPV4)
+	cfg->try_dhcp_first = true;
+#else
+	cfg->try_dhcp_first = false;
+#endif
 	cfg->prefer_dhcp_dns = true;
 	cfg->prefer_dhcp_ntp = true;
 	cfg->enable_fallback_profile = true;
@@ -368,14 +372,6 @@ void network_config_defaults(struct network_config *cfg)
 		CONFIG_NETWORK_HELPER_FALLBACK_IPV4_NETMASK);
 	str_set(cfg->fallback_profile.gateway, sizeof(cfg->fallback_profile.gateway),
 		CONFIG_NETWORK_HELPER_FALLBACK_IPV4_GW);
-
-#if defined(CONFIG_NET_DHCPV4)
-	if (!network_feature_dhcp_enabled()) {
-		cfg->try_dhcp_first = false;
-	}
-#else
-	cfg->try_dhcp_first = false;
-#endif
 }
 
 int network_get_ipv4_info(struct network_ipv4_info *out)
@@ -577,31 +573,4 @@ const char *network_ipv4_source_str(enum network_ipv4_source source)
 	default:
 		return "unknown";
 	}
-}
-
-bool network_feature_dhcp_enabled(void)
-{
-#if defined(CONFIG_NET_DHCPV4)
-	return true;
-#else
-	return false;
-#endif
-}
-
-bool network_feature_dns_enabled(void)
-{
-#if defined(CONFIG_DNS_RESOLVER)
-	return true;
-#else
-	return false;
-#endif
-}
-
-bool network_feature_ntp_enabled(void)
-{
-#if defined(CONFIG_SNTP)
-	return true;
-#else
-	return false;
-#endif
 }

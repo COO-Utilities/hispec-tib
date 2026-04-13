@@ -102,13 +102,6 @@ int network_get_active_config(struct network_config *out);
 const char *network_ipv4_source_str(enum network_ipv4_source source);
 
 /**
- * @brief Whether DHCP/DNS/NTP support is compiled in this helper.
- */
-bool network_feature_dhcp_enabled(void);
-bool network_feature_dns_enabled(void);
-bool network_feature_ntp_enabled(void);
-
-/**
  * @brief Log MAC address of default interface.
  */
 void network_log_mac_addr(void);

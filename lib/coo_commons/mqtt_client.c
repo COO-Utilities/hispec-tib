@@ -50,6 +50,11 @@ static int resolve_broker_addr(void)
 	struct sockaddr_in *broker4;
 	struct zsock_addrinfo *result = NULL;
 	struct in_addr numeric_addr = { 0 };
+#if defined(CONFIG_DNS_RESOLVER)
+	const bool dns_supported = true;
+#else
+	const bool dns_supported = false;
+#endif
 	const struct zsock_addrinfo hints = {
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM
@@ -71,7 +76,7 @@ static int resolve_broker_addr(void)
 		goto log_addr;
 	}
 
-	if (!IS_ENABLED(CONFIG_DNS_RESOLVER)) {
+	if (!dns_supported) {
 		LOG_ERR("Broker '%s' is not numeric IPv4 and DNS_RESOLVER is disabled",
 			active_broker_cfg.host);
 		return -ENOTSUP;

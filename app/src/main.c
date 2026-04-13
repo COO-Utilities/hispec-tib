@@ -24,6 +24,7 @@
 #include "command.h"
 #include "devices.h"
 #include "photodiode.h"
+#include "sntp_sync.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
@@ -75,6 +76,11 @@ static void serial_refresh_network_holdoff(void)
 static void load_network_config(struct network_config *cfg)
 {
 	struct app_ip_settings ip_cfg = {0};
+#if defined(CONFIG_NET_DHCPV4)
+	const bool dhcp_supported = true;
+#else
+	const bool dhcp_supported = false;
+#endif
 
 	if (cfg == NULL) {
 		return;
@@ -83,7 +89,7 @@ static void load_network_config(struct network_config *cfg)
 	network_config_defaults(cfg);
 	app_settings_get_ip(&ip_cfg);
 
-	cfg->try_dhcp_first = ip_cfg.try_dhcp_first && network_feature_dhcp_enabled();
+	cfg->try_dhcp_first = ip_cfg.try_dhcp_first && dhcp_supported;
 	cfg->prefer_dhcp_dns = ip_cfg.prefer_dhcp_dns;
 	cfg->prefer_dhcp_ntp = ip_cfg.prefer_dhcp_ntp;
 
@@ -411,6 +417,9 @@ static void photodiode_publish_handler(struct k_work *work)
 static void network_event_handler(bool connected)
 {
 	LOG_INF("Network event: %s", connected ? "connected" : "disconnected");
+#if defined(CONFIG_SNTP)
+	if (connected) sntp_sync_schedule_now();
+#endif
 }
 
 static int publish_outmsg(const struct OutMsg *out)
@@ -499,6 +508,8 @@ int main(void)
 
 	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
 	k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
+
+	sntp_sync_init();
 
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);

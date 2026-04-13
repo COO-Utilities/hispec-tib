@@ -18,6 +18,7 @@ target_sources(app PRIVATE
         src/maiman.c
         src/photodiode.c
         src/mems_switching.c
+        src/sntp_sync.c
         src/attenuator.h
         src/app_settings.h
         src/command.h
@@ -26,4 +27,5 @@ target_sources(app PRIVATE
         src/laser_properties.h
         src/photodiode.h
         src/mems_switching.h
+        src/sntp_sync.h
 )
