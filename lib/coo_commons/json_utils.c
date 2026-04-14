@@ -169,6 +169,29 @@ int coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
 	return rc;
 }
 
+int coo_json_extract_float(const char *json, const char *key, float *value)
+{
+	struct json_float_field {
+		float value;
+	} parsed = { 0 };
+	int rc;
+
+	if (value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	rc = find_json_key_value(json, key,
+				 JSON_TOK_NUMBER,
+				 &parsed,
+				 sizeof(parsed.value),
+				 offsetof(struct json_float_field, value),
+				 Z_ALIGN_SHIFT(struct json_float_field));
+	if (rc == COO_JSON_EXTRACT_OK) {
+		*value = parsed.value;
+	}
+	return rc;
+}
+
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)
 {
 	if (out == NULL || out_len == 0U) {

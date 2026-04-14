@@ -5,6 +5,7 @@
 #include "command.h"
 // #include "devices.h"
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -41,10 +42,6 @@ extern const struct gpio_dt_spec power_gpio;
 extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
-
-struct json_value_string {
-    char value[MEMS_SWITCH_NAME_LEN];
-};
 
 struct json_value_uint16 {
     uint16_t value;
@@ -753,7 +750,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
 
 struct OutMsg memsroute_set(const struct Command *cmd) {
 
-    // Parse { "value": [input_string, output_string] }
+    // Parse {"input":"...","output":"..."}
     struct mems_route_id route_id = {0};
     struct json_obj_descr d[] = {
         JSON_OBJ_DESCR_PRIM(struct mems_route_id, input, JSON_TOK_STRING),
@@ -778,7 +775,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
             return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
         }
 
-        rc = mems_switch_set_state(sw, step->state);
+        rc = mems_switch_set_state(sw, step->state, 0,0);
 
         if (rc != 0) {
             char payload[MAX_PAYLOAD_LEN]={0};
@@ -793,6 +790,36 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
 }
 
 
+static void mems_format_state(const struct mems_switch_status *status, char *out, size_t out_len)
+{
+    if (status->state == 'A' || status->state == 'B') {
+        snprintk(out, out_len, status->state_known_this_boot ? "%c": "%c?", status->state);
+        return;
+    }
+
+    snprintk(out, out_len, "?");
+}
+
+
+static struct OutMsg mems_response_for_switch(const struct Command *cmd, const struct mems_switch *sw)
+{
+    struct mems_switch_status status = {0};
+    char state_buf[4] = {0};
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    mems_switch_get_status(sw, &status);
+    mems_format_state(&status, state_buf, sizeof(state_buf));
+
+    snprintk(payload, sizeof(payload),
+             "{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
+             state_buf,
+             (double)status.duty_cycle,
+             (double)status.toggle_rate_hz,
+             status.stopafter_s);
+
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
 
 struct OutMsg mems_get(const struct Command *cmd) {
 
@@ -800,19 +827,25 @@ struct OutMsg mems_get(const struct Command *cmd) {
     if (strcmp(cmd->key, "mems") == 0) {
         char payload[MAX_PAYLOAD_LEN] = {0};
         size_t off = 0;
+        struct mems_switch_status status = {0};
+        char state_buf[4] = {0};
 
         off += snprintk(payload + off, sizeof(payload) - off, "{");
         for (uint8_t i = 0; i < router.num_switches; ++i) {
-            char state = 'U';
-
+            //TODO this for loop likely exceeds maximum buffer
             if (i > 0U) {
                 off += snprintk(payload + off, sizeof(payload) - off, ",");
             }
 
-            (void)mems_switch_get_state(router.switches[i], &state);
+            mems_switch_get_status(router.switches[i], &status);
+            mems_format_state(&status, state_buf, sizeof(state_buf));
             off += snprintk(payload + off, sizeof(payload) - off,
-                            "\"%s\":\"%c\"",
-                            router.switches[i]->name, state);
+                            "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
+                            router.switches[i]->name,
+                            state_buf,
+                            (double)status.duty_cycle,
+                            (double)status.toggle_rate_hz,
+                            status.stopafter_s);
         }
         snprintk(payload + off, sizeof(payload) - off, "}");
         return _msg_builder(cmd, RESP_OK, payload);
@@ -829,29 +862,61 @@ struct OutMsg mems_get(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid switch name\"}");
     }
 
-    char state;
-    mems_switch_get_state(sw, &state);
-
-    char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"value\":\"%c\"}", state);
-    return _msg_builder(cmd, RESP_OK, payload);
+    return mems_response_for_switch(cmd, sw);
 }
 
 
 struct OutMsg mems_set(const struct Command *cmd) {
+    char requested_state[8] = {0};
+    float duty_cycle = 0.0f;
+    float stopafter_s = 0.0f;
+    uint32_t stopafter_s_u32 = 0U;
+    bool has_duty_cycle = false;
+    bool has_stopafter_s = false;
+    int parse_rc;
+    int rc;
 
     char name[16], mems_switch[16];
     if  (parse_key_pair(cmd->key, name, 15, mems_switch, 15)!=0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse mems switch name\"}");
     }
 
-    // Parse { "value": "" }
-    struct json_value_string in_data = {0};
-    struct json_obj_descr d[] = {
-        JSON_OBJ_DESCR_PRIM(struct json_value_string, value, JSON_TOK_STRING),
-    };
-    if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d, ARRAY_SIZE(d), &in_data) < 0) {
+    parse_rc = coo_json_extract_string(cmd->payload, "state", requested_state, sizeof(requested_state));
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Missing state\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR || requested_state[0] == '\0' || requested_state[1] != '\0') {
         return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Failed to parse switch state\"}");
+    }
+
+    requested_state[0] = (char)toupper((unsigned char)requested_state[0]);
+    if (requested_state[0] != 'A' && requested_state[0] != 'B') {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid switch state\"}");
+    }
+
+    parse_rc = coo_json_extract_float(cmd->payload, "duty_cycle", &duty_cycle);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid duty_cycle\"}");
+    }
+    has_duty_cycle = (parse_rc == COO_JSON_EXTRACT_OK);
+
+    parse_rc = coo_json_extract_float(cmd->payload, "stopafter_s", &stopafter_s);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid stopafter_s\"}");
+    }
+    has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
+
+    if (has_duty_cycle && requested_state[0] == 'B') {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"duty_cycle only valid with state A\"}");
+    }
+    if (has_stopafter_s) {
+        if (stopafter_s < 0.0f || stopafter_s > (float)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"stopafter_s out of range\"}");
+        }
+        stopafter_s_u32 = (uint32_t)(stopafter_s + 0.5f);
+        if (stopafter_s_u32 == 0U && duty_cycle > 0.0f && duty_cycle < 1.0f) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"stopafter_s must be > 0 for toggling\"}");
+        }
     }
 
     struct mems_switch *sw = mems_router_find_switch(&router, mems_switch);
@@ -860,11 +925,20 @@ struct OutMsg mems_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid switch name\"}");
     }
 
-    if (mems_switch_set_state(sw, in_data.value[0])!=0) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid switch state\"}");
+    if (has_duty_cycle) {
+        rc = mems_switch_set_state(sw, requested_state[0], duty_cycle, stopafter_s_u32);
+    } else {
+        rc = mems_switch_set_state(sw, requested_state[0], 0, 0);
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
+    if (rc == -ERANGE) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"MEMS setting out of range\"}");
+    }
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid MEMS setting\"}");
+    }
+
+    return mems_response_for_switch(cmd, sw);
 }
 
 struct OutMsg laser_setting_get(const struct Command *cmd) {

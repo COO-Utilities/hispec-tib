@@ -33,6 +33,7 @@ bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_ou
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
+int coo_json_extract_float(const char *json, const char *key, float *value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 
 #endif /* APP_LIB_JSON_UTILS_H_ */

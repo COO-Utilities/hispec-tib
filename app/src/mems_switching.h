@@ -10,15 +10,21 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <stdbool.h>
 #include <stdint.h>
 #define MEMS_SOURCEDEST_MAX_LEN 24
-#define MEMS_SWITCH_PULSE_DELAY_MS 2
+#define MEMS_SWITCH_ELECTRICAL_PULSE_MS 2U
 #define MEMS_SWITCH_NAME_LEN 24
 #define MEMS_ROUTER_MAX_SWITCHES 8
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=18, CAL=12, AS=2
 #define MEMS_ROUTER_MAX_ROUTE_PATH 5 // cal has 5 deep
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
+#define MEMS_SWITCH_MAX_TOGGLE_HZ 50.0f
+#define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
+
+struct mems_router;
 
 
 // -----------------------
@@ -26,10 +32,33 @@
 // -----------------------
 struct mems_switch {
     const struct device *gpio_dev;
+    //todo shouldn't these pins be constant?
     gpio_pin_t pin_a;
     gpio_pin_t pin_b;
     char state; // 'A', 'B', or 'U'
+    //todo the target state isn't necessary, if toggling we switch states, if not we change if the configured state doesn't match
+    char target_state; // desired state applied by toggler on next tick
+    char configured_state; // route/effective-command state: 'A'/'B'/'T'/'U'
+    bool state_known_this_boot;
+    float duty_cycle;
+    //TODO these names are VERY confusing to the uninitiated and suggest significat redundancy. Refactor
+    float toggle_rate_hz; // active attained rate; zero means static mode, can't we axe this and use the duty cycle
+    float switching_frequency_hz; // compile-time quantized attained rate
+    uint32_t toggle_period_cycles;
+    uint32_t configured_toggle_period_cycles; //todo how does this differ from toggle_period_cycles?
+    uint32_t a_state_cycles;
+    uint32_t cycles_until_toggle;
+    uint32_t remaining_toggle_cycles; // zero means not toggling
+    struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
+};
+
+struct mems_switch_status {
+    char state;
+    bool state_known_this_boot;
+    float duty_cycle;
+    float toggle_rate_hz;
+    uint16_t stopafter_s;
 };
 
 // -----------------------
@@ -41,8 +70,8 @@ struct mems_route_step {
 };
 
 struct mems_route_id {
-    const char input[MEMS_SOURCEDEST_MAX_LEN];
-    const char output[MEMS_SOURCEDEST_MAX_LEN];
+    char input[MEMS_SOURCEDEST_MAX_LEN];
+    char output[MEMS_SOURCEDEST_MAX_LEN];
 };
 
 struct mems_route_key {
@@ -65,15 +94,21 @@ struct mems_router {
 
     struct mems_route routes[MEMS_ROUTER_MAX_ROUTES];
     uint8_t num_routes;
+    struct k_mutex lock;
+    struct k_work_delayable toggler_work;
 };
 
 // -----------------------
 // Switch Methods
 // -----------------------
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
-                      gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name);
-int mems_switch_set_state(struct mems_switch *sw, char state);
-int mems_switch_get_state(const struct mems_switch *sw, char *out_state);
+                      gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+                      float configured_toggle_rate_hz);
+int mems_switch_set_state(struct mems_switch *sw,
+                          char state,
+                          float duty_cycle,
+                          uint32_t stop_after_s);
+void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
 
 // -----------------------

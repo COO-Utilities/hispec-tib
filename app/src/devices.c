@@ -81,6 +81,11 @@ const gpio_pin_t mems_switch_pin_pairs[8][2] = {
     {8, 9}, {10, 11}, {12, 13}, {14, 15}
 };
 
+/* Per-switch compile-time nominal toggle rates (Hz), quantized in mems_switch_init(). */
+static const float mems_switch_toggle_rate_hz[8] = {
+    10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f, 10.0f
+};
+
 
 bool setup_modbus_client(void) {
 
@@ -123,7 +128,12 @@ void setup_mems_switches_and_routes() {
 
     // Initialize switches and pointer table
     for (int i = 0; i < MEMS_ROUTER_MAX_SWITCHES; ++i) {
-        mems_switch_init(&mems_switches[i], gpio_dev, mems_switch_pin_pairs[i][0], mems_switch_pin_pairs[i][1], switch_names[i]);
+        mems_switch_init(&mems_switches[i],
+                         gpio_dev,
+                         mems_switch_pin_pairs[i][0],
+                         mems_switch_pin_pairs[i][1],
+                         switch_names[i],
+                         mems_switch_toggle_rate_hz[i]);
         mems_switch_ptrs[i] = &mems_switches[i];
     }
 
