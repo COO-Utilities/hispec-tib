@@ -55,6 +55,7 @@ Before making edits understand Zephyr's task structure and device initialization
   - watchdog timer, 
   - network manager, 
   - command dispatcher, 
+  - sNTP
   - MQTT interaction/handler, 
   - MEMS switch pin toggler task (switch modulation and pin pulses)
   - photodiode monitoring / output-power-determination task
@@ -85,13 +86,11 @@ Before making edits understand Zephyr's task structure and device initialization
 
 ## Unstarted work is principally in
 - persistent settings storage,
-- NTP time integration,
-- watchdog timer integration,
 - json/MQTT standardization,
 - power management (diodes & laser),
 - auxiliary heater control,
 - attenuator calibration,
-- and user command coverage.- 
+- and user command coverage.
 - porting more advanced python laser code to maiman driver
 
 ### Other:
@@ -229,17 +228,15 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - gets the active routes via `mems_router_active_routes()`
   - builds a json message payload from them of form {'active_routes': {<input_name>: output_name, ...}}
 - defines `OutMsg memsroute_set(`Command`)
-    - parses command payload JSON of form { "value": [input_string, output_string] } for input and output route names
-      - TODO the parsing here looks suspect.
+    - parses command payload JSON of form `{"input":"<src>","output":"<dst>"}`
     - gets the route via `mems_router_get_route()`
     - walks through route and gets each switch in route with `mems_router_find_switch()` setting each to required state
     - builds response with `_msg_builder()` w/ payload of {'status': 'OK'} on completion or {'error': <error message>} in event of failure
 - defines `OutMsg mems_set(`Command`)
   - parses mems switch name from command key with `parse_key_pair` '<don't care>\<mems_switch_name>'
-  - parses the desired switch state out of {"value": "A"|"B"}
-  - looks for switch with `mems_router_find_switch()` and gets state with `mems_switch_get_state()`
-  - builds response with `_msg_builder()` w/ payload of {"value":"U"|"A"|"B"} or {"error": <errmsg>} 
-    - TODO add 'A?' and 'B?' support
+  - parses desired state from `{"state":"A"|"B"}`
+  - optional `duty_cycle` and `stopafter_s` configure toggling (state A only)
+  - returns switch state as `A|B|A?|B?` plus `duty_cycle`, `toggle_rate_hz`, and `stopafter_s`
 - `OutMsg laser_setting_get(const struct Command *cmd)`
   - parses laser name and setting name from command key with `parse_key_pair` '<laser>\<setting>'
   - gets laser channel with `get_laser_channel()` 
@@ -341,10 +338,12 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
     - make fit and adopt coeff
 
 ### mems_switching.c
-- Implements the mems switch and mems router concepts. routes are a series of switches and required states to connect an input to an output.  Multiple paths are not supported. Multiple active routes are.
+- Implements the mems switch and mems router concepts. routes are a series of switches and required states to connect an input to an output. Multiple paths are not supported. Multiple active routes are.
+- Router owns a fixed-rate toggler task that runs every `MEMS_SWITCH_ELECTRICAL_PULSE_MS`.
 - mems_switch struct
   - gpio device and pin A and B
-  - char state
+  - state fields (actual state, target state, state-known-this-boot)
+  - toggle fields (duty cycle, attained toggle rate, remaining duration)
   - char name[]
 - mems_route structs 
   - mems_route, mems_route_step|id|key
@@ -356,17 +355,16 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - *switches[] - pointers to mems switch structs
   - routs[] - array of routes
   - num_switches & num_routes
-- void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev, 
-                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name)
-  - populate the mems_switch struct with the gpio device and pin numbers, set state to 'U'
-  - configure the gpio pins as inactive outputs, presently `GPIO_OUTPUT_INACTIVE`
-    - TODO this needs to be sourcing, active high as it drives a transistor gate
-  - TODO here or elsewhere (decide in concert with all other things), restore last known state of switches on startup
-  - TODO add flag that state has not been set this if state is restored
+- void mems_switch_init(..., float configured_toggle_rate_hz)
+  - populate switch struct with GPIO pins and quantized per-switch toggle-rate data
+  - configure both GPIO pins inactive on init
 - int mems_switch_set_state(struct mems_switch *sw, char state)
-  - pulse the appropriate pin for state A or B and set the state in the struct
+  - schedules static state A/B for next toggler tick
+- int mems_switch_set_state_with_duty(...)
+  - configures duty-cycle toggling with max-duration enforcement
+  - repeated set with same profile extends remaining duration without resetting phase
 - int mems_switch_get_state(const struct mems_switch *sw, char *out_state)
-  - return by reference a pointer to the present state and return 0 if state is A|B, -1 otherwise (unknown or invalid or the passed pointers are NULL)
+  - returns known state (or target state if not yet known this boot)
 
 - void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches)
   - load the mems_router struct: set the number or routes to zero, num switches, and populate switch pointer array
@@ -383,7 +381,7 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   -  find/return the route from input to output and return a pointer to it (or NULL if not found)
 
 - uint8_t mems_router_active_routes(const struct mems_router *router, struct mems_route_key *out_keys, uint8_t max_keys);
-  - List all routes whose switches are ALL in the expected state.
+  - List all routes whose switches are ALL in the expected configured static state.
   - Returns the number of active routes found, up to max_keys.
   - Each result is a mems_route_key with an (input, output) pair.
 

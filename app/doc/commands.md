@@ -61,19 +61,19 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
 - **Request topic:** `cmd/<device>/req/memsroute`
   - Set:
   ```json
-      {"from": <source>, 
-        "to": <dest>
+      {"input":"<source>",
+        "output":"<dest>"
       }
   ```
   - Query: No payload
 
 - **Response topic:** `cmd/<device>/resp/memsroute`
-  - Set result: `{"status": "success"}`
+  - Set result: `{"status":"OK"}`
   - Query result:
     ```json
-    {"routes": {
-            <source.name>: <dest.name>,
-            "none": [<any dest w/o a source>,...]
+    TODO flip this so it is dest:source and dest that have no source are "no source"
+    {"active_routes": {
+            "<source.name>":"<dest.name>"
       }
     }
      ```
@@ -81,20 +81,39 @@ Each item below is **one request topic** (subscribed by the device) and its **ma
 ### `mems`
 - **Request topic:** `cmd/<device>/req/mems`
   - Query: No payload
-- **Response topic:** `cmd/<device>/resp/mems/<switchname>`
-  - Query result: `{<switchname>: <switchstate>, ...}`
+- **Response topic:** `cmd/<device>/resp/mems/`
+  - Query result:
+    ```json
+    {
+      "<switchname>":{
+        "state":"A|B|A?|B?|?",
+        "duty_cycle":0.0,
+        "toggle_rate_hz":0.0,
+        "stopafter_s":0
+      },
+      ...
+    }
+    ```
+    Note duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling. 
+    TODO this response bloated to likely beyond what is reasonable MQTT 
 
 ### `mems/<switchname>`
 - **Request topic:** `cmd/<device>/req/mems/<switchname>`
   - Query: No payload
-  - Set: `{"state": "A"|"B"|"A"+[0.0-1.0], "stopafter_s":0.0}`
-    - will not accept times longer than 8 hours, rerun within interval if you really need longer
+  - Set:
+    - Static: `{"state":"A"}` or `{"state":"B"}`
+    - Toggle: `{"state":"A","duty_cycle":[0.0-1.0],"stopafter_s":<seconds>}`
+    - `duty_cycle` is only valid with `state:"A"`.
+    - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
+    - `stopafter_s` max is 4 hours
 
 - **Response topic:** `cmd/<device>/resp/mems/<switchname>`
-  - Query result: `{"state": <state>}`
-
-    Where `state` is one of: `"A" | "B" | "A?" | "B?" | "unknown" | A#`, questions mark indicates that the switch has not been set this powerup.
-  - Set result: `{"status": "success"}`
+  - Query/set result:
+    ```json
+    {"state":"A|B|A?|B?","duty_cycle":0.0,"toggle_rate_hz":0.0,"stopafter_s":0}
+    ```
+    `?` suffix means the state has not yet been pulsed this boot, note that on first boot all switches wil be reported as A?
+    duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling. 
 
 
 ### `measure_tput`
