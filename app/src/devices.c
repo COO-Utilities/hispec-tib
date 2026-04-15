@@ -133,7 +133,7 @@ void setup_mems_switches_and_routes() {
                          mems_switch_pin_pairs[i][0],
                          mems_switch_pin_pairs[i][1],
                          switch_names[i],
-                         mems_switch_toggle_rate_hz[i]);
+                         mems_switch_toggle_rate_hz[i], 'A');
         mems_switch_ptrs[i] = &mems_switches[i];
     }
 

@@ -100,7 +100,8 @@ Before making edits understand Zephyr's task structure and device initialization
 
 ## Present Code Structure
 
-### High-Level Architecture:
+Note well that information below this point is not intended to be determinative of future direction, especially where it conflicts with the above of commands.md 
+
 
 | Area                              | Description                                                                                                                                                                     |
 |-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|

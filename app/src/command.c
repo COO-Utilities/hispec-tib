@@ -775,7 +775,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
             return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
         }
 
-        rc = mems_switch_set_state(sw, step->state, 0,0);
+        rc = mems_switch_set_state(sw, step->state, 1,0);
 
         if (rc != 0) {
             char payload[MAX_PAYLOAD_LEN]={0};
@@ -928,7 +928,7 @@ struct OutMsg mems_set(const struct Command *cmd) {
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle, stopafter_s_u32);
     } else {
-        rc = mems_switch_set_state(sw, requested_state[0], 0, 0);
+        rc = mems_switch_set_state(sw, requested_state[0], 1, 0);
     }
 
     if (rc == -ERANGE) {

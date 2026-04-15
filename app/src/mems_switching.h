@@ -35,17 +35,10 @@ struct mems_switch {
     //todo shouldn't these pins be constant?
     gpio_pin_t pin_a;
     gpio_pin_t pin_b;
-    char state; // 'A', 'B', or 'U'
-    //todo the target state isn't necessary, if toggling we switch states, if not we change if the configured state doesn't match
+    char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
-    char configured_state; // route/effective-command state: 'A'/'B'/'T'/'U'
     bool state_known_this_boot;
-    float duty_cycle;
-    //TODO these names are VERY confusing to the uninitiated and suggest significat redundancy. Refactor
-    float toggle_rate_hz; // active attained rate; zero means static mode, can't we axe this and use the duty cycle
-    float switching_frequency_hz; // compile-time quantized attained rate
-    uint32_t toggle_period_cycles;
-    uint32_t configured_toggle_period_cycles; //todo how does this differ from toggle_period_cycles?
+    uint32_t switching_period_cycles; // The switching frequency
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
@@ -103,11 +96,9 @@ struct mems_router {
 // -----------------------
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
-                      float configured_toggle_rate_hz);
-int mems_switch_set_state(struct mems_switch *sw,
-                          char state,
-                          float duty_cycle,
-                          uint32_t stop_after_s);
+                      float configured_toggle_rate_hz, char initial_state);
+int mems_switch_set_state(struct mems_switch *sw, char state,
+                          float duty_cycle, uint32_t stop_after_s);
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
 

@@ -80,46 +80,22 @@ static struct mems_switch *mems_router_find_switch_unlocked(const struct mems_ro
 
 static void mems_switch_set_static_locked(struct mems_switch *sw, char state)
 {
-    sw->target_state = state;
-    sw->configured_state = state;
-    sw->duty_cycle = (state == 'A') ? 1.0f : 0.0f;
-    sw->toggle_rate_hz = 0.0f;
-    sw->toggle_period_cycles = 0U;
-    sw->a_state_cycles = 0U;
+    sw->target_state = state;;
+    sw->a_state_cycles = (state == 'A') ? sw->switching_period_cycles : 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
 }
 
 static void mems_switch_stop_toggling_locked(struct mems_switch *sw)
 {
-    sw->toggle_rate_hz = 0.0f;
-    sw->toggle_period_cycles = 0U;
-    sw->a_state_cycles = 0U;
+    sw->target_state=sw->state;
+    sw->a_state_cycles = (sw->state == 'A') ? sw->switching_period_cycles : 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
-
-
-    // TODO this is undocumented yet appears to contain vital state machine assumptions
-    //  if we are stopping toggle then we've either been through at least one cycle and so state is known and A or B
-    //  or the impossible happened and we were commanded to stop before even on cycle...in which case we could fairly activate whatever state we want.
-    //  so when we kick off toggling we immediately set the pin state and free ourselves from this nonsense.
-    if (sw->state_known_this_boot && (sw->state == 'A' || sw->state == 'B')) {
-        sw->target_state = sw->state;
-    }
-
-    if (sw->target_state == 'A' || sw->target_state == 'B') {
-        sw->configured_state = sw->target_state;
-        sw->duty_cycle = (sw->target_state == 'A') ? 1.0f : 0.0f;
-    } else {
-        sw->configured_state = 'U';
-        sw->duty_cycle = 0.0f;
-    }
 }
 
-static int mems_switch_set_state_internal(struct mems_switch *sw,
-                                 char state,
-                                 float duty_cycle,
-                                 uint32_t stop_after_s)
+static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
+                                          float duty_cycle, uint32_t stop_after_s)
 {
     struct mems_router *router;
     uint32_t period_cycles;
@@ -135,7 +111,8 @@ static int mems_switch_set_state_internal(struct mems_switch *sw,
     }
 
     if (duty_cycle!=0.0f && state != 'A') {
-        return -EINVAL;
+        duty_cycle = 1.0f - duty_cycle;
+        state='A';
     }
 
     if (duty_cycle < 0.0f || duty_cycle > 1.0f || stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
@@ -148,12 +125,11 @@ static int mems_switch_set_state_internal(struct mems_switch *sw,
         locked = true;
     }
 
-    period_cycles = sw->configured_toggle_period_cycles;
+    period_cycles = sw->switching_period_cycles;
     uint32_t a_cycles = (uint32_t)(duty_cycle * (float)period_cycles + 0.5f);
     if (a_cycles > period_cycles) {
         a_cycles = period_cycles;
     }
-    duty_cycle = (float)a_cycles / (float)period_cycles;
 
     if (a_cycles == 0U) {
         mems_switch_set_static_locked(sw, 'B');
@@ -171,27 +147,18 @@ static int mems_switch_set_state_internal(struct mems_switch *sw,
         return 0;
     }
 
+    // We are in a switching mode
+
     uint32_t requested_duration_s = stop_after_s;
     if (requested_duration_s == 0U) {
         requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
     }
-    uint32_t requested_duration_cycles = seconds_to_cycles(requested_duration_s);
     bool same_profile = (sw->remaining_toggle_cycles > 0U) &&
-                        (sw->toggle_period_cycles == period_cycles) &&
                         (sw->a_state_cycles == a_cycles);
 
-    sw->configured_state = 'T'; //TODO I'm inclined that this should be A with a dutycycle
-    sw->duty_cycle = duty_cycle;
-
-    if (same_profile) {
-        if (requested_duration_cycles > sw->remaining_toggle_cycles) {
-            sw->remaining_toggle_cycles = requested_duration_cycles;
-        }
-    } else {
-        sw->toggle_period_cycles = period_cycles;
-        sw->toggle_rate_hz = sw->switching_frequency_hz;  //TODO why are there two, what does this distinction achieve. Also toggle_rate_hz and toggle_period_cycles are prima facie redundant, not good additional complexity to cary
+    sw->remaining_toggle_cycles = seconds_to_cycles(requested_duration_s);
+    if (!same_profile) {
         sw->a_state_cycles = a_cycles;
-        sw->remaining_toggle_cycles = requested_duration_cycles;
         sw->target_state = 'A';
         sw->cycles_until_toggle = a_cycles;
     }
@@ -204,14 +171,9 @@ static int mems_switch_set_state_internal(struct mems_switch *sw,
 
 static void mems_switch_tick_locked(struct mems_switch *sw)
 {
-    const bool toggling = (sw->remaining_toggle_cycles > 0U) &&
-                          (sw->toggle_rate_hz > 0.0f) &&
-                          (sw->a_state_cycles > 0U) &&
-                          (sw->a_state_cycles < sw->toggle_period_cycles); //TODO this last seems like something that should be a don't care
+    const bool toggling = (sw->remaining_toggle_cycles > 0U);
 
-    //TODO clean up this conditional, target_state should only ever be A | B, if that isn't the case then we've got problems elsewhere.
-    if ((sw->target_state == 'A' || sw->target_state == 'B') &&
-        (!sw->state_known_this_boot || sw->state != sw->target_state)) {
+    if ((!sw->state_known_this_boot || sw->state != sw->target_state)) {
 
         gpio_pin_t pin = (sw->target_state == 'A') ? sw->pin_a : sw->pin_b;
 
@@ -245,7 +207,7 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
         if (sw->target_state == 'A') {
             next_cycles = sw->a_state_cycles;
         } else {
-            next_cycles = sw->toggle_period_cycles - sw->a_state_cycles;
+            next_cycles = sw->switching_period_cycles - sw->a_state_cycles;
         }
 
         if (next_cycles == 0U) {
@@ -264,6 +226,7 @@ static void mems_router_toggler_work_handler(struct k_work *work)
 
     k_mutex_lock(&router->lock, K_FOREVER);
 
+    //TODO this is quite a bit of unnecessary I2C bus activity, at most half of these will be high
     for (uint8_t i = 0; i < router->num_switches; ++i) {
         struct mems_switch *sw = router->switches[i];
         (void)gpio_pin_set(sw->gpio_dev, sw->pin_a, 0);
@@ -285,28 +248,20 @@ static void mems_router_toggler_work_handler(struct k_work *work)
 
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
-                      float switching_frequency_hz)
+                      float switching_frequency_hz, char initial_state)
 {
-    uint32_t configured_period_cycles;
 
     sw->gpio_dev = gpio_dev;
     sw->pin_a = pin_a;
     sw->pin_b = pin_b;
-    sw->state = 'U';
-    sw->target_state = 'U';
-    sw->configured_state = 'U';
+    sw->state = toupper(initial_state)=='A'? 'A': 'B';
+    sw->target_state = sw->state;
     sw->state_known_this_boot = false;
     sw->owner = NULL;
-    sw->duty_cycle = 0.0f;
-    sw->toggle_rate_hz = 0.0f;
-    sw->toggle_period_cycles = 0U;
     sw->a_state_cycles = 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
-
-    configured_period_cycles = quantize_toggle_period_cycles(switching_frequency_hz);
-    sw->configured_toggle_period_cycles = configured_period_cycles;
-    sw->switching_frequency_hz = attained_toggle_rate_hz(configured_period_cycles);
+    sw->switching_period_cycles = quantize_toggle_period_cycles(switching_frequency_hz);
 
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
@@ -321,7 +276,7 @@ int mems_switch_set_state(struct mems_switch *sw,
                                     float duty_cycle,
                                     uint32_t stop_after_s)
 {
-    // todo is this static/nonstatic needed?!?
+    // todo is this static/nonstatic nesting needed?
     return mems_switch_set_state_internal(sw, state, duty_cycle, stop_after_s);
 }
 
@@ -338,13 +293,13 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
         k_mutex_lock(&sw->owner->lock, K_FOREVER);
     }
 
-    out->state = sw->state;
+    out->state = sw->remaining_toggle_cycles>0 ? 'A': sw->state;
     out->state_known_this_boot = sw->state_known_this_boot;
-    out->duty_cycle = sw->duty_cycle;
-    out->toggle_rate_hz = sw->toggle_rate_hz;
+    out->duty_cycle = (float)sw->a_state_cycles / (float)sw->switching_period_cycles; //actual attained duty cycle
+    out->toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
 
     if (sw->remaining_toggle_cycles!=0) {
-        out->stopafter_s = ((sw->remaining_toggle_cycles+999U) * MEMS_SWITCH_ELECTRICAL_PULSE_MS)/ 1000U;
+        out->stopafter_s = (sw->remaining_toggle_cycles * MEMS_SWITCH_ELECTRICAL_PULSE_MS + 999U)/ 1000U;
     }
 
     if (sw->owner != NULL) {
@@ -376,10 +331,10 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
 
 struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name)
 {
-    //todo what is this mess? why, this nesting is cryptic and unapproachable. an unexplained stripping of static
+    //todo Why not just make mems_router_find_switch_unlocked a non-static function. This nesting is cryptic and unapproachable to maintainers coming from python
+    // and should be documented
     return mems_router_find_switch_unlocked(router, name);
 }
-
 
 
 int mems_router_define_route(struct mems_router *router,
@@ -430,7 +385,7 @@ uint8_t mems_router_active_routes(const struct mems_router *router,
         for (uint8_t j = 0; j < route->num_steps; ++j) {
             const struct mems_route_step *step = &route->steps[j];
             struct mems_switch *sw = mems_router_find_switch_unlocked(router, step->switch_name);
-            if (!sw || sw->configured_state != step->state) {
+            if (!sw || sw->state != step->state || sw->remaining_toggle_cycles>0) {
                 match = false;
                 break;
             }
