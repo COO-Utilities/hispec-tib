@@ -827,27 +827,43 @@ struct OutMsg mems_get(const struct Command *cmd) {
     if (strcmp(cmd->key, "mems") == 0) {
         char payload[MAX_PAYLOAD_LEN] = {0};
         size_t off = 0;
+        int written;
         struct mems_switch_status status = {0};
         char state_buf[4] = {0};
 
-        off += snprintk(payload + off, sizeof(payload) - off, "{");
+        written = snprintk(payload + off, sizeof(payload) - off, "{");
+        off += (size_t)written;
+
         for (uint8_t i = 0; i < router.num_switches; ++i) {
-            //TODO this for loop likely exceeds maximum buffer
             if (i > 0U) {
-                off += snprintk(payload + off, sizeof(payload) - off, ",");
+                written = snprintk(payload + off, sizeof(payload) - off, ",");
+                if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+                    return _msg_builder(cmd, RESP_ERROR,
+                                        "{\"error\":\"mems response too large; query mems/<switchname>\"}");
+                }
+                off += (size_t)written;
             }
 
             mems_switch_get_status(router.switches[i], &status);
             mems_format_state(&status, state_buf, sizeof(state_buf));
-            off += snprintk(payload + off, sizeof(payload) - off,
-                            "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
-                            router.switches[i]->name,
-                            state_buf,
-                            (double)status.duty_cycle,
-                            (double)status.toggle_rate_hz,
-                            status.stopafter_s);
+            written = snprintk(payload + off, sizeof(payload) - off,
+                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
+                               router.switches[i]->name,
+                               state_buf,
+                               (double)status.duty_cycle,
+                               (double)status.toggle_rate_hz,
+                               status.stopafter_s);
+            if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+                return _msg_builder(cmd, RESP_ERROR,
+                                    "{\"error\":\"mems response too large; query mems/<switchname>\"}");
+            }
+            off += (size_t)written;
         }
-        snprintk(payload + off, sizeof(payload) - off, "}");
+
+        written = snprintk(payload + off, sizeof(payload) - off, "}");
+        if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"mems response too large\"}");
+        }
         return _msg_builder(cmd, RESP_OK, payload);
     }
 
