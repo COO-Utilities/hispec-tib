@@ -79,6 +79,14 @@
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
 		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+
+		ds2408_pd_power: ds2408-pd-power {
+			compatible = "maxim,ds2408";
+			status = "okay";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <8>;
+		};
 	};
 
 	/* 1-Wire bus for DS18B20 temperature sensor (CN9 D64 / PG1). */

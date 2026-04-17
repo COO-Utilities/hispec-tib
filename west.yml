@@ -25,3 +25,8 @@ manifest:
       url: https://github.com/marcrickenbach/dac7578
       revision: main
       path: modules/dac/dac7578
+    # Out-of-tree DS2408 1-Wire GPIO driver (enable once repo exists)
+    # - name: ds2408
+    #   url: <your ds2408 repo url>
+    #   revision: main
+    #   path: modules/gpio/ds2408
