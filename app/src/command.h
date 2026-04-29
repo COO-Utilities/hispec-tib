@@ -91,6 +91,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd);
 struct OutMsg atten_setting_set(const struct Command *cmd);
 
 struct OutMsg status_get(const struct Command *cmd);
+struct OutMsg temp_get(const struct Command *cmd);
 
 struct OutMsg sleep_set(const struct Command *cmd);
 
@@ -101,6 +102,26 @@ struct OutMsg unknown_response(const struct Command *cmd);
 struct OutMsg unsupported_response(const struct Command *cmd);
 struct OutMsg busy_response(const struct Command *cmd);
 struct OutMsg dispatch_command(const struct Command *cmd);
+
+/* Executor task: consumes inbound_queue and publishes one response to outbound_queue. */
+void command_executor_thread(void *p1, void *p2, void *p3);
+
+/* Serial task: polls the console UART passed in p1 and queues complete command lines. */
+void command_serial_thread(void *p1, void *p2, void *p3);
+
+/* MQTT receive callback: copies topic/payload/properties into a queued Command. */
+void command_handle_mqtt_publish(const struct mqtt_publish_param *pub);
+
+/* Extend the serial-command holdoff window that temporarily disconnects MQTT control. */
+void command_serial_note_activity(void);
+
+bool command_network_mqtt_allowed(void);
+
+/* Parse a mutable serial command line into a queued Command. */
+void command_parse_serial_line(char *line);
+
+/* Drain queued serial/MQTT responses; MQTT messages are retried when publish fails. */
+void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available);
 
 
 extern struct k_msgq inbound_queue;

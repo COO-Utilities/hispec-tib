@@ -24,6 +24,8 @@ target_sources(app PRIVATE
         src/devices.c
         src/maiman.c
         src/photodiode.c
+        src/tempsense.c
+        src/tempsense.h
         src/mems_switching.c
         src/sntp_sync.c
         src/attenuator.h

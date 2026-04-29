@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/util.h>
 #include <app_version.h>
@@ -21,9 +22,18 @@
 #include "maiman.h"
 #include "mems_switching.h"
 #include "sntp_sync.h"
+#include "tempsense.h"
 #include <coo_commons/json_utils.h>
 #include <coo_commons/network.h>
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
+
+#define MQTT_DEVICE_ID "hsfib-tib"
+#define MQTT_CMD_PREFIX "cmd/" MQTT_DEVICE_ID "/req/"
+#define MQTT_RESP_PREFIX "cmd/" MQTT_DEVICE_ID "/resp/"
+#define SERIAL_LINE_MAX 220
+
+static uint16_t mqtt_msg_id = 1;
+static volatile int64_t serial_network_ignore_until_ms;
 
 
 /* one command at a time */
@@ -77,6 +87,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "laser",      laser_setting_get,laser_setting_set},
     { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
+    { "temp",       temp_get,         NULL             },
     { "status",     status_get,       NULL  },
     { "sleep",      NULL,  sleep_set  }, // GET only
     //todo add reset for system
@@ -205,6 +216,301 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     return r;
 }
 
+static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
+{
+    if (topic == NULL || out == NULL || topic->size == 0U || topic->size >= out_len) {
+        return false;
+    }
+
+    memcpy(out, topic->utf8, topic->size);
+    out[topic->size] = '\0';
+    return true;
+}
+
+static bool derive_default_response_topic(const char *key, char *topic_out, size_t topic_out_len)
+{
+    const int n = snprintk(topic_out, topic_out_len, "%s%s", MQTT_RESP_PREFIX, key);
+
+    return n > 0 && n < (int)topic_out_len;
+}
+
+static void enqueue_serial_error(const char *msg)
+{
+    struct OutMsg out = {0};
+
+    out.target = OUT_TARGET_SERIAL;
+    out.msg_type = RESP_ERROR;
+    out.payload_len = snprintk(out.payload, sizeof(out.payload),
+                               "{\"status\":\"error\",\"msg\":\"%s\"}", msg);
+    (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
+}
+
+void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
+{
+    struct Command cmd = {0};
+    char req_topic[MAX_TOPIC_LEN];
+    const char *suffix;
+    size_t prefix_len;
+    size_t suffix_len;
+
+    if (pub == NULL || !copy_topic(&pub->message.topic.topic, req_topic, sizeof(req_topic))) {
+        return;
+    }
+
+    prefix_len = strlen(MQTT_CMD_PREFIX);
+    if (strncmp(req_topic, MQTT_CMD_PREFIX, prefix_len) != 0) {
+        return;
+    }
+
+    suffix = req_topic + prefix_len;
+    suffix_len = strlen(suffix);
+    if (suffix_len == 0U || suffix_len >= sizeof(cmd.key)) {
+        LOG_WRN("Invalid MQTT command topic suffix");
+        return;
+    }
+
+    cmd.source = CMD_SRC_MQTT;
+    memcpy(cmd.key, suffix, suffix_len);
+    cmd.key[suffix_len] = '\0';
+
+    if (pub->message.payload.len >= MAX_PAYLOAD_LEN) {
+        struct OutMsg r = invalid_command_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        return;
+    }
+
+    if (pub->message.payload.len > 0U) {
+        memcpy(cmd.payload, pub->message.payload.data, pub->message.payload.len);
+        cmd.payload[pub->message.payload.len] = '\0';
+        cmd.payload_len = pub->message.payload.len;
+        if (!parse_msg_type_from_payload(cmd.payload, &cmd.msg_type)) {
+            cmd.msg_type = MSG_SET;
+        }
+    } else {
+        cmd.msg_type = MSG_GET;
+        snprintk(cmd.payload, sizeof(cmd.payload), "{}");
+        cmd.payload_len = strlen(cmd.payload);
+    }
+
+    if (pub->prop.response_topic.utf8 != NULL &&
+        pub->prop.response_topic.size > 0U &&
+        pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
+        memcpy(cmd.response_topic, pub->prop.response_topic.utf8, pub->prop.response_topic.size);
+        cmd.response_topic[pub->prop.response_topic.size] = '\0';
+    } else if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
+        struct OutMsg r = invalid_command_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        return;
+    }
+
+    if (pub->prop.correlation_data.len > 0U &&
+        pub->prop.correlation_data.len <= sizeof(cmd.correlation_data)) {
+        memcpy(cmd.correlation_data,
+               pub->prop.correlation_data.data,
+               pub->prop.correlation_data.len);
+        cmd.corr_len = pub->prop.correlation_data.len;
+    }
+
+    if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
+        struct OutMsg r = busy_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+    }
+}
+
+void command_serial_note_activity(void)
+{
+    const uint32_t holdoff_s = app_settings_get_serial_holdoff_s();
+    serial_network_ignore_until_ms = k_uptime_get() + ((int64_t)holdoff_s * 1000LL);
+}
+
+bool command_network_mqtt_allowed(void)
+{
+    return k_uptime_get() >= serial_network_ignore_until_ms;
+}
+
+void command_parse_serial_line(char *line)
+{
+    struct Command cmd = {0};
+    char *cursor = line;
+    char *op;
+    char *key;
+    char *payload = NULL;
+    char *sep;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+
+    if (*cursor == '\0') {
+        return;
+    }
+
+    command_serial_note_activity();
+
+    sep = strpbrk(cursor, " \t");
+    if (sep == NULL) {
+        op = cursor;
+        key = cursor;
+        cmd.msg_type = MSG_GET;
+    } else {
+        *sep = '\0';
+        op = cursor;
+        cursor = sep + 1;
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+
+        if (strcasecmp(op, "get") == 0 || strcasecmp(op, "set") == 0) {
+            key = cursor;
+            sep = strpbrk(cursor, " \t");
+            if (sep != NULL) {
+                *sep = '\0';
+                payload = sep + 1;
+                while (payload && (*payload == ' ' || *payload == '\t')) {
+                    payload++;
+                }
+            }
+            cmd.msg_type = (strcasecmp(op, "set") == 0) ? MSG_SET : MSG_GET;
+        } else {
+            key = op;
+            payload = cursor;
+            cmd.msg_type = (*payload == '\0') ? MSG_GET : MSG_SET;
+        }
+    }
+
+    if (key == NULL || *key == '\0') {
+        enqueue_serial_error("missing command key");
+        return;
+    }
+
+    cmd.source = CMD_SRC_SERIAL;
+    strncpy(cmd.key, key, sizeof(cmd.key) - 1);
+    cmd.key[sizeof(cmd.key) - 1] = '\0';
+
+    if (payload == NULL || *payload == '\0') {
+        snprintk(cmd.payload, sizeof(cmd.payload), "{}");
+        cmd.payload_len = strlen(cmd.payload);
+    } else {
+        if (strlen(payload) >= sizeof(cmd.payload)) {
+            enqueue_serial_error("serial payload too large");
+            return;
+        }
+        strncpy(cmd.payload, payload, sizeof(cmd.payload) - 1);
+        cmd.payload[sizeof(cmd.payload) - 1] = '\0';
+        cmd.payload_len = strlen(cmd.payload);
+    }
+
+    if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
+        struct OutMsg r = busy_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+    }
+}
+
+void command_executor_thread(void *p1, void *p2, void *p3)
+{
+    struct Command cmd;
+    struct OutMsg out;
+
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    while (1) {
+        k_msgq_get(&inbound_queue, &cmd, K_FOREVER);
+        out = dispatch_command(&cmd);
+        if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
+            LOG_WRN("Outbound queue full; dropping command response");
+        }
+    }
+}
+
+void command_serial_thread(void *p1, void *p2, void *p3)
+{
+    const struct device *console_uart = p1;
+    uint8_t c;
+    char line[SERIAL_LINE_MAX];
+    size_t used = 0U;
+
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    if (console_uart == NULL || !device_is_ready(console_uart)) {
+        LOG_WRN("Console UART unavailable; serial commanding disabled");
+        return;
+    }
+
+    while (1) {
+        if (uart_poll_in(console_uart, &c) == 0) {
+            if (c == '\r' || c == '\n') {
+                if (used > 0U) {
+                    line[used] = '\0';
+                    command_parse_serial_line(line);
+                    used = 0U;
+                }
+            } else if (c == 0x08 || c == 0x7f) {
+                if (used > 0U) {
+                    used--;
+                }
+            } else if (used < (sizeof(line) - 1U)) {
+                line[used++] = (char)c;
+            }
+        } else {
+            k_sleep(K_MSEC(10));
+        }
+    }
+}
+
+static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
+{
+    struct mqtt_publish_param param;
+
+    if (client == NULL || out == NULL) {
+        return -EINVAL;
+    }
+
+    memset(&param, 0, sizeof(param));
+    param.message.topic.qos = out->qos;
+    param.message.topic.topic.utf8 = (uint8_t *)out->topic;
+    param.message.topic.topic.size = strlen(out->topic);
+    param.message.payload.data = (uint8_t *)out->payload;
+    param.message.payload.len = out->payload_len;
+    param.prop.correlation_data.data = (uint8_t *)out->correlation_data;
+    param.prop.correlation_data.len = out->corr_len;
+    param.message_id = mqtt_msg_id++;
+    param.dup_flag = 0U;
+    param.retain_flag = 0U;
+
+    return mqtt_publish(client, &param);
+}
+
+void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available)
+{
+    struct OutMsg out;
+    int budget = 8;
+
+    while (budget-- > 0 && k_msgq_get(&outbound_queue, &out, K_NO_WAIT) == 0) {
+        if (out.target == OUT_TARGET_SERIAL) {
+            printk("%s\n", out.payload);
+            continue;
+        }
+
+        if (!mqtt_available) {
+            if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
+                LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
+            }
+            continue;
+        }
+
+        if (publish_outmsg(client, &out) != 0) {
+            LOG_WRN("MQTT publish failed; will retry");
+            if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
+                LOG_WRN("Dropping MQTT msg (queue full after publish failure)");
+            }
+            break;
+        }
+    }
+}
+
 
 
 
@@ -314,7 +620,7 @@ struct OutMsg busy_response(const struct Command *cmd) {
 struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
-                        "{\"help\":\"help,ip,mqtt,time,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
+                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
@@ -1154,6 +1460,27 @@ struct OutMsg status_get(const struct Command *cmd) {
              net.ip,
              power_enabled() ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg temp_get(const struct Command *cmd)
+{
+    struct tempsense_status ts = {0};
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    tempsense_get_status(&ts);
+    if (ts.valid) {
+        snprintf(payload, sizeof(payload),
+                 "{\"ambient_c\":%.3f,\"ambient_age_ms\":%u,\"laserbankavg_c\":null}",
+                 (double)ts.ambient_c,
+                 ts.age_ms);
+    } else {
+        snprintf(payload, sizeof(payload),
+                 "{\"ambient_c\":null,\"ambient_age_ms\":null,\"laserbankavg_c\":null,"
+                 "\"status\":\"error\",\"msg\":\"ambient temperature unavailable\",\"last_error\":%d}",
+                 ts.last_error);
+    }
+
+    return _msg_builder(cmd, ts.valid ? RESP_OK : RESP_ERROR, payload);
 }
 
 

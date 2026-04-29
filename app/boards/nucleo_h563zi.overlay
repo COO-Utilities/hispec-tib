@@ -8,6 +8,11 @@
  */
 
 / {
+	chosen {
+		/* Explicitly bind Zephyr settings/NVS backend to on-chip flash storage partition. */
+		zephyr,settings-partition = &storage_partition;
+	};
+
 	zephyr,user {
 		power-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
 
@@ -94,6 +99,13 @@
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
 		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+
+		ds18b20 {
+			compatible = "maxim,ds18b20";
+			family-code = <0x28>;
+			resolution = <12>;
+			status = "okay";
+		};
 	};
 };
 
