@@ -1,3 +1,6 @@
+## Board
+- https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
+
 ## JSON Parsing 
 - Zephyr has support
 - 

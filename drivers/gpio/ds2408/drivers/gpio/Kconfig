@@ -1,0 +1,21 @@
+#
+# Copyright (c) 2026 Caltech Optical Observatories
+#
+
+menuconfig GPIO_DS2408
+	bool "Maxim DS2408 1-Wire GPIO expander"
+	depends on GPIO
+	depends on W1
+	depends on W1_NET
+	help
+	  Enable support for the Maxim DS2408 8-bit 1-Wire GPIO expander.
+
+if GPIO_DS2408
+
+config GPIO_DS2408_INIT_PRIORITY
+	int "Initialization priority for DS2408"
+	default 80
+	help
+	  Initialization priority for the DS2408 driver.
+
+endif # GPIO_DS2408

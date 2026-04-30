@@ -27,6 +27,7 @@ See status.md for software details
 - 2 MB of flash memory and 640 KB of SRAM
 - See user manual um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf
 - Microcontroller reference manual STM32H563ZI.pdf
+- https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
 
 # Board Type Selection
 - 4 solder jumpers (TIB, CAL (blue), CAL (red), AS (Achromatic Splitting))
@@ -36,7 +37,8 @@ See status.md for software details
 For board files:
 - Nucleo:
     - pins TBD, but read directly on Nucleo GPIO (not via an external expander)
-
+      /Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/Resources/bin/STM32_Programmer_CLI
+    - /Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI
 ### MEMS Switches
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
 - 3.3V i2c, 5V gpio, 25mA max drive

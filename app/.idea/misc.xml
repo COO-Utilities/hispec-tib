@@ -10,6 +10,7 @@
     <contentRoot DIR="$PROJECT_DIR$/../.." />
   </component>
   <component name="WestSettings"><![CDATA[{
+  "toolchainName": "Zephyr",
   "boardName": "nucleo_h563zi/stm32h563xx"
 }]]></component>
 </project>

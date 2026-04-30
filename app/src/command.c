@@ -15,6 +15,7 @@
 #include <app_version.h>
 #include <time.h>
 #include <zephyr/net/net_ip.h>
+#include <zephyr/console/console.h>
 
 #include "devices.h"
 #include "app_settings.h"
@@ -25,6 +26,7 @@
 #include "tempsense.h"
 #include <coo_commons/json_utils.h>
 #include <coo_commons/network.h>
+
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
 #define MQTT_DEVICE_ID "hsfib-tib"
@@ -426,38 +428,24 @@ void command_executor_thread(void *p1, void *p2, void *p3)
 
 void command_serial_thread(void *p1, void *p2, void *p3)
 {
-    const struct device *console_uart = p1;
-    uint8_t c;
-    char line[SERIAL_LINE_MAX];
-    size_t used = 0U;
 
+    char *line;
+
+    ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    if (console_uart == NULL || !device_is_ready(console_uart)) {
-        LOG_WRN("Console UART unavailable; serial commanding disabled");
-        return;
-    }
+    /* Initialize Zephyr's line-oriented console input once for this thread. */
+    console_getline_init();
 
     while (1) {
-        if (uart_poll_in(console_uart, &c) == 0) {
-            if (c == '\r' || c == '\n') {
-                if (used > 0U) {
-                    line[used] = '\0';
-                    command_parse_serial_line(line);
-                    used = 0U;
-                }
-            } else if (c == 0x08 || c == 0x7f) {
-                if (used > 0U) {
-                    used--;
-                }
-            } else if (used < (sizeof(line) - 1U)) {
-                line[used++] = (char)c;
-            }
-        } else {
-            k_sleep(K_MSEC(10));
+        /* Blocks until a full line is available from the configured console. */
+        line = console_getline();
+        if (line != NULL && line[0] != '\0') {
+            command_parse_serial_line(line);
         }
     }
+
 }
 
 static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)

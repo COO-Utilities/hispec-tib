@@ -6,11 +6,11 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
-# Include local out-of-tree modules that are not yet in west manifest.
-set(LOCAL_DS2408_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../modules/gpio/ds2408")
-if(EXISTS "${LOCAL_DS2408_MODULE_DIR}/zephyr/module.yml")
-  list(APPEND ZEPHYR_EXTRA_MODULES "${LOCAL_DS2408_MODULE_DIR}")
-endif()
+# Default to pyOCD for this application so west flash/debug use the open
+# source runner unless a developer explicitly overrides it on the command line.
+#set(BOARD_FLASH_RUNNER pyocd CACHE STRING "Default west flash runner")
+#set(BOARD_DEBUG_RUNNER pyocd CACHE STRING "Default west debug runner")
+
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 

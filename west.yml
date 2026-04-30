@@ -12,7 +12,7 @@ manifest:
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: main
+      revision: main #v4.4.0
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
@@ -22,8 +22,8 @@ manifest:
           - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
     # Out-of-tree DAC Driver for optical attenuators
     - name: dac7578
-      url: https://github.com/marcrickenbach/dac7578
-      revision: main
+      url: https://github.com/CaltechOpticalObservatories/dac7578
+      revision: develop
       path: modules/dac/dac7578
     # Out-of-tree DS2408 1-Wire GPIO driver (enable once repo exists)
     # - name: ds2408

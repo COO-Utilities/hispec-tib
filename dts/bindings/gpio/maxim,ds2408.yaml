@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Caltech Optical Observatories
+# SPDX-License-Identifier: Apache-2.0
+
+description: Maxim DS2408 8-bit 1-Wire GPIO expander
+
+compatible: "maxim,ds2408"
+
+include: [gpio-controller.yaml, w1-slave.yaml]
+
+properties:
+  "#gpio-cells":
+    const: 2
+
+  ngpios:
+    const: 8
+
+  family-code:
+    default: 0x29
+
+  reg:
+    description: |
+      Optional 64-bit ROM ID used to identify the DS2408 in multidrop
+      topologies. If omitted, the driver auto-reads ROM only when the bus
+      has a single slave.
+
+gpio-cells:
+  - pin
+  - flags
