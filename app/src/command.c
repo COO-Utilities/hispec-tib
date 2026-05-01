@@ -313,6 +313,12 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         cmd.corr_len = pub->prop.correlation_data.len;
     }
 
+    if (!command_network_mqtt_allowed()) {
+        struct OutMsg r = serial_active_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        return;
+    }
+
     if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
         struct OutMsg r = busy_response(&cmd);
         (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
@@ -602,6 +608,11 @@ struct OutMsg unsupported_response(const struct Command *cmd) {
 
 struct OutMsg busy_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"busy\"}";
+    return _msg_builder(cmd, RESP_ERROR,  err);
+}
+
+struct OutMsg serial_active_response(const struct Command *cmd) {
+    const char *err = "{\"error\":\"try later. local serial commands active\"}";
     return _msg_builder(cmd, RESP_ERROR,  err);
 }
 

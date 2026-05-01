@@ -101,6 +101,7 @@ struct OutMsg invalid_command_response(const struct Command *cmd);
 struct OutMsg unknown_response(const struct Command *cmd);
 struct OutMsg unsupported_response(const struct Command *cmd);
 struct OutMsg busy_response(const struct Command *cmd);
+struct OutMsg serial_active_response(const struct Command *cmd);
 struct OutMsg dispatch_command(const struct Command *cmd);
 
 /* Executor task: consumes inbound_queue and publishes one response to outbound_queue. */
