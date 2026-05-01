@@ -106,6 +106,57 @@ static void mems_switch_apply_requested_rate_locked(struct mems_switch *sw,
     sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
 }
 
+static void mems_switch_apply_exact_rate_locked(struct mems_switch *sw,
+                                                uint32_t period_cycles)
+{
+    sw->switching_period_cycles = period_cycles;
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(period_cycles);
+    sw->requested_toggle_rate_hz = sw->actual_toggle_rate_hz;
+}
+
+static int mems_switch_apply_profile_locked(struct mems_switch *sw,
+                                            uint32_t a_cycles,
+                                            uint32_t previous_period_cycles,
+                                            uint32_t stop_after_s)
+{
+    uint32_t requested_duration_s;
+    bool same_profile;
+
+    if (a_cycles > sw->switching_period_cycles) {
+        a_cycles = sw->switching_period_cycles;
+    }
+
+    if (a_cycles == 0U) {
+        mems_switch_set_static_locked(sw, 'B');
+        return 0;
+    }
+
+    if (a_cycles >= sw->switching_period_cycles) {
+        mems_switch_set_static_locked(sw, 'A');
+        return 0;
+    }
+
+    /* Mixed duty cycles are applied by the router-owned k_work_delayable tick.
+     * A zero duration means "run until the firmware safety maximum".
+     */
+    requested_duration_s = stop_after_s;
+    if (requested_duration_s == 0U) {
+        requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
+    }
+    same_profile = (sw->remaining_toggle_cycles > 0U) &&
+                   (sw->a_state_cycles == a_cycles) &&
+                   (previous_period_cycles == sw->switching_period_cycles);
+
+    sw->remaining_toggle_cycles = seconds_to_cycles(requested_duration_s);
+    if (!same_profile) {
+        sw->a_state_cycles = a_cycles;
+        sw->target_state = 'A';
+        sw->cycles_until_toggle = a_cycles;
+    }
+
+    return 0;
+}
+
 static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
                                           float duty_cycle, uint32_t stop_after_s,
                                           float requested_toggle_rate_hz)
@@ -113,6 +164,8 @@ static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
     struct mems_router *router;
     uint32_t previous_period_cycles;
     uint32_t period_cycles;
+    uint32_t a_cycles;
+    int rc;
     bool locked = false;
 
     if (sw == NULL) {
@@ -143,48 +196,14 @@ static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
     mems_switch_apply_requested_rate_locked(sw, requested_toggle_rate_hz);
 
     period_cycles = sw->switching_period_cycles;
-    uint32_t a_cycles = (uint32_t)(duty_cycle * (float)period_cycles + 0.5f);
-    if (a_cycles > period_cycles) {
-        a_cycles = period_cycles;
-    }
-
-    if (a_cycles == 0U) {
-        mems_switch_set_static_locked(sw, 'B');
-        if (locked) {
-            k_mutex_unlock(&router->lock);
-        }
-        return 0;
-    }
-
-    if (a_cycles >= period_cycles) {
-        mems_switch_set_static_locked(sw, 'A');
-        if (locked) {
-            k_mutex_unlock(&router->lock);
-        }
-        return 0;
-    }
-
-    // We are in a switching mode
-
-    uint32_t requested_duration_s = stop_after_s;
-    if (requested_duration_s == 0U) {
-        requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
-    }
-    bool same_profile = (sw->remaining_toggle_cycles > 0U) &&
-                        (sw->a_state_cycles == a_cycles) &&
-                        (previous_period_cycles == sw->switching_period_cycles);
-
-    sw->remaining_toggle_cycles = seconds_to_cycles(requested_duration_s);
-    if (!same_profile) {
-        sw->a_state_cycles = a_cycles;
-        sw->target_state = 'A';
-        sw->cycles_until_toggle = a_cycles;
-    }
+    a_cycles = (uint32_t)(duty_cycle * (float)period_cycles + 0.5f);
+    rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
+                                          stop_after_s);
 
     if (locked) {
         k_mutex_unlock(&router->lock);
     }
-    return 0;
+    return rc;
 }
 
 static void mems_switch_tick_locked(struct mems_switch *sw)
@@ -302,6 +321,52 @@ int mems_switch_set_state(struct mems_switch *sw,
                                           requested_toggle_rate_hz);
 }
 
+int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
+                                uint32_t state_ticks, uint32_t period_ticks,
+                                uint32_t stop_after_s)
+{
+    struct mems_router *router;
+    uint32_t previous_period_cycles;
+    uint32_t a_cycles;
+    int rc;
+    bool locked = false;
+
+    if (sw == NULL) {
+        return -EINVAL;
+    }
+
+    state = (char)toupper((unsigned char)state);
+    if (state != 'A' && state != 'B') {
+        return -EINVAL;
+    }
+    if (period_ticks < min_toggle_period_cycles() ||
+        state_ticks > period_ticks ||
+        stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return -ERANGE;
+    }
+
+    a_cycles = (state == 'A') ? state_ticks : period_ticks - state_ticks;
+
+    router = sw->owner;
+    if (router != NULL) {
+        k_mutex_lock(&router->lock, K_FOREVER);
+        locked = true;
+    }
+
+    /* Exact tick callers coordinate phase across multiple switches, so force
+     * mixed-duty profiles to restart even if the individual switch profile did
+     * not change.
+     */
+    previous_period_cycles = 0U;
+    mems_switch_apply_exact_rate_locked(sw, period_ticks);
+    rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
+                                          stop_after_s);
+
+    if (locked) {
+        k_mutex_unlock(&router->lock);
+    }
+    return rc;
+}
 
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out)
 {
@@ -318,6 +383,9 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
     out->state = sw->remaining_toggle_cycles>0 ? 'A': sw->state;
     out->state_known_this_boot = sw->state_known_this_boot;
     out->duty_cycle = (float)sw->a_state_cycles / (float)sw->switching_period_cycles; //actual attained duty cycle
+    out->duty_numerator = sw->a_state_cycles;
+    out->duty_denominator = sw->switching_period_cycles;
+    out->tick_duration_ms = MEMS_SWITCH_ELECTRICAL_PULSE_MS;
     out->requested_toggle_rate_hz = sw->requested_toggle_rate_hz;
     out->toggle_rate_hz = sw->actual_toggle_rate_hz;
 

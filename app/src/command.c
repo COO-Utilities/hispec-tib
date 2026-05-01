@@ -1448,448 +1448,452 @@ struct OutMsg memsroute_get(const struct Command *cmd)
     return _msg_builder(cmd, RESP_OK, buf);
 }
 
-struct split_switch_group {
-    const char *label;
-    const char *sw1_name;
-    const char *sw2_name;
-    const char *sw3_name;
+enum {
+    SPLIT_CHANNEL_COUNT = 2,
+    SPLIT_OUTPUT_COUNT = 3,
+    SPLIT_ROUTE_SWITCH_COUNT = 3,
 };
 
-struct split_group_result {
-    bool present;
-    bool configured;
-    int rc;
-    float actual_ratio1;
-    float actual_ratio2;
-    float actual_ratio3;
-    float actual_toggle_rate_hz;
-    uint32_t stopsin_s;
+#define SPLIT_ROUTE_OUTPUT "as_split"
+
+struct split_switch_duty {
+    char name[MEMS_SWITCH_NAME_LEN];
+    char state;
+    float duty_cycle;
+    uint32_t numerator;
+    uint32_t denominator;
+    uint32_t tick_ms;
 };
 
 struct split_state {
-    bool configured;
-    float requested_ratio1;
-    float requested_ratio2;
-    float requested_ratio3;
-    float actual_ratio1;
-    float actual_ratio2;
-    float actual_ratio3;
-    float requested_toggle_rate_hz;
-    float actual_toggle_rate_hz;
-    uint32_t stopafter_s;
+    float requested[SPLIT_OUTPUT_COUNT];
+    float actual[SPLIT_OUTPUT_COUNT];
+    struct split_switch_duty switches[SPLIT_ROUTE_SWITCH_COUNT];
     uint32_t stopsin_s;
 };
 
-static const struct split_switch_group split_groups[] = {
-    {"yj", "yj_sw1", "yj_sw2", "yj_sw3"},
-    {"hk", "hk_sw4", "hk_sw5", "hk_sw6"},
-};
+static const char *split_channel_names[SPLIT_CHANNEL_COUNT] = {"yj", "hk"};
+static const char *split_route_inputs[SPLIT_CHANNEL_COUNT] = {"yj_split", "hk_split"};
 
-/* Command-level cache of the requested AS split. The MEMS switch objects keep
- * their own GPIO/toggle state under the router lock; this mutex only protects
- * the compact response snapshot used by split get/set.
+/* Command-level cache of each channel's last requested and measured split.
+ * The MEMS router lock protects switch hardware state; this mutex only keeps
+ * command responses coherent across serial/MQTT callers.
  */
-static struct split_state g_split_state;
+static struct split_state g_split_state[SPLIT_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(split_state_lock);
 
-/* All three switches in a tree are required before touching that tree. */
-static bool split_find_switches(const struct split_switch_group *group,
-                                struct mems_switch **sw1,
-                                struct mems_switch **sw2,
-                                struct mems_switch **sw3)
+static int split_channel_index(const char *channel, uint8_t *index)
 {
-    *sw1 = mems_router_find_switch(&router, group->sw1_name);
-    *sw2 = mems_router_find_switch(&router, group->sw2_name);
-    *sw3 = mems_router_find_switch(&router, group->sw3_name);
+    if (channel == NULL || index == NULL) {
+        return -EINVAL;
+    }
 
-    return *sw1 != NULL && *sw2 != NULL && *sw3 != NULL;
+    for (uint8_t i = 0; i < SPLIT_CHANNEL_COUNT; ++i) {
+        if (strcmp(channel, split_channel_names[i]) == 0) {
+            *index = i;
+            return 0;
+        }
+    }
+
+    return -ENOENT;
 }
 
-static int split_set_static_or_duty(struct mems_switch *sw, float duty_cycle,
-                                    uint32_t stopafter_s, float toggle_rate_hz)
+static int split_channel_index_from_key(const char *key, uint8_t *index)
 {
-    /* Endpoint duties are steady MEMS states. Mixed duties are delegated to the
-     * MEMS tick work through mems_switch_set_state().
-     */
-    if (duty_cycle <= 0.0f) {
-        return mems_switch_set_state(sw, 'B', 1.0f, 0U, 0.0f);
-    }
-    if (duty_cycle >= 1.0f) {
-        return mems_switch_set_state(sw, 'A', 1.0f, 0U, 0.0f);
+    const char *slash = strchr(key, '/');
+
+    if (slash == NULL || slash[1] == '\0') {
+        return -ENOENT;
     }
 
-    return mems_switch_set_state(sw, 'A', duty_cycle, stopafter_s, toggle_rate_hz);
+    return split_channel_index(slash + 1, index);
 }
 
-static void split_read_group_result(const struct split_switch_group *group,
-                                    struct mems_switch *sw1,
-                                    struct mems_switch *sw3,
-                                    struct split_group_result *result)
+static const struct mems_route *split_route_for_channel(uint8_t channel_index)
 {
-    struct mems_switch_status sw1_status = {0};
-    struct mems_switch_status sw3_status = {0};
-    float sw1_duty;
-    float sw3_duty;
-
-    /* mems_switch_get_status() reads the attained, tick-quantized duty cycles
-     * under the MEMS router lock.
-     */
-    mems_switch_get_status(sw1, &sw1_status);
-    mems_switch_get_status(sw3, &sw3_status);
-
-    sw1_duty = sw1_status.duty_cycle;
-    sw3_duty = sw3_status.duty_cycle;
-    result->actual_ratio1 = sw1_duty;
-    result->actual_ratio2 = (1.0f - sw1_duty) * sw3_duty;
-    result->actual_ratio3 = (1.0f - sw1_duty) * (1.0f - sw3_duty);
-    result->stopsin_s = MAX(sw1_status.stopafter_s, sw3_status.stopafter_s);
-    result->actual_toggle_rate_hz = MAX(sw1_status.toggle_rate_hz,
-                                        sw3_status.toggle_rate_hz);
-
-    LOG_INF("Split %s actual %.3f %.3f %.3f",
-            group->label,
-            (double)result->actual_ratio1,
-            (double)result->actual_ratio2,
-            (double)result->actual_ratio3);
+    return mems_router_get_route(&router,
+                                 split_route_inputs[channel_index],
+                                 SPLIT_ROUTE_OUTPUT);
 }
 
-static int split_apply_group(const struct split_switch_group *group,
-                             float ratio1, float ratio2, float ratio3,
-                             uint32_t stopafter_s, float toggle_rate_hz,
-                             struct split_group_result *result)
+static uint32_t split_period_ticks(void)
 {
-    struct mems_switch *sw1;
-    struct mems_switch *sw2;
-    struct mems_switch *sw3;
-    float downstream_total;
-    float sw1_duty;
-    float sw3_duty;
-    int rc = 0;
+    const float ticks = 1000.0f /
+                        (MEMS_SWITCH_MAX_TOGGLE_HZ *
+                         (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS);
+    uint32_t period_ticks = (uint32_t)ticks;
 
-    memset(result, 0, sizeof(*result));
-    if (!split_find_switches(group, &sw1, &sw2, &sw3)) {
-        result->rc = -ENODEV;
-        return result->rc;
+    if ((float)period_ticks < ticks) {
+        period_ticks += 1U;
     }
-    result->present = true;
-
-    /* Side effect: these calls queue static states or timed toggling for this
-     * tree. Slow command parsing and MQTT publishing stay outside the MEMS
-     * timing work.
-     */
-    if (ratio1 == 0.0f && ratio2 == 0.0f && ratio3 == 0.0f) {
-        /* No requested splitter output: return this AS tree to its documented
-         * steady, non-splitting path.
-         */
-        rc |= mems_switch_set_state(sw1, 'A', 1.0f, 0U, 0.0f);
-        rc |= mems_switch_set_state(sw2, 'A', 1.0f, 0U, 0.0f);
-        rc |= mems_switch_set_state(sw3, 'A', 1.0f, 0U, 0.0f);
-        result->rc = rc;
-        result->configured = (rc == 0);
-        return result->rc;
+    if (period_ticks < 2U) {
+        period_ticks = 2U;
     }
 
-    downstream_total = ratio2 + ratio3;
-    sw1_duty = ratio1;
-    sw3_duty = downstream_total > 0.0f ? ratio2 / downstream_total : 1.0f;
-
-    /* This is a hard-coded achromatic-splitter task. SW2 is held on the
-     * splitter branch while SW1 chooses output 1 versus the downstream branch,
-     * and SW3 splits the downstream branch between outputs 2 and 3.
-     */
-    rc |= mems_switch_set_state(sw2, 'B', 1.0f, 0U, 0.0f);
-    rc |= split_set_static_or_duty(sw1, sw1_duty, stopafter_s, toggle_rate_hz);
-    rc |= split_set_static_or_duty(sw3, sw3_duty, stopafter_s, toggle_rate_hz);
-
-    result->rc = rc;
-    result->configured = (rc == 0);
-    if (rc == 0) {
-        split_read_group_result(group, sw1, sw3, result);
-    }
-
-    return result->rc;
+    return period_ticks;
 }
 
-static void split_store_state(float requested_ratio1, float requested_ratio2,
-                              float requested_ratio3, float requested_rate,
-                              uint32_t stopafter_s,
-                              const struct split_group_result *yj,
-                              const struct split_group_result *hk)
+static uint32_t split_ratio_to_ticks(float ratio, uint32_t period_ticks)
 {
-    float n = 0.0f;
+    uint32_t ticks = (uint32_t)(ratio * (float)period_ticks + 0.5f);
+
+    return MIN(ticks, period_ticks);
+}
+
+static float split_abs_float(float value)
+{
+    return value < 0.0f ? -value : value;
+}
+
+static uint32_t split_selected_numerator(const struct mems_switch_status *status,
+                                         char state)
+{
+    if (state == 'A') {
+        return status->duty_numerator;
+    }
+
+    return status->duty_denominator - status->duty_numerator;
+}
+
+static void split_clamp_actual(float actual[SPLIT_OUTPUT_COUNT])
+{
+    float used;
+
+    for (uint8_t i = 0; i < SPLIT_OUTPUT_COUNT; ++i) {
+        if (actual[i] < 0.0f) {
+            actual[i] = 0.0f;
+        }
+        if (actual[i] > 1.0f) {
+            actual[i] = 1.0f;
+        }
+    }
+
+    used = actual[0] + actual[1];
+    if (used > 1.0f) {
+        actual[1] = 1.0f - actual[0];
+        used = 1.0f;
+    }
+    actual[2] = 1.0f - used;
+}
+
+static int split_read_channel_state(uint8_t channel_index,
+                                    const struct mems_route *route,
+                                    const float requested[SPLIT_OUTPUT_COUNT])
+{
     struct split_state next = {0};
+    float sw1_duty;
+    float sw3_duty;
 
-    next.configured = requested_ratio1 > 0.0f || requested_ratio2 > 0.0f ||
-                      requested_ratio3 > 0.0f;
-    next.requested_ratio1 = requested_ratio1;
-    next.requested_ratio2 = requested_ratio2;
-    next.requested_ratio3 = requested_ratio3;
-    next.requested_toggle_rate_hz = requested_rate;
-    next.stopafter_s = stopafter_s;
-
-    if (yj->configured) {
-        next.actual_ratio1 += yj->actual_ratio1;
-        next.actual_ratio2 += yj->actual_ratio2;
-        next.actual_ratio3 += yj->actual_ratio3;
-        next.actual_toggle_rate_hz += yj->actual_toggle_rate_hz;
-        next.stopsin_s = MAX(next.stopsin_s, yj->stopsin_s);
-        n += 1.0f;
-    }
-    if (hk->configured) {
-        next.actual_ratio1 += hk->actual_ratio1;
-        next.actual_ratio2 += hk->actual_ratio2;
-        next.actual_ratio3 += hk->actual_ratio3;
-        next.actual_toggle_rate_hz += hk->actual_toggle_rate_hz;
-        next.stopsin_s = MAX(next.stopsin_s, hk->stopsin_s);
-        n += 1.0f;
+    if (route == NULL || route->num_steps != SPLIT_ROUTE_SWITCH_COUNT) {
+        return -EINVAL;
     }
 
-    if (n > 0.0f) {
-        next.actual_ratio1 /= n;
-        next.actual_ratio2 /= n;
-        next.actual_ratio3 /= n;
-        next.actual_toggle_rate_hz /= n;
+    if (requested != NULL) {
+        memcpy(next.requested, requested, sizeof(next.requested));
+    } else {
+        k_mutex_lock(&split_state_lock, K_FOREVER);
+        next = g_split_state[channel_index];
+        k_mutex_unlock(&split_state_lock);
     }
 
-    /* Zephyr mutex keeps get/set responses coherent if serial and MQTT command
-     * sources query split state around the same time.
-     */
+    for (uint8_t i = 0; i < SPLIT_ROUTE_SWITCH_COUNT; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        struct mems_switch *sw = mems_router_find_switch(&router, step->switch_name);
+        struct mems_switch_status status = {0};
+        uint32_t selected_ticks;
+
+        if (sw == NULL) {
+            LOG_ERR("Split route %s->%s references missing switch %s",
+                    route->key.input_name, route->key.output_name,
+                    step->switch_name);
+            return -EINVAL;
+        }
+
+        mems_switch_get_status(sw, &status);
+        selected_ticks = split_selected_numerator(&status, step->state);
+
+        snprintk(next.switches[i].name, sizeof(next.switches[i].name),
+                 "%s", step->switch_name);
+        next.switches[i].state = step->state;
+        next.switches[i].numerator = selected_ticks;
+        next.switches[i].denominator = status.duty_denominator;
+        next.switches[i].tick_ms = status.tick_duration_ms;
+        next.switches[i].duty_cycle =
+            status.duty_denominator == 0U ? 0.0f :
+            (float)selected_ticks / (float)status.duty_denominator;
+        next.stopsin_s = MAX(next.stopsin_s, status.stopafter_s);
+    }
+
+    sw1_duty = next.switches[0].duty_cycle;
+    sw3_duty = next.switches[2].duty_cycle;
+    next.actual[0] = sw1_duty;
+    next.actual[1] = sw3_duty > sw1_duty ? sw3_duty - sw1_duty : 0.0f;
+    split_clamp_actual(next.actual);
+
     k_mutex_lock(&split_state_lock, K_FOREVER);
-    g_split_state = next;
+    g_split_state[channel_index] = next;
     k_mutex_unlock(&split_state_lock);
+
+    LOG_INF("Split %s actual %.4f %.4f %.4f",
+            split_channel_names[channel_index],
+            (double)next.actual[0],
+            (double)next.actual[1],
+            (double)next.actual[2]);
+
+    return 0;
 }
 
-static void split_emit_quantization_warning(const struct split_state *state)
+static struct OutMsg split_channel_response(const struct Command *cmd,
+                                            uint8_t channel_index)
 {
-    float d1 = state->actual_ratio1 - state->requested_ratio1;
-    float d2 = state->actual_ratio2 - state->requested_ratio2;
-    float d3 = state->actual_ratio3 - state->requested_ratio3;
-    char context[128];
+    struct split_state state;
+    char payload[MAX_PAYLOAD_LEN];
+    int written;
 
-    if (d1 < 0.0f) {
-        d1 = -d1;
-    }
-    if (d2 < 0.0f) {
-        d2 = -d2;
-    }
-    if (d3 < 0.0f) {
-        d3 = -d3;
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    state = g_split_state[channel_index];
+    k_mutex_unlock(&split_state_lock);
+
+    written = snprintk(payload, sizeof(payload),
+             "{\"status\":\"success\",\"channel\":\"%s\","
+             "\"requested_ratio\":[%.4f,%.4f,%.4f],"
+             "\"actual_ratio\":[%.4f,%.4f,%.4f],"
+             "\"switches\":["
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
+             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u},"
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
+             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u},"
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
+             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u}],"
+             "\"stopsin_s\":%u}",
+             split_channel_names[channel_index],
+             (double)state.requested[0],
+             (double)state.requested[1],
+             (double)state.requested[2],
+             (double)state.actual[0],
+             (double)state.actual[1],
+             (double)state.actual[2],
+             state.switches[0].name,
+             state.switches[0].state,
+             (double)state.switches[0].duty_cycle,
+             state.switches[0].numerator,
+             state.switches[0].denominator,
+             state.switches[0].tick_ms,
+             state.switches[1].name,
+             state.switches[1].state,
+             (double)state.switches[1].duty_cycle,
+             state.switches[1].numerator,
+             state.switches[1].denominator,
+             state.switches[1].tick_ms,
+             state.switches[2].name,
+             state.switches[2].state,
+             (double)state.switches[2].duty_cycle,
+             state.switches[2].numerator,
+             state.switches[2].denominator,
+             state.switches[2].tick_ms,
+             state.stopsin_s);
+
+    if (written < 0 || written >= (int)sizeof(payload)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"split response too large\"}");
     }
 
-    if (d1 <= 0.001f && d2 <= 0.001f && d3 <= 0.001f) {
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+static void split_emit_quantization_warning(uint8_t channel_index,
+                                            const struct split_state *state)
+{
+    char context[144];
+
+    if (split_abs_float(state->actual[0] - state->requested[0]) <= 0.0005f &&
+        split_abs_float(state->actual[1] - state->requested[1]) <= 0.0005f &&
+        split_abs_float(state->actual[2] - state->requested[2]) <= 0.0005f) {
         return;
     }
 
     snprintk(context, sizeof(context),
-             "requested=%.3f/%.3f/%.3f actual=%.3f/%.3f/%.3f",
-             (double)state->requested_ratio1,
-             (double)state->requested_ratio2,
-             (double)state->requested_ratio3,
-             (double)state->actual_ratio1,
-             (double)state->actual_ratio2,
-             (double)state->actual_ratio3);
+             "channel=%s requested=%.4f/%.4f/%.4f actual=%.4f/%.4f/%.4f",
+             split_channel_names[channel_index],
+             (double)state->requested[0],
+             (double)state->requested[1],
+             (double)state->requested[2],
+             (double)state->actual[0],
+             (double)state->actual[1],
+             (double)state->actual[2]);
     app_warning_emit("split_ratio_quantized",
-                     "requested split ratio was quantized by MEMS timing",
+                     "requested split ratio was quantized to MEMS ticks",
                      context);
 }
 
-static void split_refresh_state_from_switches(void)
+static int split_parse_channel(const struct Command *cmd, uint8_t *channel_index)
 {
-    struct split_state state;
-    float n = 0.0f;
+    char channel[8] = {0};
+    int parse_rc;
 
-    k_mutex_lock(&split_state_lock, K_FOREVER);
-    state = g_split_state;
-    k_mutex_unlock(&split_state_lock);
-
-    if (!state.configured) {
-        return;
+    if (split_channel_index_from_key(cmd->key, channel_index) == 0) {
+        return 0;
     }
 
-    state.actual_ratio1 = 0.0f;
-    state.actual_ratio2 = 0.0f;
-    state.actual_ratio3 = 0.0f;
-    state.actual_toggle_rate_hz = 0.0f;
-    state.stopsin_s = 0U;
-
-    for (size_t i = 0; i < ARRAY_SIZE(split_groups); ++i) {
-        struct mems_switch *sw1;
-        struct mems_switch *sw2;
-        struct mems_switch *sw3;
-        struct split_group_result result = {0};
-
-        if (!split_find_switches(&split_groups[i], &sw1, &sw2, &sw3)) {
-            continue;
-        }
-
-        ARG_UNUSED(sw2);
-        result.configured = true;
-        split_read_group_result(&split_groups[i], sw1, sw3, &result);
-        state.actual_ratio1 += result.actual_ratio1;
-        state.actual_ratio2 += result.actual_ratio2;
-        state.actual_ratio3 += result.actual_ratio3;
-        state.actual_toggle_rate_hz += result.actual_toggle_rate_hz;
-        state.stopsin_s = MAX(state.stopsin_s, result.stopsin_s);
-        n += 1.0f;
+    parse_rc = coo_json_extract_string(cmd->payload, "channel",
+                                       channel, sizeof(channel));
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return -ENOENT;
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return -EINVAL;
     }
 
-    if (n > 0.0f) {
-        state.actual_ratio1 /= n;
-        state.actual_ratio2 /= n;
-        state.actual_ratio3 /= n;
-        state.actual_toggle_rate_hz /= n;
-    }
-
-    k_mutex_lock(&split_state_lock, K_FOREVER);
-    g_split_state = state;
-    k_mutex_unlock(&split_state_lock);
-}
-
-static struct OutMsg split_response(const struct Command *cmd, const char *status)
-{
-    struct split_state state;
-    char payload[MAX_PAYLOAD_LEN];
-
-    k_mutex_lock(&split_state_lock, K_FOREVER);
-    state = g_split_state;
-    k_mutex_unlock(&split_state_lock);
-
-    snprintk(payload, sizeof(payload),
-             "{\"status\":\"%s\",\"ratio1\":%.4f,\"ratio2\":%.4f,"
-             "\"ratio3\":%.4f,\"requested_ratio1\":%.4f,"
-             "\"requested_ratio2\":%.4f,\"requested_ratio3\":%.4f,"
-             "\"toggle_rate_hz\":%.3f,\"requested_toggle_rate_hz\":%.3f,"
-             "\"stopsin_s\":%u}",
-             status,
-             (double)state.actual_ratio1,
-             (double)state.actual_ratio2,
-             (double)state.actual_ratio3,
-             (double)state.requested_ratio1,
-             (double)state.requested_ratio2,
-             (double)state.requested_ratio3,
-             (double)state.actual_toggle_rate_hz,
-             (double)state.requested_toggle_rate_hz,
-             state.stopsin_s);
-    return _msg_builder(cmd, RESP_OK, payload);
+    return split_channel_index(channel, channel_index);
 }
 
 struct OutMsg splitting_get(const struct Command *cmd)
 {
-    struct mems_switch *sw1;
-    struct mems_switch *sw2;
-    struct mems_switch *sw3;
-    bool any_present = false;
+    uint8_t channel_index;
+    const struct mems_route *route;
+    int rc;
 
-    for (size_t i = 0; i < ARRAY_SIZE(split_groups); ++i) {
-        any_present = split_find_switches(&split_groups[i], &sw1, &sw2, &sw3);
-        if (any_present) {
-            break;
-        }
-    }
-
-    if (!any_present) {
+    rc = split_parse_channel(cmd, &channel_index);
+    if (rc != 0) {
         return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"splitter switches unavailable\"}");
+                            "{\"status\":\"error\",\"msg\":\"channel required: yj or hk\"}");
     }
 
-    split_refresh_state_from_switches();
-    return split_response(cmd, "success");
+    route = split_route_for_channel(channel_index);
+    if (route == NULL) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"split route unavailable\"}");
+    }
+
+    rc = split_read_channel_state(channel_index, route, NULL);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"split route invalid\"}");
+    }
+
+    return split_channel_response(cmd, channel_index);
 }
 
-/** Apply a fixed AS-PCB splitter command.
+/** Apply one AS-PCB split route.
  *
- * Payload fields are relative non-negative weights. The handler normalizes
- * them once, applies the same requested ratio to the YJ and HK trees, and then
- * reports the attained ratio calculated from MEMS switch status.
+ * The user provides ratio1 and ratio2 for one channel. ratio3 is the remaining
+ * fraction. SW3 is intentionally held through SW1's output-1 interval, so its
+ * selected-state numerator is ratio1 + ratio2 rather than ratio2 alone.
  */
 struct OutMsg splitting_set(const struct Command *cmd)
 {
-    struct split_group_result yj = {0};
-    struct split_group_result hk = {0};
+    uint8_t channel_index;
+    const struct mems_route *route;
     struct split_state stored;
-    float ratio1 = 0.0f;
-    float ratio2 = 0.0f;
-    float ratio3 = 0.0f;
-    float total;
-    float toggle_rate_hz = 0.0f;
+    float requested[SPLIT_OUTPUT_COUNT] = {0};
+    float ratio3_probe = 0.0f;
     uint32_t stopafter_s = 0U;
+    uint32_t period_ticks;
+    uint32_t output_ticks[SPLIT_OUTPUT_COUNT];
+    uint32_t switch_ticks[SPLIT_ROUTE_SWITCH_COUNT];
     int parse_rc;
-    bool any_present;
+    int rc;
 
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &ratio1);
+    rc = split_parse_channel(cmd, &channel_index);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"channel must be yj or hk\"}");
+    }
+
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &requested[0]);
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing ratio1\"}");
+    }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio1\"}");
     }
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &ratio2);
+
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &requested[1]);
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing ratio2\"}");
+    }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio2\"}");
     }
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio3\"}");
+
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3_probe);
+    if (parse_rc != COO_JSON_EXTRACT_MISSING) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"ratio3 is computed internally\"}");
     }
+
+    if (requested[0] < 0.0f || requested[0] > 1.0f ||
+        requested[1] < 0.0f || requested[1] > 1.0f ||
+        requested[0] + requested[1] > 1.000001f) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"ratios must be 0.0-1.0 and sum <= 1.0\"}");
+    }
+    requested[2] = 1.0f - requested[0] - requested[1];
+
     parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR ||
         stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid stopafter_s\"}");
     }
-    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
-    if (parse_rc == COO_JSON_EXTRACT_ERR || toggle_rate_hz < 0.0f) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid toggle_rate_hz\"}");
-    }
 
-    if (ratio1 < 0.0f || ratio2 < 0.0f || ratio3 < 0.0f) {
+    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &ratio3_probe);
+    if (parse_rc != COO_JSON_EXTRACT_MISSING) {
         return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"ratios must be non-negative\"}");
+                            "{\"status\":\"error\",\"msg\":\"toggle_rate_hz is automatic\"}");
     }
 
-    total = ratio1 + ratio2 + ratio3;
-    if (total > 0.0f) {
-        ratio1 /= total;
-        ratio2 /= total;
-        ratio3 /= total;
-    }
-
-    (void)split_apply_group(&split_groups[0], ratio1, ratio2, ratio3,
-                            stopafter_s, toggle_rate_hz, &yj);
-    (void)split_apply_group(&split_groups[1], ratio1, ratio2, ratio3,
-                            stopafter_s, toggle_rate_hz, &hk);
-    any_present = yj.present || hk.present;
-    if (!any_present) {
+    route = split_route_for_channel(channel_index);
+    if (route == NULL || route->num_steps != SPLIT_ROUTE_SWITCH_COUNT) {
         return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"splitter switches unavailable\"}");
+                            "{\"status\":\"error\",\"msg\":\"split route unavailable\"}");
     }
 
-    split_store_state(ratio1, ratio2, ratio3, toggle_rate_hz, stopafter_s, &yj, &hk);
+    period_ticks = split_period_ticks();
+    output_ticks[0] = split_ratio_to_ticks(requested[0], period_ticks);
+    output_ticks[1] = split_ratio_to_ticks(requested[1], period_ticks);
+    if (output_ticks[0] + output_ticks[1] > period_ticks) {
+        output_ticks[1] = period_ticks - output_ticks[0];
+    }
+    output_ticks[2] = period_ticks - output_ticks[0] - output_ticks[1];
+
+    switch_ticks[0] = output_ticks[0];
+    switch_ticks[1] = period_ticks;
+    switch_ticks[2] = output_ticks[0] + output_ticks[1];
+
+    for (uint8_t i = 0; i < SPLIT_ROUTE_SWITCH_COUNT; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        struct mems_switch *sw = mems_router_find_switch(&router, step->switch_name);
+
+        if (sw == NULL) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"split route references missing switch\"}");
+        }
+
+        rc = mems_switch_set_state_ticks(sw, step->state, switch_ticks[i],
+                                         period_ticks,
+                                         i == 1U ? 0U : stopafter_s);
+        if (rc != 0) {
+            char payload[MAX_PAYLOAD_LEN];
+
+            snprintk(payload, sizeof(payload),
+                     "{\"status\":\"error\",\"msg\":\"failed setting %s\"}",
+                     step->switch_name);
+            return _msg_builder(cmd, RESP_ERROR, payload);
+        }
+    }
+
+    rc = split_read_channel_state(channel_index, route, requested);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"split readback failed\"}");
+    }
+
     k_mutex_lock(&split_state_lock, K_FOREVER);
-    stored = g_split_state;
+    stored = g_split_state[channel_index];
     k_mutex_unlock(&split_state_lock);
+    split_emit_quantization_warning(channel_index, &stored);
 
-    if (yj.rc != 0 || hk.rc != 0) {
-        char payload[MAX_PAYLOAD_LEN];
-
-        snprintk(payload, sizeof(payload),
-                 "{\"status\":\"partial\",\"yj\":\"%s\",\"hk\":\"%s\","
-                 "\"ratio1\":%.4f,\"ratio2\":%.4f,\"ratio3\":%.4f,"
-                 "\"requested_ratio1\":%.4f,\"requested_ratio2\":%.4f,"
-                 "\"requested_ratio3\":%.4f,\"toggle_rate_hz\":%.3f,"
-                 "\"requested_toggle_rate_hz\":%.3f,\"stopsin_s\":%u}",
-                 yj.present ? (yj.rc == 0 ? "ok" : "error") : "missing",
-                 hk.present ? (hk.rc == 0 ? "ok" : "error") : "missing",
-                 (double)stored.actual_ratio1,
-                 (double)stored.actual_ratio2,
-                 (double)stored.actual_ratio3,
-                 (double)stored.requested_ratio1,
-                 (double)stored.requested_ratio2,
-                 (double)stored.requested_ratio3,
-                 (double)stored.actual_toggle_rate_hz,
-                 (double)stored.requested_toggle_rate_hz,
-                 stored.stopsin_s);
-        return _msg_builder(cmd, RESP_OK, payload);
-    }
-
-    split_emit_quantization_warning(&stored);
-    return split_response(cmd, "success");
+    return split_channel_response(cmd, channel_index);
 }
 
 struct OutMsg memsroute_set(const struct Command *cmd) {

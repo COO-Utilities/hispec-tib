@@ -21,7 +21,7 @@
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=18, CAL=12, AS=2
 #define MEMS_ROUTER_MAX_ROUTE_PATH 5 // cal has 5 deep
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
-#define MEMS_SWITCH_MAX_TOGGLE_HZ 50.0f
+#define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0f
 #define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
 
 struct mems_router;
@@ -52,6 +52,11 @@ struct mems_switch_status {
     char state;
     bool state_known_this_boot;
     float duty_cycle;
+    /* Exact A-state duty numerator and denominator in MEMS tick counts. */
+    uint32_t duty_numerator;
+    uint32_t duty_denominator;
+    /* Duration of one MEMS tick, currently the delayable-work period. */
+    uint32_t tick_duration_ms;
     float requested_toggle_rate_hz;
     float toggle_rate_hz;
     uint16_t stopafter_s;
@@ -110,6 +115,25 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           float duty_cycle, uint32_t stop_after_s,
                           float requested_toggle_rate_hz);
+/**
+ * @brief Queue a MEMS state change using exact duty-cycle tick counts.
+ *
+ * @p state_ticks is the number of ticks spent in @p state during each
+ * @p period_ticks cycle. The function converts that to the internal A-state
+ * numerator, updates the switch period, and lets the router-owned delayable
+ * work apply pulses on subsequent ticks.
+ */
+int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
+                                uint32_t state_ticks, uint32_t period_ticks,
+                                uint32_t stop_after_s);
+/**
+ * @brief Read a MEMS switch state snapshot.
+ *
+ * The snapshot is taken under the router mutex when the switch belongs to a
+ * router. `duty_cycle` and `duty_numerator` describe the internal A-state
+ * duty; callers that care about a route's B-state duty must invert the
+ * numerator against `duty_denominator`.
+ */
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
 

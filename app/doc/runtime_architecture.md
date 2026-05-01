@@ -25,8 +25,10 @@ hardware mapping.
   path. Each switch stores both the requested toggle rate and the actual
   firmware-quantized rate used by the tick loop.
 - `splitting_set()` is a specific AS-PCB command built on top of MEMS switch
-  duty control. It does not add route definitions; it directly computes the
-  `yj_sw1..3` and `hk_sw4..6` duties needed for the three-output splitter task.
+  duty control and fixed route definitions. It sets one channel at a time,
+  gets `yj_split -> as_split` or `hk_split -> as_split` with
+  `mems_router_get_route()`, and applies exact integer MEMS tick duties to the
+  three route steps.
 
 ## Named Scheduled Actions
 

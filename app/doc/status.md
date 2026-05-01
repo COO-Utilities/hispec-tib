@@ -69,7 +69,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Avoids “tedious” state machines because of maintenance fragility; lean toward simpler task patterns with explicit housekeeping unless state machine is unavoidable.
 - Many algorithmic details (attenuator linearity, exact control loops, quantization rules) will need lab verification before finalizing implementations.
   - Current implementation note: `mems/<switch>` accepts optional `toggle_rate_hz`; requested and actual quantized rates are reported separately.
-  - Current implementation note: `split` is implemented as an AS-PCB-specific system command using `yj_sw1..3` and `hk_sw4..6`, not as a general route abstraction.
+  - Current implementation note: `split` is implemented as an AS-PCB-specific system command using fixed `yj_split -> as_split` and `hk_split -> as_split` MEMS routes.
 
 ### Features:
 - Laser bank control: temperature regulation algorithms, output-power control, detected-power auto-level tuning for photodiodes.
@@ -243,6 +243,11 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - parses desired state from `{"state":"A"|"B"}`
   - optional `duty_cycle` and `stopafter_s` configure toggling (state A only)
   - returns switch state as `A|B|A?|B?` plus `duty_cycle`, `toggle_rate_hz`, and `stopafter_s`
+- defines `OutMsg splitting_set(`Command`)
+  - parses `channel`, `ratio1`, and `ratio2`; computes `ratio3 = 1 - ratio1 - ratio2`
+  - gets the fixed channel route with `mems_router_get_route()`
+  - applies exact integer MEMS tick duties with `mems_switch_set_state_ticks()`
+  - reports requested and actual split ratios as arrays plus per-switch numerator/denominator/tick timing
 - `OutMsg laser_setting_get(const struct Command *cmd)`
   - parses laser name and setting name from command key with `parse_key_pair` '<laser>\<setting>'
   - gets laser channel with `get_laser_channel()` 

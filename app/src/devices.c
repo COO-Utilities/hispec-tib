@@ -254,6 +254,24 @@ void setup_mems_switches_and_routes() {
         {"hk_mm_sm", 'B'}
     };
     mems_router_define_route(&router, "hk_sm", "hk_pd", hk_sm_to_hk_pd, 1);
+
+    /* AS splitter routes define the switch order used by splitting_set().
+     * Step 1 selects output 1, step 2 is held on the splitter branch, and
+     * step 3 is extended by step 1's deadtime before selecting output 2.
+     */
+    struct mems_route_step yj_split_to_as[] = {
+        {"yj_cal_laser", 'A'},
+        {"yj_forward_retro", 'B'},
+        {"yj_ao_fei", 'A'}
+    };
+    mems_router_define_route(&router, "yj_split", "as_split", yj_split_to_as, 3);
+
+    struct mems_route_step hk_split_to_as[] = {
+        {"hk_cal_laser", 'A'},
+        {"hk_forward_retro", 'B'},
+        {"hk_ao_fei", 'A'}
+    };
+    mems_router_define_route(&router, "hk_split", "as_split", hk_split_to_as, 3);
 }
 
 bool devices_ready(void)
