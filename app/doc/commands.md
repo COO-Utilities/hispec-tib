@@ -48,7 +48,7 @@ keywords in the serial command set.
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 stopafter_s=30
+mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
 power on
 ```
 
@@ -184,18 +184,29 @@ guard is active and attenuator DAC-range clamping.
   - Query: No payload
   - Set:
     - Static: `{"state":"A"}` or `{"state":"B"}`
-    - Toggle: `{"state":"A","duty_cycle":[0.0-1.0],"stopafter_s":<seconds>}`
+    - Toggle: `{"state":"A","duty_cycle":[0.0-1.0],"toggle_rate_hz":<hz>,"stopafter_s":<seconds>}`
     - `duty_cycle` is only valid with `state:"A"`.
+    - `toggle_rate_hz` is optional; if omitted the switch uses its current requested toggle rate.
+    - Requested `toggle_rate_hz` is stored separately from the actual firmware-quantized rate.
     - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
     - `stopafter_s` max is 4 hours
 
 - **Response topic:** `cmd/<device>/resp/mems/<switchname>`
   - Query/set result:
     ```json
-    {"state":"A|B|A?|B?","duty_cycle":0.0,"toggle_rate_hz":0.0,"stopafter_s":0}
+    {
+      "state":"A|B|A?|B?",
+      "duty_cycle":0.0,
+      "requested_toggle_rate_hz":0.0,
+      "toggle_rate_hz":0.0,
+      "stopafter_s":0
+    }
     ```
     `?` suffix means the state has not yet been pulsed this boot, note that on first boot all switches wil be reported as A?
     duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling. 
+    `toggle_rate_hz` is the actual quantized rate. If it differs from requested
+    by more than rounding noise, the firmware emits `mems_rate_quantized` on
+    `dt/<device>/warning`.
 
 
 ### `measure_tput`

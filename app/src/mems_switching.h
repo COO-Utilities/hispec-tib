@@ -38,7 +38,9 @@ struct mems_switch {
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
     bool state_known_this_boot;
-    uint32_t switching_period_cycles; // The switching frequency
+    float requested_toggle_rate_hz;
+    float actual_toggle_rate_hz;
+    uint32_t switching_period_cycles; // Quantized switching period in MEMS tick cycles
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
@@ -50,6 +52,7 @@ struct mems_switch_status {
     char state;
     bool state_known_this_boot;
     float duty_cycle;
+    float requested_toggle_rate_hz;
     float toggle_rate_hz;
     uint16_t stopafter_s;
 };
@@ -97,8 +100,16 @@ struct mems_router {
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
                       float configured_toggle_rate_hz, char initial_state);
+/**
+ * @brief Queue a static or toggling MEMS switch state change.
+ *
+ * The router-owned delayable work applies pulses on its next tick. A positive
+ * @p requested_toggle_rate_hz updates the stored requested rate and is
+ * quantized to the nearest firmware tick period before toggling starts.
+ */
 int mems_switch_set_state(struct mems_switch *sw, char state,
-                          float duty_cycle, uint32_t stop_after_s);
+                          float duty_cycle, uint32_t stop_after_s,
+                          float requested_toggle_rate_hz);
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
 

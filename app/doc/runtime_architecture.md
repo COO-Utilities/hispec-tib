@@ -22,7 +22,8 @@ hardware mapping.
 - `tempsensor_thread` owns ambient temperature polling.
 - MEMS switch timing is handled by a router-owned `k_work_delayable` tick in
   `mems_switching.c`; command parsing and MQTT work stay out of that timing
-  path.
+  path. Each switch stores both the requested toggle rate and the actual
+  firmware-quantized rate used by the tick loop.
 
 ## Named Scheduled Actions
 

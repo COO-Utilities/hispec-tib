@@ -1474,7 +1474,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
             return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
         }
 
-        rc = mems_switch_set_state(sw, step->state, 1,0);
+        rc = mems_switch_set_state(sw, step->state, 1, 0, 0.0f);
 
         if (rc != 0) {
             char payload[MAX_PAYLOAD_LEN]={0};
@@ -1510,9 +1510,12 @@ static struct OutMsg mems_response_for_switch(const struct Command *cmd, const s
     mems_format_state(&status, state_buf, sizeof(state_buf));
 
     snprintk(payload, sizeof(payload),
-             "{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
+             "{\"state\":\"%s\",\"duty_cycle\":%.3f,"
+             "\"requested_toggle_rate_hz\":%.3f,\"toggle_rate_hz\":%.3f,"
+             "\"stopafter_s\":%u}",
              state_buf,
              (double)status.duty_cycle,
+             (double)status.requested_toggle_rate_hz,
              (double)status.toggle_rate_hz,
              status.stopafter_s);
 
@@ -1546,10 +1549,13 @@ struct OutMsg mems_get(const struct Command *cmd) {
             mems_switch_get_status(router.switches[i], &status);
             mems_format_state(&status, state_buf, sizeof(state_buf));
             written = snprintk(payload + off, sizeof(payload) - off,
-                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u}",
+                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,"
+                               "\"requested_toggle_rate_hz\":%.3f,\"toggle_rate_hz\":%.3f,"
+                               "\"stopafter_s\":%u}",
                                router.switches[i]->name,
                                state_buf,
                                (double)status.duty_cycle,
+                               (double)status.requested_toggle_rate_hz,
                                (double)status.toggle_rate_hz,
                                status.stopafter_s);
             if (written < 0 || written >= (int)(sizeof(payload) - off)) {
@@ -1585,9 +1591,11 @@ struct OutMsg mems_set(const struct Command *cmd) {
     char requested_state[8] = {0};
     float duty_cycle = 0.0f;
     float stopafter_s = 0.0f;
+    float toggle_rate_hz = 0.0f;
     uint32_t stopafter_s_u32 = 0U;
     bool has_duty_cycle = false;
     bool has_stopafter_s = false;
+    bool has_toggle_rate_hz = false;
     int parse_rc;
     int rc;
 
@@ -1621,6 +1629,15 @@ struct OutMsg mems_set(const struct Command *cmd) {
     }
     has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
 
+    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid toggle_rate_hz\"}");
+    }
+    has_toggle_rate_hz = (parse_rc == COO_JSON_EXTRACT_OK);
+    if (has_toggle_rate_hz && toggle_rate_hz <= 0.0f) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"toggle_rate_hz must be > 0\"}");
+    }
+
     if (has_duty_cycle && requested_state[0] == 'B') {
         return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"duty_cycle only valid with state A\"}");
     }
@@ -1641,9 +1658,12 @@ struct OutMsg mems_set(const struct Command *cmd) {
     }
 
     if (has_duty_cycle) {
-        rc = mems_switch_set_state(sw, requested_state[0], duty_cycle, stopafter_s_u32);
+        rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
+                                   stopafter_s_u32,
+                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0f);
     } else {
-        rc = mems_switch_set_state(sw, requested_state[0], 1, 0);
+        rc = mems_switch_set_state(sw, requested_state[0], 1, 0,
+                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0f);
     }
 
     if (rc == -ERANGE) {
@@ -1651,6 +1671,27 @@ struct OutMsg mems_set(const struct Command *cmd) {
     }
     if (rc != 0) {
         return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Invalid MEMS setting\"}");
+    }
+
+    if (has_toggle_rate_hz) {
+        struct mems_switch_status status = {0};
+        char context[96];
+        float diff;
+
+        mems_switch_get_status(sw, &status);
+        diff = status.toggle_rate_hz - toggle_rate_hz;
+        if (diff < 0.0f) {
+            diff = -diff;
+        }
+        if (diff > 0.001f) {
+            snprintk(context, sizeof(context),
+                     "switch=%s requested=%.3f actual=%.3f",
+                     sw->name, (double)toggle_rate_hz,
+                     (double)status.toggle_rate_hz);
+            app_warning_emit("mems_rate_quantized",
+                             "requested MEMS toggle rate was quantized",
+                             context);
+        }
     }
 
     return mems_response_for_switch(cmd, sw);

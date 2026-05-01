@@ -68,6 +68,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Implementation target: C (Zephyr). Later port to C++ on zephyer if desired for personal learning and exploration.
 - Avoids “tedious” state machines because of maintenance fragility; lean toward simpler task patterns with explicit housekeeping unless state machine is unavoidable.
 - Many algorithmic details (attenuator linearity, exact control loops, quantization rules) will need lab verification before finalizing implementations.
+  - Current implementation note: `mems/<switch>` accepts optional `toggle_rate_hz`; requested and actual quantized rates are reported separately.
 
 ### Features:
 - Laser bank control: temperature regulation algorithms, output-power control, detected-power auto-level tuning for photodiodes.

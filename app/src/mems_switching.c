@@ -94,10 +94,24 @@ static void mems_switch_stop_toggling_locked(struct mems_switch *sw)
     sw->remaining_toggle_cycles = 0U;
 }
 
+static void mems_switch_apply_requested_rate_locked(struct mems_switch *sw,
+                                                    float requested_rate_hz)
+{
+    if (requested_rate_hz <= 0.0f) {
+        return;
+    }
+
+    sw->requested_toggle_rate_hz = requested_rate_hz;
+    sw->switching_period_cycles = quantize_toggle_period_cycles(requested_rate_hz);
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
+}
+
 static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
-                                          float duty_cycle, uint32_t stop_after_s)
+                                          float duty_cycle, uint32_t stop_after_s,
+                                          float requested_toggle_rate_hz)
 {
     struct mems_router *router;
+    uint32_t previous_period_cycles;
     uint32_t period_cycles;
     bool locked = false;
 
@@ -124,6 +138,9 @@ static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
         k_mutex_lock(&router->lock, K_FOREVER);
         locked = true;
     }
+
+    previous_period_cycles = sw->switching_period_cycles;
+    mems_switch_apply_requested_rate_locked(sw, requested_toggle_rate_hz);
 
     period_cycles = sw->switching_period_cycles;
     uint32_t a_cycles = (uint32_t)(duty_cycle * (float)period_cycles + 0.5f);
@@ -154,7 +171,8 @@ static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
         requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
     }
     bool same_profile = (sw->remaining_toggle_cycles > 0U) &&
-                        (sw->a_state_cycles == a_cycles);
+                        (sw->a_state_cycles == a_cycles) &&
+                        (previous_period_cycles == sw->switching_period_cycles);
 
     sw->remaining_toggle_cycles = seconds_to_cycles(requested_duration_s);
     if (!same_profile) {
@@ -261,7 +279,9 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
     sw->a_state_cycles = 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
+    sw->requested_toggle_rate_hz = switching_frequency_hz;
     sw->switching_period_cycles = quantize_toggle_period_cycles(switching_frequency_hz);
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
 
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
@@ -274,10 +294,12 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
 int mems_switch_set_state(struct mems_switch *sw,
                                     char state,
                                     float duty_cycle,
-                                    uint32_t stop_after_s)
+                                    uint32_t stop_after_s,
+                                    float requested_toggle_rate_hz)
 {
     // todo is this static/nonstatic nesting needed?
-    return mems_switch_set_state_internal(sw, state, duty_cycle, stop_after_s);
+    return mems_switch_set_state_internal(sw, state, duty_cycle, stop_after_s,
+                                          requested_toggle_rate_hz);
 }
 
 
@@ -296,7 +318,8 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
     out->state = sw->remaining_toggle_cycles>0 ? 'A': sw->state;
     out->state_known_this_boot = sw->state_known_this_boot;
     out->duty_cycle = (float)sw->a_state_cycles / (float)sw->switching_period_cycles; //actual attained duty cycle
-    out->toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
+    out->requested_toggle_rate_hz = sw->requested_toggle_rate_hz;
+    out->toggle_rate_hz = sw->actual_toggle_rate_hz;
 
     if (sw->remaining_toggle_cycles!=0) {
         out->stopafter_s = (sw->remaining_toggle_cycles * MEMS_SWITCH_ELECTRICAL_PULSE_MS + 999U)/ 1000U;
