@@ -90,6 +90,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "serialguard", serial_guard_get, serial_guard_set },
     { "memsroute",  memsroute_get,    memsroute_set    },
     { "mems",       mems_get,         mems_set         },
+    { "split",      splitting_get,    splitting_set    },
     { "laser",      laser_setting_get,laser_setting_set},
     { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
@@ -1000,7 +1001,7 @@ struct OutMsg serial_active_response(const struct Command *cmd) {
 struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
-                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,laser,power,atten\"}");
+                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,laser,power,atten\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
@@ -1447,6 +1448,450 @@ struct OutMsg memsroute_get(const struct Command *cmd)
     return _msg_builder(cmd, RESP_OK, buf);
 }
 
+struct split_switch_group {
+    const char *label;
+    const char *sw1_name;
+    const char *sw2_name;
+    const char *sw3_name;
+};
+
+struct split_group_result {
+    bool present;
+    bool configured;
+    int rc;
+    float actual_ratio1;
+    float actual_ratio2;
+    float actual_ratio3;
+    float actual_toggle_rate_hz;
+    uint32_t stopsin_s;
+};
+
+struct split_state {
+    bool configured;
+    float requested_ratio1;
+    float requested_ratio2;
+    float requested_ratio3;
+    float actual_ratio1;
+    float actual_ratio2;
+    float actual_ratio3;
+    float requested_toggle_rate_hz;
+    float actual_toggle_rate_hz;
+    uint32_t stopafter_s;
+    uint32_t stopsin_s;
+};
+
+static const struct split_switch_group split_groups[] = {
+    {"yj", "yj_sw1", "yj_sw2", "yj_sw3"},
+    {"hk", "hk_sw4", "hk_sw5", "hk_sw6"},
+};
+
+/* Command-level cache of the requested AS split. The MEMS switch objects keep
+ * their own GPIO/toggle state under the router lock; this mutex only protects
+ * the compact response snapshot used by split get/set.
+ */
+static struct split_state g_split_state;
+static K_MUTEX_DEFINE(split_state_lock);
+
+/* All three switches in a tree are required before touching that tree. */
+static bool split_find_switches(const struct split_switch_group *group,
+                                struct mems_switch **sw1,
+                                struct mems_switch **sw2,
+                                struct mems_switch **sw3)
+{
+    *sw1 = mems_router_find_switch(&router, group->sw1_name);
+    *sw2 = mems_router_find_switch(&router, group->sw2_name);
+    *sw3 = mems_router_find_switch(&router, group->sw3_name);
+
+    return *sw1 != NULL && *sw2 != NULL && *sw3 != NULL;
+}
+
+static int split_set_static_or_duty(struct mems_switch *sw, float duty_cycle,
+                                    uint32_t stopafter_s, float toggle_rate_hz)
+{
+    /* Endpoint duties are steady MEMS states. Mixed duties are delegated to the
+     * MEMS tick work through mems_switch_set_state().
+     */
+    if (duty_cycle <= 0.0f) {
+        return mems_switch_set_state(sw, 'B', 1.0f, 0U, 0.0f);
+    }
+    if (duty_cycle >= 1.0f) {
+        return mems_switch_set_state(sw, 'A', 1.0f, 0U, 0.0f);
+    }
+
+    return mems_switch_set_state(sw, 'A', duty_cycle, stopafter_s, toggle_rate_hz);
+}
+
+static void split_read_group_result(const struct split_switch_group *group,
+                                    struct mems_switch *sw1,
+                                    struct mems_switch *sw3,
+                                    struct split_group_result *result)
+{
+    struct mems_switch_status sw1_status = {0};
+    struct mems_switch_status sw3_status = {0};
+    float sw1_duty;
+    float sw3_duty;
+
+    /* mems_switch_get_status() reads the attained, tick-quantized duty cycles
+     * under the MEMS router lock.
+     */
+    mems_switch_get_status(sw1, &sw1_status);
+    mems_switch_get_status(sw3, &sw3_status);
+
+    sw1_duty = sw1_status.duty_cycle;
+    sw3_duty = sw3_status.duty_cycle;
+    result->actual_ratio1 = sw1_duty;
+    result->actual_ratio2 = (1.0f - sw1_duty) * sw3_duty;
+    result->actual_ratio3 = (1.0f - sw1_duty) * (1.0f - sw3_duty);
+    result->stopsin_s = MAX(sw1_status.stopafter_s, sw3_status.stopafter_s);
+    result->actual_toggle_rate_hz = MAX(sw1_status.toggle_rate_hz,
+                                        sw3_status.toggle_rate_hz);
+
+    LOG_INF("Split %s actual %.3f %.3f %.3f",
+            group->label,
+            (double)result->actual_ratio1,
+            (double)result->actual_ratio2,
+            (double)result->actual_ratio3);
+}
+
+static int split_apply_group(const struct split_switch_group *group,
+                             float ratio1, float ratio2, float ratio3,
+                             uint32_t stopafter_s, float toggle_rate_hz,
+                             struct split_group_result *result)
+{
+    struct mems_switch *sw1;
+    struct mems_switch *sw2;
+    struct mems_switch *sw3;
+    float downstream_total;
+    float sw1_duty;
+    float sw3_duty;
+    int rc = 0;
+
+    memset(result, 0, sizeof(*result));
+    if (!split_find_switches(group, &sw1, &sw2, &sw3)) {
+        result->rc = -ENODEV;
+        return result->rc;
+    }
+    result->present = true;
+
+    /* Side effect: these calls queue static states or timed toggling for this
+     * tree. Slow command parsing and MQTT publishing stay outside the MEMS
+     * timing work.
+     */
+    if (ratio1 == 0.0f && ratio2 == 0.0f && ratio3 == 0.0f) {
+        /* No requested splitter output: return this AS tree to its documented
+         * steady, non-splitting path.
+         */
+        rc |= mems_switch_set_state(sw1, 'A', 1.0f, 0U, 0.0f);
+        rc |= mems_switch_set_state(sw2, 'A', 1.0f, 0U, 0.0f);
+        rc |= mems_switch_set_state(sw3, 'A', 1.0f, 0U, 0.0f);
+        result->rc = rc;
+        result->configured = (rc == 0);
+        return result->rc;
+    }
+
+    downstream_total = ratio2 + ratio3;
+    sw1_duty = ratio1;
+    sw3_duty = downstream_total > 0.0f ? ratio2 / downstream_total : 1.0f;
+
+    /* This is a hard-coded achromatic-splitter task. SW2 is held on the
+     * splitter branch while SW1 chooses output 1 versus the downstream branch,
+     * and SW3 splits the downstream branch between outputs 2 and 3.
+     */
+    rc |= mems_switch_set_state(sw2, 'B', 1.0f, 0U, 0.0f);
+    rc |= split_set_static_or_duty(sw1, sw1_duty, stopafter_s, toggle_rate_hz);
+    rc |= split_set_static_or_duty(sw3, sw3_duty, stopafter_s, toggle_rate_hz);
+
+    result->rc = rc;
+    result->configured = (rc == 0);
+    if (rc == 0) {
+        split_read_group_result(group, sw1, sw3, result);
+    }
+
+    return result->rc;
+}
+
+static void split_store_state(float requested_ratio1, float requested_ratio2,
+                              float requested_ratio3, float requested_rate,
+                              uint32_t stopafter_s,
+                              const struct split_group_result *yj,
+                              const struct split_group_result *hk)
+{
+    float n = 0.0f;
+    struct split_state next = {0};
+
+    next.configured = requested_ratio1 > 0.0f || requested_ratio2 > 0.0f ||
+                      requested_ratio3 > 0.0f;
+    next.requested_ratio1 = requested_ratio1;
+    next.requested_ratio2 = requested_ratio2;
+    next.requested_ratio3 = requested_ratio3;
+    next.requested_toggle_rate_hz = requested_rate;
+    next.stopafter_s = stopafter_s;
+
+    if (yj->configured) {
+        next.actual_ratio1 += yj->actual_ratio1;
+        next.actual_ratio2 += yj->actual_ratio2;
+        next.actual_ratio3 += yj->actual_ratio3;
+        next.actual_toggle_rate_hz += yj->actual_toggle_rate_hz;
+        next.stopsin_s = MAX(next.stopsin_s, yj->stopsin_s);
+        n += 1.0f;
+    }
+    if (hk->configured) {
+        next.actual_ratio1 += hk->actual_ratio1;
+        next.actual_ratio2 += hk->actual_ratio2;
+        next.actual_ratio3 += hk->actual_ratio3;
+        next.actual_toggle_rate_hz += hk->actual_toggle_rate_hz;
+        next.stopsin_s = MAX(next.stopsin_s, hk->stopsin_s);
+        n += 1.0f;
+    }
+
+    if (n > 0.0f) {
+        next.actual_ratio1 /= n;
+        next.actual_ratio2 /= n;
+        next.actual_ratio3 /= n;
+        next.actual_toggle_rate_hz /= n;
+    }
+
+    /* Zephyr mutex keeps get/set responses coherent if serial and MQTT command
+     * sources query split state around the same time.
+     */
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    g_split_state = next;
+    k_mutex_unlock(&split_state_lock);
+}
+
+static void split_emit_quantization_warning(const struct split_state *state)
+{
+    float d1 = state->actual_ratio1 - state->requested_ratio1;
+    float d2 = state->actual_ratio2 - state->requested_ratio2;
+    float d3 = state->actual_ratio3 - state->requested_ratio3;
+    char context[128];
+
+    if (d1 < 0.0f) {
+        d1 = -d1;
+    }
+    if (d2 < 0.0f) {
+        d2 = -d2;
+    }
+    if (d3 < 0.0f) {
+        d3 = -d3;
+    }
+
+    if (d1 <= 0.001f && d2 <= 0.001f && d3 <= 0.001f) {
+        return;
+    }
+
+    snprintk(context, sizeof(context),
+             "requested=%.3f/%.3f/%.3f actual=%.3f/%.3f/%.3f",
+             (double)state->requested_ratio1,
+             (double)state->requested_ratio2,
+             (double)state->requested_ratio3,
+             (double)state->actual_ratio1,
+             (double)state->actual_ratio2,
+             (double)state->actual_ratio3);
+    app_warning_emit("split_ratio_quantized",
+                     "requested split ratio was quantized by MEMS timing",
+                     context);
+}
+
+static void split_refresh_state_from_switches(void)
+{
+    struct split_state state;
+    float n = 0.0f;
+
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    state = g_split_state;
+    k_mutex_unlock(&split_state_lock);
+
+    if (!state.configured) {
+        return;
+    }
+
+    state.actual_ratio1 = 0.0f;
+    state.actual_ratio2 = 0.0f;
+    state.actual_ratio3 = 0.0f;
+    state.actual_toggle_rate_hz = 0.0f;
+    state.stopsin_s = 0U;
+
+    for (size_t i = 0; i < ARRAY_SIZE(split_groups); ++i) {
+        struct mems_switch *sw1;
+        struct mems_switch *sw2;
+        struct mems_switch *sw3;
+        struct split_group_result result = {0};
+
+        if (!split_find_switches(&split_groups[i], &sw1, &sw2, &sw3)) {
+            continue;
+        }
+
+        ARG_UNUSED(sw2);
+        result.configured = true;
+        split_read_group_result(&split_groups[i], sw1, sw3, &result);
+        state.actual_ratio1 += result.actual_ratio1;
+        state.actual_ratio2 += result.actual_ratio2;
+        state.actual_ratio3 += result.actual_ratio3;
+        state.actual_toggle_rate_hz += result.actual_toggle_rate_hz;
+        state.stopsin_s = MAX(state.stopsin_s, result.stopsin_s);
+        n += 1.0f;
+    }
+
+    if (n > 0.0f) {
+        state.actual_ratio1 /= n;
+        state.actual_ratio2 /= n;
+        state.actual_ratio3 /= n;
+        state.actual_toggle_rate_hz /= n;
+    }
+
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    g_split_state = state;
+    k_mutex_unlock(&split_state_lock);
+}
+
+static struct OutMsg split_response(const struct Command *cmd, const char *status)
+{
+    struct split_state state;
+    char payload[MAX_PAYLOAD_LEN];
+
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    state = g_split_state;
+    k_mutex_unlock(&split_state_lock);
+
+    snprintk(payload, sizeof(payload),
+             "{\"status\":\"%s\",\"ratio1\":%.4f,\"ratio2\":%.4f,"
+             "\"ratio3\":%.4f,\"requested_ratio1\":%.4f,"
+             "\"requested_ratio2\":%.4f,\"requested_ratio3\":%.4f,"
+             "\"toggle_rate_hz\":%.3f,\"requested_toggle_rate_hz\":%.3f,"
+             "\"stopsin_s\":%u}",
+             status,
+             (double)state.actual_ratio1,
+             (double)state.actual_ratio2,
+             (double)state.actual_ratio3,
+             (double)state.requested_ratio1,
+             (double)state.requested_ratio2,
+             (double)state.requested_ratio3,
+             (double)state.actual_toggle_rate_hz,
+             (double)state.requested_toggle_rate_hz,
+             state.stopsin_s);
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg splitting_get(const struct Command *cmd)
+{
+    struct mems_switch *sw1;
+    struct mems_switch *sw2;
+    struct mems_switch *sw3;
+    bool any_present = false;
+
+    for (size_t i = 0; i < ARRAY_SIZE(split_groups); ++i) {
+        any_present = split_find_switches(&split_groups[i], &sw1, &sw2, &sw3);
+        if (any_present) {
+            break;
+        }
+    }
+
+    if (!any_present) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"splitter switches unavailable\"}");
+    }
+
+    split_refresh_state_from_switches();
+    return split_response(cmd, "success");
+}
+
+/** Apply a fixed AS-PCB splitter command.
+ *
+ * Payload fields are relative non-negative weights. The handler normalizes
+ * them once, applies the same requested ratio to the YJ and HK trees, and then
+ * reports the attained ratio calculated from MEMS switch status.
+ */
+struct OutMsg splitting_set(const struct Command *cmd)
+{
+    struct split_group_result yj = {0};
+    struct split_group_result hk = {0};
+    struct split_state stored;
+    float ratio1 = 0.0f;
+    float ratio2 = 0.0f;
+    float ratio3 = 0.0f;
+    float total;
+    float toggle_rate_hz = 0.0f;
+    uint32_t stopafter_s = 0U;
+    int parse_rc;
+    bool any_present;
+
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &ratio1);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio1\"}");
+    }
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &ratio2);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio2\"}");
+    }
+    parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio3\"}");
+    }
+    parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
+    if (parse_rc == COO_JSON_EXTRACT_ERR ||
+        stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid stopafter_s\"}");
+    }
+    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
+    if (parse_rc == COO_JSON_EXTRACT_ERR || toggle_rate_hz < 0.0f) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid toggle_rate_hz\"}");
+    }
+
+    if (ratio1 < 0.0f || ratio2 < 0.0f || ratio3 < 0.0f) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"ratios must be non-negative\"}");
+    }
+
+    total = ratio1 + ratio2 + ratio3;
+    if (total > 0.0f) {
+        ratio1 /= total;
+        ratio2 /= total;
+        ratio3 /= total;
+    }
+
+    (void)split_apply_group(&split_groups[0], ratio1, ratio2, ratio3,
+                            stopafter_s, toggle_rate_hz, &yj);
+    (void)split_apply_group(&split_groups[1], ratio1, ratio2, ratio3,
+                            stopafter_s, toggle_rate_hz, &hk);
+    any_present = yj.present || hk.present;
+    if (!any_present) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"splitter switches unavailable\"}");
+    }
+
+    split_store_state(ratio1, ratio2, ratio3, toggle_rate_hz, stopafter_s, &yj, &hk);
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    stored = g_split_state;
+    k_mutex_unlock(&split_state_lock);
+
+    if (yj.rc != 0 || hk.rc != 0) {
+        char payload[MAX_PAYLOAD_LEN];
+
+        snprintk(payload, sizeof(payload),
+                 "{\"status\":\"partial\",\"yj\":\"%s\",\"hk\":\"%s\","
+                 "\"ratio1\":%.4f,\"ratio2\":%.4f,\"ratio3\":%.4f,"
+                 "\"requested_ratio1\":%.4f,\"requested_ratio2\":%.4f,"
+                 "\"requested_ratio3\":%.4f,\"toggle_rate_hz\":%.3f,"
+                 "\"requested_toggle_rate_hz\":%.3f,\"stopsin_s\":%u}",
+                 yj.present ? (yj.rc == 0 ? "ok" : "error") : "missing",
+                 hk.present ? (hk.rc == 0 ? "ok" : "error") : "missing",
+                 (double)stored.actual_ratio1,
+                 (double)stored.actual_ratio2,
+                 (double)stored.actual_ratio3,
+                 (double)stored.requested_ratio1,
+                 (double)stored.requested_ratio2,
+                 (double)stored.requested_ratio3,
+                 (double)stored.actual_toggle_rate_hz,
+                 (double)stored.requested_toggle_rate_hz,
+                 stored.stopsin_s);
+        return _msg_builder(cmd, RESP_OK, payload);
+    }
+
+    split_emit_quantization_warning(&stored);
+    return split_response(cmd, "success");
+}
+
 struct OutMsg memsroute_set(const struct Command *cmd) {
 
     // Parse {"input":"...","output":"..."}
@@ -1470,6 +1915,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
         int rc;
 
         if (sw==NULL) {
+            //TODO this should be an impossible error if compiled code is correct
             LOG_ERR("Internal route error: Switch %s not found\n", step->switch_name);
             return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
         }

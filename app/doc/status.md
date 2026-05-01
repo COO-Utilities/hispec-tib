@@ -69,6 +69,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Avoids “tedious” state machines because of maintenance fragility; lean toward simpler task patterns with explicit housekeeping unless state machine is unavoidable.
 - Many algorithmic details (attenuator linearity, exact control loops, quantization rules) will need lab verification before finalizing implementations.
   - Current implementation note: `mems/<switch>` accepts optional `toggle_rate_hz`; requested and actual quantized rates are reported separately.
+  - Current implementation note: `split` is implemented as an AS-PCB-specific system command using `yj_sw1..3` and `hk_sw4..6`, not as a general route abstraction.
 
 ### Features:
 - Laser bank control: temperature regulation algorithms, output-power control, detected-power auto-level tuning for photodiodes.

@@ -49,6 +49,7 @@ keywords in the serial command set.
 ```text
 serialguard seconds=60
 mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
+split ratio1=1 ratio2=1 ratio3=1 toggle_rate_hz=17 stopafter_s=300
 power on
 ```
 
@@ -724,23 +725,56 @@ TODO add diode stabilized flag and time until setting
 - **Request topic:** `cmd/<device>/req/split`
   - Set:
     ```json
-    {     "ratio1": 0.0,
-          "ratio2": 0.0,
-          "ratio3": 0.0,
-          "stopafter_s": 0
-        }
+    {
+      "ratio1": 0.0,
+      "ratio2": 0.0,
+      "ratio3": 0.0,
+      "toggle_rate_hz": 0.0,
+      "stopafter_s": 0
+    }
     ```
   - Query: No payload
 
 - **Response topic:** `cmd/<device>/resp/split`
-  - Set result: `{"status": "success"}`
+  - Set result: same shape as query result, with `status:"success"` or
+    `status:"partial"` if one splitter tree was applied and the other was
+    missing or failed.
   - Query result:
     ```json
-    {     "ratio1": 0.0,
-          "ratio2": 0.0,
-          "ratio3": 0.0,
-          "stopsin_s": 0
-        }
+    {
+      "status": "success",
+      "ratio1": 0.0,
+      "ratio2": 0.0,
+      "ratio3": 0.0,
+      "requested_ratio1": 0.0,
+      "requested_ratio2": 0.0,
+      "requested_ratio3": 0.0,
+      "toggle_rate_hz": 0.0,
+      "requested_toggle_rate_hz": 0.0,
+      "stopsin_s": 0
+    }
     ```
 
-- **Notes:** all zeros means light isn’t going to the splitter.
+- **Notes:**
+  - This is intentionally not a general route/switch feature. It is the
+    system-level achromatic-splitter operation for the AS PCB.
+  - The implementation is anchored in `splitting_set()` and `splitting_get()`.
+  - The hard-coded YJ tree is `yj_sw1`, `yj_sw2`, `yj_sw3`; the hard-coded HK
+    tree is `hk_sw4`, `hk_sw5`, `hk_sw6`.
+  - `ratio1`, `ratio2`, and `ratio3` are non-negative relative weights. The
+    firmware normalizes them before computing switch duties.
+  - `ratio1` maps to the direct branch selected by SW1. The remaining light is
+    sent through the downstream branch, where SW3 splits `ratio2` and `ratio3`.
+    SW2 is held on the splitter branch.
+  - All zero ratios stop splitting and return each AS tree to its static
+    non-splitting path.
+  - `toggle_rate_hz` is optional. If omitted or zero, current per-switch MEMS
+    toggle rates are used.
+  - Response `ratio*` values are the currently attained ratios, refreshed from
+    switch status in `splitting_get()`. Requested values are reported separately
+    after normalization, so `1,1,1` is reported as `0.3333,0.3333,0.3333`.
+  - `status:"partial"` responses also include `yj` and `hk` fields with
+    `ok`, `missing`, or `error` for the two hard-coded switch trees.
+  - If attained ratios differ from requested ratios because MEMS timing is
+    quantized, the firmware emits `split_ratio_quantized` on
+    `dt/<device>/warning`.

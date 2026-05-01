@@ -74,6 +74,10 @@ struct DispatchEntry {
 /* Handler prototypes for all commands (get/set where defined) */
 struct OutMsg memsroute_get(const struct Command *cmd);
 struct OutMsg memsroute_set(const struct Command *cmd);
+/** Query the current AS splitter ratio command state. */
+struct OutMsg splitting_get(const struct Command *cmd);
+/** Apply the AS-PCB-specific YJ/HK three-output splitter command. */
+struct OutMsg splitting_set(const struct Command *cmd);
 struct OutMsg help_get(const struct Command *cmd);
 struct OutMsg ip_get(const struct Command *cmd);
 struct OutMsg ip_set(const struct Command *cmd);

@@ -24,6 +24,9 @@ hardware mapping.
   `mems_switching.c`; command parsing and MQTT work stay out of that timing
   path. Each switch stores both the requested toggle rate and the actual
   firmware-quantized rate used by the tick loop.
+- `splitting_set()` is a specific AS-PCB command built on top of MEMS switch
+  duty control. It does not add route definitions; it directly computes the
+  `yj_sw1..3` and `hk_sw4..6` duties needed for the three-output splitter task.
 
 ## Named Scheduled Actions
 
