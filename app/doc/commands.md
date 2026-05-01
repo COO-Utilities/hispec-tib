@@ -738,6 +738,9 @@ TODO add diode stabilized flag and time until setting
   ```json
   {   "fwversion": "<githash>",
       "bootcount": 0,
+      "board_type": "tib|cal_blue|cal_red|as|unknown|fault",
+      "board_valid": true,
+      "mems_switches": 8,
       "ip": "<response of ip command query>",
       "temp_c": 0.0,
       "pd_ontime": 0,
@@ -783,6 +786,8 @@ TODO add diode stabilized flag and time until setting
     ```
   - Query one channel: `cmd/<device>/req/split/yj` or
     `cmd/<device>/req/split/hk` with no payload
+  - Only available when the AS board strap is selected. The AS board registers
+    routes `yj_calin -> yj_split` and `hk_calin -> hk_split`.
 
 - **Response topic:** `cmd/<device>/resp/split` for set, or
   `cmd/<device>/resp/split/<channel>` for per-channel query
@@ -796,7 +801,7 @@ TODO add diode stabilized flag and time until setting
       "actual_ratio": [0.33, 0.33, 0.34],
       "switches": [
         {
-          "name": "yj_cal_laser",
+          "name": "yj_as1",
           "state": "A",
           "duty_cycle": 0.33,
           "numerator": 33,
@@ -804,7 +809,7 @@ TODO add diode stabilized flag and time until setting
           "tick_ms": 2
         },
         {
-          "name": "yj_forward_retro",
+          "name": "yj_as2",
           "state": "B",
           "duty_cycle": 1.0,
           "numerator": 100,
@@ -812,7 +817,7 @@ TODO add diode stabilized flag and time until setting
           "tick_ms": 2
         },
         {
-          "name": "yj_ao_fei",
+          "name": "yj_as3",
           "state": "A",
           "duty_cycle": 0.66,
           "numerator": 66,

@@ -83,6 +83,7 @@ Before making edits understand Zephyr's task structure and device initialization
   - Auto-calibrate attenuators in loopback mode. Plan to use linear fitting or analytical model parameterization, but must verify attenuator behavior experimentally.
 - Settings persistence:
   - Persist calibrations and states across reboots; store values and fall back to hard-coded defaults. No additional persistence layers required.
+  - Current implementation note: the detected PCB board type is persisted as `tib/board/type`; if a later boot detects a different valid board type, all other app settings are cleared and the boot behaves as a first boot for the new hardware.
 - Error handling & observability:
   - Error heuristics: if a command can detect a problem it should do as much safe work as possible and report known failures.
   - Warnings are to be easy to publish from anywhere in the code as fire-and-forget MQTT messages.
@@ -434,21 +435,22 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
 
 ### devices.c
 - instantiates adc, dac, modbus_name, and gpio dev via device tree
-- instantiates attenuators, mems_switches, mems_router
-- defines constants:
-  - switch_names strings
-  - mems_switch_pin_pairs
-- defines
-  - modbus client setup function
-  - attenuators setup function
-  - setup_mems_switches_and_routes
-    - TODO this may well have a stack memory error and really the routes should be defined as a hardcode plus possibly a 
-      macro to ease readability. These routes are fixed in hardware and can not change 
-      - This would eliminate `mems_router_define_route`
-  - devices_ready())
-    - configures power gpio IFF it doesn't report ready
-      - TODO Why is this conditional needed? Document it.
-      - 
+- detects the physically assembled PCB from the four active-low board-type strap GPIOs in `devices_detect_board_type()`
+  - exactly one strap must be active
+  - no active strap leaves board type `unknown`
+  - multiple active straps leave board type `fault`
+  - Nucleo strap pins are still TBD in `hardware.md`, so the current overlay keeps placeholder properties and detection fails safe until the pins are assigned
+- exposes simple capability helpers:
+  - `devices_has_laser_bank()`
+  - `devices_has_photodiodes()`
+  - `devices_has_laser_power_control()`
+  - `devices_attenuator_index_available()`
+- instantiates attenuators, mems_switches, and mems_router according to the detected board profile
+  - TIB: 8 MEMS switches, TIB route table, 6 logical attenuator channels, laser bank, photodiodes, laser power GPIO, relay box
+  - AS: 6 MEMS switches and AS split/cal routes
+  - CAL blue/red: 7 MEMS switches and the single H/CAL logical attenuator channel; CAL routes still need final route names
+- defines MEMS routes as static file-scope tables. `mems_router_define_route()` still copies route steps into the router, but route definitions no longer depend on local stack arrays.
+- `devices_ready()` checks only devices that should exist on the selected board profile
 
  
 

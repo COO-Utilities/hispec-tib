@@ -12,11 +12,13 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S 30U
 
+#define KEY_BOARD_TYPE "tib/board/type"
 #define KEY_SERIAL_HOLDOFF "tib/serial/holdoff_s"
 #define KEY_BOOT_COUNT "tib/boot_count"
 #define KEY_IP_TRY_DHCP "tib/ip/trydhcpfirst"
@@ -70,6 +72,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 
 	memset(s, 0, sizeof(*s));
 
+	str_set(s->board_type, sizeof(s->board_type), "");
 	s->ip.try_dhcp_first = true;
 	s->ip.prefer_dhcp_dns = true;
 	s->ip.prefer_dhcp_ntp = true;
@@ -168,6 +171,13 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 	ARG_UNUSED(len);
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
+
+	if (strcmp(name, "board/type") == 0) {
+		(void)read_str(read_cb, cb_arg,
+			       g_settings.snapshot.board_type,
+			       sizeof(g_settings.snapshot.board_type));
+		goto out;
+	}
 
 	if (strcmp(name, "serial/holdoff_s") == 0) {
 		(void)read_u32(read_cb, cb_arg, &g_settings.snapshot.serial_holdoff_s);
@@ -337,6 +347,46 @@ static void persist_str(const char *key, const char *value)
 	(void)settings_save_one(key, value, len);
 }
 
+static const char *const resettable_setting_keys[] = {
+	KEY_SERIAL_HOLDOFF,
+	KEY_BOOT_COUNT,
+	KEY_IP_TRY_DHCP,
+	KEY_IP_PREF_DNS,
+	KEY_IP_PREF_NTP,
+	KEY_IP_ADDR,
+	KEY_IP_SUBNET,
+	KEY_IP_GATEWAY,
+	KEY_IP_DNS,
+	KEY_IP_NTP,
+	KEY_MQTT_HOST,
+	KEY_MQTT_PORT,
+	KEY_PD_YJ_DARK_MV,
+	KEY_PD_YJ_LOWEST_DARK_MV,
+	KEY_PD_YJ_LOWEST_DARK_VALID,
+	KEY_PD_YJ_NOISE_WARN_MV,
+	KEY_PD_YJ_GAIN_V_PER_UW,
+	KEY_PD_HK_DARK_MV,
+	KEY_PD_HK_LOWEST_DARK_MV,
+	KEY_PD_HK_LOWEST_DARK_VALID,
+	KEY_PD_HK_NOISE_WARN_MV,
+	KEY_PD_HK_GAIN_V_PER_UW,
+};
+
+static void delete_resettable_settings(void)
+{
+	for (uint8_t i = 0; i < ARRAY_SIZE(resettable_setting_keys); ++i) {
+		/* settings_delete() removes one persisted key from the Zephyr
+		 * settings backend; missing keys are fine during first boot.
+		 */
+		int rc = settings_delete(resettable_setting_keys[i]);
+
+		if (rc != 0 && rc != -ENOENT) {
+			LOG_WRN("settings_delete(%s) failed (%d)",
+				resettable_setting_keys[i], rc);
+		}
+	}
+}
+
 int app_settings_init(void)
 {
 	int rc;
@@ -367,6 +417,55 @@ void app_settings_get_snapshot(struct app_settings_snapshot *out)
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	*out = g_settings.snapshot;
 	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_note_board_type(const char *board_type, bool *changed)
+{
+	bool changed_local = false;
+	bool persist_needed = false;
+	bool reset_needed = false;
+
+	if (changed != NULL) {
+		*changed = false;
+	}
+	if (board_type == NULL || board_type[0] == '\0' ||
+	    strlen(board_type) >= APP_SETTINGS_BOARD_TYPE_MAX_LEN) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	if (g_settings.snapshot.board_type[0] == '\0') {
+		str_set(g_settings.snapshot.board_type,
+			sizeof(g_settings.snapshot.board_type),
+			board_type);
+		persist_needed = true;
+	} else if (strcmp(g_settings.snapshot.board_type, board_type) != 0) {
+		char previous[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
+
+		str_set(previous, sizeof(previous), g_settings.snapshot.board_type);
+		LOG_WRN("Board type changed from %s to %s; clearing persisted settings",
+			previous, board_type);
+		settings_defaults(&g_settings.snapshot);
+		str_set(g_settings.snapshot.board_type,
+			sizeof(g_settings.snapshot.board_type),
+			board_type);
+		changed_local = true;
+		reset_needed = true;
+		persist_needed = true;
+	}
+	k_mutex_unlock(&g_settings.lock);
+
+	if (reset_needed) {
+		delete_resettable_settings();
+	}
+	if (persist_needed) {
+		persist_str(KEY_BOARD_TYPE, board_type);
+	}
+	if (changed != NULL) {
+		*changed = changed_local;
+	}
+
+	return 0;
 }
 
 void app_settings_get_ip(struct app_ip_settings *out)

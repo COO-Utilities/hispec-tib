@@ -37,8 +37,11 @@ See status.md for software details
 For board files:
 - Nucleo:
     - pins TBD, but read directly on Nucleo GPIO (not via an external expander)
-      /Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/Resources/bin/STM32_Programmer_CLI
-    - /Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI
+    - firmware expects active-low `zephyr,user` GPIO properties named
+      `board-type-tib-gpios`, `board-type-cal-blue-gpios`,
+      `board-type-cal-red-gpios`, and `board-type-as-gpios` once pins are assigned
+
+
 ### MEMS Switches
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
 - 3.3V i2c, 5V gpio, 25mA max drive

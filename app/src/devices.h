@@ -28,6 +28,15 @@
 
 #define NUM_ATTENUATORS 6
 
+enum hispec_board_type {
+	HISPEC_BOARD_UNKNOWN = 0,
+	HISPEC_BOARD_TIB,
+	HISPEC_BOARD_CAL_BLUE,
+	HISPEC_BOARD_CAL_RED,
+	HISPEC_BOARD_AS,
+	HISPEC_BOARD_FAULT,
+};
+
 
 // extern const struct device *modbus;
 extern const struct device *adc_dev;
@@ -35,31 +44,52 @@ extern const struct device *dac_dev;
 extern const struct device *gpio_dev;
 
 extern const struct gpio_dt_spec power_gpio;
-extern const struct gpio_dt_spec mems0_A;
-extern const struct gpio_dt_spec mems0_B;
-extern const struct gpio_dt_spec mems1_A;
-extern const struct gpio_dt_spec mems1_B;
-extern const struct gpio_dt_spec mems2_A;
-extern const struct gpio_dt_spec mems2_B;
-extern const struct gpio_dt_spec mems3_A;
-extern const struct gpio_dt_spec mems3_B;
-extern const struct gpio_dt_spec mems4_A;
-extern const struct gpio_dt_spec mems4_B;
-extern const struct gpio_dt_spec mems5_A;
-extern const struct gpio_dt_spec mems5_B;
-extern const struct gpio_dt_spec mems6_A;
-extern const struct gpio_dt_spec mems6_B;
-extern const struct gpio_dt_spec mems7_A;
-extern const struct gpio_dt_spec mems7_B;
-
 
 extern struct mems_switch mems_switches[];
 extern struct mems_router router;
 extern struct attenuator attenuators[];
 
+/**
+ * @brief Read the solder-strap GPIOs and select the active PCB profile.
+ *
+ * The straps are active-low GPIO inputs with pullups. Exactly one strap must
+ * be active. More than one active strap is treated as a board fault because the
+ * assembled PCB identity should not change at runtime.
+ */
+int devices_detect_board_type(void);
+
+/** @brief Return true after board-type strap detection has completed once. */
+bool devices_board_type_checked(void);
+
+/** @brief Return the detected board type enum. */
+enum hispec_board_type devices_board_type(void);
+
+/** @brief Return the short stable board type name used in logs/settings. */
+const char *devices_board_type_name(void);
+
+/** @brief Return true when the selected PCB is safe to configure. */
+bool devices_board_type_valid(void);
+
+/** @brief Return true when this PCB has a laser bank and Modbus control. */
+bool devices_has_laser_bank(void);
+
+/** @brief Return true when this PCB has the laser-bank power GPIO. */
+bool devices_has_laser_power_control(void);
+
+/** @brief Return true when this PCB has the ADS1115 photodiode channels. */
+bool devices_has_photodiodes(void);
+
+/** @brief Return true when this PCB has any DAC-driven attenuator channel. */
+bool devices_has_attenuators(void);
+
+/** @brief Return true when a logical attenuator index is populated on this PCB. */
+bool devices_attenuator_index_available(uint8_t index);
+
+/** @brief Return the number of MEMS switches expected for this PCB profile. */
+uint8_t devices_mems_switch_count(void);
 
 bool devices_ready(void);
-void setup_mems_switches_and_routes();
-void setup_attenuators();
+void setup_mems_switches_and_routes(void);
+void setup_attenuators(void);
 
 #endif

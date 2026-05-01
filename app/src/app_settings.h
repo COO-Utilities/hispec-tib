@@ -28,6 +28,7 @@ struct app_mqtt_settings {
 };
 
 #define APP_PD_CHANNEL_COUNT 2
+#define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
 
 struct app_pd_channel_settings {
 	float dark_mv;
@@ -42,6 +43,7 @@ struct app_photodiode_settings {
 };
 
 struct app_settings_snapshot {
+	char board_type[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
 	struct app_ip_settings ip;
 	struct app_mqtt_settings mqtt;
 	struct app_photodiode_settings photodiode;
@@ -52,6 +54,14 @@ struct app_settings_snapshot {
 
 int app_settings_init(void);
 void app_settings_get_snapshot(struct app_settings_snapshot *out);
+/**
+ * @brief Record the immutable PCB board type in persistent settings.
+ *
+ * If a stored board type exists and differs from @p board_type, all other
+ * persisted app settings are deleted and runtime settings return to defaults.
+ * That treats a physically different solder-strap identity as a first boot.
+ */
+int app_settings_note_board_type(const char *board_type, bool *changed);
 void app_settings_get_ip(struct app_ip_settings *out);
 void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
 void app_settings_get_mqtt(struct app_mqtt_settings *out);

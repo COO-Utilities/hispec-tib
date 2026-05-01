@@ -896,6 +896,9 @@ void wait_laser_boot() {
 }
 
 bool power_enabled() {
+    if (!devices_has_laser_power_control()) {
+        return false;
+    }
     if (!gpio_is_ready_dt(&power_gpio)) {
         return false;
     }
@@ -904,6 +907,10 @@ bool power_enabled() {
 }
 
 bool enable_power() {
+    if (!devices_has_laser_power_control()) {
+        LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
+        return false;
+    }
     if (!gpio_is_ready_dt(&power_gpio)) {
         LOG_ERR("POWER_GPIO not ready");
         return false;
@@ -918,6 +925,10 @@ bool enable_power() {
 }
 
 bool disable_power() {
+    if (!devices_has_laser_power_control()) {
+        LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
+        return false;
+    }
     if (!gpio_is_ready_dt(&power_gpio)) {
         LOG_ERR("POWER_GPIO not ready");
         return false;
@@ -1457,8 +1468,6 @@ enum {
     SPLIT_ROUTE_SWITCH_COUNT = 3,
 };
 
-#define SPLIT_ROUTE_OUTPUT "as_split"
-
 struct split_switch_duty {
     char name[MEMS_SWITCH_NAME_LEN];
     char state;
@@ -1476,7 +1485,8 @@ struct split_state {
 };
 
 static const char *split_channel_names[SPLIT_CHANNEL_COUNT] = {"yj", "hk"};
-static const char *split_route_inputs[SPLIT_CHANNEL_COUNT] = {"yj_split", "hk_split"};
+static const char *split_route_inputs[SPLIT_CHANNEL_COUNT] = {"yj_calin", "hk_calin"};
+static const char *split_route_outputs[SPLIT_CHANNEL_COUNT] = {"yj_split", "hk_split"};
 
 /* Command-level cache of each channel's last requested and measured split.
  * The MEMS router lock protects switch hardware state; this mutex only keeps
@@ -1516,7 +1526,7 @@ static const struct mems_route *split_route_for_channel(uint8_t channel_index)
 {
     return mems_router_get_route(&router,
                                  split_route_inputs[channel_index],
-                                 SPLIT_ROUTE_OUTPUT);
+                                 split_route_outputs[channel_index]);
 }
 
 static uint32_t split_period_ticks(void)
@@ -2152,6 +2162,11 @@ struct OutMsg mems_set(const struct Command *cmd) {
 
 struct OutMsg laser_setting_get(const struct Command *cmd) {
 
+    if (!devices_has_laser_bank()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
+
     // Extract laser### and <setting> from key
     char laser_name[16], setting[16];
     if (parse_key_pair(cmd->key, laser_name, 15, setting, 15)!=0) {
@@ -2184,6 +2199,11 @@ struct OutMsg laser_setting_get(const struct Command *cmd) {
 }
 
 struct OutMsg laser_setting_set(const struct Command *cmd) {
+
+    if (!devices_has_laser_bank()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
 
     // Extract laser### and <setting>
     char laser_name[16], setting[16];
@@ -2236,6 +2256,10 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
     }
+    if (!devices_attenuator_index_available((uint8_t)laser_id)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Attenuator unavailable on this board\"}");
+    }
 
     char payload[MAX_PAYLOAD_LEN]={0};
     if (strcasecmp(setting, "coeff") == 0) {
@@ -2271,6 +2295,10 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
+    }
+    if (!devices_attenuator_index_available((uint8_t)laser_id)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Attenuator unavailable on this board\"}");
     }
 
     // Parse value
@@ -2377,6 +2405,11 @@ struct OutMsg pd_get(const struct Command *cmd)
     float hk_err;
     int parse_rc;
 
+    if (!devices_has_photodiodes()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+    }
+
     parse_rc = coo_json_extract_string(cmd->payload, "unit", unit, sizeof(unit));
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid unit\"}");
@@ -2459,6 +2492,11 @@ struct OutMsg pd_set(const struct Command *cmd)
     bool persist = true;
     int parse_rc;
     int rc;
+
+    if (!devices_has_photodiodes()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+    }
 
     parse_rc = coo_json_extract_string(cmd->payload, "action", action, sizeof(action));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
@@ -2548,6 +2586,11 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
     size_t off = 0;
     int written;
 
+    if (!devices_has_photodiodes()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+    }
+
     app_settings_get_photodiode(&settings);
     written = snprintk(payload, sizeof(payload), "{\"autooff_s\":0,");
     if (written < 0 || written >= (int)sizeof(payload)) {
@@ -2594,6 +2637,11 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
     bool persist = false;
     bool changed = false;
     int parse_rc;
+
+    if (!devices_has_photodiodes()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+    }
 
     app_settings_get_photodiode(&settings);
 
@@ -2642,10 +2690,14 @@ struct OutMsg status_get(const struct Command *cmd) {
     (void)network_get_ipv4_info(&net);
     snprintf(payload, MAX_PAYLOAD_LEN,
              "{\"fwversion\":\"%s\",\"bootcount\":%u,\"uptime\":%lld,"
+             "\"board_type\":\"%s\",\"board_valid\":%s,\"mems_switches\":%u,"
              "\"network_ready\":%s,\"ip\":\"%s\",\"laser_power\":%s}",
              APP_VERSION_STRING,
              app_settings_get_boot_count(),
              (long long)k_uptime_get(),
+             devices_board_type_name(),
+             devices_board_type_valid() ? "true" : "false",
+             devices_mems_switch_count(),
              net.link_ready ? "true" : "false",
              net.ip,
              power_enabled() ? "true" : "false");
@@ -2676,7 +2728,11 @@ struct OutMsg temp_get(const struct Command *cmd)
 
 struct OutMsg power_get(const struct Command *cmd) {
     char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN, "{\"laser_power\":%s}", power_enabled() ? "true" : "false");
+    snprintf(payload, MAX_PAYLOAD_LEN,
+             "{\"laser_power\":%s,\"available\":%s,\"board_type\":\"%s\"}",
+             power_enabled() ? "true" : "false",
+             devices_has_laser_power_control() ? "true" : "false",
+             devices_board_type_name());
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -2686,6 +2742,11 @@ struct OutMsg power_set(const struct Command *cmd) {
 
     bool value;
     int parse_rc;
+
+    if (!devices_has_laser_power_control()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser power control unavailable on this board\"}");
+    }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "value", &value);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {

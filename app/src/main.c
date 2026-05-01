@@ -194,8 +194,24 @@ int main(void)
 	if (rc != 0) {
 		LOG_WRN("Settings init failed (%d); continuing with defaults", rc);
 	}
-	app_settings_increment_boot_count();
 
+	rc = devices_detect_board_type();
+	if (rc != 0) {
+		LOG_ERR("Board type detection failed (%d); optional hardware setup will stay disabled", rc);
+	} else {
+		bool board_changed = false;
+
+		rc = app_settings_note_board_type(devices_board_type_name(), &board_changed);
+		if (rc != 0) {
+			LOG_WRN("Failed to persist board type %s (%d)",
+				devices_board_type_name(), rc);
+		} else if (board_changed) {
+			LOG_WRN("Settings reset after board type change to %s",
+				devices_board_type_name());
+		}
+	}
+
+	app_settings_increment_boot_count();
 	(void)devices_ready();
 	setup_mems_switches_and_routes();
 	setup_attenuators();
@@ -215,7 +231,9 @@ int main(void)
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
 	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
-	k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
+	if (devices_has_photodiodes()) {
+		k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
+	}
 
 	sntp_sync_init();
 
