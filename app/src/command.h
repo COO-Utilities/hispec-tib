@@ -107,13 +107,21 @@ struct OutMsg dispatch_command(const struct Command *cmd);
 /* Executor task: consumes inbound_queue and publishes one response to outbound_queue. */
 void command_executor_thread(void *p1, void *p2, void *p3);
 
+/**
+ * @brief Initialize command-layer delayed actions.
+ *
+ * Registers the callbacks used by serial-override expiration and delayed
+ * reboot. Call once before starting command ingress threads.
+ */
+int command_runtime_init(void);
+
 /* Serial task: polls the console UART passed in p1 and queues complete command lines. */
 void command_serial_thread(void *p1, void *p2, void *p3);
 
 /* MQTT receive callback: copies topic/payload/properties into a queued Command. */
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub);
 
-/* Extend the serial-command holdoff window that temporarily disconnects MQTT control. */
+/* Extend the serial-command holdoff window that rejects MQTT command execution. */
 void command_serial_note_activity(void);
 
 bool command_network_mqtt_allowed(void);

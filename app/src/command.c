@@ -11,6 +11,7 @@
 #include <strings.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 #include <app_version.h>
 #include <time.h>
@@ -19,6 +20,7 @@
 
 #include "devices.h"
 #include "app_settings.h"
+#include "app_scheduled_actions.h"
 #include "attenuator.h"
 #include "maiman.h"
 #include "mems_switching.h"
@@ -35,7 +37,7 @@ LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 #define SERIAL_LINE_MAX 220
 
 static uint16_t mqtt_msg_id = 1;
-static volatile int64_t serial_network_ignore_until_ms;
+static atomic_t serial_network_ignore_active;
 
 
 /* one command at a time */
@@ -247,6 +249,287 @@ static void enqueue_serial_error(const char *msg)
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
 }
 
+static const char *skip_serial_space(const char *s)
+{
+    while (s != NULL && (*s == ' ' || *s == '\t')) {
+        s++;
+    }
+    return s;
+}
+
+static bool next_serial_token(const char **cursor, char *out, size_t out_len)
+{
+    const char *start;
+    size_t len;
+
+    if (cursor == NULL || *cursor == NULL || out == NULL || out_len == 0U) {
+        return false;
+    }
+
+    start = skip_serial_space(*cursor);
+    if (*start == '\0') {
+        *cursor = start;
+        return false;
+    }
+
+    len = strcspn(start, " \t");
+    if (len >= out_len) {
+        len = out_len - 1U;
+    }
+
+    memcpy(out, start, len);
+    out[len] = '\0';
+    *cursor = start + strcspn(start, " \t");
+    return true;
+}
+
+static bool serial_token_has_extra(const char *cursor)
+{
+    cursor = skip_serial_space(cursor);
+    return cursor != NULL && *cursor != '\0';
+}
+
+static bool serial_token_is_number(const char *token)
+{
+    char *end = NULL;
+
+    if (token == NULL || token[0] == '\0') {
+        return false;
+    }
+
+    (void)strtod(token, &end);
+    return end != token && end != NULL && *end == '\0';
+}
+
+static const char *serial_token_bool_json(const char *token)
+{
+    if (token == NULL) {
+        return NULL;
+    }
+
+    if (strcasecmp(token, "true") == 0 || strcasecmp(token, "on") == 0 ||
+        strcasecmp(token, "yes") == 0) {
+        return "true";
+    }
+    if (strcasecmp(token, "false") == 0 || strcasecmp(token, "off") == 0 ||
+        strcasecmp(token, "no") == 0) {
+        return "false";
+    }
+
+    return NULL;
+}
+
+static int append_serial_json_value(char *out, size_t out_len, size_t *off,
+                                    const char *token)
+{
+    const char *bool_json = serial_token_bool_json(token);
+    int written;
+
+    if (out == NULL || off == NULL || token == NULL) {
+        return -EINVAL;
+    }
+
+    if (bool_json != NULL) {
+        written = snprintk(out + *off, out_len - *off, "%s", bool_json);
+    } else if (serial_token_is_number(token) || strcasecmp(token, "null") == 0) {
+        written = snprintk(out + *off, out_len - *off, "%s", token);
+    } else {
+        if (strchr(token, '"') != NULL || strchr(token, '\\') != NULL) {
+            return -EINVAL;
+        }
+        written = snprintk(out + *off, out_len - *off, "\"%s\"", token);
+    }
+
+    if (written < 0 || written >= (int)(out_len - *off)) {
+        return -ENOSPC;
+    }
+    *off += (size_t)written;
+    return 0;
+}
+
+static int append_serial_json_field(char *out, size_t out_len, size_t *off,
+                                    const char *key, const char *token,
+                                    bool comma)
+{
+    int written;
+    int rc;
+
+    if (key == NULL || token == NULL || key[0] == '\0' ||
+        strchr(key, '"') != NULL || strchr(key, '\\') != NULL) {
+        return -EINVAL;
+    }
+
+    written = snprintk(out + *off, out_len - *off, "%s\"%s\":", comma ? "," : "", key);
+    if (written < 0 || written >= (int)(out_len - *off)) {
+        return -ENOSPC;
+    }
+    *off += (size_t)written;
+
+    rc = append_serial_json_value(out, out_len, off, token);
+    return rc;
+}
+
+static int serial_payload_from_key_values(const char *payload, char *out, size_t out_len)
+{
+    const char *cursor = payload;
+    char token[128];
+    bool first = true;
+    size_t off = 0;
+    int written;
+
+    written = snprintk(out, out_len, "{");
+    if (written < 0 || written >= (int)out_len) {
+        return -ENOSPC;
+    }
+    off = (size_t)written;
+
+    while (next_serial_token(&cursor, token, sizeof(token))) {
+        char *eq = strchr(token, '=');
+
+        if (eq == NULL || eq == token || eq[1] == '\0') {
+            return -EINVAL;
+        }
+        *eq = '\0';
+
+        if (append_serial_json_field(out, out_len, &off, token, eq + 1, !first) != 0) {
+            return -EINVAL;
+        }
+        first = false;
+    }
+
+    written = snprintk(out + off, out_len - off, "}");
+    if (written < 0 || written >= (int)(out_len - off)) {
+        return -ENOSPC;
+    }
+    return 0;
+}
+
+static int serial_payload_from_shorthand(const char *key, const char *payload,
+                                         char *out, size_t out_len)
+{
+    const char *cursor = payload;
+    char t0[96] = {0};
+    char t1[96] = {0};
+    char t2[96] = {0};
+    size_t off = 0;
+    int written;
+
+    if (!next_serial_token(&cursor, t0, sizeof(t0))) {
+        return -EINVAL;
+    }
+    (void)next_serial_token(&cursor, t1, sizeof(t1));
+    (void)next_serial_token(&cursor, t2, sizeof(t2));
+    if (serial_token_has_extra(cursor)) {
+        return -EINVAL;
+    }
+
+    if (strncmp(key, "mems/", 5) == 0) {
+        written = snprintk(out, out_len, "{\"state\":");
+        if (written < 0 || written >= (int)out_len) {
+            return -ENOSPC;
+        }
+        off = (size_t)written;
+        if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+            return -EINVAL;
+        }
+        if (t1[0] != '\0' &&
+            append_serial_json_field(out, out_len, &off, "duty_cycle", t1, true) != 0) {
+            return -EINVAL;
+        }
+        if (t2[0] != '\0' &&
+            append_serial_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
+            return -EINVAL;
+        }
+        written = snprintk(out + off, out_len - off, "}");
+        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+    }
+
+    if (strcmp(key, "serialguard") == 0) {
+        const char *seconds = (strcasecmp(t0, "off") == 0) ? "0" : t0;
+
+        written = snprintk(out, out_len, "{\"seconds\":");
+        if (written < 0 || written >= (int)out_len) {
+            return -ENOSPC;
+        }
+        off = (size_t)written;
+        if (append_serial_json_value(out, out_len, &off, seconds) != 0) {
+            return -EINVAL;
+        }
+        if (t1[0] != '\0' &&
+            append_serial_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
+            return -EINVAL;
+        }
+        written = snprintk(out + off, out_len - off, "}");
+        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+    }
+
+    if (strcmp(key, "mqtt") == 0) {
+        written = snprintk(out, out_len, "{\"broker\":");
+        if (written < 0 || written >= (int)out_len) {
+            return -ENOSPC;
+        }
+        off = (size_t)written;
+        if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+            return -EINVAL;
+        }
+        if (t1[0] != '\0' &&
+            append_serial_json_field(out, out_len, &off, "port", t1, true) != 0) {
+            return -EINVAL;
+        }
+        written = snprintk(out + off, out_len - off, "}");
+        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+    }
+
+    if (strcmp(key, "time") == 0) {
+        if (!serial_token_is_number(t0)) {
+            return -EINVAL;
+        }
+        written = snprintk(out, out_len, "{\"linuxtime_ms\":%s}", t0);
+        return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
+    }
+
+    if (t1[0] != '\0' || t2[0] != '\0') {
+        return -EINVAL;
+    }
+
+    written = snprintk(out, out_len, "{\"value\":");
+    if (written < 0 || written >= (int)out_len) {
+        return -ENOSPC;
+    }
+    off = (size_t)written;
+    if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+        return -EINVAL;
+    }
+    written = snprintk(out + off, out_len - off, "}");
+    return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+
+static int normalize_serial_payload(const char *key, const char *payload,
+                                    char *out, size_t out_len)
+{
+    payload = skip_serial_space(payload);
+    if (payload == NULL || payload[0] == '\0') {
+        int written = snprintk(out, out_len, "{}");
+
+        return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
+    }
+
+    if (payload[0] == '{') {
+        if (strlen(payload) >= out_len) {
+            return -ENOSPC;
+        }
+        strncpy(out, payload, out_len - 1U);
+        out[out_len - 1U] = '\0';
+        return 0;
+    }
+
+    if (strchr(payload, '=') != NULL) {
+        return serial_payload_from_key_values(payload, out, out_len);
+    }
+
+    return serial_payload_from_shorthand(key, payload, out, out_len);
+}
+
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
 {
     struct Command cmd = {0};
@@ -314,6 +597,7 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
     }
 
     if (!command_network_mqtt_allowed()) {
+        LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
         struct OutMsg r = serial_active_response(&cmd);
         (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
         return;
@@ -328,12 +612,26 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
 void command_serial_note_activity(void)
 {
     const uint32_t holdoff_s = app_settings_get_serial_holdoff_s();
-    serial_network_ignore_until_ms = k_uptime_get() + ((int64_t)holdoff_s * 1000LL);
+    int rc;
+
+    if (holdoff_s == 0U) {
+        (void)atomic_clear(&serial_network_ignore_active);
+        (void)app_scheduled_action_cancel(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE);
+        return;
+    }
+
+    (void)atomic_set(&serial_network_ignore_active, 1);
+    rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
+                                       K_SECONDS(holdoff_s));
+    if (rc < 0) {
+        (void)atomic_clear(&serial_network_ignore_active);
+        LOG_ERR("Failed to schedule serial guard expiration (%d)", rc);
+    }
 }
 
 bool command_network_mqtt_allowed(void)
 {
-    return k_uptime_get() >= serial_network_ignore_until_ms;
+    return atomic_get(&serial_network_ignore_active) == 0;
 }
 
 void command_parse_serial_line(char *line)
@@ -395,18 +693,11 @@ void command_parse_serial_line(char *line)
     strncpy(cmd.key, key, sizeof(cmd.key) - 1);
     cmd.key[sizeof(cmd.key) - 1] = '\0';
 
-    if (payload == NULL || *payload == '\0') {
-        snprintk(cmd.payload, sizeof(cmd.payload), "{}");
-        cmd.payload_len = strlen(cmd.payload);
-    } else {
-        if (strlen(payload) >= sizeof(cmd.payload)) {
-            enqueue_serial_error("serial payload too large");
-            return;
-        }
-        strncpy(cmd.payload, payload, sizeof(cmd.payload) - 1);
-        cmd.payload[sizeof(cmd.payload) - 1] = '\0';
-        cmd.payload_len = strlen(cmd.payload);
+    if (normalize_serial_payload(cmd.key, payload, cmd.payload, sizeof(cmd.payload)) != 0) {
+        enqueue_serial_error("invalid serial payload");
+        return;
     }
+    cmd.payload_len = strlen(cmd.payload);
 
     if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
         struct OutMsg r = busy_response(&cmd);
@@ -575,14 +866,41 @@ bool disable_power() {
 
 }
 
-static void reboot_work_handler(struct k_work *work)
+static void serial_guard_expire_handler(enum app_scheduled_action_id id, void *user_data)
 {
-    ARG_UNUSED(work);
+    ARG_UNUSED(id);
+    ARG_UNUSED(user_data);
+
+    (void)atomic_clear(&serial_network_ignore_active);
+    LOG_INF("Serial guard expired; MQTT command execution is enabled");
+}
+
+static void reboot_action_handler(enum app_scheduled_action_id id, void *user_data)
+{
+    ARG_UNUSED(id);
+    ARG_UNUSED(user_data);
+
     sys_reboot(SYS_REBOOT_COLD);
 }
 
-static struct k_work_delayable reboot_work;
-static bool reboot_work_initialized;
+int command_runtime_init(void)
+{
+    int rc;
+
+    rc = app_scheduled_actions_init();
+    if (rc != 0) {
+        return rc;
+    }
+
+    rc = app_scheduled_action_register(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
+                                       serial_guard_expire_handler, NULL);
+    if (rc != 0) {
+        return rc;
+    }
+
+    return app_scheduled_action_register(APP_SCHEDULED_ACTION_REBOOT,
+                                         reboot_action_handler, NULL);
+}
 
 
 
@@ -968,19 +1286,29 @@ struct OutMsg time_set(const struct Command *cmd)
 
 struct OutMsg reboot_set(const struct Command *cmd)
 {
-    if (!reboot_work_initialized) {
-        k_work_init_delayable(&reboot_work, reboot_work_handler);
-        reboot_work_initialized = true;
+    int rc;
+
+    rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_REBOOT, K_MSEC(250));
+    if (rc < 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"failed to schedule reboot\"}");
     }
 
-    k_work_schedule(&reboot_work, K_MSEC(250));
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 struct OutMsg serial_guard_get(const struct Command *cmd)
 {
     char payload[MAX_PAYLOAD_LEN];
-    snprintk(payload, sizeof(payload), "{\"serialguard_s\":%u}", app_settings_get_serial_holdoff_s());
+    int64_t remaining_ms = 0;
+
+    (void)app_scheduled_action_remaining_ms(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
+                                            &remaining_ms);
+    snprintk(payload, sizeof(payload),
+             "{\"serialguard_s\":%u,\"active\":%s,\"remaining_ms\":%lld}",
+             app_settings_get_serial_holdoff_s(),
+             command_network_mqtt_allowed() ? "false" : "true",
+             (long long)remaining_ms);
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -1007,6 +1335,9 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
+    if (cmd->source == CMD_SRC_SERIAL) {
+        command_serial_note_activity();
+    }
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 

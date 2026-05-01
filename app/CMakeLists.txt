@@ -18,6 +18,7 @@ project(app LANGUAGES C)
 
 target_sources(app PRIVATE
         src/main.c
+        src/app_scheduled_actions.c
         src/app_settings.c
         src/attenuator.c
         src/command.c
@@ -29,6 +30,7 @@ target_sources(app PRIVATE
         src/mems_switching.c
         src/sntp_sync.c
         src/attenuator.h
+        src/app_scheduled_actions.h
         src/app_settings.h
         src/command.h
         src/devices.h

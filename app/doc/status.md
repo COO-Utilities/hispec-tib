@@ -51,6 +51,8 @@ Before making edits understand Zephyr's task structure and device initialization
 
 - System listens for commands over serial and network. There is a serial “ignore network for X after receipt of serial cmd” command which expires X after the last serial command.
 - Expect only a small set of named global scheduled actions (no full scheduler subsystem).
+- Current implementation note: `app_scheduled_actions.c` owns the named delayed actions for serial override expiry and delayed reboot.
+- Current implementation note: MQTT remains connected during serial override; MQTT command execution is rejected at ingress and logged.
 - Core runtime components: 
   - watchdog timer, 
   - network manager, 

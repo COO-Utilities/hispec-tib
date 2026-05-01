@@ -200,6 +200,12 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
+	rc = command_runtime_init();
+	if (rc != 0) {
+		LOG_ERR("Command runtime init failed (%d)", rc);
+		return rc;
+	}
+
 	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
 			command_executor_thread, NULL, NULL, NULL,
 			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
@@ -232,8 +238,10 @@ int main(void)
 	(void)coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
 
 	while (1) {
-		// TODO MQTT can always run if network is ready, the relevant gating must be in command_handle_mqtt_publish as
-		// commands should receive an error indicating that MQTT is disabled because serial is active
+		/* MQTT stays connected whenever the network is ready. Serial override
+		 * rejection happens in command_handle_mqtt_publish(), so requesters get
+		 * an explicit response instead of a silent disconnect.
+		 */
 		bool mqtt_can_run = network_is_ready();
 		uint32_t current_mqtt_revision = app_settings_get_mqtt_revision();
 

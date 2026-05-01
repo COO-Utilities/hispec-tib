@@ -20,6 +20,32 @@ Draft 0.1
     - `correlation_data`: copied from the request
     - `qos`: response QoS 
 - Commands have serial port duals. Format is TBD but different as intended to be lightwight and used by human at serial console
+
+## Serial Command Form
+
+Serial commands are one line, whitespace separated, and intended for a human at
+the console. Query shorthand is just the key, for example:
+
+```text
+status
+mems/yj_cal_laser
+```
+
+Explicit get/set are also accepted:
+
+```text
+get status
+set serialguard seconds=60
+set mems/yj_cal_laser state=A duty_cycle=0.5 stopafter_s=30
+set power on
+```
+
+Any non-empty serial command refreshes serial override. While active, MQTT
+commands are rejected before dispatch and receive an error response when MQTT is
+available. The override expires after `serialguard_s` seconds without another
+serial command; `set serialguard off` or `set serialguard seconds=0` disables
+the override. JSON payloads are accepted for MQTT parity, but should not be
+needed for normal serial operation.
 ---
 
 ## Command Endpoints
@@ -39,6 +65,7 @@ Draft 0.1
 - `pdsettings`
 - `ip`
 - `mqtt`
+- `serialguard`
 - `time`
 - `temp`
 - `status`
@@ -525,6 +552,32 @@ TODO add diode stabilized flag and time until setting
   - Broker value may be numeric IPv4 or hostname.
   - If DNS is not compiled in, hostname values are rejected.
   - Successful set updates runtime settings and triggers MQTT reconnect behavior.
+
+### `serialguard`
+- **Request topic:** `cmd/<device>/req/serialguard`
+  - Set:
+    ```json
+    {
+      "seconds": 30,
+      "persistent": true
+    }
+    ```
+    `value` is accepted as an alias for `seconds`.
+  - Query: No payload
+
+- **Response topic:** `cmd/<device>/resp/serialguard`
+  - Set result: `{"status":"success"}`
+  - Query result:
+    ```json
+    {"serialguard_s":30, "active":true, "remaining_ms":12000}
+    ```
+
+- **Notes:**
+  - Any non-empty serial command activates or refreshes the guard.
+  - Serial shorthand: `set serialguard seconds=60` or `set serialguard off`.
+  - While active, MQTT commands are rejected before dispatch and logged.
+  - The guard uses the named scheduled action `serial_guard_expire`.
+  - `seconds:0` disables serial override.
 
 ### `time`
 - **Request topic:** `cmd/<device>/req/time`
