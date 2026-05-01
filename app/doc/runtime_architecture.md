@@ -12,8 +12,10 @@ hardware mapping.
   ingress both queue `struct Command` items into `inbound_queue`; the executor
   dispatches through the command table in `command.c`.
 - `command_serial_thread` uses Zephyr's line console so typed serial commands
-  are one line at a time. The parser accepts human-friendly key/value or
-  shorthand set payloads and normalizes them into the same JSON shape used by
+  are one line at a time. `command_parse_serial_line()` treats the first token
+  as the command key and the rest as optional payload; serial has no `get` or
+  `set` keywords. `normalize_serial_payload()` accepts raw JSON unchanged or
+  converts key/value and shorthand payloads into the same JSON shape used by
   MQTT before dispatch.
 - `photodiode_thread` samples the ADC and queues telemetry. A delayable work
   item drains photodiode telemetry into the normal outbound queue.
@@ -47,6 +49,11 @@ active, `command_handle_mqtt_publish()` rejects MQTT commands before they enter
 the executor queue, logs the rejection, and attempts to publish an error
 response on the request response topic. This keeps local serial control
 predictable without making remote clients diagnose a silent disconnect.
+
+Serial responses are not separately generated. `_msg_builder()` creates the
+same `OutMsg` payload used for MQTT responses, and `print_serial_response()`
+prints the response topic followed by the payload with 80-column wrapping and
+tab indentation at print time.
 
 ## Current Boundaries
 

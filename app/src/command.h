@@ -126,10 +126,10 @@ void command_serial_note_activity(void);
 
 bool command_network_mqtt_allowed(void);
 
-/* Parse a mutable serial command line into a queued Command. */
+/* Parse "<key> [payload]" into a queued Command; serial has no get/set words. */
 void command_parse_serial_line(char *line);
 
-/* Drain queued serial/MQTT responses; MQTT messages are retried when publish fails. */
+/* Drain queued serial/MQTT responses; serial prints the MQTT-equivalent OutMsg. */
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available);
 
 

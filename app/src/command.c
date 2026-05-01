@@ -35,6 +35,7 @@ LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 #define MQTT_CMD_PREFIX "cmd/" MQTT_DEVICE_ID "/req/"
 #define MQTT_RESP_PREFIX "cmd/" MQTT_DEVICE_ID "/resp/"
 #define SERIAL_LINE_MAX 220
+#define SERIAL_WRAP_COLUMN 80U
 
 static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
@@ -244,6 +245,7 @@ static void enqueue_serial_error(const char *msg)
 
     out.target = OUT_TARGET_SERIAL;
     out.msg_type = RESP_ERROR;
+    snprintk(out.topic, sizeof(out.topic), MQTT_RESP_PREFIX "serial");
     out.payload_len = snprintk(out.payload, sizeof(out.payload),
                                "{\"status\":\"error\",\"msg\":\"%s\"}", msg);
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
@@ -369,6 +371,10 @@ static int append_serial_json_field(char *out, size_t out_len, size_t *off,
     return rc;
 }
 
+/* Convert a serial payload like "state=A stopafter_s=30" into a compact JSON
+ * object. This function does not validate command-specific meaning; handlers
+ * still parse and validate the resulting JSON in the normal dispatch path.
+ */
 static int serial_payload_from_key_values(const char *payload, char *out, size_t out_len)
 {
     const char *cursor = payload;
@@ -404,6 +410,10 @@ static int serial_payload_from_key_values(const char *payload, char *out, size_t
     return 0;
 }
 
+/* Convert a few common human serial shorthands into the same JSON payloads MQTT
+ * uses. This is deliberately a small translation table, not another dispatcher.
+ * Examples: "power on", "serialguard off", "mems/foo A 0.5 30".
+ */
 static int serial_payload_from_shorthand(const char *key, const char *payload,
                                          char *out, size_t out_len)
 {
@@ -504,6 +514,12 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
+/* Top-level serial payload policy:
+ * - no payload becomes "{}" and is dispatched as MSG_GET;
+ * - raw JSON beginning with "{" is copied unchanged, not parsed or rebuilt;
+ * - key=value tokens are wrapped into a JSON object;
+ * - selected shorthands are translated by serial_payload_from_shorthand().
+ */
 static int normalize_serial_payload(const char *key, const char *payload,
                                     char *out, size_t out_len)
 {
@@ -638,7 +654,6 @@ void command_parse_serial_line(char *line)
 {
     struct Command cmd = {0};
     char *cursor = line;
-    char *op;
     char *key;
     char *payload = NULL;
     char *sep;
@@ -653,35 +668,23 @@ void command_parse_serial_line(char *line)
 
     command_serial_note_activity();
 
+    /* Serial syntax is one line: "<key> [payload]". There are no get/set
+     * words. An empty payload is a GET; any payload is normalized to JSON and
+     * dispatched as a SET through the same handlers MQTT uses.
+     */
     sep = strpbrk(cursor, " \t");
     if (sep == NULL) {
-        op = cursor;
         key = cursor;
         cmd.msg_type = MSG_GET;
     } else {
         *sep = '\0';
-        op = cursor;
+        key = cursor;
         cursor = sep + 1;
         while (*cursor == ' ' || *cursor == '\t') {
             cursor++;
         }
-
-        if (strcasecmp(op, "get") == 0 || strcasecmp(op, "set") == 0) {
-            key = cursor;
-            sep = strpbrk(cursor, " \t");
-            if (sep != NULL) {
-                *sep = '\0';
-                payload = sep + 1;
-                while (payload && (*payload == ' ' || *payload == '\t')) {
-                    payload++;
-                }
-            }
-            cmd.msg_type = (strcasecmp(op, "set") == 0) ? MSG_SET : MSG_GET;
-        } else {
-            key = op;
-            payload = cursor;
-            cmd.msg_type = (*payload == '\0') ? MSG_GET : MSG_SET;
-        }
+        payload = cursor;
+        cmd.msg_type = (*payload == '\0') ? MSG_GET : MSG_SET;
     }
 
     if (key == NULL || *key == '\0') {
@@ -692,6 +695,10 @@ void command_parse_serial_line(char *line)
     cmd.source = CMD_SRC_SERIAL;
     strncpy(cmd.key, key, sizeof(cmd.key) - 1);
     cmd.key[sizeof(cmd.key) - 1] = '\0';
+    if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
+        enqueue_serial_error("invalid command key");
+        return;
+    }
 
     if (normalize_serial_payload(cmd.key, payload, cmd.payload, sizeof(cmd.payload)) != 0) {
         enqueue_serial_error("invalid serial payload");
@@ -768,6 +775,47 @@ static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
     return mqtt_publish(client, &param);
 }
 
+/* Serial responses intentionally reuse the OutMsg generated for MQTT. The
+ * topic is printed first, then the payload is wrapped at print time with tab
+ * indentation so response builders do not need serial-specific formatting.
+ */
+static void print_serial_response(const struct OutMsg *out)
+{
+    size_t len;
+    uint16_t col = 0U;
+
+    if (out == NULL) {
+        return;
+    }
+
+    printk("%s\n\t", out->topic[0] != '\0' ? out->topic : "serial");
+    col = 8U;
+    len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
+
+    for (size_t i = 0; i < len && out->payload[i] != '\0'; ++i) {
+        const char ch = out->payload[i];
+
+        if (ch == '\n' || col >= SERIAL_WRAP_COLUMN) {
+            printk("\n\t");
+            col = 8U;
+            if (ch == '\n') {
+                continue;
+            }
+        }
+
+        printk("%c", ch);
+        col++;
+
+        if ((ch == ',' || ch == '}') && col >= (SERIAL_WRAP_COLUMN - 8U) &&
+            i + 1U < len) {
+            printk("\n\t");
+            col = 8U;
+        }
+    }
+
+    printk("\n");
+}
+
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available)
 {
     struct OutMsg out;
@@ -775,7 +823,7 @@ void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_availabl
 
     while (budget-- > 0 && k_msgq_get(&outbound_queue, &out, K_NO_WAIT) == 0) {
         if (out.target == OUT_TARGET_SERIAL) {
-            printk("%s\n", out.payload);
+            print_serial_response(&out);
             continue;
         }
 

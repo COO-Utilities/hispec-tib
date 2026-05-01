@@ -19,33 +19,64 @@ Draft 0.1
   - **On responses (device → publisher):**
     - `correlation_data`: copied from the request
     - `qos`: response QoS 
-- Commands have serial port duals. Format is TBD but different as intended to be lightwight and used by human at serial console
+- Commands have serial port duals. Serial commands use a simpler line format
+  for interactive bring-up and debugging.
 
 ## Serial Command Form
 
 Serial commands are one line, whitespace separated, and intended for a human at
-the console. Query shorthand is just the key, for example:
+the console.
+
+Top-level implementation path:
+
+1. `command_serial_thread()` reads one console line.
+2. `command_parse_serial_line()` splits the line into `<key>` and optional payload.
+3. `normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
+4. `command_executor_thread()` dispatches the command through `dispatch_command()`.
+5. `command_drain_outbound_queue()` prints serial responses with `print_serial_response()`.
+
+Query form is just the key:
 
 ```text
 status
 mems/yj_cal_laser
 ```
 
-Explicit get/set are also accepted:
+Set form is the key followed by a payload. There are no `get` or `set`
+keywords in the serial command set.
 
 ```text
-get status
-set serialguard seconds=60
-set mems/yj_cal_laser state=A duty_cycle=0.5 stopafter_s=30
-set power on
+serialguard seconds=60
+mems/yj_cal_laser state=A duty_cycle=0.5 stopafter_s=30
+power on
 ```
+
+Payload rules:
+
+- A payload beginning with `{` is copied unchanged into `Command.payload`; it is
+  not parsed and rebuilt by the serial layer.
+- Payloads containing `=` use `serial_payload_from_key_values()`, for example
+  `state=A stopafter_s=30`.
+- Known compact forms use `serial_payload_from_shorthand()`, for example
+  `power on`, `serialguard off`, or `mems/yj_cal_laser A 0.5 30`.
+- Handlers parse and validate the normalized JSON exactly as they do for MQTT.
+
+Serial response format:
+
+```text
+cmd/<device>/resp/<key>
+        {"same":"payload MQTT would publish, wrapped at print time"}
+```
+
+The first line is the MQTT response topic. The following lines are the response
+payload, tab-indented and wrapped at 80 columns by `print_serial_response()`.
 
 Any non-empty serial command refreshes serial override. While active, MQTT
 commands are rejected before dispatch and receive an error response when MQTT is
 available. The override expires after `serialguard_s` seconds without another
-serial command; `set serialguard off` or `set serialguard seconds=0` disables
-the override. JSON payloads are accepted for MQTT parity, but should not be
-needed for normal serial operation.
+serial command; `serialguard off` or `serialguard seconds=0` disables the
+override. JSON payloads are accepted for MQTT parity, but should not be needed
+for normal serial operation.
 ---
 
 ## Command Endpoints
@@ -574,7 +605,7 @@ TODO add diode stabilized flag and time until setting
 
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
-  - Serial shorthand: `set serialguard seconds=60` or `set serialguard off`.
+  - Serial shorthand: `serialguard seconds=60` or `serialguard off`.
   - While active, MQTT commands are rejected before dispatch and logged.
   - The guard uses the named scheduled action `serial_guard_expire`.
   - `seconds:0` disables serial override.
