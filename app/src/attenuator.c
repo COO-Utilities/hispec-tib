@@ -6,6 +6,7 @@
 // then set on dB, not voltage
 
 #include "attenuator.h"
+#include "app_warning.h"
 #include "devices.h"
 #include "drivers/dac/dac7578.h"
 LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
@@ -47,7 +48,10 @@ bool attenuator_init(struct attenuator *drv, uint8_t channel) {
 bool attenuator_set(struct attenuator *drv, double value, bool raw) {
     /* Clamp voltage to [0, MAX_VOLTAGE] */
     double voltage;
+    double unclamped_voltage;
     int err;
+    char context[48];
+
     if (raw) {
         voltage = value;
     }
@@ -56,11 +60,19 @@ bool attenuator_set(struct attenuator *drv, double value, bool raw) {
             drv->coeff_db_to_volt[1]*value+
             drv->coeff_db_to_volt[2]*value*value;
     }
+    unclamped_voltage = voltage;
 
     if (voltage < 0.0) {
         voltage = 0.0;
     } else if (voltage > MAX_VOLTAGE) {
         voltage = MAX_VOLTAGE;
+    }
+    if (voltage != unclamped_voltage) {
+        snprintk(context, sizeof(context), "channel=%u requested=%.3f clamped=%.3f",
+                 drv->cfg.channel_id, unclamped_voltage, voltage);
+        app_warning_emit("attenuator_clamped",
+                         "attenuator command exceeded DAC range and was clamped",
+                         context);
     }
 
     drv->voltage = voltage;

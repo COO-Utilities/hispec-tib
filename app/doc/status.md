@@ -84,6 +84,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Error handling & observability:
   - Error heuristics: if a command can detect a problem it should do as much safe work as possible and report known failures.
   - Warnings are to be easy to publish from anywhere in the code as fire-and-forget MQTT messages.
+  - Current implementation note: `app_warning_emit()` logs warnings locally and publishes best-effort MQTT warnings on `dt/hsfib-tib/warning`.
 - Help/UX: if memory permits, include a help command that emits plain-English descriptions of MQTT commands and payloads (not their return values).
 
 ## Unstarted work is principally in

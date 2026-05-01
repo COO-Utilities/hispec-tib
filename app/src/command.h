@@ -22,7 +22,14 @@
 
 enum MsgType { MSG_GET, MSG_SET, ACK, RESP_OK, RESP_ERROR };
 enum CommandSource { CMD_SRC_MQTT = 0, CMD_SRC_SERIAL = 1 };
-enum OutMsgTarget { OUT_TARGET_MQTT = 0, OUT_TARGET_SERIAL = 1 };
+enum OutMsgTarget {
+	OUT_TARGET_MQTT = 0,
+	OUT_TARGET_SERIAL = 1,
+	/* Fire-and-forget MQTT publication, used for warnings/telemetry that
+	 * must not block command responses when MQTT is unavailable.
+	 */
+	OUT_TARGET_MQTT_BEST_EFFORT = 2,
+};
 
 struct Command {
 	enum MsgType msg_type;

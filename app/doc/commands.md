@@ -7,6 +7,7 @@ Draft 0.1
 - **Device subscribes:** `cmd/<device>/req/#` *(all request endpoints live under this prefix)*
 - **Device publishes (responses):** `cmd/<device>/resp/...`
 - **Device publishes (telemetry):** `dt/<device>/...`
+- **Device publishes (warnings):** `dt/<device>/warning`
 
 ### Global (applies to all commands)
 
@@ -103,10 +104,33 @@ for normal serial operation.
 - `reboot`
 - `split`
 - Telemetry: `yj_tput`, `hk_tput`
+- Warnings: `dt/<device>/warning`
 
 ---
 
-Each item below is **one request topic** (subscribed by the device) and its **matching response topic** (published by the device).
+Command items below are **one request topic** (subscribed by the device) and
+their **matching response topic** (published by the device). The warning topic
+is publish-only.
+
+### Warning Publication
+- **Publish topic:** `dt/<device>/warning`
+- **Top-level helper:** `app_warning_emit()`
+- **Queue behavior:** best-effort MQTT through `OUT_TARGET_MQTT_BEST_EFFORT`;
+  logs locally and drops if MQTT is unavailable or the outbound queue is full.
+- **Payload:**
+  ```json
+  {
+    "severity": "warning",
+    "code": "<stable_warning_code>",
+    "msg": "<short human text>",
+    "context": "<short context>",
+    "uptime_ms": 0
+  }
+  ```
+
+Warnings do not imply command failure unless the command response also reports
+an error. Current warning emitters include MQTT command rejection while serial
+guard is active and attenuator DAC-range clamping.
 
 ### `help`
 - **Request topic:** `cmd/<device>/req/help`

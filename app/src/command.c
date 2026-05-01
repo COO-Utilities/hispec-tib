@@ -21,6 +21,7 @@
 #include "devices.h"
 #include "app_settings.h"
 #include "app_scheduled_actions.h"
+#include "app_warning.h"
 #include "attenuator.h"
 #include "maiman.h"
 #include "mems_switching.h"
@@ -613,9 +614,13 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
     }
 
     if (!command_network_mqtt_allowed()) {
-        LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
         struct OutMsg r = serial_active_response(&cmd);
+
+        LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
         (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        app_warning_emit("serial_guard_active",
+                         "MQTT command rejected while serial command guard is active",
+                         cmd.key);
         return;
     }
 
@@ -822,12 +827,18 @@ void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_availabl
     int budget = 8;
 
     while (budget-- > 0 && k_msgq_get(&outbound_queue, &out, K_NO_WAIT) == 0) {
+        const bool best_effort = (out.target == OUT_TARGET_MQTT_BEST_EFFORT);
+
         if (out.target == OUT_TARGET_SERIAL) {
             print_serial_response(&out);
             continue;
         }
 
         if (!mqtt_available) {
+            if (best_effort) {
+                LOG_DBG("Dropping best-effort MQTT msg while MQTT unavailable");
+                continue;
+            }
             if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
                 LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
             }
@@ -835,6 +846,10 @@ void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_availabl
         }
 
         if (publish_outmsg(client, &out) != 0) {
+            if (best_effort) {
+                LOG_WRN("Best-effort MQTT publish failed; dropping msg");
+                continue;
+            }
             LOG_WRN("MQTT publish failed; will retry");
             if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
                 LOG_WRN("Dropping MQTT msg (queue full after publish failure)");

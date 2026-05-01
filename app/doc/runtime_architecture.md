@@ -55,6 +55,14 @@ same `OutMsg` payload used for MQTT responses, and `print_serial_response()`
 prints the response topic followed by the payload with 80-column wrapping and
 tab indentation at print time.
 
+## Warnings
+
+`app_warning_emit()` is the shared warning helper. It logs locally with
+`LOG_WRN()` and tries one non-blocking enqueue to `dt/<device>/warning` using
+`OUT_TARGET_MQTT_BEST_EFFORT`. Best-effort outbound messages are dropped when
+MQTT is unavailable or publish fails; they are not retried because warning
+publication must not block command responses or hardware timing paths.
+
 ## Current Boundaries
 
 - Commands should keep parsing/validation in `command.c` and call device/domain
@@ -63,5 +71,6 @@ tab indentation at print time.
   response helper can decouple timing-sensitive work from network availability.
 - Persistent settings currently cover IP, MQTT, boot count, and serial guard
   timeout. Calibration and operating-state persistence are still future work.
-- Warning publication is still local logging plus command response errors; a
-  fire-and-forget MQTT warning helper remains a next implementation slice.
+- Warning publication is available for lightweight suspicious/degraded
+  conditions. Warning coverage still needs to be added to more hardware and
+  calibration paths as those subsystems mature.
