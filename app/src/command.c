@@ -25,6 +25,7 @@
 #include "attenuator.h"
 #include "maiman.h"
 #include "mems_switching.h"
+#include "photodiode.h"
 #include "sntp_sync.h"
 #include "tempsense.h"
 #include <coo_commons/json_utils.h>
@@ -94,6 +95,8 @@ const struct DispatchEntry dispatch_table[] = {
     { "laser",      laser_setting_get,laser_setting_set},
     { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
+    { "pdsettings", pd_settings_get, pd_settings_set },
+    { "pd",         pd_get,          pd_set          },
     { "temp",       temp_get,         NULL             },
     { "status",     status_get,       NULL  },
     { "sleep",      NULL,  sleep_set  }, // GET only
@@ -2326,6 +2329,309 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
     }
 
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
+}
+
+static float pd_power_err_uw(float noise_mv, enum photodiode_channel channel)
+{
+    struct app_photodiode_settings settings;
+
+    app_settings_get_photodiode(&settings);
+    if (!(settings.channel[channel].gain_v_per_uw > 0.0f)) {
+        return 0.0f;
+    }
+
+    return noise_mv / (settings.channel[channel].gain_v_per_uw * 1000.0f);
+}
+
+static int pd_parse_channel_from_payload(const struct Command *cmd,
+                                         enum photodiode_channel *channel)
+{
+    char channel_name[8] = {0};
+    const char *slash = strchr(cmd->key, '/');
+    int parse_rc;
+
+    if (slash != NULL && slash[1] != '\0') {
+        return photodiode_channel_from_name(slash + 1, channel);
+    }
+
+    parse_rc = coo_json_extract_string(cmd->payload, "channel",
+                                       channel_name, sizeof(channel_name));
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return -ENOENT;
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return -EINVAL;
+    }
+
+    return photodiode_channel_from_name(channel_name, channel);
+}
+
+struct OutMsg pd_get(const struct Command *cmd)
+{
+    struct photodiode_status status;
+    char unit[12] = "power";
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    float yj_value;
+    float hk_value;
+    float yj_err;
+    float hk_err;
+    int parse_rc;
+
+    parse_rc = coo_json_extract_string(cmd->payload, "unit", unit, sizeof(unit));
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid unit\"}");
+    }
+    if (strcasecmp(unit, "power") != 0 && strcasecmp(unit, "volts") != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"unit must be power or volts\"}");
+    }
+
+    photodiode_get_status(&status);
+
+    if (strcasecmp(unit, "volts") == 0) {
+        yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].mv / 1000.0f;
+        hk_value = status.channel[PHOTODIODE_CHANNEL_HK].mv / 1000.0f;
+        yj_err = status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / 1000.0f;
+        hk_err = status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / 1000.0f;
+        snprintk(unit, sizeof(unit), "volts");
+    } else {
+        yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
+        hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
+        yj_err = pd_power_err_uw(status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
+                                 PHOTODIODE_CHANNEL_YJ);
+        hk_err = pd_power_err_uw(status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
+                                 PHOTODIODE_CHANNEL_HK);
+        snprintk(unit, sizeof(unit), "power");
+    }
+
+    snprintk(payload, sizeof(payload),
+             "{\"unit\":\"%s\",\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
+             "\"hkvalue\":%.6f,\"hkvalue_err\":%.6f,"
+             "\"yj_raw\":%d,\"hk_raw\":%d,\"yj_mv\":%.3f,\"hk_mv\":%.3f,"
+             "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
+             "\"uptime\":%lld}",
+             unit,
+             (double)yj_value,
+             (double)yj_err,
+             (double)hk_value,
+             (double)hk_err,
+             status.channel[PHOTODIODE_CHANNEL_YJ].raw,
+             status.channel[PHOTODIODE_CHANNEL_HK].raw,
+             (double)status.channel[PHOTODIODE_CHANNEL_YJ].mv,
+             (double)status.channel[PHOTODIODE_CHANNEL_HK].mv,
+             (double)status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
+             (double)status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
+             status.uptime_ms);
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+static struct OutMsg pd_dark_response(const struct Command *cmd,
+                                      const struct photodiode_dark_result *result)
+{
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    snprintk(payload, sizeof(payload),
+             "{\"status\":\"success\",\"channel\":\"%s\",\"stored\":%s,"
+             "\"samples\":%u,\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
+             "\"min_mv\":%.3f,\"max_mv\":%.3f,\"previous_dark_mv\":%.3f,"
+             "\"configured_dark_mv\":%.3f,\"lowest_dark_mv\":%.3f,"
+             "\"lowest_dark_valid\":%s}",
+             photodiode_channel_name(result->channel),
+             result->stored ? "true" : "false",
+             result->samples,
+             (double)result->mean_mv,
+             (double)result->rms_mv,
+             (double)result->min_mv,
+             (double)result->max_mv,
+             (double)result->previous_dark_mv,
+             (double)result->configured_dark_mv,
+             (double)result->lowest_dark_mv,
+             result->lowest_dark_valid ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg pd_set(const struct Command *cmd)
+{
+    char action[32] = {0};
+    enum photodiode_channel channel;
+    uint32_t samples_u32 = 64U;
+    bool store = false;
+    bool persist = true;
+    int parse_rc;
+    int rc;
+
+    parse_rc = coo_json_extract_string(cmd->payload, "action", action, sizeof(action));
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing action\"}");
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid action\"}");
+    }
+
+    rc = pd_parse_channel_from_payload(cmd, &channel);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"channel must be yj or hk\"}");
+    }
+
+    if (strcasecmp(action, "measure_dark") == 0) {
+        struct photodiode_dark_result result;
+
+        parse_rc = coo_json_extract_u32(cmd->payload, "samples", &samples_u32);
+        if (parse_rc == COO_JSON_EXTRACT_ERR || samples_u32 > UINT16_MAX) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"invalid samples\"}");
+        }
+
+        parse_rc = coo_json_extract_bool(cmd->payload, "store", &store);
+        if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"invalid store\"}");
+        }
+
+        rc = photodiode_measure_dark(channel, (uint16_t)samples_u32, store, &result);
+        if (rc != 0) {
+            char payload[MAX_PAYLOAD_LEN];
+
+            snprintk(payload, sizeof(payload),
+                     "{\"status\":\"error\",\"msg\":\"dark measurement failed\",\"rc\":%d}",
+                     rc);
+            return _msg_builder(cmd, RESP_ERROR, payload);
+        }
+        return pd_dark_response(cmd, &result);
+    }
+
+    if (strcasecmp(action, "reset_lowest_dark") == 0) {
+        parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+        if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        }
+
+        rc = photodiode_reset_lowest_dark(channel, persist);
+        if (rc != 0) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"reset failed\"}");
+        }
+        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    }
+
+    return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"unknown action\"}");
+}
+
+static void pd_settings_channel_json(char *payload, size_t payload_len, size_t *off,
+                                     const char *name,
+                                     const struct app_pd_channel_settings *ch,
+                                     bool comma)
+{
+    int written = snprintk(payload + *off, payload_len - *off,
+                           "%s\"%s\":{\"dark_mv\":%.3f,"
+                           "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s,"
+                           "\"noise_rms_mV\":%.3f,\"gain_v_p_uw\":%.6f}",
+                           comma ? "," : "",
+                           name,
+                           (double)ch->dark_mv,
+                           (double)ch->lowest_dark_mv,
+                           ch->lowest_dark_valid ? "true" : "false",
+                           (double)ch->noise_warn_rms_mv,
+                           (double)ch->gain_v_per_uw);
+
+    if (written > 0 && written < (int)(payload_len - *off)) {
+        *off += (size_t)written;
+    }
+}
+
+struct OutMsg pd_settings_get(const struct Command *cmd)
+{
+    struct app_photodiode_settings settings;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t off = 0;
+    int written;
+
+    app_settings_get_photodiode(&settings);
+    written = snprintk(payload, sizeof(payload), "{\"autooff_s\":0,");
+    if (written < 0 || written >= (int)sizeof(payload)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"pdsettings response too large\"}");
+    }
+    off = (size_t)written;
+    pd_settings_channel_json(payload, sizeof(payload), &off, "yj",
+                             &settings.channel[PHOTODIODE_CHANNEL_YJ], false);
+    pd_settings_channel_json(payload, sizeof(payload), &off, "hk",
+                             &settings.channel[PHOTODIODE_CHANNEL_HK], true);
+    written = snprintk(payload + off, sizeof(payload) - off, "}");
+    if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"pdsettings response too large\"}");
+    }
+
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+static int pd_parse_optional_float(const struct Command *cmd, const char *key,
+                                   float *value, bool *changed,
+                                   float min_value, float max_value)
+{
+    float parsed;
+    int parse_rc = coo_json_extract_float(cmd->payload, key, &parsed);
+
+    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+        return 0;
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR ||
+        !(parsed >= min_value && parsed <= max_value)) {
+        return -EINVAL;
+    }
+
+    *value = parsed;
+    *changed = true;
+    return 0;
+}
+
+struct OutMsg pd_settings_set(const struct Command *cmd)
+{
+    struct app_photodiode_settings settings;
+    bool persist = false;
+    bool changed = false;
+    int parse_rc;
+
+    app_settings_get_photodiode(&settings);
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+    }
+
+    if (pd_parse_optional_float(cmd, "yj_dark_mv",
+                                &settings.channel[PHOTODIODE_CHANNEL_YJ].dark_mv,
+                                &changed, -5000.0f, 5000.0f) != 0 ||
+        pd_parse_optional_float(cmd, "hk_dark_mv",
+                                &settings.channel[PHOTODIODE_CHANNEL_HK].dark_mv,
+                                &changed, -5000.0f, 5000.0f) != 0 ||
+        pd_parse_optional_float(cmd, "yj_noise_rms_mV",
+                                &settings.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv,
+                                &changed, 0.0f, 5000.0f) != 0 ||
+        pd_parse_optional_float(cmd, "hk_noise_rms_mV",
+                                &settings.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv,
+                                &changed, 0.0f, 5000.0f) != 0 ||
+        pd_parse_optional_float(cmd, "yj_gain_v_p_uw",
+                                &settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw,
+                                &changed, 0.000001f, 1000000000.0f) != 0 ||
+        pd_parse_optional_float(cmd, "hk_gain_v_p_uw",
+                                &settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw,
+                                &changed, 0.000001f, 1000000000.0f) != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid pdsettings value\"}");
+    }
+
+    if (!changed) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"no pdsettings fields supplied\"}");
+    }
+
+    app_settings_update_photodiode(&settings, persist);
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 

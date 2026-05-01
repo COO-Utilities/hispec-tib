@@ -17,8 +17,10 @@ hardware mapping.
   `set` keywords. `normalize_serial_payload()` accepts raw JSON unchanged or
   converts key/value and shorthand payloads into the same JSON shape used by
   MQTT before dispatch.
-- `photodiode_thread` samples the ADC and queues telemetry. A delayable work
-  item drains photodiode telemetry into the normal outbound queue.
+- `photodiode_thread` samples the ADC, subtracts explicit stored dark levels,
+  estimates optical power, tracks residual RMS noise after smoothing, and queues
+  telemetry. A delayable work item drains photodiode telemetry into the normal
+  outbound queue. Dark levels are changed only by explicit `pd` commands.
 - `tempsensor_thread` owns ambient temperature polling.
 - MEMS switch timing is handled by a router-owned `k_work_delayable` tick in
   `mems_switching.c`; command parsing and MQTT work stay out of that timing
@@ -75,8 +77,9 @@ publication must not block command responses or hardware timing paths.
   modules for hardware behavior.
 - Device timing loops should not publish MQTT directly when a bounded queue or
   response helper can decouple timing-sensitive work from network availability.
-- Persistent settings currently cover IP, MQTT, boot count, and serial guard
-  timeout. Calibration and operating-state persistence are still future work.
+- Persistent settings currently cover IP, MQTT, boot count, serial guard
+  timeout, and photodiode dark/noise/gain settings. Attenuator calibration and
+  broader operating-state persistence are still future work.
 - Warning publication is available for lightweight suspicious/degraded
   conditions. Warning coverage still needs to be added to more hardware and
   calibration paths as those subsystems mature.

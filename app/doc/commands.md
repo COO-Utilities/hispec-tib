@@ -487,20 +487,61 @@ guard is active and attenuator DAC-range clamping.
   - Optional payload: `{"unit": "power"}`
 
     `unit` is `"power" | "volts"` (case-insensitive), defaults to power`.
+  - Measure dark without storing:
+    ```json
+    {
+      "action": "measure_dark",
+      "channel": "yj",
+      "samples": 64,
+      "store": false
+    }
+    ```
+  - Measure dark and persist it:
+    ```json
+    {
+      "action": "measure_dark",
+      "channel": "hk",
+      "samples": 64,
+      "store": true
+    }
+    ```
+  - Reset lowest-ever dark tracking:
+    ```json
+    {
+      "action": "reset_lowest_dark",
+      "channel": "yj",
+      "persistent": true
+    }
+    ```
 
 - **Response topic:** `cmd/<device>/resp/pd`
   ```json
-  {   "unit": "power",
-      "yjvalue": 0.0,
-      "yjvalue_err": 0.0,
-      "hkvalue": 0.0,
-      "hkvalue_err": 0.0,
-      "time": 0,
-      "uptime": 0
-    }
+  {
+    "unit": "power",
+    "yjvalue": 0.0,
+    "yjvalue_err": 0.0,
+    "hkvalue": 0.0,
+    "hkvalue_err": 0.0,
+    "yj_raw": 0,
+    "hk_raw": 0,
+    "yj_mv": 0.0,
+    "hk_mv": 0.0,
+    "yj_noise_rms_mv": 0.0,
+    "hk_noise_rms_mv": 0.0,
+    "uptime": 0
+  }
   ```
 
-- **Notes:** powers photodiodes as needed; resets photodiode auto-off timer.
+- **Notes:**
+  - Dark level is updated only by explicit `measure_dark` with `store:true`.
+  - `measure_dark` with `store:false` reports the measured mean/RMS/min/max
+    without changing stored calibration.
+  - `lowest_dark_mv` is updated only when a stored dark measurement is lower
+    than the previous stored lowest value.
+  - Active monitoring tracks a simple residual RMS after smoothing. If it
+    exceeds the configured warning threshold, the firmware emits
+    `photodiode_noise` on `dt/<device>/warning`.
+  - Power estimates subtract stored dark mV and use `gain_v_p_uw`.
 
 ### `pdsettings`
 - **Request topic:** `cmd/<device>/req/pdsettings`
@@ -541,7 +582,14 @@ guard is active and attenuator DAC-range clamping.
   - Set result: `{"status": "success"}` 
   - Get result: Full set of settings as described in set JSON
 
+- **Current set fields:**
+  - `yj_dark_mv`, `hk_dark_mv`
+  - `yj_noise_rms_mV`, `hk_noise_rms_mV`
+  - `yj_gain_v_p_uw`, `hk_gain_v_p_uw`
+  - `persistent`
+
 - **Notes:** not all settings need to be included when setting; failure on any settable setting results in none being set; QE values are in `[0, 1]`.
+  Dark and lowest-dark values are persisted through the settings subsystem.
 
 ### `ip`
 - **Request topic:** `cmd/<device>/req/ip`

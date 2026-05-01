@@ -100,6 +100,10 @@ struct OutMsg power_set(const struct Command *cmd);
 
 struct OutMsg atten_setting_get(const struct Command *cmd);
 struct OutMsg atten_setting_set(const struct Command *cmd);
+struct OutMsg pd_get(const struct Command *cmd);
+struct OutMsg pd_set(const struct Command *cmd);
+struct OutMsg pd_settings_get(const struct Command *cmd);
+struct OutMsg pd_settings_set(const struct Command *cmd);
 
 struct OutMsg status_get(const struct Command *cmd);
 struct OutMsg temp_get(const struct Command *cmd);

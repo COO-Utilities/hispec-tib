@@ -313,16 +313,19 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
     - relys on blocking behavior of adc_read and conversion time TODO this is sound as we have time margin but need to 
       verify no race condition with IC polling otherwise need to pad conversion interval or use HW interrupt
   - uses zephyr log macro to log errors
-  - gets clock time with `clock_gettime`
-    - TODO we want this to be either NTP or tracable to something synchronizable with the FEI `CLOCK_REALTIME` may not be it
   - builds `OutMsg` on hardcoded `dt/hsfib-tib/photodiode` with QoS = 0
-    payload of {"yj": <yj reading>, "hk": "<hk reading>, "time": <timestamp in ms>}
+    payload includes raw counts, millivolts, dark-subtracted millivolts, power estimate, residual RMS noise, dark settings, and uptime
     - TODO move pub address to, at a minimum, a central IoT/MQTT point in this file, ideally for whole project/kernel config
     - TODO finiaize time format
     - TODO consider adding an "hk_time_offset" value
     - TODO consider not emitting if photodiode power is off or flagging in JSON
   - put message in the `photodiode_queue` for consumption elsewhere, drop sample if queue full
   - sleep until the net polling interval don't worry about the overflow ever 300Myr
+  - active noise monitoring uses residual RMS after smoothing and emits a warning without failing the sample
+  - explicit dark calibration commands live in `pd_set()`
+    - `measure_dark` with `store:false` reports a dark measurement without changing settings
+    - `measure_dark` with `store:true` updates stored dark and lowest-ever dark if lower
+    - `reset_lowest_dark` clears lowest-ever tracking for the selected channel
 
 ### attenuator.c
 - attenuator struct

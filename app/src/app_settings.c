@@ -29,6 +29,16 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_IP_NTP "tib/ip/ntp"
 #define KEY_MQTT_HOST "tib/mqtt/host"
 #define KEY_MQTT_PORT "tib/mqtt/port"
+#define KEY_PD_YJ_DARK_MV "tib/pd/yj/dark_mv"
+#define KEY_PD_YJ_LOWEST_DARK_MV "tib/pd/yj/lowest_dark_mv"
+#define KEY_PD_YJ_LOWEST_DARK_VALID "tib/pd/yj/lowest_dark_valid"
+#define KEY_PD_YJ_NOISE_WARN_MV "tib/pd/yj/noise_warn_rms_mv"
+#define KEY_PD_YJ_GAIN_V_PER_UW "tib/pd/yj/gain_v_per_uw"
+#define KEY_PD_HK_DARK_MV "tib/pd/hk/dark_mv"
+#define KEY_PD_HK_LOWEST_DARK_MV "tib/pd/hk/lowest_dark_mv"
+#define KEY_PD_HK_LOWEST_DARK_VALID "tib/pd/hk/lowest_dark_valid"
+#define KEY_PD_HK_NOISE_WARN_MV "tib/pd/hk/noise_warn_rms_mv"
+#define KEY_PD_HK_GAIN_V_PER_UW "tib/pd/hk/gain_v_per_uw"
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -74,6 +84,16 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	}
 	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
 	s->mqtt.broker_port = (uint16_t)broker_port;
+	s->photodiode.channel[0].dark_mv = 0.0f;
+	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
+	s->photodiode.channel[0].lowest_dark_valid = false;
+	s->photodiode.channel[0].noise_warn_rms_mv = 3.0f;
+	s->photodiode.channel[0].gain_v_per_uw = 47500.0f;
+	s->photodiode.channel[1].dark_mv = 0.0f;
+	s->photodiode.channel[1].lowest_dark_mv = 0.0f;
+	s->photodiode.channel[1].lowest_dark_valid = false;
+	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
+	s->photodiode.channel[1].gain_v_per_uw = 3.0875f;
 	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
 	s->boot_count = 0U;
 	s->mqtt_revision = 0U;
@@ -104,6 +124,12 @@ static int read_u16(settings_read_cb read_cb, void *cb_arg, uint16_t *out)
 	return (rc == sizeof(*out)) ? 0 : -EINVAL;
 }
 
+static int read_float(settings_read_cb read_cb, void *cb_arg, float *out)
+{
+	int rc = read_cb(cb_arg, out, sizeof(*out));
+	return (rc == sizeof(*out)) ? 0 : -EINVAL;
+}
+
 static int read_str(settings_read_cb read_cb, void *cb_arg, char *out, size_t out_size)
 {
 	int rc;
@@ -120,6 +146,21 @@ static int read_str(settings_read_cb read_cb, void *cb_arg, char *out, size_t ou
 
 	out[out_size - 1U] = '\0';
 	return 0;
+}
+
+static void read_valid_float_or_warn(settings_read_cb read_cb, void *cb_arg,
+				     const char *name, float *out,
+				     float min_value, float max_value)
+{
+	float value;
+
+	if (read_float(read_cb, cb_arg, &value) != 0 ||
+	    !(value >= min_value && value <= max_value)) {
+		LOG_WRN("Ignoring invalid stored setting tib/%s", name);
+		return;
+	}
+
+	*out = value;
 }
 
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
@@ -190,6 +231,74 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
+	if (strcmp(name, "pd/yj/dark_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[0].dark_mv,
+					 -5000.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/yj/lowest_dark_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[0].lowest_dark_mv,
+					 -5000.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/yj/lowest_dark_valid") == 0) {
+		(void)read_bool(read_cb, cb_arg,
+				&g_settings.snapshot.photodiode.channel[0].lowest_dark_valid);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/yj/noise_warn_rms_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[0].noise_warn_rms_mv,
+					 0.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/yj/gain_v_per_uw") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[0].gain_v_per_uw,
+					 0.000001f, 1000000000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/hk/dark_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[1].dark_mv,
+					 -5000.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/hk/lowest_dark_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[1].lowest_dark_mv,
+					 -5000.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/hk/lowest_dark_valid") == 0) {
+		(void)read_bool(read_cb, cb_arg,
+				&g_settings.snapshot.photodiode.channel[1].lowest_dark_valid);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/hk/noise_warn_rms_mv") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[1].noise_warn_rms_mv,
+					 0.0f, 5000.0f);
+		goto out;
+	}
+
+	if (strcmp(name, "pd/hk/gain_v_per_uw") == 0) {
+		read_valid_float_or_warn(read_cb, cb_arg, name,
+					 &g_settings.snapshot.photodiode.channel[1].gain_v_per_uw,
+					 0.000001f, 1000000000.0f);
+		goto out;
+	}
+
 out:
 	k_mutex_unlock(&g_settings.lock);
 	return 0;
@@ -213,6 +322,11 @@ static void persist_u32(const char *key, uint32_t value)
 }
 
 static void persist_u16(const char *key, uint16_t value)
+{
+	(void)settings_save_one(key, &value, sizeof(value));
+}
+
+static void persist_float(const char *key, float value)
 {
 	(void)settings_save_one(key, &value, sizeof(value));
 }
@@ -313,6 +427,41 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	if (persist) {
 		persist_str(KEY_MQTT_HOST, mqtt->broker_host);
 		persist_u16(KEY_MQTT_PORT, mqtt->broker_port);
+	}
+}
+
+void app_settings_get_photodiode(struct app_photodiode_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.photodiode;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist)
+{
+	if (pd == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.photodiode = *pd;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_float(KEY_PD_YJ_DARK_MV, pd->channel[0].dark_mv);
+		persist_float(KEY_PD_YJ_LOWEST_DARK_MV, pd->channel[0].lowest_dark_mv);
+		persist_bool(KEY_PD_YJ_LOWEST_DARK_VALID, pd->channel[0].lowest_dark_valid);
+		persist_float(KEY_PD_YJ_NOISE_WARN_MV, pd->channel[0].noise_warn_rms_mv);
+		persist_float(KEY_PD_YJ_GAIN_V_PER_UW, pd->channel[0].gain_v_per_uw);
+		persist_float(KEY_PD_HK_DARK_MV, pd->channel[1].dark_mv);
+		persist_float(KEY_PD_HK_LOWEST_DARK_MV, pd->channel[1].lowest_dark_mv);
+		persist_bool(KEY_PD_HK_LOWEST_DARK_VALID, pd->channel[1].lowest_dark_valid);
+		persist_float(KEY_PD_HK_NOISE_WARN_MV, pd->channel[1].noise_warn_rms_mv);
+		persist_float(KEY_PD_HK_GAIN_V_PER_UW, pd->channel[1].gain_v_per_uw);
 	}
 }
 
