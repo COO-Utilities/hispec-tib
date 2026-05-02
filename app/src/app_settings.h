@@ -68,6 +68,16 @@ void app_settings_get_mqtt(struct app_mqtt_settings *out);
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
 void app_settings_get_photodiode(struct app_photodiode_settings *out);
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist);
+/**
+ * @brief Update one photodiode channel's calibration/settings.
+ *
+ * @param channel Zero-based photodiode channel index.
+ * @param pd Channel settings to copy into the runtime snapshot.
+ * @param persist If true, save only this channel's keys through Zephyr settings.
+ */
+void app_settings_update_photodiode_channel(uint8_t channel,
+					    const struct app_pd_channel_settings *pd,
+					    bool persist);
 uint32_t app_settings_get_mqtt_revision(void);
 uint32_t app_settings_get_serial_holdoff_s(void);
 void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist);

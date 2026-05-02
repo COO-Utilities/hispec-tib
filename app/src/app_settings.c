@@ -347,6 +347,27 @@ static void persist_str(const char *key, const char *value)
 	(void)settings_save_one(key, value, len);
 }
 
+static void persist_photodiode_channel(uint8_t channel,
+				       const struct app_pd_channel_settings *pd)
+{
+	if (channel == 0U) {
+		persist_float(KEY_PD_YJ_DARK_MV, pd->dark_mv);
+		persist_float(KEY_PD_YJ_LOWEST_DARK_MV, pd->lowest_dark_mv);
+		persist_bool(KEY_PD_YJ_LOWEST_DARK_VALID, pd->lowest_dark_valid);
+		persist_float(KEY_PD_YJ_NOISE_WARN_MV, pd->noise_warn_rms_mv);
+		persist_float(KEY_PD_YJ_GAIN_V_PER_UW, pd->gain_v_per_uw);
+		return;
+	}
+
+	if (channel == 1U) {
+		persist_float(KEY_PD_HK_DARK_MV, pd->dark_mv);
+		persist_float(KEY_PD_HK_LOWEST_DARK_MV, pd->lowest_dark_mv);
+		persist_bool(KEY_PD_HK_LOWEST_DARK_VALID, pd->lowest_dark_valid);
+		persist_float(KEY_PD_HK_NOISE_WARN_MV, pd->noise_warn_rms_mv);
+		persist_float(KEY_PD_HK_GAIN_V_PER_UW, pd->gain_v_per_uw);
+	}
+}
+
 static const char *const resettable_setting_keys[] = {
 	KEY_SERIAL_HOLDOFF,
 	KEY_BOOT_COUNT,
@@ -551,16 +572,25 @@ void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bo
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_float(KEY_PD_YJ_DARK_MV, pd->channel[0].dark_mv);
-		persist_float(KEY_PD_YJ_LOWEST_DARK_MV, pd->channel[0].lowest_dark_mv);
-		persist_bool(KEY_PD_YJ_LOWEST_DARK_VALID, pd->channel[0].lowest_dark_valid);
-		persist_float(KEY_PD_YJ_NOISE_WARN_MV, pd->channel[0].noise_warn_rms_mv);
-		persist_float(KEY_PD_YJ_GAIN_V_PER_UW, pd->channel[0].gain_v_per_uw);
-		persist_float(KEY_PD_HK_DARK_MV, pd->channel[1].dark_mv);
-		persist_float(KEY_PD_HK_LOWEST_DARK_MV, pd->channel[1].lowest_dark_mv);
-		persist_bool(KEY_PD_HK_LOWEST_DARK_VALID, pd->channel[1].lowest_dark_valid);
-		persist_float(KEY_PD_HK_NOISE_WARN_MV, pd->channel[1].noise_warn_rms_mv);
-		persist_float(KEY_PD_HK_GAIN_V_PER_UW, pd->channel[1].gain_v_per_uw);
+		persist_photodiode_channel(0U, &pd->channel[0]);
+		persist_photodiode_channel(1U, &pd->channel[1]);
+	}
+}
+
+void app_settings_update_photodiode_channel(uint8_t channel,
+					    const struct app_pd_channel_settings *pd,
+					    bool persist)
+{
+	if (pd == NULL || channel >= APP_PD_CHANNEL_COUNT) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.photodiode.channel[channel] = *pd;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_photodiode_channel(channel, pd);
 	}
 }
 

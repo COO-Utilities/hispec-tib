@@ -87,7 +87,7 @@ static bool attenuator_channel_available(laser_t laser_id)
         return laser_id != LASER_UNKNOWN && (uint8_t)laser_id < NUM_ATTENUATORS;
     }
 
-    if (board == HISPEC_BOARD_CAL_BLUE || board == HISPEC_BOARD_CAL_RED) {
+    if (board == HISPEC_BOARD_CAL_YJ || board == HISPEC_BOARD_CAL_HK) {
         return laser_id == LASER_1510_H;
     }
 
@@ -2374,27 +2374,44 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
 }
 
-static float pd_power_err_uw(float noise_mv, enum photodiode_channel channel)
+static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
-    struct app_photodiode_settings settings;
-
-    app_settings_get_photodiode(&settings);
-    if (!(settings.channel[channel].gain_v_per_uw > 0.0f)) {
-        return 0.0f;
+    if (name == NULL || channel == NULL) {
+        return -EINVAL;
+    }
+    if (strcasecmp(name, "yj") == 0) {
+        *channel = PHOTODIODE_CHANNEL_YJ;
+        return 0;
+    }
+    if (strcasecmp(name, "hk") == 0) {
+        *channel = PHOTODIODE_CHANNEL_HK;
+        return 0;
     }
 
-    return noise_mv / (settings.channel[channel].gain_v_per_uw * 1000.0f);
+    return -ENOENT;
 }
 
-static int pd_parse_channel_from_payload(const struct Command *cmd,
-                                         enum photodiode_channel *channel)
+static int pd_parse_channel_from_key(const struct Command *cmd,
+                                     enum photodiode_channel *channel)
+{
+    const char *slash = strchr(cmd->key, '/');
+
+    if (slash == NULL || slash[1] == '\0') {
+        return -ENOENT;
+    }
+
+    return pd_parse_channel_name(slash + 1, channel);
+}
+
+static int pd_parse_channel_from_payload_or_key(const struct Command *cmd,
+                                                enum photodiode_channel *channel)
 {
     char channel_name[8] = {0};
-    const char *slash = strchr(cmd->key, '/');
     int parse_rc;
 
-    if (slash != NULL && slash[1] != '\0') {
-        return photodiode_channel_from_name(slash + 1, channel);
+    parse_rc = pd_parse_channel_from_key(cmd, channel);
+    if (parse_rc == 0) {
+        return 0;
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "channel",
@@ -2406,7 +2423,7 @@ static int pd_parse_channel_from_payload(const struct Command *cmd,
         return -EINVAL;
     }
 
-    return photodiode_channel_from_name(channel_name, channel);
+    return pd_parse_channel_name(channel_name, channel);
 }
 
 struct OutMsg pd_get(const struct Command *cmd)
@@ -2445,10 +2462,23 @@ struct OutMsg pd_get(const struct Command *cmd)
     } else {
         yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
         hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
-        yj_err = pd_power_err_uw(status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
-                                 PHOTODIODE_CHANNEL_YJ);
-        hk_err = pd_power_err_uw(status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
-                                 PHOTODIODE_CHANNEL_HK);
+
+        struct app_photodiode_settings settings;
+        float yj_gain;
+        float hk_gain;
+
+        app_settings_get_photodiode(&settings);
+        yj_gain = settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw;
+        hk_gain = settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw;
+
+        yj_err = (yj_gain > 0.0f) ?
+            status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / (yj_gain * 1000.0f) :
+            0.0f;
+
+        hk_err = (hk_gain > 0.0f) ?
+            status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / (hk_gain * 1000.0f) :
+            0.0f;
+
         snprintk(unit, sizeof(unit), "power");
     }
 
@@ -2480,12 +2510,14 @@ static struct OutMsg pd_dark_response(const struct Command *cmd,
 
     snprintk(payload, sizeof(payload),
              "{\"status\":\"success\",\"channel\":\"%s\",\"stored\":%s,"
-             "\"samples\":%u,\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
+             "\"duration_ms\":%u,\"samples\":%u,"
+             "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
              "\"min_mv\":%.3f,\"max_mv\":%.3f,\"previous_dark_mv\":%.3f,"
              "\"configured_dark_mv\":%.3f,\"lowest_dark_mv\":%.3f,"
              "\"lowest_dark_valid\":%s}",
-             photodiode_channel_name(result->channel),
+             photodiode_channel_names[result->channel],
              result->stored ? "true" : "false",
+             result->duration_ms,
              result->samples,
              (double)result->mean_mv,
              (double)result->rms_mv,
@@ -2502,7 +2534,7 @@ struct OutMsg pd_set(const struct Command *cmd)
 {
     char action[32] = {0};
     enum photodiode_channel channel;
-    uint32_t samples_u32 = 64U;
+    uint32_t duration_ms = 0U;
     bool store = false;
     bool persist = true;
     int parse_rc;
@@ -2521,7 +2553,7 @@ struct OutMsg pd_set(const struct Command *cmd)
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid action\"}");
     }
 
-    rc = pd_parse_channel_from_payload(cmd, &channel);
+    rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
     if (rc != 0) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"channel must be yj or hk\"}");
@@ -2530,10 +2562,10 @@ struct OutMsg pd_set(const struct Command *cmd)
     if (strcasecmp(action, "measure_dark") == 0) {
         struct photodiode_dark_result result;
 
-        parse_rc = coo_json_extract_u32(cmd->payload, "samples", &samples_u32);
-        if (parse_rc == COO_JSON_EXTRACT_ERR || samples_u32 > UINT16_MAX) {
+        parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
+        if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"invalid samples\"}");
+                                "{\"status\":\"error\",\"msg\":\"invalid duration_ms\"}");
         }
 
         parse_rc = coo_json_extract_bool(cmd->payload, "store", &store);
@@ -2542,7 +2574,7 @@ struct OutMsg pd_set(const struct Command *cmd)
                                 "{\"status\":\"error\",\"msg\":\"invalid store\"}");
         }
 
-        rc = photodiode_measure_dark(channel, (uint16_t)samples_u32, store, &result);
+        rc = photodiode_measure_dark(channel, duration_ms, store, &result);
         if (rc != 0) {
             char payload[MAX_PAYLOAD_LEN];
 
@@ -2572,53 +2604,48 @@ struct OutMsg pd_set(const struct Command *cmd)
     return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"unknown action\"}");
 }
 
-static void pd_settings_channel_json(char *payload, size_t payload_len, size_t *off,
-                                     const char *name,
-                                     const struct app_pd_channel_settings *ch,
-                                     bool comma)
+static int pd_settings_channel_json(char *payload, size_t payload_len,
+                                    enum photodiode_channel channel,
+                                    const struct app_pd_channel_settings *ch)
 {
-    int written = snprintk(payload + *off, payload_len - *off,
-                           "%s\"%s\":{\"dark_mv\":%.3f,"
-                           "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s,"
-                           "\"noise_rms_mV\":%.3f,\"gain_v_p_uw\":%.6f}",
-                           comma ? "," : "",
-                           name,
+    int written = snprintk(payload, payload_len,
+                           "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
+                           "\"lowest_dark_mv\":%.3f,"
+                           "\"lowest_dark_valid\":%s,"
+                           "\"noise_rms_mV\":%.3f,"
+                           "\"gain_v_p_uw\":%.6f}",
+                           photodiode_channel_names[channel],
                            (double)ch->dark_mv,
                            (double)ch->lowest_dark_mv,
                            ch->lowest_dark_valid ? "true" : "false",
                            (double)ch->noise_warn_rms_mv,
                            (double)ch->gain_v_per_uw);
 
-    if (written > 0 && written < (int)(payload_len - *off)) {
-        *off += (size_t)written;
-    }
+    return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
 }
 
 struct OutMsg pd_settings_get(const struct Command *cmd)
 {
     struct app_photodiode_settings settings;
     char payload[MAX_PAYLOAD_LEN] = {0};
-    size_t off = 0;
-    int written;
+    enum photodiode_channel channel;
+    int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
 
-    app_settings_get_photodiode(&settings);
-    written = snprintk(payload, sizeof(payload), "{\"autooff_s\":0,");
-    if (written < 0 || written >= (int)sizeof(payload)) {
+    rc = pd_parse_channel_from_key(cmd, &channel);
+    if (rc != 0) {
         return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"pdsettings response too large\"}");
+                            "{\"status\":\"error\",\"msg\":\"pdsettings key must be pdsettings/yj or pdsettings/hk\"}");
     }
-    off = (size_t)written;
-    pd_settings_channel_json(payload, sizeof(payload), &off, "yj",
-                             &settings.channel[PHOTODIODE_CHANNEL_YJ], false);
-    pd_settings_channel_json(payload, sizeof(payload), &off, "hk",
-                             &settings.channel[PHOTODIODE_CHANNEL_HK], true);
-    written = snprintk(payload + off, sizeof(payload) - off, "}");
-    if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+
+    app_settings_get_photodiode(&settings);
+    rc = pd_settings_channel_json(payload, sizeof(payload), channel,
+                                  &settings.channel[channel]);
+    if (rc != 0) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"pdsettings response too large\"}");
     }
@@ -2626,39 +2653,29 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
-static int pd_parse_optional_float(const struct Command *cmd, const char *key,
-                                   float *value, bool *changed,
-                                   float min_value, float max_value)
-{
-    float parsed;
-    int parse_rc = coo_json_extract_float(cmd->payload, key, &parsed);
-
-    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return 0;
-    }
-    if (parse_rc == COO_JSON_EXTRACT_ERR ||
-        !(parsed >= min_value && parsed <= max_value)) {
-        return -EINVAL;
-    }
-
-    *value = parsed;
-    *changed = true;
-    return 0;
-}
-
 struct OutMsg pd_settings_set(const struct Command *cmd)
 {
     struct app_photodiode_settings settings;
+    struct app_pd_channel_settings channel_settings;
+    enum photodiode_channel channel;
     bool persist = false;
     bool changed = false;
     int parse_rc;
+    int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
 
+    rc = pd_parse_channel_from_key(cmd, &channel);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"pdsettings key must be pdsettings/yj or pdsettings/hk\"}");
+    }
+
     app_settings_get_photodiode(&settings);
+    channel_settings = settings.channel[channel];
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
@@ -2666,24 +2683,15 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
                             "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
     }
 
-    if (pd_parse_optional_float(cmd, "yj_dark_mv",
-                                &settings.channel[PHOTODIODE_CHANNEL_YJ].dark_mv,
-                                &changed, -5000.0f, 5000.0f) != 0 ||
-        pd_parse_optional_float(cmd, "hk_dark_mv",
-                                &settings.channel[PHOTODIODE_CHANNEL_HK].dark_mv,
-                                &changed, -5000.0f, 5000.0f) != 0 ||
-        pd_parse_optional_float(cmd, "yj_noise_rms_mV",
-                                &settings.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv,
-                                &changed, 0.0f, 5000.0f) != 0 ||
-        pd_parse_optional_float(cmd, "hk_noise_rms_mV",
-                                &settings.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv,
-                                &changed, 0.0f, 5000.0f) != 0 ||
-        pd_parse_optional_float(cmd, "yj_gain_v_p_uw",
-                                &settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw,
-                                &changed, 0.000001f, 1000000000.0f) != 0 ||
-        pd_parse_optional_float(cmd, "hk_gain_v_p_uw",
-                                &settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw,
-                                &changed, 0.000001f, 1000000000.0f) != 0) {
+    if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
+                                              &channel_settings.dark_mv,
+                                              &changed, -5000.0f, 5000.0f) != 0 ||
+        coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
+                                              &channel_settings.noise_warn_rms_mv,
+                                              &changed, 0.0f, 5000.0f) != 0 ||
+        coo_json_extract_optional_float_range(cmd->payload, "gain_v_p_uw",
+                                              &channel_settings.gain_v_per_uw,
+                                              &changed, 0.000001f, 1000000000.0f) != 0) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"invalid pdsettings value\"}");
     }
@@ -2693,7 +2701,9 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
                             "{\"status\":\"error\",\"msg\":\"no pdsettings fields supplied\"}");
     }
 
-    app_settings_update_photodiode(&settings, persist);
+    app_settings_update_photodiode_channel((uint8_t)channel,
+                                           &channel_settings,
+                                           persist);
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 

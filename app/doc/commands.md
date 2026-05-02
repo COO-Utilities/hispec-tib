@@ -96,7 +96,7 @@ for normal serial operation.
 - `atten`
 - `attensettings`
 - `pd`
-- `pdsettings`
+- `pdsettings/<yj|hk>`
 - `ip`
 - `mqtt`
 - `serialguard`
@@ -486,13 +486,13 @@ guard is active and attenuator DAC-range clamping.
 - **Request topic:** `cmd/<device>/req/pd`
   - Optional payload: `{"unit": "power"}`
 
-    `unit` is `"power" | "volts"` (case-insensitive), defaults to power`.
+    `unit` is `"power" | "volts"` (case-insensitive), defaults to `"power"`.
   - Measure dark without storing:
     ```json
     {
       "action": "measure_dark",
       "channel": "yj",
-      "samples": 64,
+      "duration_ms": 1280,
       "store": false
     }
     ```
@@ -501,7 +501,7 @@ guard is active and attenuator DAC-range clamping.
     {
       "action": "measure_dark",
       "channel": "hk",
-      "samples": 64,
+      "duration_ms": 1280,
       "store": true
     }
     ```
@@ -534,6 +534,9 @@ guard is active and attenuator DAC-range clamping.
 
 - **Notes:**
   - Dark level is updated only by explicit `measure_dark` with `store:true`.
+  - `duration_ms` is rounded to the nearest supported sample count at the
+    monitor thread cadence. The response reports both actual `duration_ms` and
+    exact `samples`.
   - `measure_dark` with `store:false` reports the measured mean/RMS/min/max
     without changing stored calibration.
   - `lowest_dark_mv` is updated only when a stored dark measurement is lower
@@ -544,52 +547,42 @@ guard is active and attenuator DAC-range clamping.
   - Power estimates subtract stored dark mV and use `gain_v_p_uw`.
 
 ### `pdsettings`
-- **Request topic:** `cmd/<device>/req/pdsettings`
+- **Request topic:** `cmd/<device>/req/pdsettings/<yj|hk>`
   - Set:
       ```json
-      {  "autooff_s": 0.0,
-         "yj": {
-           "nep_uwprthz": 7.5e-09,
-           "noise_rms_mV": 3.0,
-           "dark_mv": 0.0,
-           "qe_y": 0.0,
-           "qe_j": 0.0,
-           "qe_yj": 0.0,
-           "qe_1430": 0.0,
-           "qe_1028": 0.0,
-           "qe_1270": 0.0,
-           "saturation_uw": 1.1e-5,
-           "gain_v_p_uw": 47500.0
-         },
-         "hk": {
-           "nep_uwprthz": 2.11e-3,
-           "noise_rms_mV": 1.0,
-           "dark_mw": 0.0,
-           "qe_1430": 0.0,
-           "qe_1510": 0.0,
-           "qe_2330": 0.0,
-           "qe_h": 0.0,
-           "qe_k": 0.0,
-           "qe_hk": 0.0,
-           "saturation_uw": 1.6194331984,
-           "gain_v_p_uw": 3.0875
-         }
-       }
+      {
+        "noise_rms_mV": 3.0,
+        "dark_mv": 0.0,
+        "gain_v_p_uw": 47500.0,
+        "persistent": true
+      }
       ```
   - Get: No payload
 
-- **Response topic:** `cmd/<device>/resp/pdsettings`
+- **Response topic:** `cmd/<device>/resp/pdsettings/<yj|hk>`
   - Set result: `{"status": "success"}` 
-  - Get result: Full set of settings as described in set JSON
+  - Get result:
+    ```json
+    {
+      "channel": "yj",
+      "dark_mv": 0.0,
+      "lowest_dark_mv": 0.0,
+      "lowest_dark_valid": false,
+      "noise_rms_mV": 3.0,
+      "gain_v_p_uw": 47500.0
+    }
+    ```
 
 - **Current set fields:**
-  - `yj_dark_mv`, `hk_dark_mv`
-  - `yj_noise_rms_mV`, `hk_noise_rms_mV`
-  - `yj_gain_v_p_uw`, `hk_gain_v_p_uw`
+  - `dark_mv`
+  - `noise_rms_mV`
+  - `gain_v_p_uw`
   - `persistent`
 
-- **Notes:** not all settings need to be included when setting; failure on any settable setting results in none being set; QE values are in `[0, 1]`.
-  Dark and lowest-dark values are persisted through the settings subsystem.
+- **Notes:** not all settings need to be included when setting; failure on any
+  settable setting results in none being set. YJ and HK settings use separate
+  command keys and separate persistent settings keys. Dark and lowest-dark
+  values are persisted through the settings subsystem.
 
 ### `ip`
 - **Request topic:** `cmd/<device>/req/ip`
@@ -738,7 +731,7 @@ TODO add diode stabilized flag and time until setting
   ```json
   {   "fwversion": "<githash>",
       "bootcount": 0,
-      "board_type": "tib|cal_blue|cal_red|as|unknown",
+      "board_type": "tib|cal_yj|cal_hk|as|unknown",
       "board_valid": true,
       "mems_switches": 8,
       "ip": "<response of ip command query>",

@@ -324,6 +324,10 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - sleep until the net polling interval don't worry about the overflow ever 300Myr
   - active noise monitoring uses residual RMS after smoothing and emits a warning without failing the sample
   - explicit dark calibration commands live in `pd_set()`
+    - dark measurements are requested by the command path and latched by the
+      regular photodiode sampler thread; commands do not read the ADC directly
+    - requested `duration_ms` is rounded to the nearest supported whole sample
+      count at the sampler cadence
     - `measure_dark` with `store:false` reports a dark measurement without changing settings
     - `measure_dark` with `store:true` updates stored dark and lowest-ever dark if lower
     - `reset_lowest_dark` clears lowest-ever tracking for the selected channel
@@ -434,11 +438,11 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - exactly one strap must be active
   - no active strap leaves board type `unknown`
   - multiple active straps also leave board type `unknown` after logging an error
-  - Nucleo strap pins are still TBD in `hardware.md`, so the current overlay keeps placeholder properties and detection fails safe until the pins are assigned
+  - Nucleo strap pins are TIB D35/PA3, CAL YJ D37/PE15, CAL HK D36/PB10, and AS D38/PE6
 - instantiates attenuators, mems_switches, and mems_router according to the detected board profile
   - TIB: 8 MEMS switches, TIB route table, 6 logical attenuator channels, laser bank, photodiodes, laser power GPIO, relay box
   - AS: 6 MEMS switches and AS split/cal routes
-  - CAL blue/red: 7 MEMS switches, CAL route table, and the single H/CAL logical attenuator channel
+  - CAL YJ/HK: 7 MEMS switches, CAL route table, and the single H/CAL logical attenuator channel
 - defines MEMS routes as static file-scope tables selected by board type; routes are not registered or copied at boot.
 - `devices_ready()` checks only devices that should exist on the selected board profile
 

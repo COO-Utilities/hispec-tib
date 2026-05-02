@@ -34,18 +34,18 @@ static const struct gpio_dt_spec board_type_tib_gpio =
 static const struct gpio_dt_spec board_type_tib_gpio = {0};
 #endif
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_blue_gpios)
-static const struct gpio_dt_spec board_type_cal_blue_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_blue_gpios);
+#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_yj_gpios)
+static const struct gpio_dt_spec board_type_cal_yj_gpio =
+	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_yj_gpios);
 #else
-static const struct gpio_dt_spec board_type_cal_blue_gpio = {0};
+static const struct gpio_dt_spec board_type_cal_yj_gpio = {0};
 #endif
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_red_gpios)
-static const struct gpio_dt_spec board_type_cal_red_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_red_gpios);
+#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_hk_gpios)
+static const struct gpio_dt_spec board_type_cal_hk_gpio =
+	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_hk_gpios);
 #else
-static const struct gpio_dt_spec board_type_cal_red_gpio = {0};
+static const struct gpio_dt_spec board_type_cal_hk_gpio = {0};
 #endif
 
 #if DT_NODE_HAS_PROP(USER_NODE, board_type_as_gpios)
@@ -136,18 +136,18 @@ static const struct board_profile tib_profile = {
 	.attenuator_count = NUM_ATTENUATORS,
 };
 
-static const struct board_profile cal_blue_profile = {
-	.board = HISPEC_BOARD_CAL_BLUE,
-	.name = "cal_blue",
+static const struct board_profile cal_yj_profile = {
+	.board = HISPEC_BOARD_CAL_YJ,
+	.name = "cal_yj",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
 	.attenuator_first = CAL_ATTENUATOR_INDEX,
 	.attenuator_count = 1,
 };
 
-static const struct board_profile cal_red_profile = {
-	.board = HISPEC_BOARD_CAL_RED,
-	.name = "cal_red",
+static const struct board_profile cal_hk_profile = {
+	.board = HISPEC_BOARD_CAL_HK,
+	.name = "cal_hk",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
 	.attenuator_first = CAL_ATTENUATOR_INDEX,
@@ -173,8 +173,8 @@ struct board_strap {
 
 static const struct board_strap board_straps[] = {
 	{&board_type_tib_gpio, HISPEC_BOARD_TIB, "tib"},
-	{&board_type_cal_blue_gpio, HISPEC_BOARD_CAL_BLUE, "cal_blue"},
-	{&board_type_cal_red_gpio, HISPEC_BOARD_CAL_RED, "cal_red"},
+	{&board_type_cal_yj_gpio, HISPEC_BOARD_CAL_YJ, "cal_yj"},
+	{&board_type_cal_hk_gpio, HISPEC_BOARD_CAL_HK, "cal_hk"},
 	{&board_type_as_gpio, HISPEC_BOARD_AS, "as"},
 };
 
@@ -415,10 +415,10 @@ static const struct board_profile *profile_for_type(enum hispec_board_type board
 	switch (board) {
 	case HISPEC_BOARD_TIB:
 		return &tib_profile;
-	case HISPEC_BOARD_CAL_BLUE:
-		return &cal_blue_profile;
-	case HISPEC_BOARD_CAL_RED:
-		return &cal_red_profile;
+	case HISPEC_BOARD_CAL_YJ:
+		return &cal_yj_profile;
+	case HISPEC_BOARD_CAL_HK:
+		return &cal_hk_profile;
 	case HISPEC_BOARD_AS:
 		return &as_profile;
 	case HISPEC_BOARD_UNKNOWN:
@@ -673,8 +673,8 @@ void setup_mems_switches_and_routes(void)
 		routes = as_routes;
 		route_count = ARRAY_SIZE(as_routes);
 		break;
-	case HISPEC_BOARD_CAL_BLUE:
-	case HISPEC_BOARD_CAL_RED:
+	case HISPEC_BOARD_CAL_YJ:
+	case HISPEC_BOARD_CAL_HK:
 		routes = cal_routes;
 		route_count = ARRAY_SIZE(cal_routes);
 		break;

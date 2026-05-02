@@ -16,13 +16,11 @@
 	zephyr,user {
 		power-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
 
-		/* Board-type strap inputs: active-low jumpers, pullups enabled.
-		 * TODO: set actual Nucleo GPIO pins once finalized in hardware mapping.
-		 */
-		/* board-type-tib-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
-		/* board-type-cal-blue-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
-		/* board-type-cal-red-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
-		/* board-type-as-gpios = <&gpioX N (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */
+		/* Board-type strap inputs are solder jumpers to ground. */
+		board-type-tib-gpios = <&gpioa 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D35 */
+		board-type-cal-yj-gpios = <&gpioe 15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D37 */
+		board-type-cal-hk-gpios = <&gpiob 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D36 */
+		board-type-as-gpios = <&gpioe 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D38 */
 
 		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
 		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
@@ -41,6 +39,13 @@
 		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
 		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
 	};
+};
+
+/* PA3 is Nucleo D35 and is used as the TIB board strap, so leave it out of
+ * ADC1 pinctrl while keeping ADC1 enabled for on-chip VREF/VBAT sensors.
+ */
+&adc1 {
+	pinctrl-0 = <&adc1_inp3_pa6>;
 };
 
 /* I2C_A on CN7 (PB8/PB9): ADS1115 only */

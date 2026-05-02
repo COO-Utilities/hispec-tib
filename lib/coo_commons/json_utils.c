@@ -4,6 +4,7 @@
  */
 
 #include <coo_commons/json_utils.h>
+#include <errno.h>
 #include <zephyr/data/json.h>
 #include <zephyr/sys/util.h>
 #include <stdio.h>
@@ -190,6 +191,31 @@ int coo_json_extract_float(const char *json, const char *key, float *value)
 		*value = parsed.value;
 	}
 	return rc;
+}
+
+int coo_json_extract_optional_float_range(const char *json, const char *key,
+					  float *value, bool *changed,
+					  float min_value, float max_value)
+{
+	float parsed;
+	int rc;
+
+	if (value == NULL || changed == NULL || !(min_value <= max_value)) {
+		return -EINVAL;
+	}
+
+	rc = coo_json_extract_float(json, key, &parsed);
+	if (rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (rc == COO_JSON_EXTRACT_ERR ||
+	    !(parsed >= min_value && parsed <= max_value)) {
+		return -EINVAL;
+	}
+
+	*value = parsed;
+	*changed = true;
+	return 0;
 }
 
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)

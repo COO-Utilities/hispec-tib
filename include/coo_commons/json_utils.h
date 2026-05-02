@@ -34,6 +34,18 @@ int coo_json_extract_bool(const char *json, const char *key, bool *value);
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
 int coo_json_extract_float(const char *json, const char *key, float *value);
+/**
+ * @brief Parse an optional float field and reject values outside a range.
+ *
+ * Missing fields are not errors and leave @p value unchanged. On success with
+ * a present field, @p value is updated and @p changed is set true.
+ *
+ * @retval 0 Field was missing or parsed within range.
+ * @retval -EINVAL Bad arguments, malformed JSON field, or out-of-range value.
+ */
+int coo_json_extract_optional_float_range(const char *json, const char *key,
+					  float *value, bool *changed,
+					  float min_value, float max_value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 
 #endif /* APP_LIB_JSON_UTILS_H_ */
