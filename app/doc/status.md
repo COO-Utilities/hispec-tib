@@ -326,10 +326,12 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - explicit dark calibration commands live in `pd_set()`
     - dark measurements are requested by the command path and latched by the
       regular photodiode sampler thread; commands do not read the ADC directly
+      and do not block for the requested interval
     - requested `duration_ms` is rounded to the nearest supported whole sample
       count at the sampler cadence
-    - `measure_dark` with `store:false` reports a dark measurement without changing settings
-    - `measure_dark` with `store:true` updates stored dark and lowest-ever dark if lower
+    - `measure_dark` with `store:false` starts a measurement without changing settings
+    - `measure_dark` with `store:true` updates stored dark and lowest-ever dark when complete if lower
+    - `dark_status` reports measuring/complete/error state and completed statistics
     - `reset_lowest_dark` clears lowest-ever tracking for the selected channel
 
 ### attenuator.c

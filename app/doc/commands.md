@@ -505,6 +505,13 @@ guard is active and attenuator DAC-range clamping.
       "store": true
     }
     ```
+  - Retrieve dark measurement progress/result:
+    ```json
+    {
+      "action": "dark_status",
+      "channel": "yj"
+    }
+    ```
   - Reset lowest-ever dark tracking:
     ```json
     {
@@ -515,6 +522,18 @@ guard is active and attenuator DAC-range clamping.
     ```
 
 - **Response topic:** `cmd/<device>/resp/pd`
+  - `measure_dark` start response:
+    ```json
+    {
+      "status": "measuring",
+      "channel": "yj",
+      "stored_on_complete": true,
+      "duration_ms": 60000,
+      "samples": 0,
+      "target_samples": 3000
+    }
+    ```
+  - `dark_status` complete response includes the measured mean/RMS/min/max.
   ```json
   {
     "unit": "power",
@@ -533,12 +552,17 @@ guard is active and attenuator DAC-range clamping.
   ```
 
 - **Notes:**
-  - Dark level is updated only by explicit `measure_dark` with `store:true`.
+  - `measure_dark` starts or restarts the selected channel's dark measurement
+    and returns immediately with `status:"measuring"`.
+  - Dark level is updated only after an explicit `measure_dark` with
+    `store:true` completes.
   - `duration_ms` is rounded to the nearest supported sample count at the
     monitor thread cadence. The response reports both actual `duration_ms` and
     exact `samples`.
-  - `measure_dark` with `store:false` reports the measured mean/RMS/min/max
-    without changing stored calibration.
+  - `dark_status` returns `status:"measuring"`, `status:"complete"`, or
+    `status:"error"`. Complete results include measured mean/RMS/min/max.
+  - `measure_dark` with `store:false` leaves stored calibration unchanged; its
+    completed statistics are available through `dark_status`.
   - `lowest_dark_mv` is updated only when a stored dark measurement is lower
     than the previous stored lowest value.
   - Active monitoring tracks a simple residual RMS after smoothing. If it
@@ -568,6 +592,10 @@ guard is active and attenuator DAC-range clamping.
       "dark_mv": 0.0,
       "lowest_dark_mv": 0.0,
       "lowest_dark_valid": false,
+      "dark_measurement": "idle",
+      "dark_measurement_duration_ms": 0,
+      "dark_measurement_samples": 0,
+      "dark_measurement_target_samples": 0,
       "noise_rms_mV": 3.0,
       "gain_v_p_uw": 47500.0
     }

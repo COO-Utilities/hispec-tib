@@ -2503,30 +2503,59 @@ struct OutMsg pd_get(const struct Command *cmd)
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
-static struct OutMsg pd_dark_response(const struct Command *cmd,
-                                      const struct photodiode_dark_result *result)
+static struct OutMsg pd_dark_status_response(const struct Command *cmd,
+                                             const struct photodiode_dark_status *status)
 {
     char payload[MAX_PAYLOAD_LEN] = {0};
+    const struct photodiode_dark_result *result = &status->result;
+    const char *state_name = photodiode_dark_state_name(status->state);
+
+    if (status->state == PHOTODIODE_DARK_COMPLETE) {
+        snprintk(payload, sizeof(payload),
+                 "{\"status\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
+                 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
+                 "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
+                 "\"min_mv\":%.3f,\"max_mv\":%.3f,"
+                 "\"previous_dark_mv\":%.3f,\"configured_dark_mv\":%.3f,"
+                 "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s}",
+                 state_name,
+                 photodiode_channel_names[status->channel],
+                 result->stored ? "true" : "false",
+                 status->duration_ms,
+                 status->samples,
+                 status->target_samples,
+                 (double)result->mean_mv,
+                 (double)result->rms_mv,
+                 (double)result->min_mv,
+                 (double)result->max_mv,
+                 (double)result->previous_dark_mv,
+                 (double)result->configured_dark_mv,
+                 (double)result->lowest_dark_mv,
+                 result->lowest_dark_valid ? "true" : "false");
+        return _msg_builder(cmd, RESP_OK, payload);
+    }
+
+    if (status->state == PHOTODIODE_DARK_ERROR) {
+        snprintk(payload, sizeof(payload),
+                 "{\"status\":\"error\",\"channel\":\"%s\",\"rc\":%d,"
+                 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
+                 photodiode_channel_names[status->channel],
+                 status->last_error,
+                 status->duration_ms,
+                 status->samples,
+                 status->target_samples);
+        return _msg_builder(cmd, RESP_ERROR, payload);
+    }
 
     snprintk(payload, sizeof(payload),
-             "{\"status\":\"success\",\"channel\":\"%s\",\"stored\":%s,"
-             "\"duration_ms\":%u,\"samples\":%u,"
-             "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
-             "\"min_mv\":%.3f,\"max_mv\":%.3f,\"previous_dark_mv\":%.3f,"
-             "\"configured_dark_mv\":%.3f,\"lowest_dark_mv\":%.3f,"
-             "\"lowest_dark_valid\":%s}",
-             photodiode_channel_names[result->channel],
-             result->stored ? "true" : "false",
-             result->duration_ms,
-             result->samples,
-             (double)result->mean_mv,
-             (double)result->rms_mv,
-             (double)result->min_mv,
-             (double)result->max_mv,
-             (double)result->previous_dark_mv,
-             (double)result->configured_dark_mv,
-             (double)result->lowest_dark_mv,
-             result->lowest_dark_valid ? "true" : "false");
+             "{\"status\":\"%s\",\"channel\":\"%s\",\"stored_on_complete\":%s,"
+             "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
+             state_name,
+             photodiode_channel_names[status->channel],
+             status->store ? "true" : "false",
+             status->duration_ms,
+             status->samples,
+             status->target_samples);
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -2560,7 +2589,7 @@ struct OutMsg pd_set(const struct Command *cmd)
     }
 
     if (strcasecmp(action, "measure_dark") == 0) {
-        struct photodiode_dark_result result;
+        struct photodiode_dark_status status;
 
         parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {
@@ -2574,7 +2603,7 @@ struct OutMsg pd_set(const struct Command *cmd)
                                 "{\"status\":\"error\",\"msg\":\"invalid store\"}");
         }
 
-        rc = photodiode_measure_dark(channel, duration_ms, store, &result);
+        rc = photodiode_start_dark_measurement(channel, duration_ms, store, &status);
         if (rc != 0) {
             char payload[MAX_PAYLOAD_LEN];
 
@@ -2583,7 +2612,19 @@ struct OutMsg pd_set(const struct Command *cmd)
                      rc);
             return _msg_builder(cmd, RESP_ERROR, payload);
         }
-        return pd_dark_response(cmd, &result);
+        return pd_dark_status_response(cmd, &status);
+    }
+
+    if (strcasecmp(action, "dark_status") == 0) {
+        struct photodiode_dark_status status;
+
+        rc = photodiode_get_dark_status(channel, &status);
+        if (rc != 0) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"dark status unavailable\"}");
+        }
+
+        return pd_dark_status_response(cmd, &status);
     }
 
     if (strcasecmp(action, "reset_lowest_dark") == 0) {
@@ -2608,18 +2649,31 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
                                     enum photodiode_channel channel,
                                     const struct app_pd_channel_settings *ch)
 {
-    int written = snprintk(payload, payload_len,
-                           "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
-                           "\"lowest_dark_mv\":%.3f,"
-                           "\"lowest_dark_valid\":%s,"
-                           "\"noise_rms_mV\":%.3f,"
-                           "\"gain_v_p_uw\":%.6f}",
-                           photodiode_channel_names[channel],
-                           (double)ch->dark_mv,
-                           (double)ch->lowest_dark_mv,
-                           ch->lowest_dark_valid ? "true" : "false",
-                           (double)ch->noise_warn_rms_mv,
-                           (double)ch->gain_v_per_uw);
+    struct photodiode_dark_status dark = {0};
+    int written;
+
+    (void)photodiode_get_dark_status(channel, &dark);
+
+    written = snprintk(payload, payload_len,
+                       "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
+                       "\"lowest_dark_mv\":%.3f,"
+                       "\"lowest_dark_valid\":%s,"
+                       "\"dark_measurement\":\"%s\","
+                       "\"dark_measurement_duration_ms\":%u,"
+                       "\"dark_measurement_samples\":%u,"
+                       "\"dark_measurement_target_samples\":%u,"
+                       "\"noise_rms_mV\":%.3f,"
+                       "\"gain_v_p_uw\":%.6f}",
+                       photodiode_channel_names[channel],
+                       (double)ch->dark_mv,
+                       (double)ch->lowest_dark_mv,
+                       ch->lowest_dark_valid ? "true" : "false",
+                       photodiode_dark_state_name(dark.state),
+                       dark.duration_ms,
+                       dark.samples,
+                       dark.target_samples,
+                       (double)ch->noise_warn_rms_mv,
+                       (double)ch->gain_v_per_uw);
 
     return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
 }

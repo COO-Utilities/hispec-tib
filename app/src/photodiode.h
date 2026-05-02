@@ -19,6 +19,13 @@ enum photodiode_channel {
 	PHOTODIODE_CHANNEL_HK = 1
 };
 
+enum photodiode_dark_state {
+	PHOTODIODE_DARK_IDLE = 0,
+	PHOTODIODE_DARK_MEASURING,
+	PHOTODIODE_DARK_COMPLETE,
+	PHOTODIODE_DARK_ERROR
+};
+
 struct photodiode_channel_status {
 	bool valid;
 	int last_error;
@@ -30,6 +37,11 @@ struct photodiode_channel_status {
 	float dark_mv;
 	float lowest_dark_mv;
 	bool lowest_dark_valid;
+	enum photodiode_dark_state dark_state;
+	uint32_t dark_duration_ms;
+	uint32_t dark_samples;
+	uint32_t dark_target_samples;
+	int dark_last_error;
 	uint32_t age_ms;
 	uint32_t sample_count;
 };
@@ -42,7 +54,7 @@ struct photodiode_status {
 struct photodiode_dark_result {
 	enum photodiode_channel channel;
 	uint32_t duration_ms;
-	uint16_t samples;
+	uint32_t samples;
 	bool stored;
 	float mean_mv;
 	float rms_mv;
@@ -54,29 +66,48 @@ struct photodiode_dark_result {
 	bool lowest_dark_valid;
 };
 
+struct photodiode_dark_status {
+	enum photodiode_channel channel;
+	enum photodiode_dark_state state;
+	bool store;
+	uint32_t duration_ms;
+	uint32_t samples;
+	uint32_t target_samples;
+	int last_error;
+	struct photodiode_dark_result result;
+};
+
 
 extern struct k_msgq photodiode_queue;
 /** Channel labels used in command replies and telemetry JSON. */
 extern const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT];
 void photodiode_thread(void *p1, void *p2, void *p3);
 void photodiode_get_status(struct photodiode_status *out);
+const char *photodiode_dark_state_name(enum photodiode_dark_state state);
 /**
- * @brief Measure dark level using the regular photodiode sampling thread.
+ * @brief Start or restart a dark measurement on the sampling thread.
  *
  * @param channel Photodiode channel to measure.
  * @param duration_ms Requested measurement window in milliseconds. Zero uses
  * the firmware default. The implementation rounds to the nearest whole sample.
- * @param store If true, update the stored dark level and lowest-dark tracking.
- * @param out Result populated after the sampling thread latches the window.
+ * @param store If true, update stored dark and lowest-dark when complete.
+ * @param out Optional status populated immediately after the request is armed.
  *
- * @retval 0 Measurement completed.
- * @retval -EINVAL Bad channel or output pointer.
+ * A repeated request for the same channel discards the previous in-progress
+ * accumulator and starts a fresh window. This call does not wait for the
+ * measurement interval.
+ *
+ * @retval 0 Measurement was started.
+ * @retval -EINVAL Bad channel.
  * @retval -ENODEV Photodiodes are unavailable or ADC is not ready.
- * @retval -EBUSY Another dark measurement is active.
- * @retval -ETIMEDOUT The sampling thread did not complete the window.
  */
-int photodiode_measure_dark(enum photodiode_channel channel, uint32_t duration_ms,
-			    bool store, struct photodiode_dark_result *out);
+int photodiode_start_dark_measurement(enum photodiode_channel channel,
+				      uint32_t duration_ms,
+				      bool store,
+				      struct photodiode_dark_status *out);
+/** @brief Copy current or last dark-measurement state for one channel. */
+int photodiode_get_dark_status(enum photodiode_channel channel,
+			       struct photodiode_dark_status *out);
 /**
  * @brief Clear lowest-dark tracking for one channel.
  *
