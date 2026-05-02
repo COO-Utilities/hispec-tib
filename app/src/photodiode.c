@@ -134,7 +134,8 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
     if (raw == NULL || channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
         return -EINVAL;
     }
-    if (!devices_has_photodiodes() || adc_dev == NULL || !device_is_ready(adc_dev)) {
+    if (devices_board_type() != HISPEC_BOARD_TIB ||
+        adc_dev == NULL || !device_is_ready(adc_dev)) {
         return -ENODEV;
     }
 
@@ -412,7 +413,7 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         k_sleep(K_MSEC(10));
     }
 
-    if (!devices_has_photodiodes()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         LOG_INF("Photodiode monitor disabled for board type %s",
                 devices_board_type_name());
         while (1) {

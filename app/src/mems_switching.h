@@ -18,7 +18,7 @@
 #define MEMS_SWITCH_ELECTRICAL_PULSE_MS 2U
 #define MEMS_SWITCH_NAME_LEN 24
 #define MEMS_ROUTER_MAX_SWITCHES 8
-#define MEMS_ROUTER_MAX_ROUTES   18  // TIB=18, CAL=12, AS=2
+#define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4
 #define MEMS_ROUTER_MAX_ROUTE_PATH 5 // cal has 5 deep
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
 #define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0f
@@ -82,7 +82,7 @@ struct mems_route_key {
 
 struct mems_route {
     struct mems_route_key key;
-    struct mems_route_step steps[MEMS_ROUTER_MAX_ROUTE_PATH];
+    const struct mems_route_step *steps;
     uint8_t num_steps;
 };
 
@@ -93,7 +93,7 @@ struct mems_router {
     struct mems_switch *switches[MEMS_ROUTER_MAX_SWITCHES];
     uint8_t num_switches;
 
-    struct mems_route routes[MEMS_ROUTER_MAX_ROUTES];
+    const struct mems_route *routes;
     uint8_t num_routes;
     struct k_mutex lock;
     struct k_work_delayable toggler_work;
@@ -141,19 +141,20 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
 // Router Methods
 // -----------------------
 
-// Initialize router from an array of pointers to switches
-void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches);
+/**
+ * @brief Initialize a MEMS router from active switches and a static route table.
+ *
+ * @p routes points at immutable board-specific route data. The router does not
+ * copy it; the selected board profile chooses which compile-time table is used.
+ */
+void mems_router_init(struct mems_router *router, struct mems_switch **switches,
+                      uint8_t num_switches, const struct mems_route *routes,
+                      uint8_t num_routes);
 
 struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name);
 
 const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output);
-
-
-// Define a route from input to output with a path (sequence of switch/state pairs)
-int mems_router_define_route(struct mems_router *router,
-                            const char *input, const char *output,
-                            const struct mems_route_step *steps, uint8_t num_steps);
 
 
 //  List all active routes

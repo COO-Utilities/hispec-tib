@@ -113,43 +113,31 @@ static const float mems_switch_toggle_rate_hz[MAX_NUM_MEMS_SWITCHES] = {
 };
 
 struct board_profile {
-	enum hispec_board_type type;
+	enum hispec_board_type board;
 	const char *name;
 	uint8_t mems_switch_count;
 	const char *const *switch_names;
 	uint8_t attenuator_first;
 	uint8_t attenuator_count;
-	bool has_laser_bank;
-	bool has_photodiodes;
-	bool has_laser_power_control;
-	bool has_relay_box;
 };
 
 static const struct board_profile unknown_profile = {
-	.type = HISPEC_BOARD_UNKNOWN,
-	.name = "unknown",
+	.board = HISPEC_BOARD_UNKNOWN,
+	.name = "SET BOARD JUMPER!",
 };
 
-static const struct board_profile fault_profile = {
-	.type = HISPEC_BOARD_FAULT,
-	.name = "fault",
-};
 
 static const struct board_profile tib_profile = {
-	.type = HISPEC_BOARD_TIB,
+	.board = HISPEC_BOARD_TIB,
 	.name = "tib",
 	.mems_switch_count = 8,
 	.switch_names = tib_switch_names,
 	.attenuator_first = 0,
 	.attenuator_count = NUM_ATTENUATORS,
-	.has_laser_bank = true,
-	.has_photodiodes = true,
-	.has_laser_power_control = true,
-	.has_relay_box = true,
 };
 
 static const struct board_profile cal_blue_profile = {
-	.type = HISPEC_BOARD_CAL_BLUE,
+	.board = HISPEC_BOARD_CAL_BLUE,
 	.name = "cal_blue",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
@@ -158,7 +146,7 @@ static const struct board_profile cal_blue_profile = {
 };
 
 static const struct board_profile cal_red_profile = {
-	.type = HISPEC_BOARD_CAL_RED,
+	.board = HISPEC_BOARD_CAL_RED,
 	.name = "cal_red",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
@@ -167,7 +155,7 @@ static const struct board_profile cal_red_profile = {
 };
 
 static const struct board_profile as_profile = {
-	.type = HISPEC_BOARD_AS,
+	.board = HISPEC_BOARD_AS,
 	.name = "as",
 	.mems_switch_count = 6,
 	.switch_names = as_switch_names,
@@ -179,7 +167,7 @@ static bool board_type_checked;
 
 struct board_strap {
 	const struct gpio_dt_spec *gpio;
-	enum hispec_board_type type;
+	enum hispec_board_type board;
 	const char *name;
 };
 
@@ -190,15 +178,9 @@ static const struct board_strap board_straps[] = {
 	{&board_type_as_gpio, HISPEC_BOARD_AS, "as"},
 };
 
-struct route_definition {
-	const char *input;
-	const char *output;
-	const struct mems_route_step *steps;
-	uint8_t step_count;
-};
-
 #define ROUTE_DEF(input_, output_, steps_) \
-	{ .input = (input_), .output = (output_), .steps = (steps_), .step_count = ARRAY_SIZE(steps_) }
+	{ .key = { .input_name = (input_), .output_name = (output_) }, \
+	  .steps = (steps_), .num_steps = ARRAY_SIZE(steps_) }
 
 static const struct mems_route_step tib_yj_1430_to_yj_ao[] = {
 	{"yj_cal_laser", 'B'},
@@ -265,7 +247,7 @@ static const struct mems_route_step tib_hk_sm_to_hk_pd[] = {
 	{"hk_mm_sm", 'B'},
 };
 
-static const struct route_definition tib_routes[] = {
+static const struct mems_route tib_routes[] = {
 	ROUTE_DEF("yj_1430", "yj_ao", tib_yj_1430_to_yj_ao),
 	ROUTE_DEF("yj_1430", "yj_fei", tib_yj_1430_to_yj_fei),
 	ROUTE_DEF("yj_cal", "yj_ao", tib_yj_cal_to_yj_ao),
@@ -307,7 +289,7 @@ static const struct mems_route_step as_hk_split_to_cal[] = {
 	{"hk_as2", 'A'},
 };
 
-static const struct route_definition as_routes[] = {
+static const struct mems_route as_routes[] = {
 	ROUTE_DEF("yj_calin", "yj_split", as_yj_split_to_as),
 	ROUTE_DEF("hk_calin", "hk_split", as_hk_split_to_as),
 	ROUTE_DEF("yj_calin", "yj_cal", as_yj_split_to_cal),
@@ -404,7 +386,7 @@ static const struct mems_route_step nm_to_is[] = {
 
 
 
-static const struct route_definition cal_routes[] = {
+static const struct mems_route cal_routes[] = {
 	ROUTE_DEF("bb", "is", bb_to_is),
 	ROUTE_DEF("nm", "is", nm_to_is),
 
@@ -421,10 +403,16 @@ static const struct route_definition cal_routes[] = {
 	ROUTE_DEF("nm", "tib", nm_to_tib),
 };
 
+BUILD_ASSERT(ARRAY_SIZE(tib_routes) <= MEMS_ROUTER_MAX_ROUTES,
+	     "TIB route count must fit command route-status buffers");
+BUILD_ASSERT(ARRAY_SIZE(as_routes) <= MEMS_ROUTER_MAX_ROUTES,
+	     "AS route count must fit command route-status buffers");
+BUILD_ASSERT(ARRAY_SIZE(cal_routes) <= MEMS_ROUTER_MAX_ROUTES,
+	     "CAL route count must fit command route-status buffers");
 
-static const struct board_profile *profile_for_type(enum hispec_board_type type)
+static const struct board_profile *profile_for_type(enum hispec_board_type board)
 {
-	switch (type) {
+	switch (board) {
 	case HISPEC_BOARD_TIB:
 		return &tib_profile;
 	case HISPEC_BOARD_CAL_BLUE:
@@ -433,8 +421,6 @@ static const struct board_profile *profile_for_type(enum hispec_board_type type)
 		return &cal_red_profile;
 	case HISPEC_BOARD_AS:
 		return &as_profile;
-	case HISPEC_BOARD_FAULT:
-		return &fault_profile;
 	case HISPEC_BOARD_UNKNOWN:
 	default:
 		return &unknown_profile;
@@ -528,12 +514,12 @@ int devices_detect_board_type(void)
 		LOG_DBG("Board strap %s active=%d", board_straps[i].name, active ? 1 : 0);
 		if (active) {
 			active_count++;
-			detected = board_straps[i].type;
+			detected = board_straps[i].board;
 		}
 	}
 
 	if (first_error != 0) {
-		set_current_profile(&fault_profile, true);
+		set_current_profile(&unknown_profile, true);
 		return first_error;
 	}
 
@@ -547,7 +533,7 @@ int devices_detect_board_type(void)
 
 	if (active_count > 1U) {
 		LOG_ERR("Multiple board type straps are active; refusing board-specific setup");
-		set_current_profile(&fault_profile, true);
+		set_current_profile(&unknown_profile, true);
 		return -EIO;
 	}
 
@@ -569,55 +555,12 @@ bool devices_board_type_checked(void)
 
 enum hispec_board_type devices_board_type(void)
 {
-	return current_profile()->type;
+	return current_profile()->board;
 }
 
 const char *devices_board_type_name(void)
 {
 	return current_profile()->name;
-}
-
-bool devices_board_type_valid(void)
-{
-	enum hispec_board_type type = devices_board_type();
-
-	return type == HISPEC_BOARD_TIB ||
-	       type == HISPEC_BOARD_CAL_BLUE ||
-	       type == HISPEC_BOARD_CAL_RED ||
-	       type == HISPEC_BOARD_AS;
-}
-
-bool devices_has_laser_bank(void)
-{
-	return current_profile()->has_laser_bank;
-}
-
-bool devices_has_laser_power_control(void)
-{
-	return current_profile()->has_laser_power_control;
-}
-
-bool devices_has_photodiodes(void)
-{
-	return current_profile()->has_photodiodes;
-}
-
-bool devices_has_attenuators(void)
-{
-	return current_profile()->attenuator_count > 0U;
-}
-
-bool devices_attenuator_index_available(uint8_t index)
-{
-	const struct board_profile *profile = current_profile();
-
-	return index >= profile->attenuator_first &&
-	       index < profile->attenuator_first + profile->attenuator_count;
-}
-
-uint8_t devices_mems_switch_count(void)
-{
-	return current_profile()->mems_switch_count;
 }
 
 static bool device_ready_or_log(const struct device *dev, const char *label)
@@ -671,7 +614,7 @@ void setup_attenuators(void)
 {
 	const struct board_profile *profile = current_profile();
 
-	if (!devices_has_attenuators()) {
+	if (profile->attenuator_count == 0U) {
 		LOG_INF("Board %s has no attenuator channels", profile->name);
 		return;
 	}
@@ -692,36 +635,21 @@ void setup_attenuators(void)
 	}
 }
 
-static void register_routes(const struct route_definition *routes, size_t route_count)
-{
-	for (size_t i = 0; i < route_count; ++i) {
-		int rc = mems_router_define_route(&router,
-						  routes[i].input,
-						  routes[i].output,
-						  routes[i].steps,
-						  routes[i].step_count);
-
-		//TODO this is a failure to boot. Impossible in correct code
-		if (rc != 0) {
-			LOG_ERR("Failed to register MEMS route %s -> %s (%d)",
-				routes[i].input, routes[i].output, rc);
-		}
-	}
-}
-
 void setup_mems_switches_and_routes(void)
 {
 	const struct board_profile *profile = current_profile();
 	struct mems_switch *mems_switch_ptrs[MEMS_ROUTER_MAX_SWITCHES] = {0};
+	const struct mems_route *routes = NULL;
+	uint8_t route_count = 0U;
 
-	if (!devices_board_type_valid()) {
+	if (profile->board == HISPEC_BOARD_UNKNOWN) {
 		LOG_ERR("Cannot configure MEMS routes: board type is %s", profile->name);
-		mems_router_init(&router, mems_switch_ptrs, 0);
+		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
 		return;
 	}
 
 	if (!device_ready_or_log(gpio_dev, "MEMS GPIO expander")) {
-		mems_router_init(&router, mems_switch_ptrs, 0);
+		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
 		return;
 	}
 
@@ -736,24 +664,29 @@ void setup_mems_switches_and_routes(void)
 		mems_switch_ptrs[i] = &mems_switches[i];
 	}
 
-	mems_router_init(&router, mems_switch_ptrs, profile->mems_switch_count);
-
-	switch (profile->type) {
+	switch (profile->board) {
 	case HISPEC_BOARD_TIB:
-		register_routes(tib_routes, ARRAY_SIZE(tib_routes));
+		routes = tib_routes;
+		route_count = ARRAY_SIZE(tib_routes);
 		break;
 	case HISPEC_BOARD_AS:
-		register_routes(as_routes, ARRAY_SIZE(as_routes));
+		routes = as_routes;
+		route_count = ARRAY_SIZE(as_routes);
 		break;
 	case HISPEC_BOARD_CAL_BLUE:
 	case HISPEC_BOARD_CAL_RED:
-		register_routes(cal_routes, ARRAY_SIZE(cal_routes));
+		routes = cal_routes;
+		route_count = ARRAY_SIZE(cal_routes);
 		break;
 	case HISPEC_BOARD_UNKNOWN:
-	case HISPEC_BOARD_FAULT:
 	default:
+		routes = NULL;
+		route_count = 0U;
 		break;
 	}
+
+	mems_router_init(&router, mems_switch_ptrs, profile->mems_switch_count,
+			 routes, route_count);
 
 	LOG_INF("Configured %u MEMS switches and %u routes for %s",
 		router.num_switches, router.num_routes, profile->name);
@@ -773,7 +706,7 @@ bool devices_ready(void)
 		profile = current_profile();
 	}
 
-	if (!devices_board_type_valid()) {
+	if (profile->board == HISPEC_BOARD_UNKNOWN) {
 		LOG_ERR("Board type %s is not valid for device setup", profile->name);
 		return false;
 	}
@@ -782,7 +715,7 @@ bool devices_ready(void)
 		rc = false;
 	}
 
-	if (profile->has_laser_power_control) {
+	if (profile->board == HISPEC_BOARD_TIB) {
 		if (!gpio_is_ready_dt(&power_gpio)) {
 			LOG_ERR("Power GPIO is not ready");
 			rc = false;
@@ -792,7 +725,7 @@ bool devices_ready(void)
 		}
 	}
 
-	if (profile->has_laser_bank && !setup_modbus_client()) {
+	if (profile->board == HISPEC_BOARD_TIB && !setup_modbus_client()) {
 		rc = false;
 	}
 
@@ -800,11 +733,11 @@ bool devices_ready(void)
 		rc = false;
 	}
 
-	if (profile->has_photodiodes && !device_ready_or_log(adc_dev, "ADC")) {
+	if (profile->board == HISPEC_BOARD_TIB && !device_ready_or_log(adc_dev, "ADC")) {
 		rc = false;
 	}
 
-	if (profile->has_relay_box) {
+	if (profile->board == HISPEC_BOARD_TIB) {
 		LOG_INF("Relay-box profile enabled; DS2408 command support is still pending");
 	}
 

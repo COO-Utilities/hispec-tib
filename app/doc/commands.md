@@ -738,7 +738,7 @@ TODO add diode stabilized flag and time until setting
   ```json
   {   "fwversion": "<githash>",
       "bootcount": 0,
-      "board_type": "tib|cal_blue|cal_red|as|unknown|fault",
+      "board_type": "tib|cal_blue|cal_red|as|unknown",
       "board_valid": true,
       "mems_switches": 8,
       "ip": "<response of ip command query>",

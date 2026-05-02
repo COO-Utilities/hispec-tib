@@ -231,7 +231,7 @@ int main(void)
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
 	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
-	if (devices_has_photodiodes()) {
+	if (devices_board_type() == HISPEC_BOARD_TIB) {
 		k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
 	}
 

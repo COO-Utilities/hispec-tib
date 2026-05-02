@@ -368,7 +368,7 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
     - the route itself
 - mems_router struct
   - *switches[] - pointers to mems switch structs
-  - routs[] - array of routes
+  - *routes - pointer to the selected board's immutable route table
   - num_switches & num_routes
 - void mems_switch_init(..., float configured_toggle_rate_hz)
   - populate switch struct with GPIO pins and quantized per-switch toggle-rate data
@@ -381,16 +381,11 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
 - int mems_switch_get_state(const struct mems_switch *sw, char *out_state)
   - returns known state (or target state if not yet known this boot)
 
-- void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches)
-  - load the mems_router struct: set the number or routes to zero, num switches, and populate switch pointer array
+- void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches, const struct mems_route *routes, uint8_t num_routes)
+  - load the mems_router struct with active switch pointers and the selected static route table
 
 - struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name)
   - find a switch by name and return a pointer to it if found, null otherwise
-  
-- int mems_router_define_route(struct mems_router *router, const char *input, const char *output, const struct mems_route_step *steps, uint8_t num_steps)
-  - Populates a route from input to output with a path (sequence of switch/state pairs)
-  - no copies of data, just moving pointers into place
-  - not envisioned for dynamic use 
 
 - const struct mems_route *mems_router_get_route(const struct mems_router *router, const char *input, const char *output)
   -  find/return the route from input to output and return a pointer to it (or NULL if not found)
@@ -438,18 +433,13 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
 - detects the physically assembled PCB from the four active-low board-type strap GPIOs in `devices_detect_board_type()`
   - exactly one strap must be active
   - no active strap leaves board type `unknown`
-  - multiple active straps leave board type `fault`
+  - multiple active straps also leave board type `unknown` after logging an error
   - Nucleo strap pins are still TBD in `hardware.md`, so the current overlay keeps placeholder properties and detection fails safe until the pins are assigned
-- exposes simple capability helpers:
-  - `devices_has_laser_bank()`
-  - `devices_has_photodiodes()`
-  - `devices_has_laser_power_control()`
-  - `devices_attenuator_index_available()`
 - instantiates attenuators, mems_switches, and mems_router according to the detected board profile
   - TIB: 8 MEMS switches, TIB route table, 6 logical attenuator channels, laser bank, photodiodes, laser power GPIO, relay box
   - AS: 6 MEMS switches and AS split/cal routes
-  - CAL blue/red: 7 MEMS switches and the single H/CAL logical attenuator channel; CAL routes still need final route names
-- defines MEMS routes as static file-scope tables. `mems_router_define_route()` still copies route steps into the router, but route definitions no longer depend on local stack arrays.
+  - CAL blue/red: 7 MEMS switches, CAL route table, and the single H/CAL logical attenuator channel
+- defines MEMS routes as static file-scope tables selected by board type; routes are not registered or copied at boot.
 - `devices_ready()` checks only devices that should exist on the selected board profile
 
  

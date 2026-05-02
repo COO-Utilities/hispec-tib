@@ -402,7 +402,9 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
 // Router Methods
 // -----------------------
 
-void mems_router_init(struct mems_router *router, struct mems_switch **switches, uint8_t num_switches)
+void mems_router_init(struct mems_router *router, struct mems_switch **switches,
+                      uint8_t num_switches, const struct mems_route *routes,
+                      uint8_t num_routes)
 {
     k_mutex_init(&router->lock);
     router->num_switches = (num_switches > MEMS_ROUTER_MAX_SWITCHES) ? MEMS_ROUTER_MAX_SWITCHES : num_switches;
@@ -410,14 +412,17 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
         router->switches[i] = switches[i];
         router->switches[i]->owner = router;
     }
-    router->num_routes = 0;
+    router->routes = routes;
+    router->num_routes = num_routes;
 
     //It is vital that at this point in the code the switches be initialized such that they WILL NOT toggle. Their
     // needed states and potentially restored states must all align.
     //TODO Verify this is the case.
 
     k_work_init_delayable(&router->toggler_work, mems_router_toggler_work_handler);
-    (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ELECTRICAL_PULSE_MS));
+    if (router->num_switches > 0U) {
+        (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ELECTRICAL_PULSE_MS));
+    }
 }
 
 struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name)
@@ -427,30 +432,14 @@ struct mems_switch *mems_router_find_switch(const struct mems_router *router, co
     return mems_router_find_switch_unlocked(router, name);
 }
 
-
-int mems_router_define_route(struct mems_router *router,
-                            const char *input, const char *output,
-                            const struct mems_route_step *steps, uint8_t num_steps)
-{
-    if (router->num_routes >= MEMS_ROUTER_MAX_ROUTES) return -1;
-    if (!input || !output || !steps || num_steps == 0 || num_steps > MEMS_ROUTER_MAX_ROUTE_PATH) return -2;
-
-    struct mems_route *route = &router->routes[router->num_routes];
-    route->key.input_name = input;
-    route->key.output_name = output;
-    route->num_steps = num_steps;
-    for (uint8_t i = 0; i < num_steps; ++i) {
-        if (steps[i].switch_name == NULL) return -3;
-        route->steps[i] = steps[i];
-    }
-    router->num_routes += 1;
-    return 0;
-}
-
 // Find route and return pointer/step count, or NULL/-1 if not found
 const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output)
 {
+    if (router == NULL || router->routes == NULL) {
+        return NULL;
+    }
+
     for (uint8_t i = 0; i < router->num_routes; ++i) {
         if (strncmp(router->routes[i].key.input_name, input, MEMS_SWITCH_NAME_LEN) == 0 &&
             strncmp(router->routes[i].key.output_name, output, MEMS_SWITCH_NAME_LEN) == 0) {
@@ -470,7 +459,7 @@ uint8_t mems_router_active_routes(const struct mems_router *router,
 
     k_mutex_lock((struct k_mutex *)&router->lock, K_FOREVER);
 
-    for (uint8_t i = 0; i < router->num_routes && n_found < max_keys; ++i) {
+    for (uint8_t i = 0; router->routes != NULL && i < router->num_routes && n_found < max_keys; ++i) {
         const struct mems_route *route = &router->routes[i];
         bool match = true;
         for (uint8_t j = 0; j < route->num_steps; ++j) {

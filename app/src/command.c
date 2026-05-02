@@ -79,6 +79,21 @@ typedef enum laser_t {
     LASER_UNKNOWN=6
 } laser_t;
 
+static bool attenuator_channel_available(laser_t laser_id)
+{
+    enum hispec_board_type board = devices_board_type();
+
+    if (board == HISPEC_BOARD_TIB) {
+        return laser_id != LASER_UNKNOWN && (uint8_t)laser_id < NUM_ATTENUATORS;
+    }
+
+    if (board == HISPEC_BOARD_CAL_BLUE || board == HISPEC_BOARD_CAL_RED) {
+        return laser_id == LASER_1510_H;
+    }
+
+    return false;
+}
+
 
 
 
@@ -896,7 +911,7 @@ void wait_laser_boot() {
 }
 
 bool power_enabled() {
-    if (!devices_has_laser_power_control()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return false;
     }
     if (!gpio_is_ready_dt(&power_gpio)) {
@@ -907,7 +922,7 @@ bool power_enabled() {
 }
 
 bool enable_power() {
-    if (!devices_has_laser_power_control()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
         return false;
     }
@@ -925,7 +940,7 @@ bool enable_power() {
 }
 
 bool disable_power() {
-    if (!devices_has_laser_power_control()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
         return false;
     }
@@ -2162,7 +2177,7 @@ struct OutMsg mems_set(const struct Command *cmd) {
 
 struct OutMsg laser_setting_get(const struct Command *cmd) {
 
-    if (!devices_has_laser_bank()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Laser bank unavailable on this board\"}");
     }
@@ -2200,7 +2215,7 @@ struct OutMsg laser_setting_get(const struct Command *cmd) {
 
 struct OutMsg laser_setting_set(const struct Command *cmd) {
 
-    if (!devices_has_laser_bank()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Laser bank unavailable on this board\"}");
     }
@@ -2256,7 +2271,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
     }
-    if (!devices_attenuator_index_available((uint8_t)laser_id)) {
+    if (!attenuator_channel_available(laser_id)) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Attenuator unavailable on this board\"}");
     }
@@ -2296,7 +2311,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
     }
-    if (!devices_attenuator_index_available((uint8_t)laser_id)) {
+    if (!attenuator_channel_available(laser_id)) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Attenuator unavailable on this board\"}");
     }
@@ -2405,7 +2420,7 @@ struct OutMsg pd_get(const struct Command *cmd)
     float hk_err;
     int parse_rc;
 
-    if (!devices_has_photodiodes()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
@@ -2493,7 +2508,7 @@ struct OutMsg pd_set(const struct Command *cmd)
     int parse_rc;
     int rc;
 
-    if (!devices_has_photodiodes()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
@@ -2586,7 +2601,7 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
     size_t off = 0;
     int written;
 
-    if (!devices_has_photodiodes()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
@@ -2638,7 +2653,7 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
     bool changed = false;
     int parse_rc;
 
-    if (!devices_has_photodiodes()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
     }
@@ -2696,8 +2711,8 @@ struct OutMsg status_get(const struct Command *cmd) {
              app_settings_get_boot_count(),
              (long long)k_uptime_get(),
              devices_board_type_name(),
-             devices_board_type_valid() ? "true" : "false",
-             devices_mems_switch_count(),
+             devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
+             router.num_switches,
              net.link_ready ? "true" : "false",
              net.ip,
              power_enabled() ? "true" : "false");
@@ -2731,7 +2746,7 @@ struct OutMsg power_get(const struct Command *cmd) {
     snprintf(payload, MAX_PAYLOAD_LEN,
              "{\"laser_power\":%s,\"available\":%s,\"board_type\":\"%s\"}",
              power_enabled() ? "true" : "false",
-             devices_has_laser_power_control() ? "true" : "false",
+             devices_board_type() == HISPEC_BOARD_TIB ? "true" : "false",
              devices_board_type_name());
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -2743,7 +2758,7 @@ struct OutMsg power_set(const struct Command *cmd) {
     bool value;
     int parse_rc;
 
-    if (!devices_has_laser_power_control()) {
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Laser power control unavailable on this board\"}");
     }

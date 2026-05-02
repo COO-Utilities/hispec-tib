@@ -33,8 +33,7 @@ enum hispec_board_type {
 	HISPEC_BOARD_TIB,
 	HISPEC_BOARD_CAL_BLUE,
 	HISPEC_BOARD_CAL_RED,
-	HISPEC_BOARD_AS,
-	HISPEC_BOARD_FAULT,
+	HISPEC_BOARD_AS
 };
 
 
@@ -53,8 +52,8 @@ extern struct attenuator attenuators[];
  * @brief Read the solder-strap GPIOs and select the active PCB profile.
  *
  * The straps are active-low GPIO inputs with pullups. Exactly one strap must
- * be active. More than one active strap is treated as a board fault because the
- * assembled PCB identity should not change at runtime.
+ * be active. Missing or conflicting straps leave the board type unknown because
+ * the assembled PCB identity should not change at runtime.
  */
 int devices_detect_board_type(void);
 
@@ -66,27 +65,6 @@ enum hispec_board_type devices_board_type(void);
 
 /** @brief Return the short stable board type name used in logs/settings. */
 const char *devices_board_type_name(void);
-
-/** @brief Return true when the selected PCB is safe to configure. */
-bool devices_board_type_valid(void);
-
-/** @brief Return true when this PCB has a laser bank and Modbus control. */
-bool devices_has_laser_bank(void);
-
-/** @brief Return true when this PCB has the laser-bank power GPIO. */
-bool devices_has_laser_power_control(void);
-
-/** @brief Return true when this PCB has the ADS1115 photodiode channels. */
-bool devices_has_photodiodes(void);
-
-/** @brief Return true when this PCB has any DAC-driven attenuator channel. */
-bool devices_has_attenuators(void);
-
-/** @brief Return true when a logical attenuator index is populated on this PCB. */
-bool devices_attenuator_index_available(uint8_t index);
-
-/** @brief Return the number of MEMS switches expected for this PCB profile. */
-uint8_t devices_mems_switch_count(void);
 
 bool devices_ready(void);
 void setup_mems_switches_and_routes(void);
