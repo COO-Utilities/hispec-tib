@@ -56,7 +56,7 @@ K_MSGQ_DEFINE(outbound_queue,
               8,
               4);
 
-extern const struct gpio_dt_spec power_gpio;
+extern const struct gpio_dt_spec laser_power_gpio;
 extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
@@ -954,10 +954,10 @@ bool power_enabled() {
     if (devices_board_type() != HISPEC_BOARD_TIB) {
         return false;
     }
-    if (!gpio_is_ready_dt(&power_gpio)) {
+    if (!gpio_is_ready_dt(&laser_power_gpio)) {
         return false;
     }
-    int val = gpio_pin_get_dt(&power_gpio);
+    int val = gpio_pin_get_dt(&laser_power_gpio);
     return val==1;
 }
 
@@ -966,13 +966,13 @@ bool enable_power() {
         LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
         return false;
     }
-    if (!gpio_is_ready_dt(&power_gpio)) {
+    if (!gpio_is_ready_dt(&laser_power_gpio)) {
         LOG_ERR("POWER_GPIO not ready");
         return false;
     }
     if (power_enabled())
         return false;
-    int err = gpio_pin_set_dt(&power_gpio, 1);
+    int err = gpio_pin_set_dt(&laser_power_gpio, 1);
     if (err) {
         LOG_ERR("Failed to set POWER_GPIO high\n");
     }
@@ -984,13 +984,13 @@ bool disable_power() {
         LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
         return false;
     }
-    if (!gpio_is_ready_dt(&power_gpio)) {
+    if (!gpio_is_ready_dt(&laser_power_gpio)) {
         LOG_ERR("POWER_GPIO not ready");
         return false;
     }
     if (!power_enabled())
         return false;
-    int err = gpio_pin_set_dt(&power_gpio, 0);
+    int err = gpio_pin_set_dt(&laser_power_gpio, 0);
     if (err) {
         LOG_ERR("Failed to set POWER_GPIO low\n");
     }

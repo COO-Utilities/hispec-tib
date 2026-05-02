@@ -28,8 +28,11 @@ BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
 
 /* Devices */
+const struct gpio_dt_spec laser_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, laser_power_gpios);
+const struct gpio_dt_spec heater_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, heater_power_gpios);
+const struct gpio_dt_spec yj_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, yj_power_gpios);
+const struct gpio_dt_spec hk_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, hk_power_gpios);
 
-const struct gpio_dt_spec power_gpio = GPIO_DT_SPEC_GET(USER_NODE, power_gpios);
 
 #if DT_NODE_HAS_PROP(USER_NODE, board_type_tib_gpios)
 static const struct gpio_dt_spec board_type_tib_gpio =
@@ -582,6 +585,28 @@ static bool device_ready_or_log(const struct device *dev, const char *label)
 	return true;
 }
 
+static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpio,
+						  const char *label)
+{
+	int rc;
+
+	if (gpio == NULL || !gpio_is_ready_dt(gpio)) {
+		LOG_ERR("%s GPIO is not ready", label);
+		return false;
+	}
+
+	/* gpio_pin_configure_dt() applies the devicetree active flag and sets the
+	 * output inactive so relays/supplies default off during firmware setup.
+	 */
+	rc = gpio_pin_configure_dt(gpio, GPIO_OUTPUT_INACTIVE);
+	if (rc != 0) {
+		LOG_ERR("Failed to configure %s GPIO (%d)", label, rc);
+		return false;
+	}
+
+	return true;
+}
+
 static bool setup_modbus_client(void)
 {
 #if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
@@ -732,11 +757,20 @@ bool devices_ready(void)
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB) {
-		if (!gpio_is_ready_dt(&power_gpio)) {
-			LOG_ERR("Power GPIO is not ready");
+		if (!configure_gpio_output_inactive_or_log(&laser_power_gpio,
+							   "laser bank power")) {
 			rc = false;
-		} else if (gpio_pin_configure_dt(&power_gpio, GPIO_OUTPUT_INACTIVE) != 0) {
-			LOG_ERR("Failed to configure power GPIO");
+		}
+		if (!configure_gpio_output_inactive_or_log(&yj_power_gpio,
+							   "YJ photodiode power")) {
+			rc = false;
+		}
+		if (!configure_gpio_output_inactive_or_log(&hk_power_gpio,
+							   "HK photodiode power")) {
+			rc = false;
+		}
+		if (!configure_gpio_output_inactive_or_log(&heater_power_gpio,
+							   "laser bank heater")) {
 			rc = false;
 		}
 	}
@@ -754,7 +788,7 @@ bool devices_ready(void)
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB) {
-		LOG_INF("Relay-box profile enabled; DS2408 command support is still pending");
+		LOG_INF("Relay-box GPIO outputs configured");
 	}
 
 	return rc;

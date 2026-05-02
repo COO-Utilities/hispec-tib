@@ -42,7 +42,10 @@ extern const struct device *adc_dev;
 extern const struct device *dac_dev;
 extern const struct device *gpio_dev;
 
-extern const struct gpio_dt_spec power_gpio;
+extern const struct gpio_dt_spec laser_power_gpio;
+extern const struct gpio_dt_spec heater_power_gpio;
+extern const struct gpio_dt_spec yj_power_gpio;
+extern const struct gpio_dt_spec hk_power_gpio;
 
 extern struct mems_switch mems_switches[];
 extern struct mems_router router;

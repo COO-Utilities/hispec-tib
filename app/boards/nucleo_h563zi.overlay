@@ -14,7 +14,7 @@
 	};
 
 	zephyr,user {
-		power-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
+		laser_power_gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
 
 		/* Board-type strap inputs are solder jumpers to ground. */
 		board-type-tib-gpios = <&gpioa 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D35 */
@@ -38,6 +38,11 @@
 		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_HIGH>;
 		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
 		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
+
+		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_HIGH>; /* DS2408 P1 */
+		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_HIGH>; /* DS2408 P2 */
+		heater_power_gpios = <&ds2408_pd_power 2 GPIO_ACTIVE_HIGH>; /* DS2408 P3 */
+
 	};
 };
 

@@ -24,6 +24,7 @@ target_sources(app PRIVATE
         src/attenuator.c
         src/command.c
         src/devices.c
+        src/lasers.c
         src/maiman.c
         src/photodiode.c
         src/tempsense.c
@@ -36,6 +37,7 @@ target_sources(app PRIVATE
         src/app_warning.h
         src/command.h
         src/devices.h
+        src/lasers.h
         src/maiman.h
         src/laser_properties.h
         src/photodiode.h

@@ -16,73 +16,130 @@
 #define CLIENT_IFACE 0
 
 
-// Register addresses
-#define REG_TEC_TEMPERATURE_MEASURED        0x1000
-#define REG_PCB_TEMPERATURE_MEASURED        0x1001
-#define REG_TEC_TEMPERATURE_VALUE           0x1002
-#define REG_CURRENT_MEASURED                0x1003
-#define REG_CURRENT                         0x1004
-#define REG_VOLTAGE_MEASURED                0x1005
-#define REG_CURRENT_MAX_LIMIT               0x1006
-#define REG_CURRENT_PROTECTION_THRESHOLD    0x1007
-#define REG_CURRENT_SET_CALIBRATION         0x1008
-#define REG_NTC_COEFFICIENT                 0x1009
-#define REG_TEC_CURRENT_MEASURED            0x100A
-#define REG_TEC_VOLTAGE                     0x100B
-#define REG_SERIAL_NUMBER                   0x100C
-#define REG_FREQUENCY                       0x100D
-#define REG_DURATION                        0x100E
-#define REG_STATE_OF_DEVICE_COMMAND         0x1010
+/* Maiman MODBUS RTU holding-register addresses.
+ *
+ * These are the register addresses from maiman_modbus_py/config/modbus_config.yaml,
+ * cross-checked against the SF8025 family user manual's parameter table. The PDF
+ * lists legacy text-command parameter numbers such as 0300h and 0A10h; the
+ * MODBUS library maps those to the compact holding-register block below.
+ */
+#define REG_DEVICE_ID                       0x0001
+#define REG_CHANGEABLE_PARAMETERS           0x0002
+#define REG_SERIAL_NUMBER                   0x0003
+#define REG_STATE_OF_DEVICE_COMMAND         0x0004
+#define REG_LOCK_STATUS                     0x0005
+#define REG_FREQUENCY                       0x0006
+#define REG_DURATION                        0x0007
+#define REG_CURRENT                         0x0008
+#define REG_SAVE_PARAMETERS                 0x0009
+#define REG_RESET_PARAMETERS                0x000A
+
+#define REG_FREQUENCY_MIN                   0x0020
+#define REG_FREQUENCY_MAX                   0x0021
+#define REG_DURATION_MIN                    0x0022
+#define REG_DURATION_MAX                    0x0023
+#define REG_CURRENT_MIN                     0x0024
+#define REG_CURRENT_MAX                     0x0025
+#define REG_NTC_TEMPERATURE_MIN             0x0026
+#define REG_NTC_TEMPERATURE_MAX             0x0027
+#define REG_CURRENT_MAX_LIMIT               0x0029
+#define REG_CURRENT_PROTECTION_THRESHOLD    0x002A
+
+#define REG_CURRENT_MEASURED                0x0040
+#define REG_VOLTAGE_MEASURED                0x0041
+#define REG_NTC_TEMPERATURE_MEASURED        0x0042
+#define REG_PCB_TEMPERATURE_MEASURED        0x0043
+
+#define REG_TEC_TEMPERATURE_VALUE           0x0070
+#define REG_TEC_TEMPERATURE_MAX             0x0071
+#define REG_TEC_TEMPERATURE_MIN             0x0072
+#define REG_TEC_TEMPERATURE_MAX_LIMIT       0x0073
+#define REG_TEC_TEMPERATURE_MIN_LIMIT       0x0074
+#define REG_TEC_TEMPERATURE_MEASURED        0x0075
+#define REG_TEC_CURRENT_MEASURED            0x0076
+#define REG_TEC_CURRENT_LIMIT               0x0077
+#define REG_TEC_VOLTAGE                     0x0078
+#define REG_STATE_OF_TEC_COMMAND            0x007A
+#define REG_TEC_CURRENT_SET_CALIBRATION     0x007E
+#define REG_INTERNAL_LD_NTC_SENSOR          0x007F
+
+#define REG_RS_SETTING                      0x0080
+#define REG_CURRENT_SET_CALIBRATION         0x0088
+#define REG_NTC_COEFFICIENT                 0x008A
+#define REG_TEC_P_COEFFICIENT               0x0091
+#define REG_TEC_I_COEFFICIENT               0x0092
+#define REG_TEC_D_COEFFICIENT               0x0093
 
 typedef uint16_t laser_address_t;
 
-typedef struct {
-    const char *name;
-    const laser_address_t address;
-} MaimanRegister;
-
-static const MaimanRegister register_table[] = {
-    {"TEC_TEMPERATURE_MEASURED",     REG_TEC_TEMPERATURE_MEASURED},
-    {"PCB_TEMPERATURE_MEASURED",     REG_PCB_TEMPERATURE_MEASURED},
-    {"TEC_TEMPERATURE_VALUE",        REG_TEC_TEMPERATURE_VALUE},
-    {"CURRENT_MEASURED",             REG_CURRENT_MEASURED},
-    {"CURRENT",                      REG_CURRENT},
-    {"VOLTAGE_MEASURED",             REG_VOLTAGE_MEASURED},
-    {"CURRENT_MAX_LIMIT",            REG_CURRENT_MAX_LIMIT},
-    {"CURRENT_PROTECTION_THRESHOLD", REG_CURRENT_PROTECTION_THRESHOLD},
-    {"CURRENT_SET_CALIBRATION",      REG_CURRENT_SET_CALIBRATION},
-    {"NTC_COEFFICIENT",              REG_NTC_COEFFICIENT},
-    {"TEC_CURRENT_MEASURED",         REG_TEC_CURRENT_MEASURED},
-    {"TEC_VOLTAGE",                  REG_TEC_VOLTAGE},
-    {"SERIAL_NUMBER",                REG_SERIAL_NUMBER},
-    {"FREQUENCY",                    REG_FREQUENCY},
-    {"DURATION",                     REG_DURATION},
-    {"STATE_OF_DEVICE_COMMAND",      REG_STATE_OF_DEVICE_COMMAND}
-};
-
-
-// Finds the register, returns true and sets *address if found
+/* Finds the register, returns true and sets *address_out if found. */
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
 
 
-// Divider constants
-#define DIVIDER_TEMPERATURE             10.0f
-#define DIVIDER_CURRENT                 100.0f
-#define DIVIDER_VOLTAGE                 100.0f
-#define DIVIDER_DURATION                1000.0f
-#define DIVIDER_FREQUENCY               1000.0f
-#define DIVIDER_NTC_COEFFICIENT         1000.0f
+/* Divider constants from the SF8025 v5.4 device metadata used by the
+ * validation notebooks. Values returned by this layer are engineering units:
+ * mA, V, Hz, ms, deg C, A, or raw PID/register units as named.
+ */
+#define DIVIDER_FREQUENCY                   10.0f
+#define DIVIDER_DURATION                    10.0f
+#define DIVIDER_CURRENT                     10.0f
+#define DIVIDER_VOLTAGE                     10.0f
+#define DIVIDER_PCB_TEMPERATURE             10.0f
+#define DIVIDER_NTC_TEMPERATURE             10.0f
+#define DIVIDER_TEC_TEMPERATURE             100.0f
+#define DIVIDER_TEC_CURRENT                 10.0f
+#define DIVIDER_TEC_VOLTAGE                 10.0f
+#define DIVIDER_CURRENT_SET_CALIBRATION     100.0f
+#define DIVIDER_TEC_CURRENT_SET_CALIBRATION 100.0f
+#define DIVIDER_NTC_COEFFICIENT             1.0f
 
 // Device state bitmasks
-#define OPERATION_STATE_STARTED         0x0001
-#define CURRENT_SET_INTERNAL            0x0002
-#define ENABLE_INTERNAL                 0x0004
-#define EXTERNAL_NTC_INTERLOCK_DENIED   0x0008
-#define INTERLOCK_DENIED                0x0010
+#define DEVICE_STATE_POWERED                0x0001
+#define OPERATION_STATE_STARTED             0x0002
+#define CURRENT_SET_INTERNAL                0x0004
+#define ENABLE_INTERNAL                     0x0010
+#define EXTERNAL_NTC_INTERLOCK_DENIED       0x0040
+#define INTERLOCK_DENIED                    0x0080
+
+// TEC state bitmasks
+#define TEC_OPERATION_STATE_STARTED         0x0002
+#define TEC_SET_INTERNAL                    0x0004
+#define TEC_ENABLE_INTERNAL                 0x0010
+
+// Lock-status bitmasks
+#define LOCK_STATE_INTERLOCK                0x0002
+#define LOCK_STATE_LD_OVERCURRENT          0x0008
+#define LOCK_STATE_LD_OVERHEAT             0x0010
+#define LOCK_STATE_EXTERNAL_NTC_INTERLOCK  0x0020
+#define LOCK_STATE_TEC_ERROR               0x0040
+#define LOCK_STATE_TEC_SELFHEAT            0x0080
+
+#define LOCK_STATE_BLOCKING_MASK \
+    (LOCK_STATE_INTERLOCK | LOCK_STATE_LD_OVERCURRENT | \
+     LOCK_STATE_LD_OVERHEAT | LOCK_STATE_EXTERNAL_NTC_INTERLOCK | \
+     LOCK_STATE_TEC_ERROR | LOCK_STATE_TEC_SELFHEAT)
 
 // Modbus command values
-#define MODBUS_START_COMMAND_VALUE      0x0001
-#define MODBUS_STOP_COMMAND_VALUE       0x0000
+#define MODBUS_START_COMMAND_VALUE              0x0008
+#define MODBUS_STOP_COMMAND_VALUE               0x0010
+#define MODBUS_INTERNAL_CURRENT_SET_VALUE       0x0020
+#define MODBUS_EXTERNAL_CURRENT_SET_VALUE       0x0040
+#define MODBUS_EXTERNAL_ENABLE_VALUE            0x0200
+#define MODBUS_INTERNAL_ENABLE_VALUE            0x0400
+#define MODBUS_ALLOW_INTERLOCK_VALUE            0x1000
+#define MODBUS_DENY_INTERLOCK_VALUE             0x2000
+#define MODBUS_DENY_EXTERNAL_NTC_INTERLOCK_VALUE 0x4000
+#define MODBUS_ALLOW_EXTERNAL_NTC_INTERLOCK_VALUE 0x8000
+
+#define MODBUS_START_TEC_COMMAND_VALUE          0x0008
+#define MODBUS_STOP_TEC_COMMAND_VALUE           0x0010
+#define MODBUS_INTERNAL_TEMPERATURE_SET_VALUE   0x0020
+#define MODBUS_EXTERNAL_TEMPERATURE_SET_VALUE   0x0040
+#define MODBUS_EXTERNAL_TEC_ENABLE_VALUE        0x0200
+#define MODBUS_INTERNAL_TEC_ENABLE_VALUE        0x0400
+
+#define MODBUS_SAVE_PARAMETERS_VALUE            0x0001
+#define MODBUS_RESET_PARAMETERS_VALUE           0x0001
 
 
 /**
@@ -99,42 +156,80 @@ typedef struct {
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
 
-/* Rear/write a register */
+/* Read/write one raw holding register. */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
+bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, float divider,
+                        bool signed_value, float *value);
+bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
+                         bool signed_value, float value);
 
 
 /* ----- Measurement getters ----- */
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
 float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
+float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
 float maiman_get_tec_temperature_value(maiman_driver_t *drv);
 float maiman_get_current_measured(maiman_driver_t *drv);
 float maiman_get_frequency(maiman_driver_t *drv);
 float maiman_get_duration(maiman_driver_t *drv);
 bool  maiman_get_current(maiman_driver_t *drv, float *value);
 float maiman_get_voltage_measured(maiman_driver_t *drv);
+float maiman_get_current_min(maiman_driver_t *drv);
+float maiman_get_current_max(maiman_driver_t *drv);
 float maiman_get_current_max_limit(maiman_driver_t *drv);
 float maiman_get_current_protection_threshold(maiman_driver_t *drv);
 float maiman_get_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
 float maiman_get_tec_current_measured(maiman_driver_t *drv);
+float maiman_get_tec_current_limit(maiman_driver_t *drv);
+float maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_tec_voltage(maiman_driver_t *drv);
 
 /* ----- Status and control ----- */
+uint16_t maiman_get_device_id(maiman_driver_t *drv);
 uint16_t maiman_get_serial_number(maiman_driver_t *drv);
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
+uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
+uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
 bool maiman_is_operation_started(maiman_driver_t *drv);
 bool maiman_is_current_set_internal(maiman_driver_t *drv);
 bool maiman_is_enable_internal(maiman_driver_t *drv);
 bool maiman_is_external_ntc_denied(maiman_driver_t *drv);
 bool maiman_is_interlock_denied(maiman_driver_t *drv);
+bool maiman_is_tec_started(maiman_driver_t *drv);
+bool maiman_is_tec_set_internal(maiman_driver_t *drv);
+bool maiman_is_tec_enable_internal(maiman_driver_t *drv);
+bool maiman_is_lockstate_interlock(maiman_driver_t *drv);
+bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv);
+bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv);
+bool maiman_is_lockstate_external_ntc_interlock(maiman_driver_t *drv);
+bool maiman_is_lockstate_tec_error(maiman_driver_t *drv);
+bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 
 /* ----- Setpoint and commands ----- */
 bool maiman_set_current(maiman_driver_t *drv, float current);
+bool maiman_set_current_max(maiman_driver_t *drv, float current);
 bool maiman_set_frequency(maiman_driver_t *drv, float frequency);
 bool maiman_set_duration(maiman_driver_t *drv, float duration);
+bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c);
+bool maiman_set_tec_current_limit(maiman_driver_t *drv, float current_a);
+bool maiman_get_tec_pid(maiman_driver_t *drv, tec_pid_t *pid);
+bool maiman_set_tec_pid(maiman_driver_t *drv, tec_pid_t pid);
 bool maiman_start_device(maiman_driver_t *drv);
 bool maiman_stop_device(maiman_driver_t *drv);
+bool maiman_start_tec(maiman_driver_t *drv);
+bool maiman_stop_tec(maiman_driver_t *drv);
+bool maiman_set_internal_current_control(maiman_driver_t *drv, bool internal);
+bool maiman_set_internal_enable_control(maiman_driver_t *drv, bool internal);
+bool maiman_set_internal_tec_temperature_control(maiman_driver_t *drv, bool internal);
+bool maiman_set_internal_tec_enable_control(maiman_driver_t *drv, bool internal);
+bool maiman_allow_interlock(maiman_driver_t *drv);
+bool maiman_deny_interlock(maiman_driver_t *drv);
+bool maiman_allow_external_ntc_interlock(maiman_driver_t *drv);
+bool maiman_deny_external_ntc_interlock(maiman_driver_t *drv);
+bool maiman_save_parameters(maiman_driver_t *drv);
+bool maiman_reset_parameters(maiman_driver_t *drv);
 
 #endif //MAIMAN_H
