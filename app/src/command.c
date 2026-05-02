@@ -38,6 +38,7 @@ LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 #define MQTT_RESP_PREFIX "cmd/" MQTT_DEVICE_ID "/resp/"
 #define SERIAL_LINE_MAX 220
 #define SERIAL_WRAP_COLUMN 80U
+#define LASERBANK_FAULT_CLEAR_OFF_MS 250U
 
 static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
@@ -107,6 +108,9 @@ const struct DispatchEntry dispatch_table[] = {
     { "memsroute",  memsroute_get,    memsroute_set    },
     { "mems",       mems_get,         mems_set         },
     { "split",      splitting_get,    splitting_set    },
+    { "laserbank/poweron", laserbank_poweron, laserbank_poweron },
+    { "laserbank/poweroff", laserbank_poweroff, laserbank_poweroff },
+    { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
     { "laser",      laser_setting_get,laser_setting_set},
     { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
@@ -993,6 +997,102 @@ bool disable_power() {
     }
     return true;
 
+}
+
+struct OutMsg laserbank_poweron(const struct Command *cmd)
+{
+    bool transitioned;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
+
+    transitioned = enable_power();
+    if (transitioned) {
+        wait_laser_boot();
+    }
+
+    if (!power_enabled()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"laser bank power did not turn on\"}");
+    }
+
+    snprintf(payload, sizeof(payload),
+             "{\"status\":\"OK\",\"laser_power\":true,\"transitioned\":%s}",
+             transitioned ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg laserbank_poweroff(const struct Command *cmd)
+{
+    bool was_powered;
+    bool transitioned;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
+
+    was_powered = power_enabled();
+    transitioned = disable_power();
+    if (power_enabled()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"laser bank power did not turn off\"}");
+    }
+
+    snprintf(payload, sizeof(payload),
+             "{\"status\":\"OK\",\"laser_power\":false,\"was_powered\":%s,"
+             "\"transitioned\":%s}",
+             was_powered ? "true" : "false",
+             transitioned ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+struct OutMsg laserbank_clearfaults(const struct Command *cmd)
+{
+    bool was_powered;
+    bool turned_on;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
+
+    was_powered = power_enabled();
+    if (was_powered) {
+        (void)disable_power();
+        if (power_enabled()) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\","
+                                "\"msg\":\"laser bank power cycle could not turn off\"}");
+        }
+    }
+
+    /* k_sleep() is a bounded Zephyr delay that gives the laser-bank supply
+     * time to drop before re-enabling it for a fault-clear cycle.
+     */
+    k_sleep(K_MSEC(LASERBANK_FAULT_CLEAR_OFF_MS));
+    turned_on = enable_power();
+    if (turned_on) {
+        wait_laser_boot();
+    }
+
+    if (!power_enabled()) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\","
+                            "\"msg\":\"laser bank power cycle could not turn on\"}");
+    }
+
+    snprintf(payload, sizeof(payload),
+             "{\"status\":\"OK\",\"laser_power\":true,\"was_powered\":%s,"
+             "\"off_ms\":%u,\"fault_detection\":\"power_cycle_only\"}",
+             was_powered ? "true" : "false",
+             LASERBANK_FAULT_CLEAR_OFF_MS);
+    return _msg_builder(cmd, RESP_OK, payload);
 }
 
 static void serial_guard_expire_handler(enum app_scheduled_action_id id, void *user_data)

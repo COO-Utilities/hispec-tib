@@ -404,24 +404,30 @@ guard is active and attenuator DAC-range clamping.
 
 ### `laserbank/poweron`
 - **Request topic:** `cmd/<device>/req/laserbank/poweron`
-  - Payload: `{"autooff_s": 0.0}`
-- **Response topic:** `cmd/<device>/resp/laserbank`
-  - Response: `{"status": "success"}`
+  - Payload: optional; empty payload is accepted.
+- **Top-level handler:** `laserbank_poweron()`
+- **Response topic:** `cmd/<device>/resp/laserbank/poweron`
+  - Response: `{"status":"OK","laser_power":true,"transitioned":true|false}`
 
-- **Notes:** powers on the laser bank + starts TECs; does nothing if already powered (no reinit); restarts laserbank auto-off timer; bank will not power down while a laser is emitting.
+- **Notes:** powers on the TIB laser-bank power GPIO; does nothing if already
+  powered. TEC startup and auto-off policy are not implemented yet.
 
 ### `laserbank/poweroff`
 - **Request topic:** `cmd/<device>/req/laserbank/poweroff`
-- **Response topic:** `cmd/<device>/resp/laserbank`
-  - Response: `{"status": "success"}`
+- **Top-level handler:** `laserbank_poweroff()`
+- **Response topic:** `cmd/<device>/resp/laserbank/poweroff`
+  - Response: `{"status":"OK","laser_power":false,"was_powered":true|false,"transitioned":true|false}`
 
 
 ### `laserbank/clearfaults`
 - **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
-- **Response topic:** `cmd/<device>/resp/laserbank`
-  - Response: `{"status": "success"}`
+- **Top-level handler:** `laserbank_clearfaults()`
+- **Response topic:** `cmd/<device>/resp/laserbank/clearfaults`
+  - Response: `{"status":"OK","laser_power":true,"was_powered":true|false,"off_ms":250,"fault_detection":"power_cycle_only"}`
 
-- **Notes:** cycles power on the laser bank if any drive is in overcurrent protection mode (equivalent to checking each laser for `overcurrent_fault` and, if found, calling poweroff then poweron).
+- **Notes:** currently performs a bounded power cycle of the TIB laser-bank
+  power GPIO. Overcurrent-specific fault detection is not wired yet because the
+  `maiman.h` status bit for that condition is not defined.
 
 
 ### `laserbank/autowarm`

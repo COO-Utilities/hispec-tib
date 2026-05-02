@@ -205,8 +205,10 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
   - disable_power()
     - disables power for lasers
     - returns true iff power went from on->off
-
-- TODO need to add power control for laser diode bank
+- laser-bank command wrappers
+  - `laserbank_poweron()` powers on the TIB laser-bank GPIO and confirms it is high
+  - `laserbank_poweroff()` powers off the TIB laser-bank GPIO and confirms it is low
+  - `laserbank_clearfaults()` performs a bounded power cycle; overcurrent-specific fault-bit detection is still not implemented in `maiman.h`
 
 - defines a dispatch system
   - a dispatch table with callbacks for get/set for command endpoints

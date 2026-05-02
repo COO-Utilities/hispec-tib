@@ -94,6 +94,12 @@ struct OutMsg mems_set(const struct Command *cmd);
 
 struct OutMsg laser_setting_get(const struct Command *cmd);
 struct OutMsg laser_setting_set(const struct Command *cmd);
+/** Power on the TIB laser bank using the board power GPIO. */
+struct OutMsg laserbank_poweron(const struct Command *cmd);
+/** Power off the TIB laser bank using the board power GPIO. */
+struct OutMsg laserbank_poweroff(const struct Command *cmd);
+/** Clear laser-bank faults with a bounded laser-bank power cycle. */
+struct OutMsg laserbank_clearfaults(const struct Command *cmd);
 
 struct OutMsg power_get(const struct Command *cmd);
 struct OutMsg power_set(const struct Command *cmd);
