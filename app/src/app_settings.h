@@ -27,8 +27,23 @@ struct app_mqtt_settings {
 	uint16_t broker_port;
 };
 
+/** Number of logical attenuator channels whose calibration may be persisted. */
+#define APP_ATTENUATOR_CHANNEL_COUNT 6
+/** Number of quadratic coefficients per attenuator calibration polynomial. */
+#define APP_ATTENUATOR_COEFF_COUNT 3
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
+
+/** Persisted/runtime calibration for one logical attenuator channel. */
+struct app_attenuator_channel_settings {
+	float db_to_volt[APP_ATTENUATOR_COEFF_COUNT];
+	float volt_to_db[APP_ATTENUATOR_COEFF_COUNT];
+};
+
+/** Persisted/runtime attenuator calibration snapshot. */
+struct app_attenuator_settings {
+	struct app_attenuator_channel_settings channel[APP_ATTENUATOR_CHANNEL_COUNT];
+};
 
 struct app_pd_channel_settings {
 	float dark_mv;
@@ -46,6 +61,7 @@ struct app_settings_snapshot {
 	char board_type[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
 	struct app_ip_settings ip;
 	struct app_mqtt_settings mqtt;
+	struct app_attenuator_settings attenuator;
 	struct app_photodiode_settings photodiode;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
@@ -66,6 +82,18 @@ void app_settings_get_ip(struct app_ip_settings *out);
 void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
 void app_settings_get_mqtt(struct app_mqtt_settings *out);
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
+/** @brief Copy the current attenuator calibration snapshot. */
+void app_settings_get_attenuator(struct app_attenuator_settings *out);
+/**
+ * @brief Update one logical attenuator channel's calibration coefficients.
+ *
+ * @param channel Zero-based logical attenuator channel index.
+ * @param atten Channel coefficient settings copied into the runtime snapshot.
+ * @param persist If true, save this channel's coefficients through Zephyr settings.
+ */
+void app_settings_update_attenuator_channel(uint8_t channel,
+					    const struct app_attenuator_channel_settings *atten,
+					    bool persist);
 void app_settings_get_photodiode(struct app_photodiode_settings *out);
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist);
 /**

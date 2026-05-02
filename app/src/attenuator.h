@@ -11,12 +11,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/** Number of quadratic coefficients in each attenuator calibration polynomial. */
+#define ATTENUATOR_COEFF_COUNT 3
+
 /**
  * Attenuator driver structure.
  */
 struct attenuator {
-    double  coeff_db_to_volt[3];
-    double  coeff_volt_to_db[3];
+    double  coeff_db_to_volt[ATTENUATOR_COEFF_COUNT];
+    double  coeff_volt_to_db[ATTENUATOR_COEFF_COUNT];
     double  voltage;
     struct dac_channel_cfg cfg;
 };

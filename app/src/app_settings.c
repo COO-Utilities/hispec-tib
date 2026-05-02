@@ -6,6 +6,7 @@
 
 #include "app_settings.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,7 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_IP_NTP "tib/ip/ntp"
 #define KEY_MQTT_HOST "tib/mqtt/host"
 #define KEY_MQTT_PORT "tib/mqtt/port"
+#define KEY_ATTEN_PREFIX "tib/atten"
 #define KEY_PD_YJ_DARK_MV "tib/pd/yj/dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_MV "tib/pd/yj/lowest_dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_VALID "tib/pd/yj/lowest_dark_valid"
@@ -87,6 +89,15 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	}
 	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
 	s->mqtt.broker_port = (uint16_t)broker_port;
+	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
+		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
+			/* Calibration defaults are explicit zero coefficients until
+			 * lab-measured values are stored with atten/<laser>/coeff.
+			 */
+			s->attenuator.channel[ch].db_to_volt[i] = 0.0f;
+			s->attenuator.channel[ch].volt_to_db[i] = 0.0f;
+		}
+	}
 	s->photodiode.channel[0].dark_mv = 0.0f;
 	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
 	s->photodiode.channel[0].lowest_dark_valid = false;
@@ -166,8 +177,66 @@ static void read_valid_float_or_warn(settings_read_cb read_cb, void *cb_arg,
 	*out = value;
 }
 
+static int parse_key_index(const char **cursor, uint8_t max_value, uint8_t *out)
+{
+	char *end = NULL;
+	unsigned long value;
+
+	if (cursor == NULL || *cursor == NULL || out == NULL ||
+	    !isdigit((unsigned char)**cursor)) {
+		return -EINVAL;
+	}
+
+	errno = 0;
+	value = strtoul(*cursor, &end, 10);
+	if (errno != 0 || end == *cursor || value > max_value) {
+		return -EINVAL;
+	}
+
+	*out = (uint8_t)value;
+	*cursor = end;
+	return 0;
+}
+
+static bool parse_attenuator_coeff_name(const char *name,
+					uint8_t *channel,
+					bool *db_to_volt,
+					uint8_t *coeff_index)
+{
+	const char *cursor = name;
+
+	if (name == NULL || channel == NULL || db_to_volt == NULL ||
+	    coeff_index == NULL || strncmp(cursor, "atten/", 6U) != 0) {
+		return false;
+	}
+	cursor += 6U;
+
+	if (parse_key_index(&cursor, APP_ATTENUATOR_CHANNEL_COUNT - 1U, channel) != 0 ||
+	    *cursor != '/') {
+		return false;
+	}
+	cursor++;
+
+	if (strncmp(cursor, "db2volt/", 8U) == 0) {
+		*db_to_volt = true;
+		cursor += 8U;
+	} else if (strncmp(cursor, "volt2db/", 8U) == 0) {
+		*db_to_volt = false;
+		cursor += 8U;
+	} else {
+		return false;
+	}
+
+	return parse_key_index(&cursor, APP_ATTENUATOR_COEFF_COUNT - 1U, coeff_index) == 0 &&
+	       *cursor == '\0';
+}
+
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
+	uint8_t atten_channel;
+	uint8_t atten_coeff;
+	bool atten_db_to_volt;
+
 	ARG_UNUSED(len);
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
@@ -238,6 +307,17 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 
 	if (strcmp(name, "mqtt/port") == 0) {
 		(void)read_u16(read_cb, cb_arg, &g_settings.snapshot.mqtt.broker_port);
+		goto out;
+	}
+
+	if (parse_attenuator_coeff_name(name, &atten_channel, &atten_db_to_volt,
+					&atten_coeff)) {
+		float *target = atten_db_to_volt ?
+			&g_settings.snapshot.attenuator.channel[atten_channel].db_to_volt[atten_coeff] :
+			&g_settings.snapshot.attenuator.channel[atten_channel].volt_to_db[atten_coeff];
+
+		read_valid_float_or_warn(read_cb, cb_arg, name, target,
+					 -1000000000.0f, 1000000000.0f);
 		goto out;
 	}
 
@@ -347,6 +427,34 @@ static void persist_str(const char *key, const char *value)
 	(void)settings_save_one(key, value, len);
 }
 
+static void attenuator_coeff_key(char *key, size_t key_len,
+				 uint8_t channel, bool db_to_volt,
+				 uint8_t coeff_index)
+{
+	(void)snprintk(key, key_len, "%s/%u/%s/%u",
+		       KEY_ATTEN_PREFIX, channel,
+		       db_to_volt ? "db2volt" : "volt2db",
+		       coeff_index);
+}
+
+static void persist_attenuator_channel(uint8_t channel,
+				       const struct app_attenuator_channel_settings *atten)
+{
+	char key[40];
+
+	if (atten == NULL || channel >= APP_ATTENUATOR_CHANNEL_COUNT) {
+		return;
+	}
+
+	for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
+		attenuator_coeff_key(key, sizeof(key), channel, true, i);
+		persist_float(key, atten->db_to_volt[i]);
+
+		attenuator_coeff_key(key, sizeof(key), channel, false, i);
+		persist_float(key, atten->volt_to_db[i]);
+	}
+}
+
 static void persist_photodiode_channel(uint8_t channel,
 				       const struct app_pd_channel_settings *pd)
 {
@@ -393,19 +501,40 @@ static const char *const resettable_setting_keys[] = {
 	KEY_PD_HK_GAIN_V_PER_UW,
 };
 
+static void delete_setting_key(const char *key)
+{
+	int rc = settings_delete(key);
+
+	if (rc != 0 && rc != -ENOENT) {
+		LOG_WRN("settings_delete(%s) failed (%d)", key, rc);
+	}
+}
+
+static void delete_attenuator_settings(void)
+{
+	char key[40];
+
+	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
+		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
+			attenuator_coeff_key(key, sizeof(key), channel, true, i);
+			delete_setting_key(key);
+
+			attenuator_coeff_key(key, sizeof(key), channel, false, i);
+			delete_setting_key(key);
+		}
+	}
+}
+
 static void delete_resettable_settings(void)
 {
 	for (uint8_t i = 0; i < ARRAY_SIZE(resettable_setting_keys); ++i) {
 		/* settings_delete() removes one persisted key from the Zephyr
 		 * settings backend; missing keys are fine during first boot.
 		 */
-		int rc = settings_delete(resettable_setting_keys[i]);
-
-		if (rc != 0 && rc != -ENOENT) {
-			LOG_WRN("settings_delete(%s) failed (%d)",
-				resettable_setting_keys[i], rc);
-		}
+		delete_setting_key(resettable_setting_keys[i]);
 	}
+
+	delete_attenuator_settings();
 }
 
 int app_settings_init(void)
@@ -547,6 +676,34 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	if (persist) {
 		persist_str(KEY_MQTT_HOST, mqtt->broker_host);
 		persist_u16(KEY_MQTT_PORT, mqtt->broker_port);
+	}
+}
+
+void app_settings_get_attenuator(struct app_attenuator_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.attenuator;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_attenuator_channel(uint8_t channel,
+					    const struct app_attenuator_channel_settings *atten,
+					    bool persist)
+{
+	if (atten == NULL || channel >= APP_ATTENUATOR_CHANNEL_COUNT) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.attenuator.channel[channel] = *atten;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_attenuator_channel(channel, atten);
 	}
 }
 

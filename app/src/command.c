@@ -215,6 +215,42 @@ bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out
     return false;
 }
 
+static int parse_atten_key(const char *key,
+                           char *laser_name, size_t laser_name_len,
+                           char *setting, size_t setting_len)
+{
+    const char prefix[] = "atten/";
+    const char *laser_start;
+    const char *slash;
+    size_t laser_len;
+    size_t parsed_setting_len;
+
+    if (key == NULL || laser_name == NULL || setting == NULL ||
+        strncmp(key, prefix, strlen(prefix)) != 0) {
+        return -EINVAL;
+    }
+
+    laser_start = key + strlen(prefix);
+    slash = strchr(laser_start, '/');
+    if (slash == NULL) {
+        return -EINVAL;
+    }
+
+    laser_len = (size_t)(slash - laser_start);
+    parsed_setting_len = strcspn(slash + 1, "/");
+    if (laser_len == 0U || laser_len >= laser_name_len ||
+        parsed_setting_len == 0U || parsed_setting_len >= setting_len ||
+        (slash + 1)[parsed_setting_len] != '\0') {
+        return -EINVAL;
+    }
+
+    memcpy(laser_name, laser_start, laser_len);
+    laser_name[laser_len] = '\0';
+    memcpy(setting, slash + 1, parsed_setting_len);
+    setting[parsed_setting_len] = '\0';
+    return 0;
+}
+
 struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const char *msg) {
     struct OutMsg r = { 0 };
     r.msg_type = msgtyp;
@@ -2260,13 +2296,13 @@ struct OutMsg laser_setting_set(const struct Command *cmd) {
 
 struct OutMsg atten_setting_get(const struct Command *cmd) {
 
-    // Extract laser### and <setting> from key
-    char atten_name[16], setting[16];
-    if (parse_key_pair(cmd->key, atten_name, 15, setting, 15)!=0) {
+    char laser_name[16], setting[16];
+    if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
+                        setting, sizeof(setting)) != 0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse atten/setting\"}");
     }
 
-    laser_t laser_id = get_laser_channel(atten_name+5);
+    laser_t laser_id = get_laser_channel(laser_name);
 
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
@@ -2300,13 +2336,14 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
 
 struct OutMsg atten_setting_set(const struct Command *cmd) {
 
-    // Extract laser### and <setting>
-    char atten_name[16], setting[16];
-    if (parse_key_pair(cmd->key, atten_name, 15, setting, 15)!=0) {
+    char laser_name[16], setting[16];
+    char payload[64] = "{\"status\":\"OK\"}";
+    if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
+                        setting, sizeof(setting)) != 0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse laser/setting\"}");
     }
 
-    laser_t laser_id = get_laser_channel(atten_name+5);
+    laser_t laser_id = get_laser_channel(laser_name);
 
     if (laser_id==LASER_UNKNOWN) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
@@ -2318,9 +2355,9 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
     // Parse value
     struct coeffs {
-        float db2volt[3];
+        float db2volt[ATTENUATOR_COEFF_COUNT];
         size_t db2volt_len;
-        float volt2db[3];
+        float volt2db[ATTENUATOR_COEFF_COUNT];
         size_t volt2db_len;
     };
 
@@ -2332,27 +2369,42 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
     if (strcasecmp(setting, "coeff") == 0) {
 
         struct coeffs parsed_coeffs = {0};
+        struct app_attenuator_channel_settings stored_coeffs = {0};
+        bool persist = false;
+        int parse_rc;
 
         const struct json_obj_descr coeff_descr[] = {
-            JSON_OBJ_DESCR_ARRAY(struct coeffs, db2volt, 3, db2volt_len, JSON_TOK_FLOAT),
-            JSON_OBJ_DESCR_ARRAY(struct coeffs, volt2db, 3, volt2db_len, JSON_TOK_FLOAT),
+            JSON_OBJ_DESCR_ARRAY(struct coeffs, db2volt, ATTENUATOR_COEFF_COUNT,
+                                 db2volt_len, JSON_TOK_FLOAT),
+            JSON_OBJ_DESCR_ARRAY(struct coeffs, volt2db, ATTENUATOR_COEFF_COUNT,
+                                 volt2db_len, JSON_TOK_FLOAT),
         };
 
         if (json_obj_parse((char *) cmd->payload, cmd->payload_len, coeff_descr,
                                  ARRAY_SIZE(coeff_descr), &parsed_coeffs) < 0 ||
-                                 parsed_coeffs.db2volt_len != 3 || parsed_coeffs.volt2db_len != 3) {
+                                 parsed_coeffs.db2volt_len != ATTENUATOR_COEFF_COUNT ||
+                                 parsed_coeffs.volt2db_len != ATTENUATOR_COEFF_COUNT) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Improper arguments\"}");
+        }
+        parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+        if (parse_rc == COO_JSON_EXTRACT_ERR) {
+            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid persistent flag\"}");
         }
 
         double db;
         attenuator_get(&attenuators[laser_id], &db, false);
 
-        for (int i=0; i<3; i++) {
+        for (uint8_t i=0; i<ATTENUATOR_COEFF_COUNT; i++) {
             attenuators[laser_id].coeff_db_to_volt[i]=parsed_coeffs.db2volt[i];
             attenuators[laser_id].coeff_volt_to_db[i]=parsed_coeffs.volt2db[i];
+            stored_coeffs.db_to_volt[i]=parsed_coeffs.db2volt[i];
+            stored_coeffs.volt_to_db[i]=parsed_coeffs.volt2db[i];
         }
 
         attenuator_set(&attenuators[laser_id], db, false);
+        app_settings_update_attenuator_channel((uint8_t)laser_id, &stored_coeffs, persist);
+        snprintf(payload, sizeof(payload), "{\"status\":\"OK\",\"persistent\":%s}",
+                 persist ? "true" : "false");
 
     } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
 
@@ -2371,7 +2423,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
+    return _msg_builder(cmd, RESP_OK, payload);
 }
 
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)

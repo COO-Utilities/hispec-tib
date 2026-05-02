@@ -93,8 +93,9 @@ for normal serial operation.
 - `laserbank/poweron`
 - `laserbank/poweroff`
 - `laserbank/clearfaults`
-- `atten`
-- `attensettings`
+- `atten/<laser>/value`
+- `atten/<laser>/valuedb`
+- `atten/<laser>/coeff`
 - `pd`
 - `pdsettings/<yj|hk>`
 - `ip`
@@ -434,53 +435,47 @@ guard is active and attenuator DAC-range clamping.
 - **Notes:** Maintains power of bank and aux heater to ensure that lasers may be turned on at a moment's notice 
 
 ### `atten`
-- **Request topic:** `cmd/<device>/req/atten`
-  - Set:
+- **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
+- **Request topic:** `cmd/<device>/req/atten/<laser>/value`
+  - Set raw DAC millivolts:
     ```json
-    {   "name": "<lasername><optional suffix>",
-        "value": 0.0,
-        "unit": "db"
+    {"value": 1234.0}
+    ```
+  - Query:
+    empty payload
+
+- **Request topic:** `cmd/<device>/req/atten/<laser>/valuedb`
+  - Set attenuation using the current `db2volt` calibration coefficients:
+    ```json
+    {"value": 12.5}
+    ```
+  - Query:
+    empty payload
+
+- **Request topic:** `cmd/<device>/req/atten/<laser>/coeff`
+  - Set quadratic calibration coefficients:
+    ```json
+    {
+      "db2volt": [0.0, 1.0, 0.0],
+      "volt2db": [0.0, 1.0, 0.0],
+      "persistent": true
     }
     ```
   - Query:
-    ```json
-    {   "name": "<lasername>",
-        "unit": "db"
-    }
-    ```
-    Where:
-    - `name` is `<lasername>` + `"" | "1" | "2"` *(or `1|2` in your shorthand)*
-    - `unit` is `"db" | "volt" | "%"` (case-insensitive)
-    - `volt` is an error for *total* attenuation
-    - if the attenuator is unspecified (total), `value` is total
-    
-- **Response topic:** `cmd/<device>/resp/atten`
-  - Set result: `{"status": "success"}`
-  - Query result:
-    ```json
-    {    "<lasername>:": 0.0,
-         "<lasername>1": 0.0,
-         "<lasername>2": 0.0,
-         "unit": "db"
-    }
-    ```
+    empty payload
 
+- **Response topic:** `cmd/<device>/resp/atten/<laser>/<setting>`
+  - Value query: `{"voltage":1234.0000,"db":12.5000}`
+  - Coeff query: `{"db2volt":[...],"volt2db":[...]}`
+  - Set result: `{"status":"OK"}` or `{"status":"OK","persistent":true}`
 
-### `attensettings`
-- **Request topic:** `cmd/<device>/req/attensettings`
-  ```json
-  {
-      "name": "<lasername>1"|"<lasername>2",
-      "settings": {
-        "offset": 0
-      }
-    }
-  ```
-
-- **Response topic:** `cmd/<device>/resp/attensettings`
-  - Response: `{"status": "success"}` 
-
-- **Notes:** unsettable ignored; not all settings required; drive-restart requirements TBD.
+- **Notes:**
+  - `<laser>` is one of `1028y`, `1430yj`, `1430hk`, `1510h`, or `2330k`.
+  - Coefficients are loaded from persistent settings during `setup_attenuators()`.
+  - `persistent` is optional and defaults to false. A non-persistent coefficient
+    update changes runtime behavior until reboot or a later coefficient command.
+  - There is no separate `attensettings` command; calibration coefficients live
+    on `atten/<laser>/coeff`.
 
 ### `pd`
 - **Request topic:** `cmd/<device>/req/pd`

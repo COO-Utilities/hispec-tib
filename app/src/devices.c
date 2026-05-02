@@ -11,6 +11,7 @@
 #define __DEVICE_C__
 
 #include "devices.h"
+#include "app_settings.h"
 #include "mems_switching.h"
 
 #include <errno.h>
@@ -22,6 +23,9 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 #define USER_NODE DT_PATH(zephyr_user)
 #define MAX_NUM_MEMS_SWITCHES 8U
 #define CAL_ATTENUATOR_INDEX 4U
+
+BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
+	     "Persistent attenuator settings must match logical attenuator count");
 
 /* Devices */
 
@@ -613,6 +617,7 @@ static bool setup_modbus_client(void)
 void setup_attenuators(void)
 {
 	const struct board_profile *profile = current_profile();
+	struct app_attenuator_settings atten_settings;
 
 	if (profile->attenuator_count == 0U) {
 		LOG_INF("Board %s has no attenuator channels", profile->name);
@@ -621,6 +626,8 @@ void setup_attenuators(void)
 	if (!device_ready_or_log(dac_dev, "DAC")) {
 		return;
 	}
+
+	app_settings_get_attenuator(&atten_settings);
 
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;
@@ -631,7 +638,16 @@ void setup_attenuators(void)
 			continue;
 		}
 
-		attenuator_init(&attenuators[attenuator_index], attenuator_index);
+		if (!attenuator_init(&attenuators[attenuator_index], attenuator_index)) {
+			continue;
+		}
+
+		for (uint8_t coeff = 0U; coeff < ATTENUATOR_COEFF_COUNT; ++coeff) {
+			attenuators[attenuator_index].coeff_db_to_volt[coeff] =
+				atten_settings.channel[attenuator_index].db_to_volt[coeff];
+			attenuators[attenuator_index].coeff_volt_to_db[coeff] =
+				atten_settings.channel[attenuator_index].volt_to_db[coeff];
+		}
 	}
 }
 

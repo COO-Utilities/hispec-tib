@@ -84,6 +84,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Settings persistence:
   - Persist calibrations and states across reboots; store values and fall back to hard-coded defaults. No additional persistence layers required.
   - Current implementation note: the detected PCB board type is persisted as `tib/board/type`; if a later boot detects a different valid board type, all other app settings are cleared and the boot behaves as a first boot for the new hardware.
+  - Current implementation note: attenuator calibration coefficients are stored per logical attenuator channel as `tib/atten/<channel>/db2volt/<index>` and `tib/atten/<channel>/volt2db/<index>`, then loaded by `setup_attenuators()`.
 - Error handling & observability:
   - Error heuristics: if a command can detect a problem it should do as much safe work as possible and report known failures.
   - Warnings are to be easy to publish from anywhere in the code as fire-and-forget MQTT messages.
@@ -91,7 +92,7 @@ Before making edits understand Zephyr's task structure and device initialization
 - Help/UX: if memory permits, include a help command that emits plain-English descriptions of MQTT commands and payloads (not their return values).
 
 ## Unstarted work is principally in
-- persistent settings storage,
+- persistent settings storage for remaining laser/power/relay state,
 - json/MQTT standardization,
 - power management (diodes & laser),
 - auxiliary heater control,
@@ -271,9 +272,8 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
       TODO: verify this is ok.
 - TODO: verify that get/set ops with laser are operative with overcurrent alarm and if not account for that
 - `OutMsg atten_setting_get(const struct Command *cmd)`
-  - parses atten name and setting name from command key with `parse_key_pair` '<laser>\<setting>'
+  - parses attenuator key `atten/<laser>/<setting>` with `parse_atten_key()`
   - gets atten channel with `get_laser_channel()`
-    - TODO get rid of hardcoded int offset (+5) and make work with laser enum
   - if setting is "value"|"valuedb":
     - gets voltage and db setting of attenuator with  `attenuator_get()`
     - builds response with `_msg_builder()` w/ payload of {"voltage": float, "db": float}
@@ -281,18 +281,18 @@ TODO: Verify I'm dealing with networking properly and setup DHCP with fallback t
     - builds response with `_msg_builder()` w/ payload of {"db2volt": [float,..], "volt2db": [float,..]} 
   - errors get a response built with {"error": <errmsg>}
 - `OutMsg atten_setting_set(const struct Command *cmd)`
-  - parses atten name and setting name from command key with `parse_key_pair` '<laser>\<setting>'
+  - parses attenuator key `atten/<laser>/<setting>` with `parse_atten_key()`
   - gets atten channel with `get_laser_channel()`
-      - TODO get rid of hardcoded int offset (+5) and make work with laser enum
   - if setting is "value"|"valuedb":
     - parses the setting value as a float from {"value": float}
     - uses `attenuator_set()` to set the attenuation as either a dB or raw level
   - if setting is "coeff":
-    - parses json payload for quadratic coeff for {"db2volt": [float,float,float], "volt2db": [float,float,float]}
+    - parses json payload for quadratic coeff for {"db2volt": [float,float,float], "volt2db": [float,float,float], "persistent": bool}
     - fetches the current attenuation as dB
     - updates the coeffs
     - resets to the attenuation to the same dB
-  - builds response with `_msg_builder()` w/ payload of {"status": "OK"} or errors get a response built with {"error": <errmsg>}
+    - updates `app_settings_update_attenuator_channel()` and persists only when requested
+  - builds response with `_msg_builder()` w/ payload of {"status": "OK"} or {"status":"OK","persistent":bool}; errors get a response built with {"error": <errmsg>}
 - status_get()
   - builds response with `_msg_builder()` w/ payload of {"laser_power": "true" | "false"}
 - power functions
