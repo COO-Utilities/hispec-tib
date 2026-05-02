@@ -314,6 +314,114 @@ static const struct route_definition as_routes[] = {
 	ROUTE_DEF("hk_calin", "hk_cal", as_hk_split_to_cal),
 };
 
+
+//CAL switch connections
+// 	{"cal1", 'B'}, //A=LFC to cal4A, B=Etalon to cal4A
+// 	{"cal2", 'B'}, //A=CathGad to cal4B, B=cal3b to cal4B
+// 	{"cal3", 'A'}, //A=BB to cal2, B=BB to cal6
+// 	{"cal4", 'A'}, //A=cal1 to cal5B, B=cal2 to cal5B
+// 	{"cal5", 'B'}, //A=NM to cal7, B=cal4A to cal7
+// 	{"cal6", 'A'}, //A=cal3 to IS (used for BB to IS), B=NM to IS
+// 	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+
+static const struct mems_route_step etalon_to_spec[] = {
+	{"cal1", 'B'}, //A=LFC to cal4A, B=Etalon to cal4A
+	{"cal4", 'A'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step lfc_to_spec[] = {
+	{"cal1", 'A'}, //A=LFC to cal4A, B=Etalon to cal4A
+	{"cal4", 'A'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step bb_to_spec[] = {
+	{"cal2", 'B'}, //A=CathGas to cal4B, B=cal3 to cal4
+	{"cal3", 'A'}, //A=BB to cal2, B=BB to cal6
+	{"cal4", 'B'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step cathgas_to_spec[] = {
+	{"cal2", 'A'}, //A=CathGas to cal4B, B=cal3 to cal4
+	{"cal4", 'B'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step nm_to_spec[] = {
+	{"cal5", 'A'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'A'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step etalon_to_tib[] = {
+	{"cal1", 'B'}, //A=LFC to cal4A, B=Etalon to cal4A
+	{"cal4", 'A'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4A to cal7
+	{"cal7", 'B'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step lfc_to_tib[] = {
+	{"cal1", 'A'}, //A=LFC to cal4A, B=Etalon to cal4A
+	{"cal4", 'A'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4A to cal7
+	{"cal7", 'B'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step bb_to_tib[] = {
+	{"cal2", 'B'}, //A=CathGas to cal4B, B=cal3 to cal4
+	{"cal3", 'A'}, //A=BB to cal2, B=BB to cal6
+	{"cal4", 'B'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'B'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step cathgas_to_tib[] = {
+	{"cal2", 'A'}, //A=CathGas to cal4B, B=cal3 to cal4
+	{"cal4", 'B'}, //A=cal1 to cal5B, B=cal2 to cal5B
+	{"cal5", 'B'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'B'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step nm_to_tib[] = {
+	{"cal5", 'A'}, //A=NM to cal7, B=cal4 to cal7
+	{"cal7", 'B'}, //A=cal5 to spec, B=cal5 to tib
+};
+
+static const struct mems_route_step bb_to_is[] = {
+	{"cal3", 'B'}, //A=BB to cal2, B=BB to cal6
+	{"cal6", 'A'}, //A=cal3 to IS (used for BB to IS), B=NM to IS
+};
+
+
+static const struct mems_route_step nm_to_is[] = {
+	{"cal6", 'B'}, //A=cal3 to IS (used for BB to IS), B=NM to IS
+};
+
+
+
+static const struct route_definition cal_routes[] = {
+	ROUTE_DEF("bb", "is", bb_to_is),
+	ROUTE_DEF("nm", "is", nm_to_is),
+
+	ROUTE_DEF("etalon", "spec", etalon_to_spec),
+	ROUTE_DEF("lfc", "spec", lfc_to_spec),
+	ROUTE_DEF("bb", "spec", bb_to_spec),
+	ROUTE_DEF("cathgas", "spec", cathgas_to_spec),
+	ROUTE_DEF("nm", "spec", nm_to_spec),
+
+	ROUTE_DEF("etalon", "tib", etalon_to_tib),
+	ROUTE_DEF("lfc", "tib", lfc_to_tib),
+	ROUTE_DEF("bb", "tib", bb_to_tib),
+	ROUTE_DEF("cathgas", "tib", cathgas_to_tib),
+	ROUTE_DEF("nm", "tib", nm_to_tib),
+};
+
+
 static const struct board_profile *profile_for_type(enum hispec_board_type type)
 {
 	switch (type) {
@@ -593,6 +701,7 @@ static void register_routes(const struct route_definition *routes, size_t route_
 						  routes[i].steps,
 						  routes[i].step_count);
 
+		//TODO this is a failure to boot. Impossible in correct code
 		if (rc != 0) {
 			LOG_ERR("Failed to register MEMS route %s -> %s (%d)",
 				routes[i].input, routes[i].output, rc);
@@ -638,8 +747,7 @@ void setup_mems_switches_and_routes(void)
 		break;
 	case HISPEC_BOARD_CAL_BLUE:
 	case HISPEC_BOARD_CAL_RED:
-		/* CAL route names/paths are hardware-fixed but not yet documented. */
-		LOG_WRN("CAL MEMS routes are not defined yet");
+		register_routes(cal_routes, ARRAY_SIZE(cal_routes));
 		break;
 	case HISPEC_BOARD_UNKNOWN:
 	case HISPEC_BOARD_FAULT:
