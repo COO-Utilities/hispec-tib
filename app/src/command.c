@@ -990,7 +990,6 @@ bool disable_power() {
     }
     if (!power_enabled())
         return false;
-    //TODO set POWER_GPIO low
     int err = gpio_pin_set_dt(&power_gpio, 0);
     if (err) {
         LOG_ERR("Failed to set POWER_GPIO low\n");
@@ -1166,7 +1165,8 @@ struct OutMsg serial_active_response(const struct Command *cmd) {
 struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
-                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,laser,power,atten\"}");
+                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
+                        "memsroute,mems,split,laser,laserbank,power,atten,pd,pdsettings\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
