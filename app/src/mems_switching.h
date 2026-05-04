@@ -18,7 +18,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define MEMS_SOURCEDEST_MAX_LEN 24
-#define MEMS_SWITCH_ELECTRICAL_PULSE_MS 2U
+#define MEMS_SWITCH_ELECTRICAL_PULSE_MS 20U  //datasheet says pulse width >=15ms
+#define MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS 50U //datasheet says pulse width of 50ms typical (ch 7&8 on tib)
 #define MEMS_SWITCH_NAME_LEN 24
 #define MEMS_ROUTER_MAX_SWITCHES 8
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4

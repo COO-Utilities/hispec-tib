@@ -38,10 +38,3 @@
 - Add test coverage around `json_utils.c`, command normalization, and network
   profile selection.
 - Review the DAC7578 integration against the two-DAC hardware description.
-
-## LLM-resolved items requiring human review
-
-- Old notes listed DS2408 as only an example/library idea. A project-local
-  Zephyr GPIO driver now exists and is used by the Nucleo overlay.
-- Old notes listed SNTP and settings as future library concerns. Both now have
-  app implementations.

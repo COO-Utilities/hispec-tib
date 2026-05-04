@@ -66,5 +66,3 @@ on network connect, retry after failure, and hourly resync after success.
 - MEMS toggler work currently performs repeated GPIO bus activity at the tick
   rate. Source TODO notes this may be more I/O than necessary.
 - SNTP work can block in the system workqueue while waiting for an SNTP reply.
-- Photodiode telemetry is purged on queue-full; this is acceptable for
-  telemetry but should be visible in testing.

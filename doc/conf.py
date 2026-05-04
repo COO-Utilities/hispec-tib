@@ -10,7 +10,7 @@ from sphinx.errors import ExtensionError
 DOC_DIR = Path(__file__).resolve().parent
 DOXYGEN_XML = DOC_DIR / "_build_doxygen" / "xml"
 
-project = "HiSPEC-TIB Firmware"
+project = "HiSPEC-FIB Firmware"
 author = "Caltech Optical Observatories"
 release = "0.1"
 

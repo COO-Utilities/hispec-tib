@@ -1,12 +1,5 @@
 # Hardware Profiles
 
-## Authority
-
-`hardware.md` is the hardware source of truth. This page describes how current
-firmware profiles map that hardware into implementation objects. Where code and
-hardware notes disagree, the disagreement is repeated in
-`human_review_required.md`.
-
 ## Board Detection
 
 The firmware reads four active-low board-identity straps from `zephyr,user`:
@@ -115,19 +108,3 @@ Implemented routes:
 The `split` command uses the `*_calin -> *_split` routes. `ratio1` and
 `ratio2` are requested; `ratio3` is the computed remainder.
 
-## Overlay Sync Check
-
-No overlay edits were made during this audit. The checked overlay still matches
-the documented Nucleo pins for board straps, I2C buses, 1-Wire buses, USART2,
-laser-bank power, photodiode relay outputs, and MEMS GPIO expander address.
-
-Known review items:
-
-- `hardware.md` describes two DAC7578 devices and twelve physical FVOA channels
-  on TIB. Current code exposes six logical attenuator channels and only uses the
-  `dac7578` devicetree label.
-- `hardware.md` distinguishes open-drain FFSW and push-pull FFLS drive. Current
-  MEMS code uses raw GPIO expander pin numbers and does not apply per-switch
-  electrical flags from devicetree.
-- `devices.h` defines `MODBUS_STOPBITS` as two stop bits, while
-  `setup_modbus_client()` currently configures one stop bit.

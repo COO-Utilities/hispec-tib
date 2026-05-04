@@ -1,4 +1,4 @@
-# FIB MEMS switching PCB hardware
+# FIB PCB hardware
 
 FIB uses this hardware in four locations:
 1. The Trunk Interface Box (TIB), which has
@@ -28,22 +28,6 @@ See status.md for software details
 - See user manual um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf
 - Microcontroller reference manual STM32H563ZI.pdf
 - https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
-
-## Board Type Selection
-- 4 solder jumpers: TIB D35, CAL YJ D37, CAL HK D36, AS (Achromatic Splitting) D38
-- bridged to ground on PCB to say which device is being used, none or more than one is unknown/error
-- read as digital inputs with pullups enabled
-
-For board files:
-- Nucleo:
-    - board-type straps are read directly on Nucleo GPIO (not via an external expander)
-    - TIB D35 / PA3
-    - CAL YJ D37 / PE15
-    - CAL HK D36 / PB10
-    - AS D38 / PE6
-    - firmware expects active-low `zephyr,user` GPIO properties named
-      `board-type-tib-gpios`, `board-type-cal-yj-gpios`,
-      `board-type-cal-hk-gpios`, and `board-type-as-gpios`
 
 
 ## MEMS Switches

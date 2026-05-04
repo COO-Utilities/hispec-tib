@@ -198,17 +198,6 @@ a replacement for `commands.md`.
 - Mismatch: current key parsing likely prevents valid documented laser topics
   from resolving to a laser id.
 
-### `power`
-
-- GET returns laser-bank power state, availability, and board type.
-- SET field: `value` bool.
-- Board restriction: SET is TIB only.
-- Side effects: toggles the same laser-bank power GPIO used by laserbank
-  commands; does not wait for laser boot.
-- Serial shorthand: `power on`, `power off`.
-- Handler: `power_get()`, `power_set()` in `app/src/command.c`.
-- Mismatch: not fully specified in `commands.md`.
-
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 
 - GET returns `voltage` and `db`.
@@ -278,25 +267,4 @@ a replacement for `commands.md`.
 - Mismatch: `commands.md` documents a much larger payload and response-topic
   typo `stauts`.
 
-### `sleep`
 
-- SET field: `value` bool.
-- Side effects: none; parsed value is ignored.
-- Response: `{"status":"OK"}`.
-- Handler: `sleep_set()` in `app/src/command.c`.
-- Mismatch: implemented no-op requiring owner review.
-
-## Commands in `commands.md` but Not Implemented
-
-- `measure_tput`
-- `lasersettings`
-- `laserbank/autowarm`
-- `temp` set/alarm policy
-
-## Implemented Commands Missing or Stale in `commands.md`
-
-- `power`
-- `sleep`
-- `pd` dark-measurement actions are implementation-specific.
-- Laserbank power actions are implemented without autowarm or deep driver fault
-  detection.

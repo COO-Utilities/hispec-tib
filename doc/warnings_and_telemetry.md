@@ -51,11 +51,3 @@ the main loop. MQTT response topic selection is:
 2. Default `cmd/hsfib-tib/resp/<key>`.
 
 Correlation data is echoed when it fits the fixed response buffer.
-
-## Human Review Items
-
-- Warning delivery is intentionally lossy. Decide whether any warnings should
-  also be reflected in sticky status fields.
-- Photodiode telemetry hardcodes the device id and topic.
-- MQTT response payloads are hand-built strings; buffer overflow paths are
-  handled inconsistently across commands.

@@ -80,6 +80,7 @@ available. The override expires after `serialguard_s` seconds without another
 serial command; `serialguard off` or `serialguard seconds=0` disables the
 override. JSON payloads are accepted for MQTT parity, but should not be needed
 for normal serial operation.
+
 ---
 
 ## Command Endpoints

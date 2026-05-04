@@ -1,4 +1,4 @@
-HiSPEC-TIB Firmware Documentation
+HiSPEC-FIB Firmware Documentation
 =================================
 
 This documentation is built from Markdown-first architecture and audit pages
@@ -38,13 +38,10 @@ Source-of-truth rules:
    :caption: Developer Maintained Docs
 
    status.md
-   runtime_architecture.md
    libraries.md
    networking_plan.md
    nuisances.md
    hardware.md
-   breadboard.md
-   zephyr.rst
 
 .. toctree::
    :maxdepth: 2

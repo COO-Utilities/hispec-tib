@@ -56,7 +56,7 @@ Board identity comes from exactly one active strap:
 
 - `tib`: 8 MEMS switches, TIB routes, six logical attenuator channels, laser
   bank GPIOs, DS2408 relay outputs, Modbus, ADS1115 photodiodes.
-- `cal_yj`: 7 MEMS switches, CAL routes, one logical H/CAL attenuator channel.
+- `cal_yj`: 7 MEMS switches, CAL routes, one logical CAL attenuator channel (TIB's H channel).
 - `cal_hk`: same firmware profile shape as CAL YJ.
 - `as`: 6 MEMS switches, AS routes, no attenuators.
 - `unknown`: no board-specific hardware setup is allowed.
@@ -78,7 +78,7 @@ one response.
 
 ## Hardware Control
 
-MEMS commands do not directly publish. They update router-owned switch state
+Commands do not directly publish. For example, MEMS commands update router-owned switch state
 that is applied by the MEMS delayable-work tick. Photodiode sampling does not
 publish directly; it sends telemetry through `photodiode_queue`. Warning
 publication is non-blocking and best-effort.

@@ -7,10 +7,8 @@ hardware calls.
 ## 1. System Overview
 
 ```mermaid
----
-config:
-  layout: elk
----
+:config: {"layout": "elk"}
+
 flowchart TD
   Boot[main boot] --> Settings[app_settings]
   Boot --> Devices[devices board profile]
@@ -40,7 +38,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   Start[main] --> Watchdog[configure watchdog if ready]
-  Watchdog --> Load[load tib settings]
+  Watchdog --> Load[load settings]
   Load --> Straps[read active-low board straps]
   Straps --> PersistBoard[persist or validate board type]
   PersistBoard --> DevicesReady[check profile devices]

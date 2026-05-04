@@ -1,4 +1,4 @@
-# HISPEC-TIB Firmware Status
+# Development Status
 
 This page is the maintained current-status note for the Zephyr firmware. It
 summarizes current implementation state; `hardware.md` remains the hardware

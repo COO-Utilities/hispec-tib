@@ -113,8 +113,6 @@ struct OutMsg laserbank_poweroff(const struct Command *cmd);
 /** Clear laser-bank faults with a bounded laser-bank power cycle. */
 struct OutMsg laserbank_clearfaults(const struct Command *cmd);
 
-struct OutMsg power_get(const struct Command *cmd);
-struct OutMsg power_set(const struct Command *cmd);
 
 struct OutMsg atten_setting_get(const struct Command *cmd);
 struct OutMsg atten_setting_set(const struct Command *cmd);
@@ -125,8 +123,6 @@ struct OutMsg pd_settings_set(const struct Command *cmd);
 
 struct OutMsg status_get(const struct Command *cmd);
 struct OutMsg temp_get(const struct Command *cmd);
-
-struct OutMsg sleep_set(const struct Command *cmd);
 
 
 /** Parse optional MQTT-style `msg_type` from JSON; missing/unknown returns false. */

@@ -1,4 +1,4 @@
-# Command Implementation Audit
+# Implementation Audit
 
 ## Authority
 
@@ -89,8 +89,6 @@ Code uses `cmd/hsfib-tib/resp/status`.
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
-- `power` is implemented as a laser-bank power alias with status.
-- `sleep` is implemented as a no-op SET returning OK.
 - `pd` dark-measurement actions and `pdsettings` are more detailed in code
   than many older notes.
 - `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults`
@@ -110,8 +108,7 @@ Code uses `cmd/hsfib-tib/resp/status`.
   serial queries to those exact keys therefore perform power actions.
 - `reboot` is SET-only. An empty MQTT payload or bare serial `reboot` is
   unsupported; a non-empty payload schedules a reboot.
-- `sleep` accepts `value` but ignores it. This is an implemented no-op, not a
-  sleep/power-mode feature.
+
 
 ## Blocking and Queueing Summary
 

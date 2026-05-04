@@ -122,13 +122,11 @@ const struct DispatchEntry dispatch_table[] = {
     { "laserbank/poweroff", laserbank_poweroff, laserbank_poweroff },
     { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
     { "laser",      laser_setting_get,laser_setting_set},
-    { "power",      power_get,        power_set        },
     { "atten",      atten_setting_get,  atten_setting_set  },
     { "pdsettings", pd_settings_get, pd_settings_set },
     { "pd",         pd_get,          pd_set          },
     { "temp",       temp_get,         NULL             },
-    { "status",     status_get,       NULL  },
-    { "sleep",      NULL,  sleep_set  }, // GET only
+    { "status",     status_get,       NULL  },// GET only
     //todo add reset for system
 };
 
@@ -2975,56 +2973,3 @@ struct OutMsg temp_get(const struct Command *cmd)
 }
 
 
-struct OutMsg power_get(const struct Command *cmd) {
-    char payload[MAX_PAYLOAD_LEN]={0};
-    snprintf(payload, MAX_PAYLOAD_LEN,
-             "{\"laser_power\":%s,\"available\":%s,\"board_type\":\"%s\"}",
-             power_enabled() ? "true" : "false",
-             devices_board_type() == HISPEC_BOARD_TIB ? "true" : "false",
-             devices_board_type_name());
-    return _msg_builder(cmd, RESP_OK, payload);
-}
-
-
-
-struct OutMsg power_set(const struct Command *cmd) {
-
-    bool value;
-    int parse_rc;
-
-    if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"error\":\"Laser power control unavailable on this board\"}");
-    }
-
-    parse_rc = coo_json_extract_bool(cmd->payload, "value", &value);
-    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
-    }
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting value\"}");
-    }
-
-    if (value) enable_power();
-    else disable_power();
-    return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
-}
-
-struct OutMsg sleep_set(const struct Command *cmd) {
-
-    bool value;
-    int parse_rc;
-
-    parse_rc = coo_json_extract_bool(cmd->payload, "value", &value);
-    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
-    }
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting value\"}");
-    }
-
-    //TODO
-    ARG_UNUSED(value);
-
-    return _msg_builder(cmd, RESP_OK,"{\"status\":\"OK\"}");
-}

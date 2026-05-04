@@ -10,17 +10,17 @@ photodiode, laser-bank, settings, network, SNTP, and telemetry behavior.
 The maintained build target for this audit is:
 
 ```bash
-/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/west build \
+./.venv/bin/west build \
   --board=nucleo_h563zi/stm32h563xx \
-  --build-dir /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/build \
-  /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app
+  --build-dir ./hispec-tib/app/build \
+  ./hispec-tib/app
 ```
 
 Use the workspace virtual environment for Python and west commands:
 
 ```bash
-/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/python
-/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/west
+./.venv/bin/python
+./.venv/bin/west
 ```
 
 ## Hardware Profiles
@@ -79,8 +79,7 @@ GET; a key with payload is a SET. See:
 - `app_settings.c`: Zephyr settings-backed app state.
 - `app_warning.c`: best-effort warning publication.
 
-Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and
-`doc/queues_and_work.md`.
+Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 
 ## Documentation Build
 
@@ -88,8 +87,7 @@ Documentation is Markdown-first Sphinx with Doxygen XML extraction through
 Breathe and Mermaid diagram rendering:
 
 ```bash
-/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/python -m sphinx \
-  -b html hispec-tib/doc hispec-tib/doc/_build_sphinx/html
+./.venv/bin/python -m sphinx -b html hispec-tib/doc hispec-tib/doc/_build_sphinx/html
 ```
 
 The docs build requires:
