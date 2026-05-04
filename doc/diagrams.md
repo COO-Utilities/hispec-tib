@@ -7,6 +7,10 @@ hardware calls.
 ## 1. System Overview
 
 ```mermaid
+---
+config:
+  layout: elk
+---
 flowchart TD
   Boot[main boot] --> Settings[app_settings]
   Boot --> Devices[devices board profile]
