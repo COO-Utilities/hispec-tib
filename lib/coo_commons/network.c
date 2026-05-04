@@ -1,3 +1,10 @@
+/**
+ * @file network.c
+ * @brief IPv4 Ethernet bootstrap with DHCP/static/fallback profiles.
+ *
+ * This helper owns interface address selection and link-state callbacks. It
+ * deliberately does not parse commands or persist operator settings.
+ */
 /*
  * Copyright (c) 2024 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -165,6 +172,9 @@ static int try_dhcp(struct net_if *iface, uint32_t timeout_ms)
 		return -ENODEV;
 	}
 
+	/* DHCP restart is followed by a bounded polling loop so application boot
+	 * can fall back to static service addresses when no DHCP server responds.
+	 */
 	net_dhcpv4_restart(iface);
 
 	while (elapsed < timeout_ms || timeout_ms == 0U) {

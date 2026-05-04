@@ -1,3 +1,10 @@
+/**
+ * @file gpio_ds2408.c
+ * @brief Zephyr GPIO API shim for Maxim DS2408 1-Wire open-drain GPIO.
+ *
+ * All register access uses the Zephyr 1-Wire bus and may sleep. GPIO writes
+ * maintain a shadow latch because DS2408 outputs are released high and sink low.
+ */
 /*
  * Copyright (c) 2026 Caltech Optical Observatories
  *

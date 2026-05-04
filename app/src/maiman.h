@@ -1,6 +1,11 @@
-//
-// Created by Jeb Bailey on 4/28/25.
-//
+/**
+ * @file maiman.h
+ * @brief Thin Modbus register wrapper for Maiman SF8025 laser drivers.
+ *
+ * This layer exposes raw and scaled register operations. Higher-level safety,
+ * power sequencing, diode limits, and persistence are owned by lasers.c and the
+ * Maiman module EEPROM, not this wrapper.
+ */
 
 //todo see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/photonic_testing.py
 //todo see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/maiman_modbus/...
@@ -156,9 +161,10 @@ typedef struct {
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
 
-/* Read/write one raw holding register. */
+/** Read/write one raw holding register. Calls block on Modbus RTU I/O. */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
+/** Read/write scaled engineering units. Calls block on Modbus RTU I/O. */
 bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, float divider,
                         bool signed_value, float *value);
 bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,

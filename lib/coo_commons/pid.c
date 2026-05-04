@@ -1,3 +1,10 @@
+/**
+ * @file pid.c
+ * @brief Reusable bounded PID controller helper.
+ *
+ * The current firmware does not put this helper on the command path, but it is
+ * part of the app-local COO commons library included in API extraction.
+ */
 /*
  * Copyright (c) 2024 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0

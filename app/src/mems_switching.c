@@ -1,7 +1,7 @@
-//
-// Created by Jeb Bailey on 4/23/25.
-//
-// mems_switching.c
+/**
+ * @file mems_switching.c
+ * @brief MEMS pulse timing, duty-cycle quantization, and route-state readback.
+ */
 
 #include "mems_switching.h"
 #include <ctype.h>
@@ -214,6 +214,10 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
 
         gpio_pin_t pin = (sw->target_state == 'A') ? sw->pin_a : sw->pin_b;
 
+        /* gpio_pin_set() is raw because the PCAL6416A pins are passed as
+         * gpio_pin_t values, not gpio_dt_spec. The overlay active flags are
+         * therefore not applied here.
+         */
         if (gpio_pin_set(sw->gpio_dev, pin, 1) != 0) {
             LOG_ERR("Pulse set failed on %s pin %u", sw->name, (unsigned int)pin);
         }
@@ -305,6 +309,10 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
 
+    /* Raw gpio_pin_configure() is used because board profiles store only the
+     * expander pin numbers. These calls do not apply GPIO_ACTIVE_LOW/HIGH from
+     * devicetree.
+     */
     (void)gpio_pin_configure(gpio_dev, pin_a, GPIO_OUTPUT_INACTIVE);
     (void)gpio_pin_configure(gpio_dev, pin_b, GPIO_OUTPUT_INACTIVE);
 }

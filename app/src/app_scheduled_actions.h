@@ -1,5 +1,10 @@
-/*
- * HiSPEC-TIB named scheduled/deferred actions.
+/**
+ * @file app_scheduled_actions.h
+ * @brief Small named k_work_delayable actions used by command handlers.
+ *
+ * This is a fixed firmware-action table, not a user-programmable scheduler.
+ * Callbacks run in Zephyr system workqueue context.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

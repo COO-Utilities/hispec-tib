@@ -1,5 +1,11 @@
-/*
- * HiSPEC laser-bank control helpers.
+/**
+ * @file lasers.h
+ * @brief Higher-level TIB laser-bank GPIO, relay, and Maiman helper APIs.
+ *
+ * These helpers may sleep, block on Modbus, change laser-bank power/relay
+ * state, and write Maiman EEPROM-backed parameters. Most are not yet exposed by
+ * the current command dispatch table.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

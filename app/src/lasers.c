@@ -1,5 +1,11 @@
-/*
- * HiSPEC laser-bank control helpers.
+/**
+ * @file lasers.c
+ * @brief Laser-bank power, relay outputs, Maiman status, and tuning helpers.
+ *
+ * A module mutex serializes shared RS-485/GPIO operations. Functions can block
+ * on Modbus RTU, sleep for bank boot/fault-clear delays, and modify driver
+ * state owned by the Maiman modules.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

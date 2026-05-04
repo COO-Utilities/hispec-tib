@@ -1,9 +1,12 @@
-//
-// Created by Jeb Bailey on 4/23/25.
-//
-// mems_switching.h
-//
-// Zephyr/C version: supports switch and router abstractions with named lookup and route tables.
+/**
+ * @file mems_switching.h
+ * @brief MEMS switch pulse scheduling and board-local route tables.
+ *
+ * The router owns one `k_work_delayable` tick that clears pulse pins, applies
+ * requested static/toggling switch states, and quantizes requested toggle rates
+ * into fixed MEMS ticks. Public calls can sleep on the router mutex but do not
+ * publish MQTT or persist state.
+ */
 
 #ifndef MEMS_SWITCHING_H
 #define MEMS_SWITCHING_H
@@ -27,9 +30,7 @@
 struct mems_router;
 
 
-// -----------------------
-// Switch Abstraction
-// -----------------------
+/** Runtime state for one dual-coil MEMS switch. */
 struct mems_switch {
     const struct device *gpio_dev;
     //todo shouldn't these pins be constant?
@@ -62,9 +63,7 @@ struct mems_switch_status {
     uint16_t stopafter_s;
 };
 
-// -----------------------
-// Route Definitions
-// -----------------------
+/** One required switch state within a named route. */
 struct mems_route_step {
     const char *switch_name; // Points to .name in mems_switch
     char state;              // 'A' or 'B'
@@ -86,9 +85,7 @@ struct mems_route {
     uint8_t num_steps;
 };
 
-// -----------------------
-// Router Abstraction
-// -----------------------
+/** Board-selected router state and immutable route table pointer. */
 struct mems_router {
     struct mems_switch *switches[MEMS_ROUTER_MAX_SWITCHES];
     uint8_t num_switches;
@@ -99,9 +96,13 @@ struct mems_router {
     struct k_work_delayable toggler_work;
 };
 
-// -----------------------
-// Switch Methods
-// -----------------------
+/**
+ * @brief Initialize a MEMS switch object and configure its two GPIO outputs inactive.
+ *
+ * The hardware state is not known after boot until the delayable tick sends a
+ * pulse. The configured toggle rate is stored as the default requested rate and
+ * quantized to the nearest supported MEMS tick period.
+ */
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
                       float configured_toggle_rate_hz, char initial_state);
@@ -137,10 +138,6 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
 
-// -----------------------
-// Router Methods
-// -----------------------
-
 /**
  * @brief Initialize a MEMS router from active switches and a static route table.
  *
@@ -151,13 +148,15 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
                       uint8_t num_switches, const struct mems_route *routes,
                       uint8_t num_routes);
 
+/** @brief Find a switch by command/API name; returns NULL if not present. */
 struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name);
 
+/** @brief Find a route by input/output labels in the board-selected route table. */
 const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output);
 
 
-//  List all active routes
+/** @brief List static routes whose switches currently match all required states. */
 uint8_t mems_router_active_routes(const struct mems_router *router,
                                   struct mems_route_key *out_keys, uint8_t max_keys);
 

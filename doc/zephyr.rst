@@ -1,5 +1,6 @@
 Zephyr
 ======
 
-You can reference Zephyr documentation items, like
-:external+zephyr:ref:`getting_started`.
+This project uses Zephyr RTOS. The main documentation build intentionally avoids
+network-dependent intersphinx inventory fetches; use the upstream Zephyr
+documentation site for API and subsystem reference material.

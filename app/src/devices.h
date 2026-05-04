@@ -1,6 +1,11 @@
-//
-// Created by Jeb Bailey on 5/19/25.
-//
+/**
+ * @file devices.h
+ * @brief Devicetree device handles and board-profile setup.
+ *
+ * `hardware.md` owns physical wiring. This module selects the active firmware
+ * profile from board straps, initializes only hardware expected on that board,
+ * and exposes the shared MEMS router and attenuator objects.
+ */
 
 
 #ifndef DEVICES_H
@@ -69,8 +74,13 @@ enum hispec_board_type devices_board_type(void);
 /** @brief Return the short stable board type name used in logs/settings. */
 const char *devices_board_type_name(void);
 
+/** @brief Check/configure devices required by the detected board profile. */
 bool devices_ready(void);
+
+/** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);
+
+/** @brief Initialize profile-available logical attenuator channels from settings. */
 void setup_attenuators(void);
 
 #endif

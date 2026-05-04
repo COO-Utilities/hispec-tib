@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 5/19/25.
-//
+/**
+ * @file photodiode.c
+ * @brief ADS1115 photodiode monitor, telemetry queueing, and dark calibration.
+ */
 
 
 #include <zephyr/kernel.h>             // k_sleep, thread declarations, etc.
@@ -53,6 +54,9 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 #define PD_DARK_MAX_DURATION_MS (60U * 60U * 1000U)
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 
+/* The sampler publishes into a small queue so ADC timing does not depend on
+ * MQTT availability. main.c drains this into outbound_queue from delayable work.
+ */
 K_MSGQ_DEFINE(photodiode_queue, sizeof(struct OutMsg), 4, 4);
 
 struct photodiode_runtime_channel {

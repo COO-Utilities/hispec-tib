@@ -1,5 +1,11 @@
-/*
- * HiSPEC-TIB settings persistence helpers.
+/**
+ * @file app_settings.c
+ * @brief Runtime defaults, settings callbacks, and persistent app state writes.
+ *
+ * Settings callbacks run during Zephyr settings load and update the protected
+ * runtime snapshot. Public update helpers may call settings_save_one() and can
+ * block on the configured settings backend.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -544,12 +550,16 @@ int app_settings_init(void)
 	k_mutex_init(&g_settings.lock);
 	settings_defaults(&g_settings.snapshot);
 
+	/* settings_subsys_init() attaches the configured Zephyr settings backend
+	 * before any `tib/...` keys can be loaded or saved.
+	 */
 	rc = settings_subsys_init();
 	if (rc != 0) {
 		LOG_ERR("settings_subsys_init failed (%d)", rc);
 		return rc;
 	}
 
+	/* The set callback above is invoked once for each stored key under tib. */
 	rc = settings_load_subtree("tib");
 	if (rc != 0) {
 		LOG_WRN("settings_load_subtree('tib') failed (%d)", rc);

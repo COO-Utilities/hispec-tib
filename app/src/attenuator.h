@@ -1,6 +1,11 @@
-//
-// Created by Jeb Bailey on 4/22/25.
-//
+/**
+ * @file attenuator.h
+ * @brief DAC7578-backed logical attenuator channel helpers.
+ *
+ * Each logical attenuator stores runtime polynomial coefficients and the last
+ * read/write voltage. Persistence is owned by app_settings; this module only
+ * applies coefficients and performs DAC I/O.
+ */
 #ifndef ATTENUATOR_H
 #define ATTENUATOR_H
 
@@ -24,27 +29,23 @@ struct attenuator {
     struct dac_channel_cfg cfg;
 };
 
-/**
- * Initialize attenuator driver for given DAC channel.
- * @param drv     Pointer to driver instance
- * @param channel DAC channel number
- * @return true on success, false on error
- */
+/** Initialize a DAC channel. May block on I2C through the DAC driver. */
 bool attenuator_init(struct attenuator *drv, uint8_t channel);
 
 /**
- * Set output voltage on attenuator (clamped to DAC range).
- * @param drv      Pointer to driver instance
- * @param voltage  Desired voltage (0.0f to MAX_VOLTAGE)
- * @return true on success, false on error
+ * @brief Set attenuation by raw millivolts or calibrated dB.
+ *
+ * If @p raw is false, @p voltage is interpreted as dB and converted using the
+ * runtime `coeff_db_to_volt` polynomial. The final voltage is clamped to the
+ * DAC range, may enqueue a warning, and is written over I2C.
  */
 bool attenuator_set(struct attenuator *drv, double voltage, bool raw);
 
 /**
- * Get last-set voltage value.
- * @param drv      Pointer to driver instance
- * @param voltage  Out parameter for voltage
- * @return true
+ * @brief Read back the DAC register and return raw millivolts or estimated dB.
+ *
+ * The read may block on I2C. It does not verify that the attenuator hardware is
+ * powered or optically calibrated.
  */
 bool attenuator_get(struct attenuator *drv, double *voltage, bool raw);
 

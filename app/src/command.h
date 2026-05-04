@@ -1,6 +1,12 @@
-//
-// Created by Jeb Bailey on 5/27/25.
-//
+/**
+ * @file command.h
+ * @brief MQTT and serial command ingress, dispatch, and response queues.
+ *
+ * Commands from MQTT and the line-oriented serial console are normalized into
+ * `struct Command` and executed by the common command executor thread. Handler
+ * functions may touch hardware, sleep on Zephyr or bus I/O, enqueue warnings,
+ * and return one `struct OutMsg` response for later serial/MQTT publication.
+ */
 
 #ifndef COMMAND_H
 #define COMMAND_H
@@ -20,8 +26,13 @@
 #define MAX_PENDING_COMMANDS 2
 
 
+/** Command request/response type understood by the dispatcher and builders. */
 enum MsgType { MSG_GET, MSG_SET, ACK, RESP_OK, RESP_ERROR };
+
+/** Ingress path used for response routing and serial-guard policy. */
 enum CommandSource { CMD_SRC_MQTT = 0, CMD_SRC_SERIAL = 1 };
+
+/** Publication target for responses, warnings, and telemetry. */
 enum OutMsgTarget {
 	OUT_TARGET_MQTT = 0,
 	OUT_TARGET_SERIAL = 1,
@@ -44,6 +55,7 @@ struct Command {
 	uint32_t corr_len;
 };
 
+/** Fully formatted outbound response or publication. */
 struct OutMsg {
 	enum MsgType msg_type;  // RES, ACK, ERROR
 	enum OutMsgTarget target;
@@ -55,7 +67,7 @@ struct OutMsg {
 	size_t corr_len;
 };
 
-
+/** Work wrapper retained for possible Zephyr workqueue dispatch use. */
 struct CommandWork {
 	struct k_work work;
 	struct Command cmd;
@@ -117,15 +129,17 @@ struct OutMsg temp_get(const struct Command *cmd);
 struct OutMsg sleep_set(const struct Command *cmd);
 
 
+/** Parse optional MQTT-style `msg_type` from JSON; missing/unknown returns false. */
 bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out);
 struct OutMsg invalid_command_response(const struct Command *cmd);
 struct OutMsg unknown_response(const struct Command *cmd);
 struct OutMsg unsupported_response(const struct Command *cmd);
 struct OutMsg busy_response(const struct Command *cmd);
 struct OutMsg serial_active_response(const struct Command *cmd);
+/** Dispatch one normalized command to the longest matching command-table entry. */
 struct OutMsg dispatch_command(const struct Command *cmd);
 
-/* Executor task: consumes inbound_queue and publishes one response to outbound_queue. */
+/** Executor task: blocks on inbound_queue, runs a handler, and enqueues one response. */
 void command_executor_thread(void *p1, void *p2, void *p3);
 
 /**
@@ -136,21 +150,34 @@ void command_executor_thread(void *p1, void *p2, void *p3);
  */
 int command_runtime_init(void);
 
-/* Serial task: polls the console UART passed in p1 and queues complete command lines. */
+/** Serial task: blocks on Zephyr console lines and queues normalized commands. */
 void command_serial_thread(void *p1, void *p2, void *p3);
 
-/* MQTT receive callback: copies topic/payload/properties into a queued Command. */
+/**
+ * @brief MQTT receive callback.
+ *
+ * Copies the MQTT topic, payload, response-topic property, and correlation data
+ * before returning. Empty payload means GET; non-empty payload defaults to SET
+ * unless JSON `msg_type:"get"` is present. Enqueues or publishes an immediate
+ * error when serial guard or queue capacity rejects the command.
+ */
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub);
 
-/* Extend the serial-command holdoff window that rejects MQTT command execution. */
+/** Extend the serial-command holdoff window that rejects MQTT command execution. */
 void command_serial_note_activity(void);
 
+/** Return false while serial override is active. */
 bool command_network_mqtt_allowed(void);
 
-/* Parse "<key> [payload]" into a queued Command; serial has no get/set words. */
+/** Parse "<key> [payload]" into a queued Command; serial has no get/set words. */
 void command_parse_serial_line(char *line);
 
-/* Drain queued serial/MQTT responses; serial prints the MQTT-equivalent OutMsg. */
+/**
+ * @brief Drain queued serial/MQTT responses.
+ *
+ * MQTT publishing happens only here from the main loop. Non-best-effort MQTT
+ * messages are retried by requeueing when MQTT is down or publish fails.
+ */
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available);
 
 

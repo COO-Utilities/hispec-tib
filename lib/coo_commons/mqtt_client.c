@@ -1,3 +1,10 @@
+/**
+ * @file mqtt_client.c
+ * @brief Blocking MQTT connect/process helpers around Zephyr MQTT.
+ *
+ * Incoming payload bytes are copied into a stack buffer before the user
+ * callback runs. Outgoing publishes are intentionally left to the application.
+ */
 /*
  * Copyright (c) 2025 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -179,6 +186,9 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 	uint8_t payload[CONFIG_COO_MQTT_PAYLOAD_SIZE + 1] = {0};
 	struct mqtt_publish_param publish_param = evt->param.publish;
 
+	/* mqtt_read_publish_payload() drains Zephyr's MQTT RX buffer into a local
+	 * buffer so the command layer can copy it before this event handler returns.
+	 */
 	rc = mqtt_read_publish_payload(client, payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
 	if (rc < 0) {
 		LOG_ERR("Failed to read received MQTT payload [%d]", rc);
@@ -309,6 +319,7 @@ static int poll_mqtt_socket(struct mqtt_client *client, int timeout)
 		return -EINVAL;
 	}
 
+	/* zsock_poll() blocks the caller until MQTT input or keepalive work is due. */
 	rc = zsock_poll(fds, nfds, timeout);
 	if (rc < 0) {
 		LOG_ERR("Socket poll error [%d]", rc);

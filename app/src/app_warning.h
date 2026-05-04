@@ -1,5 +1,10 @@
-/*
- * HiSPEC-TIB warning publication helper.
+/**
+ * @file app_warning.h
+ * @brief Best-effort warning logging and MQTT publication entry point.
+ *
+ * Warnings enqueue outbound MQTT messages without blocking command execution or
+ * timing-sensitive work. Delivery is intentionally lossy.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

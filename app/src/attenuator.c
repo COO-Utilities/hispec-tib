@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 4/22/25.
-//
+/**
+ * @file attenuator.c
+ * @brief DAC write/read helpers for logical attenuator channels.
+ */
 
 //TODO The attenuators had a non-linear relationship between dB and voltage that we want to calibrate and then
 // then set on dB, not voltage
@@ -37,6 +38,9 @@ bool attenuator_init(struct attenuator *drv, uint8_t channel) {
         return false;
     }
 
+    /* dac_channel_setup() prepares the selected channel in the DAC driver and
+     * may perform I2C transactions depending on the underlying implementation.
+     */
     int err = dac_channel_setup(dac_dev, &drv->cfg);
     if (err != 0) {
         LOG_ERR("DAC channel setup failed: %d", err);
@@ -77,6 +81,9 @@ bool attenuator_set(struct attenuator *drv, double value, bool raw) {
 
     drv->voltage = voltage;
     uint32_t code = (uint32_t)((drv->voltage / MAX_VOLTAGE) * DAC_MAX_CODE);
+    /* dac_write_value() is the hardware side effect: it can block on I2C and
+     * changes the analog attenuation control voltage.
+     */
     err = dac_write_value(dac_dev, drv->cfg.channel_id, code);
     if (err != 0) {
         LOG_ERR("DAC write failed: %d", err);

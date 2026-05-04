@@ -1,13 +1,56 @@
-Welcome to Example Application's documentation!
-===============================================
+HiSPEC-TIB Firmware Documentation
+=================================
 
-This is a simple Sphinx documentation setup for ``example-application``.
+This documentation is built from Markdown-first architecture and audit pages
+plus Doxygen-extracted C API reference material.
+
+Source-of-truth rules:
+
+* ``hardware.md`` is the hardware source of truth.
+* ``commands.md`` is the intended command/API source of truth.
+* Current C source is the implementation source of truth.
+* Mismatches are centralized in ``human_review_required.md``.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents
+   :caption: Architecture and Runtime
 
-   zephyr
+   architecture.md
+   hardware_profiles.md
+   threads.md
+   queues_and_work.md
+   settings.md
+   warnings_and_telemetry.md
+   diagrams.md
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Commands and Audit
+
+   commands.md
+   implemented_commands.md
+   command_implementation_audit.md
+   implementation_gaps.md
+   human_review_required.md
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Developer Maintained Docs
+
+   status.md
+   runtime_architecture.md
+   libraries.md
+   networking_plan.md
+   nuisances.md
+   hardware.md
+   breadboard.md
+   zephyr.rst
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   api/index.md
 
 Indices and tables
 ==================

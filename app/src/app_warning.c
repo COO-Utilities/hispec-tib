@@ -1,5 +1,10 @@
-/*
- * HiSPEC-TIB warning publication helper.
+/**
+ * @file app_warning.c
+ * @brief Build warning JSON and enqueue best-effort MQTT warning messages.
+ *
+ * This module logs locally and attempts a non-blocking put to outbound_queue.
+ * It never publishes MQTT directly and drops warnings when queueing fails.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

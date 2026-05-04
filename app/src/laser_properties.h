@@ -1,3 +1,11 @@
+/**
+ * @file laser_properties.h
+ * @brief Fixed diode property table used for estimates and safety limits.
+ *
+ * These values are compile-time defaults. Maiman EEPROM owns driver-side
+ * persisted parameters; app settings do not currently persist laser properties.
+ */
+
 #ifndef LASER_PROPERTIES_H
 #define LASER_PROPERTIES_H
 

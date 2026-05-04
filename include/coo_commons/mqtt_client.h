@@ -9,6 +9,15 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/kernel.h>
 
+/**
+ * @file mqtt_client.h
+ * @brief Small MQTT 5 wrapper used by HISPEC-TIB.
+ *
+ * The wrapper owns one global broker config, subscription table, RX/TX buffers,
+ * and connection flag. The application still owns when to connect, subscribe,
+ * process, publish responses, and disconnect.
+ */
+
 #define COO_MQTT_BROKER_HOST_MAX 128
 
 struct coo_mqtt_broker_config {

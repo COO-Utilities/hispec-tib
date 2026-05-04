@@ -1,5 +1,10 @@
-/*
- * HiSPEC-TIB SNTP synchronization helpers.
+/**
+ * @file sntp_sync.c
+ * @brief Delayable-work SNTP sync, retry, and hourly resync logic.
+ *
+ * The work item chooses manual or DHCP NTP source, calls sntp_simple(), updates
+ * CLOCK_REALTIME on success, and records status for `time` and `ip`.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -189,6 +194,9 @@ static int sntp_sync_now_internal(void)
 		return -ENOENT;
 	}
 
+	/* sntp_simple() blocks this system-workqueue item until a reply arrives
+	 * or the timeout expires. It never runs in the MQTT or ADC timing path.
+	 */
 	rc = sntp_simple(server, SNTP_SYNC_TIMEOUT_MS, &sntp_time);
 	if (rc != 0) {
 		return rc;
@@ -226,6 +234,9 @@ static void sntp_sync_work_handler(struct k_work *work)
 		next_ms = SNTP_SYNC_RESYNC_INTERVAL_MS;
 	}
 
+	/* Rescheduling the same delayable work provides retry/resync behavior
+	 * without creating another thread or user-programmable scheduler.
+	 */
 	(void)k_work_reschedule(&g_sntp.sync_work, K_MSEC(next_ms));
 }
 

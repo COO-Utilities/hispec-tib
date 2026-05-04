@@ -1,3 +1,11 @@
+/**
+ * @file json_utils.c
+ * @brief Small JSON extraction helpers used by constrained command parsing.
+ *
+ * These helpers wrap Zephyr JSON descriptors so command handlers can validate
+ * individual fields without building command-specific descriptor structs for
+ * every optional value.
+ */
 /*
  * Copyright (c) 2024 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 4/28/25.
-//
+/**
+ * @file maiman.c
+ * @brief Blocking Modbus RTU transactions for Maiman SF8025 registers.
+ */
 
 #include "maiman.h"
 

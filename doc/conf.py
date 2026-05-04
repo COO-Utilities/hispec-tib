@@ -1,30 +1,72 @@
-# Configuration file for the Sphinx documentation builder.
-#
-# For the full list of built-in configuration values, see the documentation:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
+"""Sphinx configuration for the HiSPEC-TIB firmware documentation."""
 
-# -- Project information -----------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
+from pathlib import Path
+import shutil
+import subprocess
 
-project = 'Example Application'
-copyright = '2024, The Zephyr Community'
-author = 'The Zephyr Community'
-release = '1.0.0'
+from sphinx.errors import ExtensionError
 
-# -- General configuration ---------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = ['sphinx.ext.intersphinx']
+DOC_DIR = Path(__file__).resolve().parent
+DOXYGEN_XML = DOC_DIR / "_build_doxygen" / "xml"
 
-templates_path = ['_templates']
-exclude_patterns = ['_build_sphinx', 'Thumbs.db', '.DS_Store']
+project = "HiSPEC-TIB Firmware"
+author = "Caltech Optical Observatories"
+release = "0.1"
 
-# -- Options for HTML output -------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
+extensions = [
+    "myst_parser",
+    "breathe",
+    "sphinxcontrib.mermaid",
+]
 
-html_theme = 'alabaster'
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
 
-# -- Options for Intersphinx -------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/extensions/intersphinx.html
+templates_path = ["_templates"]
+exclude_patterns = [
+    "_build_sphinx",
+    "_build_doxygen",
+    "_doxygen",
+    "Thumbs.db",
+    ".DS_Store",
+]
 
-intersphinx_mapping = {'zephyr': ('https://docs.zephyrproject.org/latest/', None)}
+html_theme = "alabaster"
+html_theme_options = {
+    "description": "Zephyr RTOS firmware documentation",
+    "fixed_sidebar": True,
+}
+
+myst_heading_anchors = 3
+myst_fence_as_directive = ["mermaid"]
+
+breathe_projects = {
+    "hispec_tib": str(DOXYGEN_XML),
+}
+breathe_default_project = "hispec_tib"
+
+def run_doxygen(_app):
+    """Generate Doxygen XML before Breathe resolves API directives."""
+
+    if shutil.which("doxygen") is None:
+        raise ExtensionError(
+            "Doxygen is required to build the API reference. Install doxygen "
+            "and rerun the Sphinx build."
+        )
+
+    try:
+        subprocess.run(["doxygen", "Doxyfile"], cwd=DOC_DIR, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise ExtensionError(f"Doxygen failed with exit status {exc.returncode}") from exc
+
+
+def setup(app):
+    app.connect("builder-inited", run_doxygen)
+    return {
+        "version": "1.0",
+        "parallel_read_safe": True,
+        "parallel_write_safe": True,
+    }

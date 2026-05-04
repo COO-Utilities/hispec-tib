@@ -1,6 +1,11 @@
-//
-// Created by Jeb Bailey on 5/29/25.
-//
+/**
+ * @file photodiode.h
+ * @brief TIB photodiode sampling, telemetry, and dark-calibration state.
+ *
+ * The sampler thread owns ADC reads and dark-measurement accumulation. Command
+ * handlers can start/reset/query dark calibration but do not read the ADC or
+ * wait for an entire measurement interval.
+ */
 
 #ifndef PHOTODIODE_H
 #define PHOTODIODE_H
@@ -81,8 +86,13 @@ struct photodiode_dark_status {
 extern struct k_msgq photodiode_queue;
 /** Channel labels used in command replies and telemetry JSON. */
 extern const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT];
+/** @brief Background sampler thread; blocks on ADC reads and periodic sleeps. */
 void photodiode_thread(void *p1, void *p2, void *p3);
+
+/** @brief Copy the latest sample, calibration, and dark-measurement status. */
 void photodiode_get_status(struct photodiode_status *out);
+
+/** @brief Convert a dark-measurement state enum to command JSON text. */
 const char *photodiode_dark_state_name(enum photodiode_dark_state state);
 /**
  * @brief Start or restart a dark measurement on the sampling thread.

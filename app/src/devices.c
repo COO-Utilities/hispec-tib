@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 5/19/25.
-//
+/**
+ * @file devices.c
+ * @brief Board strap detection and board-profile-specific device setup.
+ */
 /*
  * Copyright (c) 2024 Analog Devices, Inc.
  *

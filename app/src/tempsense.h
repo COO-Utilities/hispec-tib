@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 4/28/26.
-//
+/**
+ * @file tempsense.h
+ * @brief DS18B20 ambient temperature sampling cache.
+ */
 
 #ifndef APP_TEMPSENSE_H
 #define APP_TEMPSENSE_H
@@ -21,10 +22,10 @@ struct tempsense_status {
 /* Latest DS18B20 ambient reading cache; use tempsense_get_status() for a stable copy. */
 extern struct tempsense_status tempsense;
 
-/* Copy the current temperature cache and compute age from Zephyr uptime. */
+/** Copy the current temperature cache and compute age from Zephyr uptime. */
 void tempsense_get_status(struct tempsense_status *out);
 
-/* Background sampler thread. Reads the Zephyr sensor API once per second. */
+/** Background sampler thread. Reads the Zephyr sensor API once per second. */
 void tempsensor_thread(void *p1, void *p2, void *p3);
 
 

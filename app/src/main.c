@@ -1,5 +1,11 @@
-/*
- * HiSPEC-TIB main application.
+/**
+ * @file main.c
+ * @brief Boot orchestration, watchdog, network/MQTT pump, and outbound publish.
+ *
+ * The main thread owns MQTT connection maintenance and all MQTT publish calls.
+ * Worker threads and work items enqueue responses, warnings, and telemetry
+ * instead of publishing directly.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -158,6 +164,9 @@ static void photodiode_publish_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 
+	/* This work item bridges sampler telemetry to the normal MQTT outbound
+	 * queue. It performs no ADC or MQTT I/O itself.
+	 */
 	while (k_msgq_get(&photodiode_queue, &out, K_NO_WAIT) == 0) {
 		if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
 			(void)k_msgq_put(&photodiode_queue, &out, K_NO_WAIT);
@@ -188,6 +197,9 @@ int main(void)
 
 	LOG_INF("HiSPEC-FIB PCB  %s\n", APP_VERSION_STRING);
 
+	/* Watchdog setup is best-effort; main feeds it only from the main
+	 * MQTT/network loop so a wedged main path can still reset the MCU.
+	 */
 	(void)watchdog_init(&wdt, &wdt_channel);
 
 	rc = app_settings_init();

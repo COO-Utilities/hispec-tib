@@ -1,5 +1,10 @@
-/*
- * HiSPEC-TIB named scheduled/deferred actions.
+/**
+ * @file app_scheduled_actions.c
+ * @brief Fixed table of named delayable-work actions.
+ *
+ * Wrapping k_work_delayable here keeps delayed command side effects explicit:
+ * serial guard expiration and delayed reboot are named firmware behaviors.
+ *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
  */

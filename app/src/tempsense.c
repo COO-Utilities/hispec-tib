@@ -1,6 +1,7 @@
-//
-// Created by Jeb Bailey on 4/28/26.
-//
+/**
+ * @file tempsense.c
+ * @brief DS18B20 Zephyr sensor polling thread and status cache.
+ */
 
 #include "tempsense.h"
 #include <zephyr/device.h>

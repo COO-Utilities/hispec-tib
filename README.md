@@ -1,357 +1,146 @@
-# HISPEC-FIB - Zephyr RTOS Firmware
+# HISPEC-FIB Zephyr RTOS Firmware
 
-HISPEC FIB PCB firmware built on Zephyr RTOS using the COO (Caltech Optical Observatories) standardized template.
+This repository contains Zephyr RTOS firmware for HISPEC FIB PCB controllers.
+The current audited application is `app`, written in C, with MQTT and serial
+command interfaces for board-profile-specific optical routing, attenuator,
+photodiode, laser-bank, settings, network, SNTP, and telemetry behavior.
 
-## Overview
+## Current Target
 
-The HISPEC FIB PCBs control optical routing, laser calibration sources, and attenuators for the HISPEC spectrograph. 
-This firmware provides MQTT-based remote control over ethernet as well as serial commanding.
-
-### Targeted boards
-- WIZnet W5500-EVB-Pico2 (RP2350 microcontroller)
-- Nucleo-ST32xxxx TODO
-
-### Hardware Features
-- **MEMS Optical Switches**: 8 dual-channel fiber switches for beam routing
-- **Maiman Laser Controllers**: Modbus control of calibration laser sources
-- **Optical Attenuators**: DAC-controlled variable optical attenuators with polynomial calibration
-- **Photodiode Monitoring**: ADC-based optical power monitoring at 50Hz
-- **Watchdog**: Automatic recovery from system hangs
-- **Persistent Settings**: NVS-backed configuration storage
-
-## Quick Start
+The maintained build target for this audit is:
 
 ```bash
-# Create and activate virtual environment
-python3 -m venv ~/zephyr-venv
-source ~/zephyr-venv/bin/activate  # On Windows: ~/zephyr-venv/Scripts/activate
-
-# Install west
-pip install west
-
-# Create workspace
-west init -m https://github.com/mikelangmayr/hispec-tib --mr main hispec-zephyr
-cd hispec-zephyr && west update
-
-# Build for W5500-EVB-Pico2
-cd hispec-tib
-west build -b w5500_evb_pico2/rp2350a/m33 app
-west flash
+/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/west build \
+  --board=nucleo_h563zi/stm32h563xx \
+  --build-dir /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/build \
+  /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app
 ```
 
-## COO Commons Library
+Use the workspace virtual environment for Python and west commands:
 
-This project uses the [lib/coo_commons](lib/coo_commons/) library to provide the following utilities:
-
-### MQTT Client
-Wrapper around Zephyr's MQTT 5.0 functionality.
-
-[TODO verify AI successfully added:] with automatic retry, subscription management, event callbacks, and QoS support (0, 1, 2).
-
-**MQTT Command Interface:**
-- **Subscribe topic**: `cmd/hsfib-tib/req/#`
-- **Response topic**: Provided in MQTT 5.0 `response_topic` property [TODO is full string default wise? Follow Amazon AWS-IoT guideance]
-- **Broker**: `jebcontrol.caltech.edu:1883` [TODO The broker needs to be configured at compile time, a fallback via mqtt, and settable via serial]
-- **Published Data**: [TODO]
-- 
-### Network Stack
-Complete networking support with connection manager integration (L4 events, DHCP with static IP fallback).
-
-### JSON Utilities
-Structured message handling for telemetry encoding, command parsing with hierarchical keys (`device/setting`), and message type detection (GET/SET/RESPONSE).
-
-### PID Controller
-Reusable proportional-integral-derivative loops for temperature and motion control.
-
-**Usage Example:**
-[TODO lets not wait forever but rather retry periodically to allow servicing commands and testing over serial]
-```c
-#include <coo_commons/mqtt_client.h>
-#include <coo_commons/network.h>
-
-// Initialize network and MQTT
-coo_network_init(NULL);
-coo_network_wait_ready(K_FOREVER); 
-
-struct mqtt_client client;
-coo_mqtt_init(&client, "hsfib-tib");
-coo_mqtt_add_subscription("cmd/hsfib-tib/req/#", MQTT_QOS_2_EXACTLY_ONCE);
-coo_mqtt_set_message_callback(on_mqtt_message);
-coo_mqtt_connect(&client);
-```
-
-**Configuration in [app/prj.conf](app/prj.conf):**
-```
-CONFIG_COO_COMMONS=y
-CONFIG_COO_NETWORK=y
-CONFIG_COO_MQTT=y
-CONFIG_COO_MQTT_BROKER_HOSTNAME="jebcontrol.caltech.edu"
-CONFIG_COO_MQTT_BROKER_PORT="1883"
-```
-
-## MQTT Command Protocol
-
-All commands follow a standardized JSON format with MQTT 5.0 properties:
-
-### Common Fields
-```json
-{
-  "msg_type": "get|set",
-  "value": "<depends on command>"
-}
-```
-
-### MEMS Switch Routing
-**Topic**: `cmd/hsfib-tib/req/memsroute`
-```json
-{
-  "msg_type": "set",
-  "value": ["input_name", "output_name"]
-}
-```
-
-### Individual MEMS Control
-**Topic**: `cmd/hsfib-tib/req/mems/<name>`
-```json
-{
-  "msg_type": "set|get",
-  "value": "state"
-}
-```
-
-### Laser Flux Control
-**Topic**: `cmd/hsfib-tib/req/laser###/flux`
-```json
-{
-  "msg_type": "set|get",
-  "value": <flux_value>
-}
-```
-
-### Attenuator Control
-**Topic**: `cmd/hsfib-tib/req/atten###/value[dB]`
-```json
-{
-  "msg_type": "set|get",
-  "value": <attenuation_in_dB_or_volts>
-}
-```
-
-**Topic**: `cmd/hsfib-tib/req/atten###/coeff`
-```json
-{
-  "msg_type": "set|get",
-  "value": [coeff0, coeff1, ..., coeffN]
-}
-```
-
-### System Status
-**Topic**: `cmd/hsfib-tib/req/status`
-```json
-{
-  "msg_type": "get"
-}
-```
-**Response**:
-```json
-{
-  "version": 1,
-  "uptime": <seconds>,
-  "a_laser_is_on": "true|false|error:...",
-  "time": <unix_timestamp>
-}
-```
-
-## Application Architecture
-
-### Thread Structure
-- **Main Thread**: MQTT event loop, network management, watchdog feeding
-- **Executor Thread**: Command dispatch and execution
-- **Photodiode Thread**: 50Hz optical power sampling
-- **Photodiode Publisher**: 100Hz work queue for telemetry publishing
-
-### Message Queues
-- `inbound_queue`: MQTT commands → Executor
-- `outbound_queue`: Executor/Photodiode → MQTT publisher
-- `photodiode_queue`: ADC samples → Publisher
-
-## Building
-
-**For Hardware:**
 ```bash
-west build -b w5500_evb_pico2/rp2350a/m33 app
-west flash
+/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/python
+/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/west
 ```
 
-**Debug Build:**
+## Hardware Profiles
+
+Board identity is selected by active-low strap GPIOs documented in
+`doc/hardware.md` and configured in `app/boards/nucleo_h563zi.overlay`.
+
+Implemented firmware profiles:
+
+- `tib`: MEMS routing, six logical attenuator channels, photodiodes, laser-bank
+  power, relay GPIOs, Maiman Modbus, network/MQTT, SNTP, settings, watchdog.
+- `cal_yj`: calibration MEMS routes and one logical attenuator channel.
+- `cal_hk`: same firmware profile shape as `cal_yj`.
+- `as`: achromatic splitter MEMS routes and split-ratio command support.
+- `unknown`: selected when board straps are missing or conflicting; board
+  hardware setup is refused.
+
+`doc/hardware.md` is the hardware source of truth. `doc/hardware_profiles.md`
+documents how current code maps those hardware facts into firmware profiles.
+
+## Command Interfaces
+
+MQTT requests use:
+
+```text
+cmd/hsfib-tib/req/#
+```
+
+Default command responses use:
+
+```text
+cmd/hsfib-tib/resp/<key>
+```
+
+MQTT 5 `response_topic` and `correlation_data` are honored when they fit the
+fixed command buffers.
+
+Serial commands share the same normalized command path. A bare serial key is a
+GET; a key with payload is a SET. See:
+
+- `doc/commands.md` for intended command/API behavior.
+- `doc/implemented_commands.md` for the implementation-derived command list.
+- `doc/command_implementation_audit.md` for mismatches and stale behavior.
+
+## Runtime Shape
+
+- `main.c`: boot order, watchdog feed, network/MQTT loop, outbound publish.
+- `command.c`: MQTT/serial ingress, serial guard, dispatch, response queues.
+- `devices.c`: board strap detection and board-profile setup.
+- `mems_switching.c`: MEMS switch state, routes, and toggler work.
+- `attenuator.c`: DAC-backed logical attenuator control and calibration.
+- `maiman.c` and `lasers.c`: Maiman Modbus and laser-bank helpers.
+- `photodiode.c`: ADS1115 sampling, dark calibration, noise, telemetry.
+- `tempsense.c`: DS18B20 ambient temperature cache.
+- `sntp_sync.c`: SNTP sync and time status.
+- `app_settings.c`: Zephyr settings-backed app state.
+- `app_warning.c`: best-effort warning publication.
+
+Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and
+`doc/queues_and_work.md`.
+
+## Documentation Build
+
+Documentation is Markdown-first Sphinx with Doxygen XML extraction through
+Breathe and Mermaid diagram rendering:
+
 ```bash
-west build -b w5500_evb_pico2/rp2350a/m33 app -- -DEXTRA_CONF_FILE=debug.conf
+/Users/jibailey/src/hispec-zephyr-mlang/.venv/bin/python -m sphinx \
+  -b html hispec-tib/doc hispec-tib/doc/_build_sphinx/html
 ```
 
-**Clean Rebuild:**
-```bash
-west build -b w5500_evb_pico2/rp2350a/m33 app --pristine
-```
+The docs build requires:
 
-## Device Tree Configuration
+- Sphinx
+- alabaster
+- myst-parser
+- breathe
+- sphinxcontrib-mermaid
+- Doxygen
 
-Hardware is configured via [app/boards/w5500_evb_pico2_rp2350a_m33.overlay](app/boards/w5500_evb_pico2_rp2350a_m33.overlay):
+Python package requirements are listed in `doc/requirements.txt`. Doxygen runs
+from the Sphinx build as a pre-step.
 
-- **I2C0**: DAC7578 (attenuators), PCAL6416A (GPIO expander for MEMS)
-- **I2C1**: ADS1115 (photodiode ADCs)
-- **UART1**: Modbus for Maiman laser controllers
-- **SPI0**: W5500 Ethernet controller
-- **Flash**: RP2350 internal flash with NVS storage partition
+## Repository Layout
 
-## Persistent Settings & Watchdog
-
-The application demonstrates NVS and watchdog usage:
-
-```c
-// Initialize and load settings from flash
-settings_subsys_init();
-settings_load();
-
-// Save settings (persists across reboots)
-settings_save_one("tib/key", &value, sizeof(value));
-
-// Initialize watchdog (5 second timeout)
-watchdog_init(&wdt, &wdt_channel);
-
-// Feed periodically in main loop
-wdt_feed(wdt, wdt_channel);
-```
-
-Settings are stored in the `storage_partition` defined in the board device tree overlay.
-
-## Network Configuration
-
-### DHCP with Static IP Fallback
-The application uses Zephyr's connection manager for automatic network setup:
-
-```c
-conn_mgr_all_if_up(true);  // Bring up interfaces with DHCP
-coo_network_wait_ready(K_FOREVER);  // Wait for L4 connectivity
-```
-
-**Static IP Configuration** (in [app/prj.conf](app/prj.conf)):
-```
-CONFIG_NET_CONFIG_MY_IPV4_ADDR="192.168.1.111"
-CONFIG_NET_CONFIG_MY_IPV4_NETMASK="255.255.255.0"
-CONFIG_NET_CONFIG_MY_IPV4_GW="192.168.1.1"
-```
-
-## Prerequisites
-
-Follow the [Zephyr Getting Started Guide](https://docs.zephyrproject.org/latest/getting_started/index.html) to install:
-
-- West: `pip3 install west`
-- CMake >= 3.20
-- Python >= 3.9
-- Zephyr SDK
-
-Set environment:
-```bash
-export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
-export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-0.16.x
-```
-
-## Project Structure
-
-```
+```text
 hispec-tib/
-├── app/                           # HiSPEC-TIB application
-│   ├── src/
-│   │   ├── main.c                # Main application with MQTT loop
-│   │   ├── command.c/h           # Command parser and dispatcher
-│   │   ├── devices.c/h           # Device initialization
-│   │   ├── attenuator.c/h        # Attenuator control via DAC
-│   │   ├── maiman.c/h            # Maiman laser Modbus driver
-│   │   ├── photodiode.c/h        # Photodiode ADC monitoring
-│   │   └── mems_switching.c/h    # MEMS switch routing logic
-│   ├── boards/
-│   │   └── w5500_evb_pico2_rp2350a_m33.overlay  # Hardware config
-│   └── prj.conf                  # Kconfig options
-├── lib/
-│   └── coo_commons/              # Shared COO library (PID, MQTT, network, JSON)
-├── include/
-│   └── coo_commons/              # COO commons public headers
-├── drivers/                      # Custom drivers (blink LED, sensors)
-├── boards/                       # Custom board definitions
-├── tests/                        # Integration tests
-├── doc/                          # Doxygen + Sphinx documentation
-└── .github/workflows/            # CI with Zephyr builds
+  app/                 Zephyr application
+  app/src/             Firmware C sources and headers
+  app/boards/          App board overlays
+  doc/                 Sphinx, Markdown, Doxygen, and audit docs
+  include/coo_commons/ Shared wrapper headers
+  lib/coo_commons/     Local network, MQTT, JSON, and PID helpers
+  drivers/gpio/ds2408/ Project-local DS2408 GPIO driver
 ```
 
-## Troubleshooting
+`app/doc` now contains short migration stubs pointing to `doc`.
 
-**Build fails with "Zephyr not found":**
-```bash
-cd hispec-zephyr
-west update
-west list  # Verify configuration
-```
+## Open items
 
-**"No CMAKE_C_COMPILER could be found":**
-```bash
-export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
-export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-0.16.x
-```
+- Review W5500/Pico references in old branch history before deciding whether
+  they should remain documented anywhere authoritative.
+- Add automated command parser and non-hardware domain tests.
+- Reconcile DAC7578/twelve-FVOA hardware description with current six logical
+  attenuator channels and single `dac7578` device handle.
+- Reconcile MEMS open-drain/push-pull hardware requirements with current raw
+  GPIO expander control.
+- Resolve command/spec mismatches listed in `doc/human_review_required.md`.
 
-**Settings don't persist:**
-- Verify `CONFIG_SETTINGS_NVS=y` in prj.conf
-- Check board overlay has `storage_partition` defined
-- Try clean build: `west build -b w5500_evb_pico2/rp2350a/m33 app --pristine`
+## LLM-resolved items requiring human review
 
-**Enable verbose logging:**
-```bash
-west build -b w5500_evb_pico2/rp2350a/m33 app -- -DEXTRA_CONF_FILE=debug.conf
-# Or in prj.conf: CONFIG_LOG_DEFAULT_LEVEL=4
-```
-
-**Network not connecting:**
-- Check Ethernet cable connection
-- Verify W5500 SPI configuration in device tree
-- Check DHCP server or configure static IP
-- Enable network debug: `CONFIG_NET_LOG_LEVEL_DBG=y`
-
-## Documentation
-
-Build API and user documentation locally:
-
-```bash
-cd doc
-pip install -r requirements.txt
-
-doxygen    # API docs → _build_doxygen/html/index.html
-make html  # User docs → _build_sphinx/html/index.html
-```
-
-## Development Notes
-
-### From tib-zephyr Migration
-This project was migrated from the original `tib-zephyr` repository to use the COO standardized template. Key improvements:
-
-- **Replaced custom MQTT client** with `coo_commons/mqtt_client` for better maintainability
-- **Added coo_commons/network** helper for simplified network initialization
-- **Integrated watchdog** for automatic recovery from hangs
-- **Added NVS settings** for persistent configuration (stub implementation, ready for expansion)
-- **Standardized project structure** following COO template conventions
-- **Improved documentation** with consistent formatting and examples
-
-### Original TODOs (from tib-zephyr)
-- UUID generation for unique device identification
-- Expand settings persistence for device calibration data
-- Verify DHCP → static IP fallback behavior across link failures
-- Test MQTT reconnection across network disruptions
-
-## Links
-
-- [Zephyr Documentation](https://docs.zephyrproject.org/)
-- [West Tool](https://docs.zephyrproject.org/latest/develop/west/index.html)
-- [Device Tree Guide](https://docs.zephyrproject.org/latest/build/dts/index.html)
-- [W5500-EVB-Pico2 Board](https://docs.zephyrproject.org/latest/boards/wiznet/w5500_evb_pico2/doc/index.html)
-- [COO Zephyr Template](https://github.com/mikelangmayr/zephyr-coo-template)
+- The README quick start was updated from the older W5500/Pico template to the
+  current Nucleo H563ZI build contract.
+- Old README command examples were replaced by links to the migrated command
+  spec and implementation audit, because several examples no longer matched
+  the command dispatcher.
+- Old notes described settings as a stub. Current firmware persists board
+  type, boot count, serial guard, IP, MQTT, attenuator coefficients, and
+  photodiode settings; remaining operating-state persistence still needs owner
+  review.
 
 ## License
 

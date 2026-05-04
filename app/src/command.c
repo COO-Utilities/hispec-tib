@@ -1,6 +1,11 @@
-//
-// Created by Jeb Bailey on 5/30/25.
-//
+/**
+ * @file command.c
+ * @brief Command normalization, execution, and outbound response publication.
+ *
+ * The module owns the static command table and the two Zephyr message queues
+ * that connect ingress, command execution, and MQTT/serial output. Hardware
+ * side effects are still delegated to the domain modules where practical.
+ */
 
 #include "command.h"
 // #include "devices.h"
@@ -44,13 +49,18 @@ static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
 
 
-/* one command at a time */
+/* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
+ * Depth is intentionally small: clients should retry instead of letting stale
+ * hardware commands pile up.
+ */
 K_MSGQ_DEFINE(inbound_queue,
               sizeof(struct Command),
               MAX_PENDING_COMMANDS,      /* depth */
               4);     /* 4‐byte align */
 
-/* up to 8 pending publishes */
+/* Responses, warnings, and telemetry leave the executor through this bounded
+ * queue. The main loop owns MQTT publish retries and serial printing.
+ */
 K_MSGQ_DEFINE(outbound_queue,
               sizeof(struct OutMsg),
               8,
@@ -264,13 +274,17 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     //        snprintf(r.payload, MAX_PAYLOAD_LEN, "{\"error\":\"Invalid route\"}");
 
 
-    // Set default response topic, but override if cmd provides a valid one
+    /* MQTT 5 response_topic is authoritative when supplied; otherwise the
+     * firmware derives cmd/<device>/resp/<key> during ingress.
+     */
     snprintk(r.topic, sizeof(r.topic), "cmd/hsfib-tib/resp");
     if (cmd && strlen(cmd->response_topic) > 0 && strlen(cmd->response_topic) < sizeof(r.topic)) {
         strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
     }
 
-    // Echo correlation_data if present
+    /* MQTT 5 correlation_data is opaque to the firmware and is echoed exactly
+     * when it fits the fixed response buffer.
+     */
     if (cmd && cmd->corr_len > 0 && cmd->corr_len < sizeof(r.correlation_data)) {
         memcpy(r.correlation_data, cmd->correlation_data, cmd->corr_len);
         r.corr_len = cmd->corr_len;
@@ -786,6 +800,7 @@ void command_executor_thread(void *p1, void *p2, void *p3)
     ARG_UNUSED(p3);
 
     while (1) {
+        /* K_FOREVER sleeps this thread until ingress queues a complete command. */
         k_msgq_get(&inbound_queue, &cmd, K_FOREVER);
         out = dispatch_command(&cmd);
         if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
@@ -836,6 +851,9 @@ static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
     param.dup_flag = 0U;
     param.retain_flag = 0U;
 
+    /* mqtt_publish() may block in the socket layer and is kept out of timing
+     * sensitive work items and sampler threads.
+     */
     return mqtt_publish(client, &param);
 }
 
