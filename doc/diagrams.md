@@ -241,14 +241,14 @@ flowchart TD
 flowchart TD
   Boot[boot] --> Defaults[initialize defaults]
   Defaults --> Subsys[settings_subsys_init]
-  Subsys --> Load[settings_load_subtree tib]
+  Subsys --> Load[load app settings subtrees]
   Load --> Runtime[runtime settings snapshot]
   Command[set command] --> Parse[validate JSON fields]
   Parse --> Update[update runtime snapshot]
   Update --> Persist{persistent true}
   Persist -- yes --> Save[settings_save_one keys]
   Persist -- no --> Volatile[runtime only]
-  BoardChange[board type changed] --> Clear[delete non-board tib settings]
+  BoardChange[board type changed] --> Clear[delete non-board app settings]
 ```
 
 ## 14. Warning Publication Flow

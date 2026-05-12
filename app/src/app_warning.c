@@ -16,12 +16,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "app_identity.h"
 #include "command.h"
 
 LOG_MODULE_REGISTER(app_warning, LOG_LEVEL_INF);
 
-#define MQTT_DEVICE_ID "hsfib-tib"
-#define APP_WARNING_TOPIC "dt/" MQTT_DEVICE_ID "/warning"
+#define APP_WARNING_TOPIC "dt/" APP_MQTT_DEVICE_ID "/warning"
 
 static int append_json_string(char *buf, size_t buf_len, size_t *off,
 			      const char *text)

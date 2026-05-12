@@ -72,17 +72,16 @@ a replacement for `commands.md`.
 
 ### `mqtt`
 
-- GET returns `broker`, `port`, and `dns_supported`.
-- SET fields: `broker` or `host`, `port`, `persistent`.
-- Validation: hostname requires DNS support unless numeric IPv4; port must be
-  1..65535.
+- GET returns `broker` as `<host-or-ip>:<port>` and `dns_supported`.
+- SET fields: `broker`, optional `persistent`.
+- Validation: broker must be one `<host-or-ip>:<port>` value; hostname
+  requires DNS support unless numeric IPv4; port must be 1..65535.
 - Response: `{"status":"success","apply":"reconnect"}`.
 - Side effects: updates runtime broker settings; optional persistence; main
   loop reconnects later.
 - Blocking: settings writes may block. No direct publish.
-- Serial shorthand: `mqtt <broker> [port]`.
+- Serial shorthand: `mqtt <host-or-ip>:<port> [persistent]`.
 - Handler: `mqtt_get()`, `mqtt_set()` in `app/src/command.c`.
-- Mismatch: source has a `-JIB` TODO to combine host and port schema.
 
 ### `time`
 
@@ -120,7 +119,8 @@ a replacement for `commands.md`.
 
 ### `memsroute`
 
-- GET returns `{"active_routes": {"<input>":"<output>"}}`.
+- GET returns `{"active_routes": {"<output>":["<input>", "..."]}}`; outputs
+  with no active source report `["no source"]`.
 - SET fields: `input`, `output`.
 - Validation: route must exist in current board profile and every route switch
   must exist.
@@ -269,4 +269,3 @@ a replacement for `commands.md`.
 - Side effects: none.
 - Handler: `status_get()` in `app/src/command.c`.
 - Mismatch: `commands.md` documents a much larger payload.
-

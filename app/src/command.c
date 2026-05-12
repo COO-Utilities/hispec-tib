@@ -11,6 +11,7 @@
 // #include "devices.h"
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -24,6 +25,7 @@
 #include <zephyr/console/console.h>
 
 #include "devices.h"
+#include "app_identity.h"
 #include "app_settings.h"
 #include "app_scheduled_actions.h"
 #include "app_warning.h"
@@ -34,13 +36,11 @@
 #include "sntp_sync.h"
 #include "tempsense.h"
 #include <coo_commons/json_utils.h>
+#include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define MQTT_DEVICE_ID "hsfib-tib"
-#define MQTT_CMD_PREFIX "cmd/" MQTT_DEVICE_ID "/req/"
-#define MQTT_RESP_PREFIX "cmd/" MQTT_DEVICE_ID "/resp/"
 #define SERIAL_LINE_MAX 220
 #define SERIAL_WRAP_COLUMN 80U
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
@@ -275,7 +275,7 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     /* MQTT 5 response_topic is authoritative when supplied; otherwise the
      * firmware derives cmd/<device>/resp/<key> during ingress.
      */
-    snprintk(r.topic, sizeof(r.topic), "cmd/hsfib-tib/resp");
+    snprintk(r.topic, sizeof(r.topic), APP_MQTT_RESP_PREFIX);
     if (cmd && strlen(cmd->response_topic) > 0 && strlen(cmd->response_topic) < sizeof(r.topic)) {
         strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
     }
@@ -288,7 +288,16 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
         r.corr_len = cmd->corr_len;
     }
 
-    snprintk(r.payload, sizeof(r.payload), "%s", msg);
+    if (msg != NULL && strlen(msg) >= sizeof(r.payload)) {
+        static const char overflow_msg[] = "{\"status\":\"error\",\"msg\":\"response too large\"}";
+
+        r.msg_type = RESP_ERROR;
+        snprintk(r.payload, sizeof(r.payload), "%s", overflow_msg);
+        r.payload_len = strlen(r.payload);
+        return r;
+    }
+
+    snprintk(r.payload, sizeof(r.payload), "%s", msg != NULL ? msg : "");
     r.payload_len = strlen(r.payload);
     return r;
 }
@@ -325,7 +334,7 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
 
 static bool derive_default_response_topic(const char *key, char *topic_out, size_t topic_out_len)
 {
-    const int n = snprintk(topic_out, topic_out_len, "%s%s", MQTT_RESP_PREFIX, key);
+    const int n = snprintk(topic_out, topic_out_len, "%s%s", APP_MQTT_RESP_PREFIX, key);
 
     return n > 0 && n < (int)topic_out_len;
 }
@@ -336,7 +345,7 @@ static void enqueue_serial_error(const char *msg)
 
     out.target = OUT_TARGET_SERIAL;
     out.msg_type = RESP_ERROR;
-    snprintk(out.topic, sizeof(out.topic), MQTT_RESP_PREFIX "serial");
+    snprintk(out.topic, sizeof(out.topic), APP_MQTT_RESP_PREFIX "serial");
     out.payload_len = snprintk(out.payload, sizeof(out.payload),
                                "{\"status\":\"error\",\"msg\":\"%s\"}", msg);
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
@@ -574,7 +583,10 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
             return -EINVAL;
         }
         if (t1[0] != '\0' &&
-            append_serial_json_field(out, out_len, &off, "port", t1, true) != 0) {
+            append_serial_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
+            return -EINVAL;
+        }
+        if (t2[0] != '\0') {
             return -EINVAL;
         }
         written = snprintk(out + off, out_len - off, "}");
@@ -649,8 +661,8 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         return;
     }
 
-    prefix_len = strlen(MQTT_CMD_PREFIX);
-    if (strncmp(req_topic, MQTT_CMD_PREFIX, prefix_len) != 0) {
+    prefix_len = strlen(APP_MQTT_CMD_PREFIX);
+    if (strncmp(req_topic, APP_MQTT_CMD_PREFIX, prefix_len) != 0) {
         return;
     }
 
@@ -1422,9 +1434,10 @@ static bool mqtt_host_is_numeric_ipv4(const char *host)
 }
 
 struct OutMsg mqtt_get(const struct Command *cmd)
-//TODO update mqtt get/set to drop port: key and convert host to form <host-or-ip>:<port -JIB
 {
     struct app_mqtt_settings mqtt_cfg = {0};
+    struct coo_mqtt_broker_config broker_cfg = {0};
+    char endpoint[160] = {0};
     char payload[MAX_PAYLOAD_LEN] = {0};
 #if defined(CONFIG_DNS_RESOLVER)
     const bool dns_supported = true;
@@ -1433,22 +1446,23 @@ struct OutMsg mqtt_get(const struct Command *cmd)
 #endif
 
     app_settings_get_mqtt(&mqtt_cfg);
+    strncpy(broker_cfg.host, mqtt_cfg.broker_host, sizeof(broker_cfg.host) - 1U);
+    broker_cfg.host[sizeof(broker_cfg.host) - 1U] = '\0';
+    broker_cfg.port = mqtt_cfg.broker_port;
+    (void)coo_mqtt_format_broker_endpoint(&broker_cfg, endpoint, sizeof(endpoint));
     snprintk(payload, sizeof(payload),
-             "{\"broker\":\"%s\",\"port\":%u,\"dns_supported\":%s}",
-             mqtt_cfg.broker_host,
-             mqtt_cfg.broker_port,
+             "{\"broker\":\"%s\",\"dns_supported\":%s}",
+             endpoint,
              dns_supported ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
 struct OutMsg mqtt_set(const struct Command *cmd)
-//TODO update mqtt get/set to drop port: key and convert host to form <host-or-ip>:<port -JIB
 {
     struct app_mqtt_settings mqtt_cfg = {0};
-    char host[sizeof(mqtt_cfg.broker_host)] = {0};
-    uint32_t port = 0U;
+    struct coo_mqtt_broker_config broker_cfg = {0};
+    char endpoint[160] = {0};
     bool persist = false;
-    bool changed = false;
     int parse_rc;
 #if defined(CONFIG_DNS_RESOLVER)
     const bool dns_supported = true;
@@ -1458,42 +1472,28 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 
     app_settings_get_mqtt(&mqtt_cfg);
 
-    parse_rc = coo_json_extract_string(cmd->payload, "broker", host, sizeof(host));
+    parse_rc = coo_json_extract_string(cmd->payload, "broker", endpoint, sizeof(endpoint));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        parse_rc = coo_json_extract_string(cmd->payload, "host", host, sizeof(host));
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing broker\"}");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid broker\"}");
     }
-    if (parse_rc == COO_JSON_EXTRACT_OK) {
-        if (!mqtt_host_is_numeric_ipv4(host) && !dns_supported) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
-        }
-        strncpy(mqtt_cfg.broker_host, host, sizeof(mqtt_cfg.broker_host) - 1U);
-        mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
-        changed = true;
+    if (!coo_mqtt_parse_broker_endpoint(endpoint, &broker_cfg)) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"broker must be host-or-ip:port\"}");
     }
-
-    parse_rc = coo_json_extract_u32(cmd->payload, "port", &port);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid port\"}");
+    if (!mqtt_host_is_numeric_ipv4(broker_cfg.host) && !dns_supported) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
     }
-    if (parse_rc == COO_JSON_EXTRACT_OK) {
-        if (port == 0U || port > UINT16_MAX) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"port out of range\"}");
-        }
-        mqtt_cfg.broker_port = (uint16_t)port;
-        changed = true;
-    }
+    strncpy(mqtt_cfg.broker_host, broker_cfg.host, sizeof(mqtt_cfg.broker_host) - 1U);
+    mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
+    mqtt_cfg.broker_port = broker_cfg.port;
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
-    }
-
-    if (!changed) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized mqtt fields\"}");
     }
 
     app_settings_update_mqtt(&mqtt_cfg, persist);
@@ -1607,43 +1607,107 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
 }
 
 
-struct OutMsg memsroute_get(const struct Command *cmd)
+static bool memsroute_output_seen(const char *const *outputs, uint8_t count,
+                                  const char *output_name)
 {
-    struct mems_route_key keys[MEMS_ROUTER_MAX_ROUTES];
-    uint8_t n_routes = mems_router_active_routes(&router, keys, MEMS_ROUTER_MAX_ROUTES);
-
-    char buf[MAX_PAYLOAD_LEN];
-    size_t offset = 0;
-    int written;
-
-    // Begin JSON object
-    offset += snprintf(buf, sizeof(buf), "{\"active_routes\":{");
-
-    for (uint8_t i = 0; i < n_routes; ++i) {
-        // Add comma if not the first entry
-        if (i > 0) {
-            written = snprintf(buf + offset, sizeof(buf) - offset, ",");
-            if (written < 0 || written >= (int)(sizeof(buf) - offset)) {
-                return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"overflow building JSON\"}");
-            }
-            offset += written;
+    for (uint8_t i = 0U; i < count; ++i) {
+        if (strcmp(outputs[i], output_name) == 0) {
+            return true;
         }
-        // Add "input":"output" pair
-        written = snprintf(
-            buf + offset, sizeof(buf) - offset,
-            "\"%s\":\"%s\"",
-            keys[i].input_name, keys[i].output_name
-        );
-        if (written < 0 || written >= (int)(sizeof(buf) - offset)) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"overflow building JSON\"}");
-        }
-        offset += written;
     }
 
-    // Close object and top-level
-    written = snprintf(buf + offset, sizeof(buf) - offset, "}}");
-    if (written < 0 || written >= (int)(sizeof(buf) - offset)) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"overflow building JSON\"}");
+    return false;
+}
+
+static int memsroute_append_json(char *buf, size_t buf_len, size_t *offset,
+                                 const char *fmt, ...)
+{
+    va_list args;
+    int written;
+
+    if (buf == NULL || offset == NULL || *offset >= buf_len) {
+        return -ENOSPC;
+    }
+
+    va_start(args, fmt);
+    written = vsnprintk(buf + *offset, buf_len - *offset, fmt, args);
+    va_end(args);
+
+    if (written < 0 || written >= (int)(buf_len - *offset)) {
+        return -ENOSPC;
+    }
+
+    *offset += (size_t)written;
+    return 0;
+}
+
+static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t *offset,
+                                              const struct mems_route_key *active,
+                                              uint8_t active_count,
+                                              const char *output_name)
+{
+    uint8_t n_sources = 0U;
+
+    if (memsroute_append_json(buf, buf_len, offset, "\"%s\":[", output_name) != 0) {
+        return -ENOSPC;
+    }
+
+    for (uint8_t i = 0U; i < active_count; ++i) {
+        if (strcmp(active[i].output_name, output_name) != 0) {
+            continue;
+        }
+
+        if (n_sources > 0U && memsroute_append_json(buf, buf_len, offset, ",") != 0) {
+            return -ENOSPC;
+        }
+        if (memsroute_append_json(buf, buf_len, offset, "\"%s\"",
+                                  active[i].input_name) != 0) {
+            return -ENOSPC;
+        }
+        n_sources++;
+    }
+
+    if (n_sources == 0U &&
+        memsroute_append_json(buf, buf_len, offset, "\"no source\"") != 0) {
+        return -ENOSPC;
+    }
+
+    return memsroute_append_json(buf, buf_len, offset, "]");
+}
+
+struct OutMsg memsroute_get(const struct Command *cmd)
+{
+    struct mems_route_key active[MEMS_ROUTER_MAX_ROUTES];
+    const char *outputs[MEMS_ROUTER_MAX_ROUTES];
+    uint8_t n_active = mems_router_active_routes(&router, active, MEMS_ROUTER_MAX_ROUTES);
+    uint8_t n_outputs = 0U;
+    char buf[MAX_PAYLOAD_LEN] = {0};
+    size_t offset = 0;
+
+    if (memsroute_append_json(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+    }
+
+    for (uint8_t i = 0U; router.routes != NULL && i < router.num_routes; ++i) {
+        const char *output_name = router.routes[i].key.output_name;
+
+        if (memsroute_output_seen(outputs, n_outputs, output_name)) {
+            continue;
+        }
+
+        outputs[n_outputs++] = output_name;
+        if (n_outputs > 1U &&
+            memsroute_append_json(buf, sizeof(buf), &offset, ",") != 0) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+        }
+        if (memsroute_append_sources_for_output(buf, sizeof(buf), &offset,
+                                                active, n_active, output_name) != 0) {
+            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+        }
+    }
+
+    if (memsroute_append_json(buf, sizeof(buf), &offset, "}}") != 0) {
+        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
     }
 
     return _msg_builder(cmd, RESP_OK, buf);

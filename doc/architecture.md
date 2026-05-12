@@ -34,7 +34,7 @@ Runtime ownership is:
 ## Boot Sequence
 
 1. `main()` starts and initializes the watchdog.
-2. `app_settings_init()` loads defaults and then stored `tib/...` settings.
+2. `app_settings_init()` loads defaults and then stored app settings.
 3. `devices_detect_board_type()` reads four active-low strap GPIOs.
 4. `app_settings_note_board_type()` persists board type and clears other app
    settings if a different valid board type is detected after a prior boot.

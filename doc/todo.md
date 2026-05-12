@@ -10,6 +10,13 @@ for intended command behavior.
   commands, fixes the `status` response topic spelling, removes stale MEMS
   response TODO text, and fixes the AS split route wording.
 
+## LLM Resolved; Human Review Requested
+
+- Hand-built command responses now have a final `_msg_builder()` size guard, and
+  `memsroute` uses checked append logic. Some older fixed-shape responses still
+  build into local buffers before that guard, so future edits should continue
+  converting risky builders to checked append helpers when payload shape expands.
+
 ## Deferred Owner-Specified Capabilities
 
 Do not design or implement these without a detailed owner specification:
@@ -31,20 +38,9 @@ Do not design or implement these without a detailed owner specification:
 - Thread priorities still need hardware-timing review.
 - Consider whether `photodiode_publish_work` should be removed and photodiode
   telemetry should push directly to `outbound_queue`.
-- Photodiode telemetry still hardcodes `dt/hsfib-tib/photodiode`; align it with
-  whatever device-id/topic ownership policy is chosen for all publishers.
-- Review hand-built MQTT response JSON for consistent overflow behavior.
-- Replace the terse `help` response with a maintained command summary, and
-  remove the stale advertised `power` command name.
-- Decide whether `memsroute` query output should change from current
-  `source: dest` pairs to `dest: source` plus explicit `no source` entries.
+- Replace the terse `help` response with a maintained command summary
 - Decide whether the all-switch `mems` query response is acceptable for the
   fixed MQTT payload budget or should be narrowed further.
-- Decide whether stored settings should eventually drop the `tib/` prefix. This
-  requires a settings migration plan, not just a key rename.
-- Convert MQTT broker get/set to a single `<host-or-ip>:<port>` value and
-  reject hostnames when DNS is unavailable. The current implementation still
-  stores host and port separately.
 
 ## Remaining Documentation/Human-Review Items
 
@@ -53,4 +49,3 @@ Do not design or implement these without a detailed owner specification:
 - CAL switch and route names are still provisional.
 - Reconcile hardware/code mismatches for TIB attenuator DAC coverage and MEMS
   electrical mode.
-

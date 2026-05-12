@@ -23,6 +23,7 @@
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
 
+#include "app_identity.h"
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
@@ -31,9 +32,6 @@
 #include "sntp_sync.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
-
-#define MQTT_DEVICE_ID "hsfib-tib"
-#define MQTT_CMD_PREFIX "cmd/" MQTT_DEVICE_ID "/req/"
 
 #define EXECUTOR_STACK_SIZE 1400
 #define EXECUTOR_PRIORITY 5
@@ -257,7 +255,7 @@ int main(void)
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);
 
-	rc = coo_mqtt_init(&client_ctx, MQTT_DEVICE_ID);
+	rc = coo_mqtt_init(&client_ctx, APP_MQTT_DEVICE_ID);
 	if (rc != 0) {
 		LOG_ERR("MQTT init failed (%d)", rc);
 		return rc;
@@ -270,7 +268,7 @@ int main(void)
 	}
 	mqtt_cfg_revision = app_settings_get_mqtt_revision();
 	coo_mqtt_set_message_callback(command_handle_mqtt_publish);
-	(void)coo_mqtt_add_subscription(MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
+	(void)coo_mqtt_add_subscription(APP_MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
 
 	while (1) {
 		/* MQTT stays connected whenever the network is ready. Serial override

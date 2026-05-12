@@ -21,34 +21,35 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
+#include <coo_commons/mqtt_client.h>
+
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S 30U
 
-#define KEY_BOARD_TYPE "tib/board/type"
-#define KEY_SERIAL_HOLDOFF "tib/serial/holdoff_s"
-#define KEY_BOOT_COUNT "tib/boot_count"
-#define KEY_IP_TRY_DHCP "tib/ip/trydhcpfirst"
-#define KEY_IP_PREF_DNS "tib/ip/preferdhcpdns"
-#define KEY_IP_PREF_NTP "tib/ip/preferdhcpntp"
-#define KEY_IP_ADDR "tib/ip/ip"
-#define KEY_IP_SUBNET "tib/ip/subnet"
-#define KEY_IP_GATEWAY "tib/ip/gateway"
-#define KEY_IP_DNS "tib/ip/dns"
-#define KEY_IP_NTP "tib/ip/ntp"
-#define KEY_MQTT_HOST "tib/mqtt/host"
-#define KEY_MQTT_PORT "tib/mqtt/port"
-#define KEY_ATTEN_PREFIX "tib/atten"
-#define KEY_PD_YJ_DARK_MV "tib/pd/yj/dark_mv"
-#define KEY_PD_YJ_LOWEST_DARK_MV "tib/pd/yj/lowest_dark_mv"
-#define KEY_PD_YJ_LOWEST_DARK_VALID "tib/pd/yj/lowest_dark_valid"
-#define KEY_PD_YJ_NOISE_WARN_MV "tib/pd/yj/noise_warn_rms_mv"
-#define KEY_PD_YJ_GAIN_V_PER_UW "tib/pd/yj/gain_v_per_uw"
-#define KEY_PD_HK_DARK_MV "tib/pd/hk/dark_mv"
-#define KEY_PD_HK_LOWEST_DARK_MV "tib/pd/hk/lowest_dark_mv"
-#define KEY_PD_HK_LOWEST_DARK_VALID "tib/pd/hk/lowest_dark_valid"
-#define KEY_PD_HK_NOISE_WARN_MV "tib/pd/hk/noise_warn_rms_mv"
-#define KEY_PD_HK_GAIN_V_PER_UW "tib/pd/hk/gain_v_per_uw"
+#define KEY_BOARD_TYPE "board/type"
+#define KEY_SERIAL_HOLDOFF "serial/holdoff_s"
+#define KEY_BOOT_COUNT "boot/count"
+#define KEY_IP_TRY_DHCP "ip/trydhcpfirst"
+#define KEY_IP_PREF_DNS "ip/preferdhcpdns"
+#define KEY_IP_PREF_NTP "ip/preferdhcpntp"
+#define KEY_IP_ADDR "ip/ip"
+#define KEY_IP_SUBNET "ip/subnet"
+#define KEY_IP_GATEWAY "ip/gateway"
+#define KEY_IP_DNS "ip/dns"
+#define KEY_IP_NTP "ip/ntp"
+#define KEY_MQTT_BROKER "mqtt/broker"
+#define KEY_ATTEN_PREFIX "atten"
+#define KEY_PD_YJ_DARK_MV "pd/yj/dark_mv"
+#define KEY_PD_YJ_LOWEST_DARK_MV "pd/yj/lowest_dark_mv"
+#define KEY_PD_YJ_LOWEST_DARK_VALID "pd/yj/lowest_dark_valid"
+#define KEY_PD_YJ_NOISE_WARN_MV "pd/yj/noise_warn_rms_mv"
+#define KEY_PD_YJ_GAIN_V_PER_UW "pd/yj/gain_v_per_uw"
+#define KEY_PD_HK_DARK_MV "pd/hk/dark_mv"
+#define KEY_PD_HK_LOWEST_DARK_MV "pd/hk/lowest_dark_mv"
+#define KEY_PD_HK_LOWEST_DARK_VALID "pd/hk/lowest_dark_valid"
+#define KEY_PD_HK_NOISE_WARN_MV "pd/hk/noise_warn_rms_mv"
+#define KEY_PD_HK_GAIN_V_PER_UW "pd/hk/gain_v_per_uw"
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -138,12 +139,6 @@ static int read_u32(settings_read_cb read_cb, void *cb_arg, uint32_t *out)
 	return (rc == sizeof(*out)) ? 0 : -EINVAL;
 }
 
-static int read_u16(settings_read_cb read_cb, void *cb_arg, uint16_t *out)
-{
-	int rc = read_cb(cb_arg, out, sizeof(*out));
-	return (rc == sizeof(*out)) ? 0 : -EINVAL;
-}
-
 static int read_float(settings_read_cb read_cb, void *cb_arg, float *out)
 {
 	int rc = read_cb(cb_arg, out, sizeof(*out));
@@ -176,7 +171,7 @@ static void read_valid_float_or_warn(settings_read_cb read_cb, void *cb_arg,
 
 	if (read_float(read_cb, cb_arg, &value) != 0 ||
 	    !(value >= min_value && value <= max_value)) {
-		LOG_WRN("Ignoring invalid stored setting tib/%s", name);
+		LOG_WRN("Ignoring invalid stored setting %s", name);
 		return;
 	}
 
@@ -212,10 +207,9 @@ static bool parse_attenuator_coeff_name(const char *name,
 	const char *cursor = name;
 
 	if (name == NULL || channel == NULL || db_to_volt == NULL ||
-	    coeff_index == NULL || strncmp(cursor, "atten/", 6U) != 0) {
+	    coeff_index == NULL) {
 		return false;
 	}
-	cursor += 6U;
 
 	if (parse_key_index(&cursor, APP_ATTENUATOR_CHANNEL_COUNT - 1U, channel) != 0 ||
 	    *cursor != '/') {
@@ -247,72 +241,75 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 
-	if (strcmp(name, "board/type") == 0) {
+	if (strcmp(name, "type") == 0) {
 		(void)read_str(read_cb, cb_arg,
 			       g_settings.snapshot.board_type,
 			       sizeof(g_settings.snapshot.board_type));
 		goto out;
 	}
 
-	if (strcmp(name, "serial/holdoff_s") == 0) {
+	if (strcmp(name, "holdoff_s") == 0) {
 		(void)read_u32(read_cb, cb_arg, &g_settings.snapshot.serial_holdoff_s);
 		goto out;
 	}
 
-	if (strcmp(name, "boot_count") == 0) {
+	if (strcmp(name, "count") == 0) {
 		(void)read_u32(read_cb, cb_arg, &g_settings.snapshot.boot_count);
 		goto out;
 	}
 
-	if (strcmp(name, "ip/trydhcpfirst") == 0) {
+	if (strcmp(name, "trydhcpfirst") == 0) {
 		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.try_dhcp_first);
 		goto out;
 	}
 
-	if (strcmp(name, "ip/preferdhcpdns") == 0) {
+	if (strcmp(name, "preferdhcpdns") == 0) {
 		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.prefer_dhcp_dns);
 		goto out;
 	}
 
-	if (strcmp(name, "ip/preferdhcpntp") == 0) {
+	if (strcmp(name, "preferdhcpntp") == 0) {
 		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.prefer_dhcp_ntp);
 		goto out;
 	}
 
-	if (strcmp(name, "ip/ip") == 0) {
+	if (strcmp(name, "ip") == 0) {
 		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.ip, sizeof(g_settings.snapshot.ip.ip));
 		goto out;
 	}
 
-	if (strcmp(name, "ip/subnet") == 0) {
+	if (strcmp(name, "subnet") == 0) {
 		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.subnet, sizeof(g_settings.snapshot.ip.subnet));
 		goto out;
 	}
 
-	if (strcmp(name, "ip/gateway") == 0) {
+	if (strcmp(name, "gateway") == 0) {
 		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.gateway, sizeof(g_settings.snapshot.ip.gateway));
 		goto out;
 	}
 
-	if (strcmp(name, "ip/dns") == 0) {
+	if (strcmp(name, "dns") == 0) {
 		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.dns, sizeof(g_settings.snapshot.ip.dns));
 		goto out;
 	}
 
-	if (strcmp(name, "ip/ntp") == 0) {
+	if (strcmp(name, "ntp") == 0) {
 		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.ntp, sizeof(g_settings.snapshot.ip.ntp));
 		goto out;
 	}
 
-	if (strcmp(name, "mqtt/host") == 0) {
-		(void)read_str(read_cb, cb_arg,
-			       g_settings.snapshot.mqtt.broker_host,
-			       sizeof(g_settings.snapshot.mqtt.broker_host));
-		goto out;
-	}
+	if (strcmp(name, "broker") == 0) {
+		char endpoint[160];
+		struct coo_mqtt_broker_config parsed;
 
-	if (strcmp(name, "mqtt/port") == 0) {
-		(void)read_u16(read_cb, cb_arg, &g_settings.snapshot.mqtt.broker_port);
+		if (read_str(read_cb, cb_arg, endpoint, sizeof(endpoint)) == 0 &&
+		    coo_mqtt_parse_broker_endpoint(endpoint, &parsed)) {
+			str_set(g_settings.snapshot.mqtt.broker_host,
+				sizeof(g_settings.snapshot.mqtt.broker_host), parsed.host);
+			g_settings.snapshot.mqtt.broker_port = parsed.port;
+		} else {
+			LOG_WRN("Ignoring invalid stored setting mqtt/broker");
+		}
 		goto out;
 	}
 
@@ -327,68 +324,68 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
-	if (strcmp(name, "pd/yj/dark_mv") == 0) {
+	if (strcmp(name, "yj/dark_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[0].dark_mv,
 					 -5000.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/yj/lowest_dark_mv") == 0) {
+	if (strcmp(name, "yj/lowest_dark_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[0].lowest_dark_mv,
 					 -5000.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/yj/lowest_dark_valid") == 0) {
+	if (strcmp(name, "yj/lowest_dark_valid") == 0) {
 		(void)read_bool(read_cb, cb_arg,
 				&g_settings.snapshot.photodiode.channel[0].lowest_dark_valid);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/yj/noise_warn_rms_mv") == 0) {
+	if (strcmp(name, "yj/noise_warn_rms_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[0].noise_warn_rms_mv,
 					 0.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/yj/gain_v_per_uw") == 0) {
+	if (strcmp(name, "yj/gain_v_per_uw") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[0].gain_v_per_uw,
 					 0.000001f, 1000000000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/hk/dark_mv") == 0) {
+	if (strcmp(name, "hk/dark_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[1].dark_mv,
 					 -5000.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/hk/lowest_dark_mv") == 0) {
+	if (strcmp(name, "hk/lowest_dark_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[1].lowest_dark_mv,
 					 -5000.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/hk/lowest_dark_valid") == 0) {
+	if (strcmp(name, "hk/lowest_dark_valid") == 0) {
 		(void)read_bool(read_cb, cb_arg,
 				&g_settings.snapshot.photodiode.channel[1].lowest_dark_valid);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/hk/noise_warn_rms_mv") == 0) {
+	if (strcmp(name, "hk/noise_warn_rms_mv") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[1].noise_warn_rms_mv,
 					 0.0f, 5000.0f);
 		goto out;
 	}
 
-	if (strcmp(name, "pd/hk/gain_v_per_uw") == 0) {
+	if (strcmp(name, "hk/gain_v_per_uw") == 0) {
 		read_valid_float_or_warn(read_cb, cb_arg, name,
 					 &g_settings.snapshot.photodiode.channel[1].gain_v_per_uw,
 					 0.000001f, 1000000000.0f);
@@ -400,11 +397,13 @@ out:
 	return 0;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(tib_settings, "tib",
-			       NULL,
-			       settings_set_cb,
-			       NULL,
-			       NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(board_settings, "board", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(serial_settings, "serial", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(boot_settings, "boot", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(ip_settings, "ip", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(mqtt_settings, "mqtt", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(atten_settings, "atten", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(pd_settings, "pd", NULL, settings_set_cb, NULL, NULL);
 
 static void persist_bool(const char *key, bool value)
 {
@@ -413,11 +412,6 @@ static void persist_bool(const char *key, bool value)
 }
 
 static void persist_u32(const char *key, uint32_t value)
-{
-	(void)settings_save_one(key, &value, sizeof(value));
-}
-
-static void persist_u16(const char *key, uint16_t value)
 {
 	(void)settings_save_one(key, &value, sizeof(value));
 }
@@ -493,8 +487,7 @@ static const char *const resettable_setting_keys[] = {
 	KEY_IP_GATEWAY,
 	KEY_IP_DNS,
 	KEY_IP_NTP,
-	KEY_MQTT_HOST,
-	KEY_MQTT_PORT,
+	KEY_MQTT_BROKER,
 	KEY_PD_YJ_DARK_MV,
 	KEY_PD_YJ_LOWEST_DARK_MV,
 	KEY_PD_YJ_LOWEST_DARK_VALID,
@@ -545,13 +538,16 @@ static void delete_resettable_settings(void)
 
 int app_settings_init(void)
 {
+	static const char *const app_settings_subtrees[] = {
+		"board", "serial", "boot", "ip", "mqtt", "atten", "pd",
+	};
 	int rc;
 
 	k_mutex_init(&g_settings.lock);
 	settings_defaults(&g_settings.snapshot);
 
 	/* settings_subsys_init() attaches the configured Zephyr settings backend
-	 * before any `tib/...` keys can be loaded or saved.
+	 * before any app-owned keys can be loaded or saved.
 	 */
 	rc = settings_subsys_init();
 	if (rc != 0) {
@@ -559,13 +555,16 @@ int app_settings_init(void)
 		return rc;
 	}
 
-	/* The set callback above is invoked once for each stored key under tib. */
-	rc = settings_load_subtree("tib");
-	if (rc != 0) {
-		LOG_WRN("settings_load_subtree('tib') failed (%d)", rc);
+	for (uint8_t i = 0U; i < ARRAY_SIZE(app_settings_subtrees); ++i) {
+		rc = settings_load_subtree(app_settings_subtrees[i]);
+		if (rc != 0) {
+			LOG_WRN("settings_load_subtree('%s') failed (%d)",
+				app_settings_subtrees[i], rc);
+			return rc;
+		}
 	}
 
-	return rc;
+	return 0;
 }
 
 void app_settings_get_snapshot(struct app_settings_snapshot *out)
@@ -684,8 +683,15 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_str(KEY_MQTT_HOST, mqtt->broker_host);
-		persist_u16(KEY_MQTT_PORT, mqtt->broker_port);
+		struct coo_mqtt_broker_config cfg = {
+			.port = mqtt->broker_port,
+		};
+		char endpoint[160];
+
+		str_set(cfg.host, sizeof(cfg.host), mqtt->broker_host);
+		if (coo_mqtt_format_broker_endpoint(&cfg, endpoint, sizeof(endpoint)) == 0) {
+			persist_str(KEY_MQTT_BROKER, endpoint);
+		}
 	}
 }
 

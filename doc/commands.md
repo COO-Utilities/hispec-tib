@@ -162,10 +162,14 @@ while serial guard is active and attenuator DAC-range clamping.
     ```json
     {
       "active_routes": {
-        "<source.name>": "<dest.name>"
+        "<dest.name>": ["<source.name>", "..."]
       }
     }
     ```
+    The response lists every destination present in the active board route
+    table. Each value is an array of currently connected sources because one
+    destination may receive multiple sources through combining optics. A
+    destination with no currently active source reports `["no source"]`.
     Active routes are read from current switch state and are not persisted.
 
 ### `mems`
@@ -689,11 +693,10 @@ measurement specification before firmware design or implementation.
   - Set:
     ```json
     {
-      "broker": "<ipv4-or-hostname>:<port>>",
+      "broker": "<ipv4-or-hostname>:<port>",
       "persistent": true
     }
     ```
-    `host` is accepted as an alias for `broker`.
   - Query: No payload
 
 - **Response topic:** `cmd/<device>/resp/mqtt`
@@ -704,7 +707,7 @@ measurement specification before firmware design or implementation.
     ```
 
 - **Notes:**
-  - Broker value may be numeric IPv4 or hostname.
+  - Broker value must be one `<host-or-ip>:<port>` string.
   - If DNS is not compiled in, hostname values are rejected.
   - Successful set updates runtime settings and triggers MQTT reconnect behavior.
 

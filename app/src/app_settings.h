@@ -2,7 +2,7 @@
  * @file app_settings.h
  * @brief Zephyr settings-backed app configuration and calibration ownership.
  *
- * The `tib` settings subtree owns persistent board identity, boot count,
+ * App-owned top-level settings subtrees store board identity, boot count,
  * operator network/MQTT configuration, serial guard duration, attenuator
  * coefficients, and photodiode calibration/noise thresholds.
  *
@@ -78,7 +78,7 @@ struct app_settings_snapshot {
 };
 
 /**
- * @brief Initialize Zephyr settings, load the `tib` subtree, and keep defaults on failure.
+ * @brief Initialize Zephyr settings, load app subtrees, and keep defaults on failure.
  *
  * Calls `settings_subsys_init()` and `settings_load_subtree()`, so it may
  * block on the configured settings backend.

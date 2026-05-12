@@ -26,6 +26,24 @@ struct coo_mqtt_broker_config {
 };
 
 /**
+ * @brief Parse one MQTT broker endpoint string.
+ *
+ * @param endpoint Endpoint in `<host-or-ip>:<port>` form.
+ * @param cfg Destination broker config.
+ * @return true on valid endpoint, false on malformed host or port.
+ */
+bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
+				    struct coo_mqtt_broker_config *cfg);
+
+/**
+ * @brief Format a broker config as `<host-or-ip>:<port>`.
+ *
+ * @return 0 on success, -ENOSPC if @p out is too small.
+ */
+int coo_mqtt_format_broker_endpoint(const struct coo_mqtt_broker_config *cfg,
+				    char *out, size_t out_len);
+
+/**
  * @brief MQTT message callback function type
  *
  * Called when an MQTT message is received on a subscribed topic.

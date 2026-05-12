@@ -2,9 +2,9 @@
 
 ## Ownership
 
-`app_settings.c` owns app-level persistent settings under the Zephyr settings
-subtree `tib`. It initializes defaults, loads stored values, and protects the
-runtime snapshot with a mutex.
+`app_settings.c` owns app-level persistent settings under named top-level
+Zephyr settings subtrees. It initializes defaults, loads stored values, and
+protects the runtime snapshot with a mutex.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
@@ -13,31 +13,30 @@ tables in `laser_properties.h` are compile-time defaults and estimates.
 
 Current app settings include:
 
-- `tib/board/type`
-- `tib/serial/holdoff_s`
-- `tib/boot_count`
-- `tib/ip/trydhcpfirst`
-- `tib/ip/preferdhcpdns`
-- `tib/ip/preferdhcpntp`
-- `tib/ip/ip`
-- `tib/ip/subnet`
-- `tib/ip/gateway`
-- `tib/ip/dns`
-- `tib/ip/ntp`
-- `tib/mqtt/host`
-- `tib/mqtt/port`
-- `tib/atten/<channel>/db2volt/<index>`
-- `tib/atten/<channel>/volt2db/<index>`
-- `tib/pd/yj/dark_mv`
-- `tib/pd/yj/lowest_dark_mv`
-- `tib/pd/yj/lowest_dark_valid`
-- `tib/pd/yj/noise_warn_rms_mv`
-- `tib/pd/yj/gain_v_per_uw`
-- `tib/pd/hk/dark_mv`
-- `tib/pd/hk/lowest_dark_mv`
-- `tib/pd/hk/lowest_dark_valid`
-- `tib/pd/hk/noise_warn_rms_mv`
-- `tib/pd/hk/gain_v_per_uw`
+- `board/type`
+- `serial/holdoff_s`
+- `boot/count`
+- `ip/trydhcpfirst`
+- `ip/preferdhcpdns`
+- `ip/preferdhcpntp`
+- `ip/ip`
+- `ip/subnet`
+- `ip/gateway`
+- `ip/dns`
+- `ip/ntp`
+- `mqtt/broker`
+- `atten/<channel>/db2volt/<index>`
+- `atten/<channel>/volt2db/<index>`
+- `pd/yj/dark_mv`
+- `pd/yj/lowest_dark_mv`
+- `pd/yj/lowest_dark_valid`
+- `pd/yj/noise_warn_rms_mv`
+- `pd/yj/gain_v_per_uw`
+- `pd/hk/dark_mv`
+- `pd/hk/lowest_dark_mv`
+- `pd/hk/lowest_dark_valid`
+- `pd/hk/noise_warn_rms_mv`
+- `pd/hk/gain_v_per_uw`
 
 ## Board-Type Reset Policy
 
@@ -51,7 +50,8 @@ silently reused on another.
 
 - IP defaults come from Zephyr network config symbols.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
-  `CONFIG_COO_MQTT_BROKER_PORT`.
+  `CONFIG_COO_MQTT_BROKER_PORT`; persistence uses one `mqtt/broker`
+  `<host-or-ip>:<port>` value.
 - Serial guard defaults to 30 s.
 - Attenuator coefficients default to all zeros until calibrated/stored.
 - Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise

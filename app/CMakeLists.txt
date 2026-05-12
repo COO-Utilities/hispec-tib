@@ -35,6 +35,7 @@ target_sources(app PRIVATE
         src/app_scheduled_actions.h
         src/app_settings.h
         src/app_warning.h
+        src/app_identity.h
         src/command.h
         src/devices.h
         src/lasers.h

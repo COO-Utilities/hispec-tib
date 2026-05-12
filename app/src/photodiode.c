@@ -14,6 +14,7 @@
 #include <math.h>
 
 #include "photodiode.h"
+#include "app_identity.h"
 #include "app_settings.h"
 #include "app_warning.h"
 #include "command.h"
@@ -21,6 +22,8 @@
 
 
 LOG_MODULE_REGISTER(photodiode, LOG_LEVEL_INF);
+
+#define PHOTODIODE_TELEMETRY_TOPIC "dt/" APP_MQTT_DEVICE_ID "/photodiode"
 
 // More ADC info:
 // https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/drivers/adc/adc_dt/src/main.c
@@ -538,7 +541,7 @@ void photodiode_thread(void *p1, void *p2, void *p3)
          */
         msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
         msg.qos = 0;
-        snprintk(msg.topic, sizeof(msg.topic), "dt/hsfib-tib/photodiode");
+        snprintk(msg.topic, sizeof(msg.topic), PHOTODIODE_TELEMETRY_TOPIC);
         pd_build_telemetry_payload(msg.payload, sizeof(msg.payload));
         msg.payload_len = strlen(msg.payload);
 

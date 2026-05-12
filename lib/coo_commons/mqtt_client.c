@@ -16,6 +16,7 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/sys/util.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(coo_mqtt, LOG_LEVEL_DBG);
@@ -48,6 +49,58 @@ static int num_subscriptions = 0;
 
 /* Retry configuration */
 #define MSECS_NET_POLL_TIMEOUT 30000
+
+bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
+				    struct coo_mqtt_broker_config *cfg)
+{
+	const char *colon;
+	char *end = NULL;
+	unsigned long port;
+	size_t host_size;
+
+	if (endpoint == NULL || cfg == NULL) {
+		return false;
+	}
+
+	colon = strrchr(endpoint, ':');
+	if (colon == NULL || colon == endpoint || colon[1] == '\0') {
+		return false;
+	}
+
+	host_size = (size_t)(colon - endpoint);
+	if (host_size >= sizeof(cfg->host)) {
+		return false;
+	}
+
+	errno = 0;
+	port = strtoul(colon + 1, &end, 10);
+	if (errno != 0 || end == colon + 1 || *end != '\0' ||
+	    port == 0UL || port > UINT16_MAX) {
+		return false;
+	}
+
+	memcpy(cfg->host, endpoint, host_size);
+	cfg->host[host_size] = '\0';
+	cfg->port = (uint16_t)port;
+	return true;
+}
+
+int coo_mqtt_format_broker_endpoint(const struct coo_mqtt_broker_config *cfg,
+				    char *out, size_t out_len)
+{
+	int written;
+
+	if (cfg == NULL || out == NULL || out_len == 0U) {
+		return -EINVAL;
+	}
+
+	written = snprintk(out, out_len, "%s:%u", cfg->host, cfg->port);
+	if (written < 0 || written >= (int)out_len) {
+		return -ENOSPC;
+	}
+
+	return 0;
+}
 
 static int resolve_broker_addr(void)
 {

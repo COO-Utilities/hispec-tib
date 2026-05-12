@@ -13,7 +13,7 @@ The firmware reads four active-low board-identity straps from `zephyr,user`:
 
 Exactly one strap must be active. None active, multiple active, unmapped GPIOs,
 or unreadable GPIOs select the `unknown` profile and block board-specific setup.
-The selected type is persisted under `tib/board/type`; a later valid change
+The selected type is persisted under `board/type`; a later valid change
 clears other app settings before storing the new profile.
 
 ## Profile Summary
@@ -107,4 +107,3 @@ Implemented routes:
 
 The `split` command uses the `*_calin -> *_split` routes. `ratio1` and
 `ratio2` are requested; `ratio3` is the computed remainder.
-
