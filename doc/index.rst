@@ -16,12 +16,17 @@ Source-of-truth rules:
    :caption: Architecture and Runtime
 
    architecture.md
-   hardware_profiles.md
    threads.md
    queues_and_work.md
    settings.md
    warnings_and_telemetry.md
    diagrams.md
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Hardware
+
+   hardware_overview.md
 
 .. toctree::
    :maxdepth: 2
@@ -41,7 +46,7 @@ Source-of-truth rules:
    libraries.md
    networking_plan.md
    nuisances.md
-   hardware.md
+   todo.md
 
 .. toctree::
    :maxdepth: 2

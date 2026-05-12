@@ -119,26 +119,11 @@ hispec-tib/
 
 ## Open items
 
-- Review W5500/Pico references in old branch history before deciding whether
-  they should remain documented anywhere authoritative.
-- Add automated command parser and non-hardware domain tests.
+- Review W5500/Pico references and remove
 - Reconcile DAC7578/twelve-FVOA hardware description with current six logical
   attenuator channels and single `dac7578` device handle.
-- Reconcile MEMS open-drain/push-pull hardware requirements with current raw
-  GPIO expander control.
 - Resolve command/spec mismatches listed in `doc/human_review_required.md`.
 
-## LLM-resolved items requiring human review
-
-- The README quick start was updated from the older W5500/Pico template to the
-  current Nucleo H563ZI build contract.
-- Old README command examples were replaced by links to the migrated command
-  spec and implementation audit, because several examples no longer matched
-  the command dispatcher.
-- Old notes described settings as a stub. Current firmware persists board
-  type, boot count, serial guard, IP, MQTT, attenuator coefficients, and
-  photodiode settings; remaining operating-state persistence still needs owner
-  review.
 
 ## License
 

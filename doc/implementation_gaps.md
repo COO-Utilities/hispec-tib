@@ -16,7 +16,6 @@ requirements.
   currently dispatched key shape.
 - `reboot` requires SET semantics in implementation even though docs imply a
   no-payload action.
-- `power` and `sleep` exist in code but need spec review.
 
 ## Hardware/Profile Gaps
 
@@ -25,7 +24,6 @@ requirements.
   one `dac7578` device.
 - MEMS electrical mode is not represented per switch in firmware. Hardware
   notes distinguish FFSW open-drain and FFLS push-pull.
-- Modbus stop-bit constants and runtime configuration disagree.
 - CAL switch names have an explicit source TODO pending final fiber path names.
 - Temperature sensing only exposes ambient DS18B20 data; laser-bank average and
   alarm lockout behavior are not implemented.
@@ -35,20 +33,20 @@ requirements.
 The following runtime state is not persisted:
 
 - MEMS switch state.
-- Active routes.
 - Split requested/actual state.
-- Laser-bank power state.
-- DS2408 relay output state.
 - Laser current, pulse, temperature, and tuning state.
 - Last-command status.
 
-## Telemetry and Warning Gaps
+The following runtime state is intentionally not persisted:
 
-- Warning delivery is lossy by design and is not mirrored into sticky status.
-- Photodiode telemetry has a hardcoded device id/topic.
-- Command response JSON is hand-built in fixed buffers; some overflow paths are
-  handled better than others.
-- Photodiode queue-full policy purges telemetry and retries the current sample.
+- Active routes, because they are derived from current MEMS switch state and
+  route tables.
+- Laser-bank power state, because reboot must return laser-related power rails
+  and heaters to the off state unless a future owner-approved policy says
+  otherwise.
+- DS2408 relay output state, for the same explicit-power-on-after-reboot
+  policy.
+
 
 ## Source TODOs Preserved
 
@@ -59,7 +57,6 @@ The following runtime state is not persisted:
 - `app/src/devices.c`: final CAL route/switch names need owner decision.
 - `app/src/command.c`: MQTT host/port schema TODO tagged `-JIB`.
 - `app/src/command.c`: internal route-error TODO.
-- `app/src/command.c`: `sleep` TODO.
 - `app/src/attenuator.c`: attenuator calibration/nonlinearity TODO.
 - `lib/coo_commons/network.c`: DHCP/network helper necessity TODOs.
 - `hardware.md`: photodiode ADC clamp TODO.

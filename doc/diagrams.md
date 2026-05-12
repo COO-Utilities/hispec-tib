@@ -37,9 +37,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Start[main] --> Watchdog[configure watchdog if ready]
-  Watchdog --> Load[load settings]
-  Load --> Straps[read active-low board straps]
+  Start[main] --> Watchdog[configure watchdog]
+  Watchdog --> WdogOK{watchdog ready}
+  WdogOK -- no --> Stop[stop boot]
+  WdogOK -- yes --> Load[load settings]
+  Load --> SettingsOK{settings loaded}
+  SettingsOK -- no --> Stop
+  SettingsOK -- yes --> Straps[read active-low board straps]
   Straps --> PersistBoard[persist or validate board type]
   PersistBoard --> DevicesReady[check profile devices]
   DevicesReady --> Router[setup MEMS switches/routes]
@@ -82,8 +86,10 @@ flowchart TD
   Parse --> SetOrGet[default MSG_SET unless msg_type get]
   Get --> Guard{serial guard active}
   SetOrGet --> Guard
-  Guard -- yes --> Reject[publish/enqueue serial guard error]
-  Guard -- no --> Enq{inbound_queue has space}
+  Guard -- yes --> GetAllowed{safe GET}
+  GetAllowed -- no --> Reject[publish/enqueue serial guard error]
+  GetAllowed -- yes --> Enq{inbound_queue has space}
+  Guard -- no --> Enq
   Enq -- yes --> Queue[queue Command]
   Enq -- no --> Busy[publish/enqueue busy error]
 ```
@@ -298,9 +304,10 @@ flowchart TD
 flowchart TD
   Boot[main boot] --> Lookup[DEVICE_DT_GET watchdog]
   Lookup --> Ready{watchdog ready}
-  Ready -- no --> Disabled[continue without watchdog]
+  Ready -- no --> Stop[stop boot]
   Ready -- yes --> Install[wdt_install_timeout]
   Install --> Setup[wdt_setup]
+  Setup -- failure --> Stop
   Setup --> Loop[main loop]
   Loop --> Feed[wdt_feed]
   Feed --> Loop

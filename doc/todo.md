@@ -1,67 +1,56 @@
-- make ch 7/8 on TIB use MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS for switch pulse width and disallow splitting 
+# TODO Review Follow-Up
 
-- `hardware.md` describes two DAC7578 devices and twelve physical FVOA channels
-  on TIB. Current code exposes six logical attenuator channels and only uses the
-  `dac7578` devicetree label.
+This page records owner-review items that remain after the documentation TODO
+review. It is not a command specification; `commands.md` remains authoritative
+for intended command behavior.
 
-- `devices.h` defines `MODBUS_STOPBITS` as two stop bits, while
-  `setup_modbus_client()` currently configures one stop bit.
+## Addressed in This Pass
 
-- doumentation needs a true hardware details page. make Hardware have subpages of hardware details and present hardware profiles page
+- `commands.md` documents photodiode dark-measurement and dark-settings
+  commands, fixes the `status` response topic spelling, removes stale MEMS
+  response TODO text, and fixes the AS split route wording.
 
-- remove the ADC1115 mutex, it is wholly unnecessary, remove it from documentation
-- add grabbing the inactive-tec temps to the tempsense thread and folding them into the available system temp OR make sure that is handled by the box heater loop.
+## Deferred Owner-Specified Capabilities
 
+Do not design or implement these without a detailed owner specification:
 
-- check that the current SNTP handler's blocking up to the SNTP timeout isn't an issue for the zephyr thead/work system
+- `measure_tput`.
+- `laserbank/autowarm` and bank temperature management.
+- Attenuator calibration/nonlinearity work and default coefficient selection.
+- Laser/laser-bank command interface expansion.
+- Broad `command.c` refactoring into domain-owned command helpers.
 
-- decide on thread priorities, lower is more important, and update docs
+## Remaining Implementation Items
 
+- TIB MEMS channels 7 and 8 need FFLS-specific pulse-width handling using
+  `MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS`, and split/toggle behavior involving
+  those switches needs an owner decision.
+- Temperature sensing currently exposes only ambient DS18B20 data. Decide
+  whether inactive TEC temperatures belong in the temperature thread or in a
+  future box-heater/bank-temperature loop.
+- Thread priorities still need hardware-timing review.
+- Consider whether `photodiode_publish_work` should be removed and photodiode
+  telemetry should push directly to `outbound_queue`.
+- Photodiode telemetry still hardcodes `dt/hsfib-tib/photodiode`; align it with
+  whatever device-id/topic ownership policy is chosen for all publishers.
+- Review hand-built MQTT response JSON for consistent overflow behavior.
+- Replace the terse `help` response with a maintained command summary, and
+  remove the stale advertised `power` command name.
+- Decide whether `memsroute` query output should change from current
+  `source: dest` pairs to `dest: source` plus explicit `no source` entries.
+- Decide whether the all-switch `mems` query response is acceptable for the
+  fixed MQTT payload budget or should be narrowed further.
+- Decide whether stored settings should eventually drop the `tib/` prefix. This
+  requires a settings migration plan, not just a key rename.
+- Convert MQTT broker get/set to a single `<host-or-ip>:<port>` value and
+  reject hostnames when DNS is unavailable. The current implementation still
+  stores host and port separately.
 
-- interaction of photodiode_publish_work and outbound queue could result in some ADC messages being stale unless adc messages are flagged as best effort so FLAG ADC messages as best effort
-  - can we just make photodiode queue push directly to the outbound queue?
+## Remaining Documentation/Human-Review Items
 
-- ensure ADC sample drop is noted in publish description
+- SNTP sync runs in system workqueue context and can block up to the SNTP
+  timeout. Decide whether that is acceptable for this firmware.
+- CAL switch and route names are still provisional.
+- Reconcile hardware/code mismatches for TIB attenuator DAC coverage and MEMS
+  electrical mode.
 
-- drop /tib from stored settings key 
-
-
-- finialize/update settings defaults for e.g. Attenuator coefficients
-
--
-- Photodiode telemetry hardcodes the device id and topic, make this consistent with how device-id/topics are set for other publishes
-
-- review all MQTT response payloads that are hand-built strings; buffer overflow paths are handled inconsistently across commands.
-
-- !!!! URGENT "Correlation data is echoed when it fits the fixed response buffer." this is not acceptable. CORRELATION DATA MUST BE output for system correctness
-
-- fail to boot if watchdog can't be made ready. Update doc/mermaid 
-
-- document what a settings load failure at boot means: Any settings load fail other than firstboot is an failure that requires human intervention, to at a minimum, reinit settings 
-
-- allow mqtt gets while serial is active
-
-- ensure that in photodiode monitoring thread noise above thresh threashold and noise monitoring are common to dark/non-dark measure path, that any above threashold does not stop thread and that mermaid diagram isn't incorrectly implying loop termination after app_warning_emit photodiode_noise (loop should not ever terminate)
-
-- see if tempsense can get rid of mutexes or if needed update mermail to clarify it is for reading not device access
-
-- make the help command
-
-- docs for memsroute suggest the order needs flipping still, figure out and clean up what needs cleanup. the  flip this so it is dest:source and dest that have no source are "no source"
-
-
-- simplify mems command response to see mems/<switchname> 
-
-- sort out "TODO this response bloated to likely beyond what is reasonable MQTT" for the mems query and update docs
-
-- !!!! MAJOR acutually implement measure_tput¶
-
-- add right side toc overview so at least command endpoints page has a clickable for each command
-
-- fix markdown formatting of | `power` | `cmd/hsfib-tib/req/power` | `cmd/hsfib-tib/resp/power` | `power [on|off]` |
-
-- figure out what "pd dark-measurement actions are implementation-specific." means
-
-- Laserbank power actions are implemented without autowarm or deep driver fault detection. fix as part of bank temp manager
-
-- document photodiode dark management commands in commands.md

@@ -39,6 +39,15 @@ html_theme_options = {
     "description": "Zephyr RTOS firmware documentation",
     "fixed_sidebar": True,
 }
+html_sidebars = {
+    "**": [
+        "about.html",
+        "navigation.html",
+        "localtoc.html",
+        "relations.html",
+        "searchbox.html",
+    ]
+}
 
 myst_heading_anchors = 3
 myst_fence_as_directive = ["mermaid"]

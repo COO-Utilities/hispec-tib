@@ -11,7 +11,8 @@ and current C source remains the source of truth for what is implemented today.
 - Primary board currently described by overlay: `nucleo_h563zi/stm32h563xx`.
 - Boot path: `main.c` initializes watchdog, settings, board strap detection,
   profile-specific devices, command runtime, serial/MQTT command paths,
-  photodiode telemetry bridge, SNTP, network, and MQTT.
+  photodiode telemetry bridge, SNTP, network, and MQTT. Watchdog or settings
+  initialization failure stops boot.
 - Command ingress: MQTT and serial both produce `struct Command` records and
   enqueue them to `inbound_queue`.
 - Command execution: `command_executor_thread()` dispatches commands through the
@@ -34,14 +35,15 @@ and current C source remains the source of truth for what is implemented today.
 - TIB laser-bank GPIO power on/off and clear-faults-by-power-cycle commands.
 - Raw Maiman Modbus register get/set helpers and higher-level laser helper APIs.
 - Logical attenuator value, dB value, and coefficient command support.
-- Photodiode sampling, telemetry, explicit dark measurement, stored dark update,
-  lowest-dark tracking, and noise warnings.
+- Photodiode sampling, best-effort telemetry, explicit dark measurement, stored
+  dark update, lowest-dark tracking, and noise warnings.
 - DS18B20 ambient temperature sampling and `temp` query.
 - IPv4 network helper with DHCP/static/fallback behavior and link monitoring.
 - MQTT broker settings with runtime reconnect trigger.
-- Serial command guard with scheduled expiration and MQTT command rejection.
+- Serial command guard with scheduled expiration, MQTT SET/action rejection,
+  and safe MQTT GET passthrough.
 - SNTP sync from manual or DHCP NTP server.
-- Watchdog setup/feed in the main loop.
+- Watchdog setup/feed in the main loop; watchdog setup failure stops boot.
 
 ## Partially Implemented
 
@@ -60,13 +62,12 @@ and current C source remains the source of truth for what is implemented today.
 
 - Reconcile implemented command behavior against `commands.md`; see
   `command_implementation_audit.md` and `implemented_commands.md`.
-- Reconcile hardware/code mismatches for attenuator DAC coverage, MEMS GPIO
-  electrical mode, and Modbus stop-bit constants; see
-  `human_review_required.md`.
-- Decide intended persistence for MEMS state, split state, laser output state,
-  relay outputs, and laser-bank power state.
-- Decide whether `power` and `sleep` remain supported commands, and document or
-  remove the no-op `sleep` behavior.
+- Reconcile hardware/code mismatches for attenuator DAC coverage and MEMS GPIO
+  electrical mode; see `human_review_required.md`.
+- Decide intended persistence for MEMS switch state, AS split requested/actual
+  state, laser output/tuning state, and last-command metadata.
+- Remove stale command help/docs references to unsupported `power` and `sleep`
+  command names, or reintroduce those commands with an owner-approved spec.
 - Add automated tests for command parsing and non-hardware domain logic.
 - Decide whether the COO commons network/MQTT helpers should remain app-local
   wrappers or become shared library APIs with stricter contracts.

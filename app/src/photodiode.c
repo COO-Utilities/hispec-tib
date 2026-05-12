@@ -91,7 +91,6 @@ struct photodiode_dark_request {
 static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
 static struct photodiode_dark_request pd_dark[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(pd_runtime_lock);
-static K_MUTEX_DEFINE(pd_adc_lock);
 
 static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
 {
@@ -113,15 +112,10 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
         return -ENODEV;
     }
 
-    /* ADS1115 conversions are serialized because the chip uses a muxed ADC.
-     * adc_read() blocks until the selected channel conversion completes.
-     */
-    k_mutex_lock(&pd_adc_lock, K_FOREVER);
     rc = adc_channel_setup(adc_dev, pd_adc_cfg[channel]);
     if (rc == 0) {
         rc = adc_read(adc_dev, &seq);
     }
-    k_mutex_unlock(&pd_adc_lock);
 
     return rc;
 }
@@ -539,7 +533,10 @@ void photodiode_thread(void *p1, void *p2, void *p3)
             pd_update_channel((enum photodiode_channel)i, rc, raw, &settings.channel[i]);
         }
 
-        msg.target = OUT_TARGET_MQTT;
+        /* Photodiode samples are status telemetry, not command responses. Drop
+         * stale samples rather than retaining them across MQTT backpressure.
+         */
+        msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
         msg.qos = 0;
         snprintk(msg.topic, sizeof(msg.topic), "dt/hsfib-tib/photodiode");
         pd_build_telemetry_payload(msg.payload, sizeof(msg.payload));

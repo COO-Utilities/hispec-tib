@@ -9,7 +9,10 @@ a replacement for `commands.md`.
 - Default MQTT response prefix: `cmd/hsfib-tib/resp/`.
 - MQTT `response_topic` overrides the default when supplied and fitting the
   fixed buffer.
-- MQTT `correlation_data` is echoed when fitting the fixed buffer.
+- MQTT `correlation_data` is copied into a fixed static buffer sized to the
+  configured MQTT packet buffer and echoed exactly in responses.
+- While serial guard is active, safe MQTT GETs are accepted, but MQTT SET/action
+  commands and legacy side-effect GET handlers are rejected.
 - Empty MQTT payload is GET.
 - Non-empty MQTT payload is SET unless it includes `msg_type:"get"`.
 - Serial `<key>` is GET.
@@ -36,13 +39,11 @@ a replacement for `commands.md`.
 | `laserbank/poweroff` | `cmd/hsfib-tib/req/laserbank/poweroff` | `cmd/hsfib-tib/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
 | `laserbank/clearfaults` | `cmd/hsfib-tib/req/laserbank/clearfaults` | `cmd/hsfib-tib/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
 | `laser/...` | `cmd/hsfib-tib/req/laser/...` | `cmd/hsfib-tib/resp/laser/...` | `laser/... [payload]` |
-| `power` | `cmd/hsfib-tib/req/power` | `cmd/hsfib-tib/resp/power` | `power [on|off]` |
 | `atten/<laser>/<setting>` | `cmd/hsfib-tib/req/atten/<laser>/<setting>` | `cmd/hsfib-tib/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
 | `pd` | `cmd/hsfib-tib/req/pd` | `cmd/hsfib-tib/resp/pd` | `pd [payload]` |
 | `pdsettings/<channel>` | `cmd/hsfib-tib/req/pdsettings/<channel>` | `cmd/hsfib-tib/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
 | `temp` | `cmd/hsfib-tib/req/temp` | `cmd/hsfib-tib/resp/temp` | `temp` |
 | `status` | `cmd/hsfib-tib/req/status` | `cmd/hsfib-tib/resp/status` | `status` |
-| `sleep` | `cmd/hsfib-tib/req/sleep` | `cmd/hsfib-tib/resp/sleep` | `sleep <bool>` |
 
 ## Command Details
 
@@ -52,7 +53,7 @@ a replacement for `commands.md`.
 - Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,laser,laserbank,power,atten,pd,pdsettings"}`.
 - No hardware side effects, no settings writes, no direct publish.
 - Handler: `help_get()` in `app/src/command.c`.
-- Mismatch: help text is implementation-derived and not a full copy of
+- Mismatch: help text is implementation-derived, not a full copy of
   `commands.md`.
 
 ### `ip`
@@ -111,6 +112,9 @@ a replacement for `commands.md`.
 - Validation: seconds/value must parse as unsigned 32-bit.
 - Side effects: updates serial guard setting; optional persistence; serial SET
   refreshes the active guard window.
+- While active, serial guard rejects MQTT SET/action commands. Safe read-only
+  MQTT GETs are allowed; laser-bank power and raw laser register GETs remain
+  blocked because those legacy GET handlers can have side effects.
 - Serial shorthand: `serialguard off`, `serialguard <seconds> [persistent]`.
 - Handler: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
 
@@ -264,7 +268,5 @@ a replacement for `commands.md`.
   switch count, network ready/IP, and laser power.
 - Side effects: none.
 - Handler: `status_get()` in `app/src/command.c`.
-- Mismatch: `commands.md` documents a much larger payload and response-topic
-  typo `stauts`.
-
+- Mismatch: `commands.md` documents a much larger payload.
 

@@ -197,14 +197,19 @@ int main(void)
 
 	LOG_INF("HiSPEC-FIB PCB  %s\n", APP_VERSION_STRING);
 
-	/* Watchdog setup is best-effort; main feeds it only from the main
-	 * MQTT/network loop so a wedged main path can still reset the MCU.
+	/* Watchdog availability is a boot requirement. The main loop feeds it only
+	 * from the MQTT/network path so a wedged main path can still reset the MCU.
 	 */
-	(void)watchdog_init(&wdt, &wdt_channel);
+	rc = watchdog_init(&wdt, &wdt_channel);
+	if (rc != 0) {
+		LOG_ERR("Watchdog init failed (%d); refusing to boot", rc);
+		return rc;
+	}
 
 	rc = app_settings_init();
 	if (rc != 0) {
-		LOG_WRN("Settings init failed (%d); continuing with defaults", rc);
+		LOG_ERR("Settings init/load failed (%d); refusing to boot", rc);
+		return rc;
 	}
 
 	rc = devices_detect_board_type();

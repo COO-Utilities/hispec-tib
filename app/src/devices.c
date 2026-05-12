@@ -614,9 +614,9 @@ static bool setup_modbus_client(void)
 	struct modbus_iface_param modbus_cfg = {
 		.mode = MODBUS_MODE_RTU,
 		.serial = {
-			.baud = 115200,
-			.parity = UART_CFG_PARITY_NONE,
-			.stop_bits = UART_CFG_STOP_BITS_1,
+			.baud = MODBUS_BAUD,
+			.parity = MODBUS_PARITY,
+			.stop_bits = MODBUS_STOPBITS,
 		},
 		.rx_timeout = MODBUS_RX_TIMEOUT_MS,
 	};

@@ -35,13 +35,11 @@ Implemented dispatch entries:
 | `laserbank/poweroff` | yes, side effect | yes |
 | `laserbank/clearfaults` | yes, side effect | yes |
 | `laser` | yes, currently key-shape mismatch | yes, currently key-shape mismatch |
-| `power` | yes | yes |
 | `atten` | yes | yes |
 | `pdsettings` | yes | yes |
 | `pd` | yes | yes |
 | `temp` | yes | no |
 | `status` | yes | no |
-| `sleep` | no | yes, no-op |
 
 ## GET and SET Selection
 
@@ -71,11 +69,8 @@ cmd/hsfib-tib/resp/<key>
 ```
 
 MQTT 5 `response_topic` overrides this default if it fits the fixed topic
-buffer. MQTT 5 `correlation_data` is echoed when it fits the fixed response
-buffer.
-
-`commands.md` contains a stale typo for `status`: `cmd/<device>/resp/stauts`.
-Code uses `cmd/hsfib-tib/resp/status`.
+buffer. MQTT 5 `correlation_data` is copied into a fixed static buffer sized to
+the configured MQTT packet buffer and echoed exactly in responses.
 
 ## Commands Documented but Not Implemented
 
@@ -109,7 +104,6 @@ Code uses `cmd/hsfib-tib/resp/status`.
 - `reboot` is SET-only. An empty MQTT payload or bare serial `reboot` is
   unsupported; a non-empty payload schedules a reboot.
 
-
 ## Blocking and Queueing Summary
 
 - All command handlers run in the single command executor thread.
@@ -120,3 +114,5 @@ Code uses `cmd/hsfib-tib/resp/status`.
 - MEMS and split commands update router state and can enqueue warnings but do
   not publish directly.
 - Warning publication is best-effort through `outbound_queue`.
+- Photodiode telemetry is best-effort and can be dropped under MQTT or queue
+  backpressure.

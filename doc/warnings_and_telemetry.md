@@ -12,6 +12,8 @@ Behavior:
   `K_NO_WAIT`.
 - Drops the MQTT warning if the queue is full, MQTT is unavailable, or publish
   fails.
+- Warnings are intentionally not mirrored into sticky status fields. Operators
+  can inspect logs or retry/query state after a warning.
 
 Warning topic:
 
@@ -39,8 +41,11 @@ Payload includes per-channel validity, raw counts, mV, dark-subtracted mV,
 estimated power, residual RMS noise, dark settings, dark measurement state,
 age, sample count, and uptime.
 
-Telemetry is queued through `photodiode_queue` first, then transferred to the
-normal outbound queue by `photodiode_publish_work`.
+Telemetry is best-effort. It is queued through `photodiode_queue` first, then
+transferred to the normal outbound queue by `photodiode_publish_work`. If the
+photodiode queue is full, old samples are purged and the current sample is
+retried. If MQTT is unavailable or publish fails after transfer, the sample is
+dropped.
 
 ## Command Responses
 
@@ -50,4 +55,6 @@ the main loop. MQTT response topic selection is:
 1. MQTT 5 `response_topic` property when present and fitting the fixed buffer.
 2. Default `cmd/hsfib-tib/resp/<key>`.
 
-Correlation data is echoed when it fits the fixed response buffer.
+MQTT 5 correlation data is opaque requester state. Accepted command requests
+copy it into a fixed static buffer sized to the configured MQTT packet buffer,
+and command responses echo those bytes exactly.

@@ -280,10 +280,10 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
         strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
     }
 
-    /* MQTT 5 correlation_data is opaque to the firmware and is echoed exactly
-     * when it fits the fixed response buffer.
+    /* MQTT 5 correlation_data is opaque requester state and must be echoed
+     * exactly so clients can match command responses.
      */
-    if (cmd && cmd->corr_len > 0 && cmd->corr_len < sizeof(r.correlation_data)) {
+    if (cmd && cmd->corr_len > 0 && cmd->corr_len <= sizeof(r.correlation_data)) {
         memcpy(r.correlation_data, cmd->correlation_data, cmd->corr_len);
         r.corr_len = cmd->corr_len;
     }
@@ -301,6 +301,25 @@ static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
 
     memcpy(out, topic->utf8, topic->size);
     out[topic->size] = '\0';
+    return true;
+}
+
+static bool mqtt_get_allowed_during_serial_guard(const char *key)
+{
+    const struct DispatchEntry *entry = find_dispatch(key);
+
+    if (entry == NULL || entry->get_handler == NULL) {
+        return false;
+    }
+
+    /* Some legacy GET handlers currently have side effects. Keep those blocked
+     * under serial guard until their command shape is corrected.
+     */
+    if (strncmp(entry->key, "laserbank/", strlen("laserbank/")) == 0 ||
+        strcmp(entry->key, "laser") == 0) {
+        return false;
+    }
+
     return true;
 }
 
@@ -684,7 +703,8 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         cmd.corr_len = pub->prop.correlation_data.len;
     }
 
-    if (!command_network_mqtt_allowed()) {
+    if (!command_network_mqtt_allowed() &&
+        (cmd.msg_type != MSG_GET || !mqtt_get_allowed_during_serial_guard(cmd.key))) {
         struct OutMsg r = serial_active_response(&cmd);
 
         LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
@@ -1182,7 +1202,7 @@ struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
                         "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
-                        "memsroute,mems,split,laser,laserbank,power,atten,pd,pdsettings\"}");
+                        "memsroute,mems,split,laser,laserbank,atten,pd,pdsettings\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
@@ -2971,5 +2991,3 @@ struct OutMsg temp_get(const struct Command *cmd)
 
     return _msg_builder(cmd, ts.valid ? RESP_OK : RESP_ERROR, payload);
 }
-
-

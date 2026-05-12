@@ -66,13 +66,22 @@ the executor thread.
 Photodiode stored dark updates happen in the sampler thread when a user-started
 dark measurement completes with `store:true`.
 
+If settings loading fails after a board has already been initialized in the
+field, treat it as a human-intervention fault. At minimum, inspect logs and
+reinitialize settings before trusting persisted calibration or network intent.
+A first boot with no stored settings is normal and should use defaults.
+
+## Intentionally Not Persisted
+
+- Active routes are derived from current MEMS switch state and route tables.
+- Laser-bank power state is not restored after reboot. Reboot must leave lasers
+  off, laser-bank power down, the laser-bank heater off, and photodiode power
+  off until an explicit command or future owner-specified policy changes that.
+- DS2408 relay output state is not restored after reboot.
+
 ## Not Currently Persisted
 
-- MEMS switch state and route state.
+- MEMS switch state.
 - AS split requested/actual state.
-- Laser-bank power state.
-- DS2408 relay output state.
 - Laser output current, temperature, pulse, or tuning state.
 - Last command metadata.
-
-These are implementation gaps, not silently assumed behavior.

@@ -33,7 +33,7 @@ Runtime ownership is:
 
 ## Boot Sequence
 
-1. `main()` starts and initializes the watchdog if available.
+1. `main()` starts and initializes the watchdog.
 2. `app_settings_init()` loads defaults and then stored `tib/...` settings.
 3. `devices_detect_board_type()` reads four active-low strap GPIOs.
 4. `app_settings_note_board_type()` persists board type and clears other app
@@ -78,10 +78,11 @@ one response.
 
 ## Hardware Control
 
-Commands do not directly publish. For example, MEMS commands update router-owned switch state
-that is applied by the MEMS delayable-work tick. Photodiode sampling does not
-publish directly; it sends telemetry through `photodiode_queue`. Warning
-publication is non-blocking and best-effort.
+Commands do not directly publish. For example, MEMS commands update
+router-owned switch state that is applied by the MEMS delayable-work tick.
+Photodiode sampling does not publish directly; it sends best-effort telemetry
+through `photodiode_queue`. Warning publication is non-blocking and
+best-effort.
 
 Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

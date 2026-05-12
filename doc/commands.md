@@ -16,7 +16,8 @@ Draft 0.1
 - Req/resp also use MQTT5 request/response metadata:
   - **On requests (publisher → device):**
     - `response_topic`: where the device should publish the response (this doc assumes it’s under `cmd/<device>/resp/...`)
-    - `correlation_data`: opaque bytes echoed back in the response so the requester can match replies to requests
+    - `correlation_data`: opaque bytes that are echoed back exactly in the
+      response so the requester can match replies to requests
   - **On responses (device → publisher):**
     - `correlation_data`: copied from the request
     - `qos`: response QoS
@@ -51,7 +52,7 @@ keywords in the serial command set.
 serialguard seconds=60
 mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
 split channel=yj ratio1=0.33 ratio2=0.33 stopafter_s=300
-power on
+laserbank/poweron
 ```
 
 Payload rules:
@@ -61,7 +62,7 @@ Payload rules:
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
   `state=A stopafter_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
-  `power on`, `serialguard off`, or `mems/yj_cal_laser A 0.5 30`.
+  `serialguard off` or `mems/yj_cal_laser A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
 
 Serial response format:
@@ -84,29 +85,30 @@ for normal serial operation.
 ---
 
 ## Command Endpoints
-- `help`
-- `memsroute`
-- `mems`
-- `mems/<switchname>`
-- `measure_tput`
-- `laser`
-- `lasersettings`
-- `laserbank/poweron`
-- `laserbank/poweroff`
-- `laserbank/clearfaults`
-- `atten/<laser>/value`
-- `atten/<laser>/valuedb`
-- `atten/<laser>/coeff`
-- `pd`
-- `pdsettings/<yj|hk>`
-- `ip`
-- `mqtt`
-- `serialguard`
-- `time`
-- `temp`
-- `status`
-- `reboot`
-- `split`
+- [`help`](#help)
+- [`memsroute`](#memsroute)
+- [`mems`](#mems)
+- [`mems/<switchname>`](#mems-switchname)
+- [`measure_tput`](#measure-tput)
+- [`laser`](#laser)
+- [`lasersettings`](#lasersettings)
+- [`laserbank/poweron`](#laserbank-poweron)
+- [`laserbank/poweroff`](#laserbank-poweroff)
+- [`laserbank/clearfaults`](#laserbank-clearfaults)
+- [`laserbank/autowarm`](#laserbank-autowarm)
+- [`atten/<laser>/value`](#atten)
+- [`atten/<laser>/valuedb`](#atten)
+- [`atten/<laser>/coeff`](#atten)
+- [`pd`](#pd)
+- [`pdsettings/<yj|hk>`](#pdsettings)
+- [`ip`](#ip)
+- [`mqtt`](#mqtt)
+- [`serialguard`](#serialguard)
+- [`time`](#time)
+- [`temp`](#temp)
+- [`status`](#status)
+- [`reboot`](#reboot)
+- [`split`](#split)
 - Telemetry: `yj_tput`, `hk_tput`
 - Warnings: `dt/<device>/warning`
 
@@ -133,8 +135,9 @@ is publish-only.
   ```
 
 Warnings do not imply command failure unless the command response also reports
-an error. Current warning emitters include MQTT command rejection while serial
-guard is active and attenuator DAC-range clamping.
+an error. Warning delivery is intentionally lossy and is not mirrored into
+sticky status fields. Current warning emitters include MQTT command rejection
+while serial guard is active and attenuator DAC-range clamping.
 
 ### `help`
 - **Request topic:** `cmd/<device>/req/help`
@@ -156,13 +159,14 @@ guard is active and attenuator DAC-range clamping.
 - **Response topic:** `cmd/<device>/resp/memsroute`
   - Set result: `{"status":"OK"}`
   - Query result:
-    ```text
-    TODO flip this so it is dest:source and dest that have no source are "no source"
-    {"active_routes": {
-            "<source.name>":"<dest.name>"
+    ```json
+    {
+      "active_routes": {
+        "<source.name>": "<dest.name>"
       }
     }
-     ```
+    ```
+    Active routes are read from current switch state and are not persisted.
 
 ### `mems`
 - **Request topic:** `cmd/<device>/req/mems`
@@ -181,8 +185,11 @@ guard is active and attenuator DAC-range clamping.
     }
     ```
     Note duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling.
-    TODO this response bloated to likely beyond what is reasonable MQTT
+    If this response exceeds the fixed MQTT payload buffer, the command returns
+    an error rather than a partial switch listing. Use `mems/<switchname>` for a
+    bounded single-switch query.
 
+(mems-switchname)=
 ### `mems/<switchname>`
 - **Request topic:** `cmd/<device>/req/mems/<switchname>`
   - Query: No payload
@@ -213,6 +220,7 @@ guard is active and attenuator DAC-range clamping.
     `dt/<device>/warning`.
 
 
+(measure-tput)=
 ### `measure_tput`
 - **Request topic:** `cmd/<device>/req/measure_tput`
   - Payload:
@@ -239,6 +247,9 @@ guard is active and attenuator DAC-range clamping.
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
 - `dt/<device>/hk_tput`
+
+**Implementation status:** deferred. This capability requires an owner-provided
+measurement specification before firmware design or implementation.
 
 **Telemetry payload:**
   ```text
@@ -403,6 +414,7 @@ guard is active and attenuator DAC-range clamping.
     - `tec_max_current_a`
     - `ntc_t_coefficient_per_c`
 
+(laserbank-poweron)=
 ### `laserbank/poweron`
 - **Request topic:** `cmd/<device>/req/laserbank/poweron`
   - Payload: optional; empty payload is accepted.
@@ -413,6 +425,7 @@ guard is active and attenuator DAC-range clamping.
 - **Notes:** powers on the TIB laser-bank power GPIO; does nothing if already
   powered. TEC startup and auto-off policy are not implemented yet.
 
+(laserbank-poweroff)=
 ### `laserbank/poweroff`
 - **Request topic:** `cmd/<device>/req/laserbank/poweroff`
 - **Top-level handler:** `laserbank_poweroff()`
@@ -420,6 +433,7 @@ guard is active and attenuator DAC-range clamping.
   - Response: `{"status":"OK","laser_power":false,"was_powered":true|false,"transitioned":true|false}`
 
 
+(laserbank-clearfaults)=
 ### `laserbank/clearfaults`
 - **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
 - **Top-level handler:** `laserbank_clearfaults()`
@@ -431,6 +445,7 @@ guard is active and attenuator DAC-range clamping.
   `maiman.h` status bit for that condition is not defined.
 
 
+(laserbank-autowarm)=
 ### `laserbank/autowarm`
 - **Request topic:** `cmd/<device>/req/laserbank/autowarm/[on,off]`
 -   - Payload: `{"alloffabove_ambienttemp": 0.0, "bankonbelow_ambienttemp":0.0,
@@ -439,7 +454,9 @@ guard is active and attenuator DAC-range clamping.
   - Response: `{"status": "success"}`
   - Response: `{settings...}`
 
-- **Notes:** Maintains power of bank and aux heater to ensure that lasers may be turned on at a moment's notice
+- **Notes:** deferred. Autowarm and laser-bank temperature-management behavior
+  require an owner-provided specification before firmware design or
+  implementation.
 
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
@@ -641,7 +658,6 @@ guard is active and attenuator DAC-range clamping.
            "dhcp": "unsupported"
          }
      ```
-TODO add diode stabilized flag and time until setting
   - Query result:
     ```json
     {     "preferdhcpntp": true,
@@ -714,7 +730,10 @@ TODO add diode stabilized flag and time until setting
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
   - Serial shorthand: `serialguard seconds=60` or `serialguard off`.
-  - While active, MQTT commands are rejected before dispatch and logged.
+  - While active, MQTT SET/action commands are rejected before dispatch and
+    logged. Safe read-only MQTT GETs are allowed. Legacy GET handlers with
+    side effects, including laser-bank power and raw laser register reads, stay
+    blocked under serial guard until those command shapes are corrected.
   - The guard uses the named scheduled action `serial_guard_expire`.
   - `seconds:0` disables serial override.
 
@@ -757,7 +776,7 @@ TODO add diode stabilized flag and time until setting
     ```
     - **Note:** ip lasers and attens are not included unless requested, key is not required
 
-- **Response topic:** `cmd/<device>/resp/stauts`
+- **Response topic:** `cmd/<device>/resp/status`
   ```json
   {   "fwversion": "<githash>",
       "bootcount": 0,
@@ -856,7 +875,7 @@ TODO add diode stabilized flag and time until setting
   - This is intentionally not a general route/switch feature. It is the
     system-level achromatic-splitter operation for the AS PCB.
   - The implementation is anchored in `splitting_set()` and `splitting_get()`.
-  - The fixed routes are `yj_split -> as_split` and `hk_split -> as_split`,
+  - The fixed routes are `yj_calin -> yj_split` and `hk_calin -> hk_split`,
     defined in `setup_mems_switches_and_routes()`. `splitting_set()` gets the
     route with `mems_router_get_route()`, then walks the route steps with
     `mems_router_find_switch()` as `memsroute_set()` does.
