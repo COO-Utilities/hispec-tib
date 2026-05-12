@@ -36,12 +36,9 @@ jobs:
       - name: Build
         run: |
           cd doc
-          doxygen
-
           SPHINXOPTS="-W" make html
 
           mkdir deploy
-          mv _build_doxygen/html deploy/doxygen
           mv _build_sphinx/html/* deploy
 
       - name: Setup pages
