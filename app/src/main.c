@@ -54,8 +54,6 @@ static struct k_thread exec_thread_data;
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
 
-static struct k_work_delayable photodiode_publish_work;
-
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
 		PHOTODIODE_PRIORITY, 0, 0);
@@ -156,25 +154,6 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
-static void photodiode_publish_handler(struct k_work *work)
-{
-	struct OutMsg out;
-
-	ARG_UNUSED(work);
-
-	/* This work item bridges sampler telemetry to the normal MQTT outbound
-	 * queue. It performs no ADC or MQTT I/O itself.
-	 */
-	while (k_msgq_get(&photodiode_queue, &out, K_NO_WAIT) == 0) {
-		if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
-			(void)k_msgq_put(&photodiode_queue, &out, K_NO_WAIT);
-			break;
-		}
-	}
-
-	k_work_schedule(&photodiode_publish_work, K_MSEC(10));
-}
-
 static void network_event_handler(bool connected)
 {
 	LOG_INF("Network event: %s", connected ? "connected" : "disconnected");
@@ -244,11 +223,6 @@ int main(void)
 	k_thread_create(&serial_thread_data, serial_stack, K_THREAD_STACK_SIZEOF(serial_stack),
 			command_serial_thread, NULL, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
-
-	k_work_init_delayable(&photodiode_publish_work, photodiode_publish_handler);
-	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		k_work_schedule(&photodiode_publish_work, K_NO_WAIT);
-	}
 
 	sntp_sync_init();
 

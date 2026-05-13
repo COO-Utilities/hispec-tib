@@ -81,8 +81,7 @@ one response.
 Commands do not directly publish. For example, MEMS commands update
 router-owned switch state that is applied by the MEMS delayable-work tick.
 Photodiode sampling does not publish directly; it sends best-effort telemetry
-through `photodiode_queue`. Warning publication is non-blocking and
-best-effort.
+through `outbound_queue`. Warning publication is non-blocking and best-effort.
 
 Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

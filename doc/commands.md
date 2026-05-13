@@ -17,9 +17,9 @@ Draft 0.1
   - **On requests (publisher → device):**
     - `response_topic`: where the device should publish the response (this doc assumes it’s under `cmd/<device>/resp/...`)
     - `correlation_data`: opaque bytes that are echoed back exactly in the
-      response so the requester can match replies to requests
+      response so the requester can match replies to requests, up to 16 bytes
   - **On responses (device → publisher):**
-    - `correlation_data`: copied from the request
+    - `correlation_data`: copied from the request when it is 16 bytes or less
     - `qos`: response QoS
 - Commands have serial port duals. Serial commands use a simpler line format
   for interactive bring-up and debugging.
@@ -181,17 +181,15 @@ while serial guard is active and attenuator DAC-range clamping.
     {
       "<switchname>":{
         "state":"A|B|A?|B?|?",
-        "duty_cycle":0.0,
-        "toggle_rate_hz":0.0,
-        "stopafter_s":0
+        "duty_cycle":0.0
       },
       ...
     }
     ```
-    Note duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling.
-    If this response exceeds the fixed MQTT payload buffer, the command returns
-    an error rather than a partial switch listing. Use `mems/<switchname>` for a
-    bounded single-switch query.
+    The all-switch query is intentionally compact and includes only state and
+    duty cycle so the TIB eight-switch response fits the fixed MQTT payload
+    buffer. Use `mems/<switchname>` for requested/actual toggle rate and
+    stop-after details.
 
 (mems-switchname)=
 ### `mems/<switchname>`

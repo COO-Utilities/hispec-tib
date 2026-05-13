@@ -9,8 +9,8 @@ a replacement for `commands.md`.
 - Default MQTT response prefix: `cmd/hsfib-tib/resp/`.
 - MQTT `response_topic` overrides the default when supplied and fitting the
   fixed buffer.
-- MQTT `correlation_data` is copied into a fixed static buffer sized to the
-  configured MQTT packet buffer and echoed exactly in responses.
+- MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
+  and echoed exactly in responses.
 - While serial guard is active, safe MQTT GETs are accepted, but MQTT SET/action
   commands and legacy side-effect GET handlers are rejected.
 - Empty MQTT payload is GET.

@@ -82,8 +82,6 @@ struct photodiode_dark_status {
 	struct photodiode_dark_result result;
 };
 
-
-extern struct k_msgq photodiode_queue;
 /** Channel labels used in command replies and telemetry JSON. */
 extern const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT];
 /** @brief Background sampler thread; blocks on ADC reads and periodic sleeps. */

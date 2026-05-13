@@ -69,8 +69,8 @@ cmd/hsfib-tib/resp/<key>
 ```
 
 MQTT 5 `response_topic` overrides this default if it fits the fixed topic
-buffer. MQTT 5 `correlation_data` is copied into a fixed static buffer sized to
-the configured MQTT packet buffer and echoed exactly in responses.
+buffer. MQTT 5 `correlation_data` up to 16 bytes is copied into a fixed static
+buffer and echoed exactly in responses.
 
 ## Commands Documented but Not Implemented
 

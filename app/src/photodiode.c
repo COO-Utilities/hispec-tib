@@ -1,6 +1,6 @@
 /**
  * @file photodiode.c
- * @brief ADS1115 photodiode monitor, telemetry queueing, and dark calibration.
+ * @brief ADS1115 photodiode monitor, telemetry publication, and dark calibration.
  */
 
 
@@ -56,11 +56,6 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
 #define PD_DARK_MAX_DURATION_MS (60U * 60U * 1000U)
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
-
-/* The sampler publishes into a small queue so ADC timing does not depend on
- * MQTT availability. main.c drains this into outbound_queue from delayable work.
- */
-K_MSGQ_DEFINE(photodiode_queue, sizeof(struct OutMsg), 4, 4);
 
 struct photodiode_runtime_channel {
     bool valid;
@@ -536,8 +531,9 @@ void photodiode_thread(void *p1, void *p2, void *p3)
             pd_update_channel((enum photodiode_channel)i, rc, raw, &settings.channel[i]);
         }
 
-        /* Photodiode samples are status telemetry, not command responses. Drop
-         * stale samples rather than retaining them across MQTT backpressure.
+        /* Photodiode samples are status telemetry, not command responses.
+         * Queue directly to outbound_queue and drop the sample if command
+         * responses or earlier telemetry already fill that bounded queue.
          */
         msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
         msg.qos = 0;
@@ -545,10 +541,8 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         pd_build_telemetry_payload(msg.payload, sizeof(msg.payload));
         msg.payload_len = strlen(msg.payload);
 
-        while (k_msgq_put(&photodiode_queue, &msg, K_NO_WAIT) != 0) {
-            /* photodiode_queue is full: purge old data & try again */
-            LOG_WRN("ADC msgq full, purging");
-            k_msgq_purge(&photodiode_queue);
+        if (k_msgq_put(&outbound_queue, &msg, K_NO_WAIT) != 0) {
+            LOG_WRN("outbound queue full; dropping photodiode telemetry");
         }
 
         int64_t elapsed = k_uptime_get() - start;  // overflow every 300M years

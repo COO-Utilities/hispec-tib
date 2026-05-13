@@ -41,12 +41,16 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
+#define APP_WARNING_TOPIC "dt/" APP_MQTT_DEVICE_ID "/warning"
+
 #define SERIAL_LINE_MAX 220
 #define SERIAL_WRAP_COLUMN 80U
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
 
 static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
+
+static void print_serial_response(const struct OutMsg *out);
 
 
 /* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
@@ -713,6 +717,9 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
                pub->prop.correlation_data.data,
                pub->prop.correlation_data.len);
         cmd.corr_len = pub->prop.correlation_data.len;
+    } else if (pub->prop.correlation_data.len > sizeof(cmd.correlation_data)) {
+        LOG_WRN("MQTT correlation_data too long (%zu > %zu); response will not echo it",
+                pub->prop.correlation_data.len, sizeof(cmd.correlation_data));
     }
 
     if (!command_network_mqtt_allowed() &&
@@ -887,6 +894,38 @@ static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
     return mqtt_publish(client, &param);
 }
 
+static void build_outbound_queue_full_warning(struct OutMsg *out)
+{
+    if (out == NULL) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->msg_type = RESP_OK;
+    out->target = OUT_TARGET_MQTT_BEST_EFFORT;
+    out->qos = 0U;
+    snprintk(out->topic, sizeof(out->topic), APP_WARNING_TOPIC);
+    snprintk(out->payload, sizeof(out->payload),
+             "{\"severity\":\"warning\",\"code\":\"outbound_queue_full\","
+             "\"msg\":\"outbound queue reached capacity\",\"context\":\"command_drain\","
+             "\"uptime_ms\":%lld}",
+             (long long)k_uptime_get());
+    out->payload_len = strlen(out->payload);
+}
+
+static void publish_outbound_queue_full_warning(struct mqtt_client *client,
+                                                bool mqtt_available)
+{
+    struct OutMsg warning;
+
+    build_outbound_queue_full_warning(&warning);
+    print_serial_response(&warning);
+
+    if (mqtt_available && publish_outmsg(client, &warning) != 0) {
+        LOG_WRN("Failed to publish outbound_queue_full warning");
+    }
+}
+
 /* Serial responses intentionally reuse the OutMsg generated for MQTT. The
  * topic is printed first, then the payload is wrapped at print time with tab
  * indentation so response builders do not need serial-specific formatting.
@@ -932,6 +971,23 @@ void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_availabl
 {
     struct OutMsg out;
     int budget = 8;
+    static bool full_warning_seen;
+    static bool full_warning_mqtt_seen;
+    bool outbound_full;
+
+    outbound_full = (k_msgq_num_free_get(&outbound_queue) == 0U);
+    if (outbound_full) {
+        if (!full_warning_seen || (mqtt_available && !full_warning_mqtt_seen)) {
+            publish_outbound_queue_full_warning(client, mqtt_available);
+            full_warning_seen = true;
+            if (mqtt_available) {
+                full_warning_mqtt_seen = true;
+            }
+        }
+    } else {
+        full_warning_seen = false;
+        full_warning_mqtt_seen = false;
+    }
 
     while (budget-- > 0 && k_msgq_get(&outbound_queue, &out, K_NO_WAIT) == 0) {
         const bool best_effort = (out.target == OUT_TARGET_MQTT_BEST_EFFORT);
@@ -2263,15 +2319,10 @@ struct OutMsg mems_get(const struct Command *cmd) {
             mems_switch_get_status(router.switches[i], &status);
             mems_format_state(&status, state_buf, sizeof(state_buf));
             written = snprintk(payload + off, sizeof(payload) - off,
-                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f,"
-                               "\"requested_toggle_rate_hz\":%.3f,\"toggle_rate_hz\":%.3f,"
-                               "\"stopafter_s\":%u}",
+                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f}",
                                router.switches[i]->name,
                                state_buf,
-                               (double)status.duty_cycle,
-                               (double)status.requested_toggle_rate_hz,
-                               (double)status.toggle_rate_hz,
-                               status.stopafter_s);
+                               (double)status.duty_cycle);
             if (written < 0 || written >= (int)(sizeof(payload) - off)) {
                 return _msg_builder(cmd, RESP_ERROR,
                                     "{\"error\":\"mems response too large; query mems/<switchname>\"}");

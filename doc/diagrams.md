@@ -25,8 +25,7 @@ flowchart TD
   Exec --> Laser
   Exec --> PD
   Exec --> OutQ[outbound_queue]
-  PD --> PDQ[photodiode_queue]
-  PDQ --> OutQ
+  PD --> OutQ
   Warnings[app_warning_emit] --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
@@ -137,7 +136,7 @@ flowchart TD
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
   Warning[app_warning_emit] --> OutQ
-  PDWork[photodiode publish work] --> OutQ
+  Photodiode[photodiode_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
   Target -- serial --> Print[print topic and wrapped payload]
@@ -192,7 +191,7 @@ flowchart TD
   Store -- yes --> Persist[update photodiode settings]
   Store -- no --> Status[update dark status]
   Dark -- no --> Noise[update residual noise]
-  Status --> Telemetry[enqueue photodiode_queue]
+  Status --> Telemetry[enqueue outbound_queue]
   Persist --> Telemetry
   Noise --> Warn{noise above threshold}
   Warn -- yes --> Emit[app_warning_emit photodiode_noise]

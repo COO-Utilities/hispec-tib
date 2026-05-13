@@ -22,11 +22,10 @@
 #define MAX_REQID_LEN 32
 #define MAX_SESSION_ID_LEN 48
 #define MAX_PAYLOAD_LEN CONFIG_COO_MQTT_PAYLOAD_SIZE
-/* MQTT 5 correlation_data is opaque requester state. Keep a fixed static
- * buffer large enough for any correlation property that can fit in the MQTT
- * wrapper's configured packet buffer so accepted requests can be matched.
+/* MQTT 5 correlation_data is opaque requester state. This deployment uses
+ * UUID64/UUID128-style request IDs, so larger values are not echoed.
  */
-#define MAX_CORRELATION_DATA CONFIG_COO_MQTT_PAYLOAD_SIZE
+#define MAX_CORRELATION_DATA 16
 #define MAX_PENDING_COMMANDS 2
 
 

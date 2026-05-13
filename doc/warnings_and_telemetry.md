@@ -28,6 +28,7 @@ Current warning codes seen in code:
 - `photodiode_noise`
 - `mems_rate_quantized`
 - `split_ratio_quantized`
+- `outbound_queue_full`
 
 ## Photodiode Telemetry
 
@@ -41,11 +42,9 @@ Payload includes per-channel validity, raw counts, mV, dark-subtracted mV,
 estimated power, residual RMS noise, dark settings, dark measurement state,
 age, sample count, and uptime.
 
-Telemetry is best-effort. It is queued through `photodiode_queue` first, then
-transferred to the normal outbound queue by `photodiode_publish_work`. If the
-photodiode queue is full, old samples are purged and the current sample is
-retried. If MQTT is unavailable or publish fails after transfer, the sample is
-dropped.
+Telemetry is best-effort. It is queued directly to `outbound_queue` with
+`K_NO_WAIT`. If the outbound queue is full, the current sample is dropped. If
+MQTT is unavailable or publish fails after transfer, the sample is dropped.
 
 ## Command Responses
 
@@ -56,5 +55,5 @@ the main loop. MQTT response topic selection is:
 2. Default `cmd/hsfib-tib/resp/<key>`.
 
 MQTT 5 correlation data is opaque requester state. Accepted command requests
-copy it into a fixed static buffer sized to the configured MQTT packet buffer,
-and command responses echo those bytes exactly.
+copy it into a fixed 16-byte static buffer, and command responses echo those
+bytes exactly.

@@ -16,17 +16,11 @@ the only path that calls `mqtt_publish()`.
 Non-best-effort MQTT messages are requeued when MQTT is unavailable or publish
 fails. Best-effort messages (i.e. warnings and telemetry) are dropped when unavailable or
 failed.
+If the main loop observes `outbound_queue` at capacity while draining, it emits
+an `outbound_queue_full` warning directly to serial and to MQTT when connected.
 
-## `photodiode_queue`
-
-Defined in `photodiode.c` as a `k_msgq` of `struct OutMsg` with depth 4.
-Photodiode sampling enqueues best-effort telemetry here with `K_NO_WAIT`. If
-full, the queue is purged and the current telemetry sample is retried.
-
-`main.c` owns `photodiode_publish_work`, which periodically drains this queue
-into `outbound_queue`. That keeps ADC sampling decoupled from MQTT availability.
-Samples may be dropped under MQTT or queue backpressure; stale ADC telemetry is
-preferable to delaying the sampler.
+Photodiode sampling enqueues best-effort telemetry directly to `outbound_queue`
+with `K_NO_WAIT`. If the queue is full, the current sample is dropped.
 
 ## Named Scheduled Actions
 
