@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
@@ -24,6 +25,8 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 #define USER_NODE DT_PATH(zephyr_user)
 #define MAX_NUM_MEMS_SWITCHES 8U
 #define CAL_ATTENUATOR_INDEX 4U
+#define PCAL6416A_REG_OUTPUT_PORT_CONFIGURATION 0x4FU
+#define PCAL6416A_OUTPUT_PORT0_OPEN_DRAIN_PORT1_PUSH_PULL BIT(0)
 
 BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
@@ -80,8 +83,16 @@ const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));
 const struct device *dac_dev = NULL;
 #endif
 
+#if DT_NODE_EXISTS(DT_NODELABEL(dac7578_b))
+const struct device *dac_dev_b = DEVICE_DT_GET(DT_NODELABEL(dac7578_b));
+#else
+const struct device *dac_dev_b = NULL;
+#endif
+
 #if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
+static const struct i2c_dt_spec pcal6416a_i2c =
+	I2C_DT_SPEC_GET(DT_NODELABEL(pcal6416a));
 #else
 const struct device *gpio_dev = NULL;
 #endif
@@ -118,6 +129,12 @@ static const gpio_pin_t mems_switch_pin_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
 /* Per-switch compile-time nominal toggle rates (Hz), quantized in mems_switch_init(). */
 static const float mems_switch_toggle_rate_hz[MAX_NUM_MEMS_SWITCHES] = {
 	5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f,
+};
+
+struct attenuator_dac_pair {
+	const struct device *dev;
+	uint8_t channel1;
+	uint8_t channel2;
 };
 
 struct board_profile {
@@ -640,6 +657,57 @@ static bool setup_modbus_client(void)
 #endif
 }
 
+static bool configure_mems_gpio_port_drive(void)
+{
+#if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
+	int rc;
+
+	if (!i2c_is_ready_dt(&pcal6416a_i2c)) {
+		LOG_ERR("PCAL6416A I2C bus is not ready");
+		return false;
+	}
+
+	/* Zephyr's PCAL64XXA GPIO API does not expose the chip's port-wide
+	 * output drive mode. Write register 0x4f directly: port 0 open-drain,
+	 * port 1 push-pull.
+	 */
+	rc = i2c_reg_write_byte_dt(&pcal6416a_i2c,
+				   PCAL6416A_REG_OUTPUT_PORT_CONFIGURATION,
+				   PCAL6416A_OUTPUT_PORT0_OPEN_DRAIN_PORT1_PUSH_PULL);
+	if (rc != 0) {
+		LOG_ERR("Failed to configure PCAL6416A output port drive: %d", rc);
+		return false;
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+static bool attenuator_dac_pair_for_index(uint8_t attenuator_index,
+					  struct attenuator_dac_pair *out)
+{
+	uint8_t local_index;
+
+	if (out == NULL || attenuator_index >= NUM_ATTENUATORS) {
+		return false;
+	}
+
+	if (attenuator_index < 3U) {
+		local_index = attenuator_index;
+		out->dev = dac_dev;
+	} else {
+		local_index = attenuator_index - 3U;
+		out->dev = dac_dev_b;
+	}
+
+	out->channel1 = local_index * 2U;
+	out->channel2 = out->channel1 + 1U;
+
+	return true;
+}
+
 void setup_attenuators(void)
 {
 	const struct board_profile *profile = current_profile();
@@ -649,14 +717,12 @@ void setup_attenuators(void)
 		LOG_INF("Board %s has no attenuator channels", profile->name);
 		return;
 	}
-	if (!device_ready_or_log(dac_dev, "DAC")) {
-		return;
-	}
 
 	app_settings_get_attenuator(&atten_settings);
 
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;
+		struct attenuator_dac_pair dac_pair;
 
 		if (attenuator_index >= NUM_ATTENUATORS) {
 			LOG_ERR("Profile %s attenuator index %u is out of range",
@@ -664,16 +730,26 @@ void setup_attenuators(void)
 			continue;
 		}
 
-		if (!attenuator_init(&attenuators[attenuator_index], attenuator_index)) {
+		if (!attenuator_dac_pair_for_index(attenuator_index, &dac_pair)) {
+			LOG_ERR("Profile %s attenuator index %u has no DAC pair",
+				profile->name, attenuator_index);
 			continue;
 		}
 
-		for (uint8_t coeff = 0U; coeff < ATTENUATOR_COEFF_COUNT; ++coeff) {
-			attenuators[attenuator_index].coeff_db_to_volt[coeff] =
-				atten_settings.channel[attenuator_index].db_to_volt[coeff];
-			attenuators[attenuator_index].coeff_volt_to_db[coeff] =
-				atten_settings.channel[attenuator_index].volt_to_db[coeff];
+		if (!attenuator_init(&attenuators[attenuator_index],
+				     dac_pair.dev, dac_pair.channel1,
+				     dac_pair.dev, dac_pair.channel2)) {
+			continue;
 		}
+
+		attenuators[attenuator_index].coeff1.slope =
+			atten_settings.channel[attenuator_index].physical[0].slope;
+		attenuators[attenuator_index].coeff1.offset =
+			atten_settings.channel[attenuator_index].physical[0].offset;
+		attenuators[attenuator_index].coeff2.slope =
+			atten_settings.channel[attenuator_index].physical[1].slope;
+		attenuators[attenuator_index].coeff2.offset =
+			atten_settings.channel[attenuator_index].physical[1].offset;
 	}
 }
 
@@ -694,13 +770,25 @@ void setup_mems_switches_and_routes(void)
 		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
 		return;
 	}
+	if (!configure_mems_gpio_port_drive()) {
+		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
+		return;
+	}
 
 	for (uint8_t i = 0; i < profile->mems_switch_count; ++i) {
+		enum mems_switch_type switch_type = MEMS_SWITCH_TYPE_FFSW;
+
+		if (profile->board == HISPEC_BOARD_TIB &&
+		    i >= profile->mems_switch_count - 2U) {
+			switch_type = MEMS_SWITCH_TYPE_FFLS;
+		}
+
 		mems_switch_init(&mems_switches[i],
 				 gpio_dev,
 				 mems_switch_pin_pairs[i][0],
 				 mems_switch_pin_pairs[i][1],
 				 profile->switch_names[i],
+				 switch_type,
 				 mems_switch_toggle_rate_hz[i],
 				 'A');
 		mems_switch_ptrs[i] = &mems_switches[i];
@@ -780,8 +868,16 @@ bool devices_ready(void)
 		rc = false;
 	}
 
-	if (profile->attenuator_count > 0U && !device_ready_or_log(dac_dev, "DAC")) {
-		rc = false;
+	if (profile->attenuator_count > 0U) {
+		for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
+			uint8_t attenuator_index = profile->attenuator_first + i;
+			struct attenuator_dac_pair dac_pair;
+
+			if (!attenuator_dac_pair_for_index(attenuator_index, &dac_pair) ||
+			    !device_ready_or_log(dac_pair.dev, "DAC")) {
+				rc = false;
+			}
+		}
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB && !device_ready_or_log(adc_dev, "ADC")) {

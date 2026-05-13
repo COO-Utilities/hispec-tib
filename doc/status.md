@@ -34,7 +34,8 @@ and current C source remains the source of truth for what is implemented today.
 - AS `split` command using fixed YJ/HK AS routes and exact MEMS tick ratios.
 - TIB laser-bank GPIO power on/off and clear-faults-by-power-cycle commands.
 - Raw Maiman Modbus register get/set helpers and higher-level laser helper APIs.
-- Logical attenuator value, dB value, and coefficient command support.
+- Logical paired-FVOA attenuator value, dB value, and coefficient command
+  support.
 - Photodiode sampling, best-effort telemetry, explicit dark measurement, stored
   dark update, lowest-dark tracking, and noise warnings.
 - DS18B20 ambient temperature sampling and `temp` query.
@@ -51,8 +52,6 @@ and current C source remains the source of truth for what is implemented today.
   current command key parsing appears inconsistent with the dispatch prefix.
 - Higher-level laser tuning/status helper APIs exist in `lasers.c`, but the
   public command table does not expose most of them.
-- Attenuator support covers six logical channels and one DAC device label; the
-  hardware document describes two DAC7578 devices and twelve physical FVOAs.
 - Runtime network reconfiguration is available in the library helper, but the
   `ip` command currently reports reboot-required for network-affecting changes.
 - SNTP status is exposed through `time` and `ip`; manual time set does not mark
@@ -62,8 +61,8 @@ and current C source remains the source of truth for what is implemented today.
 
 - Reconcile implemented command behavior against `commands.md`; see
   `command_implementation_audit.md` and `implemented_commands.md`.
-- Reconcile hardware/code mismatches for attenuator DAC coverage and MEMS GPIO
-  electrical mode; see `human_review_required.md`.
+- Reconcile MEMS GPIO electrical mode against hardware notes; see
+  `human_review_required.md`.
 - Decide intended persistence for MEMS switch state, AS split requested/actual
   state, laser output/tuning state, and last-command metadata.
 - Remove stale command help/docs references to unsupported `power` and `sleep`
@@ -88,3 +87,6 @@ and current C source remains the source of truth for what is implemented today.
 - Old notes said MQTT handling lived in `main.c`; current MQTT ingress is in
   `command_handle_mqtt_publish()` and MQTT connection/publish pumping remains
   in `main.c`.
+- Old status notes said attenuator support only used one DAC device. TIB now
+  initializes six logical attenuators as twelve physical DAC channels across
+  both DAC7578 devices; calibration model defaults still need owner review.

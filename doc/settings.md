@@ -25,8 +25,8 @@ Current app settings include:
 - `ip/dns`
 - `ip/ntp`
 - `mqtt/broker`
-- `atten/<channel>/db2volt/<index>`
-- `atten/<channel>/volt2db/<index>`
+- `atten/<channel>/physical/<physical>/slope`
+- `atten/<channel>/physical/<physical>/offset`
 - `pd/yj/dark_mv`
 - `pd/yj/lowest_dark_mv`
 - `pd/yj/lowest_dark_valid`
@@ -53,7 +53,9 @@ silently reused on another.
   `CONFIG_COO_MQTT_BROKER_PORT`; persistence uses one `mqtt/broker`
   `<host-or-ip>:<port>` value.
 - Serial guard defaults to 30 s.
-- Attenuator coefficients default to all zeros until calibrated/stored.
+- Attenuator coefficients default to a linear `b = slope * voltage + offset`
+  model that maps the 0-4096 mV DAC span onto `b = 0..8` until
+  calibrated/stored.
 - Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise
   warning values.
 

@@ -16,6 +16,10 @@ for intended command behavior.
   `memsroute` uses checked append logic. Some older fixed-shape responses still
   build into local buffers before that guard, so future edits should continue
   converting risky builders to checked append helpers when payload shape expands.
+- TIB MEMS channels 7 and 8 are initialized as FFLS switches and use
+  `MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS` for pulse hold time, toggle-rate
+  quantization, and stop-after accounting.
+
 
 ## Deferred Owner-Specified Capabilities
 
@@ -23,15 +27,12 @@ Do not design or implement these without a detailed owner specification:
 
 - `measure_tput`.
 - `laserbank/autowarm` and bank temperature management.
-- Attenuator calibration/nonlinearity work and default coefficient selection.
+- Attenuator autocalibration and final default coefficient selection.
 - Laser/laser-bank command interface expansion.
 - Broad `command.c` refactoring into domain-owned command helpers.
 
 ## Remaining Implementation Items
 
-- TIB MEMS channels 7 and 8 need FFLS-specific pulse-width handling using
-  `MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS`, and split/toggle behavior involving
-  those switches needs an owner decision.
 - Temperature sensing currently exposes only ambient DS18B20 data. Decide
   whether inactive TEC temperatures belong in the temperature thread or in a
   future box-heater/bank-temperature loop.
@@ -47,5 +48,4 @@ Do not design or implement these without a detailed owner specification:
 - SNTP sync runs in system workqueue context and can block up to the SNTP
   timeout. Decide whether that is acceptable for this firmware.
 - CAL switch and route names are still provisional.
-- Reconcile hardware/code mismatches for TIB attenuator DAC coverage and MEMS
-  electrical mode.
+- Reconcile MEMS electrical mode against hardware notes.

@@ -34,9 +34,15 @@ See status.md for software details
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
 - 3.3V i2c, 5V gpio, 25mA max drive
 - Address 0x33 (ADDR high) or 0x22 (ADDR low), using 0x33
-- Configure as open drain for FFSW as they have 5V pullups
-- Configure as push-pull for FFLS
-- Require 2 pins per FFSW or FFLS
+- Configure gpio expander as open drain for FFSW as they have 5V pullups
+- Configure as push-pull for FFLS, CAUTION THIS MAY REQUIRE PCB REWORK to move FFLS to the second port and use pins there for them on the tib varian as push-pull open drain is a per-port setting.
+- Requires 2 pins per FFSW or FFLS
+- Firmware writes PCAL6416A output port configuration register `0x4f` during
+  MEMS setup so port 0 is open-drain and port 1 is push-pull. The current
+  Zephyr `nxp,pcal6416a` devicetree binding does not expose this register, and
+  the Zephyr GPIO API rejects `GPIO_SINGLE_ENDED` because the mode is port-wide.
+  The register can be changed later by I2C, but doing so changes all 8 pins on
+  that port and should only be done with MEMS outputs idle.
 
 For board files:
 - Nucleo:

@@ -64,6 +64,7 @@
     <mapping directory="$PROJECT_DIR$/../../modules/lib/picolibc" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../../modules/lib/uoscore-uedhoc" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../../modules/lib/zcbor" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../modules/lib/zscilib" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../../modules/tee/tf-a/trusted-firmware-a" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../../modules/tee/tf-m/psa-arch-tests" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../../modules/tee/tf-m/tf-m-tests" vcs="Git" />

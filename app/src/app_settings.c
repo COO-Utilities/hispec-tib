@@ -97,12 +97,13 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
-		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-			/* Calibration defaults are explicit zero coefficients until
-			 * lab-measured values are stored with atten/<laser>/coeff.
+		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+			/* Default maps the full 0-4096 mV DAC span onto b=0..8
+			 * until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].db_to_volt[i] = 0.0f;
-			s->attenuator.channel[ch].volt_to_db[i] = 0.0f;
+			s->attenuator.channel[ch].physical[physical].slope =
+				8.0f / 4096.0f;
+			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
 		}
 	}
 	s->photodiode.channel[0].dark_mv = 0.0f;
@@ -201,12 +202,12 @@ static int parse_key_index(const char **cursor, uint8_t max_value, uint8_t *out)
 
 static bool parse_attenuator_coeff_name(const char *name,
 					uint8_t *channel,
-					bool *db_to_volt,
+					uint8_t *physical,
 					uint8_t *coeff_index)
 {
 	const char *cursor = name;
 
-	if (name == NULL || channel == NULL || db_to_volt == NULL ||
+	if (name == NULL || channel == NULL || physical == NULL ||
 	    coeff_index == NULL) {
 		return false;
 	}
@@ -217,14 +218,24 @@ static bool parse_attenuator_coeff_name(const char *name,
 	}
 	cursor++;
 
-	if (strncmp(cursor, "db2volt/", 8U) == 0) {
-		*db_to_volt = true;
-		cursor += 8U;
-	} else if (strncmp(cursor, "volt2db/", 8U) == 0) {
-		*db_to_volt = false;
-		cursor += 8U;
-	} else {
+	if (strncmp(cursor, "physical/", 9U) != 0) {
 		return false;
+	}
+	cursor += 9U;
+
+	if (parse_key_index(&cursor, APP_ATTENUATOR_PHYSICAL_COUNT - 1U, physical) != 0 ||
+	    *cursor != '/') {
+		return false;
+	}
+	cursor++;
+
+	if (strcmp(cursor, "slope") == 0) {
+		*coeff_index = 0U;
+		return true;
+	}
+	if (strcmp(cursor, "offset") == 0) {
+		*coeff_index = 1U;
+		return true;
 	}
 
 	return parse_key_index(&cursor, APP_ATTENUATOR_COEFF_COUNT - 1U, coeff_index) == 0 &&
@@ -234,8 +245,8 @@ static bool parse_attenuator_coeff_name(const char *name,
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
 	uint8_t atten_channel;
+	uint8_t atten_physical;
 	uint8_t atten_coeff;
-	bool atten_db_to_volt;
 
 	ARG_UNUSED(len);
 
@@ -313,11 +324,11 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
-	if (parse_attenuator_coeff_name(name, &atten_channel, &atten_db_to_volt,
+	if (parse_attenuator_coeff_name(name, &atten_channel, &atten_physical,
 					&atten_coeff)) {
-		float *target = atten_db_to_volt ?
-			&g_settings.snapshot.attenuator.channel[atten_channel].db_to_volt[atten_coeff] :
-			&g_settings.snapshot.attenuator.channel[atten_channel].volt_to_db[atten_coeff];
+		float *target = (atten_coeff == 0U) ?
+			&g_settings.snapshot.attenuator.channel[atten_channel].physical[atten_physical].slope :
+			&g_settings.snapshot.attenuator.channel[atten_channel].physical[atten_physical].offset;
 
 		read_valid_float_or_warn(read_cb, cb_arg, name, target,
 					 -1000000000.0f, 1000000000.0f);
@@ -428,13 +439,21 @@ static void persist_str(const char *key, const char *value)
 }
 
 static void attenuator_coeff_key(char *key, size_t key_len,
-				 uint8_t channel, bool db_to_volt,
+				 uint8_t channel, uint8_t physical,
 				 uint8_t coeff_index)
 {
+	(void)snprintk(key, key_len, "%s/%u/physical/%u/%s",
+		       KEY_ATTEN_PREFIX, channel, physical,
+		       coeff_index == 0U ? "slope" : "offset");
+}
+
+static void attenuator_legacy_coeff_key(char *key, size_t key_len,
+					uint8_t channel,
+					const char *coeff_name,
+					uint8_t coeff_index)
+{
 	(void)snprintk(key, key_len, "%s/%u/%s/%u",
-		       KEY_ATTEN_PREFIX, channel,
-		       db_to_volt ? "db2volt" : "volt2db",
-		       coeff_index);
+		       KEY_ATTEN_PREFIX, channel, coeff_name, coeff_index);
 }
 
 static void persist_attenuator_channel(uint8_t channel,
@@ -446,12 +465,12 @@ static void persist_attenuator_channel(uint8_t channel,
 		return;
 	}
 
-	for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-		attenuator_coeff_key(key, sizeof(key), channel, true, i);
-		persist_float(key, atten->db_to_volt[i]);
+	for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+		attenuator_coeff_key(key, sizeof(key), channel, physical, 0U);
+		persist_float(key, atten->physical[physical].slope);
 
-		attenuator_coeff_key(key, sizeof(key), channel, false, i);
-		persist_float(key, atten->volt_to_db[i]);
+		attenuator_coeff_key(key, sizeof(key), channel, physical, 1U);
+		persist_float(key, atten->physical[physical].offset);
 	}
 }
 
@@ -514,11 +533,21 @@ static void delete_attenuator_settings(void)
 	char key[40];
 
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
-		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-			attenuator_coeff_key(key, sizeof(key), channel, true, i);
+		for (uint8_t coeff = 0U; coeff < 3U; ++coeff) {
+			attenuator_legacy_coeff_key(key, sizeof(key), channel, "db2volt",
+						    coeff);
 			delete_setting_key(key);
 
-			attenuator_coeff_key(key, sizeof(key), channel, false, i);
+			attenuator_legacy_coeff_key(key, sizeof(key), channel, "volt2db",
+						    coeff);
+			delete_setting_key(key);
+		}
+
+		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+			attenuator_coeff_key(key, sizeof(key), channel, physical, 0U);
+			delete_setting_key(key);
+
+			attenuator_coeff_key(key, sizeof(key), channel, physical, 1U);
 			delete_setting_key(key);
 		}
 	}

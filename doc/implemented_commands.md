@@ -204,10 +204,11 @@ a replacement for `commands.md`.
 
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 
-- GET returns `voltage` and `db`.
+- GET returns total `db`, total `linear` transmission, both physical DAC
+  voltages, and both physical modeled dB values.
 - SET field: `value` float.
-- `value` writes raw voltage; `valuedb` writes attenuation dB through
-  coefficients.
+- `value` sets total linear transmission in `(0, 1]`; `valuedb` sets total
+  attenuation dB.
 - Board restriction: TIB supports all logical channels below `NUM_ATTENUATORS`;
   CAL profiles support only logical channel 4.
 - Side effects: blocks on DAC I2C and can clamp DAC range.
@@ -217,9 +218,10 @@ a replacement for `commands.md`.
 
 ### `atten/<laser>/coeff`
 
-- GET returns `db2volt` and `volt2db` coefficient arrays.
-- SET fields: `db2volt[3]`, `volt2db[3]`, optional `persistent`.
-- Validation: both arrays must contain exactly three floats.
+- GET returns `dac1` and `dac2` coefficient arrays.
+- SET fields: `dac1[2]`, `dac2[2]`, optional `persistent`.
+- Validation: both arrays must contain exactly two floats: slope and offset for
+  `b = slope * voltage + offset`.
 - Side effects: updates runtime coefficients, reapplies current attenuation,
   and optionally persists coefficients.
 - Blocking: DAC I2C and settings writes may block.

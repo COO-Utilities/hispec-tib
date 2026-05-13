@@ -11,10 +11,27 @@
 #include <string.h>
 LOG_MODULE_REGISTER(mems_switching, LOG_LEVEL_DBG);
 
-static uint32_t min_toggle_period_cycles(void)
+BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,
+             "FFSW pulse width must be an integer number of router ticks");
+BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,
+             "FFLS pulse width must be an integer number of router ticks");
+
+static uint32_t mems_switch_pulse_ms(const struct mems_switch *sw)
+{
+    return sw->switch_type == MEMS_SWITCH_TYPE_FFLS ?
+           MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS :
+           MEMS_SWITCH_ELECTRICAL_PULSE_MS;
+}
+
+static uint8_t mems_switch_work_ticks(const struct mems_switch *sw)
+{
+    return (uint8_t)(mems_switch_pulse_ms(sw) / MEMS_SWITCH_ROUTER_TICK_MS);
+}
+
+static uint32_t min_toggle_period_cycles(const struct mems_switch *sw)
 {
     const float min_period_ms = 1000.0f / MEMS_SWITCH_MAX_TOGGLE_HZ;
-    const float cycles = min_period_ms / (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS;
+    const float cycles = min_period_ms / (float)mems_switch_pulse_ms(sw);
     uint32_t min_cycles = (uint32_t)cycles;
 
     if ((float)min_cycles < cycles) {
@@ -26,16 +43,17 @@ static uint32_t min_toggle_period_cycles(void)
     return min_cycles;
 }
 
-static uint32_t quantize_toggle_period_cycles(float requested_rate_hz)
+static uint32_t quantize_toggle_period_cycles(const struct mems_switch *sw,
+                                              float requested_rate_hz)
 {
     uint32_t period_cycles;
-    const uint32_t min_cycles = min_toggle_period_cycles();
+    const uint32_t min_cycles = min_toggle_period_cycles(sw);
 
     if (requested_rate_hz <= 0.0f) {
         return min_cycles;
     }
 
-    period_cycles = (uint32_t)((1000.0f / (requested_rate_hz * (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS)) + 0.5f);
+    period_cycles = (uint32_t)((1000.0f / (requested_rate_hz * (float)mems_switch_pulse_ms(sw))) + 0.5f);
     if (period_cycles < min_cycles) {
         period_cycles = min_cycles;
     }
@@ -45,17 +63,18 @@ static uint32_t quantize_toggle_period_cycles(float requested_rate_hz)
     return period_cycles;
 }
 
-static float attained_toggle_rate_hz(uint32_t period_cycles)
+static float attained_toggle_rate_hz(const struct mems_switch *sw,
+                                     uint32_t period_cycles)
 {
     if (period_cycles == 0U) {
         return 0.0f;
     }
-    return 1000.0f / ((float)period_cycles * (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS);
+    return 1000.0f / ((float)period_cycles * (float)mems_switch_pulse_ms(sw));
 }
 
-static uint32_t seconds_to_cycles(uint32_t seconds)
+static uint32_t seconds_to_cycles(const struct mems_switch *sw, uint32_t seconds)
 {
-    uint64_t cycles = ((uint64_t)seconds * 1000ULL) / (uint64_t)MEMS_SWITCH_ELECTRICAL_PULSE_MS;
+    uint64_t cycles = ((uint64_t)seconds * 1000ULL) / (uint64_t)mems_switch_pulse_ms(sw);
     if (cycles == 0ULL) {
         cycles = 1ULL;
     }
@@ -102,15 +121,15 @@ static void mems_switch_apply_requested_rate_locked(struct mems_switch *sw,
     }
 
     sw->requested_toggle_rate_hz = requested_rate_hz;
-    sw->switching_period_cycles = quantize_toggle_period_cycles(requested_rate_hz);
-    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
+    sw->switching_period_cycles = quantize_toggle_period_cycles(sw, requested_rate_hz);
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw, sw->switching_period_cycles);
 }
 
 static void mems_switch_apply_exact_rate_locked(struct mems_switch *sw,
                                                 uint32_t period_cycles)
 {
     sw->switching_period_cycles = period_cycles;
-    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(period_cycles);
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw, period_cycles);
     sw->requested_toggle_rate_hz = sw->actual_toggle_rate_hz;
 }
 
@@ -147,7 +166,7 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
                    (sw->a_state_cycles == a_cycles) &&
                    (previous_period_cycles == sw->switching_period_cycles);
 
-    sw->remaining_toggle_cycles = seconds_to_cycles(requested_duration_s);
+    sw->remaining_toggle_cycles = seconds_to_cycles(sw, requested_duration_s);
     if (!same_profile) {
         sw->a_state_cycles = a_cycles;
         sw->target_state = 'A';
@@ -222,6 +241,7 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
             LOG_ERR("Pulse set failed on %s pin %u", sw->name, (unsigned int)pin);
         }
         else {
+            sw->pulse_ticks_remaining = mems_switch_work_ticks(sw);
             sw->state = sw->target_state;
             sw->state_known_this_boot = true;
         }
@@ -260,6 +280,19 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
     }
 }
 
+static void mems_switch_clear_finished_pulse_locked(struct mems_switch *sw)
+{
+    if (sw->pulse_ticks_remaining == 0U) {
+        return;
+    }
+
+    sw->pulse_ticks_remaining -= 1U;
+    if (sw->pulse_ticks_remaining == 0U) {
+        const gpio_pin_t pin = (sw->state == 'A') ? sw->pin_a : sw->pin_b;
+        (void)gpio_pin_set(sw->gpio_dev, pin, 0);
+    }
+}
+
 static void mems_router_toggler_work_handler(struct k_work *work)
 {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -267,20 +300,25 @@ static void mems_router_toggler_work_handler(struct k_work *work)
 
     k_mutex_lock(&router->lock, K_FOREVER);
 
-    //TODO this is quite a bit of unnecessary I2C bus activity, at most half of these will be high
     for (uint8_t i = 0; i < router->num_switches; ++i) {
-        struct mems_switch *sw = router->switches[i];
-        (void)gpio_pin_set(sw->gpio_dev, sw->pin_a, 0);
-        (void)gpio_pin_set(sw->gpio_dev, sw->pin_b, 0);
+        mems_switch_clear_finished_pulse_locked(router->switches[i]);
     }
 
     for (uint8_t i = 0; i < router->num_switches; ++i) {
-        mems_switch_tick_locked(router->switches[i]);
+        struct mems_switch *sw = router->switches[i];
+
+        if (sw->service_ticks_remaining > 0U) {
+            sw->service_ticks_remaining -= 1U;
+        }
+        if (sw->service_ticks_remaining == 0U) {
+            mems_switch_tick_locked(sw);
+            sw->service_ticks_remaining = mems_switch_work_ticks(sw);
+        }
     }
 
     k_mutex_unlock(&router->lock);
 
-    (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ELECTRICAL_PULSE_MS));
+    (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ROUTER_TICK_MS));
 }
 
 // -----------------------
@@ -289,12 +327,14 @@ static void mems_router_toggler_work_handler(struct k_work *work)
 
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+                      enum mems_switch_type switch_type,
                       float switching_frequency_hz, char initial_state)
 {
 
     sw->gpio_dev = gpio_dev;
     sw->pin_a = pin_a;
     sw->pin_b = pin_b;
+    sw->switch_type = switch_type;
     sw->state = toupper(initial_state)=='A'? 'A': 'B';
     sw->target_state = sw->state;
     sw->state_known_this_boot = false;
@@ -302,9 +342,11 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
     sw->a_state_cycles = 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
+    sw->pulse_ticks_remaining = 0U;
+    sw->service_ticks_remaining = 0U;
     sw->requested_toggle_rate_hz = switching_frequency_hz;
-    sw->switching_period_cycles = quantize_toggle_period_cycles(switching_frequency_hz);
-    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw->switching_period_cycles);
+    sw->switching_period_cycles = quantize_toggle_period_cycles(sw, switching_frequency_hz);
+    sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw, sw->switching_period_cycles);
 
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
@@ -347,7 +389,7 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
     if (state != 'A' && state != 'B') {
         return -EINVAL;
     }
-    if (period_ticks < min_toggle_period_cycles() ||
+    if (period_ticks < min_toggle_period_cycles(sw) ||
         state_ticks > period_ticks ||
         stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
@@ -393,12 +435,12 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
     out->duty_cycle = (float)sw->a_state_cycles / (float)sw->switching_period_cycles; //actual attained duty cycle
     out->duty_numerator = sw->a_state_cycles;
     out->duty_denominator = sw->switching_period_cycles;
-    out->tick_duration_ms = MEMS_SWITCH_ELECTRICAL_PULSE_MS;
+    out->tick_duration_ms = mems_switch_pulse_ms(sw);
     out->requested_toggle_rate_hz = sw->requested_toggle_rate_hz;
     out->toggle_rate_hz = sw->actual_toggle_rate_hz;
 
     if (sw->remaining_toggle_cycles!=0) {
-        out->stopafter_s = (sw->remaining_toggle_cycles * MEMS_SWITCH_ELECTRICAL_PULSE_MS + 999U)/ 1000U;
+        out->stopafter_s = (sw->remaining_toggle_cycles * mems_switch_pulse_ms(sw) + 999U)/ 1000U;
     }
 
     if (sw->owner != NULL) {
@@ -429,7 +471,7 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
 
     k_work_init_delayable(&router->toggler_work, mems_router_toggler_work_handler);
     if (router->num_switches > 0U) {
-        (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ELECTRICAL_PULSE_MS));
+        (void)k_work_reschedule(&router->toggler_work, K_MSEC(MEMS_SWITCH_ROUTER_TICK_MS));
     }
 }
 

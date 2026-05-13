@@ -20,6 +20,10 @@ manifest:
           - cmsis_6      # required by the ARM port for Cortex-M [TODO is this the true rational? I thoguht this was for flash/debug? -JIB"]
           - hal_stm32    # required by the st32 nucleo board
           - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
+    - name: zscilib
+      remote: zephyrproject-rtos
+      revision: master
+      path: modules/lib/zscilib
     # Out-of-tree DAC Driver for optical attenuators
     - name: dac7578
       url: https://github.com/CaltechOpticalObservatories/dac7578

@@ -21,9 +21,6 @@ that should be reviewed by a project owner.
 
 ## Hardware vs Code
 
-- Hardware docs describe two DAC7578 devices and twelve physical TIB FVOA
-  channels. Code initializes six logical attenuator channels through one
-  `dac7578` device handle.
 - Hardware docs distinguish FFSW open-drain and FFLS push-pull MEMS drive.
   Current code uses raw GPIO expander pins and does not apply per-switch
   electrical mode.
@@ -35,10 +32,6 @@ that should be reviewed by a project owner.
   registered as both GET and SET handlers, so bare queries perform actions.
 - Local `laser_t` values map `LASER_1028_Y` and `LASER_1270_J` to the same
   value.
-- Photodiode dark calibration ownership is split: settings owns persisted
-  values, while the sampler thread completes and optionally stores dark
-  measurements.
-
 
 ## Stale Docs Removed or Rewritten
 
@@ -62,4 +55,3 @@ that should be reviewed by a project owner.
   build command and links to implementation-derived command docs.
 
 ## Codex Judgment Calls
-

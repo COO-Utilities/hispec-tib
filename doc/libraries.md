@@ -11,7 +11,8 @@
 
 - `devices.c`: board strap detection and board-profile setup.
 - `mems_switching.c`: MEMS switch state, route lookup, and duty-cycle tick work.
-- `attenuator.c`: DAC-backed logical attenuator channels.
+- `attenuator.c`: paired-DAC logical attenuator channels using zscilib math for
+  the FVOA attenuation model.
 - `maiman.c`: raw/scaled Modbus register wrapper for Maiman drivers.
 - `lasers.c`: laser-bank GPIO, Maiman profile, status, and tuning helpers.
 - `photodiode.c`: ADS1115 sampling, dark calibration, and telemetry.
@@ -37,4 +38,5 @@
   reusable shared module.
 - Add test coverage around `json_utils.c`, command normalization, and network
   profile selection.
-- Review the DAC7578 integration against the two-DAC hardware description.
+- Add test coverage for the attenuator model and inverse once calibration
+  expectations are owner-approved.

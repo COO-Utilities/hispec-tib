@@ -23,6 +23,8 @@ struct json_type_msg {
 	char msg_type[8];
 };
 
+#define COO_JSON_DOUBLE_ARRAY_MAX 8U
+
 /**
  * @brief Extract one JSON field by key using Zephyr's descriptor parser.
  *
@@ -199,6 +201,75 @@ int coo_json_extract_float(const char *json, const char *key, float *value)
 		*value = parsed.value;
 	}
 	return rc;
+}
+
+int coo_json_extract_double(const char *json, const char *key, double *value)
+{
+	struct json_double_field {
+		double value;
+	} parsed = { 0 };
+	int rc;
+
+	if (value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	rc = find_json_key_value(json, key,
+				 JSON_TOK_DOUBLE_FP,
+				 &parsed,
+				 sizeof(parsed.value),
+				 offsetof(struct json_double_field, value),
+				 Z_ALIGN_SHIFT(struct json_double_field));
+	if (rc == COO_JSON_EXTRACT_OK) {
+		*value = parsed.value;
+	}
+	return rc;
+}
+
+int coo_json_extract_double_array(const char *json, const char *key,
+				  double *values, size_t max_values,
+				  size_t *parsed_len)
+{
+	struct json_double_array_field {
+		double values[COO_JSON_DOUBLE_ARRAY_MAX];
+		size_t values_len;
+	} parsed = { 0 };
+	struct json_obj_descr descr[] = {
+		JSON_OBJ_DESCR_ARRAY(struct json_double_array_field, values,
+				     COO_JSON_DOUBLE_ARRAY_MAX, values_len,
+				     JSON_TOK_DOUBLE_FP),
+	};
+	size_t key_len;
+	int64_t rc;
+
+	if (json == NULL || key == NULL || values == NULL || parsed_len == NULL ||
+	    max_values == 0U || max_values > COO_JSON_DOUBLE_ARRAY_MAX) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+	*parsed_len = 0U;
+
+	key_len = strlen(key);
+	if (key_len == 0U || key_len > 127U) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	descr[0].field_name = key;
+	descr[0].field_name_len = key_len;
+
+	rc = json_obj_parse((char *)json, strlen(json), descr, ARRAY_SIZE(descr), &parsed);
+	if (rc < 0) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+	if ((rc & BIT64(0)) == 0) {
+		return COO_JSON_EXTRACT_MISSING;
+	}
+	if (parsed.values_len > max_values) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	memcpy(values, parsed.values, parsed.values_len * sizeof(values[0]));
+	*parsed_len = parsed.values_len;
+	return COO_JSON_EXTRACT_OK;
 }
 
 int coo_json_extract_optional_float_range(const char *json, const char *key,

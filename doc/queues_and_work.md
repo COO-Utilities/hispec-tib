@@ -46,10 +46,11 @@ behaviors with fixed enum entries.
 Each initialized `mems_router` owns one `k_work_delayable` tick. Every tick:
 
 1. Locks the router.
-2. Clears all MEMS pulse pins.
-3. Applies any target-state pulses.
-4. Advances duty-cycle counters and stop-after counters.
-5. Reschedules itself for `MEMS_SWITCH_ELECTRICAL_PULSE_MS`.
+2. Clears pulse pins whose per-switch electrical pulse window has expired.
+3. Applies any target-state pulses for switches whose service interval is due.
+4. Advances duty-cycle counters and stop-after counters on each switch's
+   FFSW/FFLS pulse-width cadence.
+5. Reschedules itself for `MEMS_SWITCH_ROUTER_TICK_MS`.
 
 The tick uses raw GPIO pin APIs because board profiles store expander pin
 numbers rather than `gpio_dt_spec` objects.

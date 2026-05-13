@@ -20,6 +20,7 @@
 #define MEMS_SOURCEDEST_MAX_LEN 24
 #define MEMS_SWITCH_ELECTRICAL_PULSE_MS 20U  //datasheet says pulse width >=15ms
 #define MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS 50U //datasheet says pulse width of 50ms typical (ch 7&8 on tib)
+#define MEMS_SWITCH_ROUTER_TICK_MS 10U
 #define MEMS_SWITCH_NAME_LEN 24
 #define MEMS_ROUTER_MAX_SWITCHES 8
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4
@@ -30,13 +31,22 @@
 
 struct mems_router;
 
+enum mems_switch_type {
+    MEMS_SWITCH_TYPE_FFSW,
+    MEMS_SWITCH_TYPE_FFLS,
+};
 
-/** Runtime state for one dual-coil MEMS switch. */
+/** Runtime state for one dual-coil MEMS switch.
+ *
+ * `switch_type` is assigned once by mems_switch_init() from the active board
+ * profile. It controls the electrical pulse width used by router work ticks.
+ */
 struct mems_switch {
     const struct device *gpio_dev;
     //todo shouldn't these pins be constant?
     gpio_pin_t pin_a;
     gpio_pin_t pin_b;
+    enum mems_switch_type switch_type;
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
     bool state_known_this_boot;
@@ -46,6 +56,8 @@ struct mems_switch {
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
+    uint8_t pulse_ticks_remaining;
+    uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
 };
@@ -57,7 +69,7 @@ struct mems_switch_status {
     /* Exact A-state duty numerator and denominator in MEMS tick counts. */
     uint32_t duty_numerator;
     uint32_t duty_denominator;
-    /* Duration of one MEMS tick, currently the delayable-work period. */
+    /* Duration of one MEMS service tick for this switch type. */
     uint32_t tick_duration_ms;
     float requested_toggle_rate_hz;
     float toggle_rate_hz;
@@ -106,6 +118,7 @@ struct mems_router {
  */
 void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
                       gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+                      enum mems_switch_type switch_type,
                       float configured_toggle_rate_hz, char initial_state);
 /**
  * @brief Queue a static or toggling MEMS switch state change.

@@ -2,9 +2,9 @@
  * @file attenuator.h
  * @brief DAC7578-backed logical attenuator channel helpers.
  *
- * Each logical attenuator stores runtime polynomial coefficients and the last
- * read/write voltage. Persistence is owned by app_settings; this module only
- * applies coefficients and performs DAC I/O.
+ * Each logical attenuator owns two physical DAC-backed FVOAs. Persistence is
+ * owned by app_settings; this module only applies model coefficients and
+ * performs DAC I/O.
  */
 #ifndef ATTENUATOR_H
 #define ATTENUATOR_H
@@ -16,37 +16,101 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/** Number of quadratic coefficients in each attenuator calibration polynomial. */
-#define ATTENUATOR_COEFF_COUNT 3
+#define ATTENUATOR_PHYSICAL_COUNT 2
+#define ATTENUATOR_COEFF_COUNT 2
+
+struct attenuator_model_coeffs {
+    double slope;
+    double offset;
+};
+
+struct attenuator_dac_cfg {
+    const struct device *dev;
+    struct dac_channel_cfg cfg;
+    double voltage;
+    double attenuation_db;
+};
+
+struct attenuator_status {
+    double attenuation_db;
+    double linear;
+    double voltage1;
+    double voltage2;
+    double attenuation_db1;
+    double attenuation_db2;
+};
 
 /**
  * Attenuator driver structure.
  */
 struct attenuator {
-    double  coeff_db_to_volt[ATTENUATOR_COEFF_COUNT];
-    double  coeff_volt_to_db[ATTENUATOR_COEFF_COUNT];
-    double  voltage;
-    struct dac_channel_cfg cfg;
+    struct attenuator_model_coeffs coeff1;
+    struct attenuator_model_coeffs coeff2;
+    struct attenuator_dac_cfg dac_cfg1;
+    struct attenuator_dac_cfg dac_cfg2;
+    double attenuation_db;
 };
 
 /** Initialize a DAC channel. May block on I2C through the DAC driver. */
-bool attenuator_init(struct attenuator *drv, uint8_t channel);
+bool attenuator_init(struct attenuator *drv,
+                     const struct device *dac1, uint8_t channel1,
+                     const struct device *dac2, uint8_t channel2);
 
 /**
- * @brief Set attenuation by raw millivolts or calibrated dB.
+ * @brief Convert a physical attenuator voltage to modeled attenuation in dB.
  *
- * If @p raw is false, @p voltage is interpreted as dB and converted using the
- * runtime `coeff_db_to_volt` polynomial. The final voltage is clamped to the
- * DAC range, may enqueue a warning, and is written over I2C.
+ * The model is transmission = (erf(4) + erf(4 - b)) / (2 * erf(4)), where
+ * b = slope * voltage + offset. This helper does not perform DAC I/O.
  */
-bool attenuator_set(struct attenuator *drv, double voltage, bool raw);
+double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
+                                      double voltage);
 
 /**
- * @brief Read back the DAC register and return raw millivolts or estimated dB.
+ * @brief Convert modeled attenuation in dB to a physical attenuator voltage.
+ *
+ * This is the inverse of attenuator_model_voltage_to_db(). Returns false when
+ * the coefficient slope is zero or the requested attenuation is outside the
+ * model domain.
+ */
+bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
+                                    double attenuation_db, double *voltage);
+
+/** Set physical attenuator 1 by modeled dB. May block on I2C. */
+bool attenuator_set_dac1_db(struct attenuator *drv, double attenuation_db);
+
+/** Set physical attenuator 2 by modeled dB. May block on I2C. */
+bool attenuator_set_dac2_db(struct attenuator *drv, double attenuation_db);
+
+/** Set physical attenuator 1 by raw DAC millivolts. May block on I2C. */
+bool attenuator_set_dac1_voltage(struct attenuator *drv, double voltage);
+
+/** Set physical attenuator 2 by raw DAC millivolts. May block on I2C. */
+bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage);
+
+/**
+ * @brief Set total logical attenuation in dB.
+ *
+ * The first physical attenuator is driven to its modeled maximum before the
+ * second attenuator is used. This overrides any prior individual physical
+ * attenuator set point and may enqueue a warning if the requested attenuation
+ * exceeds the modeled DAC range.
+ */
+bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
+
+/**
+ * @brief Set total logical transmission as a linear fraction in (0, 1].
+ *
+ * This converts the requested transmission to dB attenuation and delegates to
+ * attenuator_set_db().
+ */
+bool attenuator_set_linear(struct attenuator *drv, double linear);
+
+/**
+ * @brief Read back both DAC registers and return logical/physical state.
  *
  * The read may block on I2C. It does not verify that the attenuator hardware is
  * powered or optically calibrated.
  */
-bool attenuator_get(struct attenuator *drv, double *voltage, bool raw);
+bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
 
 #endif /* ATTENUATOR_H */

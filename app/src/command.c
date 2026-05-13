@@ -2515,18 +2515,28 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
     char payload[MAX_PAYLOAD_LEN]={0};
     if (strcasecmp(setting, "coeff") == 0) {
         snprintf(payload, MAX_PAYLOAD_LEN,
-                 "{\"db2volt\":[%.4f,%.4f,%.4f],\"volt2db\":[%.4f,%.4f,%.4f]}",
-                 attenuators[laser_id].coeff_db_to_volt[0],
-                 attenuators[laser_id].coeff_db_to_volt[1],
-                 attenuators[laser_id].coeff_db_to_volt[2],
-                 attenuators[laser_id].coeff_volt_to_db[0],
-                 attenuators[laser_id].coeff_volt_to_db[1],
-                 attenuators[laser_id].coeff_volt_to_db[2]);
+                 "{\"dac1\":[%.8f,%.8f],\"dac2\":[%.8f,%.8f]}",
+                 attenuators[laser_id].coeff1.slope,
+                 attenuators[laser_id].coeff1.offset,
+                 attenuators[laser_id].coeff2.slope,
+                 attenuators[laser_id].coeff2.offset);
     } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
-        double db, voltage;
-        attenuator_get(&attenuators[laser_id], &db, false);
-        attenuator_get(&attenuators[laser_id], &voltage, true);
-        snprintf(payload, MAX_PAYLOAD_LEN, "{\"voltage\":%.4f,\"db\":%.4f}", voltage, db);
+        struct attenuator_status status = {0};
+
+        if (!attenuator_get(&attenuators[laser_id], &status)) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"error\":\"Failed to read attenuator\"}");
+        }
+        snprintf(payload, MAX_PAYLOAD_LEN,
+                 "{\"db\":%.4f,\"linear\":%.6f,"
+                 "\"voltage1\":%.4f,\"voltage2\":%.4f,"
+                 "\"db1\":%.4f,\"db2\":%.4f}",
+                 status.attenuation_db,
+                 status.linear,
+                 status.voltage1,
+                 status.voltage2,
+                 status.attenuation_db1,
+                 status.attenuation_db2);
     } else {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
     }
@@ -2553,71 +2563,80 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
                             "{\"error\":\"Attenuator unavailable on this board\"}");
     }
 
-    // Parse value
-    struct coeffs {
-        float db2volt[ATTENUATOR_COEFF_COUNT];
-        size_t db2volt_len;
-        float volt2db[ATTENUATOR_COEFF_COUNT];
-        size_t volt2db_len;
-    };
-
-    // Parse value
-    struct json_value_float {
-        float value;
-    };
-
     if (strcasecmp(setting, "coeff") == 0) {
 
-        struct coeffs parsed_coeffs = {0};
+        double dac1_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
+        double dac2_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
+        size_t dac1_len = 0U;
+        size_t dac2_len = 0U;
         struct app_attenuator_channel_settings stored_coeffs = {0};
         bool persist = false;
         int parse_rc;
+        struct attenuator_status status = {0};
 
-        const struct json_obj_descr coeff_descr[] = {
-            JSON_OBJ_DESCR_ARRAY(struct coeffs, db2volt, ATTENUATOR_COEFF_COUNT,
-                                 db2volt_len, JSON_TOK_FLOAT),
-            JSON_OBJ_DESCR_ARRAY(struct coeffs, volt2db, ATTENUATOR_COEFF_COUNT,
-                                 volt2db_len, JSON_TOK_FLOAT),
-        };
-
-        if (json_obj_parse((char *) cmd->payload, cmd->payload_len, coeff_descr,
-                                 ARRAY_SIZE(coeff_descr), &parsed_coeffs) < 0 ||
-                                 parsed_coeffs.db2volt_len != ATTENUATOR_COEFF_COUNT ||
-                                 parsed_coeffs.volt2db_len != ATTENUATOR_COEFF_COUNT) {
+        parse_rc = coo_json_extract_double_array(cmd->payload, "dac1",
+                                                 dac1_coeffs,
+                                                 ATTENUATOR_COEFF_COUNT,
+                                                 &dac1_len);
+        if (parse_rc != COO_JSON_EXTRACT_OK || dac1_len != ATTENUATOR_COEFF_COUNT) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Improper arguments\"}");
         }
+
+        parse_rc = coo_json_extract_double_array(cmd->payload, "dac2",
+                                                 dac2_coeffs,
+                                                 ATTENUATOR_COEFF_COUNT,
+                                                 &dac2_len);
+        if (parse_rc != COO_JSON_EXTRACT_OK || dac2_len != ATTENUATOR_COEFF_COUNT) {
+            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Improper arguments\"}");
+        }
+
         parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid persistent flag\"}");
         }
 
-        double db;
-        attenuator_get(&attenuators[laser_id], &db, false);
-
-        for (uint8_t i=0; i<ATTENUATOR_COEFF_COUNT; i++) {
-            attenuators[laser_id].coeff_db_to_volt[i]=parsed_coeffs.db2volt[i];
-            attenuators[laser_id].coeff_volt_to_db[i]=parsed_coeffs.volt2db[i];
-            stored_coeffs.db_to_volt[i]=parsed_coeffs.db2volt[i];
-            stored_coeffs.volt_to_db[i]=parsed_coeffs.volt2db[i];
+        if (!attenuator_get(&attenuators[laser_id], &status)) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"error\":\"Failed to read attenuator\"}");
         }
 
-        attenuator_set(&attenuators[laser_id], db, false);
+        attenuators[laser_id].coeff1.slope = dac1_coeffs[0];
+        attenuators[laser_id].coeff1.offset = dac1_coeffs[1];
+        attenuators[laser_id].coeff2.slope = dac2_coeffs[0];
+        attenuators[laser_id].coeff2.offset = dac2_coeffs[1];
+        stored_coeffs.physical[0].slope = dac1_coeffs[0];
+        stored_coeffs.physical[0].offset = dac1_coeffs[1];
+        stored_coeffs.physical[1].slope = dac2_coeffs[0];
+        stored_coeffs.physical[1].offset = dac2_coeffs[1];
+
+        if (!attenuator_set_db(&attenuators[laser_id], status.attenuation_db)) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"error\":\"Failed to apply coefficients\"}");
+        }
         app_settings_update_attenuator_channel((uint8_t)laser_id, &stored_coeffs, persist);
         snprintf(payload, sizeof(payload), "{\"status\":\"OK\",\"persistent\":%s}",
                  persist ? "true" : "false");
 
     } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
 
-        struct json_value_float in_data = {0};
-        struct json_obj_descr d[] = {
-            JSON_OBJ_DESCR_PRIM(struct json_value_float, value, JSON_TOK_NUMBER)
-        };
-        if (json_obj_parse((char *) cmd->payload, cmd->payload_len, d, 1, &in_data) < 0) {
+        double value;
+
+        if (coo_json_extract_double(cmd->payload, "value", &value) !=
+            COO_JSON_EXTRACT_OK) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
         }
 
-        bool raw_voltage = (strcasecmp(setting, "value") == 0);
-        attenuator_set(&attenuators[laser_id], in_data.value, raw_voltage);
+        if (strcasecmp(setting, "value") == 0) {
+            if (!attenuator_set_linear(&attenuators[laser_id], value)) {
+                return _msg_builder(cmd, RESP_ERROR,
+                                    "{\"error\":\"Invalid linear transmission\"}");
+            }
+        } else {
+            if (!attenuator_set_db(&attenuators[laser_id], value)) {
+                return _msg_builder(cmd, RESP_ERROR,
+                                    "{\"error\":\"Invalid dB attenuation\"}");
+            }
+        }
 
     } else {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");

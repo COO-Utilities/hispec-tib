@@ -19,9 +19,6 @@ requirements.
 
 ## Hardware/Profile Gaps
 
-- TIB hardware uses two DAC7578 devices and twelve physical FVOA channels.
-  Firmware currently exposes six logical attenuator channels and initializes
-  one `dac7578` device.
 - MEMS electrical mode is not represented per switch in firmware. Hardware
   notes distinguish FFSW open-drain and FFLS push-pull.
 - CAL switch names have an explicit source TODO pending final fiber path names.
@@ -57,6 +54,6 @@ The following runtime state is intentionally not persisted:
 - `app/src/devices.c`: final CAL route/switch names need owner decision.
 - `app/src/command.c`: MQTT host/port schema TODO tagged `-JIB`.
 - `app/src/command.c`: internal route-error TODO.
-- `app/src/attenuator.c`: attenuator calibration/nonlinearity TODO.
+- `app/src/attenuator.c`: attenuator autocalibration TODO.
 - `lib/coo_commons/network.c`: DHCP/network helper necessity TODOs.
 - `hardware.md`: photodiode ADC clamp TODO.

@@ -36,15 +36,20 @@ struct app_mqtt_settings {
 
 /** Number of logical attenuator channels whose calibration may be persisted. */
 #define APP_ATTENUATOR_CHANNEL_COUNT 6
-/** Number of quadratic coefficients per attenuator calibration polynomial. */
-#define APP_ATTENUATOR_COEFF_COUNT 3
+/** Number of model coefficients per physical attenuator: b = slope * voltage + offset. */
+#define APP_ATTENUATOR_COEFF_COUNT 2
+#define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
 
+struct app_attenuator_physical_settings {
+	float slope;
+	float offset;
+};
+
 /** Persisted/runtime calibration for one logical attenuator channel. */
 struct app_attenuator_channel_settings {
-	float db_to_volt[APP_ATTENUATOR_COEFF_COUNT];
-	float volt_to_db[APP_ATTENUATOR_COEFF_COUNT];
+	struct app_attenuator_physical_settings physical[APP_ATTENUATOR_PHYSICAL_COUNT];
 };
 
 /** Persisted/runtime attenuator calibration snapshot. */

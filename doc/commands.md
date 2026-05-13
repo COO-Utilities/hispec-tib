@@ -465,15 +465,15 @@ measurement specification before firmware design or implementation.
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
 - **Request topic:** `cmd/<device>/req/atten/<laser>/value`
-  - Set raw DAC millivolts:
+  - Set total linear transmission through the logical attenuator:
     ```json
-    {"value": 1234.0}
+    {"value": 0.25}
     ```
   - Query:
     empty payload
 
 - **Request topic:** `cmd/<device>/req/atten/<laser>/valuedb`
-  - Set attenuation using the current `db2volt` calibration coefficients:
+  - Set total attenuation in dB:
     ```json
     {"value": 12.5}
     ```
@@ -481,11 +481,12 @@ measurement specification before firmware design or implementation.
     empty payload
 
 - **Request topic:** `cmd/<device>/req/atten/<laser>/coeff`
-  - Set quadratic calibration coefficients:
+  - Set the linear model coefficients for the two physical attenuators that
+    make up the logical attenuator:
     ```json
     {
-      "db2volt": [0.0, 1.0, 0.0],
-      "volt2db": [0.0, 1.0, 0.0],
+      "dac1": [0.001953125, 0.0],
+      "dac2": [0.001953125, 0.0],
       "persistent": true
     }
     ```
@@ -493,13 +494,21 @@ measurement specification before firmware design or implementation.
     empty payload
 
 - **Response topic:** `cmd/<device>/resp/atten/<laser>/<setting>`
-  - Value query: `{"voltage":1234.0000,"db":12.5000}`
-  - Coeff query: `{"db2volt":[...],"volt2db":[...]}`
+  - Value query:
+    `{"db":12.5000,"linear":0.0562,"voltage1":1234.0000,"voltage2":0.0000,"db1":12.5000,"db2":0.0000}`
+  - Coeff query: `{"dac1":[slope,offset],"dac2":[slope,offset]}`
   - Set result: `{"status":"OK"}` or `{"status":"OK","persistent":true}`
 
 - **Notes:**
   - `<laser>` is one of `1028y`, `1430yj`, `1430hk`, `1510h`, or `2330k`.
-  - Coefficients are loaded from persistent settings during `setup_attenuators()`.
+  - Each logical attenuator is a pair of physical FVOAs. Total set commands use
+    the full modeled range of the first physical attenuator before using the
+    second, and override any individual physical set point made through the C
+    attenuator API.
+  - `value` is a unitless linear transmission fraction in `(0, 1]`.
+  - Coefficients are loaded from persistent settings during
+    `setup_attenuators()`. They define `b = slope * voltage + offset` for the
+    attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.
   - `persistent` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
