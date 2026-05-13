@@ -55,8 +55,8 @@ Default command responses use:
 cmd/hsfib-tib/resp/<key>
 ```
 
-MQTT 5 `response_topic` and `correlation_data` are honored when they fit the
-fixed command buffers.
+MQTT 5 `response_topic` is honored when it fits the fixed topic buffer.
+`correlation_data` is echoed when it is 16 bytes or less.
 
 Serial commands share the same normalized command path. A bare serial key is a
 GET; a key with payload is a SET. See:
