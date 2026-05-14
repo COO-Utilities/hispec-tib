@@ -41,10 +41,9 @@ LLMs Agents: Do NOT change headings in this file.
 
 ## Decisions To Make
 
-- Laser-bank heater mode is persisted and defaults to `auto`; laser output
-  state and Maiman TEC/current setpoints are not restored after reboot.
+- laser output state and Maiman TEC/current setpoints are not restored after reboot.
 - DS2408 relay output state is intentionally not restored after reboot; the
-  local driver defaults the expander outputs low/off. Verify relay polarity on
+  local driver defaults the expander outputs low/off. Verify DS2408 relay polarity on
   first PCB bring-up.
 - Decide whether `temp` should expose the laser-bank heater control loop's TEC
   cache or remain ambient-only.

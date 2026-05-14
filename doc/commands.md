@@ -245,6 +245,52 @@ while serial guard is active and attenuator DAC-range clamping.
   - Result: `{"status": "success"}`
     Causes telemetry to be published on `yj_tput` or `hk_tput` topic (or stops it).
 
+  Measure throughput of the external system. While individual commands may be used to set a laser current, attenuation value, 
+  and monitored values of the photodiode's reading to be streamed out that scenario leaves it to the user to tune flux and 
+  attenuation to stay within both the sensitivity envelope of the photodiode and ADC. Furthermore the SNR of the resulting 
+  data will likely be sub-optimal as that will both not be a user's primary concern and a more complex optimization path. 
+  Full (admittedly overly detailed) treatment would require detailed knowledge and computation/propagation of errors of 
+  open-loop hardware.
+  
+  the `measure_throughput` command resolves this by dynamically adjusting the selected laser output power (by way of 
+  drive current) and attenuator values to maintain good ("good-enough"/good as possible) signal on the photodiode. Using 
+  the response (i.e. QE curve, transimpediance, noise bandwidth, measured dark signal) of the photodiode, the adc gain/datasheet, and the known 
+  loss (a user parameter see `memsroute/route_loss` command) of the configured pd input route the software is able to 
+  determine a measured flux and measurement error (inclusive of both Poisson and measurement system). 
+  Using the laser's flux-current response (from datasheet and laboratory testing), similarly the known values for the 
+  attenuators, and losses in whatever active route (switch toggling is intentionally ignored) the software is able to 
+  determine an estimate of the emitted flux (and error via error propagation of input through response function).
+  
+  The ratio of these is then used to determine the transmission (loss) and its error.
+  
+  A second error is reported that uses the RMS of the pd over the past half second for its error assumes no uncertainty 
+  on the output flux. 
+  
+  The control algorithm works by monitoring the average PD signal over the past second and if that drops below 20% of the 
+  range it triples the output flux. Similarly, if it rises above 80% of the photodiode range it drops the flux by a third. 
+  Five consecutive samples that are saturated or below the dark level cause an instant adjustment (this feature cuts initial 
+  ranging time 10s of seconds to generally < 1s).
+  
+  Flux is raised by first decreasing attenuation (which follows uses the logical attenuator's function and thus follows 
+  its priority rules) and then by raising laser power.
+  
+  Flux is decreased by first increasing attenuation and then decreasing laser power. 
+  
+  When throughput monitoring is first started attenuation is set to max and then laser power to max.   
+  
+  The laser library functions are used to compute the nominal output laser flux.
+  the attenuator library functions are used to compute the nominal attenuation
+  both libraries have their own helper that reports the error on that nominal value. 
+  
+  The error model is as follows:
+  
+  each physical attenuator has a user set error that is on "b" and propagated through the transmission model as the 
+  uncertainty is in the attenuator shutter position
+  
+  the laser diode has a user-set fractional noise on its computed output flux plus a constant noise 
+  
+  details on the photodiodes and python example code with the relevant conversion equations is in photodiode_notes.md
+
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
@@ -296,6 +342,13 @@ measurement specification before firmware design or implementation.
   - PD: updates no sooner than `max(stopafter_s, pd_autooff_s)`
   - Laserbank: updates no sooner than `max(stopafter_s, laserbank_autooff_s)`
   - Laser: updates no sooner than `max(stopafter_s, laser_autooff_s)`
+
+(route-loss)=
+- **Request topic:** `cmd/<device>/req/memsroute/route_loss`
+  - {"route":<routename>, <lasername>: <doubleprecision transmission> | "<loss> db"}
+
+    TBD
+
 
 ### `laser`
 - **Request topic:** `cmd/<device>/req/laser`

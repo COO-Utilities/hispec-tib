@@ -100,6 +100,8 @@ Uses an ADS1115 16 bit 4 channel muxed ADC
 - PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - Uses 2-channels of LL shifting for i2c 3.3-5V
+- Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
+- See photodiode_notes.md for additional details
 
 For board files:
 - Nucleo:
