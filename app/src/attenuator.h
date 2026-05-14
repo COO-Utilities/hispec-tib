@@ -40,6 +40,16 @@ struct attenuator_status {
     double attenuation_db2;
 };
 
+struct attenuator_transmission_estimate {
+    double linear;
+    double linear_err;
+    double attenuation_db;
+    double attenuation_db1;
+    double attenuation_db2;
+    double voltage1;
+    double voltage2;
+};
+
 /**
  * Attenuator driver structure.
  */
@@ -112,5 +122,16 @@ bool attenuator_set_linear(struct attenuator *drv, double linear);
  * powered or optically calibrated.
  */
 bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
+
+/**
+ * @brief Read logical transmission and propagate physical FVOA b uncertainty.
+ *
+ * This may block on I2C through attenuator_get(). The uncertainty inputs are
+ * standard deviations in the model coordinate b for physical attenuator 1 and
+ * 2. A zero uncertainty reports the nominal transmission with zero error.
+ */
+bool attenuator_estimate_transmission(struct attenuator *drv,
+                                      double sigma_b1, double sigma_b2,
+                                      struct attenuator_transmission_estimate *out);
 
 #endif /* ATTENUATOR_H */

@@ -27,6 +27,8 @@ Runtime ownership is:
   higher-level Maiman helper APIs.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
   sample windows.
+- `throughput_monitor.c`: measure-throughput streaming, route-loss application,
+  and optional autolevel control.
 - `tempsense.c`: DS18B20 polling and cache.
 - `sntp_sync.c`: SNTP delayable-work sync and status.
 - `app_settings.c`: Zephyr settings-backed app configuration and calibration.

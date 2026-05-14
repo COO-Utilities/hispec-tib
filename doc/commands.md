@@ -307,6 +307,10 @@ that frame is specified, implementations should reject `format:"binary"`.
 - Route transmissions default to `1.0` when no route-loss record is stored.
 - Both outbound laser route loss and inbound photodiode route loss are applied
   when estimating throughput.
+- The current firmware lookup names the inbound photodiode route as
+  `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` from `fiber:"M"|"S"` and the outbound laser
+  route as `<lasername>_to_<M|S>`. These names are route-loss record keys, not
+  MEMS route-table entries.
 - The 1 s mean controls autolevel. Below 20% usable range, firmware requests
   3x flux. Above 80%, it requests 1/3 flux.
 - Five consecutive saturated samples or five consecutive below-dark samples

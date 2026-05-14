@@ -40,6 +40,13 @@ and noise/window state, and sleeps to target the 20 ms sampling period.
 `sensor_sample_fetch()` and `sensor_channel_get()` for ambient temperature. It
 updates a mutex-protected cache used by the `temp` command.
 
+## Throughput Monitor Thread
+
+`throughput_monitor_thread()` owns `measure_throughput` stream publication and
+optional autolevel control. It reads photodiode snapshots, route-loss settings,
+attenuator state, and laser estimates, then enqueues best-effort telemetry to
+`outbound_queue`.
+
 ## Laser-Bank Control Thread
 
 `laserbank_control_thread()` is created only for the TIB profile. It owns

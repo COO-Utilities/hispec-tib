@@ -17,6 +17,8 @@
 - `lasers.c`: laser-bank GPIO, Maiman profile, status, and tuning helpers.
 - `laserbank_control.c`: TIB heater auto/override and bank temperature policy.
 - `photodiode.c`: ADS1115 sampling, dark calibration, and rolling sample windows.
+- `throughput_monitor.c`: measure-throughput streaming, route-loss application,
+  and optional photodiode autolevel control.
 - `app_settings.c`: Zephyr settings ownership for app-level persistent state.
 - `app_warning.c`: best-effort warning publication.
 

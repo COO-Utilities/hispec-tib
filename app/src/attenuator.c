@@ -8,6 +8,7 @@
 #include "drivers/dac/dac7578.h"
 
 #include <errno.h>
+#include <math.h>
 #include <zsl/probability.h>
 #include <zsl/zsl.h>
 
@@ -18,6 +19,9 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define MAX_VOLTAGE         4096.0
 #define MODEL_ERF_SCALE     4.0
 #define MODEL_MAX_DB        120.0
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
                                 const struct device *dev, uint8_t channel)
@@ -307,6 +311,71 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
     out->voltage2 = drv->dac_cfg2.voltage;
     out->attenuation_db1 = drv->dac_cfg1.attenuation_db;
     out->attenuation_db2 = drv->dac_cfg2.attenuation_db;
+
+    return true;
+}
+
+static double attenuator_model_b_to_linear(double b)
+{
+    const double erf_scale = erf(MODEL_ERF_SCALE);
+    double transmission = (erf_scale + erf(MODEL_ERF_SCALE - b)) /
+                          (2.0 * erf_scale);
+
+    if (transmission < 0.0) {
+        return 0.0;
+    }
+    if (transmission > 1.0) {
+        return 1.0;
+    }
+
+    return transmission;
+}
+
+static double attenuator_model_dlinear_db(double b)
+{
+    const double erf_scale = erf(MODEL_ERF_SCALE);
+
+    return -exp(-((MODEL_ERF_SCALE - b) * (MODEL_ERF_SCALE - b))) /
+           (sqrt(M_PI) * erf_scale);
+}
+
+bool attenuator_estimate_transmission(struct attenuator *drv,
+                                      double sigma_b1, double sigma_b2,
+                                      struct attenuator_transmission_estimate *out)
+{
+    struct attenuator_status status;
+    double b1;
+    double b2;
+    double tx1;
+    double tx2;
+    double dtx1_db;
+    double dtx2_db;
+    double var;
+
+    if (drv == NULL || out == NULL || sigma_b1 < 0.0 || sigma_b2 < 0.0) {
+        return false;
+    }
+
+    if (!attenuator_get(drv, &status)) {
+        return false;
+    }
+
+    b1 = drv->coeff1.slope * status.voltage1 + drv->coeff1.offset;
+    b2 = drv->coeff2.slope * status.voltage2 + drv->coeff2.offset;
+    tx1 = attenuator_model_b_to_linear(b1);
+    tx2 = attenuator_model_b_to_linear(b2);
+    dtx1_db = attenuator_model_dlinear_db(b1);
+    dtx2_db = attenuator_model_dlinear_db(b2);
+    var = (tx2 * dtx1_db * sigma_b1) * (tx2 * dtx1_db * sigma_b1) +
+          (tx1 * dtx2_db * sigma_b2) * (tx1 * dtx2_db * sigma_b2);
+
+    out->linear = tx1 * tx2;
+    out->linear_err = sqrt(var);
+    out->attenuation_db = status.attenuation_db;
+    out->attenuation_db1 = status.attenuation_db1;
+    out->attenuation_db2 = status.attenuation_db2;
+    out->voltage1 = status.voltage1;
+    out->voltage2 = status.voltage2;
 
     return true;
 }

@@ -36,6 +36,7 @@
 #include "maiman.h"
 #include "mems_switching.h"
 #include "photodiode.h"
+#include "throughput_monitor.h"
 #include "sntp_sync.h"
 #include "tempsense.h"
 #include <coo_commons/json_utils.h>
@@ -124,6 +125,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "memsroute",  memsroute_get,    memsroute_set    },
     { "mems",       mems_get,         mems_set         },
     { "split",      splitting_get,    splitting_set    },
+    { "measure_throughput", NULL, measure_throughput_set },
     { "laserbank/poweron", laserbank_poweron, laserbank_poweron },
     { "laserbank/poweroff", laserbank_poweroff, laserbank_poweroff },
     { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
@@ -1371,7 +1373,8 @@ struct OutMsg help_get(const struct Command *cmd)
 {
     return _msg_builder(cmd, RESP_OK,
                         "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
-                        "memsroute,mems,split,laser,laserbank,atten,pd,pdsettings\"}");
+                        "memsroute,mems,split,measure_throughput,laser,laserbank,"
+                        "atten,pd,pdsettings\"}");
 }
 
 struct OutMsg ip_get(const struct Command *cmd)
@@ -2539,6 +2542,122 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
 }
 
+struct OutMsg measure_throughput_set(const struct Command *cmd)
+{
+    char stop[8] = {0};
+    char laser_name[16] = {0};
+    char fiber_text[4] = "M";
+    char format[8] = "json";
+    struct throughput_monitor_request request = {0};
+    struct throughput_monitor_status status = {0};
+    uint32_t stopafter_s = 0U;
+    bool autolevel = true;
+    int parse_rc;
+    int rc;
+
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"measure_throughput unavailable on this board\"}");
+    }
+
+    parse_rc = coo_json_extract_string(cmd->payload, "stop", stop, sizeof(stop));
+    if (parse_rc == COO_JSON_EXTRACT_OK) {
+        uint8_t channel;
+
+        if (strcasecmp(stop, "all") == 0) {
+            rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &status);
+            return rc == 0 ?
+                _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"stopped\":\"all\"}") :
+                _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"stop failed\"}");
+        }
+
+        if (strcasecmp(stop, "yj") == 0) {
+            channel = PHOTODIODE_CHANNEL_YJ;
+        } else if (strcasecmp(stop, "hk") == 0) {
+            channel = PHOTODIODE_CHANNEL_HK;
+        } else {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"stop must be yj, hk, or all\"}");
+        }
+
+        rc = throughput_monitor_stop(channel, &status);
+        if (rc != 0) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"stop failed\"}");
+        }
+
+        char payload[MAX_PAYLOAD_LEN];
+        snprintk(payload, sizeof(payload),
+                 "{\"status\":\"success\",\"stopped\":\"%s\"}",
+                 photodiode_channel_names[channel]);
+        return _msg_builder(cmd, RESP_OK, payload);
+    }
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid stop\"}");
+    }
+
+    parse_rc = coo_json_extract_string(cmd->payload, "laser", laser_name, sizeof(laser_name));
+    if (parse_rc != COO_JSON_EXTRACT_OK ||
+        hispec_laser_id_from_name(laser_name, &request.laser) != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser\"}");
+    }
+
+    parse_rc = coo_json_extract_string(cmd->payload, "fiber", fiber_text, sizeof(fiber_text));
+    if (parse_rc == COO_JSON_EXTRACT_ERR || fiber_text[0] == '\0' ||
+        fiber_text[1] != '\0') {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"fiber must be M or S\"}");
+    }
+    fiber_text[0] = (char)toupper((unsigned char)fiber_text[0]);
+    if (fiber_text[0] != 'M' && fiber_text[0] != 'S') {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"fiber must be M or S\"}");
+    }
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "autolevel", &autolevel);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid autolevel\"}");
+    }
+
+    parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid stopafter_s\"}");
+    }
+
+    parse_rc = coo_json_extract_string(cmd->payload, "format", format, sizeof(format));
+    if (parse_rc == COO_JSON_EXTRACT_ERR || strcasecmp(format, "json") != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"only json format is supported\"}");
+    }
+
+    request.autolevel = autolevel;
+    request.fiber = fiber_text[0];
+    request.stopafter_s = stopafter_s;
+
+    rc = throughput_monitor_start(&request, &status);
+    if (rc != 0) {
+        char payload[MAX_PAYLOAD_LEN];
+
+        snprintk(payload, sizeof(payload),
+                 "{\"status\":\"error\",\"msg\":\"measure_throughput start failed\",\"rc\":%d}",
+                 rc);
+        return _msg_builder(cmd, RESP_ERROR, payload);
+    }
+
+    char payload[MAX_PAYLOAD_LEN];
+    snprintk(payload, sizeof(payload),
+             "{\"status\":\"success\",\"channel\":\"%s\",\"laser\":\"%s\","
+             "\"autolevel\":%s}",
+             photodiode_channel_names[status.channel],
+             status.laser_name == NULL ? laser_name : status.laser_name,
+             status.autolevel ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
 
 static void mems_format_state(const struct mems_switch_status *status, char *out, size_t out_len)
 {
@@ -2970,6 +3089,11 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
     }
 
+    enum hispec_laser_id hispec_id;
+    if (hispec_laser_id_from_name(laser_name, &hispec_id) == 0) {
+        throughput_monitor_note_attenuator_changed((uint8_t)hispec_id);
+    }
+
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -3195,6 +3319,11 @@ struct OutMsg pd_set(const struct Command *cmd)
 
     if (strcasecmp(action, "measure_dark") == 0) {
         struct photodiode_dark_status status;
+
+        if (throughput_monitor_autolevel_active(channel)) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"status\":\"error\",\"msg\":\"dark measurement blocked by autolevel throughput monitor\"}");
+        }
 
         parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {

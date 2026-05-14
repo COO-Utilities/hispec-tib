@@ -16,6 +16,7 @@
 #include "devices.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -25,6 +26,9 @@
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
+
+#define PLANCK_J_S 6.62607015e-34
+#define LIGHT_M_PER_S 299792458.0
 
 /* One mutex protects the shared RS-485 bus sequencing and the bank/relay GPIOs.
  * k_mutex_lock() sleeps the calling thread instead of busy-waiting while another
@@ -1028,6 +1032,45 @@ float hispec_laser_estimate_power_mw(const laserprops_t *properties, float curre
 	power_mw = (current_ma - properties->threshold_current_ma) *
 		   properties->efficiency_mw_per_ma;
 	return (power_mw > 0.0f) ? power_mw : 0.0f;
+}
+
+int hispec_laser_estimate_flux(const laserprops_t *properties,
+			       float current_ma,
+			       float fractional_noise,
+			       float constant_noise_mw,
+			       struct hispec_laser_flux_estimate *out)
+{
+	double power_mw;
+	double power_w;
+	double photon_j;
+	double wavelength_m;
+	double power_err_mw;
+
+	if (properties == NULL || out == NULL ||
+	    !float_is_valid(current_ma) ||
+	    !float_is_valid(fractional_noise) ||
+	    !float_is_valid(constant_noise_mw) ||
+	    fractional_noise < 0.0f || constant_noise_mw < 0.0f ||
+	    !float_is_valid(properties->wavelength_nm) ||
+	    properties->wavelength_nm <= 0.0f) {
+		return -EINVAL;
+	}
+
+	power_mw = hispec_laser_estimate_power_mw(properties, current_ma);
+	wavelength_m = (double)properties->wavelength_nm * 1.0e-9;
+	photon_j = PLANCK_J_S * LIGHT_M_PER_S / wavelength_m;
+	power_w = power_mw * 1.0e-3;
+	power_err_mw = sqrt((power_mw * (double)fractional_noise) *
+			    (power_mw * (double)fractional_noise) +
+			    (double)constant_noise_mw * (double)constant_noise_mw);
+
+	memset(out, 0, sizeof(*out));
+	out->power_mw = power_mw;
+	out->power_err_mw = power_err_mw;
+	out->wavelength_nm = properties->wavelength_nm;
+	out->flux_ph_s = power_w / photon_j;
+	out->flux_err_ph_s = (power_err_mw * 1.0e-3) / photon_j;
+	return 0;
 }
 
 float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,

@@ -116,6 +116,14 @@ struct hispec_laser_tune_result {
 	bool current_clamped;
 };
 
+struct hispec_laser_flux_estimate {
+	double power_mw;
+	double power_err_mw;
+	double wavelength_nm;
+	double flux_ph_s;
+	double flux_err_ph_s;
+};
+
 struct hispec_laser_bank_channel_temperature {
 	enum hispec_laser_id id;
 	bool valid;
@@ -243,6 +251,19 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);
+
+/**
+ * @brief Estimate emitted photon flux and laser-owned uncertainty.
+ *
+ * The fractional noise is applied to computed optical power and constant noise
+ * is an absolute mW term. This helper performs only datasheet/property math; it
+ * does not touch Modbus, GPIO, settings, or MQTT.
+ */
+int hispec_laser_estimate_flux(const laserprops_t *properties,
+			       float current_ma,
+			       float fractional_noise,
+			       float constant_noise_mw,
+			       struct hispec_laser_flux_estimate *out);
 
 /** @brief Estimate wavelength from TEC temperature and current. */
 float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,

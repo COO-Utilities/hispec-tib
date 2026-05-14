@@ -29,6 +29,7 @@
 #include "devices.h"
 #include "laserbank_control.h"
 #include "photodiode.h"
+#include "throughput_monitor.h"
 #include "tempsense.h"
 #include "sntp_sync.h"
 
@@ -42,6 +43,8 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define PHOTODIODE_PRIORITY 5
 #define LASERBANK_CONTROL_STACK_SIZE 1100
 #define LASERBANK_CONTROL_PRIORITY 7
+#define THROUGHPUT_MONITOR_STACK_SIZE 1800
+#define THROUGHPUT_MONITOR_PRIORITY 6
 
 #define TEMPSENSOR_STACK_SIZE 500
 #define TEMPSENSOR_PRIORITY 5  //TODO this should be lowest
@@ -67,6 +70,10 @@ K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 K_THREAD_DEFINE(temp_tid, TEMPSENSOR_STACK_SIZE,
 		tempsensor_thread, NULL, NULL, NULL,
 		TEMPSENSOR_PRIORITY, 0, 0);
+
+K_THREAD_DEFINE(throughput_monitor_tid, THROUGHPUT_MONITOR_STACK_SIZE,
+		throughput_monitor_thread, NULL, NULL, NULL,
+		THROUGHPUT_MONITOR_PRIORITY, 0, 0);
 
 static void load_network_config(struct network_config *cfg)
 {
