@@ -77,11 +77,9 @@ buffer and echoed exactly in responses.
 
 ## Commands Documented but Not Implemented
 
-- `lasersettings`
 - `temp` alarm set behavior
-- Full `status` payload including nested IP/temp/PD/laser/atten/last-command
-  data
-- Full intended `laser` command behavior as described in `commands.md`
+- Full `status` payload including nested IP/temp/PD/laser/atten/last-command data
+- Full intended `laser`/`lasersettings` command behavior as described in `commands.md`
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
