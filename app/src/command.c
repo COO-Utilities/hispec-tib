@@ -14,6 +14,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <strings.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/reboot.h>
@@ -1831,6 +1832,179 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
     return memsroute_append_json(buf, buf_len, offset, "]");
 }
 
+static const char *const route_loss_laser_names[] = {
+    "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k",
+};
+
+static bool memsroute_is_route_loss_key(const char *key)
+{
+    return strcmp(key, "memsroute/route_loss") == 0;
+}
+
+static bool route_loss_laser_name_is_known(const char *laser)
+{
+    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
+        if (strcmp(route_loss_laser_names[i], laser) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int route_loss_parse_db_string(const char *text, double *transmission)
+{
+    char *end = NULL;
+    double loss_db;
+
+    if (text == NULL || transmission == NULL) {
+        return -EINVAL;
+    }
+
+    errno = 0;
+    loss_db = strtod(text, &end);
+    if (errno != 0 || end == text) {
+        return -EINVAL;
+    }
+
+    while (*end != '\0' && isspace((unsigned char)*end)) {
+        end++;
+    }
+    if (strcasecmp(end, "db") != 0) {
+        return -EINVAL;
+    }
+    if (loss_db < 0.0) {
+        return -ERANGE;
+    }
+
+    *transmission = pow(10.0, -loss_db / 10.0);
+    return (*transmission > 0.0 && *transmission <= 1.0) ? 0 : -ERANGE;
+}
+
+static int route_loss_extract_value(const struct Command *cmd,
+                                    char *laser, size_t laser_len,
+                                    double *transmission)
+{
+    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
+        const char *candidate = route_loss_laser_names[i];
+        double tx = 0.0;
+        char db_text[24] = {0};
+        int rc;
+
+        rc = coo_json_extract_double(cmd->payload, candidate, &tx);
+        if (rc == COO_JSON_EXTRACT_OK) {
+            if (!(tx > 0.0 && tx <= 1.0)) {
+                return -ERANGE;
+            }
+            snprintk(laser, laser_len, "%s", candidate);
+            *transmission = tx;
+            return 0;
+        }
+        if (rc != COO_JSON_EXTRACT_MISSING &&
+            coo_json_extract_string(cmd->payload, candidate, db_text, sizeof(db_text)) ==
+            COO_JSON_EXTRACT_OK) {
+            int parse_rc = route_loss_parse_db_string(db_text, &tx);
+
+            if (parse_rc != 0) {
+                return parse_rc;
+            }
+            snprintk(laser, laser_len, "%s", candidate);
+            *transmission = tx;
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static struct OutMsg route_loss_query_response(const struct Command *cmd,
+                                               const char *route,
+                                               const char *laser)
+{
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    double tx = 1.0;
+    double loss_db = 0.0;
+    bool configured = false;
+    int rc;
+
+    rc = app_settings_get_route_loss(route, laser, &tx, &configured);
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid route_loss key\"}");
+    }
+
+    loss_db = -10.0 * log10(tx);
+    snprintk(payload, sizeof(payload),
+             "{\"route\":\"%s\",\"laser\":\"%s\",\"tx\":%.9f,"
+             "\"loss_db\":%.6f,\"configured\":%s}",
+             route, laser, tx, loss_db, configured ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_request)
+{
+    char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
+    char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
+    double tx = 1.0;
+    bool persist = false;
+    int parse_rc;
+
+    parse_rc = coo_json_extract_string(cmd->payload, "route", route, sizeof(route));
+    if (parse_rc != COO_JSON_EXTRACT_OK) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"missing or invalid route\"}");
+    }
+
+    parse_rc = route_loss_extract_value(cmd, laser, sizeof(laser), &tx);
+    if (parse_rc == -ENOENT) {
+        parse_rc = coo_json_extract_string(cmd->payload, "laser", laser, sizeof(laser));
+        if (parse_rc == COO_JSON_EXTRACT_OK) {
+            if (!route_loss_laser_name_is_known(laser)) {
+                return _msg_builder(cmd, RESP_ERROR,
+                                    "{\"status\":\"error\",\"msg\":\"invalid route_loss laser\"}");
+            }
+            return route_loss_query_response(cmd, route, laser);
+        }
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"missing route_loss laser value\"}");
+    }
+    if (!set_request) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"route_loss query uses laser field\"}");
+    }
+    if (parse_rc == -ERANGE) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"route_loss out of range\"}");
+    }
+    if (parse_rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid route_loss value\"}");
+    }
+
+    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+    }
+
+    parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
+    if (parse_rc == -ENOSPC) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"route_loss table full\"}");
+    }
+    if (parse_rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"invalid route_loss key\"}");
+    }
+
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    snprintk(payload, sizeof(payload),
+             "{\"status\":\"success\",\"route\":\"%s\",\"laser\":\"%s\","
+             "\"tx\":%.9f,\"loss_db\":%.6f,\"persistent\":%s}",
+             route, laser, tx, -10.0 * log10(tx), persist ? "true" : "false");
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
 struct OutMsg memsroute_get(const struct Command *cmd)
 {
     struct mems_route_key active[MEMS_ROUTER_MAX_ROUTES];
@@ -1839,6 +2013,10 @@ struct OutMsg memsroute_get(const struct Command *cmd)
     uint8_t n_outputs = 0U;
     char buf[MAX_PAYLOAD_LEN] = {0};
     size_t offset = 0;
+
+    if (memsroute_is_route_loss_key(cmd->key)) {
+        return route_loss_handle(cmd, false);
+    }
 
     if (memsroute_append_json(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
@@ -2317,6 +2495,9 @@ struct OutMsg splitting_set(const struct Command *cmd)
 }
 
 struct OutMsg memsroute_set(const struct Command *cmd) {
+    if (memsroute_is_route_loss_key(cmd->key)) {
+        return route_loss_handle(cmd, true);
+    }
 
     // Parse {"input":"...","output":"..."}
     struct mems_route_id route_id = {0};

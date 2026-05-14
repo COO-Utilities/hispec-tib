@@ -40,6 +40,7 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_IP_NTP "ip/ntp"
 #define KEY_MQTT_BROKER "mqtt/broker"
 #define KEY_ATTEN_PREFIX "atten"
+#define KEY_ROUTE_LOSS_PREFIX "routeloss"
 #define KEY_PD_YJ_DARK_MV "pd/yj/dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_MV "pd/yj/lowest_dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_VALID "pd/yj/lowest_dark_valid"
@@ -148,6 +149,12 @@ static int read_float(settings_read_cb read_cb, void *cb_arg, float *out)
 	return (rc == sizeof(*out)) ? 0 : -EINVAL;
 }
 
+static int read_double(settings_read_cb read_cb, void *cb_arg, double *out)
+{
+	int rc = read_cb(cb_arg, out, sizeof(*out));
+	return (rc == sizeof(*out)) ? 0 : -EINVAL;
+}
+
 static int read_str(settings_read_cb read_cb, void *cb_arg, char *out, size_t out_size)
 {
 	int rc;
@@ -173,6 +180,21 @@ static void read_valid_float_or_warn(settings_read_cb read_cb, void *cb_arg,
 	float value;
 
 	if (read_float(read_cb, cb_arg, &value) != 0 ||
+	    !(value >= min_value && value <= max_value)) {
+		LOG_WRN("Ignoring invalid stored setting %s", name);
+		return;
+	}
+
+	*out = value;
+}
+
+static void read_valid_double_or_warn(settings_read_cb read_cb, void *cb_arg,
+				      const char *name, double *out,
+				      double min_value, double max_value)
+{
+	double value;
+
+	if (read_double(read_cb, cb_arg, &value) != 0 ||
 	    !(value >= min_value && value <= max_value)) {
 		LOG_WRN("Ignoring invalid stored setting %s", name);
 		return;
@@ -242,6 +264,61 @@ static bool parse_attenuator_coeff_name(const char *name,
 
 	return parse_key_index(&cursor, APP_ATTENUATOR_COEFF_COUNT - 1U, coeff_index) == 0 &&
 	       *cursor == '\0';
+}
+
+static int route_loss_record_index_locked(const char *route, const char *laser,
+					  bool allocate)
+{
+	int first_free = -1;
+
+	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		struct app_route_loss_record *record =
+			&g_settings.snapshot.route_loss.record[i];
+
+		if (!record->configured) {
+			if (first_free < 0) {
+				first_free = i;
+			}
+			continue;
+		}
+
+		if (strcmp(record->route, route) == 0 &&
+		    strcmp(record->laser, laser) == 0) {
+			return i;
+		}
+	}
+
+	return allocate ? first_free : -1;
+}
+
+static bool parse_route_loss_name(const char *name, char *route, size_t route_len,
+				  char *laser, size_t laser_len)
+{
+	const char *slash;
+	size_t route_name_len;
+	size_t laser_name_len;
+
+	if (name == NULL || route == NULL || laser == NULL ||
+	    route_len == 0U || laser_len == 0U) {
+		return false;
+	}
+
+	slash = strchr(name, '/');
+	if (slash == NULL) {
+		return false;
+	}
+
+	route_name_len = (size_t)(slash - name);
+	laser_name_len = strlen(slash + 1);
+	if (route_name_len == 0U || route_name_len >= route_len ||
+	    laser_name_len == 0U || laser_name_len >= laser_len) {
+		return false;
+	}
+
+	memcpy(route, name, route_name_len);
+	route[route_name_len] = '\0';
+	memcpy(laser, slash + 1, laser_name_len + 1U);
+	return true;
 }
 
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
@@ -418,6 +495,30 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
+	if (strchr(name, '/') != NULL) {
+		char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
+		char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
+
+		if (parse_route_loss_name(name, route, sizeof(route), laser, sizeof(laser))) {
+			int index = route_loss_record_index_locked(route, laser, true);
+
+			if (index >= 0) {
+				struct app_route_loss_record *record =
+					&g_settings.snapshot.route_loss.record[index];
+
+				record->configured = true;
+				str_set(record->route, sizeof(record->route), route);
+				str_set(record->laser, sizeof(record->laser), laser);
+				read_valid_double_or_warn(read_cb, cb_arg, name,
+							  &record->transmission,
+							  0.000000001, 1.0);
+			} else {
+				LOG_WRN("Ignoring stored route-loss setting %s; table full", name);
+			}
+		}
+		goto out;
+	}
+
 out:
 	k_mutex_unlock(&g_settings.lock);
 	return 0;
@@ -431,6 +532,7 @@ SETTINGS_STATIC_HANDLER_DEFINE(mqtt_settings, "mqtt", NULL, settings_set_cb, NUL
 SETTINGS_STATIC_HANDLER_DEFINE(atten_settings, "atten", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(pd_settings, "pd", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(laserbank_settings, "laserbank", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(route_loss_settings, "routeloss", NULL, settings_set_cb, NULL, NULL);
 
 static void persist_bool(const char *key, bool value)
 {
@@ -444,6 +546,11 @@ static void persist_u32(const char *key, uint32_t value)
 }
 
 static void persist_float(const char *key, float value)
+{
+	(void)settings_save_one(key, &value, sizeof(value));
+}
+
+static void persist_double(const char *key, double value)
 {
 	(void)settings_save_one(key, &value, sizeof(value));
 }
@@ -511,6 +618,13 @@ static void persist_photodiode_channel(uint8_t channel,
 	}
 }
 
+static void route_loss_key(char *key, size_t key_len,
+			   const char *route, const char *laser)
+{
+	(void)snprintk(key, key_len, "%s/%s/%s",
+		       KEY_ROUTE_LOSS_PREFIX, route, laser);
+}
+
 static const char *const resettable_setting_keys[] = {
 	KEY_SERIAL_HOLDOFF,
 	KEY_BOOT_COUNT,
@@ -570,6 +684,26 @@ static void delete_attenuator_settings(void)
 	}
 }
 
+static void delete_route_loss_settings(const struct app_route_loss_settings *route_loss)
+{
+	char key[64];
+
+	if (route_loss == NULL) {
+		return;
+	}
+
+	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		const struct app_route_loss_record *record = &route_loss->record[i];
+
+		if (!record->configured) {
+			continue;
+		}
+
+		route_loss_key(key, sizeof(key), record->route, record->laser);
+		delete_setting_key(key);
+	}
+}
+
 static void delete_resettable_settings(void)
 {
 	for (uint8_t i = 0; i < ARRAY_SIZE(resettable_setting_keys); ++i) {
@@ -586,6 +720,7 @@ int app_settings_init(void)
 {
 	static const char *const app_settings_subtrees[] = {
 		"board", "serial", "boot", "ip", "mqtt", "atten", "pd",
+		"laserbank", "routeloss",
 	};
 	int rc;
 
@@ -629,6 +764,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 	bool changed_local = false;
 	bool persist_needed = false;
 	bool reset_needed = false;
+	struct app_route_loss_settings old_route_loss = {0};
 
 	if (changed != NULL) {
 		*changed = false;
@@ -648,6 +784,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		char previous[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
 
 		str_set(previous, sizeof(previous), g_settings.snapshot.board_type);
+		old_route_loss = g_settings.snapshot.route_loss;
 		LOG_WRN("Board type changed from %s to %s; clearing persisted settings",
 			previous, board_type);
 		settings_defaults(&g_settings.snapshot);
@@ -662,6 +799,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 
 	if (reset_needed) {
 		delete_resettable_settings();
+		delete_route_loss_settings(&old_route_loss);
 	}
 	if (persist_needed) {
 		persist_str(KEY_BOARD_TYPE, board_type);
@@ -839,6 +977,76 @@ void app_settings_update_laserbank(const struct app_laserbank_settings *laserban
 		persist_u32(KEY_LASERBANK_HEATER_MODE,
 			    (uint32_t)laserbank->heater_mode);
 	}
+}
+
+int app_settings_get_route_loss(const char *route, const char *laser,
+				double *transmission, bool *configured)
+{
+	int index;
+
+	if (transmission == NULL || configured == NULL ||
+	    route == NULL || laser == NULL) {
+		return -EINVAL;
+	}
+	if (route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
+		return -EINVAL;
+	}
+
+	*transmission = 1.0;
+	*configured = false;
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	index = route_loss_record_index_locked(route, laser, false);
+	if (index >= 0) {
+		*transmission = g_settings.snapshot.route_loss.record[index].transmission;
+		*configured = true;
+	}
+	k_mutex_unlock(&g_settings.lock);
+
+	return 0;
+}
+
+int app_settings_set_route_loss(const char *route, const char *laser,
+				double transmission, bool persist)
+{
+	int index;
+	struct app_route_loss_record record;
+
+	if (route == NULL || laser == NULL ||
+	    route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN ||
+	    !(transmission > 0.0 && transmission <= 1.0)) {
+		return -EINVAL;
+	}
+
+	memset(&record, 0, sizeof(record));
+	record.configured = true;
+	str_set(record.route, sizeof(record.route), route);
+	str_set(record.laser, sizeof(record.laser), laser);
+	record.transmission = transmission;
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	index = route_loss_record_index_locked(route, laser, true);
+	if (index >= 0) {
+		g_settings.snapshot.route_loss.record[index] = record;
+	}
+	k_mutex_unlock(&g_settings.lock);
+
+	if (index < 0) {
+		return -ENOSPC;
+	}
+
+	if (persist) {
+		char key[64];
+
+		route_loss_key(key, sizeof(key), route, laser);
+		persist_double(key, transmission);
+	}
+
+	return 0;
 }
 
 uint32_t app_settings_get_mqtt_revision(void)

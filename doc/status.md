@@ -23,8 +23,8 @@ and current C source remains the source of truth for what is implemented today.
   active-low board strap GPIOs.
 - Persistence: Zephyr settings under the `tib` subtree store board type, boot
   count, serial guard, IP, MQTT, laser-bank heater mode,
-  attenuator calibration coefficients, and
-  photodiode calibration/noise/gain settings.
+  attenuator calibration coefficients, route-loss records, and photodiode
+  calibration/noise/gain settings.
 
 
 ## Partially Implemented
@@ -46,7 +46,6 @@ and current C source remains the source of truth for what is implemented today.
   state, laser output/tuning state, and last-command metadata.
 
 - Add automated tests for command parsing and non-hardware domain logic.
-
 
 
 

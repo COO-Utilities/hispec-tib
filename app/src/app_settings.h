@@ -43,6 +43,9 @@ struct app_mqtt_settings {
 #define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
+#define APP_ROUTE_LOSS_RECORD_COUNT 32
+#define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
+#define APP_ROUTE_LOSS_LASER_MAX_LEN 16
 
 struct app_attenuator_physical_settings {
 	float slope;
@@ -76,6 +79,18 @@ struct app_laserbank_settings {
 	enum laserbank_heater_mode heater_mode;
 };
 
+/** User-provided optical route transmission keyed by route and laser names. */
+struct app_route_loss_record {
+	bool configured;
+	char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
+	char laser[APP_ROUTE_LOSS_LASER_MAX_LEN];
+	double transmission;
+};
+
+struct app_route_loss_settings {
+	struct app_route_loss_record record[APP_ROUTE_LOSS_RECORD_COUNT];
+};
+
 /** Persisted/runtime settings snapshot copied under a module mutex. */
 struct app_settings_snapshot {
 	char board_type[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
@@ -84,6 +99,7 @@ struct app_settings_snapshot {
 	struct app_attenuator_settings attenuator;
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
+	struct app_route_loss_settings route_loss;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
 	uint32_t mqtt_revision;
@@ -144,6 +160,23 @@ void app_settings_get_laserbank(struct app_laserbank_settings *out);
 /** @brief Replace laser-bank heater mode setting. */
 void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist);
+/**
+ * @brief Get one route-loss record.
+ *
+ * Missing records are not errors; @p configured is false and @p transmission
+ * is returned as 1.0 so optical math can treat unspecified routes as loss-free.
+ */
+int app_settings_get_route_loss(const char *route, const char *laser,
+				double *transmission, bool *configured);
+/**
+ * @brief Store or update one route-loss record.
+ *
+ * The record is keyed only by route and laser names. It does not change MEMS
+ * route structs or switch state. If @p persist is true, the value is saved via
+ * Zephyr settings and may block on the backend.
+ */
+int app_settings_set_route_loss(const char *route, const char *laser,
+				double transmission, bool persist);
 /** @brief Monotonic runtime counter used by main.c to reconnect MQTT. */
 uint32_t app_settings_get_mqtt_revision(void);
 /** @brief Get serial-command guard duration in seconds. */

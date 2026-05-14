@@ -37,6 +37,8 @@ Current app settings include:
 - `pd/hk/lowest_dark_valid`
 - `pd/hk/noise_warn_rms_mv`
 - `pd/hk/gain_v_per_uw`
+- `laserbank/heater`
+- `routeloss/<route>/<laser>`
 
 ## Board-Type Reset Policy
 
@@ -58,6 +60,8 @@ silently reused on another.
   calibrated/stored.
 - Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise
   warning values.
+- Route-loss records default to absent. Missing route-loss settings are treated
+  as loss-free transmission, `1.0`.
 
 ## Persistence Side Effects
 
