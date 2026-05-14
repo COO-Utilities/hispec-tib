@@ -84,6 +84,7 @@ struct hispec_laser_status {
 	float current_max_limit_ma;
 	float current_protection_threshold_ma;
 	float voltage_v;
+	float current_on_time_s;
 	float tec_temperature_set_c;
 	float tec_temperature_measured_c;
 	float pcb_temperature_c;
@@ -192,6 +193,14 @@ int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled
 int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enabled);
 
 /**
+ * @brief Return relay-output on-time tracked since boot.
+ *
+ * The laser/relay module owns this because it owns relay writes. It does not
+ * read back or infer pre-boot relay state.
+ */
+float hispec_laser_aux_power_on_time_s(enum hispec_laser_aux_output output);
+
+/**
  * @brief Poll TEC temperatures and TEC-running state for the full laser bank.
  *
  * This call blocks on Modbus RTU transactions while holding the laser-bank
@@ -261,9 +270,13 @@ float hispec_laser_estimate_power_mw(const laserprops_t *properties, float curre
  */
 int hispec_laser_estimate_flux(const laserprops_t *properties,
 			       float current_ma,
+			       float tec_temperature_c,
 			       float fractional_noise,
 			       float constant_noise_mw,
 			       struct hispec_laser_flux_estimate *out);
+
+/** @brief Return current-emission on-time tracked by this module since boot. */
+float hispec_laser_current_on_time_s(enum hispec_laser_id id);
 
 /** @brief Estimate wavelength from TEC temperature and current. */
 float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,

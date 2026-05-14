@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 /**
  * @file json_utils.h
@@ -53,5 +54,16 @@ int coo_json_extract_optional_float_range(const char *json, const char *key,
 					  float *value, bool *changed,
 					  float min_value, float max_value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
+/**
+ * @brief Append formatted JSON text to a fixed buffer.
+ *
+ * Updates @p offset only on success. This is intentionally small and format-
+ * oriented because command telemetry uses static buffers and must avoid
+ * dynamic allocation.
+ */
+int coo_json_append(char *buf, size_t buf_len, size_t *offset,
+		    const char *fmt, ...);
+int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
+		     const char *fmt, va_list args);
 
 #endif /* APP_LIB_JSON_UTILS_H_ */

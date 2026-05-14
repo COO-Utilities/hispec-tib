@@ -32,9 +32,11 @@ a replacement for `commands.md`.
 | `reboot` | `cmd/hsfib-tib/req/reboot` | `cmd/hsfib-tib/resp/reboot` | `reboot <payload>` |
 | `serialguard` | `cmd/hsfib-tib/req/serialguard` | `cmd/hsfib-tib/resp/serialguard` | `serialguard [payload]` |
 | `memsroute` | `cmd/hsfib-tib/req/memsroute` | `cmd/hsfib-tib/resp/memsroute` | `memsroute [payload]` |
+| `memsroute/route_loss` | `cmd/hsfib-tib/req/memsroute/route_loss` | `cmd/hsfib-tib/resp/memsroute/route_loss` | `memsroute/route_loss [payload]` |
 | `mems` | `cmd/hsfib-tib/req/mems` | `cmd/hsfib-tib/resp/mems` | `mems` |
 | `mems/<switch>` | `cmd/hsfib-tib/req/mems/<switch>` | `cmd/hsfib-tib/resp/mems/<switch>` | `mems/<switch> [payload]` |
 | `split/<channel>` | `cmd/hsfib-tib/req/split/<channel>` | `cmd/hsfib-tib/resp/split/<channel>` | `split/<channel> [payload]` |
+| `measure_throughput` | `cmd/hsfib-tib/req/measure_throughput` | `cmd/hsfib-tib/resp/measure_throughput` | `measure_throughput <payload>` |
 | `laserbank/poweron` | `cmd/hsfib-tib/req/laserbank/poweron` | `cmd/hsfib-tib/resp/laserbank/poweron` | `laserbank/poweron [payload]` |
 | `laserbank/poweroff` | `cmd/hsfib-tib/req/laserbank/poweroff` | `cmd/hsfib-tib/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
 | `laserbank/clearfaults` | `cmd/hsfib-tib/req/laserbank/clearfaults` | `cmd/hsfib-tib/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
@@ -51,7 +53,7 @@ a replacement for `commands.md`.
 ### `help`
 
 - GET only. Payload ignored.
-- Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,laser,laserbank,power,atten,pd,pdsettings"}`.
+- Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,measure_throughput,laser,laserbank,atten,pd,pdsettings"}`.
 - No hardware side effects, no settings writes, no direct publish.
 - Handler: `help_get()` in `app/src/command.c`.
 - Mismatch: help text is implementation-derived, not a full copy of
@@ -130,6 +132,20 @@ a replacement for `commands.md`.
   direct publish.
 - Handler: `memsroute_get()`, `memsroute_set()` in `app/src/command.c`.
 
+### `memsroute/route_loss`
+
+- GET/query fields: `route`, `laser`.
+- SET fields: `route`, one laser-name key containing either linear
+  transmission or a string loss in dB, optional `persistent`.
+- Validation: route and laser names must fit fixed route-loss record buffers;
+  transmission must be in `(0, 1]`; dB loss must be non-negative.
+- Query response: `status`, `tx`, `loss_db`, and `configured`. Set response:
+  `{"status":"success"}`.
+- Side effects: updates one app-owned route-loss record and optionally persists
+  it under `routeloss/<route>/<laser>`.
+- Handler: `memsroute_get()`, `memsroute_set()` route-loss branch in
+  `app/src/command.c`.
+
 ### `mems` and `mems/<switch>`
 
 - `mems` GET returns all active profile switches.
@@ -157,6 +173,22 @@ a replacement for `commands.md`.
 - Board restriction: requires routes present in active board profile, normally
   the AS profile.
 - Handler: `splitting_get()`, `splitting_set()` in `app/src/command.c`.
+
+### `measure_throughput`
+
+- SET-only action.
+- Start fields: `laser`, `fiber`, optional `autolevel`, optional
+  `stopafter_s`, optional `format` with `json` or `binary`.
+- Stop field: `stop` as `yj`, `hk`, or `all`.
+- Response: `{"status":"success"}` or `{"status":"error","msg":"..."}`.
+- Side effects: starts/stops throughput stream publication on `yj_tput` or
+  `hk_tput`; can enable photodiode power and, with autolevel enabled, set
+  attenuation and laser current.
+- Binary telemetry is emitted as a fixed little-endian frame. JSON telemetry
+  includes Unix time, channel/fiber label, flux estimates, PD windows, current
+  attenuation, PD on-time, and laser-current on-time.
+- Handler: `measure_throughput_set()` in `app/src/command.c` and
+  `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
 
 ### `laserbank/poweron`
 
@@ -248,7 +280,8 @@ a replacement for `commands.md`.
 
 - GET field: optional `unit` with `power` or `volts`; for MQTT this requires
   `msg_type:"get"` if payload is non-empty.
-- GET response includes YJ/HK values, errors, raw counts, mV, noise, and uptime.
+- GET response includes YJ/HK values, errors, raw counts, mV, noise, rolling
+  windows, and uptime.
 - SET fields: `action`, `channel` or key suffix, plus action-specific fields.
 - Actions:
   - `measure_dark`: optional `duration_ms`, optional `store`.

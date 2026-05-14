@@ -242,10 +242,8 @@ while serial guard is active and attenuator DAC-range clamping.
     }
     ```
 - **Response topic:** `cmd/<device>/resp/measure_throughput`
-  - Start result:
-    `{"status":"success","channel":"yj","laser":"1430yj","autolevel":true}`
-  - Stop result:
-    `{"status":"success","stopped":"yj"}`
+  - Start or stop result: `{"status":"success"}`
+  - Error result: `{"status":"error","msg":"<error message>"}`
 
 `measure_throughput` is the only command that starts or stops photodiode
 streaming. It measures throughput by comparing the route-corrected flux at the
@@ -270,10 +268,10 @@ math.
 **Telemetry payload (`format:"json"`):**
 ```json
 {
-  "channel": "yj",
+  "channel": "yj_m",
   "laser": "1430yj",
-  "fiber": "M",
   "autolevel": true,
+  "time": 0,
   "tp": 0.0,
   "tp_err": 0.0,
   "tp_rms_err": 0.0,
@@ -292,13 +290,47 @@ math.
   "laser_current_ma": 0.0,
   "atten_db": 0.0,
   "wavelength_nm": 1430.0,
-  "flags": [],
-  "uptime_ms": 0
+  "pd_ontime_s": 0.0,
+  "laser_current_ontime_s": 0.0,
+  "flags": []
 }
 ```
 
-Binary output is reserved for a future packed, endian-specified frame. Until
-that frame is specified, implementations should reject `format:"binary"`.
+`channel` combines the photodiode channel and fiber class with an underscore,
+for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `time` is Unix time in
+milliseconds from the firmware clock. `pd_ontime_s` is the tracked on-time of
+the photodiode power relay for that channel since boot; it does not infer
+pre-boot relay state.
+
+**Telemetry payload (`format:"binary"`):**
+
+Binary telemetry is little-endian and contains the fields below in order. The
+first field is a zero-padded 8-byte ASCII channel/fiber label such as `yj_m`.
+
+```text
+char[8] channel
+uint64 time_ms
+float64 tp
+float64 tp_err
+float64 tp_rms_err
+float64 pd_flux_ph_s
+float64 pd_flux_err_ph_s
+float64 laser_flux_ph_s
+float64 laser_flux_err_ph_s
+float64 pd_route_tx
+float64 laser_route_tx
+float64 atten_tx
+int16 pd_raw
+float32 pd_mv
+float32 pd_net_mv
+float32 pd_mean_mv_1s
+float32 pd_rms_mv_0p5s
+float32 laser_current_ma
+float32 atten_db
+float32 wavelength_nm
+float32 pd_ontime_s
+float32 laser_current_ontime_s
+```
 
 **Notes (behavior):**
 - `tp` is unitless. `NaN` means offscale or insufficient information; values
@@ -342,16 +374,17 @@ that frame is specified, implementations should reject `format:"binary"`.
     {"route":"yj_sm_to_yj_pd","laser":"1430yj"}
     ```
 - **Response topic:** `cmd/<device>/resp/memsroute/route_loss`
-  - Set result:
-    `{"status":"success","route":"yj_sm_to_yj_pd","laser":"1430yj","tx":0.93,"loss_db":0.3188,"persistent":true}`
+  - Set result: `{"status":"success"}`
   - Query result:
-    `{"route":"yj_sm_to_yj_pd","laser":"1430yj","tx":0.93,"loss_db":0.3188,"configured":true}`
+    `{"status":"success","tx":0.93,"loss_db":0.3188,"configured":true}`
 
 Route-loss records are app settings keyed by route name and laser name. They
 are not stored in MEMS route structs or switch structs. Missing route-loss
 records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
 linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
 loss in dB and convert to `tx = 10^(-loss_db / 10)`.
+The route-loss table holds 18 records, matching the expected maximum of 14
+outbound laser paths and 4 inbound photodiode paths.
 
 
 ### `laser`

@@ -11,7 +11,6 @@
 // #include "devices.h"
 #include <ctype.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -97,16 +96,16 @@ typedef enum laser_t {
     LASER_UNKNOWN=7
 } laser_t;
 
-static bool attenuator_channel_available(laser_t laser_id)
+static bool attenuator_channel_available(uint8_t attenuator_index)
 {
     enum hispec_board_type board = devices_board_type();
 
     if (board == HISPEC_BOARD_TIB) {
-        return laser_id != LASER_UNKNOWN && (uint8_t)laser_id < NUM_ATTENUATORS;
+        return attenuator_index < NUM_ATTENUATORS;
     }
 
     if (board == HISPEC_BOARD_CAL_YJ || board == HISPEC_BOARD_CAL_HK) {
-        return laser_id == LASER_1510_H;
+        return attenuator_index == LASER_1510_H;
     }
 
     return false;
@@ -1779,28 +1778,6 @@ static bool memsroute_output_seen(const char *const *outputs, uint8_t count,
     return false;
 }
 
-static int memsroute_append_json(char *buf, size_t buf_len, size_t *offset,
-                                 const char *fmt, ...)
-{
-    va_list args;
-    int written;
-
-    if (buf == NULL || offset == NULL || *offset >= buf_len) {
-        return -ENOSPC;
-    }
-
-    va_start(args, fmt);
-    written = vsnprintk(buf + *offset, buf_len - *offset, fmt, args);
-    va_end(args);
-
-    if (written < 0 || written >= (int)(buf_len - *offset)) {
-        return -ENOSPC;
-    }
-
-    *offset += (size_t)written;
-    return 0;
-}
-
 static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t *offset,
                                               const struct mems_route_key *active,
                                               uint8_t active_count,
@@ -1808,7 +1785,7 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
 {
     uint8_t n_sources = 0U;
 
-    if (memsroute_append_json(buf, buf_len, offset, "\"%s\":[", output_name) != 0) {
+    if (coo_json_append(buf, buf_len, offset, "\"%s\":[", output_name) != 0) {
         return -ENOSPC;
     }
 
@@ -1817,10 +1794,10 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
             continue;
         }
 
-        if (n_sources > 0U && memsroute_append_json(buf, buf_len, offset, ",") != 0) {
+        if (n_sources > 0U && coo_json_append(buf, buf_len, offset, ",") != 0) {
             return -ENOSPC;
         }
-        if (memsroute_append_json(buf, buf_len, offset, "\"%s\"",
+        if (coo_json_append(buf, buf_len, offset, "\"%s\"",
                                   active[i].input_name) != 0) {
             return -ENOSPC;
         }
@@ -1828,11 +1805,11 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
     }
 
     if (n_sources == 0U &&
-        memsroute_append_json(buf, buf_len, offset, "\"no source\"") != 0) {
+        coo_json_append(buf, buf_len, offset, "\"no source\"") != 0) {
         return -ENOSPC;
     }
 
-    return memsroute_append_json(buf, buf_len, offset, "]");
+    return coo_json_append(buf, buf_len, offset, "]");
 }
 
 static const char *const route_loss_laser_names[] = {
@@ -1938,9 +1915,9 @@ static struct OutMsg route_loss_query_response(const struct Command *cmd,
 
     loss_db = -10.0 * log10(tx);
     snprintk(payload, sizeof(payload),
-             "{\"route\":\"%s\",\"laser\":\"%s\",\"tx\":%.9f,"
-             "\"loss_db\":%.6f,\"configured\":%s}",
-             route, laser, tx, loss_db, configured ? "true" : "false");
+             "{\"status\":\"success\",\"tx\":%.9f,\"loss_db\":%.6f,"
+             "\"configured\":%s}",
+             tx, loss_db, configured ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -2000,12 +1977,7 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
                             "{\"status\":\"error\",\"msg\":\"invalid route_loss key\"}");
     }
 
-    char payload[MAX_PAYLOAD_LEN] = {0};
-    snprintk(payload, sizeof(payload),
-             "{\"status\":\"success\",\"route\":\"%s\",\"laser\":\"%s\","
-             "\"tx\":%.9f,\"loss_db\":%.6f,\"persistent\":%s}",
-             route, laser, tx, -10.0 * log10(tx), persist ? "true" : "false");
-    return _msg_builder(cmd, RESP_OK, payload);
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 struct OutMsg memsroute_get(const struct Command *cmd)
@@ -2021,7 +1993,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
         return route_loss_handle(cmd, false);
     }
 
-    if (memsroute_append_json(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
+    if (coo_json_append(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
     }
 
@@ -2034,7 +2006,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
 
         outputs[n_outputs++] = output_name;
         if (n_outputs > 1U &&
-            memsroute_append_json(buf, sizeof(buf), &offset, ",") != 0) {
+            coo_json_append(buf, sizeof(buf), &offset, ",") != 0) {
             return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
         }
         if (memsroute_append_sources_for_output(buf, sizeof(buf), &offset,
@@ -2043,7 +2015,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
         }
     }
 
-    if (memsroute_append_json(buf, sizeof(buf), &offset, "}}") != 0) {
+    if (coo_json_append(buf, sizeof(buf), &offset, "}}") != 0) {
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
     }
 
@@ -2567,7 +2539,7 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
         if (strcasecmp(stop, "all") == 0) {
             rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &status);
             return rc == 0 ?
-                _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"stopped\":\"all\"}") :
+                _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}") :
                 _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"stop failed\"}");
         }
 
@@ -2586,11 +2558,7 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
                                 "{\"status\":\"error\",\"msg\":\"stop failed\"}");
         }
 
-        char payload[MAX_PAYLOAD_LEN];
-        snprintk(payload, sizeof(payload),
-                 "{\"status\":\"success\",\"stopped\":\"%s\"}",
-                 photodiode_channel_names[channel]);
-        return _msg_builder(cmd, RESP_OK, payload);
+        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return _msg_builder(cmd, RESP_ERROR,
@@ -2629,33 +2597,25 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "format", format, sizeof(format));
-    if (parse_rc == COO_JSON_EXTRACT_ERR || strcasecmp(format, "json") != 0) {
+    if (parse_rc == COO_JSON_EXTRACT_ERR ||
+        (strcasecmp(format, "json") != 0 && strcasecmp(format, "binary") != 0)) {
         return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"only json format is supported\"}");
+                            "{\"status\":\"error\",\"msg\":\"format must be json or binary\"}");
     }
 
     request.autolevel = autolevel;
+    request.binary = strcasecmp(format, "binary") == 0;
     request.fiber = fiber_text[0];
     request.stopafter_s = stopafter_s;
 
     rc = throughput_monitor_start(&request, &status);
     if (rc != 0) {
-        char payload[MAX_PAYLOAD_LEN];
-
-        snprintk(payload, sizeof(payload),
-                 "{\"status\":\"error\",\"msg\":\"measure_throughput start failed\",\"rc\":%d}",
-                 rc);
-        return _msg_builder(cmd, RESP_ERROR, payload);
+        LOG_ERR("measure_throughput start failed: %d", rc);
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"measure_throughput start failed\"}");
     }
 
-    char payload[MAX_PAYLOAD_LEN];
-    snprintk(payload, sizeof(payload),
-             "{\"status\":\"success\",\"channel\":\"%s\",\"laser\":\"%s\","
-             "\"autolevel\":%s}",
-             photodiode_channel_names[status.channel],
-             status.laser_name == NULL ? laser_name : status.laser_name,
-             status.autolevel ? "true" : "false");
-    return _msg_builder(cmd, RESP_OK, payload);
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
 }
 
 
@@ -2949,12 +2909,14 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse atten/setting\"}");
     }
 
-    laser_t laser_id = get_laser_channel(laser_name);
+    enum hispec_laser_id laser_id;
+    uint8_t attenuator_index;
 
-    if (laser_id==LASER_UNKNOWN) {
+    if (hispec_laser_id_from_name(laser_name, &laser_id) != 0 ||
+        attenuator_index_from_laser_id(laser_id, &attenuator_index) != 0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
     }
-    if (!attenuator_channel_available(laser_id)) {
+    if (!attenuator_channel_available(attenuator_index)) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Attenuator unavailable on this board\"}");
     }
@@ -2963,14 +2925,14 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
     if (strcasecmp(setting, "coeff") == 0) {
         snprintf(payload, MAX_PAYLOAD_LEN,
                  "{\"dac1\":[%.8f,%.8f],\"dac2\":[%.8f,%.8f]}",
-                 attenuators[laser_id].coeff1.slope,
-                 attenuators[laser_id].coeff1.offset,
-                 attenuators[laser_id].coeff2.slope,
-                 attenuators[laser_id].coeff2.offset);
+                 attenuators[attenuator_index].coeff1.slope,
+                 attenuators[attenuator_index].coeff1.offset,
+                 attenuators[attenuator_index].coeff2.slope,
+                 attenuators[attenuator_index].coeff2.offset);
     } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
         struct attenuator_status status = {0};
 
-        if (!attenuator_get(&attenuators[laser_id], &status)) {
+        if (!attenuator_get(&attenuators[attenuator_index], &status)) {
             return _msg_builder(cmd, RESP_ERROR,
                                 "{\"error\":\"Failed to read attenuator\"}");
         }
@@ -3000,12 +2962,14 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse laser/setting\"}");
     }
 
-    laser_t laser_id = get_laser_channel(laser_name);
+    enum hispec_laser_id laser_id;
+    uint8_t attenuator_index;
 
-    if (laser_id==LASER_UNKNOWN) {
+    if (hispec_laser_id_from_name(laser_name, &laser_id) != 0 ||
+        attenuator_index_from_laser_id(laser_id, &attenuator_index) != 0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
     }
-    if (!attenuator_channel_available(laser_id)) {
+    if (!attenuator_channel_available(attenuator_index)) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"error\":\"Attenuator unavailable on this board\"}");
     }
@@ -3042,25 +3006,25 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
             return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid persistent flag\"}");
         }
 
-        if (!attenuator_get(&attenuators[laser_id], &status)) {
+        if (!attenuator_get(&attenuators[attenuator_index], &status)) {
             return _msg_builder(cmd, RESP_ERROR,
                                 "{\"error\":\"Failed to read attenuator\"}");
         }
 
-        attenuators[laser_id].coeff1.slope = dac1_coeffs[0];
-        attenuators[laser_id].coeff1.offset = dac1_coeffs[1];
-        attenuators[laser_id].coeff2.slope = dac2_coeffs[0];
-        attenuators[laser_id].coeff2.offset = dac2_coeffs[1];
+        attenuators[attenuator_index].coeff1.slope = dac1_coeffs[0];
+        attenuators[attenuator_index].coeff1.offset = dac1_coeffs[1];
+        attenuators[attenuator_index].coeff2.slope = dac2_coeffs[0];
+        attenuators[attenuator_index].coeff2.offset = dac2_coeffs[1];
         stored_coeffs.physical[0].slope = dac1_coeffs[0];
         stored_coeffs.physical[0].offset = dac1_coeffs[1];
         stored_coeffs.physical[1].slope = dac2_coeffs[0];
         stored_coeffs.physical[1].offset = dac2_coeffs[1];
 
-        if (!attenuator_set_db(&attenuators[laser_id], status.attenuation_db)) {
+        if (!attenuator_set_db(&attenuators[attenuator_index], status.attenuation_db)) {
             return _msg_builder(cmd, RESP_ERROR,
                                 "{\"error\":\"Failed to apply coefficients\"}");
         }
-        app_settings_update_attenuator_channel((uint8_t)laser_id, &stored_coeffs, persist);
+        app_settings_update_attenuator_channel(attenuator_index, &stored_coeffs, persist);
         snprintf(payload, sizeof(payload), "{\"status\":\"OK\",\"persistent\":%s}",
                  persist ? "true" : "false");
 
@@ -3074,12 +3038,12 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         }
 
         if (strcasecmp(setting, "value") == 0) {
-            if (!attenuator_set_linear(&attenuators[laser_id], value)) {
+            if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
                 return _msg_builder(cmd, RESP_ERROR,
                                     "{\"error\":\"Invalid linear transmission\"}");
             }
         } else {
-            if (!attenuator_set_db(&attenuators[laser_id], value)) {
+            if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
                 return _msg_builder(cmd, RESP_ERROR,
                                     "{\"error\":\"Invalid dB attenuation\"}");
             }
@@ -3089,10 +3053,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
     }
 
-    enum hispec_laser_id hispec_id;
-    if (hispec_laser_id_from_name(laser_name, &hispec_id) == 0) {
-        throughput_monitor_note_attenuator_changed((uint8_t)hispec_id);
-    }
+    throughput_monitor_note_attenuator_changed(attenuator_index);
 
     return _msg_builder(cmd, RESP_OK, payload);
 }

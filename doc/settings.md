@@ -61,7 +61,7 @@ silently reused on another.
 - Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise
   warning values.
 - Route-loss records default to absent. Missing route-loss settings are treated
-  as loss-free transmission, `1.0`.
+  as loss-free transmission, `1.0`. The runtime table holds 18 records.
 
 ## Persistence Side Effects
 

@@ -19,6 +19,7 @@
 struct throughput_monitor_request {
 	enum hispec_laser_id laser;
 	bool autolevel;
+	bool binary;
 	char fiber;
 	uint32_t stopafter_s;
 };

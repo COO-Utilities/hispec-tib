@@ -16,6 +16,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "lasers.h"
+
 #define ATTENUATOR_PHYSICAL_COUNT 2
 #define ATTENUATOR_COEFF_COUNT 2
 
@@ -65,6 +67,9 @@ struct attenuator {
 bool attenuator_init(struct attenuator *drv,
                      const struct device *dac1, uint8_t channel1,
                      const struct device *dac2, uint8_t channel2);
+
+/** @brief Map a laser-bank channel to the matching logical attenuator index. */
+int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index);
 
 /**
  * @brief Convert a physical attenuator voltage to modeled attenuation in dB.

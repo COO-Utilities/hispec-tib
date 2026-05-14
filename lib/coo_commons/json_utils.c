@@ -13,6 +13,7 @@
 
 #include <coo_commons/json_utils.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <zephyr/data/json.h>
 #include <zephyr/sys/util.h>
 #include <stdio.h>
@@ -309,4 +310,35 @@ int coo_json_extract_string(const char *json, const char *key, char *out, size_t
 				   out_len,
 				   0U,
 				   0U);
+}
+
+int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
+		     const char *fmt, va_list args)
+{
+	int written;
+
+	if (buf == NULL || offset == NULL || fmt == NULL || *offset >= buf_len) {
+		return -ENOSPC;
+	}
+
+	written = vsnprintf(buf + *offset, buf_len - *offset, fmt, args);
+	if (written < 0 || written >= (int)(buf_len - *offset)) {
+		return -ENOSPC;
+	}
+
+	*offset += (size_t)written;
+	return 0;
+}
+
+int coo_json_append(char *buf, size_t buf_len, size_t *offset,
+		    const char *fmt, ...)
+{
+	va_list args;
+	int rc;
+
+	va_start(args, fmt);
+	rc = coo_json_vappend(buf, buf_len, offset, fmt, args);
+	va_end(args);
+
+	return rc;
 }

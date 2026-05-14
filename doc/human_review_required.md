@@ -9,8 +9,6 @@ LLMs Agents: Do NOT change headings in this file.
 
 ## Command/API Mismatches
 
-- `commands.md` documents `measure_tput`, but `command.c` has no dispatch
-  entry for it.
 - `commands.md` documents `lasersettings`, but `command.c` has no dispatch
   entry for it.
 - `commands.md` documents `temp` set/alarm behavior. Current code registers
@@ -75,9 +73,7 @@ LLMs Agents: Do NOT change headings in this file.
 
 Do not design or implement these without a detailed owner specification:
 
-- `measure_tput`.
 - Attenuator autocalibration and final default coefficient selection.
 - Higher-level laser/laser-bank command interface expansion.
 - Broad `command.c` refactoring into domain-owned command helpers.
 - Replacing the terse `help` response with a maintained command summary.
-

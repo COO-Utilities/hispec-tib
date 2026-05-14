@@ -23,6 +23,18 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define M_PI 3.14159265358979323846
 #endif
 
+static double attenuator_model_b_to_linear(double b);
+
+int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
+{
+    if (index == NULL || laser < 0 || laser >= HISPEC_LASER_COUNT) {
+        return -EINVAL;
+    }
+
+    *index = (uint8_t)laser;
+    return 0;
+}
+
 static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
                                 const struct device *dev, uint8_t channel)
 {
@@ -79,26 +91,24 @@ bool attenuator_init(struct attenuator *drv,
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       double voltage)
 {
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    zsl_real_t b;
-    zsl_real_t transmission;
+    double b;
+    double transmission;
 
     if (coeffs == NULL) {
         return 0.0;
     }
 
-    b = (zsl_real_t)(coeffs->slope * voltage + coeffs->offset);
-    transmission = (erf_scale + ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE - b)) /
-                   ((zsl_real_t)2.0 * erf_scale);
+    b = coeffs->slope * voltage + coeffs->offset;
+    transmission = attenuator_model_b_to_linear(b);
 
-    if (transmission <= (zsl_real_t)0.0) {
+    if (transmission <= 0.0) {
         return MODEL_MAX_DB;
     }
-    if (transmission >= (zsl_real_t)1.0) {
+    if (transmission >= 1.0) {
         return 0.0;
     }
 
-    return -10.0 * (double)ZSL_LOG10(transmission);
+    return -10.0 * (double)ZSL_LOG10((zsl_real_t)transmission);
 }
 
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
@@ -317,9 +327,11 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
 
 static double attenuator_model_b_to_linear(double b)
 {
-    const double erf_scale = erf(MODEL_ERF_SCALE);
-    double transmission = (erf_scale + erf(MODEL_ERF_SCALE - b)) /
-                          (2.0 * erf_scale);
+    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
+    double transmission = (double)((erf_scale +
+                                    ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE -
+                                            (zsl_real_t)b)) /
+                                   ((zsl_real_t)2.0 * erf_scale));
 
     if (transmission < 0.0) {
         return 0.0;
