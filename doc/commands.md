@@ -89,7 +89,7 @@ for normal serial operation.
 - [`memsroute`](#memsroute)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
-- [`measure_tput`](#measure-tput)
+- [`measure_throughput`](#measure-throughput)
 - [`laser`](#laser)
 - [`lasersettings`](#lasersettings)
 - [`laserbank/poweron`](#laserbank-poweron)
@@ -222,132 +222,132 @@ while serial guard is active and attenuator DAC-range clamping.
     `dt/<device>/warning`.
 
 
-(measure-tput)=
-### `measure_tput`
-- **Request topic:** `cmd/<device>/req/measure_tput`
+(measure-throughput)=
+### `measure_throughput`
+- **Request topic:** `cmd/<device>/req/measure_throughput`
   - Payload:
-    ```text
+    ```json
     {
-        "autolevel": true,
-        "laser": "<lasername>",
-        "fiber": "<fibername>",
-        "stopafter_s": 300,
-        "format": "json"|"binary"
-      }
-    ```
-    or
-    ```text
-    {
-    "stop": "yj"|"hk"|"all"
+      "autolevel": true,
+      "laser": "<lasername>",
+      "fiber": "M",
+      "stopafter_s": 300,
+      "format": "json"
     }
     ```
-- **Response topic:** `cmd/<device>/resp/measure_tput`
-  - Result: `{"status": "success"}`
-    Causes telemetry to be published on `yj_tput` or `hk_tput` topic (or stops it).
+    or
+    ```json
+    {
+      "stop": "yj"
+    }
+    ```
+- **Response topic:** `cmd/<device>/resp/measure_throughput`
+  - Start result:
+    `{"status":"success","channel":"yj","laser":"1430yj","autolevel":true}`
+  - Stop result:
+    `{"status":"success","stopped":"yj"}`
 
-  Measure throughput of the external system. While individual commands may be used to set a laser current, attenuation value, 
-  and monitored values of the photodiode's reading to be streamed out that scenario leaves it to the user to tune flux and 
-  attenuation to stay within both the sensitivity envelope of the photodiode and ADC. Furthermore the SNR of the resulting 
-  data will likely be sub-optimal as that will both not be a user's primary concern and a more complex optimization path. 
-  Full (admittedly overly detailed) treatment would require detailed knowledge and computation/propagation of errors of 
-  open-loop hardware.
-  
-  the `measure_throughput` command resolves this by dynamically adjusting the selected laser output power (by way of 
-  drive current) and attenuator values to maintain good ("good-enough"/good as possible) signal on the photodiode. Using 
-  the response (i.e. QE curve, transimpediance, noise bandwidth, measured dark signal) of the photodiode, the adc gain/datasheet, and the known 
-  loss (a user parameter see `memsroute/route_loss` command) of the configured pd input route the software is able to 
-  determine a measured flux and measurement error (inclusive of both Poisson and measurement system). 
-  Using the laser's flux-current response (from datasheet and laboratory testing), similarly the known values for the 
-  attenuators, and losses in whatever active route (switch toggling is intentionally ignored) the software is able to 
-  determine an estimate of the emitted flux (and error via error propagation of input through response function).
-  
-  The ratio of these is then used to determine the transmission (loss) and its error.
-  
-  A second error is reported that uses the RMS of the pd over the past half second for its error assumes no uncertainty 
-  on the output flux. 
-  
-  The control algorithm works by monitoring the average PD signal over the past second and if that drops below 20% of the 
-  range it triples the output flux. Similarly, if it rises above 80% of the photodiode range it drops the flux by a third. 
-  Five consecutive samples that are saturated or below the dark level cause an instant adjustment (this feature cuts initial 
-  ranging time 10s of seconds to generally < 1s).
-  
-  Flux is raised by first decreasing attenuation (which follows uses the logical attenuator's function and thus follows 
-  its priority rules) and then by raising laser power.
-  
-  Flux is decreased by first increasing attenuation and then decreasing laser power. 
-  
-  When throughput monitoring is first started attenuation is set to max and then laser power to max.   
-  
-  The laser library functions are used to compute the nominal output laser flux.
-  the attenuator library functions are used to compute the nominal attenuation
-  both libraries have their own helper that reports the error on that nominal value. 
-  
-  The error model is as follows:
-  
-  each physical attenuator has a user set error that is on "b" and propagated through the transmission model as the 
-  uncertainty is in the attenuator shutter position
-  
-  the laser diode has a user-set fractional noise on its computed output flux plus a constant noise 
-  
-  details on the photodiodes and python example code with the relevant conversion equations is in photodiode_notes.md
+`measure_throughput` is the only command that starts or stops photodiode
+streaming. It measures throughput by comparing the route-corrected flux at the
+selected photodiode with the route- and attenuator-corrected laser flux
+estimate.
 
+`autolevel:true` lets firmware adjust the selected laser drive current and
+logical attenuator to keep the photodiode signal in the useful ADC/photodiode
+range. `autolevel:false` streams the selected photodiode level and derived
+values without changing laser current or attenuation.
+
+Firmware uses precomputed photodiode response values for each supported
+laser/photodiode combination; it does not interpolate wavelength curves at
+runtime. The photodiode sampler owns ADC reads and dark tracking. The
+throughput monitor owns streaming output, autolevel decisions, and throughput
+math.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
 - `dt/<device>/hk_tput`
 
-**Implementation status:** deferred. This capability requires an owner-provided
-measurement specification before firmware design or implementation.
+**Telemetry payload (`format:"json"`):**
+```json
+{
+  "channel": "yj",
+  "laser": "1430yj",
+  "fiber": "M",
+  "autolevel": true,
+  "tp": 0.0,
+  "tp_err": 0.0,
+  "tp_rms_err": 0.0,
+  "pd_flux_ph_s": 0.0,
+  "pd_flux_err_ph_s": 0.0,
+  "laser_flux_ph_s": 0.0,
+  "laser_flux_err_ph_s": 0.0,
+  "pd_route_tx": 1.0,
+  "laser_route_tx": 1.0,
+  "atten_tx": 1.0,
+  "pd_raw": 0,
+  "pd_mv": 0.0,
+  "pd_net_mv": 0.0,
+  "pd_mean_mv_1s": 0.0,
+  "pd_rms_mv_0p5s": 0.0,
+  "laser_current_ma": 0.0,
+  "atten_db": 0.0,
+  "wavelength_nm": 1430.0,
+  "flags": [],
+  "uptime_ms": 0
+}
+```
 
-**Telemetry payload:**
-  ```text
-  {
-    "tp": 0.0,
-    "tp_err": 0.0,
-    "laser": 0.0,
-    "at1": 0.0,
-    "at2": 0.0,
-    "adc": 0.0,
-    "time": 0,
-    "waveelngth_nm": 0.0,
-    "fiber": "M"|"S"
-  }
-  ```
-  or 35 bytes of binary data
-
-  ```text
-    {
-      float64_t tp,
-      float64_t tp_err,
-      uint16_t laser,
-      uint16_t at1,
-      uint16_t at2,
-      uint16_t adc,
-      uint64_t time,
-      uint16_t wavelength_nm,
-      char fiber
-    }
-  ```
-
-*(The `yj` vs `hk` stream depends on the requested laser.)*
+Binary output is reserved for a future packed, endian-specified frame. Until
+that frame is specified, implementations should reject `format:"binary"`.
 
 **Notes (behavior):**
-- throughput (tp) is in [0-1], though NaN is offscale, greater than unity would indicate a noise artifact
-- Units for values are TBD
-- Turning on any other laser to that photodiode disables measurement.
-- Switching the MEMS route may impact the measurement but will not stop it.
-- Changing laser power/attenuation disables autolevel; run the command again to re-enable.
-- Powers photodiodes and lasers as needed.
-- Auto-off timing:
-  - PD: updates no sooner than `max(stopafter_s, pd_autooff_s)`
-  - Laserbank: updates no sooner than `max(stopafter_s, laserbank_autooff_s)`
-  - Laser: updates no sooner than `max(stopafter_s, laser_autooff_s)`
+- `tp` is unitless. `NaN` means offscale or insufficient information; values
+  above unity are reported rather than clamped.
+- Flux values are photons per second.
+- Route transmissions default to `1.0` when no route-loss record is stored.
+- Both outbound laser route loss and inbound photodiode route loss are applied
+  when estimating throughput.
+- The 1 s mean controls autolevel. Below 20% usable range, firmware requests
+  3x flux. Above 80%, it requests 1/3 flux.
+- Five consecutive saturated samples or five consecutive below-dark samples
+  trigger immediate autolevel adjustment.
+- Flux is raised by decreasing logical attenuation first, then raising laser
+  current. Flux is decreased by increasing logical attenuation first, then
+  lowering laser current.
+- At start with `autolevel:true`, attenuation is set to maximum before laser
+  power is raised.
+- Starting a monitor powers the required photodiode and laser-bank outputs as
+  needed. Shutting down the required photodiode power stops that monitor.
+- Changing the monitored laser output or its logical attenuator disables
+  autolevel for the affected monitor; run the command again to re-enable it.
+- Dark measurement must not be started while an autolevel throughput monitor is
+  running on that photodiode.
 
 (route-loss)=
 - **Request topic:** `cmd/<device>/req/memsroute/route_loss`
-  - {"route":<routename>, <lasername>: <doubleprecision transmission> | "<loss> db"}
+  - Set one route-loss record:
+    ```json
+    {"route":"yj_sm_to_yj_pd","1430yj":0.93,"persistent":true}
+    ```
+    or:
+    ```json
+    {"route":"yj_sm_to_yj_pd","1430yj":"0.32 dB","persistent":true}
+    ```
+  - Query one route-loss record:
+    ```json
+    {"route":"yj_sm_to_yj_pd","laser":"1430yj"}
+    ```
+- **Response topic:** `cmd/<device>/resp/memsroute/route_loss`
+  - Set result:
+    `{"status":"success","route":"yj_sm_to_yj_pd","laser":"1430yj","tx":0.93,"loss_db":0.3188,"persistent":true}`
+  - Query result:
+    `{"route":"yj_sm_to_yj_pd","laser":"1430yj","tx":0.93,"loss_db":0.3188,"configured":true}`
 
-    TBD
+Route-loss records are app settings keyed by route name and laser name. They
+are not stored in MEMS route structs or switch structs. Missing route-loss
+records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
+linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
+loss in dB and convert to `tx = 10^(-loss_db / 10)`.
 
 
 ### `laser`
