@@ -19,8 +19,10 @@ failed.
 If the main loop observes `outbound_queue` at capacity while draining, it emits
 an `outbound_queue_full` warning directly to serial and to MQTT when connected.
 
-Photodiode sampling enqueues best-effort telemetry directly to `outbound_queue`
-with `K_NO_WAIT`. If the queue is full, the current sample is dropped.
+Photodiode sampling keeps rolling sample windows but does not publish
+telemetry directly. Throughput monitoring enqueues photodiode stream telemetry
+to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample
+is dropped.
 
 ## Named Scheduled Actions
 

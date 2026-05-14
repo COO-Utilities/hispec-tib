@@ -32,8 +32,7 @@ main loop drains `outbound_queue`.
 
 `photodiode_thread()` is active only for the TIB profile. It waits for board
 strap detection and ADS1115 readiness, samples YJ and HK channels, updates dark
-and noise state, enqueues best-effort telemetry to `outbound_queue`, and
-sleeps to target the 20 ms sampling period.
+and noise/window state, and sleeps to target the 20 ms sampling period.
 
 ## Temperature Thread
 

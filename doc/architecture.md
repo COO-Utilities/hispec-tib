@@ -25,7 +25,8 @@ Runtime ownership is:
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, estimates, and
   higher-level Maiman helper APIs.
-- `photodiode.c`: ADC sampling, dark calibration, noise tracking, telemetry.
+- `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
+  sample windows.
 - `tempsense.c`: DS18B20 polling and cache.
 - `sntp_sync.c`: SNTP delayable-work sync and status.
 - `app_settings.c`: Zephyr settings-backed app configuration and calibration.
@@ -80,8 +81,9 @@ one response.
 
 Commands do not directly publish. For example, MEMS commands update
 router-owned switch state that is applied by the MEMS delayable-work tick.
-Photodiode sampling does not publish directly; it sends best-effort telemetry
-through `outbound_queue`. Warning publication is non-blocking and best-effort.
+Photodiode sampling does not publish directly. Throughput monitoring owns
+photodiode stream publication through `outbound_queue`. Warning publication is
+non-blocking and best-effort.
 
 Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

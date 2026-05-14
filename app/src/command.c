@@ -2905,6 +2905,8 @@ struct OutMsg pd_get(const struct Command *cmd)
              "\"hkvalue\":%.6f,\"hkvalue_err\":%.6f,"
              "\"yj_raw\":%d,\"hk_raw\":%d,\"yj_mv\":%.3f,\"hk_mv\":%.3f,"
              "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
+             "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
+             "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
              "\"uptime\":%lld}",
              unit,
              (double)yj_value,
@@ -2917,6 +2919,10 @@ struct OutMsg pd_get(const struct Command *cmd)
              (double)status.channel[PHOTODIODE_CHANNEL_HK].mv,
              (double)status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
              (double)status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
+             (double)status.channel[PHOTODIODE_CHANNEL_YJ].mean_mv_1s,
+             (double)status.channel[PHOTODIODE_CHANNEL_HK].mean_mv_1s,
+             (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
+             (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
              status.uptime_ms);
     return _msg_builder(cmd, RESP_OK, payload);
 }

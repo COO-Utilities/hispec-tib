@@ -655,6 +655,10 @@ loss in dB and convert to `tx = 10^(-loss_db / 10)`.
     "hk_mv": 0.0,
     "yj_noise_rms_mv": 0.0,
     "hk_noise_rms_mv": 0.0,
+    "yj_mean_mv_1s": 0.0,
+    "hk_mean_mv_1s": 0.0,
+    "yj_rms_mv_0p5s": 0.0,
+    "hk_rms_mv_0p5s": 0.0,
     "uptime": 0
   }
   ```

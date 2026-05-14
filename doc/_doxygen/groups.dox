@@ -25,7 +25,7 @@
 
 /**
  * @defgroup photodiode_monitoring Photodiode monitoring
- * @brief ADS1115 sampling, dark calibration, and photodiode telemetry state.
+ * @brief ADS1115 sampling, dark calibration, and photodiode rolling sample state.
  */
 
 /**

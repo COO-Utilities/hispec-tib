@@ -1,6 +1,6 @@
 /**
  * @file photodiode.c
- * @brief ADS1115 photodiode monitor, telemetry publication, and dark calibration.
+ * @brief ADS1115 photodiode sampler, rolling status windows, and dark calibration.
  */
 
 
@@ -14,16 +14,12 @@
 #include <math.h>
 
 #include "photodiode.h"
-#include "app_identity.h"
 #include "app_settings.h"
 #include "app_warning.h"
-#include "command.h"
 #include "devices.h"
 
 
 LOG_MODULE_REGISTER(photodiode, LOG_LEVEL_INF);
-
-#define PHOTODIODE_TELEMETRY_TOPIC "dt/" APP_MQTT_DEVICE_ID "/photodiode"
 
 // More ADC info:
 // https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/drivers/adc/adc_dt/src/main.c
@@ -56,6 +52,8 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
 #define PD_DARK_MAX_DURATION_MS (60U * 60U * 1000U)
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
+#define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
+#define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
 
 struct photodiode_runtime_channel {
     bool valid;
@@ -67,6 +65,17 @@ struct photodiode_runtime_channel {
     float smooth_mv;
     float noise_var_mv2;
     float noise_rms_mv;
+    float mean_window_mv[PD_MEAN_WINDOW_SAMPLES];
+    float mean_sum_mv;
+    uint8_t mean_index;
+    uint8_t mean_count;
+    float rms_window_mv[PD_RMS_WINDOW_SAMPLES];
+    float rms_sum_mv;
+    float rms_sum_sq_mv2;
+    uint8_t rms_index;
+    uint8_t rms_count;
+    float mean_mv_1s;
+    float rms_mv_0p5s;
     uint32_t sample_count;
     int64_t updated_ms;
     int64_t next_noise_warning_ms;
@@ -252,6 +261,41 @@ static void pd_dark_sample_locked(enum photodiode_channel channel, int rc, float
     dark->state = PHOTODIODE_DARK_COMPLETE;
 }
 
+static void pd_window_update(float mv, struct photodiode_runtime_channel *snapshot)
+{
+    float old_mv;
+    float mean;
+    float variance;
+
+    if (snapshot->mean_count < PD_MEAN_WINDOW_SAMPLES) {
+        snapshot->mean_count++;
+    } else {
+        snapshot->mean_sum_mv -= snapshot->mean_window_mv[snapshot->mean_index];
+    }
+    snapshot->mean_window_mv[snapshot->mean_index] = mv;
+    snapshot->mean_sum_mv += mv;
+    snapshot->mean_index = (snapshot->mean_index + 1U) % PD_MEAN_WINDOW_SAMPLES;
+    snapshot->mean_mv_1s = snapshot->mean_sum_mv / (float)snapshot->mean_count;
+
+    if (snapshot->rms_count < PD_RMS_WINDOW_SAMPLES) {
+        snapshot->rms_count++;
+    } else {
+        old_mv = snapshot->rms_window_mv[snapshot->rms_index];
+        snapshot->rms_sum_mv -= old_mv;
+        snapshot->rms_sum_sq_mv2 -= old_mv * old_mv;
+    }
+    snapshot->rms_window_mv[snapshot->rms_index] = mv;
+    snapshot->rms_sum_mv += mv;
+    snapshot->rms_sum_sq_mv2 += mv * mv;
+    snapshot->rms_index = (snapshot->rms_index + 1U) % PD_RMS_WINDOW_SAMPLES;
+
+    mean = snapshot->rms_sum_mv / (float)snapshot->rms_count;
+    variance = (snapshot->rms_sum_sq_mv2 / (float)snapshot->rms_count) - (mean * mean);
+    if (variance < 0.0f) {
+        variance = 0.0f;
+    }
+    snapshot->rms_mv_0p5s = sqrtf(variance);
+}
 
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
                               const struct app_pd_channel_settings *settings)
@@ -290,6 +334,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
                             snapshot.net_mv / (settings->gain_v_per_uw * 1000.0f) :
                             0.0f;
         snapshot.noise_rms_mv = noise_rms;
+        pd_window_update(mv, &snapshot);
         snapshot.sample_count++;
     } else {
         snapshot.valid = false;
@@ -346,6 +391,8 @@ void photodiode_get_status(struct photodiode_status *out)
         dst->net_mv = src->net_mv;
         dst->power_uw = src->power_uw;
         dst->noise_rms_mv = src->noise_rms_mv;
+        dst->mean_mv_1s = src->mean_mv_1s;
+        dst->rms_mv_0p5s = src->rms_mv_0p5s;
         dst->dark_mv = settings.channel[i].dark_mv;
         dst->lowest_dark_mv = settings.channel[i].lowest_dark_mv;
         dst->lowest_dark_valid = settings.channel[i].lowest_dark_valid;
@@ -360,63 +407,6 @@ void photodiode_get_status(struct photodiode_status *out)
     k_mutex_unlock(&pd_runtime_lock);
 
     out->uptime_ms = now;
-}
-
-static void pd_format_channel_json(char *payload, size_t payload_len, size_t *off,
-                                   enum photodiode_channel channel,
-                                   const struct photodiode_channel_status *status)
-{
-    int written;
-
-    written = snprintk(payload + *off, payload_len - *off,
-                       "\"%s\":{\"valid\":%s,\"raw\":%d,\"mv\":%.3f,"
-                       "\"net_mv\":%.3f,\"power_uw\":%.6f,"
-                       "\"noise_rms_mv\":%.3f,\"dark_mv\":%.3f,"
-                       "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s,"
-                       "\"dark_measurement\":\"%s\","
-                       "\"age_ms\":%u,\"samples\":%u}",
-                       photodiode_channel_names[channel],
-                       status->valid ? "true" : "false",
-                       status->raw,
-                       (double)status->mv,
-                       (double)status->net_mv,
-                       (double)status->power_uw,
-                       (double)status->noise_rms_mv,
-                       (double)status->dark_mv,
-                       (double)status->lowest_dark_mv,
-                       status->lowest_dark_valid ? "true" : "false",
-                       photodiode_dark_state_name(status->dark_state),
-                       status->age_ms,
-                       status->sample_count);
-    if (written > 0 && written < (int)(payload_len - *off)) {
-        *off += (size_t)written;
-    }
-}
-
-static void pd_build_telemetry_payload(char *payload, size_t payload_len)
-{
-    struct photodiode_status status;
-    size_t off = 0;
-    int written;
-
-    photodiode_get_status(&status);
-
-    written = snprintk(payload, payload_len, "{");
-    if (written < 0 || written >= (int)payload_len) {
-        return;
-    }
-    off = (size_t)written;
-    pd_format_channel_json(payload, payload_len, &off, PHOTODIODE_CHANNEL_YJ,
-                           &status.channel[PHOTODIODE_CHANNEL_YJ]);
-    written = snprintk(payload + off, payload_len - off, ",");
-    if (written < 0 || written >= (int)(payload_len - off)) {
-        return;
-    }
-    off += (size_t)written;
-    pd_format_channel_json(payload, payload_len, &off, PHOTODIODE_CHANNEL_HK,
-                           &status.channel[PHOTODIODE_CHANNEL_HK]);
-    (void)snprintk(payload + off, payload_len - off,
-                   ",\"uptime_ms\":%lld}", status.uptime_ms);
 }
 
 int photodiode_start_dark_measurement(enum photodiode_channel channel,
@@ -516,7 +506,6 @@ void photodiode_thread(void *p1, void *p2, void *p3)
 
     while (1) {
         struct app_photodiode_settings settings;
-        struct OutMsg msg = {0};
         int64_t start = k_uptime_get();
 
         app_settings_get_photodiode(&settings);
@@ -529,20 +518,6 @@ void photodiode_thread(void *p1, void *p2, void *p3)
                 LOG_ERR("ADC %s read failed (%d)", photodiode_channel_names[i], rc);
             }
             pd_update_channel((enum photodiode_channel)i, rc, raw, &settings.channel[i]);
-        }
-
-        /* Photodiode samples are status telemetry, not command responses.
-         * Queue directly to outbound_queue and drop the sample if command
-         * responses or earlier telemetry already fill that bounded queue.
-         */
-        msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
-        msg.qos = 0;
-        snprintk(msg.topic, sizeof(msg.topic), PHOTODIODE_TELEMETRY_TOPIC);
-        pd_build_telemetry_payload(msg.payload, sizeof(msg.payload));
-        msg.payload_len = strlen(msg.payload);
-
-        if (k_msgq_put(&outbound_queue, &msg, K_NO_WAIT) != 0) {
-            LOG_WRN("outbound queue full; dropping photodiode telemetry");
         }
 
         int64_t elapsed = k_uptime_get() - start;  // overflow every 300M years

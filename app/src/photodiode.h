@@ -1,6 +1,6 @@
 /**
  * @file photodiode.h
- * @brief TIB photodiode sampling, telemetry, and dark-calibration state.
+ * @brief TIB photodiode sampling, rolling status windows, and dark-calibration state.
  *
  * The sampler thread owns ADC reads and dark-measurement accumulation. Command
  * handlers can start/reset/query dark calibration but do not read the ADC or
@@ -39,6 +39,8 @@ struct photodiode_channel_status {
 	float net_mv;
 	float power_uw;
 	float noise_rms_mv;
+	float mean_mv_1s;
+	float rms_mv_0p5s;
 	float dark_mv;
 	float lowest_dark_mv;
 	bool lowest_dark_valid;

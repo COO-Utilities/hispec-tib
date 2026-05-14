@@ -16,7 +16,7 @@
 - `maiman.c`: raw/scaled Modbus register wrapper for Maiman drivers.
 - `lasers.c`: laser-bank GPIO, Maiman profile, status, and tuning helpers.
 - `laserbank_control.c`: TIB heater auto/override and bank temperature policy.
-- `photodiode.c`: ADS1115 sampling, dark calibration, and telemetry.
+- `photodiode.c`: ADS1115 sampling, dark calibration, and rolling sample windows.
 - `app_settings.c`: Zephyr settings ownership for app-level persistent state.
 - `app_warning.c`: best-effort warning publication.
 
