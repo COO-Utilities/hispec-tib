@@ -116,6 +116,18 @@ struct hispec_laser_tune_result {
 	bool current_clamped;
 };
 
+struct hispec_laser_bank_channel_temperature {
+	enum hispec_laser_id id;
+	bool valid;
+	bool tec_enabled;
+	float tec_temperature_c;
+};
+
+struct hispec_laser_bank_temperature_status {
+	bool heater_enabled;
+	struct hispec_laser_bank_channel_temperature channel[HISPEC_LASER_COUNT];
+};
+
 /**
  * @brief Parse a command/API laser name into a laser-bank channel.
  *
@@ -139,8 +151,6 @@ int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
 
 /**
  * @brief Read the TIB laser-bank supply GPIO.
- *
- * Returns false when this board is not the TIB or the GPIO is unavailable.
  */
 bool hispec_laser_bank_power_is_enabled(void);
 
@@ -172,6 +182,16 @@ int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled
 
 /** @brief Read one relay-box output's logical state. */
 int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enabled);
+
+/**
+ * @brief Poll TEC temperatures and TEC-running state for the full laser bank.
+ *
+ * This call blocks on Modbus RTU transactions while holding the laser-bank
+ * mutex so command handlers and the heater control loop do not interleave RS-485
+ * traffic. If the bank is off, channel readings are marked invalid but the
+ * heater GPIO state is still returned.
+ */
+int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_status *out);
 
 /**
  * @brief Verify that the expected Maiman driver is at a channel's Modbus address.

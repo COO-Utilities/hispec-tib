@@ -162,11 +162,6 @@ static int profile_for_id(enum hispec_laser_id id,
 	return 0;
 }
 
-static int require_tib(void)
-{
-	return (devices_board_type() == HISPEC_BOARD_TIB) ? 0 : -ENODEV;
-}
-
 int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out)
 {
 	if (name == NULL || out == NULL) {
@@ -236,10 +231,6 @@ static bool bank_power_is_enabled_locked(void)
 {
 	int val;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB || !gpio_is_ready_dt(&laser_power_gpio)) {
-		return false;
-	}
-
 	val = gpio_pin_get_dt(&laser_power_gpio);
 	return val > 0;
 }
@@ -262,15 +253,6 @@ static int bank_power_set_locked(bool enabled, bool *transitioned)
 
 	if (transitioned != NULL) {
 		*transitioned = false;
-	}
-
-	rc = require_tib();
-	if (rc != 0) {
-		return rc;
-	}
-
-	if (!gpio_is_ready_dt(&laser_power_gpio)) {
-		return -ENODEV;
 	}
 
 	was_enabled = bank_power_is_enabled_locked();
@@ -360,21 +342,11 @@ int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	rc = require_tib();
-	if (rc != 0) {
-		goto out;
-	}
-	if (!gpio_is_ready_dt(gpio)) {
-		rc = -ENODEV;
-		goto out;
-	}
-
 	/* Relay GPIOs are logical Zephyr GPIOs; devicetree active flags handle
 	 * the DS2408's open-drain electrical behavior.
 	 */
 	rc = gpio_pin_set_dt(gpio, enabled ? 1 : 0);
 
-out:
 	k_mutex_unlock(&laser_lock);
 	return rc;
 }
@@ -390,15 +362,6 @@ int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enable
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	rc = require_tib();
-	if (rc != 0) {
-		goto out;
-	}
-	if (!gpio_is_ready_dt(gpio)) {
-		rc = -ENODEV;
-		goto out;
-	}
-
 	val = gpio_pin_get_dt(gpio);
 	if (val < 0) {
 		rc = val;
@@ -407,6 +370,67 @@ int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enable
 	*enabled = val > 0;
 
 out:
+	k_mutex_unlock(&laser_lock);
+	return rc;
+}
+
+static bool aux_power_get_locked(enum hispec_laser_aux_output output)
+{
+	const struct gpio_dt_spec *gpio = aux_gpio(output);
+	int val;
+
+	if (gpio == NULL) {
+		return false;
+	}
+
+	val = gpio_pin_get_dt(gpio);
+	return val > 0;
+}
+
+int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_status *out)
+{
+	int rc;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	memset(out, 0, sizeof(*out));
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		out->channel[i].id = laser_profiles[i].id;
+		out->channel[i].tec_temperature_c = LASERPROP_NA;
+	}
+
+	k_mutex_lock(&laser_lock, K_FOREVER);
+	out->heater_enabled = aux_power_get_locked(HISPEC_LASER_AUX_BANK_HEATER);
+
+	if (!bank_power_is_enabled_locked()) {
+		rc = 0;
+		goto out_unlock;
+	}
+
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		maiman_driver_t drv;
+		uint16_t tec_state = 0U;
+		float tec_temp = LASERPROP_NA;
+		bool temp_ok;
+		bool state_ok;
+
+		maiman_init(&drv, laser_profiles[i].node_id);
+		temp_ok = maiman_read_scaled(&drv, REG_TEC_TEMPERATURE_MEASURED,
+					     DIVIDER_TEC_TEMPERATURE, true,
+					     &tec_temp);
+		state_ok = maiman_read_u16(&drv, REG_STATE_OF_TEC_COMMAND, &tec_state);
+
+		out->channel[i].valid = temp_ok && state_ok;
+		out->channel[i].tec_temperature_c = tec_temp;
+		out->channel[i].tec_enabled =
+			state_ok && ((tec_state & TEC_OPERATION_STATE_STARTED) != 0U);
+	}
+
+	rc = 0;
+
+out_unlock:
 	k_mutex_unlock(&laser_lock);
 	return rc;
 }
@@ -708,11 +732,6 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	status_defaults(profile, out);
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	rc = require_tib();
-	if (rc != 0) {
-		goto out_unlock;
-	}
-
 	out->bank_powered = bank_power_is_enabled_locked();
 	if (!out->bank_powered) {
 		rc = 0;

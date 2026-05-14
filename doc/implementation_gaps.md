@@ -8,7 +8,6 @@ requirements.
 
 - `measure_tput` is documented but has no dispatch entry.
 - `lasersettings` is documented but has no dispatch entry.
-- `laserbank/autowarm` is documented but has no dispatch entry.
 - `temp` set/alarm behavior is documented but not implemented.
 - `status` returns a compact payload and does not implement the larger nested
   payload described in `commands.md`.
@@ -22,8 +21,8 @@ requirements.
 - MEMS electrical mode is not represented per switch in firmware. Hardware
   notes distinguish FFSW open-drain and FFLS push-pull.
 - CAL switch names have an explicit source TODO pending final fiber path names.
-- Temperature sensing only exposes ambient DS18B20 data; laser-bank average and
-  alarm lockout behavior are not implemented.
+- Temperature sensing only exposes ambient DS18B20 data; temp-command laser-bank
+  average and alarm lockout behavior are not implemented.
 
 ## Persistence Gaps
 
@@ -38,9 +37,8 @@ The following runtime state is intentionally not persisted:
 
 - Active routes, because they are derived from current MEMS switch state and
   route tables.
-- Laser-bank power state, because reboot must return laser-related power rails
-  and heaters to the off state unless a future owner-approved policy says
-  otherwise.
+- Laser output state. Laser-bank power may be turned on after boot by the
+  persisted heater auto/override policy, but diode current/TEC setpoints are not restored.
 - DS2408 relay output state, for the same explicit-power-on-after-reboot
   policy.
 

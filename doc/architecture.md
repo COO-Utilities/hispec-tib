@@ -91,8 +91,8 @@ fault-clear power-cycle interval.
 
 Implemented behavior is detailed in `implemented_commands.md`. Intended command
 behavior remains in `commands.md`. Known gaps include the documented
-`measure_tput`, `lasersettings`, laser setpoint behavior, `temp` alarm set, and
-laserbank autowarm commands, which are not currently implemented as specified.
+`measure_tput`, `lasersettings`, laser setpoint behavior, and `temp` alarm set,
+which are not currently implemented as specified.
 
 ## Design Constraints
 

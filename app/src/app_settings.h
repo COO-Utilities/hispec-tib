@@ -70,6 +70,16 @@ struct app_photodiode_settings {
 	struct app_pd_channel_settings channel[APP_PD_CHANNEL_COUNT];
 };
 
+enum app_laserbank_heater_mode {
+	LASERBANK_HEATER_MODE_AUTO = 0,
+	LASERBANK_HEATER_MODE_OVERRIDE_ON,
+	LASERBANK_HEATER_MODE_OVERRIDE_OFF,
+};
+
+struct app_laserbank_settings {
+	enum app_laserbank_heater_mode heater_mode;
+};
+
 /** Persisted/runtime settings snapshot copied under a module mutex. */
 struct app_settings_snapshot {
 	char board_type[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
@@ -77,6 +87,7 @@ struct app_settings_snapshot {
 	struct app_mqtt_settings mqtt;
 	struct app_attenuator_settings attenuator;
 	struct app_photodiode_settings photodiode;
+	struct app_laserbank_settings laserbank;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
 	uint32_t mqtt_revision;
@@ -132,6 +143,11 @@ void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bo
 void app_settings_update_photodiode_channel(uint8_t channel,
 					    const struct app_pd_channel_settings *pd,
 					    bool persist);
+/** @brief Copy current laser-bank heater mode setting. */
+void app_settings_get_laserbank(struct app_laserbank_settings *out);
+/** @brief Replace laser-bank heater mode setting. */
+void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
+				   bool persist);
 /** @brief Monotonic runtime counter used by main.c to reconnect MQTT. */
 uint32_t app_settings_get_mqtt_revision(void);
 /** @brief Get serial-command guard duration in seconds. */

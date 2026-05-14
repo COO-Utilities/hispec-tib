@@ -95,7 +95,7 @@ for normal serial operation.
 - [`laserbank/poweron`](#laserbank-poweron)
 - [`laserbank/poweroff`](#laserbank-poweroff)
 - [`laserbank/clearfaults`](#laserbank-clearfaults)
-- [`laserbank/autowarm`](#laserbank-autowarm)
+- [`laserbank/heater`](#laserbank-heater)
 - [`atten/<laser>/value`](#atten)
 - [`atten/<laser>/valuedb`](#atten)
 - [`atten/<laser>/coeff`](#atten)
@@ -425,7 +425,7 @@ measurement specification before firmware design or implementation.
   - Response: `{"status":"OK","laser_power":true,"transitioned":true|false}`
 
 - **Notes:** powers on the TIB laser-bank power GPIO; does nothing if already
-  powered. TEC startup and auto-off policy are not implemented yet.
+  powered. Autowarm may also power the bank for temperature monitoring.
 
 (laserbank-poweroff)=
 ### `laserbank/poweroff`
@@ -447,18 +447,41 @@ measurement specification before firmware design or implementation.
   `maiman.h` status bit for that condition is not defined.
 
 
-(laserbank-autowarm)=
-### `laserbank/autowarm`
-- **Request topic:** `cmd/<device>/req/laserbank/autowarm/[on,off]`
--   - Payload: `{"alloffabove_ambienttemp": 0.0, "bankonbelow_ambienttemp":0.0,
-                 "auxonbelow_tectemp": 0.0, auxoffabove_tectemp": 0.0, auxonoperating_ambienttemp": 0.0}`
-- **Response topic:** `cmd/<device>/resp/laserbank/autowarm`
-  - Response: `{"status": "success"}`
-  - Response: `{settings...}`
+(laserbank-heater)=
+### `laserbank/heater`
+- **Request topic:** `cmd/<device>/req/laserbank/heater`
+  - Query: no payload
+  - Set: `{"override":"auto|override_on|override_off"}` or topic suffix
+    `laserbank/heater/auto|override_on|override_off`
+- **Response topic:** `cmd/<device>/resp/laserbank/heater`
+  - Response:
+    ```json
+    {
+      "heater_mode": "auto|override_on|override_off",
+      "heater_on": false,
+      "bank_power": true,
+      "ambient_valid": true,
+      "ambient_c": 0.0,
+      "valid_temps": 6,
+      "stale_temps": 0,
+      "any_disabled_below_15c": false,
+      "any_disabled_above_off_threshold": false,
+      "all_tecs_enabled": false,
+      "all_tecs_enabled_ms": 0,
+      "last_error": 0,
+      "last_poll_age_ms": 0
+    }
+    ```
 
-- **Notes:** deferred. Autowarm and laser-bank temperature-management behavior
-  require an owner-provided specification before firmware design or
-  implementation.
+- **Notes:** `auto` is the default at boot. In `auto`, the TIB-only control
+  thread powers the laser bank so the Maiman temperature monitors can
+  initialize, polls TEC temperatures at a fixed interval, and drives the
+  laser-bank heater. Any disabled TEC below 15 C turns the heater on. Any
+  disabled TEC above the ambient-dependent off threshold turns it off. If all
+  TECs remain enabled for at least one control interval, the heater is turned
+  off. `override_on` and `override_off` force the heater state and suspend the
+  automatic warmup policy. While a heater override is active, firmware emits
+  `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
 
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`

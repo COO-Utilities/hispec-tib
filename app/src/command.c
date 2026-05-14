@@ -25,6 +25,8 @@
 #include <zephyr/console/console.h>
 
 #include "devices.h"
+#include "laserbank_control.h"
+#include "lasers.h"
 #include "app_identity.h"
 #include "app_settings.h"
 #include "app_scheduled_actions.h"
@@ -70,7 +72,6 @@ K_MSGQ_DEFINE(outbound_queue,
               8,
               4);
 
-extern const struct gpio_dt_spec laser_power_gpio;
 extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
@@ -125,6 +126,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "laserbank/poweron", laserbank_poweron, laserbank_poweron },
     { "laserbank/poweroff", laserbank_poweroff, laserbank_poweroff },
     { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
+    { "laserbank/heater", laserbank_heater, laserbank_heater },
     { "laser",      laser_setting_get,laser_setting_set},
     { "atten",      atten_setting_get,  atten_setting_set  },
     { "pdsettings", pd_settings_get, pd_settings_set },
@@ -1050,56 +1052,30 @@ laser_t get_laser_channel(const char *laser_name) {
     return LASER_UNKNOWN;
 }
 
-void wait_laser_boot() {
-    k_sleep(K_MSEC(1000));
-}
-
 bool power_enabled() {
-    if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return false;
-    }
-    if (!gpio_is_ready_dt(&laser_power_gpio)) {
-        return false;
-    }
-    int val = gpio_pin_get_dt(&laser_power_gpio);
-    return val==1;
+    return hispec_laser_bank_power_is_enabled();
 }
 
 bool enable_power() {
-    if (devices_board_type() != HISPEC_BOARD_TIB) {
-        LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
+    bool transitioned = false;
+    int err = hispec_laser_bank_power_set(true, &transitioned);
+
+    if (err != 0) {
+        LOG_ERR("Failed to enable laser bank power (%d)", err);
         return false;
     }
-    if (!gpio_is_ready_dt(&laser_power_gpio)) {
-        LOG_ERR("POWER_GPIO not ready");
-        return false;
-    }
-    if (power_enabled())
-        return false;
-    int err = gpio_pin_set_dt(&laser_power_gpio, 1);
-    if (err) {
-        LOG_ERR("Failed to set POWER_GPIO high\n");
-    }
-    return true;
+    return transitioned;
 }
 
 bool disable_power() {
-    if (devices_board_type() != HISPEC_BOARD_TIB) {
-        LOG_WRN("Laser power GPIO unavailable on board %s", devices_board_type_name());
-        return false;
-    }
-    if (!gpio_is_ready_dt(&laser_power_gpio)) {
-        LOG_ERR("POWER_GPIO not ready");
-        return false;
-    }
-    if (!power_enabled())
-        return false;
-    int err = gpio_pin_set_dt(&laser_power_gpio, 0);
-    if (err) {
-        LOG_ERR("Failed to set POWER_GPIO low\n");
-    }
-    return true;
+    bool transitioned = false;
+    int err = hispec_laser_bank_power_set(false, &transitioned);
 
+    if (err != 0) {
+        LOG_ERR("Failed to disable laser bank power (%d)", err);
+        return false;
+    }
+    return transitioned;
 }
 
 struct OutMsg laserbank_poweron(const struct Command *cmd)
@@ -1113,9 +1089,6 @@ struct OutMsg laserbank_poweron(const struct Command *cmd)
     }
 
     transitioned = enable_power();
-    if (transitioned) {
-        wait_laser_boot();
-    }
 
     if (!power_enabled()) {
         return _msg_builder(cmd, RESP_ERROR,
@@ -1157,7 +1130,6 @@ struct OutMsg laserbank_poweroff(const struct Command *cmd)
 struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 {
     bool was_powered;
-    bool turned_on;
     char payload[MAX_PAYLOAD_LEN] = {0};
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
@@ -1166,22 +1138,10 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
     }
 
     was_powered = power_enabled();
-    if (was_powered) {
-        (void)disable_power();
-        if (power_enabled()) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\","
-                                "\"msg\":\"laser bank power cycle could not turn off\"}");
-        }
-    }
-
-    /* k_sleep() is a bounded Zephyr delay that gives the laser-bank supply
-     * time to drop before re-enabling it for a fault-clear cycle.
-     */
-    k_sleep(K_MSEC(LASERBANK_FAULT_CLEAR_OFF_MS));
-    turned_on = enable_power();
-    if (turned_on) {
-        wait_laser_boot();
+    if (hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS) != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\","
+                            "\"msg\":\"laser bank power cycle failed\"}");
     }
 
     if (!power_enabled()) {
@@ -1195,6 +1155,141 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
              "\"off_ms\":%u,\"fault_detection\":\"power_cycle_only\"}",
              was_powered ? "true" : "false",
              LASERBANK_FAULT_CLEAR_OFF_MS);
+    return _msg_builder(cmd, RESP_OK, payload);
+}
+
+static const char *command_suffix_after(const struct Command *cmd, const char *prefix)
+{
+    const char *suffix;
+    size_t prefix_len;
+
+    if (cmd == NULL || prefix == NULL) {
+        return "";
+    }
+
+    prefix_len = strlen(prefix);
+    if (strncmp(cmd->key, prefix, prefix_len) != 0) {
+        return "";
+    }
+
+    suffix = cmd->key + prefix_len;
+    return suffix[0] == '/' ? suffix + 1 : suffix;
+}
+
+static void laserbank_control_status_payload(char *payload, size_t payload_len)
+{
+    struct laserbank_control_status status = {0};
+
+    laserbank_control_get_status(&status);
+    snprintk(payload, payload_len,
+             "{\"heater_mode\":\"%s\","
+             "\"heater_on\":%s,\"bank_power\":%s,"
+             "\"ambient_valid\":%s,\"ambient_c\":%.2f,"
+             "\"valid_temps\":%u,\"stale_temps\":%u,"
+             "\"any_disabled_below_15c\":%s,"
+             "\"any_disabled_above_off_threshold\":%s,"
+             "\"all_tecs_enabled\":%s,\"all_tecs_enabled_ms\":%u,"
+             "\"last_error\":%d,\"last_poll_age_ms\":%u}",
+             laserbank_heater_mode_name(status.heater_mode),
+             status.heater_on ? "true" : "false",
+             status.bank_powered ? "true" : "false",
+             status.ambient_valid ? "true" : "false",
+             (double)status.ambient_c,
+             status.valid_temp_count,
+             status.stale_temp_count,
+             status.any_disabled_below_15c ? "true" : "false",
+             status.any_disabled_above_off_threshold ? "true" : "false",
+             status.all_tecs_enabled ? "true" : "false",
+             status.all_tecs_enabled_ms,
+             status.last_error,
+             status.last_poll_age_ms);
+}
+
+static bool parse_heater_mode_text(const char *text,
+                                   enum app_laserbank_heater_mode *mode)
+{
+    if (text == NULL || mode == NULL) {
+        return false;
+    }
+
+    if (strcasecmp(text, "auto") == 0) {
+        *mode = LASERBANK_HEATER_MODE_AUTO;
+        return true;
+    }
+    if (strcasecmp(text, "override_on") == 0 ||
+        strcasecmp(text, "overide_on") == 0 ||
+        strcasecmp(text, "on") == 0) {
+        *mode = LASERBANK_HEATER_MODE_OVERRIDE_ON;
+        return true;
+    }
+    if (strcasecmp(text, "override_off") == 0 ||
+        strcasecmp(text, "overide_off") == 0 ||
+        strcasecmp(text, "off") == 0) {
+        *mode = LASERBANK_HEATER_MODE_OVERRIDE_OFF;
+        return true;
+    }
+
+    return false;
+}
+
+static bool parse_heater_request(const struct Command *cmd,
+                                 enum app_laserbank_heater_mode *mode)
+{
+    const char *suffix = command_suffix_after(cmd, "laserbank/heater");
+    char state[20] = {0};
+    bool flag;
+    int rc;
+
+    if (parse_heater_mode_text(suffix, mode)) {
+        return true;
+    }
+
+    if (cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0) {
+        return false;
+    }
+
+    if (coo_json_extract_string(cmd->payload, "override", state, sizeof(state)) ==
+        COO_JSON_EXTRACT_OK ||
+        coo_json_extract_string(cmd->payload, "state", state, sizeof(state)) ==
+        COO_JSON_EXTRACT_OK) {
+        return parse_heater_mode_text(state, mode);
+    }
+
+    rc = coo_json_extract_bool(cmd->payload, "override_on", &flag);
+    if (rc == COO_JSON_EXTRACT_OK && flag) {
+        *mode = LASERBANK_HEATER_MODE_OVERRIDE_ON;
+        return true;
+    }
+    rc = coo_json_extract_bool(cmd->payload, "override_off", &flag);
+    if (rc == COO_JSON_EXTRACT_OK && flag) {
+        *mode = LASERBANK_HEATER_MODE_OVERRIDE_OFF;
+        return true;
+    }
+
+    return parse_heater_mode_text(cmd->payload, mode);
+}
+
+struct OutMsg laserbank_heater(const struct Command *cmd)
+{
+    enum app_laserbank_heater_mode mode;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+
+    if (devices_board_type() != HISPEC_BOARD_TIB) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"error\":\"Laser bank unavailable on this board\"}");
+    }
+
+    if (cmd != NULL &&
+        (cmd->msg_type == MSG_SET ||
+         command_suffix_after(cmd, "laserbank/heater")[0] != '\0')) {
+        if (!parse_heater_request(cmd, &mode)) {
+            return _msg_builder(cmd, RESP_ERROR,
+                                "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
+        }
+        (void)laserbank_control_set_heater_mode(mode, true);
+    }
+
+    laserbank_control_status_payload(payload, sizeof(payload));
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -2486,9 +2581,7 @@ struct OutMsg laser_setting_get(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid laser setting\"}");
     }
 
-    if (enable_power()) {
-        wait_laser_boot();
-    }
+    (void)enable_power();
 
     uint16_t value = 0;
     if (!maiman_read_u16(&driver, addr, &value)) {
@@ -2533,9 +2626,7 @@ struct OutMsg laser_setting_set(const struct Command *cmd) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid laser setting\"}");
     }
 
-    if (enable_power()) {
-        wait_laser_boot();
-    }
+    (void)enable_power();
 
     if (!maiman_write_u16(&driver, addr, in_data.value) ) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"set_driver_setting failed\"}");

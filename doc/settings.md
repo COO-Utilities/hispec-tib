@@ -76,9 +76,10 @@ A first boot with no stored settings is normal and should use defaults.
 ## Intentionally Not Persisted
 
 - Active routes are derived from current MEMS switch state and route tables.
-- Laser-bank power state is not restored after reboot. Reboot must leave lasers
-  off, laser-bank power down, the laser-bank heater off, and photodiode power
-  off until an explicit command or future owner-specified policy changes that.
+- Laser output state is not restored after reboot. Laser-bank heater mode is a
+  persisted policy and defaults to `auto`; in auto mode it may power the bank
+  after boot for temperature monitoring. The heater starts off unless auto mode
+  or an override turns it on.
 - DS2408 relay output state is not restored after reboot.
 
 ## Not Currently Persisted

@@ -16,6 +16,8 @@ It dispatches one command and tries one non-blocking enqueue to
 - MEMS commands can sleep on router mutexes but do not perform bus I/O directly.
 - Attenuator commands can block on DAC I2C.
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
+- TIB laser-bank heater auto mode runs in its own low-priority thread and can
+  block on Modbus temperature polling and heater GPIO writes.
 - Settings commands can block on Zephyr settings backend writes.
 - Reboot and serial guard commands schedule delayable work.
 
@@ -39,6 +41,14 @@ sleeps to target the 20 ms sampling period.
 `sensor_sample_fetch()` and `sensor_channel_get()` for ambient temperature. It
 updates a mutex-protected cache used by the `temp` command.
 
+## Laser-Bank Control Thread
+
+`laserbank_control_thread()` is created only for the TIB profile. It owns
+heater auto/override policy, polls Maiman TEC temperature/state at a fixed
+interval, reads the cached ambient temperature, and drives the auxiliary
+laser-bank heater GPIO. It does not publish MQTT directly; override warnings
+are queued through `app_warning_emit()`.
+
 ## Zephyr System Workqueue Users
 
 The following delayable work items run in Zephyr system workqueue context:
@@ -58,6 +68,7 @@ Current configured priorities:
 
 - Command executor: 5.
 - Photodiode thread: 5.
+- Laser-bank control thread: 7.
 - Temperature thread: 5, with a source TODO that it should be lowest.
 - Serial thread: 6.
 

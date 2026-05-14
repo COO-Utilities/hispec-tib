@@ -5,8 +5,8 @@ that should be reviewed by a project owner.
 
 ## Command Spec vs Code
 
-- `commands.md` documents `measure_tput`, `lasersettings`, and
-  `laserbank/autowarm`; none are implemented.
+- `commands.md` documents `measure_tput` and `lasersettings`; neither is
+  implemented.
 - `commands.md` documents `temp` alarm set behavior; code implements GET only.
 - `commands.md` documents optional GET payloads. Code treats non-empty MQTT
   payloads as SET unless `msg_type:"get"` is present.

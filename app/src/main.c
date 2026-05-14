@@ -27,6 +27,7 @@
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
+#include "laserbank_control.h"
 #include "photodiode.h"
 #include "tempsense.h"
 #include "sntp_sync.h"
@@ -39,6 +40,8 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define SERIAL_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 500
 #define PHOTODIODE_PRIORITY 5
+#define LASERBANK_CONTROL_STACK_SIZE 1100
+#define LASERBANK_CONTROL_PRIORITY 7
 
 #define TEMPSENSOR_STACK_SIZE 500
 #define TEMPSENSOR_PRIORITY 5  //TODO this should be lowest
@@ -53,6 +56,9 @@ static struct k_thread exec_thread_data;
 
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
+
+static K_THREAD_STACK_DEFINE(laserbank_control_stack, LASERBANK_CONTROL_STACK_SIZE);
+static struct k_thread laserbank_control_thread_data;
 
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
@@ -223,6 +229,14 @@ int main(void)
 	k_thread_create(&serial_thread_data, serial_stack, K_THREAD_STACK_SIZEOF(serial_stack),
 			command_serial_thread, NULL, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
+
+	if (devices_board_type() == HISPEC_BOARD_TIB) {
+		k_thread_create(&laserbank_control_thread_data,
+				laserbank_control_stack,
+				K_THREAD_STACK_SIZEOF(laserbank_control_stack),
+				laserbank_control_thread, NULL, NULL, NULL,
+				LASERBANK_CONTROL_PRIORITY, 0, K_NO_WAIT);
+	}
 
 	sntp_sync_init();
 

@@ -490,10 +490,6 @@ static int board_strap_read_active(const struct board_strap *strap, bool *active
 	if (strap == NULL || active == NULL || strap->gpio->port == NULL) {
 		return -ENODEV;
 	}
-	if (!gpio_is_ready_dt(strap->gpio)) {
-		return -ENODEV;
-	}
-
 	/* gpio_pin_configure_dt() applies the GPIO_ACTIVE_LOW and GPIO_PULL_UP
 	 * flags from the overlay. gpio_pin_get_dt() then returns logical active
 	 * state, so an active-low jumper shorted to ground reads as true.
@@ -608,8 +604,8 @@ static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpi
 {
 	int rc;
 
-	if (gpio == NULL || !gpio_is_ready_dt(gpio)) {
-		LOG_ERR("%s GPIO is not ready", label);
+	if (gpio == NULL) {
+		LOG_ERR("%s GPIO is not mapped in devicetree", label);
 		return false;
 	}
 

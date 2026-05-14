@@ -11,7 +11,7 @@ and current C source remains the source of truth for what is implemented today.
 - Primary board currently described by overlay: `nucleo_h563zi/stm32h563xx`.
 - Boot path: `main.c` initializes watchdog, settings, board strap detection,
   profile-specific devices, command runtime, serial/MQTT command paths,
-  photodiode telemetry bridge, SNTP, network, and MQTT. Watchdog or settings
+  laser-bank heater control, SNTP, network, and MQTT. Watchdog or settings
   initialization failure stops boot.
 - Command ingress: MQTT and serial both produce `struct Command` records and
   enqueue them to `inbound_queue`.
@@ -22,7 +22,8 @@ and current C source remains the source of truth for what is implemented today.
 - Hardware profiles: TIB, CAL YJ, CAL HK, AS, and unknown are selected from
   active-low board strap GPIOs.
 - Persistence: Zephyr settings under the `tib` subtree store board type, boot
-  count, serial guard, IP, MQTT, attenuator calibration coefficients, and
+  count, serial guard, IP, MQTT, laser-bank heater mode,
+  attenuator calibration coefficients, and
   photodiode calibration/noise/gain settings.
 
 ## Implemented Areas
@@ -33,6 +34,8 @@ and current C source remains the source of truth for what is implemented today.
   route readback, and quantization warnings.
 - AS `split` command using fixed YJ/HK AS routes and exact MEMS tick ratios.
 - TIB laser-bank GPIO power on/off and clear-faults-by-power-cycle commands.
+- TIB laser-bank heater auto/override policy using Maiman TEC
+  temperature polling.
 - Raw Maiman Modbus register get/set helpers and higher-level laser helper APIs.
 - Logical paired-FVOA attenuator value, dB value, and coefficient command
   support.

@@ -29,6 +29,7 @@ Current warning codes seen in code:
 - `mems_rate_quantized`
 - `split_ratio_quantized`
 - `outbound_queue_full`
+- `laserbank_heater_override`
 
 ## Photodiode Telemetry
 

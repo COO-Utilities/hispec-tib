@@ -38,6 +38,7 @@ a replacement for `commands.md`.
 | `laserbank/poweron` | `cmd/hsfib-tib/req/laserbank/poweron` | `cmd/hsfib-tib/resp/laserbank/poweron` | `laserbank/poweron [payload]` |
 | `laserbank/poweroff` | `cmd/hsfib-tib/req/laserbank/poweroff` | `cmd/hsfib-tib/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
 | `laserbank/clearfaults` | `cmd/hsfib-tib/req/laserbank/clearfaults` | `cmd/hsfib-tib/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
+| `laserbank/heater` | `cmd/hsfib-tib/req/laserbank/heater` | `cmd/hsfib-tib/resp/laserbank/heater` | `laserbank/heater [auto|override_on|override_off]` |
 | `laser/...` | `cmd/hsfib-tib/req/laser/...` | `cmd/hsfib-tib/resp/laser/...` | `laser/... [payload]` |
 | `atten/<laser>/<setting>` | `cmd/hsfib-tib/req/atten/<laser>/<setting>` | `cmd/hsfib-tib/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
 | `pd` | `cmd/hsfib-tib/req/pd` | `cmd/hsfib-tib/resp/pd` | `pd [payload]` |
@@ -186,6 +187,21 @@ a replacement for `commands.md`.
 - Response: `status`, `laser_power`, `was_powered`, `off_ms`,
   `fault_detection`.
 - Handler: `laserbank_clearfaults()` in `app/src/command.c`.
+
+### `laserbank/heater`
+
+- GET with no suffix reports heater auto/override control status.
+- SET accepts `override`/`state` string values `auto`, `override_on`, or
+  `override_off`, including topic suffixes. The misspelled `overide_*` forms
+  are accepted for operator convenience.
+- Board restriction: TIB only.
+- Side effects: updates the persisted laser-bank heater mode and wakes
+  `laserbank_control_thread()`. `auto` runs the warmup policy; `override_on`
+  and `override_off` force heater state from the control thread. Override mode
+  emits a best-effort warning every 20 minutes.
+- Response: heater mode, heater/bank state, ambient state, temperature freshness
+  counts, control flags, and last error.
+- Handler: `laserbank_heater()` in `app/src/command.c`.
 
 ### `laser/...`
 

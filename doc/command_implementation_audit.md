@@ -34,6 +34,7 @@ Implemented dispatch entries:
 | `laserbank/poweron` | yes, side effect | yes |
 | `laserbank/poweroff` | yes, side effect | yes |
 | `laserbank/clearfaults` | yes, side effect | yes |
+| `laserbank/heater` | yes | yes |
 | `laser` | yes, currently key-shape mismatch | yes, currently key-shape mismatch |
 | `atten` | yes | yes |
 | `pdsettings` | yes | yes |
@@ -76,7 +77,6 @@ buffer and echoed exactly in responses.
 
 - `measure_tput`
 - `lasersettings`
-- `laserbank/autowarm`
 - `temp` alarm set behavior
 - Full `status` payload including nested IP/temp/PD/laser/atten/last-command
   data
@@ -87,7 +87,7 @@ buffer and echoed exactly in responses.
 - `pd` dark-measurement actions and `pdsettings` are more detailed in code
   than many older notes.
 - `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults`
-  have current implementations but no autowarm/driver fault-state integration.
+  have current implementations but no driver fault-state integration.
 
 ## High-Risk Implementation Mismatches
 

@@ -50,6 +50,7 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_PD_HK_LOWEST_DARK_VALID "pd/hk/lowest_dark_valid"
 #define KEY_PD_HK_NOISE_WARN_MV "pd/hk/noise_warn_rms_mv"
 #define KEY_PD_HK_GAIN_V_PER_UW "pd/hk/gain_v_per_uw"
+#define KEY_LASERBANK_HEATER_MODE "laserbank/heater"
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -116,6 +117,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[1].lowest_dark_valid = false;
 	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
 	s->photodiode.channel[1].gain_v_per_uw = 3.0875f;
+	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
 	s->boot_count = 0U;
 	s->mqtt_revision = 0U;
@@ -403,6 +405,19 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
+	if (strcmp(name, "heater") == 0) {
+		uint32_t value;
+
+		if (read_u32(read_cb, cb_arg, &value) == 0 &&
+		    value <= LASERBANK_HEATER_MODE_OVERRIDE_OFF) {
+			g_settings.snapshot.laserbank.heater_mode =
+				(enum app_laserbank_heater_mode)value;
+		} else {
+			LOG_WRN("Ignoring invalid stored setting %s", name);
+		}
+		goto out;
+	}
+
 out:
 	k_mutex_unlock(&g_settings.lock);
 	return 0;
@@ -415,6 +430,7 @@ SETTINGS_STATIC_HANDLER_DEFINE(ip_settings, "ip", NULL, settings_set_cb, NULL, N
 SETTINGS_STATIC_HANDLER_DEFINE(mqtt_settings, "mqtt", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(atten_settings, "atten", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(pd_settings, "pd", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(laserbank_settings, "laserbank", NULL, settings_set_cb, NULL, NULL);
 
 static void persist_bool(const char *key, bool value)
 {
@@ -517,6 +533,7 @@ static const char *const resettable_setting_keys[] = {
 	KEY_PD_HK_LOWEST_DARK_VALID,
 	KEY_PD_HK_NOISE_WARN_MV,
 	KEY_PD_HK_GAIN_V_PER_UW,
+	KEY_LASERBANK_HEATER_MODE,
 };
 
 static void delete_setting_key(const char *key)
@@ -793,6 +810,34 @@ void app_settings_update_photodiode_channel(uint8_t channel,
 
 	if (persist) {
 		persist_photodiode_channel(channel, pd);
+	}
+}
+
+void app_settings_get_laserbank(struct app_laserbank_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laserbank;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
+				   bool persist)
+{
+	if (laserbank == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laserbank = *laserbank;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_u32(KEY_LASERBANK_HEATER_MODE,
+			    (uint32_t)laserbank->heater_mode);
 	}
 }
 

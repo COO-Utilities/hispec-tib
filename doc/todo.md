@@ -19,7 +19,6 @@ for intended command behavior.
 Do not design or implement these without a detailed owner specification:
 
 - `measure_tput`.
-- `laserbank/autowarm` and bank temperature management.
 - Attenuator autocalibration and final default coefficient selection.
 - Laser/laser-bank command interface expansion.
 - Broad `command.c` refactoring into domain-owned command helpers.
@@ -28,8 +27,8 @@ Do not design or implement these without a detailed owner specification:
 ## Remaining Implementation Items
 
 - Temperature sensing currently exposes only ambient DS18B20 data. Decide
-  whether inactive TEC temperatures belong in the temperature thread or in a
-  future box-heater/bank-temperature loop.
+  whether the `temp` command should include the laser-bank control loop's TEC
+  temperature cache.
 - Thread priorities still need hardware-timing review.
 
 ## Remaining Documentation/Human-Review Items

@@ -115,6 +115,8 @@ struct OutMsg laserbank_poweron(const struct Command *cmd);
 struct OutMsg laserbank_poweroff(const struct Command *cmd);
 /** Clear laser-bank faults with a bounded laser-bank power cycle. */
 struct OutMsg laserbank_clearfaults(const struct Command *cmd);
+/** Query or set laser-bank heater auto/override mode. */
+struct OutMsg laserbank_heater(const struct Command *cmd);
 
 
 struct OutMsg atten_setting_get(const struct Command *cmd);
