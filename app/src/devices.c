@@ -13,11 +13,12 @@
 
 #include "devices.h"
 #include "app_settings.h"
+#include "app_warning.h"
 #include "mems_switching.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
-#include <zephyr/drivers/i2c.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
@@ -25,8 +26,6 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 #define USER_NODE DT_PATH(zephyr_user)
 #define MAX_NUM_MEMS_SWITCHES 8U
 #define CAL_ATTENUATOR_INDEX 4U
-#define PCAL6416A_REG_OUTPUT_PORT_CONFIGURATION 0x4FU
-#define PCAL6416A_OUTPUT_PORT0_OPEN_DRAIN_PORT1_PUSH_PULL BIT(0)
 
 BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
@@ -91,8 +90,6 @@ const struct device *dac_dev_b = NULL;
 
 #if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
-static const struct i2c_dt_spec pcal6416a_i2c =
-	I2C_DT_SPEC_GET(DT_NODELABEL(pcal6416a));
 #else
 const struct device *gpio_dev = NULL;
 #endif
@@ -189,6 +186,10 @@ static const struct board_profile as_profile = {
 static K_MUTEX_DEFINE(board_profile_lock);
 static const struct board_profile *active_profile = &unknown_profile;
 static bool board_type_checked;
+static K_MUTEX_DEFINE(relay_gpio_lock);
+static bool relay_gpio_online;
+static int relay_gpio_last_error = -ENODEV;
+static bool relay_gpio_warning_emitted;
 
 struct board_strap {
 	const struct gpio_dt_spec *gpio;
@@ -621,6 +622,93 @@ static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpi
 	return true;
 }
 
+static void set_relay_gpio_status(bool online, int error)
+{
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	relay_gpio_online = online;
+	relay_gpio_last_error = online ? 0 : error;
+	k_mutex_unlock(&relay_gpio_lock);
+}
+
+bool devices_relay_gpio_online(void)
+{
+	bool online;
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	online = relay_gpio_online;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	return online;
+}
+
+int devices_relay_gpio_last_error(void)
+{
+	int error;
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	error = relay_gpio_last_error;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	return error;
+}
+
+static void emit_relay_gpio_offline_warning_once(int error)
+{
+	char context[24];
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	if (relay_gpio_warning_emitted) {
+		k_mutex_unlock(&relay_gpio_lock);
+		return;
+	}
+	relay_gpio_warning_emitted = true;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	snprintf(context, sizeof(context), "rc=%d", error);
+	app_warning_emit("relay_gpio_offline",
+			 "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+			 context);
+}
+
+static bool configure_relay_gpio_outputs(void)
+{
+	const struct device *relay_port = yj_power_gpio.port;
+	int error = -ENODEV;
+
+	if (relay_port == NULL || !device_is_ready(relay_port)) {
+		LOG_WRN("Relay GPIO expander is offline at boot");
+		set_relay_gpio_status(false, error);
+		emit_relay_gpio_offline_warning_once(error);
+		return false;
+	}
+
+	if (!configure_gpio_output_inactive_or_log(&yj_power_gpio,
+						   "YJ photodiode power")) {
+		error = -EIO;
+		goto offline;
+	}
+	if (!configure_gpio_output_inactive_or_log(&hk_power_gpio,
+						   "HK photodiode power")) {
+		error = -EIO;
+		goto offline;
+	}
+	if (!configure_gpio_output_inactive_or_log(&heater_power_gpio,
+						   "laser bank heater")) {
+		error = -EIO;
+		goto offline;
+	}
+
+	set_relay_gpio_status(true, 0);
+	LOG_INF("Relay-box GPIO outputs configured inactive");
+	return true;
+
+offline:
+	LOG_WRN("Relay GPIO expander setup failed");
+	set_relay_gpio_status(false, error);
+	emit_relay_gpio_offline_warning_once(error);
+	return false;
+}
+
 static bool setup_modbus_client(void)
 {
 #if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
@@ -649,34 +737,6 @@ static bool setup_modbus_client(void)
 	return false;
 #else
 	LOG_ERR("Modbus serial device is not configured");
-	return false;
-#endif
-}
-
-static bool configure_mems_gpio_port_drive(void)
-{
-#if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
-	int rc;
-
-	if (!i2c_is_ready_dt(&pcal6416a_i2c)) {
-		LOG_ERR("PCAL6416A I2C bus is not ready");
-		return false;
-	}
-
-	/* Zephyr's PCAL64XXA GPIO API does not expose the chip's port-wide
-	 * output drive mode. Write register 0x4f directly: port 0 open-drain,
-	 * port 1 push-pull.
-	 */
-	rc = i2c_reg_write_byte_dt(&pcal6416a_i2c,
-				   PCAL6416A_REG_OUTPUT_PORT_CONFIGURATION,
-				   PCAL6416A_OUTPUT_PORT0_OPEN_DRAIN_PORT1_PUSH_PULL);
-	if (rc != 0) {
-		LOG_ERR("Failed to configure PCAL6416A output port drive: %d", rc);
-		return false;
-	}
-
-	return true;
-#else
 	return false;
 #endif
 }
@@ -766,10 +826,6 @@ void setup_mems_switches_and_routes(void)
 		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
 		return;
 	}
-	if (!configure_mems_gpio_port_drive()) {
-		mems_router_init(&router, mems_switch_ptrs, 0, NULL, 0);
-		return;
-	}
 
 	for (uint8_t i = 0; i < profile->mems_switch_count; ++i) {
 		enum mems_switch_type switch_type = MEMS_SWITCH_TYPE_FFSW;
@@ -846,18 +902,7 @@ bool devices_ready(void)
 							   "laser bank power")) {
 			rc = false;
 		}
-		if (!configure_gpio_output_inactive_or_log(&yj_power_gpio,
-							   "YJ photodiode power")) {
-			rc = false;
-		}
-		if (!configure_gpio_output_inactive_or_log(&hk_power_gpio,
-							   "HK photodiode power")) {
-			rc = false;
-		}
-		if (!configure_gpio_output_inactive_or_log(&heater_power_gpio,
-							   "laser bank heater")) {
-			rc = false;
-		}
+		(void)configure_relay_gpio_outputs();
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB && !setup_modbus_client()) {
@@ -878,10 +923,6 @@ bool devices_ready(void)
 
 	if (profile->board == HISPEC_BOARD_TIB && !device_ready_or_log(adc_dev, "ADC")) {
 		rc = false;
-	}
-
-	if (profile->board == HISPEC_BOARD_TIB) {
-		LOG_INF("Relay-box GPIO outputs configured");
 	}
 
 	return rc;

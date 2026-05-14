@@ -78,6 +78,12 @@ const char *devices_board_type_name(void);
 /** @brief Check/configure devices required by the detected board profile. */
 bool devices_ready(void);
 
+/** @brief Return true when the off-board DS2408 relay GPIO expander is usable. */
+bool devices_relay_gpio_online(void);
+
+/** @brief Last DS2408 relay GPIO setup error, or 0 when online. */
+int devices_relay_gpio_last_error(void);
+
 /** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);
 

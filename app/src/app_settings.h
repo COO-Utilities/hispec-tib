@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <zephyr/net/net_ip.h>
 
+#include "laserbank_control.h"
+
 struct app_ip_settings {
 	bool try_dhcp_first;
 	bool prefer_dhcp_dns;
@@ -70,14 +72,8 @@ struct app_photodiode_settings {
 	struct app_pd_channel_settings channel[APP_PD_CHANNEL_COUNT];
 };
 
-enum app_laserbank_heater_mode {
-	LASERBANK_HEATER_MODE_AUTO = 0,
-	LASERBANK_HEATER_MODE_OVERRIDE_ON,
-	LASERBANK_HEATER_MODE_OVERRIDE_OFF,
-};
-
 struct app_laserbank_settings {
-	enum app_laserbank_heater_mode heater_mode;
+	enum laserbank_heater_mode heater_mode;
 };
 
 /** Persisted/runtime settings snapshot copied under a module mutex. */

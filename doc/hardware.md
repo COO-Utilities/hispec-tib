@@ -34,15 +34,17 @@ See status.md for software details
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
 - 3.3V i2c, 5V gpio, 25mA max drive
 - Address 0x33 (ADDR high) or 0x22 (ADDR low), using 0x33
-- Configure gpio expander as open drain for FFSW as they have 5V pullups
-- Configure as push-pull for FFLS, CAUTION THIS MAY REQUIRE PCB REWORK to move FFLS to the second port and use pins there for them on the tib varian as push-pull open drain is a per-port setting.
+- FFSW lines have 4.7k external resistors. in open drain each switch channel flows 2mA through PCAL
+  - FFLS lines do not have a pullup but one may be added at site of unpopulated FFSW drive MOSFET to allow operation in same manner
+- Placing ports in push-pull with pull-ups enabled and then writing all low would pull 2.2mA though PCAL per switch and should work for all switches
+- The port with FFLS switches also has FFSW switches so I am going with a common selection for both ports for simplicity.
+- Initial testing will be with push-pull approach and full drive strength
 - Requires 2 pins per FFSW or FFLS
-- Firmware writes PCAL6416A output port configuration register `0x4f` during
-  MEMS setup so port 0 is open-drain and port 1 is push-pull. The current
-  Zephyr `nxp,pcal6416a` devicetree binding does not expose this register, and
-  the Zephyr GPIO API rejects `GPIO_SINGLE_ENDED` because the mode is port-wide.
-  The register can be changed later by I2C, but doing so changes all 8 pins on
-  that port and should only be done with MEMS outputs idle.
+- The Nucleo devicetree configures all 16 PCAL MEMS outputs with GPIO hogs:
+  push-pull, pull-ups enabled, and output-low at boot. Zephyr's mainline
+  `nxp,pcal6416a` driver resets the PCAL drive strength registers to full drive
+  and leaves both ports push-pull; firmware no longer writes the PCAL port-drive
+  register directly.
 
 For board files:
 - Nucleo:
@@ -98,7 +100,6 @@ Uses an ADS1115 16 bit 4 channel muxed ADC
 - PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - Uses 2-channels of LL shifting for i2c 3.3-5V
-- TODO Elec: Consider clamping Ain at MAX Vdd+.3 (say .2V above 5V with a shottkey(?) diode)
 
 For board files:
 - Nucleo:
@@ -124,6 +125,9 @@ For board files:
 ## Laser Bank Power Enable
 - 3.3V, GPIO to enable of power driver,
 - pull into 1-5v range against a 10k pulldown to ground to enable
+- Firmware policy is off after reboot. The Nucleo devicetree hog drives the
+  on-board laser-bank power enable low before app setup, and app setup repeats
+  the inactive configuration.
 
 For board files:
 - Nucleo: CN9 13 D72 IO PB2 -
@@ -133,6 +137,16 @@ Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
 - P1 is the power switch for the YJ photodiode
 - P2 is the power switch for the HK photodiode
 - P3 is the power switch for the laser bank aux heater
+- Firmware policy is off after reboot. The local DS2408 driver drives all
+  expander outputs low during driver init when the chip is present, and app
+  setup configures P1-P3 inactive/low when the DS2408 is online.
+- If the off-board relay expander is missing at boot, firmware emits a warning,
+  reports the relay GPIO expander offline in `status`, continues photodiode ADC
+  telemetry, ignores photodiode relay power commands with a warning, and returns
+  an I/O error for laser-bank heater mode commands.
+- The DS2408 is intentionally not configured through a generic GPIO hog because
+  Zephyr's hog init aborts on a not-ready GPIO controller. The relay board is an
+  allowed missing-at-boot fault, while the PCAL MEMS defaults must still apply.
 
 For board files:
 - Nucleo: CN9 15 D71 IO PE9

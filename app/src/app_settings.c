@@ -411,7 +411,7 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		if (read_u32(read_cb, cb_arg, &value) == 0 &&
 		    value <= LASERBANK_HEATER_MODE_OVERRIDE_OFF) {
 			g_settings.snapshot.laserbank.heater_mode =
-				(enum app_laserbank_heater_mode)value;
+				(enum laserbank_heater_mode)value;
 		} else {
 			LOG_WRN("Ignoring invalid stored setting %s", name);
 		}

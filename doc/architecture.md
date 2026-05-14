@@ -90,9 +90,8 @@ fault-clear power-cycle interval.
 ## Implemented vs Intended
 
 Implemented behavior is detailed in `implemented_commands.md`. Intended command
-behavior remains in `commands.md`. Known gaps include the documented
-`measure_tput`, `lasersettings`, laser setpoint behavior, and `temp` alarm set,
-which are not currently implemented as specified.
+behavior remains in `commands.md`. Current code-vs-doc gaps and owner-review
+items are centralized in `human_review_required.md`.
 
 ## Design Constraints
 

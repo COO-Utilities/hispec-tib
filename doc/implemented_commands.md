@@ -283,7 +283,7 @@ a replacement for `commands.md`.
 
 - GET only.
 - Response: firmware version, boot count, uptime, board type/validity, MEMS
-  switch count, network ready/IP, and laser power.
+  switch count, network ready/IP, laser power, and relay GPIO error state.
 - Side effects: none.
 - Handler: `status_get()` in `app/src/command.c`.
 - Mismatch: `commands.md` documents a much larger payload.

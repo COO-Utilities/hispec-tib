@@ -1,57 +1,84 @@
 # Human Review Required
 
-This page is the central list of audit decisions, mismatches, and stale content
-that should be reviewed by a project owner.
+This is the central owner-review list for current code-vs-doc mismatches,
+source TODOs, and behavior decisions. `commands.md` remains the intended
+command/API source of truth; current C source remains the implementation source
+of truth.
 
-## Command Spec vs Code
+LLMs Agents: Do NOT change headings in this file.
 
-- `commands.md` documents `measure_tput` and `lasersettings`; neither is
-  implemented.
-- `commands.md` documents `temp` alarm set behavior; code implements GET only.
-- `commands.md` documents optional GET payloads. Code treats non-empty MQTT
-  payloads as SET unless `msg_type:"get"` is present.
-- `status_get()` ignores optional `ip`, `lasers`, and `attens` request fields
-  and returns a compact payload.
-- `mqtt` docs and source TODOs disagree about whether broker and port should be
-  combined as one field.
-- `laser` command key parsing appears internally inconsistent and likely does
-  not reach real Maiman registers through the documented topic shape.
-- `reboot` is SET-only in code even though the intended interface reads like a
-  no-payload action.
+## Command/API Mismatches
 
-## Hardware vs Code
-
-- Hardware docs distinguish FFSW open-drain and FFLS push-pull MEMS drive.
-  Current code uses raw GPIO expander pins and does not apply per-switch
-  electrical mode.
-- CAL switch names and route names are explicitly provisional in source.
-
-## Behavior That May Not Match Intent
-
+- `commands.md` documents `measure_tput`, but `command.c` has no dispatch
+  entry for it.
+- `commands.md` documents `lasersettings`, but `command.c` has no dispatch
+  entry for it.
+- `commands.md` documents `temp` set/alarm behavior. Current code registers
+  `temp` as GET-only and returns cached ambient temperature plus
+  `laserbankavg_c:null`.
+- `commands.md` documents a larger nested `status` payload. Current
+  `status_get()` returns firmware version, boot count, uptime, board/network
+  state, MEMS switch count, IP, and laser-bank power only.
+- `commands.md` documents optional GET payloads for some commands. Current MQTT
+  ingress treats a non-empty payload as SET unless JSON includes
+  `msg_type:"get"`.
+- The raw `laser` command dispatch accepts `laser/...`, but the handler parses
+  the first path segment and then calls `get_laser_channel(laser_name + 5)`.
+  A documented key such as `laser/1028y/current` therefore does not appear to
+  address a real Maiman register.
+- `reboot` is SET-only in code. Empty MQTT payloads and bare serial `reboot`
+  commands are rejected as unsupported.
 - `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults` are
-  registered as both GET and SET handlers, so bare queries perform actions.
-- Local `laser_t` values map `LASER_1028_Y` and `LASER_1270_J` to the same
-  value.
+  registered as both GET and SET handlers, so exact bare queries perform power
+  actions.
+- The help response includes aggregate names such as `laserbank` and `power`,
+  not the exact currently implemented endpoint list.
 
-## Stale Docs Removed or Rewritten
+## Hardware/Profile Decisions
 
-- `status.md` was rewritten from older platform notes into current Zephyr
-  firmware status.
-- `runtime_architecture.md` was rewritten to remove stale split-route wording
-  and reflect current thread/queue/work structure.
-- `libraries.md` was rewritten around current local wrappers and app modules.
-- `nuisances.md` was kept informal and narrowed to current known annoyances.
-- The root `README.md` was rewritten from an older W5500/Pico template into a
-  current Nucleo-oriented overview with links to the audit pages.
+- CAL switch and route names remain provisional in `devices.c` pending final
+  fiber-path names.
 
-## LLM-resolved items requiring human review
+## Decisions To Make
 
-- Stale Pico/C++/Zyre status content was removed from the authoritative status
-  page because current code is a Zephyr C firmware app.
-- Stale splitter wording was replaced with current route names:
-  `yj_calin -> yj_split` and `hk_calin -> hk_split`.
-- Old library notes were consolidated into a current module/wrapper inventory.
-- Old README build and command examples were replaced by the current Nucleo
-  build command and links to implementation-derived command docs.
+- Laser-bank heater mode is persisted and defaults to `auto`; laser output
+  state and Maiman TEC/current setpoints are not restored after reboot.
+- DS2408 relay output state is intentionally not restored after reboot; the
+  local driver defaults the expander outputs low/off. Verify relay polarity on
+  first PCB bring-up.
+- Decide whether `temp` should expose the laser-bank heater control loop's TEC
+  cache or remain ambient-only.
+- Decide whether the SNTP work item may continue blocking in the Zephyr system
+  workqueue while waiting for an SNTP reply.
+- Review thread priorities after hardware timing tests. `main.c` still tags the
+  temperature thread priority with a source TODO.
 
-## Codex Judgment Calls
+## Source TODOs Preserved
+
+- `app/src/photodiode.h`: ADC resolution should come from devicetree.
+- `app/src/mems_switching.h`: MEMS switch pin fields may want stronger
+  constness.
+- `app/src/mems_switching.c`: review static/non-static helper nesting.
+- `app/src/mems_switching.c`: verify first-boot unknown-state behavior.
+- `app/src/mems_switching.c`: review whether router switch lookup should be a
+  non-static helper instead of a nested local helper.
+- `app/src/command.c`: internal split-route error is marked as theoretically
+  impossible if compiled route tables are correct.
+- `app/src/devices.c`: final CAL switch/route names need an owner decision.
+- `app/src/main.c`: temperature thread priority should probably be lowest.
+- `app/src/maiman.h`: compare Maiman behavior against the referenced
+  validation/test scripts.
+- `lib/coo_commons/network.c`: review whether small network parsing wrappers
+  are still useful or should be removed.
+
+  
+## Deferred Owner-Specified Capabilities
+
+Do not design or implement these without a detailed owner specification:
+
+- `measure_tput`.
+- Attenuator autocalibration and final default coefficient selection.
+- Higher-level laser/laser-bank command interface expansion.
+- Broad `command.c` refactoring into domain-owned command helpers.
+- Replacing the terse `help` response with a maintained command summary.
+

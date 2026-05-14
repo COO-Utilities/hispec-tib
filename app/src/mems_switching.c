@@ -351,12 +351,13 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
 
-    /* Raw gpio_pin_configure() is used because board profiles store only the
-     * expander pin numbers. These calls do not apply GPIO_ACTIVE_LOW/HIGH from
-     * devicetree.
+    /* PCAL stays push-pull because no GPIO_SINGLE_ENDED/OPEN_DRAIN flag is
+     * used. Mirror the devicetree hog: pull-up enabled, output inactive/low.
      */
-    (void)gpio_pin_configure(gpio_dev, pin_a, GPIO_OUTPUT_INACTIVE);
-    (void)gpio_pin_configure(gpio_dev, pin_b, GPIO_OUTPUT_INACTIVE);
+    (void)gpio_pin_configure(gpio_dev, pin_a,
+                             GPIO_OUTPUT_INACTIVE | GPIO_PULL_UP);
+    (void)gpio_pin_configure(gpio_dev, pin_b,
+                             GPIO_OUTPUT_INACTIVE | GPIO_PULL_UP);
 }
 
 

@@ -9,15 +9,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "app_settings.h"
-
 #define LASERBANK_CONTROL_POLL_INTERVAL_MS 10000U
 #define LASERBANK_CONTROL_TEMP_STALE_MS (2U * LASERBANK_CONTROL_POLL_INTERVAL_MS)
 #define LASERBANK_CONTROL_OVERRIDE_WARNING_MS (20U * 60U * 1000U)
 
+enum laserbank_heater_mode {
+	LASERBANK_HEATER_MODE_AUTO = 0,
+	LASERBANK_HEATER_MODE_OVERRIDE_ON,
+	LASERBANK_HEATER_MODE_OVERRIDE_OFF,
+};
+
 struct laserbank_control_status {
 	bool available;
-	enum app_laserbank_heater_mode heater_mode;
+	enum laserbank_heater_mode heater_mode;
 	bool bank_powered;
 	bool heater_on;
 	bool ambient_valid;
@@ -40,9 +44,9 @@ void laserbank_control_thread(void *p1, void *p2, void *p3);
 void laserbank_control_get_status(struct laserbank_control_status *out);
 
 /** Set heater mode. Auto runs the warmup policy; override modes force the relay. */
-int laserbank_control_set_heater_mode(enum app_laserbank_heater_mode mode,
+int laserbank_control_set_heater_mode(enum laserbank_heater_mode mode,
 				      bool persist);
 
-const char *laserbank_heater_mode_name(enum app_laserbank_heater_mode mode);
+const char *laserbank_heater_mode_name(enum laserbank_heater_mode mode);
 
 #endif /* HISPEC_LASERBANK_CONTROL_H */

@@ -15,7 +15,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "app_settings.h"
 #include "app_warning.h"
+#include "devices.h"
 #include "lasers.h"
 #include "tempsense.h"
 
@@ -37,7 +39,7 @@ struct laserbank_control_runtime {
 	int64_t last_poll_ms;
 	int64_t all_tecs_enabled_since_ms;
 	int64_t last_override_warning_ms;
-	enum app_laserbank_heater_mode previous_mode;
+	enum laserbank_heater_mode previous_mode;
 	bool have_previous_mode;
 };
 
@@ -45,7 +47,7 @@ static struct laserbank_control_runtime control;
 static K_MUTEX_DEFINE(control_lock);
 static K_SEM_DEFINE(control_wake, 0, 1);
 
-const char *laserbank_heater_mode_name(enum app_laserbank_heater_mode mode)
+const char *laserbank_heater_mode_name(enum laserbank_heater_mode mode)
 {
 	switch (mode) {
 	case LASERBANK_HEATER_MODE_AUTO:
@@ -59,7 +61,7 @@ const char *laserbank_heater_mode_name(enum app_laserbank_heater_mode mode)
 	}
 }
 
-static bool heater_mode_is_valid(enum app_laserbank_heater_mode mode)
+static bool heater_mode_is_valid(enum laserbank_heater_mode mode)
 {
 	return mode == LASERBANK_HEATER_MODE_AUTO ||
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_ON ||
@@ -100,13 +102,16 @@ void laserbank_control_get_status(struct laserbank_control_status *out)
 	k_mutex_unlock(&control_lock);
 }
 
-int laserbank_control_set_heater_mode(enum app_laserbank_heater_mode mode,
+int laserbank_control_set_heater_mode(enum laserbank_heater_mode mode,
 				      bool persist)
 {
 	struct app_laserbank_settings settings;
 
 	if (!heater_mode_is_valid(mode)) {
 		return -EINVAL;
+	}
+	if (!devices_relay_gpio_online()) {
+		return -EIO;
 	}
 
 	app_settings_get_laserbank(&settings);
@@ -188,7 +193,7 @@ static void summarize_temperature_state(const struct tempsense_status *ambient,
 	control.status.stale_temp_count = stale_count;
 }
 
-static void maybe_emit_override_warning(enum app_laserbank_heater_mode mode,
+static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 					int64_t now_ms)
 {
 	if (mode == LASERBANK_HEATER_MODE_AUTO) {

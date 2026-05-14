@@ -46,6 +46,15 @@
 	};
 };
 
+&gpiob {
+	laser_bank_power_default: laser-bank-power-default {
+		gpio-hog;
+		gpios = <2 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "laser-bank-power-default-off";
+	};
+};
+
 /* PA3 is Nucleo D35 and is used as the TIB board strap, so leave it out of
  * ADC1 pinctrl while keeping ADC1 enabled for on-chip VREF/VBAT sensors.
  */
@@ -145,6 +154,31 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		ngpios = <16>;
+
+		/* PCAL64xxA reset/default output mode is push-pull. These hogs
+		 * deliberately omit GPIO_OPEN_DRAIN and only set pull-up + low.
+		 */
+		mems_drive_default: mems-drive-default {
+			gpio-hog;
+			gpios = <0 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<1 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<2 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<4 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<5 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<6 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<7 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<8 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<9 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<10 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<11 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<12 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<13 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<14 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
+				<15 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+			output-low;
+			line-name = "mems-drive-default-low";
+		};
 	};
 };
 

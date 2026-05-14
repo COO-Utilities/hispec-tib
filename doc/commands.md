@@ -425,7 +425,7 @@ measurement specification before firmware design or implementation.
   - Response: `{"status":"OK","laser_power":true,"transitioned":true|false}`
 
 - **Notes:** powers on the TIB laser-bank power GPIO; does nothing if already
-  powered. Autowarm may also power the bank for temperature monitoring.
+  powered. Heater auto mode may also power the bank for temperature monitoring.
 
 (laserbank-poweroff)=
 ### `laserbank/poweroff`
@@ -482,6 +482,8 @@ measurement specification before firmware design or implementation.
   off. `override_on` and `override_off` force the heater state and suspend the
   automatic warmup policy. While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
+  If the off-board DS2408 relay expander is offline, set requests return an I/O
+  error because the heater relay cannot be driven.
 
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
@@ -816,6 +818,7 @@ measurement specification before firmware design or implementation.
       "board_type": "tib|cal_yj|cal_hk|as|unknown",
       "board_valid": true,
       "mems_switches": 8,
+      "relay_gpio_error": 0,
       "ip": "<response of ip command query>",
       "temp_c": 0.0,
       "pd_ontime": 0,

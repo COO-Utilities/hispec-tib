@@ -12,6 +12,7 @@
 
 #include "lasers.h"
 
+#include "app_warning.h"
 #include "devices.h"
 
 #include <errno.h>
@@ -332,6 +333,12 @@ static const struct gpio_dt_spec *aux_gpio(enum hispec_laser_aux_output output)
 	}
 }
 
+static bool aux_output_is_photodiode(enum hispec_laser_aux_output output)
+{
+	return output == HISPEC_LASER_AUX_YJ_PHOTODIODE ||
+	       output == HISPEC_LASER_AUX_HK_PHOTODIODE;
+}
+
 int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled)
 {
 	const struct gpio_dt_spec *gpio = aux_gpio(output);
@@ -339,6 +346,15 @@ int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled
 
 	if (gpio == NULL) {
 		return -EINVAL;
+	}
+	if (!devices_relay_gpio_online()) {
+		if (aux_output_is_photodiode(output)) {
+			app_warning_emit("relay_gpio_offline",
+					 "photodiode relay command ignored because relay GPIO expander is offline",
+					 enabled ? "enable" : "disable");
+			return 0;
+		}
+		return -EIO;
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
@@ -359,6 +375,9 @@ int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enable
 
 	if (gpio == NULL || enabled == NULL) {
 		return -EINVAL;
+	}
+	if (!devices_relay_gpio_online()) {
+		return -EIO;
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);

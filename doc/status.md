@@ -26,28 +26,6 @@ and current C source remains the source of truth for what is implemented today.
   attenuator calibration coefficients, and
   photodiode calibration/noise/gain settings.
 
-## Implemented Areas
-
-- Board strap detection with exactly-one-active validation.
-- TIB/CAL/AS MEMS switch profile selection and route tables.
-- MEMS static switching, duty-cycle toggling, exact tick duty control, active
-  route readback, and quantization warnings.
-- AS `split` command using fixed YJ/HK AS routes and exact MEMS tick ratios.
-- TIB laser-bank GPIO power on/off and clear-faults-by-power-cycle commands.
-- TIB laser-bank heater auto/override policy using Maiman TEC
-  temperature polling.
-- Raw Maiman Modbus register get/set helpers and higher-level laser helper APIs.
-- Logical paired-FVOA attenuator value, dB value, and coefficient command
-  support.
-- Photodiode sampling, best-effort telemetry, explicit dark measurement, stored
-  dark update, lowest-dark tracking, and noise warnings.
-- DS18B20 ambient temperature sampling and `temp` query.
-- IPv4 network helper with DHCP/static/fallback behavior and link monitoring.
-- MQTT broker settings with runtime reconnect trigger.
-- Serial command guard with scheduled expiration, MQTT SET/action rejection,
-  and safe MQTT GET passthrough.
-- SNTP sync from manual or DHCP NTP server.
-- Watchdog setup/feed in the main loop; watchdog setup failure stops boot.
 
 ## Partially Implemented
 
@@ -58,38 +36,18 @@ and current C source remains the source of truth for what is implemented today.
 - Runtime network reconfiguration is available in the library helper, but the
   `ip` command currently reports reboot-required for network-affecting changes.
 - SNTP status is exposed through `time` and `ip`; manual time set does not mark
-  SNTP status as manual.
+  SNTP status as manual. SNTP might also have too much blocking on a main/command thread
 
 ## Open items
 
 - Reconcile implemented command behavior against `commands.md`; see
   `command_implementation_audit.md` and `implemented_commands.md`.
-- Reconcile MEMS GPIO electrical mode against hardware notes; see
-  `human_review_required.md`.
 - Decide intended persistence for MEMS switch state, AS split requested/actual
   state, laser output/tuning state, and last-command metadata.
-- Remove stale command help/docs references to unsupported `power` and `sleep`
-  command names, or reintroduce those commands with an owner-approved spec.
+
 - Add automated tests for command parsing and non-hardware domain logic.
-- Decide whether the COO commons network/MQTT helpers should remain app-local
-  wrappers or become shared library APIs with stricter contracts.
 
-## LLM-resolved items requiring human review
 
-- Old status notes said settings persistence was unimplemented. Current code now
-  persists IP, MQTT, serial guard, boot count, attenuator coefficients, and
-  photodiode calibration settings. Human review is still needed for missing
-  operating-state persistence.
-- Old status notes said SNTP was unimplemented. Current code has `sntp_sync.c`
-  and exposes status through `time`; review is still needed for manual/DHCP
-  policy and failure reporting.
-- Old status notes described `main.cpp`, `executor_task.cpp`, and Zyre/Pico
-  modules from a previous architecture. Those notes are stale for this Zephyr C
-  app and are replaced by `architecture.md`, `threads.md`, and
-  `queues_and_work.md`.
-- Old notes said MQTT handling lived in `main.c`; current MQTT ingress is in
-  `command_handle_mqtt_publish()` and MQTT connection/publish pumping remains
-  in `main.c`.
-- Old status notes said attenuator support only used one DAC device. TIB now
-  initializes six logical attenuators as twelve physical DAC channels across
-  both DAC7578 devices; calibration model defaults still need owner review.
+
+
+

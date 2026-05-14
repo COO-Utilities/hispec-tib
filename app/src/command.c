@@ -87,12 +87,12 @@ struct json_value_bool {
 
 typedef enum laser_t {
     LASER_1028_Y=1,
-    LASER_1270_J=1,
-    LASER_1430_YJ=2,
-    LASER_1430_HK=3,
-    LASER_1510_H=4,
-    LASER_2330_K=5,
-    LASER_UNKNOWN=6
+    LASER_1270_J=2,
+    LASER_1430_YJ=3,
+    LASER_1430_HK=4,
+    LASER_1510_H=5,
+    LASER_2330_K=6,
+    LASER_UNKNOWN=7
 } laser_t;
 
 static bool attenuator_channel_available(laser_t laser_id)
@@ -132,8 +132,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "pdsettings", pd_settings_get, pd_settings_set },
     { "pd",         pd_get,          pd_set          },
     { "temp",       temp_get,         NULL             },
-    { "status",     status_get,       NULL  },// GET only
-    //todo add reset for system
+    { "status",     status_get,       NULL  },
 };
 
 
@@ -1206,7 +1205,7 @@ static void laserbank_control_status_payload(char *payload, size_t payload_len)
 }
 
 static bool parse_heater_mode_text(const char *text,
-                                   enum app_laserbank_heater_mode *mode)
+                                   enum laserbank_heater_mode *mode)
 {
     if (text == NULL || mode == NULL) {
         return false;
@@ -1233,7 +1232,7 @@ static bool parse_heater_mode_text(const char *text,
 }
 
 static bool parse_heater_request(const struct Command *cmd,
-                                 enum app_laserbank_heater_mode *mode)
+                                 enum laserbank_heater_mode *mode)
 {
     const char *suffix = command_suffix_after(cmd, "laserbank/heater");
     char state[20] = {0};
@@ -1271,7 +1270,7 @@ static bool parse_heater_request(const struct Command *cmd,
 
 struct OutMsg laserbank_heater(const struct Command *cmd)
 {
-    enum app_laserbank_heater_mode mode;
+    enum laserbank_heater_mode mode;
     char payload[MAX_PAYLOAD_LEN] = {0};
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
@@ -1286,7 +1285,13 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
             return _msg_builder(cmd, RESP_ERROR,
                                 "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
         }
-        (void)laserbank_control_set_heater_mode(mode, true);
+        int rc = laserbank_control_set_heater_mode(mode, true);
+        if (rc != 0) {
+            snprintf(payload, sizeof(payload),
+                     "{\"status\":\"error\",\"msg\":\"laser bank heater relay unavailable\",\"rc\":%d}",
+                     rc);
+            return _msg_builder(cmd, RESP_ERROR, payload);
+        }
     }
 
     laserbank_control_status_payload(payload, sizeof(payload));
@@ -2334,7 +2339,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
         int rc;
 
         if (sw==NULL) {
-            //TODO this should be an impossible error if compiled code is correct
+            //NB this should be an impossible error if compiled code is correct
             LOG_ERR("Internal route error: Switch %s not found\n", step->switch_name);
             return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
         }
@@ -3183,7 +3188,8 @@ struct OutMsg status_get(const struct Command *cmd) {
     snprintf(payload, MAX_PAYLOAD_LEN,
              "{\"fwversion\":\"%s\",\"bootcount\":%u,\"uptime\":%lld,"
              "\"board_type\":\"%s\",\"board_valid\":%s,\"mems_switches\":%u,"
-             "\"network_ready\":%s,\"ip\":\"%s\",\"laser_power\":%s}",
+             "\"network_ready\":%s,\"ip\":\"%s\",\"laser_power\":%s,"
+             "\"relay_gpio_error\":%d}",
              APP_VERSION_STRING,
              app_settings_get_boot_count(),
              (long long)k_uptime_get(),
@@ -3192,7 +3198,8 @@ struct OutMsg status_get(const struct Command *cmd) {
              router.num_switches,
              net.link_ready ? "true" : "false",
              net.ip,
-             power_enabled() ? "true" : "false");
+             power_enabled() ? "true" : "false",
+             devices_relay_gpio_last_error());
     return _msg_builder(cmd, RESP_OK, payload);
 }
 

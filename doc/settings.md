@@ -80,7 +80,8 @@ A first boot with no stored settings is normal and should use defaults.
   persisted policy and defaults to `auto`; in auto mode it may power the bank
   after boot for temperature monitoring. The heater starts off unless auto mode
   or an override turns it on.
-- DS2408 relay output state is not restored after reboot.
+- DS2408 relay output state is not restored after reboot; relay outputs default
+  inactive/off when the off-board expander is online during app setup.
 
 ## Not Currently Persisted
 

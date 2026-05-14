@@ -406,8 +406,12 @@ static int ds2408_init(const struct device *dev)
 	}
 
 	k_mutex_init(&data->lock);
-	data->direction_mask = 0U;
-	data->output_raw = (uint8_t)cfg->common.port_pin_mask;
+	/* HiSPEC relay outputs must be off after reboot. Drive all available
+	 * DS2408 pins low during driver init; app setup later reconfigures the
+	 * named relay pins and reports the expander online/offline.
+	 */
+	data->direction_mask = (uint8_t)cfg->common.port_pin_mask;
+	data->output_raw = 0U;
 
 	ret = ds2408_setup_slave(dev);
 	if (ret != 0) {
@@ -419,7 +423,7 @@ static int ds2408_init(const struct device *dev)
 		LOG_WRN("Failed to run DS2408 test-mode clear sequence: %d", ret);
 	}
 
-	/* Release all pins on startup; direction changes happen in pin_configure. */
+	/* Apply the reboot-off default before normal GPIO users run. */
 	ret = ds2408_apply_outputs_locked(dev);
 	if (ret != 0) {
 		return ret;
