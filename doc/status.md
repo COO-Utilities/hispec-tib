@@ -33,9 +33,6 @@ and current C source remains the source of truth for what is implemented today.
   current command key parsing appears inconsistent with the dispatch prefix.
 - Higher-level laser tuning/status helper APIs exist in `lasers.c`, but the
   public command table does not expose most of them.
-- `measure_throughput` now has an initial implementation for JSON streaming and
-  simple autolevel control. Hardware validation and final route-name
-  conventions are still needed.
 - Runtime network reconfiguration is available in the library helper, but the
   `ip` command currently reports reboot-required for network-affecting changes.
 - SNTP status is exposed through `time` and `ip`; manual time set does not mark

@@ -5,7 +5,7 @@ source TODOs, and behavior decisions. `commands.md` remains the intended
 command/API source of truth; current C source remains the implementation source
 of truth.
 
-LLMs Agents: Do NOT change headings in this file.
+LLMs Agents: Do NOT change heading names in this file.
 
 ## Command/API Mismatches
 
@@ -77,3 +77,11 @@ Do not design or implement these without a detailed owner specification:
 - Higher-level laser/laser-bank command interface expansion.
 - Broad `command.c` refactoring into domain-owned command helpers.
 - Replacing the terse `help` response with a maintained command summary.
+
+
+## Open items
+
+- Add test coverage around `json_utils.c`, command normalization, and network
+  profile selection.
+- Add test coverage for the attenuator model and inverse once calibration
+  expectations are owner-approved.

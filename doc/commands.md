@@ -87,6 +87,7 @@ for normal serial operation.
 ## Command Endpoints
 - [`help`](#help)
 - [`memsroute`](#memsroute)
+- [`memsroute/route_loss`](#route-loss)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
 - [`measure_throughput`](#measure-throughput)
@@ -171,6 +172,32 @@ while serial guard is active and attenuator DAC-range clamping.
     destination may receive multiple sources through combining optics. A
     destination with no currently active source reports `["no source"]`.
     Active routes are read from current switch state and are not persisted.
+
+(route-loss)=
+### `memsroute/route_loss`
+- **Request topic:** `cmd/<device>/req/memsroute/route_loss`
+  - Set one route-loss record:
+    ```json
+    {"route":"yj_sm_to_yj_pd","1430yj":0.93,"persistent":true}
+    ```
+    or:
+    ```json
+    {"route":"yj_sm_to_yj_pd","1430yj":"0.32 dB","persistent":true}
+    ```
+  - Query one route-loss record:
+    ```json
+    {"route":"yj_sm_to_yj_pd","laser":"1430yj"}
+    ```
+- **Response topic:** `cmd/<device>/resp/memsroute/route_loss`
+  - Set result: `{"status":"success"}`
+  - Query result:
+    `{"status":"success","tx":0.93,"loss_db":0.3188,"configured":true}`
+
+Route-loss records are app settings keyed by route name and laser name. Missing route-loss
+records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
+linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
+loss in dB and convert to `tx = 10^(-loss_db / 10)`. Route loses are only used on the TIB for throughput monitoring. 
+
 
 ### `mems`
 - **Request topic:** `cmd/<device>/req/mems`
@@ -358,33 +385,6 @@ float32 laser_current_ontime_s
   autolevel for the affected monitor; run the command again to re-enable it.
 - Dark measurement must not be started while an autolevel throughput monitor is
   running on that photodiode.
-
-(route-loss)=
-- **Request topic:** `cmd/<device>/req/memsroute/route_loss`
-  - Set one route-loss record:
-    ```json
-    {"route":"yj_sm_to_yj_pd","1430yj":0.93,"persistent":true}
-    ```
-    or:
-    ```json
-    {"route":"yj_sm_to_yj_pd","1430yj":"0.32 dB","persistent":true}
-    ```
-  - Query one route-loss record:
-    ```json
-    {"route":"yj_sm_to_yj_pd","laser":"1430yj"}
-    ```
-- **Response topic:** `cmd/<device>/resp/memsroute/route_loss`
-  - Set result: `{"status":"success"}`
-  - Query result:
-    `{"status":"success","tx":0.93,"loss_db":0.3188,"configured":true}`
-
-Route-loss records are app settings keyed by route name and laser name. They
-are not stored in MEMS route structs or switch structs. Missing route-loss
-records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
-linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
-loss in dB and convert to `tx = 10^(-loss_db / 10)`.
-The route-loss table holds 18 records, matching the expected maximum of 14
-outbound laser paths and 4 inbound photodiode paths.
 
 
 ### `laser`

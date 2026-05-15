@@ -34,12 +34,3 @@
 
 - `drivers/gpio/ds2408`: project-local Zephyr GPIO driver for the DS2408
   1-Wire open-drain GPIO expander.
-
-## Open items
-
-- Decide whether `coo_commons` remains in this repository or is split into a
-  reusable shared module.
-- Add test coverage around `json_utils.c`, command normalization, and network
-  profile selection.
-- Add test coverage for the attenuator model and inverse once calibration
-  expectations are owner-approved.
