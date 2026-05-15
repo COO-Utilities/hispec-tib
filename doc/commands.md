@@ -101,16 +101,16 @@ for normal serial operation.
 - [`mems/<switchname>`](#mems-switchname)
 - [`measure_throughput`](#measure-throughput)
 - [`laser`](#laser)
-- [`laser/tune`](#lasertune)
-- [`laser/status`](#laserstatus)
-- [`laser/engstatus`](#laserengstatus)
-- [`laser/settings`](#lasersettings)
-- [`laserbank/power`](#laserbankpower)
+- [`laser/tune`](#laser-tune)
+- [`laser/status`](#laser-status)
+- [`laser/engstatus`](#laser-engstatus)
+- [`laser/settings`](#laser-settings)
+- [`laserbank/power`](#laserbank-power)
 - [`laserbank/clearfaults`](#laserbank-clearfaults)
 - [`laserbank/heater`](#laserbank-heater)
-- [`atten/<laser>/value`](#atten)
-- [`atten/<laser>/valuedb`](#atten)
-- [`atten/<laser>/coeff`](#atten)
+- [`atten/<laser>/value`](#atten-value)
+- [`atten/<laser>/valuedb`](#atten-valuedb)
+- [`atten/<laser>/coeff`](#atten-coeff)
 - [`pd`](#pd)
 - [`pdsettings/<yj|hk>`](#pdsettings)
 - [`ip`](#ip)
@@ -122,7 +122,7 @@ for normal serial operation.
 - [`reboot`](#reboot)
 - [`split`](#split)
 - Telemetry: `yj_tput`, `hk_tput`
-- Warnings: `dt/<device>/warning`
+- Warnings: [`dt/<device>/warning`](#warning-publication)
 
 ---
 
@@ -130,6 +130,7 @@ Command items below are **one request topic** (subscribed by the device) and
 their **matching response topic** (published by the device). The warning topic
 is publish-only.
 
+(warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
 - **Top-level helper:** `app_warning_emit()`
@@ -151,6 +152,7 @@ an error. Warning delivery is intentionally lossy and is not mirrored into
 sticky status fields. Current warning emitters include MQTT command rejection
 while serial guard is active and attenuator DAC-range clamping.
 
+(help)=
 ### `help`
 - **Request topic:** `cmd/<device>/req/help`
   - No payload
@@ -158,6 +160,7 @@ while serial guard is active and attenuator DAC-range clamping.
 - **Response topic:** `cmd/<device>/resp/help`
   - Result: `{"help": <a nice string of commands and info, in essence a summary of this file>}`
 
+(memsroute)=
 ### `memsroute`
 - **Request topic:** `cmd/<device>/req/memsroute`
   - Set:
@@ -210,6 +213,7 @@ linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
 loss in dB and convert to `tx = 10^(-loss_db / 10)`. Route loses are only used on the TIB for throughput monitoring. 
 
 
+(mems)=
 ### `mems`
 - **Request topic:** `cmd/<device>/req/mems`
   - Query: No payload
@@ -398,6 +402,7 @@ float32 laser_current_ontime_s
   running on that photodiode.
 
 
+(laser)=
 ### `laser`
 - **Request topic:** `cmd/<device>/req/laser`
   - Set:
@@ -443,6 +448,7 @@ float32 laser_current_ontime_s
   stops cleanly. `autooff_s` is optional and non-persistent; if supplied, it overrides the default configured through
   `laser/settings` for this start.
 
+(laser-tune)=
 ### `laser/tune`
 - **Request topic:** `cmd/<device>/req/laser/tune`
   - Set:
@@ -463,6 +469,7 @@ positive `laser` level commands. It is best-effort: large shifts are clamped by 
 current adjustment.
 
 
+(laser-status)=
 ### `laser/status`
 - **Request topic:** `cmd/<device>/req/laser/status`
 - Query: `{"name": "<lasername>" }`
@@ -471,6 +478,7 @@ current adjustment.
 Compact operational status. This is the preferred status payload for normal users and is the source used by the
 optional laser section of `status`.
 
+(laser-engstatus)=
 ### `laser/engstatus`
 - **Request topic:** `cmd/<device>/req/laser/engstatus`
 - Query: `{"name": "<lasername>" }`
@@ -482,6 +490,7 @@ serial/device-id verification, and interlock flags. This command may be slower t
 many Modbus registers.
 
 
+(laser-settings)=
 ### `laser/settings`
 - **Request topic:** `cmd/<device>/req/laser/settings`
 - Set:
@@ -646,6 +655,10 @@ off or no faults).
   If the off-board DS2408 relay expander is offline, set requests return an I/O
   error because the heater relay cannot be driven.
 
+(atten)=
+(atten-value)=
+(atten-valuedb)=
+(atten-coeff)=
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
 - **Request topic:** `cmd/<device>/req/atten/<laser>/value`
@@ -698,6 +711,7 @@ off or no faults).
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
 
+(pd)=
 ### `pd`
 - **Request topic:** `cmd/<device>/req/pd`
   - Optional payload: `{"unit": "power"}`
@@ -790,6 +804,7 @@ off or no faults).
     `photodiode_noise` on `dt/<device>/warning`.
   - Power estimates subtract stored dark mV and use `gain_v_p_uw`.
 
+(pdsettings)=
 ### `pdsettings`
 - **Request topic:** `cmd/<device>/req/pdsettings/<yj|hk>`
   - Set:
@@ -832,6 +847,7 @@ off or no faults).
   command keys and separate persistent settings keys. Dark and lowest-dark
   values are persisted through the settings subsystem.
 
+(ip)=
 ### `ip`
 - **Request topic:** `cmd/<device>/req/ip`
   - Set:
@@ -897,6 +913,7 @@ off or no faults).
     require reboot.
   - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
 
+(mqtt)=
 ### `mqtt`
 - **Request topic:** `cmd/<device>/req/mqtt`
   - Set:
@@ -924,6 +941,7 @@ off or no faults).
     behavior. If the new broker cannot connect, firmware restores the prior
     broker and emits a best-effort `mqtt_broker_revert` warning.
 
+(serialguard)=
 ### `serialguard`
 - **Request topic:** `cmd/<device>/req/serialguard`
   - Set:
@@ -953,6 +971,7 @@ off or no faults).
   - The guard uses the named scheduled action `serial_guard_expire`.
   - `seconds:0` disables serial override.
 
+(time)=
 ### `time`
 - **Request topic:** `cmd/<device>/req/time`
   - Query: No payload
@@ -970,6 +989,7 @@ off or no faults).
 
 - **Notes:** set time may be overwritten later by NTP if configured and responding.
 
+(temp)=
 ### `temp`
 - **Request topic:** `cmd/<device>/req/temp`
   - Query: No payload
@@ -991,6 +1011,7 @@ off or no faults).
   can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
   temperatures.
 
+(status)=
 ### `status`
 - **Request topic:** `cmd/<device>/req/status`
   - Optional payload:
@@ -1037,11 +1058,13 @@ off or no faults).
   ```
 
 
+(reboot)=
 ### `reboot`
 - **Request topic:** `cmd/<device>/req/reboot`
 - **Response topic:** `cmd/<device>/resp/reboot`
   - Response: `{"status": "success"}`
 
+(split)=
 ### `split`
 - **Request topic:** `cmd/<device>/req/split`
   - Set:
