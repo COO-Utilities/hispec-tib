@@ -565,3 +565,14 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 	}
 	k_mutex_unlock(&monitors_lock);
 }
+
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser)
+{
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		if (monitors[i].active && monitors[i].laser == laser) {
+			stop_locked((enum photodiode_channel)i);
+		}
+	}
+	k_mutex_unlock(&monitors_lock);
+}

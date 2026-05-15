@@ -35,11 +35,14 @@ Implemented dispatch entries:
 | `mems` | yes | yes |
 | `split` | yes | yes |
 | `measure_throughput` | no | yes |
-| `laserbank/poweron` | yes, side effect | yes |
-| `laserbank/poweroff` | yes, side effect | yes |
-| `laserbank/clearfaults` | yes, side effect | yes |
+| `laserbank/power` | yes | yes |
+| `laserbank/clearfaults` | yes, conditional side effect | yes, conditional side effect |
 | `laserbank/heater` | yes | yes |
-| `laser` | yes, currently key-shape mismatch | yes, currently key-shape mismatch |
+| `laser` | yes | yes |
+| `laser/tune` | yes | yes |
+| `laser/status` | yes | no |
+| `laser/engstatus` | yes | no |
+| `laser/settings` | yes | yes |
 | `atten` | yes | yes |
 | `pdsettings` | yes | yes |
 | `pd` | yes | yes |
@@ -79,29 +82,15 @@ buffer and echoed exactly in responses.
 
 ## Commands Documented but Not Implemented
 
-- `temp` alarm set behavior
 - Full `status` payload including nested IP/temp/PD/laser/atten/last-command data
-- Full intended `laser`/`lasersettings` command behavior as described in `commands.md`
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
 - `pd` dark-measurement actions and `pdsettings` are more detailed in code
   than many older notes.
-- `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults`
-  have current implementations but no driver fault-state integration.
 
 ## High-Risk Implementation Mismatches
 
-- `laser` command key parsing appears inconsistent with dispatch. The dispatch
-  entry is `laser`, which accepts `laser/...`, but the handler uses
-  `parse_key_pair()` and then calls `get_laser_channel(laser_name + 5)`. For a
-  request like `laser/1028y/current`, `laser_name` is `laser`, so the lookup is
-  invalid. A key shaped like `laser1028y/current` would make the pointer math
-  plausible, but it does not match the dispatch table.
-- The local `laser_t` enum maps both `LASER_1028_Y` and `LASER_1270_J` to
-  channel value 1. This affects attenuator and laser mapping review.
-- Laser-bank power actions are registered for both GET and SET. Empty MQTT or
-  serial queries to those exact keys therefore perform power actions.
 - `reboot` is SET-only. An empty MQTT payload or bare serial `reboot` is
   unsupported; a non-empty payload schedules a reboot.
 

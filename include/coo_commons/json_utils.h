@@ -55,6 +55,13 @@ int coo_json_extract_optional_float_range(const char *json, const char *key,
 					  float min_value, float max_value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 /**
+ * @brief Copy a nested JSON object value into @p out.
+ *
+ * This is a bounded helper for command schemas with optional nested objects.
+ * The copied string includes the surrounding braces.
+ */
+int coo_json_extract_object(const char *json, const char *key, char *out, size_t out_len);
+/**
  * @brief Append formatted JSON text to a fixed buffer.
  *
  * Updates @p offset only on success. This is intentionally small and format-
@@ -65,5 +72,8 @@ int coo_json_append(char *buf, size_t buf_len, size_t *offset,
 		    const char *fmt, ...);
 int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
 		     const char *fmt, va_list args);
+/** Append a JSON number or null when @p value is NaN. */
+int coo_json_append_float_or_null(char *buf, size_t buf_len, size_t *offset,
+				  double value, int precision);
 
 #endif /* APP_LIB_JSON_UTILS_H_ */

@@ -61,7 +61,7 @@ keywords in the serial command set.
 serialguard seconds=60
 mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
 split channel=yj ratio1=0.33 ratio2=0.33 stopafter_s=300
-laserbank/poweron
+laserbank/power/override_on
 ```
 
 Payload rules:
@@ -101,9 +101,11 @@ for normal serial operation.
 - [`mems/<switchname>`](#mems-switchname)
 - [`measure_throughput`](#measure-throughput)
 - [`laser`](#laser)
-- [`lasersettings`](#lasersettings)
-- [`laserbank/poweron`](#laserbank-poweron)
-- [`laserbank/poweroff`](#laserbank-poweroff)
+- [`laser/tune`](#lasertune)
+- [`laser/status`](#laserstatus)
+- [`laser/engstatus`](#laserengstatus)
+- [`laser/settings`](#lasersettings)
+- [`laserbank/power`](#laserbankpower)
 - [`laserbank/clearfaults`](#laserbank-clearfaults)
 - [`laserbank/heater`](#laserbank-heater)
 - [`atten/<laser>/value`](#atten)
@@ -415,56 +417,69 @@ float32 laser_current_ontime_s
     {
     "name": "<lasername>",
     "powered": true,
-    "timetecon_s": 0,
-    "timeemitting_s": 0,
-    "totaltimeemitting_s": 0,
-    "temp_C": 0.0,
+    "tec_on_s": 0,
+    "emit_on_s": 0,
+    "emit_total_s": 0,
+    "temp_c": 0.0,
     "current_ma": 0.0,
-    "emittedpower_%": 0.0,
-    "emittedpower_mw": 0.0,
-    "nominal_wavelength_nm": 0.0,
-    "tuned_wavelength_nm": 0.0,
-    "tuning_request_nm": 0.0,
-    "attenuated_power_mw": 0.0,
+    "level": 0.0,
+    "power_mw": 0.0,
+    "nominal_nm": 0.0,
+    "tuned_nm": 0.0,
+    "tune_nm": 0.0,
     "tec_ma": 0.0,
     "diode_v": 0.0,
     "tec_v": 0.0,
     "offin_s": 0,
-    "overcurrent_fault": false
+    "oc_fault": false
     }
     ```
 
-- **Notes:** turns on laser (+ laser bank power) as needed; validates range; restarts laser auto-off timer. `timetecon_s` 
-is time with TEC running. `totaltimeemitting_s` is the lifetime cumulative time and is tied to the driver's serial number..
-
-autooff_s is optional and non-persistant. If set, overrides the value configured via `laser/settings`. 
+- **Notes:** `level` is 0-100% of the nominal current range above threshold current. Setting a positive level powers
+  the laser bank as needed, prepares the TEC, sets the laser current, and restarts the auto-off timer. Setting level
+  0 stops emission and writes driver current to 0. Laser output current is never persisted by app settings. The Maiman
+  driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
+  `tec_on_s`, `emit_on_s`, and `emit_total_s` are firmware-owned counters. `emit_total_s` is persisted when emission
+  stops cleanly. `autooff_s` is optional and non-persistent; if supplied, it overrides the default configured through
+  `laser/settings` for this start.
 
 ### `laser/tune`
 - **Request topic:** `cmd/<device>/req/laser/tune`
   - Set:
     ```json
     {"name": "<lasername>",
-      "delta_nm": 0.0
+      "tune_nm": 0.0
      }
     ```
     - Query result:
     ```json
     {
     "name": "<lasername>",
-      "delta_nm": 0.0
+      "tune_nm": 0.0
     }
     ```
-Sets the wavelength tuning request used when running the laser. Performed best-effort as large values are unattainable 
-and smaller values are influenced by the required/requested drive current.
+Sets the wavelength tuning request used when running the laser. The request is stored by firmware and used on future
+positive `laser` level commands. It is best-effort: large shifts are clamped by the TEC temperature range and allowed
+current adjustment.
 
 
 ### `laser/status`
 - **Request topic:** `cmd/<device>/req/laser/status`
 - Query: `{"name": "<lasername>" }`
-- **Response topic:** `cmd/<device>/resp/laser/status
+- **Response topic:** `cmd/<device>/resp/laser/status`
 
-A superset of `laser/settings` with additional information about the laser's current state based on python code and 
-with internal/interlock type info as well
+Compact operational status. This is the preferred status payload for normal users and is the source used by the
+optional laser section of `status`.
+
+### `laser/engstatus`
+- **Request topic:** `cmd/<device>/req/laser/engstatus`
+- Query: `{"name": "<lasername>" }`
+- **Response topic:** `cmd/<device>/resp/laser/engstatus`
+
+Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
+Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
+serial/device-id verification, and interlock flags. This command may be slower than `laser/status` because it reads
+many Modbus registers.
 
 
 ### `laser/settings`
@@ -477,18 +492,18 @@ with internal/interlock type info as well
           "max_current_ma": 0.0,
           "efficiency_mw_per_ma": 0.0,
           "wavelength_nm": 0.0,
-          "current_set_calibration_%": 0.0, 
+          "current_set_calibration_pct": 0.0,
           "default_operating_temp_c": 0.0,
           "operating_temp_range_c": [0.0, 0.0], 
           "tec_pid": {
-            "p": 0.0,
-            "i": 0.0,
-            "d": 0.0
+            "p": 0,
+            "i": 0,
+            "d": 0
           },
           "disable_tec_at_autooff": true,
           "dlambda_dT_nm_per_k": 0.0,
           "dlambda_dA_nm_per_ma": 0.0,
-          "autooff_s": 0.0
+          "autooff_s": 0
         }
   }
   ```
@@ -502,13 +517,10 @@ with internal/interlock type info as well
     {
           "name": "<lasername>",
           "settings": {
-            "name": "<string>",
             "model": "<string>",
-            "serial": "<string>",
             "nominal_current_ma": 0.0,
             "max_current_ma": 0.0,
-            "current_set_calibration_%": 0.0, 
-            "overcurrent_threshold_ma": 0.0,
+            "current_set_calibration_pct": 0.0,
             "threshold_current_ma": 0.0,
             "efficiency_mw_per_ma": 0.0,
             "wavelength_nm": 0.0,
@@ -518,15 +530,17 @@ with internal/interlock type info as well
             "isolation_db": 0.0,
             "tec_max_current_a": 0.0,
             "tec_pid": {
-              "p": 0.0,
-              "i": 0.0,
-              "d": 0.0
+              "p": 0,
+              "i": 0,
+              "d": 0
             },
             "disable_tec_at_autooff": true,
             "ntc_t_coefficient_per_c": 0.0,
             "dlambda_dT_nm_per_k": 0.0,
             "dlambda_dA_nm_per_ma": 0.0,
-            "autooff_s": 0.0
+            "autooff_s": 0,
+            "tune_nm": 0.0,
+            "emit_total_s": 0.0
           }
         }
     ```
@@ -535,7 +549,9 @@ with internal/interlock type info as well
   - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
   - Settings are checked when a laser is first talked to at each boot
   - A mismatch between those the driver stores in its eeprom and controllers NVRAM will trigger a warning in the log and the driver values will be programmed.
-  - driver will not be powered just to update settings
+  - If the laser bank is off, firmware powers it, applies driver-backed settings, verifies them as practical, and then
+    restores the previous bank power state. If `laserbank/power` is `override_off`, driver-backed settings changes return
+    an error.
   - it is **encouraged** to send only the settings that requested changed.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
@@ -575,16 +591,18 @@ with internal/interlock type info as well
     }
     ```
 
-- **Notes:** `auto` is the default at boot. In `auto`, powers to the laser bank is handled by the needs of the bank 
-  heater or a command interacting with a laser driver.
+- **Notes:** `auto` is the default at boot. In `auto`, power to the laser bank is handled by the bank heater and commands
+  interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser emission, writes
+  driver currents to 0 as practical, and powers the bank off; commands that need a live driver return an error while the
+  override is active.
 
 (laserbank-clearfaults)=
 ### `laserbank/clearfaults`
 - **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
 - **Response topic:** `cmd/<device>/resp/laserbank/clearfaults`
-  - Response: `{"status":"OK","off_ms":250}`
+  - Response: `{"status":"success","off_ms":250}`
 
-This command performs an off-on cycle IFF the bank is powered AND at least one of the drivers reports an overcurrent 
+This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
 fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
 The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
 off or no faults).
@@ -957,11 +975,21 @@ off or no faults).
   - Query: No payload
 
 - **Response topic:** `cmd/<device>/resp/temp`
-  - Query result: `{"ambient_c": 0.0, "laserbank_c": NaN| 0.0, "laser[name]_c": NaN| 0.0}`
-  - Set result: `{"status": "success"}`
+  - Query result:
+    ```json
+    {
+      "ambient_c": 0.0,
+      "ambient_age_ms": 0,
+      "laserbank_c": 0.0,
+      "laser": {
+        "<lasername>": 0.0
+      }
+    }
+    ```
 
-- **Notes:** Laser/bank temperature is not available if power is off or laser TEC is running. Bank temp is merely an 
-average of reported laser values. 
+- **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
+  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
+  temperatures.
 
 ### `status`
 - **Request topic:** `cmd/<device>/req/status`

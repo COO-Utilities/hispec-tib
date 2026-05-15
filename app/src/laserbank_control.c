@@ -329,6 +329,7 @@ void laserbank_control_thread(void *p1, void *p2, void *p3)
 
 	while (true) {
 		run_heater_control_cycle();
+		hispec_laser_service_autooff();
 		(void)k_sem_take(&control_wake,
 				 K_MSEC(LASERBANK_CONTROL_POLL_INTERVAL_MS));
 	}

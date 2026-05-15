@@ -40,6 +40,7 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_IP_NTP "ip/ntp"
 #define KEY_MQTT_BROKER "mqtt/broker"
 #define KEY_ATTEN_PREFIX "atten"
+#define KEY_LASER_PREFIX "laser"
 #define KEY_ROUTE_LOSS_PREFIX "routeloss"
 #define KEY_PD_YJ_DARK_MV "pd/yj/dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_MV "pd/yj/lowest_dark_mv"
@@ -52,6 +53,15 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_PD_HK_NOISE_WARN_MV "pd/hk/noise_warn_rms_mv"
 #define KEY_PD_HK_GAIN_V_PER_UW "pd/hk/gain_v_per_uw"
 #define KEY_LASERBANK_HEATER_MODE "laserbank/heater"
+
+static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
+	&LASER_1028,
+	&LASER_1270,
+	&LASER_1430,
+	&LASER_1430,
+	&LASER_1510,
+	&LASER_2330,
+};
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -119,6 +129,14 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
 	s->photodiode.channel[1].gain_v_per_uw = 3.0875f;
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
+	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
+		s->laser.channel[i].properties = *default_laser_props[i];
+		s->laser.channel[i].current_set_calibration_pct = 100.0f;
+		s->laser.channel[i].disable_tec_at_autooff = true;
+		s->laser.channel[i].autooff_s = 3U * 3600U;
+		s->laser.channel[i].tune_delta_nm = 0.0f;
+		s->laser.channel[i].total_emitting_s = 0.0;
+	}
 	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
 	s->boot_count = 0U;
 	s->mqtt_revision = 0U;
@@ -321,11 +339,31 @@ static bool parse_route_loss_name(const char *name, char *route, size_t route_le
 	return true;
 }
 
+static bool parse_laser_setting_name(const char *name, uint8_t *channel,
+				     const char **field)
+{
+	const char *cursor = name;
+
+	if (name == NULL || channel == NULL || field == NULL) {
+		return false;
+	}
+
+	if (parse_key_index(&cursor, APP_LASER_CHANNEL_COUNT - 1U, channel) != 0 ||
+	    *cursor != '/') {
+		return false;
+	}
+
+	*field = cursor + 1;
+	return **field != '\0';
+}
+
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
 	uint8_t atten_channel;
 	uint8_t atten_physical;
 	uint8_t atten_coeff;
+	uint8_t laser_channel;
+	const char *laser_field;
 
 	ARG_UNUSED(len);
 
@@ -495,6 +533,88 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
+	if (parse_laser_setting_name(name, &laser_channel, &laser_field)) {
+		struct app_laser_channel_settings *laser =
+			&g_settings.snapshot.laser.channel[laser_channel];
+
+		if (strcmp(laser_field, "nominal_current_ma") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.nominal_current_ma,
+						 0.0f, 1000.0f);
+		} else if (strcmp(laser_field, "max_current_ma") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.max_current_ma,
+						 0.0f, 1000.0f);
+		} else if (strcmp(laser_field, "threshold_current_ma") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.threshold_current_ma,
+						 0.0f, 1000.0f);
+		} else if (strcmp(laser_field, "efficiency_mw_per_ma") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.efficiency_mw_per_ma,
+						 0.0f, 100.0f);
+		} else if (strcmp(laser_field, "wavelength_nm") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.wavelength_nm,
+						 1.0f, 10000.0f);
+		} else if (strcmp(laser_field, "current_set_calibration_pct") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->current_set_calibration_pct,
+						 95.0f, 105.0f);
+		} else if (strcmp(laser_field, "operating_temp_min_c") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.operating_temp_range_c.min_c,
+						 15.0f, 40.0f);
+		} else if (strcmp(laser_field, "operating_temp_max_c") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.operating_temp_range_c.max_c,
+						 15.0f, 40.0f);
+		} else if (strcmp(laser_field, "operating_temp_c") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.operating_temp_c,
+						 15.0f, 40.0f);
+		} else if (strcmp(laser_field, "tec_pid_p") == 0) {
+			uint32_t value;
+
+			if (read_u32(read_cb, cb_arg, &value) == 0 && value <= UINT16_MAX) {
+				laser->properties.tec_pid.kp = (uint16_t)value;
+			}
+		} else if (strcmp(laser_field, "tec_pid_i") == 0) {
+			uint32_t value;
+
+			if (read_u32(read_cb, cb_arg, &value) == 0 && value <= UINT16_MAX) {
+				laser->properties.tec_pid.ki = (uint16_t)value;
+			}
+		} else if (strcmp(laser_field, "tec_pid_d") == 0) {
+			uint32_t value;
+
+			if (read_u32(read_cb, cb_arg, &value) == 0 && value <= UINT16_MAX) {
+				laser->properties.tec_pid.kd = (uint16_t)value;
+			}
+		} else if (strcmp(laser_field, "disable_tec_at_autooff") == 0) {
+			(void)read_bool(read_cb, cb_arg, &laser->disable_tec_at_autooff);
+		} else if (strcmp(laser_field, "dlambda_dT_nm_per_k") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.dlambda_dT_nm_per_k,
+						 -10.0f, 10.0f);
+		} else if (strcmp(laser_field, "dlambda_dA_nm_per_ma") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->properties.dlambda_dA_nm_per_ma,
+						 -10.0f, 10.0f);
+		} else if (strcmp(laser_field, "autooff_s") == 0) {
+			(void)read_u32(read_cb, cb_arg, &laser->autooff_s);
+		} else if (strcmp(laser_field, "tune_delta_nm") == 0) {
+			read_valid_float_or_warn(read_cb, cb_arg, name,
+						 &laser->tune_delta_nm,
+						 -1000.0f, 1000.0f);
+		} else if (strcmp(laser_field, "total_emitting_s") == 0) {
+			read_valid_double_or_warn(read_cb, cb_arg, name,
+						  &laser->total_emitting_s,
+						  0.0, 1.0e12);
+		}
+		goto out;
+	}
+
 	if (strchr(name, '/') != NULL) {
 		char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 		char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
@@ -532,6 +652,7 @@ SETTINGS_STATIC_HANDLER_DEFINE(mqtt_settings, "mqtt", NULL, settings_set_cb, NUL
 SETTINGS_STATIC_HANDLER_DEFINE(atten_settings, "atten", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(pd_settings, "pd", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(laserbank_settings, "laserbank", NULL, settings_set_cb, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(laser_settings, "laser", NULL, settings_set_cb, NULL, NULL);
 SETTINGS_STATIC_HANDLER_DEFINE(route_loss_settings, "routeloss", NULL, settings_set_cb, NULL, NULL);
 
 static void persist_bool(const char *key, bool value)
@@ -618,6 +739,83 @@ static void persist_photodiode_channel(uint8_t channel,
 	}
 }
 
+static void laser_setting_key(char *key, size_t key_len, uint8_t channel,
+			      const char *field)
+{
+	(void)snprintk(key, key_len, "%s/%u/%s", KEY_LASER_PREFIX, channel, field);
+}
+
+static void persist_laser_float(uint8_t channel, const char *field, float value)
+{
+	char key[56];
+
+	laser_setting_key(key, sizeof(key), channel, field);
+	persist_float(key, value);
+}
+
+static void persist_laser_u32(uint8_t channel, const char *field, uint32_t value)
+{
+	char key[56];
+
+	laser_setting_key(key, sizeof(key), channel, field);
+	persist_u32(key, value);
+}
+
+static void persist_laser_bool(uint8_t channel, const char *field, bool value)
+{
+	char key[56];
+
+	laser_setting_key(key, sizeof(key), channel, field);
+	persist_bool(key, value);
+}
+
+static void persist_laser_double(uint8_t channel, const char *field, double value)
+{
+	char key[56];
+
+	laser_setting_key(key, sizeof(key), channel, field);
+	persist_double(key, value);
+}
+
+static void persist_laser_channel(uint8_t channel,
+				  const struct app_laser_channel_settings *laser)
+{
+	if (laser == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return;
+	}
+
+	persist_laser_float(channel, "nominal_current_ma",
+			    laser->properties.nominal_current_ma);
+	persist_laser_float(channel, "max_current_ma",
+			    laser->properties.max_current_ma);
+	persist_laser_float(channel, "threshold_current_ma",
+			    laser->properties.threshold_current_ma);
+	persist_laser_float(channel, "efficiency_mw_per_ma",
+			    laser->properties.efficiency_mw_per_ma);
+	persist_laser_float(channel, "wavelength_nm",
+			    laser->properties.wavelength_nm);
+	persist_laser_float(channel, "current_set_calibration_pct",
+			    laser->current_set_calibration_pct);
+	persist_laser_float(channel, "operating_temp_min_c",
+			    laser->properties.operating_temp_range_c.min_c);
+	persist_laser_float(channel, "operating_temp_max_c",
+			    laser->properties.operating_temp_range_c.max_c);
+	persist_laser_float(channel, "operating_temp_c",
+			    laser->properties.operating_temp_c);
+	persist_laser_u32(channel, "tec_pid_p", laser->properties.tec_pid.kp);
+	persist_laser_u32(channel, "tec_pid_i", laser->properties.tec_pid.ki);
+	persist_laser_u32(channel, "tec_pid_d", laser->properties.tec_pid.kd);
+	persist_laser_bool(channel, "disable_tec_at_autooff",
+			   laser->disable_tec_at_autooff);
+	persist_laser_float(channel, "dlambda_dT_nm_per_k",
+			    laser->properties.dlambda_dT_nm_per_k);
+	persist_laser_float(channel, "dlambda_dA_nm_per_ma",
+			    laser->properties.dlambda_dA_nm_per_ma);
+	persist_laser_u32(channel, "autooff_s", laser->autooff_s);
+	persist_laser_float(channel, "tune_delta_nm", laser->tune_delta_nm);
+	persist_laser_double(channel, "total_emitting_s", laser->total_emitting_s);
+}
+
 static void route_loss_key(char *key, size_t key_len,
 			   const char *route, const char *laser)
 {
@@ -684,6 +882,38 @@ static void delete_attenuator_settings(void)
 	}
 }
 
+static void delete_laser_settings(void)
+{
+	static const char *const fields[] = {
+		"nominal_current_ma",
+		"max_current_ma",
+		"threshold_current_ma",
+		"efficiency_mw_per_ma",
+		"wavelength_nm",
+		"current_set_calibration_pct",
+		"operating_temp_min_c",
+		"operating_temp_max_c",
+		"operating_temp_c",
+		"tec_pid_p",
+		"tec_pid_i",
+		"tec_pid_d",
+		"disable_tec_at_autooff",
+		"dlambda_dT_nm_per_k",
+		"dlambda_dA_nm_per_ma",
+		"autooff_s",
+		"tune_delta_nm",
+		"total_emitting_s",
+	};
+	char key[56];
+
+	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
+		for (uint8_t i = 0U; i < ARRAY_SIZE(fields); ++i) {
+			laser_setting_key(key, sizeof(key), channel, fields[i]);
+			delete_setting_key(key);
+		}
+	}
+}
+
 static void delete_route_loss_settings(const struct app_route_loss_settings *route_loss)
 {
 	char key[64];
@@ -714,13 +944,14 @@ static void delete_resettable_settings(void)
 	}
 
 	delete_attenuator_settings();
+	delete_laser_settings();
 }
 
 int app_settings_init(void)
 {
 	static const char *const app_settings_subtrees[] = {
 		"board", "serial", "boot", "ip", "mqtt", "atten", "pd",
-		"laserbank", "routeloss",
+		"laserbank", "laser", "routeloss",
 	};
 	int rc;
 
@@ -977,6 +1208,68 @@ void app_settings_update_laserbank(const struct app_laserbank_settings *laserban
 		persist_u32(KEY_LASERBANK_HEATER_MODE,
 			    (uint32_t)laserbank->heater_mode);
 	}
+}
+
+void app_settings_get_laser(struct app_laser_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laser;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_get_laser_channel(uint8_t channel,
+				   struct app_laser_channel_settings *out)
+{
+	if (out == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laser.channel[channel];
+	k_mutex_unlock(&g_settings.lock);
+	return 0;
+}
+
+int app_settings_update_laser_channel(uint8_t channel,
+				      const struct app_laser_channel_settings *laser,
+				      bool persist)
+{
+	if (laser == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laser.channel[channel] = *laser;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_laser_channel(channel, laser);
+	}
+
+	return 0;
+}
+
+int app_settings_update_laser_total_emitting(uint8_t channel,
+					     double total_emitting_s,
+					     bool persist)
+{
+	if (channel >= APP_LASER_CHANNEL_COUNT || !(total_emitting_s >= 0.0)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laser.channel[channel].total_emitting_s = total_emitting_s;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		persist_laser_double(channel, "total_emitting_s", total_emitting_s);
+	}
+
+	return 0;
 }
 
 int app_settings_get_route_loss(const char *route, const char *laser,

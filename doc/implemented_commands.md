@@ -40,11 +40,14 @@ a replacement for `commands.md`.
 | `mems/<switch>` | `cmd/<device>/req/mems/<switch>` | `cmd/<device>/resp/mems/<switch>` | `mems/<switch> [payload]` |
 | `split/<channel>` | `cmd/<device>/req/split/<channel>` | `cmd/<device>/resp/split/<channel>` | `split/<channel> [payload]` |
 | `measure_throughput` | `cmd/<device>/req/measure_throughput` | `cmd/<device>/resp/measure_throughput` | `measure_throughput <payload>` |
-| `laserbank/poweron` | `cmd/<device>/req/laserbank/poweron` | `cmd/<device>/resp/laserbank/poweron` | `laserbank/poweron [payload]` |
-| `laserbank/poweroff` | `cmd/<device>/req/laserbank/poweroff` | `cmd/<device>/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
+| `laserbank/power` | `cmd/<device>/req/laserbank/power` | `cmd/<device>/resp/laserbank/power` | `laserbank/power[/mode] [payload]` |
 | `laserbank/clearfaults` | `cmd/<device>/req/laserbank/clearfaults` | `cmd/<device>/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
 | `laserbank/heater` | `cmd/<device>/req/laserbank/heater` | `cmd/<device>/resp/laserbank/heater` | `laserbank/heater [auto|override_on|override_off]` |
-| `laser/...` | `cmd/<device>/req/laser/...` | `cmd/<device>/resp/laser/...` | `laser/... [payload]` |
+| `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser [payload]` |
+| `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune [payload]` |
+| `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status [payload]` |
+| `laser/engstatus` | `cmd/<device>/req/laser/engstatus` | `cmd/<device>/resp/laser/engstatus` | `laser/engstatus [payload]` |
+| `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings [payload]` |
 | `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
 | `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
@@ -199,24 +202,40 @@ a replacement for `commands.md`.
 - Handler: `measure_throughput_set()` in `app/src/command.c` and
   `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
 
-### `laserbank/poweron`
+### `laserbank/power`
 
-- GET and SET both call the same side-effect handler.
-- Payload ignored.
+- GET returns current laser-bank power override mode and GPIO power state.
+- SET accepts `{"override":"auto|override_on|override_off"}`,
+  `{"mode":"auto|override_on|override_off"}`, raw text, or a topic suffix such
+  as `laserbank/power/override_on`.
 - Board restriction: TIB only.
-- Side effects: enables laser-bank power GPIO and sleeps 1000 ms when it
-  transitions on.
-- Response: `status`, `laser_power`, `transitioned`.
-- Handler: `laserbank_poweron()` in `app/src/command.c`.
+- Side effects: `override_on` powers the bank and waits for Maiman boot;
+  `override_off` best-effort writes all currents to 0 before powering the bank
+  off. `auto` returns bank power to demand-driven control.
+- Handler: `laserbank_power()` in `app/src/command.c` and laser-bank domain
+  helpers in `app/src/lasers.c`.
 
-### `laserbank/poweroff`
+### `laser`
 
-- GET and SET both call the same side-effect handler.
-- Payload ignored.
+- GET accepts `{"name":"<laser>"}` and returns compact operational status.
+- SET accepts `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
 - Board restriction: TIB only.
-- Side effects: disables laser-bank power GPIO.
-- Response: `status`, `laser_power`, `was_powered`, `transitioned`.
-- Handler: `laserbank_poweroff()` in `app/src/command.c`.
+- Side effects: SET can power the bank, program TEC/current, stop an active
+  throughput monitor using that laser, and arm/reset firmware auto-off.
+- Handler: `laser_get()`, `laser_set()` in `app/src/command.c`; hardware work
+  is delegated to `app/src/lasers.c`.
+
+### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
+
+- `laser/tune` GET/SET manages the persisted wavelength tune offset.
+- `laser/status` is an alias of compact `laser` GET.
+- `laser/engstatus` returns raw Maiman engineering status and measured driver
+  values; unavailable numeric values are JSON `null`.
+- `laser/settings` GET/SET manages app-owned diode settings. Driver-backed
+  updates temporarily power the bank if needed, unless bank power is
+  `override_off`.
+- Handlers: `laser_tune_*()`, `laser_status_get()`,
+  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/command.c`.
 
 ### `laserbank/clearfaults`
 
@@ -243,21 +262,6 @@ a replacement for `commands.md`.
 - Response: heater mode, heater/bank state, ambient state, temperature freshness
   counts, control flags, and last error.
 - Handler: `laserbank_heater()` in `app/src/command.c`.
-
-### `laser/...`
-
-- Intended handler reads or writes one raw Maiman 16-bit register.
-- SET field: `value` as uint16.
-- Accepted register names come from `maiman_get_register_address()`, including
-  `CURRENT`, `FREQUENCY`, `DURATION`, `LOCK_STATUS`, measured current/voltage
-  and temperature registers, TEC registers, PID coefficients, and aliases in
-  `maiman.c`.
-- Board restriction: TIB only.
-- Side effects: powers on the laser bank if needed, sleeps 1000 ms on power
-  transition, then performs blocking Modbus I/O.
-- Handler: `laser_setting_get()`, `laser_setting_set()` in `app/src/command.c`.
-- Mismatch: current key parsing likely prevents valid documented laser topics
-  from resolving to a laser id.
 
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 
@@ -316,10 +320,11 @@ a replacement for `commands.md`.
 ### `temp`
 
 - GET only.
-- Response: valid ambient temperature and age, or error with `last_error`.
-- Side effects: none; reads cached state from temperature thread.
+- Response: cached ambient temperature/age and TIB laser TEC temperatures.
+  Unavailable numeric values are JSON `null`.
+- Side effects: reads cached ambient state and can perform Modbus reads for
+  laser TEC temperatures on TIB.
 - Handler: `temp_get()` in `app/src/command.c`.
-- Mismatch: documented alarm set behavior is not implemented.
 
 ### `status`
 

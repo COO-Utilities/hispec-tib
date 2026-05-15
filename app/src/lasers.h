@@ -19,6 +19,8 @@
 #include "laser_properties.h"
 #include "maiman.h"
 
+struct app_laser_channel_settings;
+
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
 
@@ -37,6 +39,12 @@ enum hispec_laser_aux_output {
 	HISPEC_LASER_AUX_YJ_PHOTODIODE = 0,
 	HISPEC_LASER_AUX_HK_PHOTODIODE,
 	HISPEC_LASER_AUX_BANK_HEATER,
+};
+
+enum hispec_laser_bank_power_mode {
+	HISPEC_LASER_BANK_POWER_AUTO = 0,
+	HISPEC_LASER_BANK_POWER_OVERRIDE_ON,
+	HISPEC_LASER_BANK_POWER_OVERRIDE_OFF,
 };
 
 struct hispec_laser_driver_profile {
@@ -85,12 +93,19 @@ struct hispec_laser_status {
 	float current_protection_threshold_ma;
 	float voltage_v;
 	float current_on_time_s;
+	float tec_on_time_s;
+	double total_emitting_s;
+	float tune_delta_nm;
+	uint32_t autooff_s;
+	int64_t off_in_s;
 	float tec_temperature_set_c;
 	float tec_temperature_measured_c;
 	float pcb_temperature_c;
 	float tec_current_measured_a;
 	float tec_current_limit_a;
 	float tec_voltage_v;
+	float current_set_calibration_pct;
+	float ntc_t_coefficient_per_c;
 	tec_pid_t tec_pid;
 	float estimated_power_mw;
 	float estimated_wavelength_nm;
@@ -155,6 +170,13 @@ const laserprops_t *hispec_laser_properties(enum hispec_laser_id id);
 int hispec_laser_get_driver_profile(enum hispec_laser_id id,
 				    const struct hispec_laser_driver_profile **out);
 
+/**
+ * @brief Load app-owned laser settings into the laser runtime cache.
+ *
+ * Call after app_settings_init(). This does not power hardware or touch Modbus.
+ */
+void hispec_laser_load_app_settings(void);
+
 /** @brief Initialize a Maiman driver handle for the selected laser channel. */
 int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
 
@@ -162,6 +184,11 @@ int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
  * @brief Read the TIB laser-bank supply GPIO.
  */
 bool hispec_laser_bank_power_is_enabled(void);
+
+/** @brief Get or set the runtime laser-bank power override mode. */
+enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
+const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
+int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
 
 /**
  * @brief Set the TIB laser-bank supply GPIO.
@@ -180,6 +207,9 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
  * emitting.
  */
 int hispec_laser_bank_clear_faults(uint32_t off_ms);
+
+/** @brief Report whether any powered driver currently shows overcurrent fault. */
+int hispec_laser_bank_any_overcurrent_fault(bool *fault);
 
 /**
  * @brief Set one relay-box output: YJ PD power, HK PD power, or bank heater.
@@ -234,6 +264,12 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 /** @brief Read a best-effort snapshot of one laser channel. */
 int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status *out);
 
+/** @brief Stop one channel's emission and write current 0 when possible. */
+int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec);
+
+/** @brief Stop every channel's emission and write driver current 0 when possible. */
+int hispec_laser_stop_all_outputs(bool stop_tecs);
+
 /**
  * @brief Set raw diode current in mA.
  *
@@ -242,6 +278,11 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
  * emission without exposing a public startup/shutdown primitive.
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma);
+
+/** @brief Set output percent and configure auto-off deadline. */
+int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
+					    float percent,
+					    uint32_t autooff_s);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw);
@@ -257,6 +298,18 @@ int hispec_laser_set_pulse(enum hispec_laser_id id, float frequency_hz, float du
 
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
 int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
+
+/** @brief Get/update app-owned laser channel settings and apply driver-backed values. */
+int hispec_laser_get_channel_settings(enum hispec_laser_id id,
+				      struct app_laser_channel_settings *out);
+int hispec_laser_update_channel_settings(enum hispec_laser_id id,
+					 const struct app_laser_channel_settings *settings,
+					 bool apply_driver,
+					 bool persist);
+int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
+				   bool persist);
+float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
+void hispec_laser_service_autooff(void);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);

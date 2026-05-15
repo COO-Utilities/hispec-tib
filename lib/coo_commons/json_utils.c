@@ -312,6 +312,86 @@ int coo_json_extract_string(const char *json, const char *key, char *out, size_t
 				   0U);
 }
 
+int coo_json_extract_object(const char *json, const char *key, char *out, size_t out_len)
+{
+	char pattern[80];
+	const char *match;
+	const char *cursor;
+	const char *start;
+	int depth = 0;
+	bool in_string = false;
+	bool escaped = false;
+	int written;
+
+	if (json == NULL || key == NULL || out == NULL || out_len == 0U ||
+	    strlen(key) > 60U) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+	if (written < 0 || written >= (int)sizeof(pattern)) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	match = strstr(json, pattern);
+	if (match == NULL) {
+		return COO_JSON_EXTRACT_MISSING;
+	}
+
+	cursor = match + strlen(pattern);
+	while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+		cursor++;
+	}
+	if (*cursor != ':') {
+		return COO_JSON_EXTRACT_ERR;
+	}
+	cursor++;
+	while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+		cursor++;
+	}
+	if (*cursor != '{') {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	start = cursor;
+	for (; *cursor != '\0'; ++cursor) {
+		char c = *cursor;
+
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (in_string && c == '\\') {
+			escaped = true;
+			continue;
+		}
+		if (c == '"') {
+			in_string = !in_string;
+			continue;
+		}
+		if (in_string) {
+			continue;
+		}
+		if (c == '{') {
+			depth++;
+		} else if (c == '}') {
+			depth--;
+			if (depth == 0) {
+				size_t len = (size_t)(cursor - start + 1);
+
+				if (len >= out_len) {
+					return COO_JSON_EXTRACT_ERR;
+				}
+				memcpy(out, start, len);
+				out[len] = '\0';
+				return COO_JSON_EXTRACT_OK;
+			}
+		}
+	}
+
+	return COO_JSON_EXTRACT_ERR;
+}
+
 int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
 		     const char *fmt, va_list args)
 {
@@ -341,4 +421,27 @@ int coo_json_append(char *buf, size_t buf_len, size_t *offset,
 	va_end(args);
 
 	return rc;
+}
+
+int coo_json_append_float_or_null(char *buf, size_t buf_len, size_t *offset,
+				  double value, int precision)
+{
+	if (value != value) {
+		return coo_json_append(buf, buf_len, offset, "null");
+	}
+
+	switch (precision) {
+	case 0:
+		return coo_json_append(buf, buf_len, offset, "%.0f", value);
+	case 1:
+		return coo_json_append(buf, buf_len, offset, "%.1f", value);
+	case 2:
+		return coo_json_append(buf, buf_len, offset, "%.2f", value);
+	case 4:
+		return coo_json_append(buf, buf_len, offset, "%.4f", value);
+	case 6:
+		return coo_json_append(buf, buf_len, offset, "%.6f", value);
+	default:
+		return coo_json_append(buf, buf_len, offset, "%.3f", value);
+	}
 }

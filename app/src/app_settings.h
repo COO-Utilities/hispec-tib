@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <zephyr/net/net_ip.h>
 
+#include "laser_properties.h"
 #include "laserbank_control.h"
 
 struct app_ip_settings {
@@ -46,6 +47,7 @@ struct app_mqtt_settings {
 #define APP_ROUTE_LOSS_RECORD_COUNT 18
 #define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
 #define APP_ROUTE_LOSS_LASER_MAX_LEN 16
+#define APP_LASER_CHANNEL_COUNT 6
 
 struct app_attenuator_physical_settings {
 	float slope;
@@ -79,6 +81,20 @@ struct app_laserbank_settings {
 	enum laserbank_heater_mode heater_mode;
 };
 
+/** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
+struct app_laser_channel_settings {
+	laserprops_t properties;
+	float current_set_calibration_pct;
+	bool disable_tec_at_autooff;
+	uint32_t autooff_s;
+	float tune_delta_nm;
+	double total_emitting_s;
+};
+
+struct app_laser_settings {
+	struct app_laser_channel_settings channel[APP_LASER_CHANNEL_COUNT];
+};
+
 /** User-provided optical route transmission keyed by route and laser names. */
 struct app_route_loss_record {
 	bool configured;
@@ -99,6 +115,7 @@ struct app_settings_snapshot {
 	struct app_attenuator_settings attenuator;
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
+	struct app_laser_settings laser;
 	struct app_route_loss_settings route_loss;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
@@ -160,6 +177,24 @@ void app_settings_get_laserbank(struct app_laserbank_settings *out);
 /** @brief Replace laser-bank heater mode setting. */
 void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist);
+/** @brief Copy app-owned laser settings and lifetime counters. */
+void app_settings_get_laser(struct app_laser_settings *out);
+/** @brief Copy one app-owned laser channel's settings. */
+int app_settings_get_laser_channel(uint8_t channel,
+				   struct app_laser_channel_settings *out);
+/**
+ * @brief Replace one laser channel's app-owned settings.
+ *
+ * Driver-backed values are only app intent here; lasers.c owns applying those
+ * values to the Maiman module. Laser output current is intentionally absent.
+ */
+int app_settings_update_laser_channel(uint8_t channel,
+				      const struct app_laser_channel_settings *laser,
+				      bool persist);
+/** @brief Update the persisted/runtime total emitting counter for one laser. */
+int app_settings_update_laser_total_emitting(uint8_t channel,
+					     double total_emitting_s,
+					     bool persist);
 /**
  * @brief Get one route-loss record.
  *

@@ -217,6 +217,7 @@ bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 /* ----- Setpoint and commands ----- */
 bool maiman_set_current(maiman_driver_t *drv, float current);
 bool maiman_set_current_max(maiman_driver_t *drv, float current);
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent);
 bool maiman_set_frequency(maiman_driver_t *drv, float frequency);
 bool maiman_set_duration(maiman_driver_t *drv, float duration);
 bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c);

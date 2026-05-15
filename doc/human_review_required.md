@@ -9,35 +9,38 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## Command/API Mismatches
 
-### Laser stuff
-  - `commands.md` documents `lasersettings`, but `command.c` has no dispatch
-  entry for it.
-- `commands.md` documents `temp` set/alarm behavior. Current code registers
-  `temp` as GET-only and returns cached ambient temperature plus
-  `laserbankavg_c:null`.
+### Still Open
 - `commands.md` documents a larger nested `status` payload. Current
   `status_get()` returns firmware version, boot count, uptime, board/network
   state, MEMS switch count, IP, and laser-bank power only.
 - `commands.md` documents optional GET payloads for some commands. Current MQTT
   ingress treats a non-empty payload as SET unless JSON includes
   `msg_type:"get"`.
-- The raw `laser` command dispatch accepts `laser/...`, but the handler parses
-  the first path segment and then calls `get_laser_channel(laser_name + 5)`.
-  A documented key such as `laser/1028y/current` therefore does not appear to
-  address a real Maiman register.
 - `reboot` is SET-only in code. Empty MQTT payloads and bare serial `reboot`
   commands are rejected as unsupported.
-- `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults` are
-  registered as both GET and SET handlers, so exact bare queries perform power
-  actions.
 - The help response includes aggregate names such as `laserbank` and `power`,
   not the exact currently implemented endpoint list.
+
+### LLM Resolved; Human Review Requested
+
+- `lasersettings` was replaced with `laser/settings`, matching the implemented
+  dispatch table.
+- Legacy `laserbank/poweron` and `laserbank/poweroff` API documentation was
+  replaced with `laserbank/power` and explicit `auto|override_on|override_off`
+  modes.
+- `temp` is intentionally GET-only and now includes per-laser TEC temperatures
+  when the TIB laser bank is powered.
+- The documented `laser` command is now a level/status command with
+  `laser/status`, `laser/engstatus`, `laser/tune`, and `laser/settings`
+  subcommands. The old raw-register laser handlers remain in source for now but
+  are no longer in the dispatch table.
+- `laserbank/clearfaults` now only power-cycles an already-powered bank when at
+  least one driver reports an overcurrent fault.
 
 ## Hardware/Profile Decisions
 
 - CAL switch and route names remain provisional in `devices.c` pending final
   fiber-path names.
-- need to expose laser-bank idle TEC temp cache in `temp` response
 
 ## Decisions To Make
 

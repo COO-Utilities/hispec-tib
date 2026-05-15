@@ -573,6 +573,13 @@ bool maiman_set_current_max(maiman_driver_t *drv, float current)
 	return maiman_write_scaled(drv, REG_CURRENT_MAX, DIVIDER_CURRENT, false, current);
 }
 
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent)
+{
+	return maiman_write_scaled(drv, REG_CURRENT_SET_CALIBRATION,
+				   DIVIDER_CURRENT_SET_CALIBRATION, false,
+				   calibration_percent);
+}
+
 bool maiman_set_frequency(maiman_driver_t *drv, float frequency)
 {
 	return maiman_write_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, frequency);

@@ -29,6 +29,7 @@
 #include "command.h"
 #include "devices.h"
 #include "laserbank_control.h"
+#include "lasers.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #include "tempsense.h"
@@ -250,6 +251,7 @@ int main(void)
 	}
 
 	app_settings_increment_boot_count();
+	hispec_laser_load_app_settings();
 	(void)devices_ready();
 	setup_mems_switches_and_routes();
 	setup_attenuators();

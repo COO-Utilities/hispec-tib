@@ -47,4 +47,7 @@ bool throughput_monitor_autolevel_active(enum photodiode_channel channel);
 /** Disable autolevel when another command changes a monitored attenuator. */
 void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
 
+/** Stop any monitor using a laser whose output/settings changed externally. */
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser);
+
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */
