@@ -810,9 +810,11 @@ float32 laser_current_ontime_s
 - **Notes:**
   - unsupported features don’t error; partial config accepted
   - IP precedence: `temporary_override` → `persistent manual setting` → `dhcp` (if enabled) → `compiled`.
+    - if trydhcpfirst is true then order is `temporary_override` →  `dhcp` (if enabled) → `persistent manual setting` → `compiled`.
   - partial comes with keys indicating which settings are not supported.
   - unsupported have unsupported in place of an ip
   - source names are: `temporary_override`, `persistent_manual`, `dhcp`, `compiled`.
+  - `temporary_override` is a manual ip with persistent = false 
 
 ### `mqtt`
 - **Request topic:** `cmd/<device>/req/mqtt`
