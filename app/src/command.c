@@ -3937,6 +3937,7 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 struct OutMsg status_get(const struct Command *cmd)
 {
     struct tempsense_status ts = {0};
+    struct laserbank_control_status bank = {0};
     bool include_ip = false;
     bool include_lasers = false;
     bool include_attens = false;
@@ -3958,6 +3959,7 @@ struct OutMsg status_get(const struct Command *cmd)
     }
 
     tempsense_get_status(&ts);
+    laserbank_control_get_status(&bank);
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fwversion\":\"%s\",\"bootcount\":%u,"
                         "\"board_type\":\"%s\",\"board_valid\":%s,"
@@ -3973,9 +3975,10 @@ struct OutMsg status_get(const struct Command *cmd)
                                       ts.valid ? ts.ambient_c : NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
                         ",\"pd_ontime\":%.1f,\"pd_offin_s\":0,"
-                        "\"laserbank_ontime\":0",
+                        "\"laserbank_ontime\":%u",
                         (double)MAX(hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_YJ_PHOTODIODE),
-                                    hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE))) != 0) {
+                                    hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE)),
+                        bank.bank_power_on_time_s) != 0) {
         return error_response(cmd, "status response too large");
     }
 

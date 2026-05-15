@@ -39,6 +39,7 @@ struct laserbank_control_runtime {
 	int64_t last_poll_ms;
 	int64_t all_tecs_enabled_since_ms;
 	int64_t last_override_warning_ms;
+	int64_t bank_power_started_ms;
 	enum laserbank_heater_mode previous_mode;
 	bool have_previous_mode;
 };
@@ -81,6 +82,28 @@ static bool channel_is_stale(const struct laserbank_cached_channel *channel,
 	       now_ms - channel->last_valid_ms > LASERBANK_CONTROL_TEMP_STALE_MS;
 }
 
+/* Track the current laser-bank supply on interval in RAM only. Zero is a safe
+ * sentinel because firmware cannot turn the bank on at uptime 0.
+ */
+static void update_bank_power_runtime_locked(bool bank_powered, int64_t now_ms)
+{
+	if (bank_powered && control.bank_power_started_ms <= 0) {
+		control.bank_power_started_ms = now_ms;
+	} else if (!bank_powered) {
+		control.bank_power_started_ms = 0;
+	}
+
+	control.status.bank_powered = bank_powered;
+	if (bank_powered && control.bank_power_started_ms > 0) {
+		int64_t ontime_s = (now_ms - control.bank_power_started_ms) / 1000;
+
+		control.status.bank_power_on_time_s =
+			ontime_s > UINT32_MAX ? UINT32_MAX : (uint32_t)ontime_s;
+	} else {
+		control.status.bank_power_on_time_s = 0U;
+	}
+}
+
 static void copy_status_locked(struct laserbank_control_status *out)
 {
 	if (out == NULL) {
@@ -97,7 +120,15 @@ static void copy_status_locked(struct laserbank_control_status *out)
 
 void laserbank_control_get_status(struct laserbank_control_status *out)
 {
+	bool bank_powered = false;
+	int64_t now_ms = k_uptime_get();
+
+	if (devices_board_type() == HISPEC_BOARD_TIB) {
+		bank_powered = hispec_laser_bank_power_is_enabled();
+	}
+
 	k_mutex_lock(&control_lock, K_FOREVER);
+	update_bank_power_runtime_locked(bank_powered, now_ms);
 	copy_status_locked(out);
 	k_mutex_unlock(&control_lock);
 }
@@ -249,7 +280,7 @@ static void run_heater_control_cycle(void)
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.status.available = true;
 	control.status.heater_mode = settings.heater_mode;
-	control.status.bank_powered = bank_powered;
+	update_bank_power_runtime_locked(bank_powered, now_ms);
 	control.status.ambient_valid = ambient.valid;
 	control.status.ambient_c = ambient.ambient_c;
 	control.status.ambient_age_ms = ambient.age_ms;
@@ -290,7 +321,7 @@ static void run_heater_control_cycle(void)
 
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.last_poll_ms = now_ms;
-	control.status.bank_powered = bank_powered;
+	update_bank_power_runtime_locked(bank_powered, now_ms);
 	if (rc == 0) {
 		refresh_cached_temperatures(&poll, now_ms);
 		control.status.heater_on = poll.heater_enabled;

@@ -23,6 +23,8 @@ struct laserbank_control_status {
 	bool available;
 	enum laserbank_heater_mode heater_mode;
 	bool bank_powered;
+	/* Runtime-only laser-bank supply on-time since firmware boot. */
+	uint32_t bank_power_on_time_s;
 	bool heater_on;
 	bool ambient_valid;
 	float ambient_c;
