@@ -52,6 +52,9 @@ LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
 static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
+static char last_command_name[MAX_KEY_LEN];
+static char last_command_source[8] = "unknown";
+static int64_t last_command_time_ms;
 
 static void print_serial_response(const struct OutMsg *out);
 
@@ -157,6 +160,14 @@ struct OutMsg dispatch_command(const struct Command *cmd) {
     LOG_INF("Dispatching: %s", cmd->key);
     struct OutMsg r;
 
+    if (cmd != NULL) {
+        strncpy(last_command_name, cmd->key, sizeof(last_command_name) - 1);
+        last_command_name[sizeof(last_command_name) - 1] = '\0';
+        snprintk(last_command_source, sizeof(last_command_source), "%s",
+                 cmd->source == CMD_SRC_SERIAL ? "serial" : "mqtt");
+        last_command_time_ms = k_uptime_get();
+    }
+
     const struct DispatchEntry *entry = find_dispatch(cmd->key);
     if (!entry) {
         r = unknown_response(cmd);
@@ -203,24 +214,6 @@ int parse_key_pair(const char *key,
 }
 
 
-
-bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out)
-{
-    enum coo_msg_type msg_type;
-    if (!coo_json_parse_msg_type(payload, &msg_type)) {
-        return false;
-    }
-
-    if (msg_type == COO_MSG_GET) {
-        *msg_type_out = MSG_GET;
-        return true;
-    }
-    if (msg_type == COO_MSG_SET) {
-        *msg_type_out = MSG_SET;
-        return true;
-    }
-    return false;
-}
 
 static int parse_atten_key(const char *key,
                            char *laser_name, size_t laser_name_len,
@@ -285,7 +278,7 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     }
 
     if (msg != NULL && strlen(msg) >= sizeof(r.payload)) {
-        static const char overflow_msg[] = "{\"status\":\"error\",\"msg\":\"response too large\"}";
+        static const char overflow_msg[] = "{\"error\":\"response too large\"}";
 
         r.msg_type = RESP_ERROR;
         snprintk(r.payload, sizeof(r.payload), "%s", overflow_msg);
@@ -296,6 +289,27 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     snprintk(r.payload, sizeof(r.payload), "%s", msg != NULL ? msg : "");
     r.payload_len = strlen(r.payload);
     return r;
+}
+
+static struct OutMsg ok_response(const struct Command *cmd)
+{
+    return _msg_builder(cmd, RESP_OK, "{\"status\":\"ok\"}");
+}
+
+static struct OutMsg error_response(const struct Command *cmd, const char *msg)
+{
+    char payload[MAX_PAYLOAD_LEN];
+
+    snprintk(payload, sizeof(payload), "{\"error\":\"%s\"}", msg);
+    return _msg_builder(cmd, RESP_ERROR, payload);
+}
+
+static struct OutMsg error_response_rc(const struct Command *cmd, const char *msg, int rc)
+{
+    char payload[MAX_PAYLOAD_LEN];
+
+    snprintk(payload, sizeof(payload), "{\"error\":\"%s\",\"rc\":%d}", msg, rc);
+    return _msg_builder(cmd, RESP_ERROR, payload);
 }
 
 static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
@@ -333,6 +347,64 @@ static bool derive_default_response_topic(const char *key, char *topic_out, size
     return app_mqtt_format_response_topic(key, topic_out, topic_out_len) == 0;
 }
 
+static bool command_payload_empty(const struct Command *cmd)
+{
+    return cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0;
+}
+
+static enum MsgType command_infer_msg_type(const struct Command *cmd)
+{
+    float fval;
+    char text[32];
+
+    if (cmd == NULL) {
+        return MSG_GET;
+    }
+
+    if (command_payload_empty(cmd)) {
+        if (strcmp(cmd->key, "reboot") == 0 ||
+            strcmp(cmd->key, "laserbank/clearfaults") == 0 ||
+            strncmp(cmd->key, "laserbank/power/", strlen("laserbank/power/")) == 0 ||
+            strncmp(cmd->key, "laserbank/heater/", strlen("laserbank/heater/")) == 0) {
+            return MSG_SET;
+        }
+        return MSG_GET;
+    }
+
+    if (strcmp(cmd->key, "status") == 0 ||
+        strcmp(cmd->key, "laser/status") == 0 ||
+        strcmp(cmd->key, "laser/engstatus") == 0) {
+        return MSG_GET;
+    }
+
+    if (strcmp(cmd->key, "memsroute/route_loss") == 0) {
+        return coo_json_extract_string(cmd->payload, "laser",
+                                       text, sizeof(text)) != COO_JSON_EXTRACT_MISSING ?
+               MSG_GET : MSG_SET;
+    }
+
+    if (strcmp(cmd->key, "laser") == 0) {
+        return coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
+               MSG_SET : MSG_GET;
+    }
+
+    if (strcmp(cmd->key, "laser/tune") == 0) {
+        return coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
+               coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
+               MSG_SET : MSG_GET;
+    }
+
+    if (strcmp(cmd->key, "laser/settings") == 0) {
+        char settings_json[MAX_PAYLOAD_LEN];
+
+        return coo_json_extract_object(cmd->payload, "settings",
+                                       settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
+               MSG_SET : MSG_GET;
+    }
+
+    return MSG_SET;
+}
+
 static void enqueue_serial_error(const char *msg)
 {
     struct OutMsg out = {0};
@@ -341,7 +413,7 @@ static void enqueue_serial_error(const char *msg)
     out.msg_type = RESP_ERROR;
     (void)app_mqtt_format_response_topic("serial", out.topic, sizeof(out.topic));
     out.payload_len = snprintk(out.payload, sizeof(out.payload),
-                               "{\"status\":\"error\",\"msg\":\"%s\"}", msg);
+                               "{\"error\":\"%s\"}", msg);
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
 }
 
@@ -685,14 +757,11 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         memcpy(cmd.payload, pub->message.payload.data, pub->message.payload.len);
         cmd.payload[pub->message.payload.len] = '\0';
         cmd.payload_len = pub->message.payload.len;
-        if (!parse_msg_type_from_payload(cmd.payload, &cmd.msg_type)) {
-            cmd.msg_type = MSG_SET;
-        }
     } else {
-        cmd.msg_type = MSG_GET;
         snprintk(cmd.payload, sizeof(cmd.payload), "{}");
         cmd.payload_len = strlen(cmd.payload);
     }
+    cmd.msg_type = command_infer_msg_type(&cmd);
 
     if (pub->prop.response_topic.utf8 != NULL &&
         pub->prop.response_topic.size > 0U &&
@@ -777,14 +846,12 @@ void command_parse_serial_line(char *line)
 
     command_serial_note_activity();
 
-    /* Serial syntax is one line: "<key> [payload]". There are no get/set
-     * words. An empty payload is a GET; any payload is normalized to JSON and
-     * dispatched as a SET through the same handlers MQTT uses.
+    /* Serial syntax is one line: "<key> [payload]". Payload text is normalized
+     * to JSON, then classified with the same documented request shapes as MQTT.
      */
     sep = strpbrk(cursor, " \t");
     if (sep == NULL) {
         key = cursor;
-        cmd.msg_type = MSG_GET;
     } else {
         *sep = '\0';
         key = cursor;
@@ -793,7 +860,6 @@ void command_parse_serial_line(char *line)
             cursor++;
         }
         payload = cursor;
-        cmd.msg_type = (*payload == '\0') ? MSG_GET : MSG_SET;
     }
 
     if (key == NULL || *key == '\0') {
@@ -814,6 +880,7 @@ void command_parse_serial_line(char *line)
         return;
     }
     cmd.payload_len = strlen(cmd.payload);
+    cmd.msg_type = command_infer_msg_type(&cmd);
 
     if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
         struct OutMsg r = busy_response(&cmd);
@@ -1071,23 +1138,18 @@ struct OutMsg laserbank_power(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"laser bank unavailable on this board\"}");
+        return error_response(cmd, "laser bank unavailable on this board");
     }
 
     if (cmd != NULL &&
         (cmd->msg_type == MSG_SET ||
          command_suffix_after(cmd, "laserbank/power")[0] != '\0')) {
         if (!parse_laserbank_power_request(cmd, &mode)) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"override must be auto, override_on, or override_off\"}");
+            return error_response(cmd, "override must be auto, override_on, or override_off");
         }
         rc = hispec_laser_bank_power_mode_set(mode);
         if (rc != 0) {
-            snprintk(payload, sizeof(payload),
-                     "{\"status\":\"error\",\"msg\":\"laser bank power mode failed\",\"rc\":%d}",
-                     rc);
-            return _msg_builder(cmd, RESP_ERROR, payload);
+            return error_response_rc(cmd, "laser bank power mode failed", rc);
         }
     }
 
@@ -1101,51 +1163,36 @@ struct OutMsg laserbank_power(const struct Command *cmd)
 
 struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 {
-    bool was_powered;
     bool fault = false;
     uint32_t off_ms = 0U;
     char payload[MAX_PAYLOAD_LEN] = {0};
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"error\":\"Laser bank unavailable on this board\"}");
+        return error_response(cmd, "laser bank unavailable on this board");
     }
 
-    was_powered = power_enabled();
-    if (!was_powered) {
-        return _msg_builder(cmd, RESP_OK,
-                            "{\"status\":\"success\",\"off_ms\":0}");
+    if (!power_enabled()) {
+        return _msg_builder(cmd, RESP_OK, "{\"off_ms\":0}");
     }
     rc = hispec_laser_bank_any_overcurrent_fault(&fault);
     if (rc != 0) {
-        snprintf(payload, sizeof(payload),
-                 "{\"status\":\"error\",\"msg\":\"overcurrent status unavailable\",\"rc\":%d}",
-                 rc);
-        return _msg_builder(cmd, RESP_ERROR, payload);
+        return error_response_rc(cmd, "overcurrent status unavailable", rc);
     }
     if (!fault) {
-        return _msg_builder(cmd, RESP_OK,
-                            "{\"status\":\"success\",\"off_ms\":0}");
+        return _msg_builder(cmd, RESP_OK, "{\"off_ms\":0}");
     }
     if (hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\","
-                            "\"msg\":\"laser bank power cycle failed\"}");
+        return error_response(cmd, "laser bank power cycle failed");
     }
     off_ms = LASERBANK_FAULT_CLEAR_OFF_MS;
 
     if (!power_enabled()) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\","
-                            "\"msg\":\"laser bank power cycle could not turn on\"}");
+        return error_response(cmd, "laser bank power cycle could not turn on");
     }
 
     snprintf(payload, sizeof(payload),
-             "{\"status\":\"success\",\"laser_power\":true,\"was_powered\":%s,"
-             "\"off_ms\":%u}",
-             was_powered ? "true" : "false",
-             off_ms);
+             "{\"off_ms\":%u}", off_ms);
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -1266,8 +1313,7 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
     char payload[MAX_PAYLOAD_LEN] = {0};
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"error\":\"Laser bank unavailable on this board\"}");
+        return error_response(cmd, "laser bank unavailable on this board");
     }
 
     if (cmd != NULL &&
@@ -1279,10 +1325,7 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
         }
         int rc = laserbank_control_set_heater_mode(mode, true);
         if (rc != 0) {
-            snprintf(payload, sizeof(payload),
-                     "{\"status\":\"error\",\"msg\":\"laser bank heater relay unavailable\",\"rc\":%d}",
-                     rc);
-            return _msg_builder(cmd, RESP_ERROR, payload);
+            return error_response_rc(cmd, "laser bank heater relay unavailable", rc);
         }
     }
 
@@ -1489,7 +1532,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid trydhcpfirst\"}");
+            return error_response(cmd, "invalid trydhcpfirst");
         }
     }
 
@@ -1503,7 +1546,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpdns\"}");
+            return error_response(cmd, "invalid preferdhcpdns");
         }
     }
 
@@ -1517,7 +1560,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid preferdhcpntp\"}");
+            return error_response(cmd, "invalid preferdhcpntp");
         }
     }
 
@@ -1528,7 +1571,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ip\"}");
+        return error_response(cmd, "invalid ip");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf));
@@ -1538,7 +1581,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid subnet\"}");
+        return error_response(cmd, "invalid subnet");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf));
@@ -1548,7 +1591,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid gateway\"}");
+        return error_response(cmd, "invalid gateway");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf));
@@ -1563,7 +1606,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid dns\"}");
+            return error_response(cmd, "invalid dns");
         }
     }
 
@@ -1579,17 +1622,17 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ntp\"}");
+            return error_response(cmd, "invalid ntp");
         }
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        return error_response(cmd, "invalid persistent");
     }
 
     if (!changed && !(unsupported_dhcp || unsupported_dns || unsupported_ntp)) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized ip fields\"}");
+        return error_response(cmd, "no recognized ip fields");
     }
 
     if (network_changed) {
@@ -1599,10 +1642,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         network_config_from_app_ip(&ip_cfg, &net_cfg);
         rc = network_reconfigure(&net_cfg);
         if (rc != 0) {
-            snprintk(response, sizeof(response),
-                     "{\"status\":\"error\",\"msg\":\"network reconfigure failed\",\"rc\":%d}",
-                     rc);
-            return _msg_builder(cmd, RESP_ERROR, response);
+            return error_response_rc(cmd, "network reconfigure failed", rc);
         }
     }
 
@@ -1616,27 +1656,15 @@ struct OutMsg ip_set(const struct Command *cmd)
     }
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
-        const char *apply =
-            network_changed ? "immediate" :
-            (ntp_changed ? "immediate" : "none");
         snprintk(response, sizeof(response),
-                 "{\"status\":\"partial\",\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\",\"apply\":\"%s\"}",
+                 "{\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"}",
                  unsupported_dhcp ? "unsupported" : "ok",
                  unsupported_dns ? "unsupported" : "ok",
-                 unsupported_ntp ? "unsupported" : "ok",
-                 apply);
+                 unsupported_ntp ? "unsupported" : "ok");
         return _msg_builder(cmd, RESP_OK, response);
     }
 
-    if (network_changed) {
-        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"immediate\"}");
-    }
-
-    if (ntp_changed) {
-        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"immediate\"}");
-    }
-
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg mqtt_get(const struct Command *cmd)
@@ -1677,23 +1705,20 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_string(cmd->payload, "broker", endpoint, sizeof(endpoint));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing broker\"}");
+        return error_response(cmd, "missing broker");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid broker\"}");
+        return error_response(cmd, "invalid broker");
     }
     if (!coo_mqtt_parse_broker_endpoint(endpoint, &broker_cfg)) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"broker must be host-or-ip:port\"}");
+        return error_response(cmd, "broker must be host-or-ip:port");
     }
     rc = coo_mqtt_resolve_broker_config(&broker_cfg, resolved_ip, sizeof(resolved_ip));
     if (rc == -ENOTSUP) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
+        return error_response(cmd, "broker hostname requires DNS");
     }
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"broker host did not resolve\"}");
+        return error_response(cmd, "broker host did not resolve");
     }
     strncpy(mqtt_cfg.broker_host, broker_cfg.host, sizeof(mqtt_cfg.broker_host) - 1U);
     mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
@@ -1701,54 +1726,25 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        return error_response(cmd, "invalid persistent");
     }
 
     app_settings_update_mqtt(&mqtt_cfg, persist);
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reconnect\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg time_get(const struct Command *cmd)
 {
     struct timespec ts = {0};
-#if defined(CONFIG_SNTP)
-    struct sntp_sync_status sntp = {0};
-    const char *ntp_source;
-    const char *ntp_server;
-    const char *ntp_synced;
-    uint64_t ntp_last_sync_utc;
-    int ntp_last_error;
-#else
-    const char *ntp_source = "unsupported";
-    const char *ntp_server = "";
-    const char *ntp_synced = "false";
-    uint64_t ntp_last_sync_utc = 0U;
-    int ntp_last_error = -ENOTSUP;
-#endif
     uint64_t utc_ms;
     char payload[MAX_PAYLOAD_LEN];
 
     clock_gettime(CLOCK_REALTIME, &ts);
-#if defined(CONFIG_SNTP)
-    sntp_sync_get_status(&sntp);
-    ntp_source = sntp_sync_source_str(sntp.source);
-    ntp_server = sntp.server;
-    ntp_synced = sntp.synced ? "true" : "false";
-    ntp_last_sync_utc = sntp.last_sync_utc_ms;
-    ntp_last_error = sntp.last_error;
-#endif
     utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 
     snprintk(payload, sizeof(payload),
-             "{\"utc\":%llu,\"ticks\":%u,\"uptime\":%lld,"
-             "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\",\"synced\":%s,"
-             "\"last_sync_utc\":%llu,\"last_error\":%d}}",
-             (unsigned long long)utc_ms, k_cycle_get_32(), (long long)k_uptime_get(),
-             ntp_source,
-             ntp_server,
-             ntp_synced,
-             (unsigned long long)ntp_last_sync_utc,
-             ntp_last_error);
+             "{\"utc\":%llu,\"uptime\":%lld}",
+             (unsigned long long)utc_ms, (long long)k_uptime_get());
 
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -1761,20 +1757,20 @@ struct OutMsg time_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing linuxtime_ms\"}");
+        return error_response(cmd, "missing linuxtime_ms");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid linuxtime_ms\"}");
+        return error_response(cmd, "invalid linuxtime_ms");
     }
 
     ts.tv_sec = utc_ms / 1000ULL;
     ts.tv_nsec = (utc_ms % 1000ULL) * 1000000ULL;
 
     if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"clock_settime failed\"}");
+        return error_response(cmd, "clock_settime failed");
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg reboot_set(const struct Command *cmd)
@@ -1783,11 +1779,10 @@ struct OutMsg reboot_set(const struct Command *cmd)
 
     rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_REBOOT, K_MSEC(250));
     if (rc < 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"failed to schedule reboot\"}");
+        return error_response(cmd, "failed to schedule reboot");
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg serial_guard_get(const struct Command *cmd)
@@ -1816,22 +1811,22 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
     parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
     parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
     if (parse_rc_seconds == COO_JSON_EXTRACT_ERR || parse_rc_value == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid seconds\"}");
+        return error_response(cmd, "invalid seconds");
     }
     if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
         parse_rc_value == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing seconds\"}");
+        return error_response(cmd, "missing seconds");
     }
 
     parse_rc_persist = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc_persist == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        return error_response(cmd, "invalid persistent");
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
     if (cmd->source == CMD_SRC_SERIAL) {
         command_serial_note_activity();
     }
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 
@@ -1978,14 +1973,12 @@ static struct OutMsg route_loss_query_response(const struct Command *cmd,
 
     rc = app_settings_get_route_loss(route, laser, &tx, &configured);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid route_loss key\"}");
+        return error_response(cmd, "invalid route_loss key");
     }
 
     loss_db = -10.0 * log10(tx);
     snprintk(payload, sizeof(payload),
-             "{\"status\":\"success\",\"tx\":%.9f,\"loss_db\":%.6f,"
-             "\"configured\":%s}",
+             "{\"tx\":%.9f,\"loss_db\":%.6f,\"configured\":%s}",
              tx, loss_db, configured ? "true" : "false");
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -2000,8 +1993,7 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
 
     parse_rc = coo_json_extract_string(cmd->payload, "route", route, sizeof(route));
     if (parse_rc != COO_JSON_EXTRACT_OK) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid route\"}");
+        return error_response(cmd, "missing or invalid route");
     }
 
     parse_rc = route_loss_extract_value(cmd, laser, sizeof(laser), &tx);
@@ -2009,44 +2001,36 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
         parse_rc = coo_json_extract_string(cmd->payload, "laser", laser, sizeof(laser));
         if (parse_rc == COO_JSON_EXTRACT_OK) {
             if (!route_loss_laser_name_is_known(laser)) {
-                return _msg_builder(cmd, RESP_ERROR,
-                                    "{\"status\":\"error\",\"msg\":\"invalid route_loss laser\"}");
+                return error_response(cmd, "invalid route_loss laser");
             }
             return route_loss_query_response(cmd, route, laser);
         }
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing route_loss laser value\"}");
+        return error_response(cmd, "missing route_loss laser value");
     }
     if (!set_request) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"route_loss query uses laser field\"}");
+        return error_response(cmd, "route_loss query uses laser field");
     }
     if (parse_rc == -ERANGE) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"route_loss out of range\"}");
+        return error_response(cmd, "route_loss out of range");
     }
     if (parse_rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid route_loss value\"}");
+        return error_response(cmd, "invalid route_loss value");
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        return error_response(cmd, "invalid persistent");
     }
 
     parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
     if (parse_rc == -ENOSPC) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"route_loss table full\"}");
+        return error_response(cmd, "route_loss table full");
     }
     if (parse_rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid route_loss key\"}");
+        return error_response(cmd, "invalid route_loss key");
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg memsroute_get(const struct Command *cmd)
@@ -2063,7 +2047,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
     }
 
     if (coo_json_append(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+        return error_response(cmd, "response too large");
     }
 
     for (uint8_t i = 0U; router.routes != NULL && i < router.num_routes; ++i) {
@@ -2076,16 +2060,16 @@ struct OutMsg memsroute_get(const struct Command *cmd)
         outputs[n_outputs++] = output_name;
         if (n_outputs > 1U &&
             coo_json_append(buf, sizeof(buf), &offset, ",") != 0) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+            return error_response(cmd, "response too large");
         }
         if (memsroute_append_sources_for_output(buf, sizeof(buf), &offset,
                                                 active, n_active, output_name) != 0) {
-            return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+            return error_response(cmd, "response too large");
         }
     }
 
     if (coo_json_append(buf, sizeof(buf), &offset, "}}") != 0) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"response too large\"}");
+        return error_response(cmd, "response too large");
     }
 
     return _msg_builder(cmd, RESP_OK, buf);
@@ -2297,7 +2281,7 @@ static struct OutMsg split_channel_response(const struct Command *cmd,
     k_mutex_unlock(&split_state_lock);
 
     written = snprintk(payload, sizeof(payload),
-             "{\"status\":\"success\",\"channel\":\"%s\","
+             "{\"channel\":\"%s\","
              "\"requested_ratio\":[%.4f,%.4f,%.4f],"
              "\"actual_ratio\":[%.4f,%.4f,%.4f],"
              "\"switches\":["
@@ -2336,8 +2320,7 @@ static struct OutMsg split_channel_response(const struct Command *cmd,
              state.stopsin_s);
 
     if (written < 0 || written >= (int)sizeof(payload)) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"split response too large\"}");
+        return error_response(cmd, "split response too large");
     }
 
     return _msg_builder(cmd, RESP_OK, payload);
@@ -2397,20 +2380,17 @@ struct OutMsg splitting_get(const struct Command *cmd)
 
     rc = split_parse_channel(cmd, &channel_index);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"channel required: yj or hk\"}");
+        return error_response(cmd, "channel required: yj or hk");
     }
 
     route = split_route_for_channel(channel_index);
     if (route == NULL) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"split route unavailable\"}");
+        return error_response(cmd, "split route unavailable");
     }
 
     rc = split_read_channel_state(channel_index, route, NULL);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"split route invalid\"}");
+        return error_response(cmd, "split route invalid");
     }
 
     return split_channel_response(cmd, channel_index);
@@ -2438,56 +2418,51 @@ struct OutMsg splitting_set(const struct Command *cmd)
 
     rc = split_parse_channel(cmd, &channel_index);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"channel must be yj or hk\"}");
+        return error_response(cmd, "channel must be yj or hk");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &requested[0]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing ratio1\"}");
+        return error_response(cmd, "missing ratio1");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio1\"}");
+        return error_response(cmd, "invalid ratio1");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &requested[1]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing ratio2\"}");
+        return error_response(cmd, "missing ratio2");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid ratio2\"}");
+        return error_response(cmd, "invalid ratio2");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"ratio3 is computed internally\"}");
+        return error_response(cmd, "ratio3 is computed internally");
     }
 
     if (requested[0] < 0.0f || requested[0] > 1.0f ||
         requested[1] < 0.0f || requested[1] > 1.0f ||
         requested[0] + requested[1] > 1.000001f) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"ratios must be 0.0-1.0 and sum <= 1.0\"}");
+        return error_response(cmd, "ratios must be 0.0-1.0 and sum <= 1.0");
     }
     requested[2] = 1.0f - requested[0] - requested[1];
 
     parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR ||
         stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid stopafter_s\"}");
+        return error_response(cmd, "invalid stopafter_s");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"toggle_rate_hz is automatic\"}");
+        return error_response(cmd, "toggle_rate_hz is automatic");
     }
 
     route = split_route_for_channel(channel_index);
     if (route == NULL || route->num_steps != SPLIT_ROUTE_SWITCH_COUNT) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"split route unavailable\"}");
+        return error_response(cmd, "split route unavailable");
     }
 
     period_ticks = split_period_ticks();
@@ -2507,8 +2482,7 @@ struct OutMsg splitting_set(const struct Command *cmd)
         struct mems_switch *sw = mems_router_find_switch(&router, step->switch_name);
 
         if (sw == NULL) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"split route references missing switch\"}");
+            return error_response(cmd, "split route references missing switch");
         }
 
         rc = mems_switch_set_state_ticks(sw, step->state, switch_ticks[i],
@@ -2518,7 +2492,7 @@ struct OutMsg splitting_set(const struct Command *cmd)
             char payload[MAX_PAYLOAD_LEN];
 
             snprintk(payload, sizeof(payload),
-                     "{\"status\":\"error\",\"msg\":\"failed setting %s\"}",
+                     "{\"error\":\"failed setting %s\"}",
                      step->switch_name);
             return _msg_builder(cmd, RESP_ERROR, payload);
         }
@@ -2526,8 +2500,7 @@ struct OutMsg splitting_set(const struct Command *cmd)
 
     rc = split_read_channel_state(channel_index, route, requested);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"split readback failed\"}");
+        return error_response(cmd, "split readback failed");
     }
 
     k_mutex_lock(&split_state_lock, K_FOREVER);
@@ -2580,7 +2553,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
         LOG_INF("Set switch %s to %c\n", step->switch_name, step->state);
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"OK\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg measure_throughput_set(const struct Command *cmd)
@@ -2597,8 +2570,7 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"measure_throughput unavailable on this board\"}");
+        return error_response(cmd, "measure_throughput unavailable on this board");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "stop", stop, sizeof(stop));
@@ -2608,8 +2580,8 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
         if (strcasecmp(stop, "all") == 0) {
             rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &status);
             return rc == 0 ?
-                _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}") :
-                _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"stop failed\"}");
+                ok_response(cmd) :
+                error_response(cmd, "stop failed");
         }
 
         if (strcasecmp(stop, "yj") == 0) {
@@ -2617,59 +2589,50 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
         } else if (strcasecmp(stop, "hk") == 0) {
             channel = PHOTODIODE_CHANNEL_HK;
         } else {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"stop must be yj, hk, or all\"}");
+            return error_response(cmd, "stop must be yj, hk, or all");
         }
 
         rc = throughput_monitor_stop(channel, &status);
         if (rc != 0) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"stop failed\"}");
+            return error_response(cmd, "stop failed");
         }
 
-        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+        return ok_response(cmd);
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid stop\"}");
+        return error_response(cmd, "invalid stop");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "laser", laser_name, sizeof(laser_name));
     if (parse_rc != COO_JSON_EXTRACT_OK ||
         hispec_laser_id_from_name(laser_name, &request.laser) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser\"}");
+        return error_response(cmd, "missing or invalid laser");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "fiber", fiber_text, sizeof(fiber_text));
     if (parse_rc == COO_JSON_EXTRACT_ERR || fiber_text[0] == '\0' ||
         fiber_text[1] != '\0') {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"fiber must be M or S\"}");
+        return error_response(cmd, "fiber must be M or S");
     }
     fiber_text[0] = (char)toupper((unsigned char)fiber_text[0]);
     if (fiber_text[0] != 'M' && fiber_text[0] != 'S') {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"fiber must be M or S\"}");
+        return error_response(cmd, "fiber must be M or S");
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "autolevel", &autolevel);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid autolevel\"}");
+        return error_response(cmd, "invalid autolevel");
     }
 
     parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid stopafter_s\"}");
+        return error_response(cmd, "invalid stopafter_s");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "format", format, sizeof(format));
     if (parse_rc == COO_JSON_EXTRACT_ERR ||
         (strcasecmp(format, "json") != 0 && strcasecmp(format, "binary") != 0)) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"format must be json or binary\"}");
+        return error_response(cmd, "format must be json or binary");
     }
 
     request.autolevel = autolevel;
@@ -2680,11 +2643,10 @@ struct OutMsg measure_throughput_set(const struct Command *cmd)
     rc = throughput_monitor_start(&request, &status);
     if (rc != 0) {
         LOG_ERR("measure_throughput start failed: %d", rc);
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"measure_throughput start failed\"}");
+        return error_response(cmd, "measure_throughput start failed");
     }
 
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 
@@ -2911,19 +2873,14 @@ static int command_laser_id_from_payload(const struct Command *cmd,
 
 static struct OutMsg laser_unavailable(const struct Command *cmd)
 {
-    return _msg_builder(cmd, RESP_ERROR,
-                        "{\"status\":\"error\",\"msg\":\"laser bank unavailable on this board\"}");
+    return error_response(cmd, "laser bank unavailable on this board");
 }
 
 static struct OutMsg laser_error_response(const struct Command *cmd,
                                           const char *msg,
                                           int rc)
 {
-    char payload[MAX_PAYLOAD_LEN];
-
-    snprintk(payload, sizeof(payload),
-             "{\"status\":\"error\",\"msg\":\"%s\",\"rc\":%d}", msg, rc);
-    return _msg_builder(cmd, RESP_ERROR, payload);
+    return error_response_rc(cmd, msg, rc);
 }
 
 static float laser_status_level(const struct hispec_laser_status *status)
@@ -3015,8 +2972,7 @@ struct OutMsg laser_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
 
     rc = hispec_laser_get_status(id, &status);
@@ -3024,10 +2980,10 @@ struct OutMsg laser_get(const struct Command *cmd)
         return laser_error_response(cmd, "laser status failed", rc);
     }
     if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"laser response too large\"}");
+        return error_response(cmd, "laser response too large");
     }
-    return _msg_builder(cmd, rc == 0 ? RESP_OK : RESP_ERROR, payload);
+    return rc == 0 ? _msg_builder(cmd, RESP_OK, payload) :
+           laser_error_response(cmd, "laser status failed", rc);
 }
 
 struct OutMsg laser_set(const struct Command *cmd)
@@ -3044,13 +3000,11 @@ struct OutMsg laser_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
     parse_rc = coo_json_extract_float(cmd->payload, "level", &level);
     if (parse_rc != COO_JSON_EXTRACT_OK || level < 0.0f || level > 100.0f) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"level must be 0..100\"}");
+        return error_response(cmd, "level must be 0..100");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
@@ -3059,8 +3013,7 @@ struct OutMsg laser_set(const struct Command *cmd)
     autooff_s = settings.autooff_s;
     parse_rc = coo_json_extract_u32(cmd->payload, "autooff_s", &autooff_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid autooff_s\"}");
+        return error_response(cmd, "invalid autooff_s");
     }
 
     throughput_monitor_note_laser_changed(id);
@@ -3068,7 +3021,7 @@ struct OutMsg laser_set(const struct Command *cmd)
     if (rc != 0) {
         return laser_error_response(cmd, "laser level failed", rc);
     }
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg laser_tune_get(const struct Command *cmd)
@@ -3081,8 +3034,7 @@ struct OutMsg laser_tune_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
     snprintk(payload, sizeof(payload),
              "{\"name\":\"%s\",\"tune_nm\":%.4f}",
@@ -3103,23 +3055,21 @@ struct OutMsg laser_tune_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
     parse_rc = coo_json_extract_float(cmd->payload, "tune_nm", &delta_nm);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         parse_rc = coo_json_extract_float(cmd->payload, "delta_nm", &delta_nm);
     }
     if (parse_rc != COO_JSON_EXTRACT_OK) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing tune_nm\"}");
+        return error_response(cmd, "missing tune_nm");
     }
     throughput_monitor_note_laser_changed(id);
     rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
     if (rc != 0) {
         return laser_error_response(cmd, "laser tune failed", rc);
     }
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 static int laser_settings_payload(char *payload, size_t payload_len,
@@ -3181,16 +3131,14 @@ struct OutMsg laser_settings_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
         return laser_error_response(cmd, "laser settings unavailable", rc);
     }
     if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"laser settings response too large\"}");
+        return error_response(cmd, "laser settings response too large");
     }
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -3323,8 +3271,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
@@ -3333,8 +3280,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 
     rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
     if (rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid settings object\"}");
+        return error_response(cmd, "invalid settings object");
     }
     json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
 
@@ -3343,8 +3289,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
         return laser_error_response(cmd, "invalid laser settings", rc);
     }
     if (!changed) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"no laser settings fields supplied\"}");
+        return error_response(cmd, "no laser settings fields supplied");
     }
 
     throughput_monitor_note_laser_changed(id);
@@ -3352,7 +3297,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
     if (rc != 0) {
         return laser_error_response(cmd, "laser settings update failed", rc);
     }
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 struct OutMsg laser_status_get(const struct Command *cmd)
@@ -3384,8 +3329,7 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"missing or invalid laser name\"}");
+        return error_response(cmd, "missing or invalid laser name");
     }
 
     rc = hispec_laser_get_status(id, &s);
@@ -3454,10 +3398,10 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
         json_append_named_float(payload, sizeof(payload), &off,
                                 "ntc_t_coeff", s.ntc_t_coefficient_per_c, 6) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"laser engineering status response too large\"}");
+        return error_response(cmd, "laser engineering status response too large");
     }
-    return _msg_builder(cmd, rc == 0 ? RESP_OK : RESP_ERROR, payload);
+    return rc == 0 ? _msg_builder(cmd, RESP_OK, payload) :
+           laser_error_response(cmd, "laser engineering status failed", rc);
 }
 
 struct OutMsg atten_setting_get(const struct Command *cmd) {
@@ -3515,7 +3459,6 @@ struct OutMsg atten_setting_get(const struct Command *cmd) {
 struct OutMsg atten_setting_set(const struct Command *cmd) {
 
     char laser_name[16], setting[16];
-    char payload[64] = "{\"status\":\"OK\"}";
     if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
                         setting, sizeof(setting)) != 0) {
         return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse laser/setting\"}");
@@ -3584,8 +3527,6 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
                                 "{\"error\":\"Failed to apply coefficients\"}");
         }
         app_settings_update_attenuator_channel(attenuator_index, &stored_coeffs, persist);
-        snprintf(payload, sizeof(payload), "{\"status\":\"OK\",\"persistent\":%s}",
-                 persist ? "true" : "false");
 
     } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
 
@@ -3614,7 +3555,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd) {
 
     throughput_monitor_note_attenuator_changed(attenuator_index);
 
-    return _msg_builder(cmd, RESP_OK, payload);
+    return ok_response(cmd);
 }
 
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
@@ -3681,17 +3622,15 @@ struct OutMsg pd_get(const struct Command *cmd)
     int parse_rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+        return error_response(cmd, "photodiodes unavailable on this board");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "unit", unit, sizeof(unit));
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid unit\"}");
+        return error_response(cmd, "invalid unit");
     }
     if (strcasecmp(unit, "power") != 0 && strcasecmp(unit, "volts") != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"unit must be power or volts\"}");
+        return error_response(cmd, "unit must be power or volts");
     }
 
     photodiode_get_status(&status);
@@ -3761,7 +3700,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 
     if (status->state == PHOTODIODE_DARK_COMPLETE) {
         snprintk(payload, sizeof(payload),
-                 "{\"status\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
+                 "{\"state\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
                  "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
                  "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
                  "\"min_mv\":%.3f,\"max_mv\":%.3f,"
@@ -3786,7 +3725,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 
     if (status->state == PHOTODIODE_DARK_ERROR) {
         snprintk(payload, sizeof(payload),
-                 "{\"status\":\"error\",\"channel\":\"%s\",\"rc\":%d,"
+                 "{\"error\":\"dark measurement failed\",\"channel\":\"%s\",\"rc\":%d,"
                  "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
                  photodiode_channel_names[status->channel],
                  status->last_error,
@@ -3797,7 +3736,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
     }
 
     snprintk(payload, sizeof(payload),
-             "{\"status\":\"%s\",\"channel\":\"%s\",\"stored_on_complete\":%s,"
+             "{\"state\":\"%s\",\"channel\":\"%s\",\"stored_on_complete\":%s,"
              "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
              state_name,
              photodiode_channel_names[status->channel],
@@ -3819,52 +3758,42 @@ struct OutMsg pd_set(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+        return error_response(cmd, "photodiodes unavailable on this board");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "action", action, sizeof(action));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"missing action\"}");
+        return error_response(cmd, "missing action");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"invalid action\"}");
+        return error_response(cmd, "invalid action");
     }
 
     rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"channel must be yj or hk\"}");
+        return error_response(cmd, "channel must be yj or hk");
     }
 
     if (strcasecmp(action, "measure_dark") == 0) {
         struct photodiode_dark_status status;
 
         if (throughput_monitor_autolevel_active(channel)) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"dark measurement blocked by autolevel throughput monitor\"}");
+            return error_response(cmd, "dark measurement blocked by autolevel throughput monitor");
         }
 
         parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"invalid duration_ms\"}");
+            return error_response(cmd, "invalid duration_ms");
         }
 
         parse_rc = coo_json_extract_bool(cmd->payload, "store", &store);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"invalid store\"}");
+            return error_response(cmd, "invalid store");
         }
 
         rc = photodiode_start_dark_measurement(channel, duration_ms, store, &status);
         if (rc != 0) {
-            char payload[MAX_PAYLOAD_LEN];
-
-            snprintk(payload, sizeof(payload),
-                     "{\"status\":\"error\",\"msg\":\"dark measurement failed\",\"rc\":%d}",
-                     rc);
-            return _msg_builder(cmd, RESP_ERROR, payload);
+            return error_response_rc(cmd, "dark measurement failed", rc);
         }
         return pd_dark_status_response(cmd, &status);
     }
@@ -3874,8 +3803,7 @@ struct OutMsg pd_set(const struct Command *cmd)
 
         rc = photodiode_get_dark_status(channel, &status);
         if (rc != 0) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"dark status unavailable\"}");
+            return error_response(cmd, "dark status unavailable");
         }
 
         return pd_dark_status_response(cmd, &status);
@@ -3884,19 +3812,17 @@ struct OutMsg pd_set(const struct Command *cmd)
     if (strcasecmp(action, "reset_lowest_dark") == 0) {
         parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
         if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+            return error_response(cmd, "invalid persistent");
         }
 
         rc = photodiode_reset_lowest_dark(channel, persist);
         if (rc != 0) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"reset failed\"}");
+            return error_response(cmd, "reset failed");
         }
-        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+        return ok_response(cmd);
     }
 
-    return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"unknown action\"}");
+    return error_response(cmd, "unknown action");
 }
 
 static int pd_settings_channel_json(char *payload, size_t payload_len,
@@ -3940,22 +3866,19 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+        return error_response(cmd, "photodiodes unavailable on this board");
     }
 
     rc = pd_parse_channel_from_key(cmd, &channel);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"pdsettings key must be pdsettings/yj or pdsettings/hk\"}");
+        return error_response(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
     }
 
     app_settings_get_photodiode(&settings);
     rc = pd_settings_channel_json(payload, sizeof(payload), channel,
                                   &settings.channel[channel]);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"pdsettings response too large\"}");
+        return error_response(cmd, "pdsettings response too large");
     }
 
     return _msg_builder(cmd, RESP_OK, payload);
@@ -3972,14 +3895,12 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"photodiodes unavailable on this board\"}");
+        return error_response(cmd, "photodiodes unavailable on this board");
     }
 
     rc = pd_parse_channel_from_key(cmd, &channel);
     if (rc != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"pdsettings key must be pdsettings/yj or pdsettings/hk\"}");
+        return error_response(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
     }
 
     app_settings_get_photodiode(&settings);
@@ -3987,8 +3908,7 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid persistent\"}");
+        return error_response(cmd, "invalid persistent");
     }
 
     if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
@@ -4000,42 +3920,144 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
         coo_json_extract_optional_float_range(cmd->payload, "gain_v_p_uw",
                                               &channel_settings.gain_v_per_uw,
                                               &changed, 0.000001f, 1000000000.0f) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"invalid pdsettings value\"}");
+        return error_response(cmd, "invalid pdsettings value");
     }
 
     if (!changed) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"no pdsettings fields supplied\"}");
+        return error_response(cmd, "no pdsettings fields supplied");
     }
 
     app_settings_update_photodiode_channel((uint8_t)channel,
                                            &channel_settings,
                                            persist);
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
+    return ok_response(cmd);
 }
 
 
-struct OutMsg status_get(const struct Command *cmd) {
-    struct network_ipv4_info net = {0};
-    char payload[MAX_PAYLOAD_LEN]={0};
+struct OutMsg status_get(const struct Command *cmd)
+{
+    struct tempsense_status ts = {0};
+    bool include_ip = false;
+    bool include_lasers = false;
+    bool include_attens = false;
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t off = 0U;
+    int parse_rc;
 
-    (void)network_get_ipv4_info(&net);
-    snprintf(payload, MAX_PAYLOAD_LEN,
-             "{\"fwversion\":\"%s\",\"bootcount\":%u,\"uptime\":%lld,"
-             "\"board_type\":\"%s\",\"board_valid\":%s,\"mems_switches\":%u,"
-             "\"network_ready\":%s,\"ip\":\"%s\",\"laser_power\":%s,"
-             "\"relay_gpio_error\":%d}",
-             APP_VERSION_STRING,
-             app_settings_get_boot_count(),
-             (long long)k_uptime_get(),
-             devices_board_type_name(),
-             devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
-             router.num_switches,
-             net.link_ready ? "true" : "false",
-             net.ip,
-             power_enabled() ? "true" : "false",
-             devices_relay_gpio_last_error());
+    parse_rc = coo_json_extract_bool(cmd->payload, "ip", &include_ip);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return error_response(cmd, "invalid ip");
+    }
+    parse_rc = coo_json_extract_bool(cmd->payload, "lasers", &include_lasers);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return error_response(cmd, "invalid lasers");
+    }
+    parse_rc = coo_json_extract_bool(cmd->payload, "attens", &include_attens);
+    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+        return error_response(cmd, "invalid attens");
+    }
+
+    tempsense_get_status(&ts);
+    if (coo_json_append(payload, sizeof(payload), &off,
+                        "{\"fwversion\":\"%s\",\"bootcount\":%u,"
+                        "\"board_type\":\"%s\",\"board_valid\":%s,"
+                        "\"mems_switches\":%u,\"relay_gpio_error\":%d,"
+                        "\"temp_c\":",
+                        APP_VERSION_STRING,
+                        app_settings_get_boot_count(),
+                        devices_board_type_name(),
+                        devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
+                        router.num_switches,
+                        devices_relay_gpio_last_error()) != 0 ||
+        coo_json_append_float_or_null(payload, sizeof(payload), &off,
+                                      ts.valid ? ts.ambient_c : NAN, 3) != 0 ||
+        coo_json_append(payload, sizeof(payload), &off,
+                        ",\"pd_ontime\":%.1f,\"pd_offin_s\":0,"
+                        "\"laserbank_ontime\":0",
+                        (double)MAX(hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_YJ_PHOTODIODE),
+                                    hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE))) != 0) {
+        return error_response(cmd, "status response too large");
+    }
+
+    if (include_ip) {
+        struct OutMsg ip = ip_get(cmd);
+
+        if (ip.msg_type != RESP_OK ||
+            coo_json_append(payload, sizeof(payload), &off,
+                            ",\"ip\":%s", ip.payload) != 0) {
+            return error_response(cmd, "status response too large");
+        }
+    }
+
+    if (include_lasers) {
+        if (coo_json_append(payload, sizeof(payload), &off, ",\"lasers\":{") != 0) {
+            return error_response(cmd, "status response too large");
+        }
+        for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+            struct hispec_laser_status laser = {0};
+            int rc = hispec_laser_get_status((enum hispec_laser_id)i, &laser);
+
+            if (coo_json_append(payload, sizeof(payload), &off,
+                                "%s\"%s\":{\"power_mw\":",
+                                i == 0U ? "" : ",",
+                                hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
+                coo_json_append_float_or_null(payload, sizeof(payload), &off,
+                                              rc == 0 ? laser.estimated_power_mw : NAN, 3) != 0 ||
+                coo_json_append(payload, sizeof(payload), &off,
+                                ",\"tec_on_time_s\":%.1f,\"offin_s\":%lld}",
+                                rc == 0 ? (double)laser.tec_on_time_s : 0.0,
+                                rc == 0 ? (long long)laser.off_in_s : 0LL) != 0) {
+                return error_response(cmd, "status response too large");
+            }
+        }
+        if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+            return error_response(cmd, "status response too large");
+        }
+    }
+
+    if (include_attens) {
+        bool first = true;
+
+        if (coo_json_append(payload, sizeof(payload), &off, ",\"attens\":{") != 0) {
+            return error_response(cmd, "status response too large");
+        }
+        for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+            uint8_t atten_index;
+            struct attenuator_status atten = {0};
+            bool valid;
+
+            if (attenuator_index_from_laser_id((enum hispec_laser_id)i, &atten_index) != 0 ||
+                !attenuator_channel_available(atten_index)) {
+                continue;
+            }
+
+            valid = attenuator_get(&attenuators[atten_index], &atten);
+
+            if (coo_json_append(payload, sizeof(payload), &off,
+                                "%s\"%s\":{\"level_%%\":",
+                                first ? "" : ",",
+                                hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
+                coo_json_append_float_or_null(payload, sizeof(payload), &off,
+                                              valid ? atten.linear * 100.0 : (double)NAN, 3) != 0 ||
+                coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+                return error_response(cmd, "status response too large");
+            }
+            first = false;
+        }
+        if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+            return error_response(cmd, "status response too large");
+        }
+    }
+
+    if (coo_json_append(payload, sizeof(payload), &off,
+                        ",\"lastcommand\":{\"name\":\"%s\",\"source\":\"%s\","
+                        "\"time\":%lld}}",
+                        last_command_name,
+                        last_command_source,
+                        (long long)last_command_time_ms) != 0) {
+        return error_response(cmd, "status response too large");
+    }
+
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
@@ -4065,21 +4087,8 @@ struct OutMsg temp_get(const struct Command *cmd)
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"ambient_c\":") != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                      ts.valid ? ts.ambient_c : NAN, 3) != 0 ||
-        coo_json_append(payload, sizeof(payload), &off,
-                        ",\"ambient_age_ms\":") != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
-    }
-    if (ts.valid) {
-        if (coo_json_append(payload, sizeof(payload), &off,
-                            "%u", ts.age_ms) != 0) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
-        }
-    } else if (coo_json_append(payload, sizeof(payload), &off, "null") != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
+                                      ts.valid ? ts.ambient_c : NAN, 3) != 0) {
+        return error_response(cmd, "temp response too large");
     }
 
     if (coo_json_append(payload, sizeof(payload), &off,
@@ -4089,8 +4098,7 @@ struct OutMsg temp_get(const struct Command *cmd)
                                       3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
                         ",\"laser\":{") != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
+        return error_response(cmd, "temp response too large");
     }
     for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
         if (coo_json_append(payload, sizeof(payload), &off,
@@ -4101,16 +4109,12 @@ struct OutMsg temp_get(const struct Command *cmd)
                                           laser_rc == 0 && bank.channel[i].valid ?
                                           bank.channel[i].tec_temperature_c : NAN,
                                           3) != 0) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
+            return error_response(cmd, "temp response too large");
         }
     }
-    if (coo_json_append(payload, sizeof(payload), &off,
-                        "},\"ambient_last_error\":%d,\"laserbank_last_error\":%d}",
-                        ts.last_error, laser_rc) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"status\":\"error\",\"msg\":\"temp response too large\"}");
+    if (coo_json_append(payload, sizeof(payload), &off, "}}") != 0) {
+        return error_response(cmd, "temp response too large");
     }
 
-    return _msg_builder(cmd, (ts.valid && laser_rc == 0) ? RESP_OK : RESP_ERROR, payload);
+    return _msg_builder(cmd, RESP_OK, payload);
 }

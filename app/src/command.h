@@ -135,8 +135,6 @@ struct OutMsg status_get(const struct Command *cmd);
 struct OutMsg temp_get(const struct Command *cmd);
 
 
-/** Parse optional MQTT-style `msg_type` from JSON; missing/unknown returns false. */
-bool parse_msg_type_from_payload(const char *payload, enum MsgType *msg_type_out);
 struct OutMsg invalid_command_response(const struct Command *cmd);
 struct OutMsg unknown_response(const struct Command *cmd);
 struct OutMsg unsupported_response(const struct Command *cmd);
@@ -163,9 +161,9 @@ void command_serial_thread(void *p1, void *p2, void *p3);
  * @brief MQTT receive callback.
  *
  * Copies the MQTT topic, payload, response-topic property, and correlation data
- * before returning. Empty payload means GET; non-empty payload defaults to SET
- * unless JSON `msg_type:"get"` is present. Enqueues or publishes an immediate
- * error when serial guard or queue capacity rejects the command.
+ * before returning. Request shape is inferred from the documented command
+ * schema. Enqueues or publishes an immediate error when serial guard or queue
+ * capacity rejects the command.
  */
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub);
 

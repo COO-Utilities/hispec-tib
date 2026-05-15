@@ -1049,7 +1049,6 @@ off or no faults).
     "pd_ontime": 0,
     "pd_offin_s": 0,
     "laserbank_ontime": 0,
-    "laserbank_offin_s": 0,
     "lasers": {
       "<lasername>": {
         "power_mw": 0.0,
