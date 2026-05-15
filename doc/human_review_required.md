@@ -47,6 +47,8 @@ LLMs Agents: Do NOT change heading names in this file.
   cache or remain ambient-only.
 - Review thread priorities after hardware timing tests. `main.c` still tags the
   temperature thread priority with a source TODO.
+- Decide intended persistence for MEMS switch state, AS split requested/actual
+  state, laser output/tuning state, and last-command metadata.
 
 ## Source TODOs Preserved
 
@@ -63,6 +65,7 @@ LLMs Agents: Do NOT change heading names in this file.
 - `app/src/main.c`: temperature thread priority should probably be lowest.
 - `app/src/maiman.h`: compare Maiman behavior against the referenced
   validation/test scripts.
+- 
 ## Deferred Owner-Specified Capabilities
 
 Do not design or implement these without a detailed owner specification:
@@ -79,3 +82,16 @@ Do not design or implement these without a detailed owner specification:
   profile selection.
 - Add test coverage for the attenuator model and inverse once calibration
   expectations are owner-approved.
+- Add automated tests for command parsing and non-hardware domain logic.
+- Reconcile implemented command behavior against `commands.md`; see
+  `command_implementation_audit.md` and `implemented_commands.md`.
+
+## Partially Implemented
+
+- Laser command coverage exists only as raw register get/set plumbing, and the
+  current command key parsing appears inconsistent with the dispatch prefix.
+- Higher-level laser tuning/status helper APIs exist in `lasers.c`, but the
+  public command table does not expose most of them.
+
+
+
