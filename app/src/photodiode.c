@@ -42,6 +42,11 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
     "hk",
 };
 
+static void photodiode_sample_timer_handler(struct k_timer *timer);
+
+static K_SEM_DEFINE(pd_sample_sem, 0, 1);
+static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
+
 /* Hardware docs specify ADS1115 +/-6.144 V full scale at ADC_GAIN_1_3, which
  * gives 187.5 uV per signed 16-bit count.
  */
@@ -54,6 +59,16 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
 #define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
+
+static void photodiode_sample_timer_handler(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+
+    /* Timer expiry is interrupt context; ADS1115 I/O stays in the photodiode
+     * thread so ADC bus transactions never run in the ISR.
+     */
+    k_sem_give(&pd_sample_sem);
+}
 
 struct photodiode_runtime_channel {
     bool valid;
@@ -504,9 +519,19 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         k_sleep(K_MSEC(100));
     }
 
+    k_timer_start(&pd_sample_timer, K_NO_WAIT, K_MSEC(PUBLISH_INTERVAL_MS));
+
     while (1) {
         struct app_photodiode_settings settings;
         int64_t start = k_uptime_get();
+        uint32_t elapsed_samples;
+
+        k_sem_take(&pd_sample_sem, K_FOREVER);
+        elapsed_samples = k_timer_status_get(&pd_sample_timer);
+        if (elapsed_samples > 1U) {
+            LOG_WRN("ADC sample timer missed %u intervals",
+                    (unsigned int)(elapsed_samples - 1U));
+        }
 
         app_settings_get_photodiode(&settings);
 
@@ -521,12 +546,9 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         }
 
         int64_t elapsed = k_uptime_get() - start;  // overflow every 300M years
-        int64_t remaining = PUBLISH_INTERVAL_MS - elapsed;
-
-        if (remaining > 0) {
-            k_sleep(K_MSEC(remaining));
-        } else {
-            LOG_WRN("ADC loop overran interval by %lld ms", -remaining);
+        if (elapsed > PUBLISH_INTERVAL_MS) {
+            LOG_WRN("ADC loop overran interval by %lld ms",
+                    elapsed - PUBLISH_INTERVAL_MS);
         }
     }
 }

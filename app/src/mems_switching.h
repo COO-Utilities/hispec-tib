@@ -2,9 +2,10 @@
  * @file mems_switching.h
  * @brief MEMS switch pulse scheduling and board-local route tables.
  *
- * The router owns one `k_work_delayable` tick that clears pulse pins, applies
- * requested static/toggling switch states, and quantizes requested toggle rates
- * into fixed MEMS ticks. Public calls can sleep on the router mutex but do not
+ * A kernel timer provides the MEMS cadence and a dedicated MEMS thread performs
+ * GPIO-expander writes. The thread clears pulse pins, applies requested
+ * static/toggling switch states, and quantizes requested toggle rates into
+ * fixed MEMS ticks. Public calls can sleep on the router mutex but do not
  * publish MQTT or persist state.
  */
 
@@ -106,7 +107,6 @@ struct mems_router {
     const struct mems_route *routes;
     uint8_t num_routes;
     struct k_mutex lock;
-    struct k_work_delayable toggler_work;
 };
 
 /**
@@ -123,7 +123,7 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
 /**
  * @brief Queue a static or toggling MEMS switch state change.
  *
- * The router-owned delayable work applies pulses on its next tick. A positive
+ * The router-owned MEMS thread applies pulses on its next tick. A positive
  * @p requested_toggle_rate_hz updates the stored requested rate and is
  * quantized to the nearest firmware tick period before toggling starts.
  */
@@ -135,8 +135,8 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
  *
  * @p state_ticks is the number of ticks spent in @p state during each
  * @p period_ticks cycle. The function converts that to the internal A-state
- * numerator, updates the switch period, and lets the router-owned delayable
- * work apply pulses on subsequent ticks.
+ * numerator, updates the switch period, and lets the router-owned MEMS thread
+ * apply pulses on subsequent ticks.
  */
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
                                 uint32_t state_ticks, uint32_t period_ticks,

@@ -49,7 +49,7 @@ flowchart TD
   Router --> Attens[setup profile attenuators]
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
-  Threads --> SNTP[start SNTP work]
+  Threads --> SNTP[start SNTP thread]
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
   MQTTInit --> Loop[main MQTT/outbound loop]
@@ -205,14 +205,16 @@ flowchart TD
 flowchart TD
   Command[mems or memsroute command] --> Lock[lock router/switch]
   Lock --> Target[store requested state or tick pattern]
-  Target --> Schedule[schedule router delayable work]
-  Schedule --> Tick[MEMS work tick]
+  Target --> Timer[periodic k_timer]
+  Timer --> Wake[wake MEMS router thread]
+  Wake --> Tick[MEMS router tick]
   Tick --> Clear[clear pulse pins]
   Clear --> Apply[set A/B pulse pins for current tick]
   Apply --> Advance[advance duty and stop counters]
-  Advance --> More{active toggles remain}
-  More -- yes --> Reschedule[reschedule next tick]
-  More -- no --> Idle[idle with last logical state cached]
+  Advance --> Missed{missed tick?}
+  Missed -- no --> Idle[idle until next timer release]
+  Missed -- yes --> Classify[cleanup late lows, skip stale highs]
+  Classify --> Idle
 ```
 
 ## 12. Split Command Flow
@@ -285,15 +287,16 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Init[sntp_sync_init] --> Work[delayable SNTP work]
-  Network[network connected] --> ScheduleNow[schedule sync now]
-  IPSet[ip ntp change] --> ScheduleNow
-  Work --> Server{manual or DHCP NTP server}
-  Server -- none --> Retry[schedule retry]
+  Init[sntp_sync_init] --> Thread[low-priority SNTP thread]
+  Network[network connected] --> Wake[wake sync now]
+  IPSet[ip ntp change] --> Wake
+  Thread --> Server{manual or DHCP NTP server}
+  Wake --> Server
+  Server -- none --> Retry[thread waits retry interval]
   Server -- present --> SNTP[sntp_simple blocking call]
   SNTP -- success --> Clock[clock_settime]
   Clock --> Status[synced status]
-  Status --> Resync[schedule hourly resync]
+  Status --> Resync[thread waits hourly resync]
   SNTP -- fail --> Error[last_error and retry]
 ```
 

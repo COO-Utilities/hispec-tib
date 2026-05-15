@@ -20,7 +20,7 @@ Runtime ownership is:
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
 - `command.c`: MQTT/serial command normalization, dispatch, response builders.
 - `devices.c`: board strap detection, profile setup, shared device objects.
-- `mems_switching.c`: MEMS switch state, route matching, toggler work.
+- `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, estimates, and
@@ -30,7 +30,7 @@ Runtime ownership is:
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
 - `tempsense.c`: DS18B20 polling and cache.
-- `sntp_sync.c`: SNTP delayable-work sync and status.
+- `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: Zephyr settings-backed app configuration and calibration.
 - `app_warning.c`: local warning log plus best-effort MQTT warning publication.
 
@@ -130,11 +130,14 @@ SNTP is independent of manual `time` commands. Manual time setting updates
 `CLOCK_REALTIME`; it does not mark SNTP state as manual. If SNTP is configured
 and later succeeds, it will update the clock again, and failures remain visible
 through `time`, `ip`, and status paths that report SNTP state.
+SNTP network waits run in a low-priority SNTP thread, not on the system
+workqueue and not in the command, MQTT, MEMS, or ADC timing paths.
 
 ## Hardware Control
 
 Commands do not directly publish. For example, MEMS commands update
-router-owned switch state that is applied by the MEMS delayable-work tick.
+router-owned switch state that is applied by the timer-driven MEMS router
+thread.
 Photodiode sampling does not publish directly. Throughput monitoring owns
 photodiode stream publication through `outbound_queue`. Warning publication is
 non-blocking and best-effort.

@@ -136,8 +136,8 @@ a replacement for `commands.md`.
 - Validation: route must exist in current board profile and every route switch
   must exist.
 - Side effects: sets MEMS switch requested states through the router.
-- Blocking/enqueue: can lock router state and schedule MEMS delayable work; no
-  direct publish.
+- Blocking/enqueue: can lock router state and update state applied by the MEMS
+  router thread; no direct publish.
 - Handler: `memsroute_get()`, `memsroute_set()` in `app/src/command.c`.
 
 ### `memsroute/route_loss`
@@ -163,7 +163,8 @@ a replacement for `commands.md`.
 - Validation: state is `A` or `B`; `duty_cycle` only valid with state `A`;
   `toggle_rate_hz` must be greater than zero; `stopafter_s` must be in range.
 - Response: state, duty cycle, requested and quantized toggle rate, stop-after.
-- Side effects: updates router-owned MEMS switch state and schedules toggler.
+- Side effects: updates router-owned MEMS switch state applied by the MEMS
+  router thread.
 - Enqueue: can enqueue `mems_rate_quantized` warning.
 - Serial shorthand: `mems/<switch> A [duty_cycle] [stopafter_s]`.
 - Handler: `mems_get()`, `mems_set()` in `app/src/command.c`.

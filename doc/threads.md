@@ -9,6 +9,10 @@ and calls `coo_mqtt_process()`. It can block in MQTT connect/process and sleeps
 watchdog interval so a dead broker does not starve the main loop long enough to
 reset the device.
 
+`CONFIG_MAIN_THREAD_PRIORITY` is set below MEMS and photodiode timing work but
+above command execution so outbound command responses and watchdog feeding are
+not delayed by command handlers.
+
 ## Command Executor Thread
 
 `command_executor_thread()` blocks on `k_msgq_get(&inbound_queue, K_FOREVER)`.
@@ -33,8 +37,13 @@ main loop drains `outbound_queue`.
 ## Photodiode Thread
 
 `photodiode_thread()` is active only for the TIB profile. It waits for board
-strap detection and ADS1115 readiness, samples YJ and HK channels, updates dark
-and noise/window state, and sleeps to target the 20 ms sampling period.
+strap detection and ADS1115 readiness. A `k_timer` provides the 20 ms sampling
+cadence and the timer callback only wakes the photodiode thread; ADS1115 bus
+I/O remains in thread context. The thread samples YJ and HK channels and updates
+dark/noise/window state.
+
+If the timer reports missed periods, the thread logs the missed count and takes
+one current sample. Missed ADC sampling periods are not replayed.
 
 ## Temperature Thread
 
@@ -57,29 +66,51 @@ interval, reads the cached ambient temperature, and drives the auxiliary
 laser-bank heater GPIO. It does not publish MQTT directly; override warnings
 are queued through `app_warning_emit()`.
 
+## MEMS Router Thread
+
+`mems_router_thread()` is released by a periodic `k_timer` at
+`MEMS_SWITCH_ROUTER_TICK_MS`. The timer expiry runs in interrupt context and
+only gives a semaphore. The MEMS thread owns GPIO-expander writes, pulse cleanup,
+duty-cycle counter advancement, and stop-after countdowns.
+
+MEMS toggling is not catch-up work. A missed high-to-low cleanup is still
+performed because leaving a pulse pin asserted is the worse behavior. A missed
+low-to-high pulse is emitted late only when the requested high window still has
+enough remaining service time; a fully stale high pulse is skipped and logged.
+
+## SNTP Thread
+
+`sntp_sync_thread()` runs only when `CONFIG_SNTP` is enabled. It handles initial
+sync, network-connect wakeups, NTP setting changes, failure retry, and hourly
+resync. `sntp_simple()` can block up to the SNTP timeout, but that wait happens
+only in the low-priority SNTP thread.
+
 ## Zephyr System Workqueue Users
 
 The following delayable work items run in Zephyr system workqueue context:
 
-- MEMS router toggler work.
-- SNTP sync/retry/resync work.
 - Network reconnect work.
 - Serial guard expiration.
 - Delayed reboot.
 
-Work handlers should remain short. The current SNTP handler may block up to the
-SNTP timeout, and the MEMS toggler performs GPIO expander writes on each tick.
-That SNTP wait runs in the Zephyr system workqueue, not in the photodiode
-thread, command executor, or main MQTT/outbound loop.
+Work handlers should remain short. Physical timing loops and SNTP do not run on
+the system workqueue.
 
 ## Thread Priorities
 
 Current configured priorities:
 
-- Command executor: 5.
-- Photodiode thread: 5.
-- Laser-bank control thread: 7.
-- Temperature thread: 5, with a source TODO that it should be lowest.
+- MEMS router thread: 2.
+- Photodiode thread: 3.
+- Main MQTT/outbound/watchdog thread: 4.
+- Laser-bank control thread: 5.
+- Command executor: 6.
 - Serial thread: 6.
+- Throughput monitor thread: 7.
+- SNTP thread: 10.
+- Temperature thread: 11.
 
-These priorities need human review after hardware timing tests.
+Lower numeric values are higher priority in Zephyr preemptive priorities. The
+priority order keeps physical MEMS and ADC cadence ahead of network, command,
+and telemetry work; command ingress over serial and MQTT is treated as
+equivalent at the command-executor layer.

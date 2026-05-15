@@ -1,4 +1,4 @@
-# Queues and Work Items
+# Queues, Timers, and Work Items
 
 ## `inbound_queue`
 
@@ -24,6 +24,9 @@ telemetry directly. Throughput monitoring enqueues photodiode stream telemetry
 to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample
 is dropped.
 
+Photodiode sampling is released by a `k_timer`; ADC I/O runs in the photodiode
+thread, not in the timer ISR.
+
 ## Named Scheduled Actions
 
 `app_scheduled_actions.c` wraps a small fixed table of `k_work_delayable`
@@ -39,17 +42,22 @@ behaviors with fixed enum entries.
 
 ## MEMS Router Work
 
-Each initialized `mems_router` owns one `k_work_delayable` tick. Every tick:
+The active `mems_router` is driven by a periodic `k_timer` and a dedicated MEMS
+thread. The timer callback only gives a semaphore; GPIO-expander writes happen
+in the MEMS thread. Every MEMS thread tick:
 
 1. Locks the router.
 2. Clears pulse pins whose per-switch electrical pulse window has expired.
 3. Applies any target-state pulses for switches whose service interval is due.
 4. Advances duty-cycle counters and stop-after counters on each switch's
    FFSW/FFLS pulse-width cadence.
-5. Reschedules itself for `MEMS_SWITCH_ROUTER_TICK_MS`.
 
 The tick uses raw GPIO pin APIs because board profiles store expander pin
 numbers rather than `gpio_dt_spec` objects.
+
+Missed MEMS ticks are logged. High-to-low pulse cleanup is still applied, late
+low-to-high pulses are applied only when their requested high window has not
+fully elapsed, and fully stale high pulses are skipped.
 
 ## Network Reconnect Work
 
@@ -61,17 +69,14 @@ require reboot.
 
 ## SNTP Work
 
-`sntp_sync.c` uses one delayable work item for initial sync, reschedule on
-network connect, retry after failure, and hourly resync after success. Manual
-`time` commands do not alter SNTP status; SNTP will update the clock on the next
-successful sync.
+`sntp_sync.c` uses one low-priority thread for initial sync, network-connect
+wakeups, retry after failure, and hourly resync after success. Manual `time`
+commands do not alter SNTP status; SNTP will update the clock on the next
+successful sync. The blocking `sntp_simple()` wait does not run on the system
+workqueue.
 
 ## Work/Queue Human Review
 
-- MEMS toggler work currently performs repeated GPIO bus activity at the tick
-  rate. Source TODO notes this may be more I/O than necessary.
-- SNTP work can block the Zephyr system workqueue while waiting for an SNTP
-  reply. It does not block photodiode sampling, command execution, or outbound
-  queue draining, which run in separate threads. If future MEMS timing tests
-  show system-workqueue jitter matters, move SNTP to a dedicated low-priority
-  thread/workqueue.
+- Network reconnect work still runs from the system workqueue and calls
+  `conn_mgr_all_if_connect(true)`. MEMS, photodiode sampling, command execution,
+  outbound queue draining, and SNTP do not depend on that workqueue path.

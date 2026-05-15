@@ -1,9 +1,9 @@
 /**
  * @file sntp_sync.c
- * @brief Delayable-work SNTP sync, retry, and hourly resync logic.
+ * @brief Low-priority SNTP sync, retry, and hourly resync logic.
  *
- * The work item chooses manual or DHCP NTP source, calls sntp_simple(), updates
- * CLOCK_REALTIME on success, and records status for `time` and `ip`.
+ * The SNTP thread chooses manual or DHCP NTP source, calls sntp_simple(),
+ * updates CLOCK_REALTIME on success, and records status for `time` and `ip`.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -31,15 +31,28 @@ LOG_MODULE_REGISTER(sntp_sync, LOG_LEVEL_INF);
 #define SNTP_SYNC_TIMEOUT_MS 3000U
 #define SNTP_SYNC_RETRY_INTERVAL_MS 30000U
 #define SNTP_SYNC_RESYNC_INTERVAL_MS 3600000U
+#define SNTP_SYNC_INITIAL_DELAY_MS 1000U
+#define SNTP_SYNC_STACK_SIZE 1400
+#define SNTP_SYNC_THREAD_PRIORITY 10
 
 struct sntp_sync_runtime {
 	struct k_mutex lock;
-	struct k_work_delayable sync_work;
 	struct sntp_sync_status status;
 	bool initialized;
 };
 
 static struct sntp_sync_runtime g_sntp;
+
+#if defined(CONFIG_SNTP)
+static void sntp_sync_thread(void *p1, void *p2, void *p3);
+
+static K_SEM_DEFINE(sntp_start_sem, 0, 1);
+static K_SEM_DEFINE(sntp_wake_sem, 0, 1);
+
+K_THREAD_DEFINE(sntp_sync_tid, SNTP_SYNC_STACK_SIZE,
+		sntp_sync_thread, NULL, NULL, NULL,
+		SNTP_SYNC_THREAD_PRIORITY, 0, 0);
+#endif
 
 const char *sntp_sync_source_str(enum sntp_sync_source source)
 {
@@ -194,8 +207,9 @@ static int sntp_sync_now_internal(void)
 		return -ENOENT;
 	}
 
-	/* sntp_simple() blocks this system-workqueue item until a reply arrives
-	 * or the timeout expires. It never runs in the MQTT or ADC timing path.
+	/* sntp_simple() blocks this low-priority SNTP thread until a reply
+	 * arrives or the timeout expires. It never runs in the MQTT, command,
+	 * MEMS, or ADC timing paths.
 	 */
 	rc = sntp_simple(server, SNTP_SYNC_TIMEOUT_MS, &sntp_time);
 	if (rc != 0) {
@@ -218,33 +232,39 @@ static int sntp_sync_now_internal(void)
 }
 #endif
 
-static void sntp_sync_work_handler(struct k_work *work)
+#if defined(CONFIG_SNTP)
+static void sntp_sync_thread(void *p1, void *p2, void *p3)
 {
-	int rc;
 	uint32_t next_ms;
 
-	ARG_UNUSED(work);
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
 
-	rc = sntp_sync_now_internal();
-	if (rc != 0) {
-		LOG_WRN("SNTP sync failed (%d)", rc);
-		set_status_result(rc, 0U);
-		next_ms = SNTP_SYNC_RETRY_INTERVAL_MS;
-	} else {
-		next_ms = SNTP_SYNC_RESYNC_INTERVAL_MS;
+	k_sem_take(&sntp_start_sem, K_FOREVER);
+	next_ms = SNTP_SYNC_INITIAL_DELAY_MS;
+
+	while (1) {
+		int rc;
+
+		(void)k_sem_take(&sntp_wake_sem, K_MSEC(next_ms));
+
+		rc = sntp_sync_now_internal();
+		if (rc != 0) {
+			LOG_WRN("SNTP sync failed (%d)", rc);
+			set_status_result(rc, 0U);
+			next_ms = SNTP_SYNC_RETRY_INTERVAL_MS;
+		} else {
+			next_ms = SNTP_SYNC_RESYNC_INTERVAL_MS;
+		}
 	}
-
-	/* Rescheduling the same delayable work provides retry/resync behavior
-	 * without creating another thread or user-programmable scheduler.
-	 */
-	(void)k_work_reschedule(&g_sntp.sync_work, K_MSEC(next_ms));
 }
+#endif
 
 void sntp_sync_init(void)
 {
 	memset(&g_sntp, 0, sizeof(g_sntp));
 	k_mutex_init(&g_sntp.lock);
-	k_work_init_delayable(&g_sntp.sync_work, sntp_sync_work_handler);
 
 	k_mutex_lock(&g_sntp.lock, K_FOREVER);
 #if defined(CONFIG_SNTP)
@@ -259,7 +279,7 @@ void sntp_sync_init(void)
 	k_mutex_unlock(&g_sntp.lock);
 
 #if defined(CONFIG_SNTP)
-	(void)k_work_schedule(&g_sntp.sync_work, K_SECONDS(1));
+	k_sem_give(&sntp_start_sem);
 #endif
 }
 
@@ -270,7 +290,7 @@ void sntp_sync_schedule_now(void)
 	}
 
 #if defined(CONFIG_SNTP)
-	(void)k_work_reschedule(&g_sntp.sync_work, K_NO_WAIT);
+	k_sem_give(&sntp_wake_sem);
 #endif
 }
 

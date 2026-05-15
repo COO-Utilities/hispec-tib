@@ -9,7 +9,8 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## Command/API Mismatches
 
-- `commands.md` documents `lasersettings`, but `command.c` has no dispatch
+### Laser stuff
+  - `commands.md` documents `lasersettings`, but `command.c` has no dispatch
   entry for it.
 - `commands.md` documents `temp` set/alarm behavior. Current code registers
   `temp` as GET-only and returns cached ambient temperature plus
@@ -36,17 +37,12 @@ LLMs Agents: Do NOT change heading names in this file.
 
 - CAL switch and route names remain provisional in `devices.c` pending final
   fiber-path names.
+- need to expose laser-bank idle TEC temp cache in `temp` response
 
 ## Decisions To Make
 
 - laser output state and Maiman TEC/current setpoints are not restored after reboot.
-- DS2408 relay output state is intentionally not restored after reboot; the
-  local driver defaults the expander outputs low/off. Verify DS2408 relay polarity on
-  first PCB bring-up.
-- Decide whether `temp` should expose the laser-bank heater control loop's TEC
-  cache or remain ambient-only.
-- Review thread priorities after hardware timing tests. `main.c` still tags the
-  temperature thread priority with a source TODO.
+- Verify DS2408 relay polarity on first PCB bring-up.
 - Decide intended persistence for MEMS switch state, AS split requested/actual
   state, laser output/tuning state, and last-command metadata.
 
@@ -62,7 +58,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - `app/src/command.c`: internal split-route error is marked as theoretically
   impossible if compiled route tables are correct.
 - `app/src/devices.c`: final CAL switch/route names need an owner decision.
-- `app/src/main.c`: temperature thread priority should probably be lowest.
 - `app/src/maiman.h`: compare Maiman behavior against the referenced
   validation/test scripts.
 - 
@@ -83,15 +78,3 @@ Do not design or implement these without a detailed owner specification:
 - Add test coverage for the attenuator model and inverse once calibration
   expectations are owner-approved.
 - Add automated tests for command parsing and non-hardware domain logic.
-- Reconcile implemented command behavior against `commands.md`; see
-  `command_implementation_audit.md` and `implemented_commands.md`.
-
-## Partially Implemented
-
-- Laser command coverage exists only as raw register get/set plumbing, and the
-  current command key parsing appears inconsistent with the dispatch prefix.
-- Higher-level laser tuning/status helper APIs exist in `lasers.c`, but the
-  public command table does not expose most of them.
-
-
-
