@@ -114,40 +114,31 @@ BUILD_ASSERT(ARRAY_SIZE(laser_profiles) == HISPEC_LASER_COUNT,
 static int profile_for_id(enum hispec_laser_id id,
 			  const struct hispec_laser_driver_profile **profile);
 
-static void laser_default_settings(enum hispec_laser_id id,
-				   struct app_laser_channel_settings *out)
+static void ensure_laser_runtime_settings_locked(void)
 {
-	const struct hispec_laser_driver_profile *profile;
+	struct app_laser_settings stored = {0};
 
-	if (out == NULL || profile_for_id(id, &profile) != 0) {
-		return;
-	}
-
-	memset(out, 0, sizeof(*out));
-	out->properties = *profile->properties;
-	out->current_set_calibration_pct = 100.0f;
-	out->disable_tec_at_autooff = true;
-	out->autooff_s = 3U * 3600U;
-	out->tune_delta_nm = 0.0f;
-	out->total_emitting_s = 0.0;
-}
-
-static void ensure_laser_runtime_defaults_locked(void)
-{
 	if (laser_runtime_initialized) {
 		return;
 	}
 
+	/* app_settings_init() owns loading defaults plus persisted values. The
+	 * laser module pulls the completed snapshot on first use so boot code does
+	 * not need a laser-specific post-settings hook and app_settings.c stays a
+	 * storage layer instead of calling into hardware/domain modules.
+	 */
+	app_settings_get_laser(&stored);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		laser_default_settings((enum hispec_laser_id)i, &laser_settings[i]);
+		laser_settings[i] = stored.channel[i];
 		laser_autooff_deadline_ms[i] = 0;
 	}
+
 	laser_runtime_initialized = true;
 }
 
 static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
 {
-	ensure_laser_runtime_defaults_locked();
+	ensure_laser_runtime_settings_locked();
 	if (id < 0 || id >= HISPEC_LASER_COUNT) {
 		return NULL;
 	}
@@ -413,20 +404,6 @@ int hispec_laser_get_driver_profile(enum hispec_laser_id id,
 				    const struct hispec_laser_driver_profile **out)
 {
 	return profile_for_id(id, out);
-}
-
-void hispec_laser_load_app_settings(void)
-{
-	struct app_laser_settings stored = {0};
-
-	app_settings_get_laser(&stored);
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		laser_settings[i] = stored.channel[i];
-		laser_autooff_deadline_ms[i] = 0;
-	}
-	laser_runtime_initialized = true;
-	k_mutex_unlock(&laser_lock);
 }
 
 int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv)
@@ -1388,7 +1365,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	ensure_laser_runtime_defaults_locked();
+	ensure_laser_runtime_settings_locked();
 	settings = laser_settings[id];
 	props = &laser_settings[id].properties;
 	k_mutex_unlock(&laser_lock);
@@ -1557,7 +1534,7 @@ int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	ensure_laser_runtime_defaults_locked();
+	ensure_laser_runtime_settings_locked();
 	*out = laser_settings[id];
 	k_mutex_unlock(&laser_lock);
 	return 0;
@@ -1586,7 +1563,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	ensure_laser_runtime_defaults_locked();
+	ensure_laser_runtime_settings_locked();
 	previous = laser_settings[id];
 
 	if (apply_driver) {
@@ -1658,7 +1635,7 @@ float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
 	float value = LASERPROP_NA;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	ensure_laser_runtime_defaults_locked();
+	ensure_laser_runtime_settings_locked();
 	if (id >= 0 && id < HISPEC_LASER_COUNT) {
 		value = laser_settings[id].tune_delta_nm;
 	}
@@ -1675,7 +1652,7 @@ void hispec_laser_service_autooff(void)
 		bool stop_tec = false;
 
 		k_mutex_lock(&laser_lock, K_FOREVER);
-		ensure_laser_runtime_defaults_locked();
+		ensure_laser_runtime_settings_locked();
 		expired = laser_autooff_deadline_ms[i] > 0 &&
 			  now >= laser_autooff_deadline_ms[i];
 		stop_tec = laser_settings[i].disable_tec_at_autooff;

@@ -170,13 +170,6 @@ const laserprops_t *hispec_laser_properties(enum hispec_laser_id id);
 int hispec_laser_get_driver_profile(enum hispec_laser_id id,
 				    const struct hispec_laser_driver_profile **out);
 
-/**
- * @brief Load app-owned laser settings into the laser runtime cache.
- *
- * Call after app_settings_init(). This does not power hardware or touch Modbus.
- */
-void hispec_laser_load_app_settings(void);
-
 /** @brief Initialize a Maiman driver handle for the selected laser channel. */
 int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
 
