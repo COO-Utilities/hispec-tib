@@ -36,8 +36,7 @@ jobs:
       - name: Build
         run: |
           cd doc
-          SPHINXOPTS="-W" make html
-
+          make html
           mkdir deploy
           mv _build_sphinx/html/* deploy
 

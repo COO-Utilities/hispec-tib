@@ -110,7 +110,7 @@ static const char *const as_switch_names[6] = {
 	"hk_as1", "hk_as2", "hk_as3",
 };
 
-/* TODO decide on final CAL route/switch names once the fiber path names are finalized. */
+
 static const char *const cal_switch_names[7] = {
 	"cal1", "cal2", "cal3", "cal4", "cal5", "cal6", "cal7",
 };
@@ -119,14 +119,16 @@ static const char *const cal_switch_names[7] = {
  * Board profiles below limit how many of these pairs are instantiated.
  */
 static const gpio_pin_t mems_switch_pin_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
-	{0, 1}, {2, 3}, {4, 5}, {6, 7},
-	{8, 9}, {10, 11}, {12, 13}, {14, 15},
+	{6, 7},  	//sw1
+	{8, 9}, 		//sw2
+	{4, 5},		//sw3
+	{10, 11},	//sw4
+	{12, 13},	//sw5
+	{14, 15},	//sw6
+	{2, 3},		//sw7
+	{0, 1},		//sw8
 };
 
-/* Per-switch compile-time nominal toggle rates (Hz), quantized in mems_switch_init(). */
-static const float mems_switch_toggle_rate_hz[MAX_NUM_MEMS_SWITCHES] = {
-	5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f,
-};
 
 struct attenuator_dac_pair {
 	const struct device *dev;
@@ -841,7 +843,7 @@ void setup_mems_switches_and_routes(void)
 				 mems_switch_pin_pairs[i][1],
 				 profile->switch_names[i],
 				 switch_type,
-				 mems_switch_toggle_rate_hz[i],
+				 MEMS_SWITCH_MAX_TOGGLE_HZ,
 				 'A');
 		mems_switch_ptrs[i] = &mems_switches[i];
 	}
