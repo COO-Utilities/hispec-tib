@@ -33,7 +33,6 @@ target_sources(app PRIVATE
         src/tempsense.c
         src/tempsense.h
         src/mems_switching.c
-        src/sntp_sync.c
         src/attenuator.h
         src/app_scheduled_actions.h
         src/app_settings.h
@@ -48,5 +47,9 @@ target_sources(app PRIVATE
         src/photodiode.h
         src/throughput_monitor.h
         src/mems_switching.h
+)
+
+target_sources_ifdef(CONFIG_SNTP app PRIVATE
+        src/sntp_sync.c
         src/sntp_sync.h
 )

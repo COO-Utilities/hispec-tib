@@ -32,7 +32,9 @@
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #include "tempsense.h"
+#if defined(CONFIG_SNTP)
 #include "sntp_sync.h"
+#endif
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
@@ -274,7 +276,9 @@ int main(void)
 				LASERBANK_CONTROL_PRIORITY, 0, K_NO_WAIT);
 	}
 
+#if defined(CONFIG_SNTP)
 	sntp_sync_init();
+#endif
 
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);

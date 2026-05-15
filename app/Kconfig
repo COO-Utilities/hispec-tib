@@ -10,6 +10,13 @@ menu "Zephyr"
 source "Kconfig.zephyr"
 endmenu
 
+config NET_DHCPV4_OPTION_NTP_SERVER
+	default y if SNTP && NET_DHCPV4
+
+choice SNTP_LOG_LEVEL_CHOICE
+	default SNTP_LOG_LEVEL_DBG if SNTP
+endchoice
+
 module = APP
 module-str = APP
 source "subsys/logging/Kconfig.template.log_config"

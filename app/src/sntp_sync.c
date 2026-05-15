@@ -18,9 +18,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
-#if defined(CONFIG_SNTP)
 #include <zephyr/net/sntp.h>
-#endif
 
 #include <coo_commons/network.h>
 
@@ -43,7 +41,6 @@ struct sntp_sync_runtime {
 
 static struct sntp_sync_runtime g_sntp;
 
-#if defined(CONFIG_SNTP)
 static void sntp_sync_thread(void *p1, void *p2, void *p3);
 
 static K_SEM_DEFINE(sntp_start_sem, 0, 1);
@@ -52,7 +49,6 @@ static K_SEM_DEFINE(sntp_wake_sem, 0, 1);
 K_THREAD_DEFINE(sntp_sync_tid, SNTP_SYNC_STACK_SIZE,
 		sntp_sync_thread, NULL, NULL, NULL,
 		SNTP_SYNC_THREAD_PRIORITY, 0, 0);
-#endif
 
 const char *sntp_sync_source_str(enum sntp_sync_source source)
 {
@@ -164,7 +160,6 @@ static enum sntp_sync_source choose_ntp_server(char *out, size_t out_len)
 	return SNTP_SYNC_SOURCE_NONE;
 }
 
-#if defined(CONFIG_SNTP)
 static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_out)
 {
 	struct timespec ts = {0};
@@ -225,14 +220,7 @@ static int sntp_sync_now_internal(void)
 	set_status_result(0, utc_ms);
 	return 0;
 }
-#else
-static int sntp_sync_now_internal(void)
-{
-	return -ENOTSUP;
-}
-#endif
 
-#if defined(CONFIG_SNTP)
 static void sntp_sync_thread(void *p1, void *p2, void *p3)
 {
 	uint32_t next_ms;
@@ -259,7 +247,6 @@ static void sntp_sync_thread(void *p1, void *p2, void *p3)
 		}
 	}
 }
-#endif
 
 void sntp_sync_init(void)
 {
@@ -267,20 +254,13 @@ void sntp_sync_init(void)
 	k_mutex_init(&g_sntp.lock);
 
 	k_mutex_lock(&g_sntp.lock, K_FOREVER);
-#if defined(CONFIG_SNTP)
 	g_sntp.status.enabled = true;
 	g_sntp.status.last_error = -ENETDOWN;
-#else
-	g_sntp.status.enabled = false;
-	g_sntp.status.last_error = -ENOTSUP;
-#endif
 	g_sntp.status.source = SNTP_SYNC_SOURCE_NONE;
 	g_sntp.initialized = true;
 	k_mutex_unlock(&g_sntp.lock);
 
-#if defined(CONFIG_SNTP)
 	k_sem_give(&sntp_start_sem);
-#endif
 }
 
 void sntp_sync_schedule_now(void)
@@ -289,9 +269,7 @@ void sntp_sync_schedule_now(void)
 		return;
 	}
 
-#if defined(CONFIG_SNTP)
 	k_sem_give(&sntp_wake_sem);
-#endif
 }
 
 void sntp_sync_get_status(struct sntp_sync_status *out)

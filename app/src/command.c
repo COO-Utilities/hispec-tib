@@ -36,7 +36,9 @@
 #include "mems_switching.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
+#if defined(CONFIG_SNTP)
 #include "sntp_sync.h"
+#endif
 #include "tempsense.h"
 #include <coo_commons/json_utils.h>
 #include <coo_commons/mqtt_client.h>
@@ -1381,12 +1383,23 @@ struct OutMsg ip_get(const struct Command *cmd)
 {
     struct app_ip_settings ip_cfg;
     struct network_ipv4_info net = {0};
+#if defined(CONFIG_SNTP)
     struct sntp_sync_status sntp = {0};
+    const char *ntp_source;
+    const char *ntp_server;
+#else
+    const char *ntp_source = "unsupported";
+    const char *ntp_server = "";
+#endif
     char payload[MAX_PAYLOAD_LEN];
 
     app_settings_get_ip(&ip_cfg);
     (void)network_get_ipv4_info(&net);
+#if defined(CONFIG_SNTP)
     sntp_sync_get_status(&sntp);
+    ntp_source = sntp_sync_source_str(sntp.source);
+    ntp_server = sntp.server;
+#endif
 
     snprintk(payload, sizeof(payload),
              "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
@@ -1401,8 +1414,8 @@ struct OutMsg ip_get(const struct Command *cmd)
              ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway, ip_cfg.dns, ip_cfg.ntp,
              net.link_ready ? "true" : "false",
              net.ip,
-             sntp_sync_source_str(sntp.source),
-             sntp.server);
+             ntp_source,
+             ntp_server);
 
     return _msg_builder(cmd, RESP_OK, payload);
 }
@@ -1608,9 +1621,11 @@ struct OutMsg ip_set(const struct Command *cmd)
 
     if (changed) {
         app_settings_update_ip(&ip_cfg, persist);
-        if (ntp_changed && ntp_supported) {
+#if defined(CONFIG_SNTP)
+        if (ntp_changed) {
             sntp_sync_schedule_now();
         }
+#endif
     }
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
@@ -1709,12 +1724,32 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 struct OutMsg time_get(const struct Command *cmd)
 {
     struct timespec ts = {0};
+#if defined(CONFIG_SNTP)
     struct sntp_sync_status sntp = {0};
+    const char *ntp_source;
+    const char *ntp_server;
+    const char *ntp_synced;
+    uint64_t ntp_last_sync_utc;
+    int ntp_last_error;
+#else
+    const char *ntp_source = "unsupported";
+    const char *ntp_server = "";
+    const char *ntp_synced = "false";
+    uint64_t ntp_last_sync_utc = 0U;
+    int ntp_last_error = -ENOTSUP;
+#endif
     uint64_t utc_ms;
     char payload[MAX_PAYLOAD_LEN];
 
     clock_gettime(CLOCK_REALTIME, &ts);
+#if defined(CONFIG_SNTP)
     sntp_sync_get_status(&sntp);
+    ntp_source = sntp_sync_source_str(sntp.source);
+    ntp_server = sntp.server;
+    ntp_synced = sntp.synced ? "true" : "false";
+    ntp_last_sync_utc = sntp.last_sync_utc_ms;
+    ntp_last_error = sntp.last_error;
+#endif
     utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 
     snprintk(payload, sizeof(payload),
@@ -1722,11 +1757,11 @@ struct OutMsg time_get(const struct Command *cmd)
              "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\",\"synced\":%s,"
              "\"last_sync_utc\":%llu,\"last_error\":%d}}",
              (unsigned long long)utc_ms, k_cycle_get_32(), (long long)k_uptime_get(),
-             sntp_sync_source_str(sntp.source),
-             sntp.server,
-             sntp.synced ? "true" : "false",
-             (unsigned long long)sntp.last_sync_utc_ms,
-             sntp.last_error);
+             ntp_source,
+             ntp_server,
+             ntp_synced,
+             (unsigned long long)ntp_last_sync_utc,
+             ntp_last_error);
 
     return _msg_builder(cmd, RESP_OK, payload);
 }
