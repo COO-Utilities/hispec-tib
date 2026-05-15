@@ -33,10 +33,9 @@ and current C source remains the source of truth for what is implemented today.
   current command key parsing appears inconsistent with the dispatch prefix.
 - Higher-level laser tuning/status helper APIs exist in `lasers.c`, but the
   public command table does not expose most of them.
-- Runtime network reconfiguration is available in the library helper, but the
-  `ip` command currently reports reboot-required for network-affecting changes.
-- SNTP status is exposed through `time` and `ip`; manual time set does not mark
-  SNTP status as manual. SNTP might also have too much blocking on a main/command thread
+- Runtime network reconfiguration is wired through the `ip` command.
+- SNTP status is exposed through `time` and `ip`. Manual `time` commands only
+  set `CLOCK_REALTIME`; they intentionally do not change SNTP status.
 
 ## Open items
 
@@ -46,6 +45,5 @@ and current C source remains the source of truth for what is implemented today.
   state, laser output/tuning state, and last-command metadata.
 
 - Add automated tests for command parsing and non-hardware domain logic.
-
 
 

@@ -44,6 +44,16 @@ int coo_mqtt_format_broker_endpoint(const struct coo_mqtt_broker_config *cfg,
 				    char *out, size_t out_len);
 
 /**
+ * @brief Resolve a broker config without changing the active MQTT broker.
+ *
+ * Numeric IPv4 hosts succeed without DNS. Hostnames require DNS support and a
+ * configured resolver that can return an IPv4 address. @p resolved_ip may be
+ * NULL when the caller only needs validation.
+ */
+int coo_mqtt_resolve_broker_config(const struct coo_mqtt_broker_config *cfg,
+				   char *resolved_ip, size_t resolved_ip_len);
+
+/**
  * @brief MQTT message callback function type
  *
  * Called when an MQTT message is received on a subscribed topic.

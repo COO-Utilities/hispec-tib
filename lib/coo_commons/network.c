@@ -21,6 +21,9 @@
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/net_ip.h>
+#if defined(CONFIG_DNS_RESOLVER)
+#include <zephyr/net/dns_resolve.h>
+#endif
 #if defined(CONFIG_NET_DHCPV4)
 #include <zephyr/net/dhcpv4.h>
 #endif
@@ -40,7 +43,9 @@ static struct net_mgmt_event_callback net_ipv4_mgmt_cb;
 static struct k_work_delayable reconnect_work;
 static bool network_initialized;
 
-//TODO is this really necessary, I'm inclined to axe it
+/* Tiny local copies keep profile/default setup readable without dynamic
+ * allocation or repeating strncpy termination rules.
+ */
 static void str_set(char *dst, size_t dst_size, const char *src)
 {
 	if (dst == NULL || dst_size == 0U) {
@@ -56,7 +61,6 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 	dst[dst_size - 1U] = '\0';
 }
 
-//TODO is this really necessary, I'm inclined to axe it, use net_addr_pton directly, this looks like defensive coding
 static bool parse_ipv4(const char *text, struct in_addr *out)
 {
 	if (text == NULL || out == NULL || text[0] == '\0') {
@@ -65,6 +69,53 @@ static bool parse_ipv4(const char *text, struct in_addr *out)
 
 	return net_addr_pton(AF_INET, text, out) == 0;
 }
+
+static bool parse_ipv4_nonzero(const char *text, struct in_addr *out)
+{
+	struct in_addr addr = {0};
+
+	if (!parse_ipv4(text, &addr) || net_ipv4_is_addr_unspecified(&addr)) {
+		return false;
+	}
+
+	if (out != NULL) {
+		*out = addr;
+	}
+	return true;
+}
+
+#if defined(CONFIG_DNS_RESOLVER)
+static int configure_manual_dns(const struct network_ipv4_profile *profile)
+{
+	struct dns_resolve_context *ctx;
+	struct in_addr dns = {0};
+	const char *servers[2];
+	int rc;
+
+	if (profile == NULL || profile->dns[0] == '\0') {
+		return 0;
+	}
+	if (!parse_ipv4_nonzero(profile->dns, &dns)) {
+		return -EINVAL;
+	}
+
+	ctx = dns_resolve_get_default();
+	servers[0] = profile->dns;
+	servers[1] = NULL;
+	rc = dns_resolve_reconfigure(ctx, servers, NULL, DNS_SOURCE_MANUAL);
+	if (rc != 0) {
+		LOG_WRN("Manual DNS reconfigure failed (%d)", rc);
+	}
+
+	return rc;
+}
+#else
+static int configure_manual_dns(const struct network_ipv4_profile *profile)
+{
+	ARG_UNUSED(profile);
+	return 0;
+}
+#endif
 
 static bool profile_has_valid_static_ipv4(const struct network_ipv4_profile *profile)
 {
@@ -150,6 +201,10 @@ static int apply_static_profile(struct net_if *iface,
 
 	if (parse_ipv4(profile->gateway, &gateway)) {
 		net_if_ipv4_set_gw(iface, &gateway);
+	}
+
+	if (configure_manual_dns(profile) != 0) {
+		return -EINVAL;
 	}
 
 	active_source = source;
@@ -296,6 +351,12 @@ static int apply_active_config(struct net_if *iface)
 	if (active_cfg.try_dhcp_first) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
+#if defined(CONFIG_DNS_RESOLVER)
+			if (!active_cfg.prefer_dhcp_dns &&
+			    configure_manual_dns(&active_cfg.static_profile) != 0) {
+				return -EINVAL;
+			}
+#endif
 			return 0;
 		}
 		LOG_WRN("DHCPv4 timed out (%d), trying static", rc);
@@ -461,6 +522,8 @@ int network_reconfigure(const struct network_config *cfg)
 {
 	int rc;
 	struct net_if *iface;
+	struct network_config prior_cfg;
+	enum network_ipv4_source prior_source;
 
 	if (cfg == NULL) {
 		return -EINVAL;
@@ -472,10 +535,15 @@ int network_reconfigure(const struct network_config *cfg)
 		return -ENETDOWN;
 	}
 
+	prior_cfg = active_cfg;
+	prior_source = active_source;
 	active_cfg = *cfg;
 	rc = apply_active_config(iface);
 	if (rc != 0) {
 		LOG_WRN("No IPv4 configuration could be applied (%d)", rc);
+		active_cfg = prior_cfg;
+		active_source = prior_source;
+		(void)apply_active_config(iface);
 	}
 
 	return rc;

@@ -42,8 +42,6 @@ Source-of-truth rules:
    :caption: Developer Maintained Docs
 
    status.md
-   libraries.md
-   networking_plan.md
    nuisances.md
    todo.md
 

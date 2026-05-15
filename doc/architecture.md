@@ -34,6 +34,20 @@ Runtime ownership is:
 - `app_settings.c`: Zephyr settings-backed app configuration and calibration.
 - `app_warning.c`: local warning log plus best-effort MQTT warning publication.
 
+Project-local wrappers under `lib/coo_commons` are intentionally small:
+
+- `network.c`: Ethernet IPv4 bootstrap and runtime reconfiguration with
+  DHCP/static/fallback profile selection.
+- `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
+  and subscription helpers around Zephyr MQTT.
+- `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
+  helpers used by command code.
+- `pid.c`: generic PID helper, currently not central to the app runtime.
+
+The application otherwise uses Zephyr GPIO, I2C, ADC, DAC, UART, Modbus,
+settings/NVS, watchdog, console, networking, MQTT, SNTP, sensor, and 1-Wire
+APIs directly.
+
 ## Boot Sequence
 
 1. `main()` starts and initializes the watchdog.
@@ -78,6 +92,40 @@ normalization.
 The command executor runs exactly one command at a time from `inbound_queue`.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response.
+
+## Network And MQTT Runtime
+
+Network capability presence follows Zephyr Kconfig: DHCP uses
+`CONFIG_NET_DHCPV4`, DNS uses `CONFIG_DNS_RESOLVER`, and SNTP uses
+`CONFIG_SNTP`. App code should not add duplicate capability flags.
+
+IPv4 configuration precedence is:
+
+1. Runtime settings from the `ip` command.
+2. Compile-time static IPv4 defaults.
+3. Fallback service profile for direct laptop recovery.
+
+At apply time the helper tries DHCP first when configured, otherwise static,
+then fallback, then DHCP as the last attempt for static-first mode. The `ip`
+command applies network-affecting changes at runtime through
+`network_reconfigure()`; it no longer requires reboot for ordinary IPv4 profile
+changes. Failed runtime reconfigure attempts restore the prior active profile.
+
+DNS and NTP addresses are profile/settings data. Unsupported DNS/NTP fields are
+reported by command code. Manual DNS is applied to Zephyr's resolver when DNS is
+compiled in and a nonzero DNS server is configured; DHCP DNS is used when DHCP
+provides it and `preferdhcpdns` is true.
+
+MQTT broker hostnames are accepted only when they resolve before settings are
+updated. Numeric IPv4 brokers do not require DNS. After a broker setting change,
+the main loop disconnects and tries the new broker once; if that connection
+fails, firmware restores the prior broker setting and emits a best-effort
+`mqtt_broker_revert` warning.
+
+SNTP is independent of manual `time` commands. Manual time setting updates
+`CLOCK_REALTIME`; it does not mark SNTP state as manual. If SNTP is configured
+and later succeeds, it will update the clock again, and failures remain visible
+through `time`, `ip`, and status paths that report SNTP state.
 
 ## Hardware Control
 

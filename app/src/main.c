@@ -25,6 +25,7 @@
 
 #include "app_identity.h"
 #include "app_settings.h"
+#include "app_warning.h"
 #include "command.h"
 #include "devices.h"
 #include "laserbank_control.h"
@@ -128,6 +129,31 @@ static void load_mqtt_config(struct coo_mqtt_broker_config *cfg)
 	cfg->port = mqtt_cfg.broker_port;
 }
 
+static bool mqtt_config_equal(const struct coo_mqtt_broker_config *a,
+			      const struct coo_mqtt_broker_config *b)
+{
+	return a != NULL && b != NULL &&
+	       a->port == b->port &&
+	       strcmp(a->host, b->host) == 0;
+}
+
+static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
+{
+	struct app_mqtt_settings mqtt_cfg = {0};
+
+	if (cfg == NULL) {
+		return;
+	}
+
+	strncpy(mqtt_cfg.broker_host, cfg->host, sizeof(mqtt_cfg.broker_host) - 1U);
+	mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
+	mqtt_cfg.broker_port = cfg->port;
+	/* Revert persistent settings too so a resolvable but unreachable broker
+	 * does not strand the next boot on the rejected endpoint.
+	 */
+	app_settings_update_mqtt(&mqtt_cfg, true);
+}
+
 static void wdt_callback(const struct device *wdt_dev, int channel_id)
 {
 	ARG_UNUSED(wdt_dev);
@@ -182,8 +208,10 @@ int main(void)
 	int wdt_channel = -1;
 	bool mqtt_subscribed = false;
 	uint32_t mqtt_cfg_revision = 0U;
+	bool mqtt_revert_on_connect_failure = false;
 	struct network_config net_cfg;
 	struct coo_mqtt_broker_config mqtt_cfg;
+	struct coo_mqtt_broker_config prior_mqtt_cfg = {0};
 
 	LOG_INF("HiSPEC-FIB PCB  %s\n", APP_VERSION_STRING);
 
@@ -274,14 +302,23 @@ int main(void)
 		uint32_t current_mqtt_revision = app_settings_get_mqtt_revision();
 
 		if (current_mqtt_revision != mqtt_cfg_revision) {
+			struct coo_mqtt_broker_config new_mqtt_cfg;
+
 			mqtt_cfg_revision = current_mqtt_revision;
-			load_mqtt_config(&mqtt_cfg);
-			rc = coo_mqtt_set_broker_config(&mqtt_cfg);
+			load_mqtt_config(&new_mqtt_cfg);
+			rc = coo_mqtt_set_broker_config(&new_mqtt_cfg);
 			if (rc != 0) {
 				LOG_ERR("MQTT broker reconfigure rejected (%d)", rc);
-			} else if (coo_mqtt_is_connected()) {
-				(void)mqtt_disconnect(&client_ctx, NULL);
-				mqtt_subscribed = false;
+			} else {
+				if (!mqtt_config_equal(&new_mqtt_cfg, &mqtt_cfg)) {
+					prior_mqtt_cfg = mqtt_cfg;
+					mqtt_cfg = new_mqtt_cfg;
+					mqtt_revert_on_connect_failure = true;
+				}
+				if (coo_mqtt_is_connected()) {
+					(void)mqtt_disconnect(&client_ctx, NULL);
+					mqtt_subscribed = false;
+				}
 			}
 		}
 
@@ -298,6 +335,23 @@ int main(void)
 			rc = coo_mqtt_connect(&client_ctx);
 			if (rc == 0) {
 				mqtt_subscribed = false;
+				mqtt_revert_on_connect_failure = false;
+			} else if (mqtt_revert_on_connect_failure) {
+				char context[160];
+
+				snprintk(context, sizeof(context),
+					 "host=%s port=%u rc=%d",
+					 mqtt_cfg.host, mqtt_cfg.port, rc);
+				app_warning_emit("mqtt_broker_revert",
+						 "MQTT broker connection failed; reverting to prior broker",
+						 context);
+				LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
+					rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
+				mqtt_cfg = prior_mqtt_cfg;
+				(void)coo_mqtt_set_broker_config(&mqtt_cfg);
+				restore_mqtt_config(&mqtt_cfg);
+				mqtt_cfg_revision = app_settings_get_mqtt_revision();
+				mqtt_revert_on_connect_failure = false;
 			}
 		}
 

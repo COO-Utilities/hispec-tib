@@ -781,40 +781,50 @@ float32 laser_current_ontime_s
 
 - **Response topic:** `cmd/<device>/resp/ip`
   - Set result:
-     ```text
-     {     "status": "success"|"partial",
-           "ntp": "unsupported",
-           "dns": "unsupported",
-           "dhcp": "unsupported"
-         }
+     ```json
+     {
+       "status": "success",
+       "apply": "immediate"
+     }
      ```
+     Unsupported capability fields return `status:"partial"` with per-feature
+     `dhcp`, `dns`, and `ntp` values.
   - Query result:
     ```json
-    {     "preferdhcpntp": true,
-          "preferdhcpdns": true,
-          "source": "<source>",
-          "sourceonnextboot": "<source>",
-          "trydhcpfirst": true,
-          "source_settings": {
-            "<source>": {
-              "ip": "<ip>",
-              "ntp": "<ip>",
-              "dns": "<ip>",
-              "subnet": "<subnet>",
-              "gateway": "<gateway>"
-            }
-          }
-        }
+    {
+      "source": "<source>",
+      "trydhcpfirst": true,
+      "preferdhcpdns": true,
+      "preferdhcpntp": true,
+      "manual": {
+        "ip": "<ip>",
+        "subnet": "<subnet>",
+        "gateway": "<gateway>",
+        "dns": "<ip>",
+        "ntp": "<ip>"
+      },
+      "active": {
+        "ready": true,
+        "ip": "<ip>"
+      },
+      "ntp": {
+        "source": "<source>",
+        "server": "<ip>"
+      }
+    }
     ```
 
 - **Notes:**
-  - unsupported features don’t error; partial config accepted
-  - IP precedence: `temporary_override` → `persistent manual setting` → `dhcp` (if enabled) → `compiled`.
-    - if trydhcpfirst is true then order is `temporary_override` →  `dhcp` (if enabled) → `persistent manual setting` → `compiled`.
+  - Unsupported features don’t error; supported changes are still applied and
+    partial status reports unsupported fields.
+  - IP precedence: runtime settings → compiled static defaults → fallback
+    service profile.
+  - If `trydhcpfirst` is true and DHCP is compiled in, DHCP is tried before the
+    runtime static profile.
   - partial comes with keys indicating which settings are not supported.
-  - unsupported have unsupported in place of an ip
-  - source names are: `temporary_override`, `persistent_manual`, `dhcp`, `compiled`.
-  - `temporary_override` is a manual ip with persistent = false 
+  - network-affecting changes are applied at runtime; ordinary changes do not
+    require reboot.
+  - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
 
 ### `mqtt`
 - **Request topic:** `cmd/<device>/req/mqtt`
@@ -837,7 +847,11 @@ float32 laser_current_ontime_s
 - **Notes:**
   - Broker value must be one `<host-or-ip>:<port>` string.
   - If DNS is not compiled in, hostname values are rejected.
-  - Successful set updates runtime settings and triggers MQTT reconnect behavior.
+  - Hostname values must resolve before settings are updated. Numeric IPv4
+    broker values do not require DNS.
+  - Successful set updates runtime settings and triggers MQTT reconnect
+    behavior. If the new broker cannot connect, firmware restores the prior
+    broker and emits a best-effort `mqtt_broker_revert` warning.
 
 ### `serialguard`
 - **Request topic:** `cmd/<device>/req/serialguard`

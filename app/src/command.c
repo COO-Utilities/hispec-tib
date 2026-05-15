@@ -1406,6 +1406,47 @@ struct OutMsg ip_get(const struct Command *cmd)
     return _msg_builder(cmd, RESP_OK, payload);
 }
 
+static void network_config_from_app_ip(const struct app_ip_settings *ip_cfg,
+                                       struct network_config *net_cfg)
+{
+#if defined(CONFIG_NET_DHCPV4)
+    const bool dhcp_supported = true;
+#else
+    const bool dhcp_supported = false;
+#endif
+
+    if (ip_cfg == NULL || net_cfg == NULL) {
+        return;
+    }
+
+    network_config_defaults(net_cfg);
+    net_cfg->try_dhcp_first = ip_cfg->try_dhcp_first && dhcp_supported;
+    net_cfg->prefer_dhcp_dns = ip_cfg->prefer_dhcp_dns;
+    net_cfg->prefer_dhcp_ntp = ip_cfg->prefer_dhcp_ntp;
+
+    strncpy(net_cfg->static_profile.ip, ip_cfg->ip,
+            sizeof(net_cfg->static_profile.ip) - 1U);
+    net_cfg->static_profile.ip[sizeof(net_cfg->static_profile.ip) - 1U] = '\0';
+    strncpy(net_cfg->static_profile.subnet, ip_cfg->subnet,
+            sizeof(net_cfg->static_profile.subnet) - 1U);
+    net_cfg->static_profile.subnet[sizeof(net_cfg->static_profile.subnet) - 1U] = '\0';
+    strncpy(net_cfg->static_profile.gateway, ip_cfg->gateway,
+            sizeof(net_cfg->static_profile.gateway) - 1U);
+    net_cfg->static_profile.gateway[sizeof(net_cfg->static_profile.gateway) - 1U] = '\0';
+
+#if defined(CONFIG_DNS_RESOLVER)
+    strncpy(net_cfg->static_profile.dns, ip_cfg->dns,
+            sizeof(net_cfg->static_profile.dns) - 1U);
+    net_cfg->static_profile.dns[sizeof(net_cfg->static_profile.dns) - 1U] = '\0';
+#endif
+
+#if defined(CONFIG_SNTP)
+    strncpy(net_cfg->static_profile.ntp, ip_cfg->ntp,
+            sizeof(net_cfg->static_profile.ntp) - 1U);
+    net_cfg->static_profile.ntp[sizeof(net_cfg->static_profile.ntp) - 1U] = '\0';
+#endif
+}
+
 struct OutMsg ip_set(const struct Command *cmd)
 {
     struct app_ip_settings ip_cfg;
@@ -1550,6 +1591,20 @@ struct OutMsg ip_set(const struct Command *cmd)
         return _msg_builder(cmd, RESP_ERROR, "{\"status\":\"error\",\"msg\":\"no recognized ip fields\"}");
     }
 
+    if (network_changed) {
+        struct network_config net_cfg;
+        int rc;
+
+        network_config_from_app_ip(&ip_cfg, &net_cfg);
+        rc = network_reconfigure(&net_cfg);
+        if (rc != 0) {
+            snprintk(response, sizeof(response),
+                     "{\"status\":\"error\",\"msg\":\"network reconfigure failed\",\"rc\":%d}",
+                     rc);
+            return _msg_builder(cmd, RESP_ERROR, response);
+        }
+    }
+
     if (changed) {
         app_settings_update_ip(&ip_cfg, persist);
         if (ntp_changed && ntp_supported) {
@@ -1559,7 +1614,7 @@ struct OutMsg ip_set(const struct Command *cmd)
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
         const char *apply =
-            network_changed ? "reboot_required" :
+            network_changed ? "immediate" :
             (ntp_changed ? "immediate" : "none");
         snprintk(response, sizeof(response),
                  "{\"status\":\"partial\",\"dhcp\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\",\"apply\":\"%s\"}",
@@ -1571,7 +1626,7 @@ struct OutMsg ip_set(const struct Command *cmd)
     }
 
     if (network_changed) {
-        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"reboot_required\"}");
+        return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\",\"apply\":\"immediate\"}");
     }
 
     if (ntp_changed) {
@@ -1579,17 +1634,6 @@ struct OutMsg ip_set(const struct Command *cmd)
     }
 
     return _msg_builder(cmd, RESP_OK, "{\"status\":\"success\"}");
-}
-
-static bool mqtt_host_is_numeric_ipv4(const char *host)
-{
-    struct in_addr addr = {0};
-
-    if (host == NULL || host[0] == '\0') {
-        return false;
-    }
-
-    return net_addr_pton(AF_INET, host, &addr) == 0;
 }
 
 struct OutMsg mqtt_get(const struct Command *cmd)
@@ -1621,13 +1665,10 @@ struct OutMsg mqtt_set(const struct Command *cmd)
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
     char endpoint[160] = {0};
+    char resolved_ip[NET_IPV4_ADDR_LEN] = {0};
     bool persist = false;
     int parse_rc;
-#if defined(CONFIG_DNS_RESOLVER)
-    const bool dns_supported = true;
-#else
-    const bool dns_supported = false;
-#endif
+    int rc;
 
     app_settings_get_mqtt(&mqtt_cfg);
 
@@ -1642,9 +1683,14 @@ struct OutMsg mqtt_set(const struct Command *cmd)
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"broker must be host-or-ip:port\"}");
     }
-    if (!mqtt_host_is_numeric_ipv4(broker_cfg.host) && !dns_supported) {
+    rc = coo_mqtt_resolve_broker_config(&broker_cfg, resolved_ip, sizeof(resolved_ip));
+    if (rc == -ENOTSUP) {
         return _msg_builder(cmd, RESP_ERROR,
                             "{\"status\":\"error\",\"msg\":\"broker hostname requires DNS\"}");
+    }
+    if (rc != 0) {
+        return _msg_builder(cmd, RESP_ERROR,
+                            "{\"status\":\"error\",\"msg\":\"broker host did not resolve\"}");
     }
     strncpy(mqtt_cfg.broker_host, broker_cfg.host, sizeof(mqtt_cfg.broker_host) - 1U);
     mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';

@@ -66,11 +66,13 @@ a replacement for `commands.md`.
   `subnet`, `gateway`, `dns`, `ntp`, `persistent`.
 - Validation: bools must parse as bools; string fields must fit fixed IPv4
   buffers; unsupported DHCP/DNS/NTP fields return partial status.
-- Response: success with `apply:"reboot_required"` for network changes,
+- Response: success with `apply:"immediate"` for network changes,
   `apply:"immediate"` for NTP-only changes, or partial support status.
-- Side effects: updates runtime settings; optional settings persistence; NTP
-  changes schedule SNTP sync.
-- Blocking: settings writes may block. No direct publish.
+- Side effects: applies runtime network changes through `network_reconfigure()`,
+  updates runtime settings after successful apply, optional settings
+  persistence, and NTP changes schedule SNTP sync.
+- Blocking: runtime network reconfigure can wait for DHCP; settings writes may
+  block. No direct publish.
 - Handler: `ip_get()`, `ip_set()` in `app/src/command.c`.
 
 ### `mqtt`
@@ -78,11 +80,14 @@ a replacement for `commands.md`.
 - GET returns `broker` as `<host-or-ip>:<port>` and `dns_supported`.
 - SET fields: `broker`, optional `persistent`.
 - Validation: broker must be one `<host-or-ip>:<port>` value; hostname
-  requires DNS support unless numeric IPv4; port must be 1..65535.
+  requires DNS support and must resolve before settings are updated unless
+  numeric IPv4; port must be 1..65535.
 - Response: `{"status":"success","apply":"reconnect"}`.
 - Side effects: updates runtime broker settings; optional persistence; main
-  loop reconnects later.
-- Blocking: settings writes may block. No direct publish.
+  loop reconnects later. If the new broker fails its first connection attempt,
+  main restores the prior broker setting and emits `mqtt_broker_revert`.
+- Blocking: hostname resolution and settings writes may block. No direct
+  publish.
 - Serial shorthand: `mqtt <host-or-ip>:<port> [persistent]`.
 - Handler: `mqtt_get()`, `mqtt_set()` in `app/src/command.c`.
 

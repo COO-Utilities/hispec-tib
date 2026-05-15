@@ -45,8 +45,6 @@ LLMs Agents: Do NOT change heading names in this file.
   first PCB bring-up.
 - Decide whether `temp` should expose the laser-bank heater control loop's TEC
   cache or remain ambient-only.
-- Decide whether the SNTP work item may continue blocking in the Zephyr system
-  workqueue while waiting for an SNTP reply.
 - Review thread priorities after hardware timing tests. `main.c` still tags the
   temperature thread priority with a source TODO.
 
@@ -65,10 +63,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - `app/src/main.c`: temperature thread priority should probably be lowest.
 - `app/src/maiman.h`: compare Maiman behavior against the referenced
   validation/test scripts.
-- `lib/coo_commons/network.c`: review whether small network parsing wrappers
-  are still useful or should be removed.
-
-  
 ## Deferred Owner-Specified Capabilities
 
 Do not design or implement these without a detailed owner specification:

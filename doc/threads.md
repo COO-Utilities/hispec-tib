@@ -5,7 +5,9 @@
 `main()` is the network and MQTT pump. It feeds the watchdog, reconnects MQTT
 when the network is ready, resubscribes after reconnect, drains `outbound_queue`,
 and calls `coo_mqtt_process()`. It can block in MQTT connect/process and sleeps
-20 ms when MQTT is disconnected.
+20 ms when MQTT is disconnected. MQTT connect waits are bounded below the
+watchdog interval so a dead broker does not starve the main loop long enough to
+reset the device.
 
 ## Command Executor Thread
 
@@ -67,6 +69,8 @@ The following delayable work items run in Zephyr system workqueue context:
 
 Work handlers should remain short. The current SNTP handler may block up to the
 SNTP timeout, and the MEMS toggler performs GPIO expander writes on each tick.
+That SNTP wait runs in the Zephyr system workqueue, not in the photodiode
+thread, command executor, or main MQTT/outbound loop.
 
 ## Thread Priorities
 

@@ -54,15 +54,24 @@ numbers rather than `gpio_dt_spec` objects.
 ## Network Reconnect Work
 
 `lib/coo_commons/network.c` schedules reconnect work when Zephyr reports L4
-disconnect. The handler calls `conn_mgr_all_if_connect(true)`.
+disconnect. The handler calls `conn_mgr_all_if_connect(true)`. Runtime IP
+changes from the `ip` command call `network_reconfigure()` directly from the
+command executor; that command may block while DHCP is tried, but it does not
+require reboot.
 
 ## SNTP Work
 
-`sntp_sync.c` uses one delayable work item for initial sync, manual reschedule
-on network connect, retry after failure, and hourly resync after success.
+`sntp_sync.c` uses one delayable work item for initial sync, reschedule on
+network connect, retry after failure, and hourly resync after success. Manual
+`time` commands do not alter SNTP status; SNTP will update the clock on the next
+successful sync.
 
 ## Work/Queue Human Review
 
 - MEMS toggler work currently performs repeated GPIO bus activity at the tick
   rate. Source TODO notes this may be more I/O than necessary.
-- SNTP work can block in the system workqueue while waiting for an SNTP reply.
+- SNTP work can block the Zephyr system workqueue while waiting for an SNTP
+  reply. It does not block photodiode sampling, command execution, or outbound
+  queue draining, which run in separate threads. If future MEMS timing tests
+  show system-workqueue jitter matters, move SNTP to a dedicated low-priority
+  thread/workqueue.
