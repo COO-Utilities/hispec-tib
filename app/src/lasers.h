@@ -133,6 +133,8 @@ struct hispec_laser_tune_result {
 };
 
 struct hispec_laser_flux_estimate {
+	double current_ma;
+	double tec_temperature_c;
 	double power_mw;
 	double power_err_mw;
 	double wavelength_nm;
@@ -308,18 +310,16 @@ void hispec_laser_service_autooff(void);
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);
 
 /**
- * @brief Estimate emitted photon flux and laser-owned uncertainty.
+ * @brief Estimate emitted photon flux from the laser module's operating state.
  *
- * The fractional noise is applied to computed optical power and constant noise
- * is an absolute mW term. This helper performs only datasheet/property math; it
- * does not touch Modbus, GPIO, settings, or MQTT.
+ * The laser module owns the current/TEC setpoints used for this estimate. This
+ * reads only module state under a mutex; it does not perform Modbus I/O, change
+ * GPIO state, enqueue, publish, or persist settings.
  */
-int hispec_laser_estimate_flux(const laserprops_t *properties,
-			       float current_ma,
-			       float tec_temperature_c,
-			       float fractional_noise,
-			       float constant_noise_mw,
-			       struct hispec_laser_flux_estimate *out);
+int laser_estimate_flux(enum hispec_laser_id id,
+			float fractional_noise,
+			float constant_noise_mw,
+			struct hispec_laser_flux_estimate *out);
 
 /** @brief Return current-emission on-time tracked by this module since boot. */
 float hispec_laser_current_on_time_s(enum hispec_laser_id id);

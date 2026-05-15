@@ -56,8 +56,6 @@ struct throughput_state {
 	uint8_t attenuator_index;
 	char fiber;
 	float level_percent;
-	float current_ma;
-	float tec_temperature_c;
 	int64_t started_ms;
 	uint32_t stopafter_s;
 	uint8_t high_count;
@@ -178,23 +176,6 @@ static void put_f64(uint8_t *payload, size_t payload_len, size_t *offset, double
 	put_bytes(payload, payload_len, offset, &value, sizeof(value));
 }
 
-static void refresh_laser_snapshot(struct throughput_state *state)
-{
-	struct hispec_laser_status laser_status = {0};
-
-	if (state == NULL || hispec_laser_get_status(state->laser, &laser_status) != 0) {
-		return;
-	}
-
-	if (laser_status.current_set_ma == laser_status.current_set_ma) {
-		state->current_ma = laser_status.current_set_ma;
-	}
-	if (laser_status.tec_temperature_measured_c ==
-	    laser_status.tec_temperature_measured_c) {
-		state->tec_temperature_c = laser_status.tec_temperature_measured_c;
-	}
-}
-
 static int autolevel_adjust(struct throughput_state *state,
 			    const struct photodiode_channel_status *pd,
 			    const struct attenuator_transmission_estimate *atten)
@@ -239,7 +220,6 @@ static int autolevel_adjust(struct throughput_state *state,
 								     next_percent, 0U);
 			if (rc == 0) {
 				state->level_percent = next_percent;
-				refresh_laser_snapshot(state);
 			}
 		}
 		state->low_count = 0U;
@@ -262,7 +242,6 @@ static int autolevel_adjust(struct throughput_state *state,
 								     next_percent, 0U);
 			if (rc == 0) {
 				state->level_percent = next_percent;
-				refresh_laser_snapshot(state);
 			}
 		}
 		state->high_count = 0U;
@@ -276,7 +255,6 @@ static void publish_sample(const struct throughput_state *state,
 			   uint64_t time_ms)
 {
 	const struct pd_response *response = response_for_laser(state->laser);
-	const laserprops_t *props = hispec_laser_properties(state->laser);
 	struct attenuator_transmission_estimate atten = {0};
 	struct hispec_laser_flux_estimate laser_flux = {0};
 	struct OutMsg msg = {0};
@@ -299,12 +277,10 @@ static void publish_sample(const struct throughput_state *state,
 	bool pd_route_configured;
 	bool laser_route_configured;
 
-	if (response == NULL || props == NULL || laser_name == NULL ||
+	if (response == NULL || laser_name == NULL ||
 	    !attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					      0.0, 0.0, &atten) ||
-	    hispec_laser_estimate_flux(props, state->current_ma, state->tec_temperature_c,
-				       0.0f, 0.0f,
-				       &laser_flux) != 0) {
+	    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) != 0) {
 		return;
 	}
 
@@ -362,7 +338,8 @@ static void publish_sample(const struct throughput_state *state,
 		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
 		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
 		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, state->current_ma);
+		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			(float)laser_flux.current_ma);
 		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
 			(float)atten.attenuation_db);
 		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
@@ -399,7 +376,7 @@ static void publish_sample(const struct throughput_state *state,
 			",\"laser_current_ma\":%.2f,\"atten_db\":%.3f,"
 			"\"wavelength_nm\":%.1f,\"pd_ontime_s\":%.2f,"
 			"\"laser_current_ontime_s\":%.2f,\"flags\":[]}",
-			(double)state->current_ma, atten.attenuation_db,
+			laser_flux.current_ma, atten.attenuation_db,
 			laser_flux.wavelength_nm, pd_ontime_s,
 			laser_current_ontime_s) != 0) {
 		LOG_WRN("throughput telemetry payload too large");
@@ -434,7 +411,6 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 
 		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			bool pd_power = false;
-			const laserprops_t *props;
 			struct attenuator_transmission_estimate atten = {0};
 
 			if (!local[i].active) {
@@ -457,8 +433,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			props = hispec_laser_properties(local[i].laser);
-			if (local[i].autolevel && props != NULL &&
+			if (local[i].autolevel &&
 			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
 							     0.0, 0.0, &atten)) {
 				(void)autolevel_adjust(&local[i], &pd_status.channel[i],
@@ -466,8 +441,6 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				if (monitors[i].active && monitors[i].laser == local[i].laser) {
 					monitors[i].level_percent = local[i].level_percent;
-					monitors[i].current_ma = local[i].current_ma;
-					monitors[i].tec_temperature_c = local[i].tec_temperature_c;
 					monitors[i].high_count = local[i].high_count;
 					monitors[i].low_count = local[i].low_count;
 				}
@@ -485,7 +458,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status)
 {
 	const struct pd_response *response;
-	const laserprops_t *props;
 	uint8_t attenuator_index;
 	struct throughput_state next = {0};
 	int rc;
@@ -495,9 +467,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	}
 
 	response = response_for_laser(request->laser);
-	props = hispec_laser_properties(request->laser);
-	if (response == NULL || props == NULL ||
-	    (request->fiber != 'M' && request->fiber != 'S')) {
+	if (response == NULL || (request->fiber != 'M' && request->fiber != 'S')) {
 		return -EINVAL;
 	}
 	rc = attenuator_index_from_laser_id(request->laser, &attenuator_index);
@@ -528,18 +498,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		if (rc != 0) {
 			return rc;
 		}
-		refresh_laser_snapshot(&next);
-	} else {
-		struct hispec_laser_status laser_status = {0};
-
-		if (hispec_laser_get_status(request->laser, &laser_status) == 0) {
-			next.current_ma = laser_status.current_set_ma;
-			next.tec_temperature_c = laser_status.tec_temperature_measured_c;
-		}
-	}
-
-	if (!(next.tec_temperature_c == next.tec_temperature_c)) {
-		next.tec_temperature_c = props->operating_temp_c;
 	}
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
