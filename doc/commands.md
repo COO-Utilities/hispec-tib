@@ -458,6 +458,15 @@ Sets the wavelength tuning request used when running the laser. Performed best-e
 and smaller values are influenced by the required/requested drive current.
 
 
+### `laser/status`
+- **Request topic:** `cmd/<device>/req/laser/status`
+- Query: `{"name": "<lasername>" }`
+- **Response topic:** `cmd/<device>/resp/laser/status
+
+A superset of `laser/settings` with additional information about the laser's current state based on python code and 
+with internal/interlock type info as well
+
+
 ### `laser/settings`
 - **Request topic:** `cmd/<device>/req/laser/settings`
 - Set:
@@ -486,7 +495,7 @@ and smaller values are influenced by the required/requested drive current.
 
 - Query: `{"name": "<lasername>" }`
 
-- **Response topic:** `cmd/<device>/resp/lasersettings`
+- **Response topic:** `cmd/<device>/resp/laser/settings`
   - Set result: `{"status": "success"}`
   - Query result:
     ```json
@@ -552,7 +561,7 @@ and smaller values are influenced by the required/requested drive current.
 
 
 (laserbank-power)=
-### `laserbank/heater`
+### `laserbank/power`
 - **Request topic:** `cmd/<device>/req/laserbank/power`
   - Query: no payload
   - Set: `{"override":"auto|override_on|override_off"}` or topic suffix
@@ -946,13 +955,13 @@ off or no faults).
 ### `temp`
 - **Request topic:** `cmd/<device>/req/temp`
   - Query: No payload
-  - Set alarm: `{"alarm_level": 0.0}`
 
 - **Response topic:** `cmd/<device>/resp/temp`
-  - Query result: `{"ambient_c": 0.0, "laserbankavg_c": NaN| 0.0, "laser[name]_c": NaN| 0.0}`
+  - Query result: `{"ambient_c": 0.0, "laserbank_c": NaN| 0.0, "laser[name]_c": NaN| 0.0}`
   - Set result: `{"status": "success"}`
 
-- **Notes:** if above alarm level, all commands except this one return an alarm error. Laserbank temperature is not available if power is off or laser TEC is running.
+- **Notes:** Laser/bank temperature is not available if power is off or laser TEC is running. Bank temp is merely an 
+average of reported laser values. 
 
 ### `status`
 - **Request topic:** `cmd/<device>/req/status`
