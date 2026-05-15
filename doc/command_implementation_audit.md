@@ -11,12 +11,14 @@ the two without silently changing either contract.
 MQTT requests are accepted under:
 
 ```text
-cmd/hsfib-tib/req/#
+cmd/<device>/req/#
 ```
 
 The suffix after the request prefix is copied into `Command.key`.
 `dispatch_command()` chooses the longest dispatch-table key that is either an
 exact match or followed by `/`.
+The `<device>` component is board-profile dependent: `hsfib-tib`,
+`hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
 
 Implemented dispatch entries:
 
@@ -68,7 +70,7 @@ payload is a SET unless `msg_type:"get"` is also present.
 The default MQTT response topic is:
 
 ```text
-cmd/hsfib-tib/resp/<key>
+cmd/<device>/resp/<key>
 ```
 
 MQTT 5 `response_topic` overrides this default if it fits the fixed topic

@@ -54,6 +54,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define WDT_TIMEOUT_MS 6000
 
 static struct mqtt_client client_ctx;
+static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
 
 static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
 static struct k_thread exec_thread_data;
@@ -278,7 +279,7 @@ int main(void)
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);
 
-	rc = coo_mqtt_init(&client_ctx, APP_MQTT_DEVICE_ID);
+	rc = coo_mqtt_init(&client_ctx, app_mqtt_device_id());
 	if (rc != 0) {
 		LOG_ERR("MQTT init failed (%d)", rc);
 		return rc;
@@ -291,7 +292,27 @@ int main(void)
 	}
 	mqtt_cfg_revision = app_settings_get_mqtt_revision();
 	coo_mqtt_set_message_callback(command_handle_mqtt_publish);
-	(void)coo_mqtt_add_subscription(APP_MQTT_CMD_PREFIX "#", MQTT_QOS_2_EXACTLY_ONCE);
+	{
+		int written;
+		size_t prefix_len;
+
+		rc = app_mqtt_format_request_prefix(mqtt_cmd_subscription,
+						    sizeof(mqtt_cmd_subscription));
+		if (rc != 0) {
+			LOG_ERR("MQTT command topic prefix too long (%d)", rc);
+			return rc;
+		}
+		prefix_len = strlen(mqtt_cmd_subscription);
+		written = snprintk(mqtt_cmd_subscription + prefix_len,
+				   sizeof(mqtt_cmd_subscription) - prefix_len, "#");
+		if (written < 0 ||
+		    written >= (int)(sizeof(mqtt_cmd_subscription) - prefix_len)) {
+			LOG_ERR("MQTT command subscription topic too long");
+			return -ENOSPC;
+		}
+		(void)coo_mqtt_add_subscription(mqtt_cmd_subscription,
+						MQTT_QOS_2_EXACTLY_ONCE);
+	}
 
 	while (1) {
 		/* MQTT stays connected whenever the network is ready. Serial override

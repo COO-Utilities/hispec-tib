@@ -44,8 +44,6 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define APP_WARNING_TOPIC "dt/" APP_MQTT_DEVICE_ID "/warning"
-
 #define SERIAL_LINE_MAX 220
 #define SERIAL_WRAP_COLUMN 80U
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
@@ -282,7 +280,8 @@ struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const
     /* MQTT 5 response_topic is authoritative when supplied; otherwise the
      * firmware derives cmd/<device>/resp/<key> during ingress.
      */
-    snprintk(r.topic, sizeof(r.topic), APP_MQTT_RESP_PREFIX);
+    (void)app_mqtt_format_response_topic(cmd != NULL ? cmd->key : "",
+                                         r.topic, sizeof(r.topic));
     if (cmd && strlen(cmd->response_topic) > 0 && strlen(cmd->response_topic) < sizeof(r.topic)) {
         strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
     }
@@ -341,9 +340,7 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
 
 static bool derive_default_response_topic(const char *key, char *topic_out, size_t topic_out_len)
 {
-    const int n = snprintk(topic_out, topic_out_len, "%s%s", APP_MQTT_RESP_PREFIX, key);
-
-    return n > 0 && n < (int)topic_out_len;
+    return app_mqtt_format_response_topic(key, topic_out, topic_out_len) == 0;
 }
 
 static void enqueue_serial_error(const char *msg)
@@ -352,7 +349,7 @@ static void enqueue_serial_error(const char *msg)
 
     out.target = OUT_TARGET_SERIAL;
     out.msg_type = RESP_ERROR;
-    snprintk(out.topic, sizeof(out.topic), APP_MQTT_RESP_PREFIX "serial");
+    (void)app_mqtt_format_response_topic("serial", out.topic, sizeof(out.topic));
     out.payload_len = snprintk(out.payload, sizeof(out.payload),
                                "{\"status\":\"error\",\"msg\":\"%s\"}", msg);
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
@@ -661,6 +658,7 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
     struct Command cmd = {0};
     char req_topic[MAX_TOPIC_LEN];
     const char *suffix;
+    char cmd_prefix[MAX_TOPIC_LEN];
     size_t prefix_len;
     size_t suffix_len;
 
@@ -668,8 +666,11 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         return;
     }
 
-    prefix_len = strlen(APP_MQTT_CMD_PREFIX);
-    if (strncmp(req_topic, APP_MQTT_CMD_PREFIX, prefix_len) != 0) {
+    if (app_mqtt_format_request_prefix(cmd_prefix, sizeof(cmd_prefix)) != 0) {
+        return;
+    }
+    prefix_len = strlen(cmd_prefix);
+    if (strncmp(req_topic, cmd_prefix, prefix_len) != 0) {
         return;
     }
 
@@ -907,7 +908,7 @@ static void build_outbound_queue_full_warning(struct OutMsg *out)
     out->msg_type = RESP_OK;
     out->target = OUT_TARGET_MQTT_BEST_EFFORT;
     out->qos = 0U;
-    snprintk(out->topic, sizeof(out->topic), APP_WARNING_TOPIC);
+    (void)app_mqtt_format_data_topic("warning", out->topic, sizeof(out->topic));
     snprintk(out->payload, sizeof(out->payload),
              "{\"severity\":\"warning\",\"code\":\"outbound_queue_full\","
              "\"msg\":\"outbound queue reached capacity\",\"context\":\"command_drain\","

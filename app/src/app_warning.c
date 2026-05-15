@@ -21,8 +21,6 @@
 
 LOG_MODULE_REGISTER(app_warning, LOG_LEVEL_INF);
 
-#define APP_WARNING_TOPIC "dt/" APP_MQTT_DEVICE_ID "/warning"
-
 static int append_json_string(char *buf, size_t buf_len, size_t *off,
 			      const char *text)
 {
@@ -113,7 +111,7 @@ void app_warning_emit(const char *code, const char *msg, const char *context)
 	out.msg_type = RESP_OK;
 	out.target = OUT_TARGET_MQTT_BEST_EFFORT;
 	out.qos = 0U;
-	snprintk(out.topic, sizeof(out.topic), APP_WARNING_TOPIC);
+	(void)app_mqtt_format_data_topic("warning", out.topic, sizeof(out.topic));
 
 	if (build_warning_payload(out.payload, sizeof(out.payload), code, msg, context) != 0) {
 		LOG_WRN("warning payload too large; MQTT warning dropped");

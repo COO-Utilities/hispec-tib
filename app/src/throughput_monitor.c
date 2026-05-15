@@ -23,8 +23,6 @@
 
 LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 
-#define TP_TOPIC_YJ "dt/" APP_MQTT_DEVICE_ID "/yj_tput"
-#define TP_TOPIC_HK "dt/" APP_MQTT_DEVICE_ID "/hk_tput"
 #define TP_INTERVAL_MS 100U
 #define TP_ADC_USABLE_MV 5000.0
 #define TP_LOW_FRACTION 0.20
@@ -312,8 +310,9 @@ static void publish_sample(const struct throughput_state *state,
 
 	msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
 	msg.qos = 0;
-	snprintk(msg.topic, sizeof(msg.topic), state->channel == PHOTODIODE_CHANNEL_YJ ?
-		 TP_TOPIC_YJ : TP_TOPIC_HK);
+	(void)app_mqtt_format_data_topic(state->channel == PHOTODIODE_CHANNEL_YJ ?
+					 "yj_tput" : "hk_tput",
+					 msg.topic, sizeof(msg.topic));
 
 	if (state->binary) {
 		put_bytes((uint8_t *)msg.payload, sizeof(msg.payload), &off,

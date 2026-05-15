@@ -65,7 +65,7 @@ flowchart TD
   Ready -- yes --> Connected{MQTT connected}
   Connected -- no --> Connect[coo_mqtt_connect]
   Connected -- yes --> Drain[command_drain_outbound_queue]
-  Connect --> Subscribe[subscribe cmd/hsfib-tib/req/#]
+  Connect --> Subscribe[subscribe cmd/<device>/req/#]
   Subscribe --> Drain
   Drain --> Process[coo_mqtt_process poll/read]
   Process --> Loop
@@ -76,7 +76,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Pub[MQTT publish callback] --> Prefix{topic under cmd/hsfib-tib/req}
+  Pub[MQTT publish callback] --> Prefix{topic under cmd/<device>/req}
   Prefix -- no --> Drop[ignore]
   Prefix -- yes --> Copy[copy key payload properties]
   Copy --> Type{payload empty}
@@ -260,7 +260,7 @@ flowchart TD
   Enqueue -- full --> Drop[drop warning]
   Enqueue -- ok --> Main[main loop drain]
   Main --> MQTT{MQTT available and publish OK}
-  MQTT -- yes --> Topic[dt/hsfib-tib/warning]
+  MQTT -- yes --> Topic[dt/<device>/warning]
   MQTT -- no --> Drop
 ```
 

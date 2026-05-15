@@ -5,8 +5,11 @@ a replacement for `commands.md`.
 
 ## Global Rules
 
-- MQTT request prefix: `cmd/hsfib-tib/req/`.
-- Default MQTT response prefix: `cmd/hsfib-tib/resp/`.
+- MQTT request prefix: `cmd/<device>/req/`.
+- Default MQTT response prefix: `cmd/<device>/resp/`.
+- `<device>` is selected from the board strap: `tib` uses `hsfib-tib`,
+  `cal_hk` uses `hsfib-rcal`, `cal_yj` uses `hsfib-bcal`, and `as` uses
+  `hsfib-as`.
 - MQTT `response_topic` overrides the default when supplied and fitting the
   fixed buffer.
 - MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
@@ -25,28 +28,28 @@ a replacement for `commands.md`.
 
 | Command key | MQTT request topic | Default response topic | Serial form |
 | --- | --- | --- | --- |
-| `help` | `cmd/hsfib-tib/req/help` | `cmd/hsfib-tib/resp/help` | `help` |
-| `ip` | `cmd/hsfib-tib/req/ip` | `cmd/hsfib-tib/resp/ip` | `ip [payload]` |
-| `mqtt` | `cmd/hsfib-tib/req/mqtt` | `cmd/hsfib-tib/resp/mqtt` | `mqtt [payload]` |
-| `time` | `cmd/hsfib-tib/req/time` | `cmd/hsfib-tib/resp/time` | `time [payload]` |
-| `reboot` | `cmd/hsfib-tib/req/reboot` | `cmd/hsfib-tib/resp/reboot` | `reboot <payload>` |
-| `serialguard` | `cmd/hsfib-tib/req/serialguard` | `cmd/hsfib-tib/resp/serialguard` | `serialguard [payload]` |
-| `memsroute` | `cmd/hsfib-tib/req/memsroute` | `cmd/hsfib-tib/resp/memsroute` | `memsroute [payload]` |
-| `memsroute/route_loss` | `cmd/hsfib-tib/req/memsroute/route_loss` | `cmd/hsfib-tib/resp/memsroute/route_loss` | `memsroute/route_loss [payload]` |
-| `mems` | `cmd/hsfib-tib/req/mems` | `cmd/hsfib-tib/resp/mems` | `mems` |
-| `mems/<switch>` | `cmd/hsfib-tib/req/mems/<switch>` | `cmd/hsfib-tib/resp/mems/<switch>` | `mems/<switch> [payload]` |
-| `split/<channel>` | `cmd/hsfib-tib/req/split/<channel>` | `cmd/hsfib-tib/resp/split/<channel>` | `split/<channel> [payload]` |
-| `measure_throughput` | `cmd/hsfib-tib/req/measure_throughput` | `cmd/hsfib-tib/resp/measure_throughput` | `measure_throughput <payload>` |
-| `laserbank/poweron` | `cmd/hsfib-tib/req/laserbank/poweron` | `cmd/hsfib-tib/resp/laserbank/poweron` | `laserbank/poweron [payload]` |
-| `laserbank/poweroff` | `cmd/hsfib-tib/req/laserbank/poweroff` | `cmd/hsfib-tib/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
-| `laserbank/clearfaults` | `cmd/hsfib-tib/req/laserbank/clearfaults` | `cmd/hsfib-tib/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
-| `laserbank/heater` | `cmd/hsfib-tib/req/laserbank/heater` | `cmd/hsfib-tib/resp/laserbank/heater` | `laserbank/heater [auto|override_on|override_off]` |
-| `laser/...` | `cmd/hsfib-tib/req/laser/...` | `cmd/hsfib-tib/resp/laser/...` | `laser/... [payload]` |
-| `atten/<laser>/<setting>` | `cmd/hsfib-tib/req/atten/<laser>/<setting>` | `cmd/hsfib-tib/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
-| `pd` | `cmd/hsfib-tib/req/pd` | `cmd/hsfib-tib/resp/pd` | `pd [payload]` |
-| `pdsettings/<channel>` | `cmd/hsfib-tib/req/pdsettings/<channel>` | `cmd/hsfib-tib/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
-| `temp` | `cmd/hsfib-tib/req/temp` | `cmd/hsfib-tib/resp/temp` | `temp` |
-| `status` | `cmd/hsfib-tib/req/status` | `cmd/hsfib-tib/resp/status` | `status` |
+| `help` | `cmd/<device>/req/help` | `cmd/<device>/resp/help` | `help` |
+| `ip` | `cmd/<device>/req/ip` | `cmd/<device>/resp/ip` | `ip [payload]` |
+| `mqtt` | `cmd/<device>/req/mqtt` | `cmd/<device>/resp/mqtt` | `mqtt [payload]` |
+| `time` | `cmd/<device>/req/time` | `cmd/<device>/resp/time` | `time [payload]` |
+| `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot <payload>` |
+| `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` |
+| `memsroute` | `cmd/<device>/req/memsroute` | `cmd/<device>/resp/memsroute` | `memsroute [payload]` |
+| `memsroute/route_loss` | `cmd/<device>/req/memsroute/route_loss` | `cmd/<device>/resp/memsroute/route_loss` | `memsroute/route_loss [payload]` |
+| `mems` | `cmd/<device>/req/mems` | `cmd/<device>/resp/mems` | `mems` |
+| `mems/<switch>` | `cmd/<device>/req/mems/<switch>` | `cmd/<device>/resp/mems/<switch>` | `mems/<switch> [payload]` |
+| `split/<channel>` | `cmd/<device>/req/split/<channel>` | `cmd/<device>/resp/split/<channel>` | `split/<channel> [payload]` |
+| `measure_throughput` | `cmd/<device>/req/measure_throughput` | `cmd/<device>/resp/measure_throughput` | `measure_throughput <payload>` |
+| `laserbank/poweron` | `cmd/<device>/req/laserbank/poweron` | `cmd/<device>/resp/laserbank/poweron` | `laserbank/poweron [payload]` |
+| `laserbank/poweroff` | `cmd/<device>/req/laserbank/poweroff` | `cmd/<device>/resp/laserbank/poweroff` | `laserbank/poweroff [payload]` |
+| `laserbank/clearfaults` | `cmd/<device>/req/laserbank/clearfaults` | `cmd/<device>/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
+| `laserbank/heater` | `cmd/<device>/req/laserbank/heater` | `cmd/<device>/resp/laserbank/heater` | `laserbank/heater [auto|override_on|override_off]` |
+| `laser/...` | `cmd/<device>/req/laser/...` | `cmd/<device>/resp/laser/...` | `laser/... [payload]` |
+| `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
+| `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
+| `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
+| `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
+| `status` | `cmd/<device>/req/status` | `cmd/<device>/resp/status` | `status` |
 
 ## Command Details
 

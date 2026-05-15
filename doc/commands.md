@@ -9,6 +9,15 @@ Draft 0.1
 - **Device publishes (telemetry):** `dt/<device>/...`
 - **Device publishes (warnings):** `dt/<device>/warning`
 
+`<device>` is selected from the detected board strap:
+
+| Board profile | MQTT device name |
+| --- | --- |
+| `tib` | `hsfib-tib` |
+| `cal_hk` | `hsfib-rcal` |
+| `cal_yj` | `hsfib-bcal` |
+| `as` | `hsfib-as` |
+
 ### Global (applies to all commands)
 
 - Any response may be: `{"status":"error", "msg":<error message>}`

@@ -80,9 +80,13 @@ Board identity comes from exactly one active strap:
 
 ## Command Model
 
-MQTT subscribes to `cmd/hsfib-tib/req/#`. The suffix after that prefix is the
+MQTT subscribes to `cmd/<device>/req/#`. The suffix after that prefix is the
 command key. An MQTT response topic property is used when present; otherwise
-the default response topic is `cmd/hsfib-tib/resp/<key>`.
+the default response topic is `cmd/<device>/resp/<key>`.
+The `<device>` namespace is selected from the detected board strap: `tib` maps
+to `hsfib-tib`, `cal_hk` to `hsfib-rcal`, `cal_yj` to `hsfib-bcal`, and `as` to
+`hsfib-as`. The same name is used for telemetry under `dt/<device>/...` and as
+the MQTT client ID.
 
 Empty MQTT payloads are GET. Non-empty MQTT payloads default to SET unless the
 JSON payload has `msg_type:"get"`. Serial commands have no get/set words:

@@ -18,8 +18,11 @@ Behavior:
 Warning topic:
 
 ```text
-dt/hsfib-tib/warning
+dt/<device>/warning
 ```
+
+The `<device>` component follows the selected board strap: `hsfib-tib`,
+`hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
 
 Current warning codes seen in code:
 
@@ -31,17 +34,18 @@ Current warning codes seen in code:
 - `outbound_queue_full`
 - `laserbank_heater_override`
 
-## Photodiode Telemetry
+## Throughput Telemetry
 
-Photodiode telemetry is produced by `photodiode_thread()` on:
+Throughput telemetry is produced by `throughput_monitor_thread()` when
+`measure_throughput` is active. It is published on:
 
 ```text
-dt/hsfib-tib/photodiode
+dt/<device>/yj_tput
+dt/<device>/hk_tput
 ```
 
-Payload includes per-channel validity, raw counts, mV, dark-subtracted mV,
-estimated power, residual RMS noise, dark settings, dark measurement state,
-age, sample count, and uptime.
+Payload format is selected by the command request and is specified in
+`commands.md`.
 
 Telemetry is best-effort. It is queued directly to `outbound_queue` with
 `K_NO_WAIT`. If the outbound queue is full, the current sample is dropped. If
@@ -53,7 +57,7 @@ Command responses are `struct OutMsg` records built by handlers and drained by
 the main loop. MQTT response topic selection is:
 
 1. MQTT 5 `response_topic` property when present and fitting the fixed buffer.
-2. Default `cmd/hsfib-tib/resp/<key>`.
+2. Default `cmd/<device>/resp/<key>`.
 
 MQTT 5 correlation data is opaque requester state. Accepted command requests
 copy it into a fixed 16-byte static buffer, and command responses echo those
