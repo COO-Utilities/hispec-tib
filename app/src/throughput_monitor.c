@@ -55,6 +55,7 @@ struct throughput_state {
 	enum photodiode_channel channel;
 	uint8_t attenuator_index;
 	char fiber;
+	float level_percent;
 	float current_ma;
 	float tec_temperature_c;
 	int64_t started_ms;
@@ -177,15 +178,33 @@ static void put_f64(uint8_t *payload, size_t payload_len, size_t *offset, double
 	put_bytes(payload, payload_len, offset, &value, sizeof(value));
 }
 
+static void refresh_laser_snapshot(struct throughput_state *state)
+{
+	struct hispec_laser_status laser_status = {0};
+
+	if (state == NULL || hispec_laser_get_status(state->laser, &laser_status) != 0) {
+		return;
+	}
+
+	if (laser_status.current_set_ma == laser_status.current_set_ma) {
+		state->current_ma = laser_status.current_set_ma;
+	}
+	if (laser_status.tec_temperature_measured_c ==
+	    laser_status.tec_temperature_measured_c) {
+		state->tec_temperature_c = laser_status.tec_temperature_measured_c;
+	}
+}
+
 static int autolevel_adjust(struct throughput_state *state,
 			    const struct photodiode_channel_status *pd,
-			    const laserprops_t *props,
 			    const struct attenuator_transmission_estimate *atten)
 {
 	double mean_net_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
 	bool low = mean_net_mv < (TP_ADC_USABLE_MV * TP_LOW_FRACTION);
 	bool high = mean_net_mv > (TP_ADC_USABLE_MV * TP_HIGH_FRACTION);
 	double next_tx;
+	float next_percent;
+	int rc;
 
 	if (pd->raw > INT16_MAX - 1024 || mean_net_mv <= 0.0) {
 		if (high || pd->raw > INT16_MAX - 1024) {
@@ -211,12 +230,17 @@ static int autolevel_adjust(struct throughput_state *state,
 				next_tx = 1.0;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->current_ma < props->max_current_ma) {
-			state->current_ma *= 3.0f;
-			if (state->current_ma > props->max_current_ma) {
-				state->current_ma = props->max_current_ma;
+		} else if (state->level_percent < 100.0f) {
+			next_percent = state->level_percent * 3.0f;
+			if (next_percent > 100.0f) {
+				next_percent = 100.0f;
 			}
-			(void)hispec_laser_set_current_ma(state->laser, state->current_ma);
+			rc = hispec_laser_set_output_percent_autooff(state->laser,
+								     next_percent, 0U);
+			if (rc == 0) {
+				state->level_percent = next_percent;
+				refresh_laser_snapshot(state);
+			}
 		}
 		state->low_count = 0U;
 		return 0;
@@ -229,12 +253,17 @@ static int autolevel_adjust(struct throughput_state *state,
 				next_tx = TP_MIN_ATTEN_TX;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->current_ma > props->threshold_current_ma) {
-			state->current_ma /= 3.0f;
-			if (state->current_ma < props->threshold_current_ma) {
-				state->current_ma = props->threshold_current_ma;
+		} else if (state->level_percent > 0.0f) {
+			next_percent = state->level_percent / 3.0f;
+			if (next_percent < 0.0f) {
+				next_percent = 0.0f;
 			}
-			(void)hispec_laser_set_current_ma(state->laser, state->current_ma);
+			rc = hispec_laser_set_output_percent_autooff(state->laser,
+								     next_percent, 0U);
+			if (rc == 0) {
+				state->level_percent = next_percent;
+				refresh_laser_snapshot(state);
+			}
 		}
 		state->high_count = 0U;
 	}
@@ -433,10 +462,12 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
 							     0.0, 0.0, &atten)) {
 				(void)autolevel_adjust(&local[i], &pd_status.channel[i],
-						       props, &atten);
+						       &atten);
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				if (monitors[i].active && monitors[i].laser == local[i].laser) {
+					monitors[i].level_percent = local[i].level_percent;
 					monitors[i].current_ma = local[i].current_ma;
+					monitors[i].tec_temperature_c = local[i].tec_temperature_c;
 					monitors[i].high_count = local[i].high_count;
 					monitors[i].low_count = local[i].low_count;
 				}
@@ -490,12 +521,14 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.started_ms = k_uptime_get();
 
 	if (request->autolevel) {
-		next.current_ma = props->max_current_ma;
+		next.level_percent = 100.0f;
 		(void)attenuator_set_db(&attenuators[attenuator_index], 120.0);
-		rc = hispec_laser_set_current_ma(request->laser, next.current_ma);
+		rc = hispec_laser_set_output_percent_autooff(request->laser,
+							     next.level_percent, 0U);
 		if (rc != 0) {
 			return rc;
 		}
+		refresh_laser_snapshot(&next);
 	} else {
 		struct hispec_laser_status laser_status = {0};
 

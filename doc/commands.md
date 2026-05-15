@@ -288,10 +288,10 @@ streaming. It measures throughput by comparing the route-corrected flux at the
 selected photodiode with the route- and attenuator-corrected laser flux
 estimate.
 
-`autolevel:true` lets firmware adjust the selected laser drive current and
-logical attenuator to keep the photodiode signal in the useful ADC/photodiode
-range. `autolevel:false` streams the selected photodiode level and derived
-values without changing laser current or attenuation.
+`autolevel:true` lets firmware adjust the selected laser output level percent
+and logical attenuator to keep the photodiode signal in the useful
+ADC/photodiode range. `autolevel:false` streams the selected photodiode level
+and derived values without changing laser level or attenuation.
 
 Firmware uses precomputed photodiode response values for each supported
 laser/photodiode combination; it does not interpolate wavelength curves at
@@ -386,8 +386,8 @@ float32 laser_current_ontime_s
 - Five consecutive saturated samples or five consecutive below-dark samples
   trigger immediate autolevel adjustment.
 - Flux is raised by decreasing logical attenuation first, then raising laser
-  current. Flux is decreased by increasing logical attenuation first, then
-  lowering laser current.
+  output level percent. Flux is decreased by increasing logical attenuation
+  first, then lowering laser output level percent.
 - At start with `autolevel:true`, attenuation is set to maximum before laser
   power is raised.
 - Starting a monitor powers the required photodiode and laser-bank outputs as
