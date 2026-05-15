@@ -20,7 +20,33 @@ Draft 0.1
 
 ### Global (applies to all commands)
 
-- Any response may be: `{"status":"error", "msg":<error message>}`
+- Command request topics use `cmd/<device>/req/<command-key>` and response
+  topics use `cmd/<device>/resp/<command-key>` unless the endpoint documents a
+  different topic shape. For example, request `cmd/<device>/req/status`
+  receives its default response on `cmd/<device>/resp/status`.
+
+- Successful requests with no response data return:
+  ```json
+  {"status":"ok"}
+  ```
+
+- Successful requests with response data return only the response data. They do
+  not include a top-level transport `status` key.
+
+- Failures are indicated by the presence of an `error` key:
+  ```json
+  {"error":"<error message>"}
+  ```
+  Error responses may include extra diagnostic fields such as `rc` or
+  `context` when the command documents them.
+
+- Endpoint sections use request-shape wording:
+  - **Request with no payload**
+  - **Request with payload**
+  - **Request with topic suffix**
+
+  Side effects, persistence, and hardware behavior are described in endpoint
+  notes rather than encoded into a separate request class.
 
 - Req/resp also use MQTT5 request/response metadata:
   - **On requests (publisher → device):**
@@ -46,7 +72,7 @@ Top-level implementation path:
 4. `command_executor_thread()` dispatches the command through `dispatch_command()`.
 5. `command_drain_outbound_queue()` prints serial responses with `print_serial_response()`.
 
-Query form is just the key:
+No-payload serial request form is just the key:
 
 ```text
 status
@@ -54,8 +80,8 @@ mems/yj_cal_laser
 split/yj
 ```
 
-Set form is the key followed by a payload. There are no `get` or `set`
-keywords in the serial command set.
+Requests with payload use the key followed by a payload. There are no `get` or
+`set` keywords in the serial command set.
 
 ```text
 serialguard seconds=60
@@ -126,17 +152,13 @@ for normal serial operation.
 
 ---
 
-Command items below are **one request topic** (subscribed by the device) and
-their **matching response topic** (published by the device). The warning topic
-is publish-only.
-
 (warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
 - **Top-level helper:** `app_warning_emit()`
 - **Queue behavior:** best-effort MQTT through `OUT_TARGET_MQTT_BEST_EFFORT`;
   logs locally and drops if MQTT is unavailable or the outbound queue is full.
-- **Payload:**
+- **Warning payload:**
   ```json
   {
     "severity": "warning",
@@ -154,58 +176,62 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (help)=
 ### `help`
-- **Request topic:** `cmd/<device>/req/help`
-  - No payload
-
-- **Response topic:** `cmd/<device>/resp/help`
-  - Result: `{"help": <a nice string of commands and info, in essence a summary of this file>}`
+- **No payload -> command summary:**
+  ```json
+  {"help":"<summary of commands and device info>"}
+  ```
 
 (memsroute)=
 ### `memsroute`
-- **Request topic:** `cmd/<device>/req/memsroute`
-  - Set:
+- **No payload -> active routes:**
   ```json
-      {"input":"<source>",
-        "output":"<dest>"
-      }
-  ```
-  - Query: No payload
-
-- **Response topic:** `cmd/<device>/resp/memsroute`
-  - Set result: `{"status":"OK"}`
-  - Query result:
-    ```json
-    {
-      "active_routes": {
-        "<dest.name>": ["<source.name>", "..."]
-      }
+  {
+    "active_routes": {
+      "<dest.name>": ["<source.name>", "..."]
     }
-    ```
-    The response lists every destination present in the active board route
-    table. Each value is an array of currently connected sources because one
-    destination may receive multiple sources through combining optics. A
-    destination with no currently active source reports `["no source"]`.
-    Active routes are read from current switch state and are not persisted.
+  }
+  ```
+- **Payload:** set one route.
+  ```json
+  {
+    "input": "<source>",
+    "output": "<dest>"
+  }
+  ```
+- **Notes:** The no-payload response lists every destination present in the active
+  board route table. Each value is an array of currently connected sources
+  because one destination may receive multiple sources through combining optics.
+  A destination with no currently active source reports `["no source"]`. Active
+  routes are read from current switch state and are not persisted.
 
 (route-loss)=
 ### `memsroute/route_loss`
-- **Request topic:** `cmd/<device>/req/memsroute/route_loss`
-  - Set one route-loss record:
-    ```json
-    {"route":"yj_sm_to_yj_pd","1430yj":0.93,"persistent":true}
-    ```
-    or:
-    ```json
-    {"route":"yj_sm_to_yj_pd","1430yj":"0.32 dB","persistent":true}
-    ```
-  - Query one route-loss record:
-    ```json
-    {"route":"yj_sm_to_yj_pd","laser":"1430yj"}
-    ```
-- **Response topic:** `cmd/<device>/resp/memsroute/route_loss`
-  - Set result: `{"status":"success"}`
-  - Query result:
-    `{"status":"success","tx":0.93,"loss_db":0.3188,"configured":true}`
+- **Payload:** set one route-loss record.
+  ```json
+  {
+    "route": "yj_sm_to_yj_pd",
+    "1430yj": 0.93,
+    "persistent": true
+  }
+  ```
+  or:
+  ```json
+  {
+    "route": "yj_sm_to_yj_pd",
+    "1430yj": "0.32 dB",
+    "persistent": true
+  }
+  ```
+- **Payload -> one route-loss record:**
+  ```json
+  {
+    "route": "yj_sm_to_yj_pd",
+    "laser": "1430yj"
+  }
+  ```
+  ```json
+  {"tx":0.93,"loss_db":0.3188,"configured":true}
+  ```
 
 Route-loss records are app settings keyed by route name and laser name. Missing route-loss
 records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
@@ -215,77 +241,88 @@ loss in dB and convert to `tx = 10^(-loss_db / 10)`. Route loses are only used o
 
 (mems)=
 ### `mems`
-- **Request topic:** `cmd/<device>/req/mems`
-  - Query: No payload
-- **Response topic:** `cmd/<device>/resp/mems/`
-  - Query result:
-    ```text
-    {
-      "<switchname>":{
-        "state":"A|B|A?|B?|?",
-        "duty_cycle":0.0
-      },
-      ...
+- **No payload -> all MEMS switch states:**
+  ```json
+  {
+    "<switchname>": {
+      "state": "A|B|A?|B?|?",
+      "duty_cycle": 0.0
     }
-    ```
-    The all-switch query is intentionally compact and includes only state and
-    duty cycle so the TIB eight-switch response fits the fixed MQTT payload
-    buffer. Use `mems/<switchname>` for requested/actual toggle rate and
-    stop-after details.
+  }
+  ```
+- **Notes:** The all-switch query is intentionally compact and includes only
+  state and duty cycle so the TIB eight-switch response fits the fixed MQTT
+  payload buffer. Use `mems/<switchname>` for requested/actual toggle rate and
+  stop-after details.
 
 (mems-switchname)=
 ### `mems/<switchname>`
-- **Request topic:** `cmd/<device>/req/mems/<switchname>`
-  - Query: No payload
-  - Set:
-    - Static: `{"state":"A"}` or `{"state":"B"}`
-    - Toggle: `{"state":"A","duty_cycle":[0.0-1.0],"toggle_rate_hz":<hz>,"stopafter_s":<seconds>}`
-    - `duty_cycle` is only valid with `state:"A"`.
-    - `toggle_rate_hz` is optional; if omitted the switch uses its current requested toggle rate.
-    - Requested `toggle_rate_hz` is stored separately from the actual firmware-quantized rate.
-    - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-    - `stopafter_s` max is 4 hours
+- **Topic:** `cmd/<device>/req/mems/<switchname>`
+- **No payload or payload -> one MEMS switch state.**
 
-- **Response topic:** `cmd/<device>/resp/mems/<switchname>`
-  - Query/set result:
-    ```json
-    {
-      "state":"A|B|A?|B?",
-      "duty_cycle":0.0,
-      "requested_toggle_rate_hz":0.0,
-      "toggle_rate_hz":0.0,
-      "stopafter_s":0
-    }
-    ```
-    `?` suffix means the state has not yet been pulsed this boot, note that on first boot all switches wil be reported as A?
-    duty_cycle, toggle_rate_hz, stopafter_s are omitted if not toggling.
-    `toggle_rate_hz` is the actual quantized rate. If it differs from requested
+  Static payload:
+  ```json
+  {"state":"A"}
+  ```
+  or:
+  ```json
+  {"state":"B"}
+  ```
+  Toggle:
+  ```json
+  {
+    "state": "A",
+    "duty_cycle": 0.5,
+    "toggle_rate_hz": 17,
+    "stopafter_s": 30
+  }
+  ```
+
+  Response:
+  ```json
+  {
+    "state": "A|B|A?|B?",
+    "duty_cycle": 0.0,
+    "requested_toggle_rate_hz": 0.0,
+    "toggle_rate_hz": 0.0,
+    "stopafter_s": 0
+  }
+  ```
+- **Notes:**
+  - `duty_cycle` is only valid with `state:"A"`.
+  - `toggle_rate_hz` is optional; if omitted the switch uses its current
+    requested toggle rate.
+  - Requested `toggle_rate_hz` is stored separately from the actual
+    firmware-quantized rate.
+  - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
+  - `stopafter_s` max is 4 hours.
+  - `?` suffix means the state has not yet been pulsed this boot; on first boot
+    all switches will be reported as `A?`.
+  - `duty_cycle`, `toggle_rate_hz`, and `stopafter_s` are omitted if not
+    toggling.
+  - `toggle_rate_hz` is the actual quantized rate. If it differs from requested
     by more than rounding noise, the firmware emits `mems_rate_quantized` on
     `dt/<device>/warning`.
 
 
 (measure-throughput)=
 ### `measure_throughput`
-- **Request topic:** `cmd/<device>/req/measure_throughput`
-  - Payload:
-    ```json
-    {
-      "autolevel": true,
-      "laser": "<lasername>",
-      "fiber": "M",
-      "stopafter_s": 300,
-      "format": "json"
-    }
-    ```
-    or
-    ```json
-    {
-      "stop": "yj"
-    }
-    ```
-- **Response topic:** `cmd/<device>/resp/measure_throughput`
-  - Start or stop result: `{"status":"success"}`
-  - Error result: `{"status":"error","msg":"<error message>"}`
+- **Payload:** start monitoring.
+  ```json
+  {
+    "autolevel": true,
+    "laser": "<lasername>",
+    "fiber": "M",
+    "stopafter_s": 300,
+    "format": "json"
+  }
+  ```
+- **Payload:** stop monitoring.
+  ```json
+  {
+    "stop": "yj"
+  }
+  ```
 
 `measure_throughput` is the only command that starts or stops photodiode
 streaming. It measures throughput by comparing the route-corrected flux at the
@@ -374,7 +411,7 @@ float32 pd_ontime_s
 float32 laser_current_ontime_s
 ```
 
-**Notes (behavior):**
+**Notes:**
 - `tp` is unitless. `NaN` means offscale or insufficient information; values
   above unity are reported rather than clamped.
 - Flux values are photons per second.
@@ -404,22 +441,12 @@ float32 laser_current_ontime_s
 
 (laser)=
 ### `laser`
-- **Request topic:** `cmd/<device>/req/laser`
-  - Set:
-    ```json
-    {"name": "<lasername>",
-      "level": 0.0,
-      "autooff_s": 0
-     }
-    ```
-
-  - Query: `{"name": "<lasername>"}`
-
-- **Response topic:** `cmd/<device>/resp/laser`
-  - Set result: `{"status": "success"}`
-  - Query result:
-    ```json
-    {
+- **Payload -> laser status:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
     "name": "<lasername>",
     "powered": true,
     "tec_on_s": 0,
@@ -437,8 +464,16 @@ float32 laser_current_ontime_s
     "tec_v": 0.0,
     "offin_s": 0,
     "oc_fault": false
-    }
-    ```
+  }
+  ```
+- **Payload:** set one laser output level.
+  ```json
+  {
+    "name": "<lasername>",
+    "level": 0.0,
+    "autooff_s": 0
+  }
+  ```
 
 - **Notes:** `level` is 0-100% of the nominal current range above threshold current. Setting a positive level powers
   the laser bank as needed, prepares the TEC, sets the laser current, and restarts the auto-off timer. Setting level
@@ -450,39 +485,46 @@ float32 laser_current_ontime_s
 
 (laser-tune)=
 ### `laser/tune`
-- **Request topic:** `cmd/<device>/req/laser/tune`
-  - Set:
-    ```json
-    {"name": "<lasername>",
-      "tune_nm": 0.0
-     }
-    ```
-    - Query result:
-    ```json
-    {
+- **Payload -> stored tuning request:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
     "name": "<lasername>",
-      "tune_nm": 0.0
-    }
-    ```
-Sets the wavelength tuning request used when running the laser. The request is stored by firmware and used on future
-positive `laser` level commands. It is best-effort: large shifts are clamped by the TEC temperature range and allowed
-current adjustment.
+    "tune_nm": 0.0
+  }
+  ```
+- **Payload:** set the stored tuning request.
+  ```json
+  {
+    "name": "<lasername>",
+    "tune_nm": 0.0
+  }
+  ```
+- **Notes:** Sets the wavelength tuning request used when running the laser.
+  The request is stored by firmware and used on future positive `laser` level
+  commands. It is best-effort: large shifts are clamped by the TEC temperature
+  range and allowed current adjustment.
 
 
 (laser-status)=
 ### `laser/status`
-- **Request topic:** `cmd/<device>/req/laser/status`
-- Query: `{"name": "<lasername>" }`
-- **Response topic:** `cmd/<device>/resp/laser/status`
+- **Payload -> compact operational status:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  Response shape is the same as `laser` query.
 
 Compact operational status. This is the preferred status payload for normal users and is the source used by the
 optional laser section of `status`.
 
 (laser-engstatus)=
 ### `laser/engstatus`
-- **Request topic:** `cmd/<device>/req/laser/engstatus`
-- Query: `{"name": "<lasername>" }`
-- **Response topic:** `cmd/<device>/resp/laser/engstatus`
+- **Payload -> detailed engineering status:**
+  ```json
+  {"name":"<lasername>"}
+  ```
 
 Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
 Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
@@ -492,67 +534,65 @@ many Modbus registers.
 
 (laser-settings)=
 ### `laser/settings`
-- **Request topic:** `cmd/<device>/req/laser/settings`
-- Set:
+- **Payload -> laser settings:**
   ```json
-  {     "name": "<lasername>",
-        "settings": {
-          "nominal_current_ma": 0.0,
-          "max_current_ma": 0.0,
-          "efficiency_mw_per_ma": 0.0,
-          "wavelength_nm": 0.0,
-          "current_set_calibration_pct": 0.0,
-          "default_operating_temp_c": 0.0,
-          "operating_temp_range_c": [0.0, 0.0], 
-          "tec_pid": {
-            "p": 0,
-            "i": 0,
-            "d": 0
-          },
-          "disable_tec_at_autooff": true,
-          "dlambda_dT_nm_per_k": 0.0,
-          "dlambda_dA_nm_per_ma": 0.0,
-          "autooff_s": 0
-        }
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
+    "name": "<lasername>",
+    "settings": {
+      "model": "<string>",
+      "nominal_current_ma": 0.0,
+      "max_current_ma": 0.0,
+      "current_set_calibration_pct": 0.0,
+      "threshold_current_ma": 0.0,
+      "efficiency_mw_per_ma": 0.0,
+      "wavelength_nm": 0.0,
+      "operating_temp_range_c": [0.0, 0.0],
+      "default_operating_temp_c": 0.0,
+      "thermistor_kohm": 0.0,
+      "isolation_db": 0.0,
+      "tec_max_current_a": 0.0,
+      "tec_pid": {
+        "p": 0,
+        "i": 0,
+        "d": 0
+      },
+      "disable_tec_at_autooff": true,
+      "ntc_t_coefficient_per_c": 0.0,
+      "dlambda_dT_nm_per_k": 0.0,
+      "dlambda_dA_nm_per_ma": 0.0,
+      "autooff_s": 0,
+      "tune_nm": 0.0,
+      "emit_total_s": 0.0
+    }
   }
   ```
-
-- Query: `{"name": "<lasername>" }`
-
-- **Response topic:** `cmd/<device>/resp/laser/settings`
-  - Set result: `{"status": "success"}`
-  - Query result:
-    ```json
-    {
-          "name": "<lasername>",
-          "settings": {
-            "model": "<string>",
-            "nominal_current_ma": 0.0,
-            "max_current_ma": 0.0,
-            "current_set_calibration_pct": 0.0,
-            "threshold_current_ma": 0.0,
-            "efficiency_mw_per_ma": 0.0,
-            "wavelength_nm": 0.0,
-            "operating_temp_range_c": [0.0, 0.0],
-            "default_operating_temp_c": 0.0,
-            "thermistor_kohm": 0.0,
-            "isolation_db": 0.0,
-            "tec_max_current_a": 0.0,
-            "tec_pid": {
-              "p": 0,
-              "i": 0,
-              "d": 0
-            },
-            "disable_tec_at_autooff": true,
-            "ntc_t_coefficient_per_c": 0.0,
-            "dlambda_dT_nm_per_k": 0.0,
-            "dlambda_dA_nm_per_ma": 0.0,
-            "autooff_s": 0,
-            "tune_nm": 0.0,
-            "emit_total_s": 0.0
-          }
-        }
-    ```
+- **Payload:** update laser settings.
+  ```json
+  {
+    "name": "<lasername>",
+    "settings": {
+      "nominal_current_ma": 0.0,
+      "max_current_ma": 0.0,
+      "efficiency_mw_per_ma": 0.0,
+      "wavelength_nm": 0.0,
+      "current_set_calibration_pct": 0.0,
+      "default_operating_temp_c": 0.0,
+      "operating_temp_range_c": [0.0, 0.0],
+      "tec_pid": {
+        "p": 0,
+        "i": 0,
+        "d": 0
+      },
+      "disable_tec_at_autooff": true,
+      "dlambda_dT_nm_per_k": 0.0,
+      "dlambda_dA_nm_per_ma": 0.0,
+      "autooff_s": 0
+    }
+  }
+  ```
 
 - **Notes:**
   - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
@@ -587,18 +627,21 @@ many Modbus registers.
 
 (laserbank-power)=
 ### `laserbank/power`
-- **Request topic:** `cmd/<device>/req/laserbank/power`
-  - Query: no payload
-  - Set: `{"override":"auto|override_on|override_off"}` or topic suffix
-    `laserbank/power/auto|override_on|override_off`
-- **Response topic:** `cmd/<device>/resp/laserbank/power`
-  - Response:
-    ```json
-    {
-      "mode": "auto|override_on|override_off",
-      "powered": false,
-    }
-    ```
+- **No payload -> laser-bank power state:**
+  ```json
+  {
+    "mode": "auto|override_on|override_off",
+    "powered": false
+  }
+  ```
+- **Payload or topic suffix -> laser-bank power state after update:**
+  ```json
+  {"override":"auto|override_on|override_off"}
+  ```
+  Suffix requests use
+  `cmd/<device>/req/laserbank/power/auto`,
+  `cmd/<device>/req/laserbank/power/override_on`, or
+  `cmd/<device>/req/laserbank/power/override_off`.
 
 - **Notes:** `auto` is the default at boot. In `auto`, power to the laser bank is handled by the bank heater and commands
   interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser emission, writes
@@ -607,9 +650,10 @@ many Modbus registers.
 
 (laserbank-clearfaults)=
 ### `laserbank/clearfaults`
-- **Request topic:** `cmd/<device>/req/laserbank/clearfaults`
-- **Response topic:** `cmd/<device>/resp/laserbank/clearfaults`
-  - Response: `{"status":"success","off_ms":250}`
+- **No payload -> clear result:**
+  ```json
+  {"off_ms":250}
+  ```
 
 This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
 fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
@@ -619,29 +663,32 @@ off or no faults).
 
 (laserbank-heater)=
 ### `laserbank/heater`
-- **Request topic:** `cmd/<device>/req/laserbank/heater`
-  - Query: no payload
-  - Set: `{"override":"auto|override_on|override_off"}` or topic suffix
-    `laserbank/heater/auto|override_on|override_off`
-- **Response topic:** `cmd/<device>/resp/laserbank/heater`
-  - Response:
-    ```json
-    {
-      "heater_mode": "auto|override_on|override_off",
-      "heater_on": false,
-      "bank_power": true,
-      "ambient_valid": true,
-      "ambient_c": 0.0,
-      "valid_temps": 6,
-      "stale_temps": 0,
-      "any_disabled_below_15c": false,
-      "any_disabled_above_off_threshold": false,
-      "all_tecs_enabled": false,
-      "all_tecs_enabled_ms": 0,
-      "last_error": 0,
-      "last_poll_age_ms": 0
-    }
-    ```
+- **No payload -> laser-bank heater state:**
+  ```json
+  {
+    "heater_mode": "auto|override_on|override_off",
+    "heater_on": false,
+    "bank_power": true,
+    "ambient_valid": true,
+    "ambient_c": 0.0,
+    "valid_temps": 6,
+    "stale_temps": 0,
+    "any_disabled_below_15c": false,
+    "any_disabled_above_off_threshold": false,
+    "all_tecs_enabled": false,
+    "all_tecs_enabled_ms": 0,
+    "last_error": 0,
+    "last_poll_age_ms": 0
+  }
+  ```
+- **Payload or topic suffix -> laser-bank heater state after update:**
+  ```json
+  {"override":"auto|override_on|override_off"}
+  ```
+  Suffix requests use
+  `cmd/<device>/req/laserbank/heater/auto`,
+  `cmd/<device>/req/laserbank/heater/override_on`, or
+  `cmd/<device>/req/laserbank/heater/override_off`.
 
 - **Notes:** `auto` is the default at boot. In `auto`, the TIB-only control
   thread powers the laser bank so the Maiman temperature monitors can
@@ -661,40 +708,44 @@ off or no faults).
 (atten-coeff)=
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
-- **Request topic:** `cmd/<device>/req/atten/<laser>/value`
-  - Set total linear transmission through the logical attenuator:
-    ```json
-    {"value": 0.25}
-    ```
-  - Query:
-    empty payload
-
-- **Request topic:** `cmd/<device>/req/atten/<laser>/valuedb`
-  - Set total attenuation in dB:
-    ```json
-    {"value": 12.5}
-    ```
-  - Query:
-    empty payload
-
-- **Request topic:** `cmd/<device>/req/atten/<laser>/coeff`
-  - Set the linear model coefficients for the two physical attenuators that
-    make up the logical attenuator:
-    ```json
-    {
-      "dac1": [0.001953125, 0.0],
-      "dac2": [0.001953125, 0.0],
-      "persistent": true
-    }
-    ```
-  - Query:
-    empty payload
-
-- **Response topic:** `cmd/<device>/resp/atten/<laser>/<setting>`
-  - Value query:
-    `{"db":12.5000,"linear":0.0562,"voltage1":1234.0000,"voltage2":0.0000,"db1":12.5000,"db2":0.0000}`
-  - Coeff query: `{"dac1":[slope,offset],"dac2":[slope,offset]}`
-  - Set result: `{"status":"OK"}` or `{"status":"OK","persistent":true}`
+- **Topics:**
+  - `cmd/<device>/req/atten/<laser>/value`
+  - `cmd/<device>/req/atten/<laser>/valuedb`
+  - `cmd/<device>/req/atten/<laser>/coeff`
+  - Responses use the same key under `cmd/<device>/resp/...`.
+- **No payload to `value` or `valuedb` -> attenuator setting:**
+  ```json
+  {
+    "db": 12.5,
+    "linear": 0.0562,
+    "voltage1": 1234.0,
+    "voltage2": 0.0,
+    "db1": 12.5,
+    "db2": 0.0
+  }
+  ```
+- **Payload to `value`:** set total linear transmission through the logical
+  attenuator.
+  ```json
+  {"value":0.25}
+  ```
+- **Payload to `valuedb`:** set total attenuation in dB.
+  ```json
+  {"value":12.5}
+  ```
+- **No payload to `coeff` -> model coefficients:**
+  ```json
+  {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0]}
+  ```
+- **Payload to `coeff`:** set the linear model coefficients for the two physical
+  attenuators that make up the logical attenuator.
+  ```json
+  {
+    "dac1": [0.001953125, 0.0],
+    "dac2": [0.001953125, 0.0],
+    "persistent": true
+  }
+  ```
 
 - **Notes:**
   - `<laser>` is one of `1028y`, `1430yj`, `1430hk`, `1510h`, or `2330k`.
@@ -713,57 +764,7 @@ off or no faults).
 
 (pd)=
 ### `pd`
-- **Request topic:** `cmd/<device>/req/pd`
-  - Optional payload: `{"unit": "power"}`
-
-    `unit` is `"power" | "volts"` (case-insensitive), defaults to `"power"`.
-  - Measure dark without storing:
-    ```json
-    {
-      "action": "measure_dark",
-      "channel": "yj",
-      "duration_ms": 1280,
-      "store": false
-    }
-    ```
-  - Measure dark and persist it:
-    ```json
-    {
-      "action": "measure_dark",
-      "channel": "hk",
-      "duration_ms": 1280,
-      "store": true
-    }
-    ```
-  - Retrieve dark measurement progress/result:
-    ```json
-    {
-      "action": "dark_status",
-      "channel": "yj"
-    }
-    ```
-  - Reset lowest-ever dark tracking:
-    ```json
-    {
-      "action": "reset_lowest_dark",
-      "channel": "yj",
-      "persistent": true
-    }
-    ```
-
-- **Response topic:** `cmd/<device>/resp/pd`
-  - `measure_dark` start response:
-    ```json
-    {
-      "status": "measuring",
-      "channel": "yj",
-      "stored_on_complete": true,
-      "duration_ms": 60000,
-      "samples": 0,
-      "target_samples": 3000
-    }
-    ```
-  - `dark_status` complete response includes the measured mean/RMS/min/max.
+- **No payload -> photodiode values:**
   ```json
   {
     "unit": "power",
@@ -784,17 +785,62 @@ off or no faults).
     "uptime": 0
   }
   ```
+- **Payload -> dark measurement state:** measure dark without storing.
+  ```json
+  {
+    "action": "measure_dark",
+    "channel": "yj",
+    "duration_ms": 1280,
+    "store": false
+  }
+  ```
+  Response:
+  ```json
+  {
+    "state": "measuring",
+    "channel": "yj",
+    "stored_on_complete": true,
+    "duration_ms": 60000,
+    "samples": 0,
+    "target_samples": 3000
+  }
+  ```
+- **Payload -> dark measurement state:** measure dark and persist it.
+  ```json
+  {
+    "action": "measure_dark",
+    "channel": "hk",
+    "duration_ms": 1280,
+    "store": true
+  }
+  ```
+- **Payload -> dark measurement progress/result:** complete results include the
+  measured mean/RMS/min/max.
+  ```json
+  {
+    "action": "dark_status",
+    "channel": "yj"
+  }
+  ```
+- **Payload:** reset lowest-ever dark tracking.
+  ```json
+  {
+    "action": "reset_lowest_dark",
+    "channel": "yj",
+    "persistent": true
+  }
+  ```
 
 - **Notes:**
   - `measure_dark` starts or restarts the selected channel's dark measurement
-    and returns immediately with `status:"measuring"`.
+    and returns immediately with `state:"measuring"`.
   - Dark level is updated only after an explicit `measure_dark` with
     `store:true` completes.
   - `duration_ms` is rounded to the nearest supported sample count at the
     monitor thread cadence. The response reports both actual `duration_ms` and
     exact `samples`.
-  - `dark_status` returns `status:"measuring"`, `status:"complete"`, or
-    `status:"error"`. Complete results include measured mean/RMS/min/max.
+  - `dark_status` returns `state:"measuring"`, `state:"complete"`, or an error
+    response. Complete results include measured mean/RMS/min/max.
   - `measure_dark` with `store:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
   - `lowest_dark_mv` is updated only when a stored dark measurement is lower
@@ -806,35 +852,31 @@ off or no faults).
 
 (pdsettings)=
 ### `pdsettings`
-- **Request topic:** `cmd/<device>/req/pdsettings/<yj|hk>`
-  - Set:
-      ```json
-      {
-        "noise_rms_mV": 3.0,
-        "dark_mv": 0.0,
-        "gain_v_p_uw": 47500.0,
-        "persistent": true
-      }
-      ```
-  - Get: No payload
-
-- **Response topic:** `cmd/<device>/resp/pdsettings/<yj|hk>`
-  - Set result: `{"status": "success"}`
-  - Get result:
-    ```json
-    {
-      "channel": "yj",
-      "dark_mv": 0.0,
-      "lowest_dark_mv": 0.0,
-      "lowest_dark_valid": false,
-      "dark_measurement": "idle",
-      "dark_measurement_duration_ms": 0,
-      "dark_measurement_samples": 0,
-      "dark_measurement_target_samples": 0,
-      "noise_rms_mV": 3.0,
-      "gain_v_p_uw": 47500.0
-    }
-    ```
+- **Topic:** `cmd/<device>/req/pdsettings/<yj|hk>`
+- **No payload -> one channel's photodiode settings:**
+  ```json
+  {
+    "channel": "yj",
+    "dark_mv": 0.0,
+    "lowest_dark_mv": 0.0,
+    "lowest_dark_valid": false,
+    "dark_measurement": "idle",
+    "dark_measurement_duration_ms": 0,
+    "dark_measurement_samples": 0,
+    "dark_measurement_target_samples": 0,
+    "noise_rms_mV": 3.0,
+    "gain_v_p_uw": 47500.0
+  }
+  ```
+- **Payload:** update one channel's photodiode settings.
+  ```json
+  {
+    "noise_rms_mV": 3.0,
+    "dark_mv": 0.0,
+    "gain_v_p_uw": 47500.0,
+    "persistent": true
+  }
+  ```
 
 - **Current set fields:**
   - `dark_mv`
@@ -849,57 +891,44 @@ off or no faults).
 
 (ip)=
 ### `ip`
-- **Request topic:** `cmd/<device>/req/ip`
-  - Set:
-    ```json
-    {   "ip": "<ip>",
-        "ntp": "<ip>",
-        "dns": "<ip>",
-        "subnet": "<subnet>",
-        "gateway": "<gateway>",
-        "trydhcpfirst": true,
-        "preferdhcpntp": true,
-        "preferdhcpdns": true,
-        "persistent": true
-    }
-    ```
-
-    - Query: No payload
-
-- **Response topic:** `cmd/<device>/resp/ip`
-  - Set result:
-     ```json
-     {
-       "status": "success",
-       "apply": "immediate"
-     }
-     ```
-     Unsupported capability fields return `status:"partial"` with per-feature
-     `dhcp`, `dns`, and `ntp` values.
-  - Query result:
-    ```json
-    {
+- **No payload -> IP configuration:**
+  ```json
+  {
+    "source": "<source>",
+    "trydhcpfirst": true,
+    "preferdhcpdns": true,
+    "preferdhcpntp": true,
+    "manual": {
+      "ip": "<ip>",
+      "subnet": "<subnet>",
+      "gateway": "<gateway>",
+      "dns": "<ip>",
+      "ntp": "<ip>"
+    },
+    "active": {
+      "ready": true,
+      "ip": "<ip>"
+    },
+    "ntp": {
       "source": "<source>",
-      "trydhcpfirst": true,
-      "preferdhcpdns": true,
-      "preferdhcpntp": true,
-      "manual": {
-        "ip": "<ip>",
-        "subnet": "<subnet>",
-        "gateway": "<gateway>",
-        "dns": "<ip>",
-        "ntp": "<ip>"
-      },
-      "active": {
-        "ready": true,
-        "ip": "<ip>"
-      },
-      "ntp": {
-        "source": "<source>",
-        "server": "<ip>"
-      }
+      "server": "<ip>"
     }
-    ```
+  }
+  ```
+- **Payload:** update IP configuration.
+  ```json
+  {
+    "ip": "<ip>",
+    "ntp": "<ip>",
+    "dns": "<ip>",
+    "subnet": "<subnet>",
+    "gateway": "<gateway>",
+    "trydhcpfirst": true,
+    "preferdhcpntp": true,
+    "preferdhcpdns": true,
+    "persistent": true
+  }
+  ```
 
 - **Notes:**
   - Unsupported features don’t error; supported changes are still applied and
@@ -908,29 +937,24 @@ off or no faults).
     service profile.
   - If `trydhcpfirst` is true and DHCP is compiled in, DHCP is tried before the
     runtime static profile.
-  - partial comes with keys indicating which settings are not supported.
+  - Partial responses include keys indicating which settings are not supported.
   - network-affecting changes are applied at runtime; ordinary changes do not
     require reboot.
   - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
 
 (mqtt)=
 ### `mqtt`
-- **Request topic:** `cmd/<device>/req/mqtt`
-  - Set:
-    ```json
-    {
-      "broker": "<ipv4-or-hostname>:<port>",
-      "persistent": true
-    }
-    ```
-  - Query: No payload
-
-- **Response topic:** `cmd/<device>/resp/mqtt`
-  - Set result: `{"status":"success","apply":"reconnect"}`
-  - Query result:
-    ```json
-    {"broker":"<value>:<port>", "dns_supported":true}
-    ```
+- **No payload -> MQTT broker configuration:**
+  ```json
+  {"broker":"<value>:<port>","dns_supported":true}
+  ```
+- **Payload:** update MQTT broker configuration.
+  ```json
+  {
+    "broker": "<ipv4-or-hostname>:<port>",
+    "persistent": true
+  }
+  ```
 
 - **Notes:**
   - Broker value must be one `<host-or-ip>:<port>` string.
@@ -943,69 +967,56 @@ off or no faults).
 
 (serialguard)=
 ### `serialguard`
-- **Request topic:** `cmd/<device>/req/serialguard`
-  - Set:
-    ```json
-    {
-      "seconds": 30,
-      "persistent": true
-    }
-    ```
-    `value` is accepted as an alias for `seconds`.
-  - Query: No payload
-
-- **Response topic:** `cmd/<device>/resp/serialguard`
-  - Set result: `{"status":"success"}`
-  - Query result:
-    ```json
-    {"serialguard_s":30, "active":true, "remaining_ms":12000}
-    ```
+- **No payload -> serial guard configuration and current state:**
+  ```json
+  {"serialguard_s":30,"active":true,"remaining_ms":12000}
+  ```
+- **Payload:** update serial guard configuration.
+  ```json
+  {
+    "seconds": 30,
+    "persistent": true
+  }
+  ```
+  `value` is accepted as an alias for `seconds`.
 
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
   - Serial shorthand: `serialguard seconds=60` or `serialguard off`.
-  - While active, MQTT SET/action commands are rejected before dispatch and
-    logged. Safe read-only MQTT GETs are allowed. Legacy GET handlers with
-    side effects, including laser-bank power and raw laser register reads, stay
-    blocked under serial guard until those command shapes are corrected.
+  - While active, MQTT requests that may change hardware or runtime state are
+    rejected before dispatch and logged. Safe read-only MQTT requests are
+    allowed.
   - The guard uses the named scheduled action `serial_guard_expire`.
   - `seconds:0` disables serial override.
 
 (time)=
 ### `time`
-- **Request topic:** `cmd/<device>/req/time`
-  - Query: No payload
-  - Set: `{"linuxtime_ms": 0}`
-
-- **Response topic:** `cmd/<device>/resp/time`
-  - Query result:
-    ```json
-    {     "utc": 0,
-          "ticks": 0,
-          "uptime": 0
-     }
-    ```
-  - Set result: `{"status": "success"}`
+- **No payload -> firmware time:**
+  ```json
+  {
+    "utc": 0,
+    "uptime": 0
+  }
+  ```
+- **Payload:** set firmware time.
+  ```json
+  {"linuxtime_ms":0}
+  ```
 
 - **Notes:** set time may be overwritten later by NTP if configured and responding.
 
 (temp)=
 ### `temp`
-- **Request topic:** `cmd/<device>/req/temp`
-  - Query: No payload
-
-- **Response topic:** `cmd/<device>/resp/temp`
-  - Query result:
-    ```json
-    {
-      "ambient_c": 0.0,
-      "ambient_age_ms": 0,
-      "laserbank_c": 0.0,
-      "laser": {
-        "<lasername>": 0.0
-      }
+- **No payload -> temperature status:**
+  ```json
+  {
+    "ambient_c": 0.0,
+    "laserbank_c": 0.0,
+    "laser": {
+      "<lasername>": 0.0
     }
-    ```
+  }
+  ```
 
 - **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
   can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
@@ -1013,113 +1024,112 @@ off or no faults).
 
 (status)=
 ### `status`
-- **Request topic:** `cmd/<device>/req/status`
-  - Optional payload:
-    ```json
-    {   "ip": true,
-        "lasers": true,
-        "attens": true
-      }
-    ```
-    - **Note:** ip lasers and attens are not included unless requested, key is not required
+- **No payload or payload -> firmware status.**
 
-- **Response topic:** `cmd/<device>/resp/status`
+  Optional payload:
   ```json
-  {   "fwversion": "<githash>",
-      "bootcount": 0,
-      "board_type": "tib|cal_yj|cal_hk|as|unknown",
-      "board_valid": true,
-      "mems_switches": 8,
-      "relay_gpio_error": 0,
-      "ip": "<response of ip command query>",
-      "temp_c": 0.0,
-      "pd_ontime": 0,
-      "pd_offin_s": 0,
-      "laserbank_ontime": 0,
-      "laserbank_offin_s": 0,
-      "lasers": {
-        "<lasername>": {
-          "power_mw": 0.0,
-          "tec_on_time_s": 0,
-          "offin_s": 0
-        }
-      },
-      "attens": {
-        "<attenname>": {
-          "level_%": 0.0
-        }
-      },
-      "lastcommand": {
-        "name": "<cmdname>",
-        "source": "mqtt",
-        "time": 0
-      }
-    }
+  {
+    "ip": true,
+    "lasers": true,
+    "attens": true
+  }
   ```
+
+  Response:
+  ```json
+  {
+    "fwversion": "<githash>",
+    "bootcount": 0,
+    "board_type": "tib|cal_yj|cal_hk|as|unknown",
+    "board_valid": true,
+    "mems_switches": 8,
+    "relay_gpio_error": 0,
+    "ip": "<response of ip command query>",
+    "temp_c": 0.0,
+    "pd_ontime": 0,
+    "pd_offin_s": 0,
+    "laserbank_ontime": 0,
+    "laserbank_offin_s": 0,
+    "lasers": {
+      "<lasername>": {
+        "power_mw": 0.0,
+        "tec_on_time_s": 0,
+        "offin_s": 0
+      }
+    },
+    "attens": {
+      "<attenname>": {
+        "level_%": 0.0
+      }
+    },
+    "lastcommand": {
+      "name": "<cmdname>",
+      "source": "mqtt",
+      "time": 0
+    }
+  }
+  ```
+- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
 
 
 (reboot)=
 ### `reboot`
-- **Request topic:** `cmd/<device>/req/reboot`
-- **Response topic:** `cmd/<device>/resp/reboot`
-  - Response: `{"status": "success"}`
+- **No payload:** schedule a reboot.
 
 (split)=
 ### `split`
-- **Request topic:** `cmd/<device>/req/split`
-  - Set:
-    ```json
-    {
-      "channel": "yj",
-      "ratio1": 0.0,
-      "ratio2": 0.0,
-      "stopafter_s": 0
-    }
-    ```
-  - Query one channel: `cmd/<device>/req/split/yj` or
-    `cmd/<device>/req/split/hk` with no payload
-  - Only available when the AS board strap is selected. The AS board registers
-    routes `yj_calin -> yj_split` and `hk_calin -> hk_split`.
+- **Topics:**
+  - `cmd/<device>/req/split`
+  - `cmd/<device>/req/split/yj` or `cmd/<device>/req/split/hk`
+  - Responses use the same key under `cmd/<device>/resp/...`.
+  
+- **Payload to `split` -> set splitter state:**
+  ```json
+  {
+    "channel": "yj",
+    "ratio1": 0.0,
+    "ratio2": 0.0,
+    "stopafter_s": 0
+  }
+  ```
+- **No payload to `split/yj` or `split/hk` -> get splitter state.**
+- **Availability:** only available when the AS board strap is selected.
 
-- **Response topic:** `cmd/<device>/resp/split` for set, or
-  `cmd/<device>/resp/split/<channel>` for per-channel query
-  - Set result: same shape as query result.
-  - Query result:
-    ```json
-    {
-      "status": "success",
-      "channel": "yj",
-      "requested_ratio": [0.33, 0.33, 0.34],
-      "actual_ratio": [0.33, 0.33, 0.34],
-      "switches": [
-        {
-          "name": "yj_as1",
-          "state": "A",
-          "duty_cycle": 0.33,
-          "numerator": 33,
-          "denominator": 100,
-          "tick_ms": 2
-        },
-        {
-          "name": "yj_as2",
-          "state": "B",
-          "duty_cycle": 1.0,
-          "numerator": 100,
-          "denominator": 100,
-          "tick_ms": 2
-        },
-        {
-          "name": "yj_as3",
-          "state": "A",
-          "duty_cycle": 0.66,
-          "numerator": 66,
-          "denominator": 100,
-          "tick_ms": 2
-        }
-      ],
-      "stopsin_s": 0
-    }
-    ```
+  Response:
+  ```json
+  {
+    "channel": "yj",
+    "requested_ratio": [0.33, 0.33, 0.34],
+    "actual_ratio": [0.33, 0.33, 0.34],
+    "switches": [
+      {
+        "name": "yj_as1",
+        "state": "A",
+        "duty_cycle": 0.33,
+        "numerator": 33,
+        "denominator": 100,
+        "tick_ms": 2
+      },
+      {
+        "name": "yj_as2",
+        "state": "B",
+        "duty_cycle": 1.0,
+        "numerator": 100,
+        "denominator": 100,
+        "tick_ms": 2
+      },
+      {
+        "name": "yj_as3",
+        "state": "A",
+        "duty_cycle": 0.66,
+        "numerator": 66,
+        "denominator": 100,
+        "tick_ms": 2
+      }
+    ],
+    "stopsin_s": 0
+  }
+  ```
 
 - **Notes:**
   - This is intentionally not a general route/switch feature. It is the
