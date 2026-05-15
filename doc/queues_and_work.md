@@ -15,12 +15,10 @@ the only path that calls `mqtt_publish()`.
 
 Non-best-effort MQTT messages are requeued when MQTT is unavailable or publish
 fails. Best-effort messages (i.e. warnings and telemetry) are dropped when unavailable or
-failed.
-If the main loop observes `outbound_queue` at capacity while draining, it emits
+failed. If the main loop observes `outbound_queue` at capacity while draining, it emits
 an `outbound_queue_full` warning directly to serial and to MQTT when connected.
 
-Photodiode sampling keeps rolling sample windows but does not publish
-telemetry directly. Throughput monitoring enqueues photodiode stream telemetry
+Throughput monitoring enqueues photodiode stream telemetry
 to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample
 is dropped.
 
@@ -74,9 +72,3 @@ wakeups, retry after failure, and hourly resync after success. Manual `time`
 commands do not alter SNTP status; SNTP will update the clock on the next
 successful sync. The blocking `sntp_simple()` wait does not run on the system
 workqueue.
-
-## Work/Queue Human Review
-
-- Network reconnect work still runs from the system workqueue and calls
-  `conn_mgr_all_if_connect(true)`. MEMS, photodiode sampling, command execution,
-  outbound queue draining, and SNTP do not depend on that workqueue path.
