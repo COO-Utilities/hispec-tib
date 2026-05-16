@@ -29,6 +29,7 @@ target_sources(app PRIVATE
         src/lasers.c
         src/laserbank_control.c
         src/maiman.c
+        src/mems_command.c
         src/photodiode.c
         src/photodiode_command.c
         src/throughput_command.c
@@ -47,6 +48,7 @@ target_sources(app PRIVATE
         src/lasers.h
         src/laserbank_control.h
         src/maiman.h
+        src/mems_command.h
         src/laser_properties.h
         src/photodiode.h
         src/photodiode_command.h

@@ -29,6 +29,9 @@
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
 #define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0f
 #define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
+#define MEMS_SPLIT_CHANNEL_COUNT 2
+#define MEMS_SPLIT_OUTPUT_COUNT 3
+#define MEMS_SPLIT_ROUTE_SWITCH_COUNT 3
 
 struct mems_router;
 
@@ -97,6 +100,22 @@ struct mems_route {
     struct mems_route_key key;
     const struct mems_route_step *steps;
     uint8_t num_steps;
+};
+
+struct mems_split_switch_duty {
+    char name[MEMS_SWITCH_NAME_LEN];
+    char state;
+    float duty_cycle;
+    uint32_t numerator;
+    uint32_t denominator;
+    uint32_t tick_ms;
+};
+
+struct mems_split_state {
+    float requested[MEMS_SPLIT_OUTPUT_COUNT];
+    float actual[MEMS_SPLIT_OUTPUT_COUNT];
+    struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
+    uint32_t stopsin_s;
 };
 
 /** Board-selected router state and immutable route table pointer. */
@@ -169,9 +188,55 @@ struct mems_switch *mems_router_find_switch(const struct mems_router *router, co
 const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output);
 
+/**
+ * @brief Apply every switch step in one static route.
+ *
+ * This queues switch state changes through mems_switch_set_state() and can
+ * sleep on the router mutex. The caller owns route lookup and command response
+ * formatting. On a per-switch failure, @p failed_switch and @p failed_state
+ * identify the route step that failed when non-NULL.
+ */
+int mems_router_apply_route(const struct mems_router *router,
+                            const struct mems_route *route,
+                            const char **failed_switch,
+                            char *failed_state);
 
 /** @brief List static routes whose switches currently match all required states. */
 uint8_t mems_router_active_routes(const struct mems_router *router,
                                   struct mems_route_key *out_keys, uint8_t max_keys);
+
+/** @brief Return the API name for one AS split channel, or NULL if invalid. */
+const char *mems_split_channel_name(uint8_t channel_index);
+
+/** @brief Map an AS split channel name such as "yj" or "hk" to an index. */
+int mems_split_channel_index(const char *channel, uint8_t *index);
+
+/**
+ * @brief Read current AS split route state into @p out.
+ *
+ * The route is selected from the board MEMS route table. This can sleep on the
+ * router mutex while reading switch snapshots. If @p requested is non-NULL it
+ * becomes the stored requested ratio for future responses; otherwise the last
+ * requested ratio is retained.
+ */
+int mems_split_read_channel_state(const struct mems_router *router,
+                                  uint8_t channel_index,
+                                  const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                  struct mems_split_state *out);
+
+/**
+ * @brief Apply one AS split channel as three output ratios.
+ *
+ * The user-facing command provides ratio1 and ratio2; this domain helper
+ * receives all three normalized ratios and converts them to exact MEMS ticks.
+ * It can sleep on the router mutex through MEMS switch operations, does not
+ * publish warnings, and does not parse command payloads.
+ */
+int mems_split_apply_channel(const struct mems_router *router,
+                             uint8_t channel_index,
+                             const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             uint32_t stopafter_s,
+                             struct mems_split_state *out,
+                             const char **failed_switch);
 
 #endif // MEMS_SWITCHING_H

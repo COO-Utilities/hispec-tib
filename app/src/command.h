@@ -46,13 +46,7 @@
 #define DispatchFunc coo_cmd_handler_fn
 #define DispatchEntry coo_cmd_dispatch_entry
 
-/* Handler prototypes for all commands (get/set where defined) */
-struct OutMsg memsroute_get(const struct Command *cmd);
-struct OutMsg memsroute_set(const struct Command *cmd);
-/** Query one AS splitter channel, usually with command key split/yj or split/hk. */
-struct OutMsg splitting_get(const struct Command *cmd);
-/** Apply one AS-PCB splitter channel using channel, ratio1, and ratio2. */
-struct OutMsg splitting_set(const struct Command *cmd);
+/* Handler prototypes for command.c-owned commands (get/set where defined). */
 struct OutMsg help_get(const struct Command *cmd);
 struct OutMsg ip_get(const struct Command *cmd);
 struct OutMsg ip_set(const struct Command *cmd);
@@ -63,9 +57,6 @@ struct OutMsg time_set(const struct Command *cmd);
 struct OutMsg reboot_set(const struct Command *cmd);
 struct OutMsg serial_guard_get(const struct Command *cmd);
 struct OutMsg serial_guard_set(const struct Command *cmd);
-
-struct OutMsg mems_get(const struct Command *cmd);
-struct OutMsg mems_set(const struct Command *cmd);
 
 struct OutMsg laser_get(const struct Command *cmd);
 struct OutMsg laser_set(const struct Command *cmd);

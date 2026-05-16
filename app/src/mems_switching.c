@@ -28,6 +28,12 @@ static K_TIMER_DEFINE(mems_router_timer, mems_router_timer_handler, NULL);
 
 static struct mems_router *active_router;
 
+static const char *split_channel_names[MEMS_SPLIT_CHANNEL_COUNT] = {"yj", "hk"};
+static const char *split_route_inputs[MEMS_SPLIT_CHANNEL_COUNT] = {"yj_calin", "hk_calin"};
+static const char *split_route_outputs[MEMS_SPLIT_CHANNEL_COUNT] = {"yj_split", "hk_split"};
+static struct mems_split_state g_split_state[MEMS_SPLIT_CHANNEL_COUNT];
+static K_MUTEX_DEFINE(split_state_lock);
+
 K_THREAD_DEFINE(mems_router_tid, MEMS_ROUTER_STACK_SIZE,
                 mems_router_thread, NULL, NULL, NULL,
                 MEMS_ROUTER_PRIORITY, 0, 0);
@@ -638,6 +644,45 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
     return NULL;
 }
 
+int mems_router_apply_route(const struct mems_router *router,
+                            const struct mems_route *route,
+                            const char **failed_switch,
+                            char *failed_state)
+{
+    if (router == NULL || route == NULL) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = 0U; i < route->num_steps; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        struct mems_switch *sw = mems_router_find_switch(router, step->switch_name);
+        int rc;
+
+        if (sw == NULL) {
+            if (failed_switch != NULL) {
+                *failed_switch = step->switch_name;
+            }
+            if (failed_state != NULL) {
+                *failed_state = step->state;
+            }
+            return -ENOENT;
+        }
+
+        rc = mems_switch_set_state(sw, step->state, 1.0f, 0U, 0.0f);
+        if (rc != 0) {
+            if (failed_switch != NULL) {
+                *failed_switch = step->switch_name;
+            }
+            if (failed_state != NULL) {
+                *failed_state = step->state;
+            }
+            return rc;
+        }
+    }
+
+    return 0;
+}
+
 // List all routes whose switches are ALL in the expected state.
 // Returns the number of active routes found, up to max_keys.
 // Each result is an (input, output) pair.
@@ -668,4 +713,241 @@ uint8_t mems_router_active_routes(const struct mems_router *router,
 
     k_mutex_unlock((struct k_mutex *)&router->lock);
     return n_found;
+}
+
+const char *mems_split_channel_name(uint8_t channel_index)
+{
+    if (channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
+        return NULL;
+    }
+
+    return split_channel_names[channel_index];
+}
+
+int mems_split_channel_index(const char *channel, uint8_t *index)
+{
+    if (channel == NULL || index == NULL) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_CHANNEL_COUNT; ++i) {
+        if (strcmp(channel, split_channel_names[i]) == 0) {
+            *index = i;
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static const struct mems_route *split_route_for_channel(const struct mems_router *router,
+                                                        uint8_t channel_index)
+{
+    if (channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
+        return NULL;
+    }
+
+    return mems_router_get_route(router,
+                                 split_route_inputs[channel_index],
+                                 split_route_outputs[channel_index]);
+}
+
+static uint32_t split_period_ticks(void)
+{
+    const float ticks = 1000.0f /
+                        (MEMS_SWITCH_MAX_TOGGLE_HZ *
+                         (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS);
+    uint32_t period_ticks = (uint32_t)ticks;
+
+    if ((float)period_ticks < ticks) {
+        period_ticks += 1U;
+    }
+    if (period_ticks < 2U) {
+        period_ticks = 2U;
+    }
+
+    return period_ticks;
+}
+
+static uint32_t split_ratio_to_ticks(float ratio, uint32_t period_ticks)
+{
+    uint32_t ticks = (uint32_t)(ratio * (float)period_ticks + 0.5f);
+
+    return MIN(ticks, period_ticks);
+}
+
+static uint32_t split_selected_numerator(const struct mems_switch_status *status,
+                                         char state)
+{
+    if (state == 'A') {
+        return status->duty_numerator;
+    }
+
+    return status->duty_denominator - status->duty_numerator;
+}
+
+static void split_clamp_actual(float actual[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    float used;
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        if (actual[i] < 0.0f) {
+            actual[i] = 0.0f;
+        }
+        if (actual[i] > 1.0f) {
+            actual[i] = 1.0f;
+        }
+    }
+
+    used = actual[0] + actual[1];
+    if (used > 1.0f) {
+        actual[1] = 1.0f - actual[0];
+        used = 1.0f;
+    }
+    actual[2] = 1.0f - used;
+}
+
+int mems_split_read_channel_state(const struct mems_router *router,
+                                  uint8_t channel_index,
+                                  const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                  struct mems_split_state *out)
+{
+    const struct mems_route *route;
+    struct mems_split_state next = {0};
+    float sw1_duty;
+    float sw3_duty;
+
+    if (router == NULL || channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
+        return -EINVAL;
+    }
+
+    route = split_route_for_channel(router, channel_index);
+    if (route == NULL || route->num_steps != MEMS_SPLIT_ROUTE_SWITCH_COUNT) {
+        return -EINVAL;
+    }
+
+    if (requested != NULL) {
+        memcpy(next.requested, requested, sizeof(next.requested));
+    } else {
+        k_mutex_lock(&split_state_lock, K_FOREVER);
+        next = g_split_state[channel_index];
+        k_mutex_unlock(&split_state_lock);
+    }
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_ROUTE_SWITCH_COUNT; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        struct mems_switch *sw = mems_router_find_switch(router, step->switch_name);
+        struct mems_switch_status status = {0};
+        uint32_t selected_ticks;
+
+        if (sw == NULL) {
+            LOG_ERR("Split route %s->%s references missing switch %s",
+                    route->key.input_name, route->key.output_name,
+                    step->switch_name);
+            return -EINVAL;
+        }
+
+        mems_switch_get_status(sw, &status);
+        selected_ticks = split_selected_numerator(&status, step->state);
+
+        snprintk(next.switches[i].name, sizeof(next.switches[i].name),
+                 "%s", step->switch_name);
+        next.switches[i].state = step->state;
+        next.switches[i].numerator = selected_ticks;
+        next.switches[i].denominator = status.duty_denominator;
+        next.switches[i].tick_ms = status.tick_duration_ms;
+        next.switches[i].duty_cycle =
+            status.duty_denominator == 0U ? 0.0f :
+            (float)selected_ticks / (float)status.duty_denominator;
+        next.stopsin_s = MAX(next.stopsin_s, status.stopafter_s);
+    }
+
+    sw1_duty = next.switches[0].duty_cycle;
+    sw3_duty = next.switches[2].duty_cycle;
+    next.actual[0] = sw1_duty;
+    next.actual[1] = sw3_duty > sw1_duty ? sw3_duty - sw1_duty : 0.0f;
+    split_clamp_actual(next.actual);
+
+    k_mutex_lock(&split_state_lock, K_FOREVER);
+    g_split_state[channel_index] = next;
+    k_mutex_unlock(&split_state_lock);
+
+    if (out != NULL) {
+        *out = next;
+    }
+
+    LOG_INF("Split %s actual %.4f %.4f %.4f",
+            split_channel_names[channel_index],
+            (double)next.actual[0],
+            (double)next.actual[1],
+            (double)next.actual[2]);
+
+    return 0;
+}
+
+int mems_split_apply_channel(const struct mems_router *router,
+                             uint8_t channel_index,
+                             const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             uint32_t stopafter_s,
+                             struct mems_split_state *out,
+                             const char **failed_switch)
+{
+    const struct mems_route *route;
+    uint32_t period_ticks;
+    uint32_t output_ticks[MEMS_SPLIT_OUTPUT_COUNT];
+    uint32_t switch_ticks[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
+
+    if (router == NULL || requested == NULL ||
+        channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
+        return -EINVAL;
+    }
+    if (requested[0] < 0.0f || requested[0] > 1.0f ||
+        requested[1] < 0.0f || requested[1] > 1.0f ||
+        requested[2] < 0.0f || requested[2] > 1.0f ||
+        requested[0] + requested[1] > 1.000001f ||
+        stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return -ERANGE;
+    }
+
+    route = split_route_for_channel(router, channel_index);
+    if (route == NULL || route->num_steps != MEMS_SPLIT_ROUTE_SWITCH_COUNT) {
+        return -EINVAL;
+    }
+
+    period_ticks = split_period_ticks();
+    output_ticks[0] = split_ratio_to_ticks(requested[0], period_ticks);
+    output_ticks[1] = split_ratio_to_ticks(requested[1], period_ticks);
+    if (output_ticks[0] + output_ticks[1] > period_ticks) {
+        output_ticks[1] = period_ticks - output_ticks[0];
+    }
+    output_ticks[2] = period_ticks - output_ticks[0] - output_ticks[1];
+
+    switch_ticks[0] = output_ticks[0];
+    switch_ticks[1] = period_ticks;
+    switch_ticks[2] = output_ticks[0] + output_ticks[1];
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_ROUTE_SWITCH_COUNT; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        struct mems_switch *sw = mems_router_find_switch(router, step->switch_name);
+        int rc;
+
+        if (sw == NULL) {
+            if (failed_switch != NULL) {
+                *failed_switch = step->switch_name;
+            }
+            return -ENOENT;
+        }
+
+        rc = mems_switch_set_state_ticks(sw, step->state, switch_ticks[i],
+                                         period_ticks,
+                                         i == 1U ? 0U : stopafter_s);
+        if (rc != 0) {
+            if (failed_switch != NULL) {
+                *failed_switch = step->switch_name;
+            }
+            return rc;
+        }
+    }
+
+    return mems_split_read_channel_state(router, channel_index, requested, out);
 }
