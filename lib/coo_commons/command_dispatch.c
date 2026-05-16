@@ -381,7 +381,7 @@ struct coo_cmd_response coo_cmd_error(const struct coo_cmd_request *cmd,
 	char payload[COO_CMD_PAYLOAD_MAX];
 
 	snprintk(payload, sizeof(payload), "{\"error\":\"%s\"}",
-		 msg != NULL ? msg : "");
+		 msg != NULL ? msg : "Unspecified error");
 	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
 }
 
