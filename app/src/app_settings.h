@@ -4,7 +4,7 @@
  *
  * App-owned top-level settings subtrees store board identity, boot count,
  * operator network/MQTT configuration, serial guard duration, attenuator
- * coefficients, and photodiode calibration/noise thresholds.
+ * coefficients, and photodiode calibration/response settings.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -64,13 +64,14 @@ struct app_attenuator_settings {
 	struct app_attenuator_channel_settings channel[APP_ATTENUATOR_CHANNEL_COUNT];
 };
 
-/** Photodiode calibration and warning thresholds owned by app settings. */
+/** Photodiode calibration, response, and warning thresholds owned by app settings. */
 struct app_pd_channel_settings {
 	float dark_mv;
 	float lowest_dark_mv;
 	bool lowest_dark_valid;
 	float noise_warn_rms_mv;
-	float gain_v_per_uw;
+	double responsivity_a_per_w;
+	double transimpedance_v_per_a;
 };
 
 struct app_photodiode_settings {

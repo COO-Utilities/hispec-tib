@@ -139,4 +139,20 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
                                       double sigma_b1, double sigma_b2,
                                       struct attenuator_transmission_estimate *out);
 
+/**
+ * @brief Replace both physical model coefficients and preserve logical dB.
+ *
+ * Reads the current logical attenuation, installs the supplied coefficients,
+ * and reapplies that logical attenuation using the new model. This may block on
+ * DAC I2C through attenuator_get() and attenuator_set_db(). On failure while
+ * applying the new model, the previous coefficients are restored in RAM.
+ *
+ * @retval 0 Coefficients were applied and logical attenuation was reissued.
+ * @retval -EINVAL Bad arguments.
+ * @retval -EIO DAC read or write failed.
+ */
+int attenuator_apply_coefficients_preserve_db(
+    struct attenuator *drv,
+    const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT]);
+
 #endif /* ATTENUATOR_H */

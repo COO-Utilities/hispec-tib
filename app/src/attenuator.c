@@ -391,3 +391,33 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
 
     return true;
 }
+
+int attenuator_apply_coefficients_preserve_db(
+    struct attenuator *drv,
+    const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT])
+{
+    struct attenuator_model_coeffs old_coeff1;
+    struct attenuator_model_coeffs old_coeff2;
+    struct attenuator_status status = {0};
+
+    if (drv == NULL || physical == NULL) {
+        return -EINVAL;
+    }
+
+    if (!attenuator_get(drv, &status)) {
+        return -EIO;
+    }
+
+    old_coeff1 = drv->coeff1;
+    old_coeff2 = drv->coeff2;
+    drv->coeff1 = physical[0];
+    drv->coeff2 = physical[1];
+
+    if (!attenuator_set_db(drv, status.attenuation_db)) {
+        drv->coeff1 = old_coeff1;
+        drv->coeff2 = old_coeff2;
+        return -EIO;
+    }
+
+    return 0;
+}

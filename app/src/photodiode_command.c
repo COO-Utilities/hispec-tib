@@ -56,6 +56,30 @@ static struct OutMsg pd_cmd_error_rc(const struct Command *cmd, const char *msg,
 	return pd_cmd_response(cmd, RESP_ERROR, payload);
 }
 
+static int pd_extract_optional_double_range(const char *payload,
+					    const char *key,
+					    double *target,
+					    bool *changed,
+					    double min_value,
+					    double max_value)
+{
+	double value;
+	int parse_rc;
+
+	parse_rc = coo_json_extract_double(payload, key, &value);
+	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (parse_rc == COO_JSON_EXTRACT_ERR ||
+	    value < min_value || value > max_value) {
+		return -EINVAL;
+	}
+
+	*target = value;
+	*changed = true;
+	return 0;
+}
+
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
 	if (name == NULL || channel == NULL) {
@@ -117,8 +141,6 @@ struct OutMsg pd_get(const struct Command *cmd)
 	float hk_value;
 	float yj_err;
 	float hk_err;
-	float yj_gain;
-	float hk_gain;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
 		return pd_cmd_error(cmd, "photodiodes unavailable on this board");
@@ -129,16 +151,12 @@ struct OutMsg pd_get(const struct Command *cmd)
 
 	yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
 	hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
-	yj_gain = settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw;
-	hk_gain = settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw;
-
-	yj_err = (yj_gain > 0.0f) ?
-		status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / (yj_gain * 1000.0f) :
-		0.0f;
-
-	hk_err = (hk_gain > 0.0f) ?
-		status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / (hk_gain * 1000.0f) :
-		0.0f;
+	yj_err = (float)photodiode_power_uw_from_mv(
+		status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
+		&settings.channel[PHOTODIODE_CHANNEL_YJ]);
+	hk_err = (float)photodiode_power_uw_from_mv(
+		status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
+		&settings.channel[PHOTODIODE_CHANNEL_HK]);
 
 	snprintk(payload, sizeof(payload),
 		 "{\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
@@ -319,7 +337,8 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 			   "\"dark_measurement_samples\":%u,"
 			   "\"dark_measurement_target_samples\":%u,"
 			   "\"noise_rms_mV\":%.3f,"
-			   "\"gain_v_p_uw\":%.6f}",
+			   "\"responsivity_a_per_w\":%.9f,"
+			   "\"transimpedance_v_per_a\":%.6e}",
 			   photodiode_channel_names[channel],
 			   (double)ch->dark_mv,
 			   (double)ch->lowest_dark_mv,
@@ -329,7 +348,8 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 			   dark.samples,
 			   dark.target_samples,
 			   (double)ch->noise_warn_rms_mv,
-			   (double)ch->gain_v_per_uw);
+			   ch->responsivity_a_per_w,
+			   ch->transimpedance_v_per_a);
 
 	return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
 }
@@ -393,9 +413,12 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 	    coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
 						  &channel_settings.noise_warn_rms_mv,
 						  &changed, 0.0f, 5000.0f) != 0 ||
-	    coo_json_extract_optional_float_range(cmd->payload, "gain_v_p_uw",
-						  &channel_settings.gain_v_per_uw,
-						  &changed, 0.000001f, 1000000000.0f) != 0) {
+	    pd_extract_optional_double_range(cmd->payload, "responsivity_a_per_w",
+					     &channel_settings.responsivity_a_per_w,
+					     &changed, 0.000001, 10.0) != 0 ||
+	    pd_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
+					     &channel_settings.transimpedance_v_per_a,
+					     &changed, 1.0, 1.0e12) != 0) {
 		return pd_cmd_error(cmd, "invalid pdsettings value");
 	}
 

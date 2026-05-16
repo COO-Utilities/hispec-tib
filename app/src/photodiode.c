@@ -59,6 +59,8 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
 #define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
+#define PLANCK_J_S 6.62607015e-34
+#define LIGHT_M_PER_S 299792458.0
 
 static void photodiode_sample_timer_handler(struct k_timer *timer)
 {
@@ -156,6 +158,44 @@ const char *photodiode_dark_state_name(enum photodiode_dark_state state)
     default:
         return "unknown";
     }
+}
+
+double photodiode_power_uw_from_mv(double net_mv,
+                                   const struct app_pd_channel_settings *settings)
+{
+    double signal_v;
+    double power_w;
+
+    if (settings == NULL || net_mv <= 0.0 ||
+        settings->responsivity_a_per_w <= 0.0 ||
+        settings->transimpedance_v_per_a <= 0.0) {
+        return 0.0;
+    }
+
+    signal_v = net_mv / 1000.0;
+    power_w = signal_v / (settings->transimpedance_v_per_a *
+                          settings->responsivity_a_per_w);
+    return power_w * 1.0e6;
+}
+
+double photodiode_photon_flux_from_mv(double net_mv,
+                                      double wavelength_nm,
+                                      const struct app_pd_channel_settings *settings)
+{
+    double power_w;
+    double photon_j;
+
+    if (wavelength_nm <= 0.0) {
+        return 0.0;
+    }
+
+    power_w = photodiode_power_uw_from_mv(net_mv, settings) * 1.0e-6;
+    if (power_w <= 0.0) {
+        return 0.0;
+    }
+
+    photon_j = PLANCK_J_S * LIGHT_M_PER_S / (wavelength_nm * 1.0e-9);
+    return power_w / photon_j;
 }
 
 static uint32_t pd_dark_duration_to_samples(uint32_t duration_ms)
@@ -345,9 +385,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
         snapshot.raw = raw;
         snapshot.mv = mv;
         snapshot.net_mv = mv - settings->dark_mv;
-        snapshot.power_uw = (settings->gain_v_per_uw > 0.0f) ?
-                            snapshot.net_mv / (settings->gain_v_per_uw * 1000.0f) :
-                            0.0f;
+        snapshot.power_uw = (float)photodiode_power_uw_from_mv(snapshot.net_mv, settings);
         snapshot.noise_rms_mv = noise_rms;
         pd_window_update(mv, &snapshot);
         snapshot.sample_count++;

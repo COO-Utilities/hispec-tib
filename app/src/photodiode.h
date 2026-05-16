@@ -19,6 +19,8 @@
 
 #define PHOTODIODE_CHANNEL_COUNT 2
 
+struct app_pd_channel_settings;
+
 enum photodiode_channel {
 	PHOTODIODE_CHANNEL_YJ = 0,
 	PHOTODIODE_CHANNEL_HK = 1
@@ -94,6 +96,27 @@ void photodiode_get_status(struct photodiode_status *out);
 
 /** @brief Convert a dark-measurement state enum to command JSON text. */
 const char *photodiode_dark_state_name(enum photodiode_dark_state state);
+
+/**
+ * @brief Convert dark-subtracted ADC millivolts to optical power in uW.
+ *
+ * Uses the app-owned photodiode responsivity and transimpedance settings. This
+ * helper performs no I/O and returns zero for non-positive signal or invalid
+ * response settings.
+ */
+double photodiode_power_uw_from_mv(double net_mv,
+				   const struct app_pd_channel_settings *settings);
+
+/**
+ * @brief Convert dark-subtracted ADC millivolts to photon flux.
+ *
+ * Uses app-owned response settings plus the caller-provided wavelength. This
+ * helper performs no I/O and returns zero for non-positive signal or invalid
+ * wavelength/response settings.
+ */
+double photodiode_photon_flux_from_mv(double net_mv,
+				      double wavelength_nm,
+				      const struct app_pd_channel_settings *settings);
 /**
  * @brief Start or restart a dark measurement on the sampling thread.
  *

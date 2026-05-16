@@ -29,8 +29,6 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 #define TP_HIGH_FRACTION 0.80
 #define TP_INSTANT_BAD_SAMPLES 5U
 #define TP_MIN_ATTEN_TX 1.0e-9
-#define PLANCK_J_S 6.62607015e-34
-#define LIGHT_M_PER_S 299792458.0
 
 BUILD_ASSERT((int)HISPEC_LASER_AUX_YJ_PHOTODIODE == (int)PHOTODIODE_CHANNEL_YJ,
 	     "YJ photodiode relay index must match photodiode channel");
@@ -39,12 +37,9 @@ BUILD_ASSERT((int)HISPEC_LASER_AUX_HK_PHOTODIODE == (int)PHOTODIODE_CHANNEL_HK,
 BUILD_ASSERT(IS_ENABLED(CONFIG_LITTLE_ENDIAN),
 	     "throughput binary telemetry uses little-endian float layout");
 
-struct pd_response {
+struct laser_pd_channel {
 	enum hispec_laser_id laser;
 	enum photodiode_channel channel;
-	double wavelength_nm;
-	double responsivity_a_per_w;
-	double transimpedance_v_per_a;
 };
 
 struct throughput_state {
@@ -62,27 +57,33 @@ struct throughput_state {
 	uint8_t low_count;
 };
 
-static const struct pd_response pd_responses[] = {
-	{HISPEC_LASER_1028_Y, PHOTODIODE_CHANNEL_YJ, 1028.0, 0.66, 5.0e10},
-	{HISPEC_LASER_1270_J, PHOTODIODE_CHANNEL_YJ, 1270.0, 0.85, 5.0e10},
-	{HISPEC_LASER_1430_YJ, PHOTODIODE_CHANNEL_YJ, 1430.0, 0.93, 5.0e10},
-	{HISPEC_LASER_1430_HK, PHOTODIODE_CHANNEL_HK, 1430.0, 0.5264, 2.375e9},
-	{HISPEC_LASER_1510_H, PHOTODIODE_CHANNEL_HK, 1510.0, 0.60971, 2.375e9},
-	{HISPEC_LASER_2330_K, PHOTODIODE_CHANNEL_HK, 2330.0, 1.23378, 2.375e9},
+static const struct laser_pd_channel laser_pd_channels[] = {
+	{HISPEC_LASER_1028_Y, PHOTODIODE_CHANNEL_YJ},
+	{HISPEC_LASER_1270_J, PHOTODIODE_CHANNEL_YJ},
+	{HISPEC_LASER_1430_YJ, PHOTODIODE_CHANNEL_YJ},
+	{HISPEC_LASER_1430_HK, PHOTODIODE_CHANNEL_HK},
+	{HISPEC_LASER_1510_H, PHOTODIODE_CHANNEL_HK},
+	{HISPEC_LASER_2330_K, PHOTODIODE_CHANNEL_HK},
 };
 
 static struct throughput_state monitors[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(monitors_lock);
 
-static const struct pd_response *response_for_laser(enum hispec_laser_id laser)
+static int photodiode_channel_for_laser(enum hispec_laser_id laser,
+					enum photodiode_channel *channel)
 {
-	for (uint8_t i = 0U; i < ARRAY_SIZE(pd_responses); ++i) {
-		if (pd_responses[i].laser == laser) {
-			return &pd_responses[i];
+	if (channel == NULL) {
+		return -EINVAL;
+	}
+
+	for (uint8_t i = 0U; i < ARRAY_SIZE(laser_pd_channels); ++i) {
+		if (laser_pd_channels[i].laser == laser) {
+			*channel = laser_pd_channels[i].channel;
+			return 0;
 		}
 	}
 
-	return NULL;
+	return -ENOENT;
 }
 
 static void route_name_for_pd(char *buf, size_t buf_len,
@@ -113,23 +114,6 @@ static uint64_t realtime_ms(void)
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
-}
-
-static double pd_flux_from_mv(double net_mv, const struct pd_response *response)
-{
-	double signal_v;
-	double power_w;
-	double photon_j;
-
-	if (response == NULL || net_mv <= 0.0) {
-		return 0.0;
-	}
-
-	signal_v = net_mv / 1000.0;
-	power_w = signal_v / (response->transimpedance_v_per_a *
-			      response->responsivity_a_per_w);
-	photon_j = PLANCK_J_S * LIGHT_M_PER_S / (response->wavelength_nm * 1.0e-9);
-	return power_w / photon_j;
 }
 
 static void stop_locked(enum photodiode_channel channel)
@@ -254,7 +238,7 @@ static void publish_sample(const struct throughput_state *state,
 			   const struct photodiode_channel_status *pd,
 			   uint64_t time_ms)
 {
-	const struct pd_response *response = response_for_laser(state->laser);
+	struct app_photodiode_settings pd_settings;
 	struct attenuator_transmission_estimate atten = {0};
 	struct hispec_laser_flux_estimate laser_flux = {0};
 	struct OutMsg msg = {0};
@@ -277,12 +261,13 @@ static void publish_sample(const struct throughput_state *state,
 	bool pd_route_configured;
 	bool laser_route_configured;
 
-	if (response == NULL || laser_name == NULL ||
+	if (laser_name == NULL ||
 	    !attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					      0.0, 0.0, &atten) ||
 	    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) != 0) {
 		return;
 	}
+	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
 	pd_ontime_s = hispec_laser_aux_power_on_time_s((enum hispec_laser_aux_output)state->channel);
@@ -295,8 +280,12 @@ static void publish_sample(const struct throughput_state *state,
 	ARG_UNUSED(pd_route_configured);
 	ARG_UNUSED(laser_route_configured);
 
-	pd_flux = pd_flux_from_mv(pd->net_mv, response) / pd_route_tx;
-	pd_flux_err = pd_flux_from_mv(pd->rms_mv_0p5s, response) / pd_route_tx;
+	pd_flux = photodiode_photon_flux_from_mv(
+		pd->net_mv, laser_flux.wavelength_nm,
+		&pd_settings.channel[state->channel]) / pd_route_tx;
+	pd_flux_err = photodiode_photon_flux_from_mv(
+		pd->rms_mv_0p5s, laser_flux.wavelength_nm,
+		&pd_settings.channel[state->channel]) / pd_route_tx;
 	emitted_flux = laser_flux.flux_ph_s * atten.linear * laser_route_tx;
 	emitted_flux_err = sqrt((laser_flux.flux_err_ph_s * atten.linear * laser_route_tx) *
 				(laser_flux.flux_err_ph_s * atten.linear * laser_route_tx) +
@@ -457,7 +446,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status)
 {
-	const struct pd_response *response;
+	enum photodiode_channel channel;
 	uint8_t attenuator_index;
 	struct throughput_state next = {0};
 	int rc;
@@ -466,8 +455,8 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return -EINVAL;
 	}
 
-	response = response_for_laser(request->laser);
-	if (response == NULL || (request->fiber != 'M' && request->fiber != 'S')) {
+	if (photodiode_channel_for_laser(request->laser, &channel) != 0 ||
+	    (request->fiber != 'M' && request->fiber != 'S')) {
 		return -EINVAL;
 	}
 	rc = attenuator_index_from_laser_id(request->laser, &attenuator_index);
@@ -475,7 +464,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return rc;
 	}
 
-	rc = hispec_laser_aux_power_set((enum hispec_laser_aux_output)response->channel, true);
+	rc = hispec_laser_aux_power_set((enum hispec_laser_aux_output)channel, true);
 	if (rc != 0) {
 		return rc;
 	}
@@ -484,7 +473,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.autolevel = request->autolevel;
 	next.binary = request->binary;
 	next.laser = request->laser;
-	next.channel = response->channel;
+	next.channel = channel;
 	next.attenuator_index = attenuator_index;
 	next.fiber = request->fiber;
 	next.stopafter_s = request->stopafter_s;
@@ -501,10 +490,10 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	}
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
-	monitors[response->channel] = next;
+	monitors[channel] = next;
 	if (status != NULL) {
 		status->active = true;
-		status->channel = response->channel;
+		status->channel = channel;
 		status->laser_name = hispec_laser_name(request->laser);
 		status->autolevel = request->autolevel;
 	}

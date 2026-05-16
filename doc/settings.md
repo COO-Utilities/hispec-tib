@@ -31,12 +31,14 @@ Current app settings include:
 - `pd/yj/lowest_dark_mv`
 - `pd/yj/lowest_dark_valid`
 - `pd/yj/noise_warn_rms_mv`
-- `pd/yj/gain_v_per_uw`
+- `pd/yj/responsivity_a_per_w`
+- `pd/yj/transimpedance_v_per_a`
 - `pd/hk/dark_mv`
 - `pd/hk/lowest_dark_mv`
 - `pd/hk/lowest_dark_valid`
 - `pd/hk/noise_warn_rms_mv`
-- `pd/hk/gain_v_per_uw`
+- `pd/hk/responsivity_a_per_w`
+- `pd/hk/transimpedance_v_per_a`
 - `laserbank/heater`
 - `routeloss/<route>/<laser>`
 

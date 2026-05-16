@@ -181,9 +181,9 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 		size_t dac1_len = 0U;
 		size_t dac2_len = 0U;
 		struct app_attenuator_channel_settings stored_coeffs = {0};
+		struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
 		bool persist = false;
 		int parse_rc;
-		struct attenuator_status status = {0};
 
 		parse_rc = coo_json_extract_double_array(cmd->payload, "dac1",
 							 dac1_coeffs,
@@ -209,22 +209,17 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 						  "{\"error\":\"Invalid persistent flag\"}");
 		}
 
-		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-			return atten_cmd_response(cmd, RESP_ERROR,
-						  "{\"error\":\"Failed to read attenuator\"}");
-		}
-
-		attenuators[attenuator_index].coeff1.slope = dac1_coeffs[0];
-		attenuators[attenuator_index].coeff1.offset = dac1_coeffs[1];
-		attenuators[attenuator_index].coeff2.slope = dac2_coeffs[0];
-		attenuators[attenuator_index].coeff2.offset = dac2_coeffs[1];
+		physical[0].slope = dac1_coeffs[0];
+		physical[0].offset = dac1_coeffs[1];
+		physical[1].slope = dac2_coeffs[0];
+		physical[1].offset = dac2_coeffs[1];
 		stored_coeffs.physical[0].slope = dac1_coeffs[0];
 		stored_coeffs.physical[0].offset = dac1_coeffs[1];
 		stored_coeffs.physical[1].slope = dac2_coeffs[0];
 		stored_coeffs.physical[1].offset = dac2_coeffs[1];
 
-		if (!attenuator_set_db(&attenuators[attenuator_index],
-				       status.attenuation_db)) {
+		if (attenuator_apply_coefficients_preserve_db(
+			    &attenuators[attenuator_index], physical) != 0) {
 			return atten_cmd_response(cmd, RESP_ERROR,
 						  "{\"error\":\"Failed to apply coefficients\"}");
 		}

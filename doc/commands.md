@@ -334,11 +334,11 @@ and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without changing laser level or attenuation.
 
-Firmware uses precomputed photodiode response values for each supported
-laser/photodiode combination; it does not interpolate wavelength curves at
-runtime. The photodiode sampler owns ADC reads and dark tracking. The
-throughput monitor owns streaming output, autolevel decisions, and throughput
-math.
+Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
+`transimpedance_v_per_a` from `pdsettings/<yj|hk>` with the active laser
+wavelength estimate. It does not interpolate wavelength curves at runtime. The
+photodiode sampler owns ADC reads and dark tracking. The throughput monitor
+owns streaming output, autolevel decisions, and throughput math.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
@@ -847,7 +847,8 @@ off or no faults).
   - Active monitoring tracks a simple residual RMS after smoothing. If it
     exceeds the configured warning threshold, the firmware emits
     `photodiode_noise` on `dt/<device>/warning`.
-  - Power estimates subtract stored dark mV and use `gain_v_p_uw`.
+  - Power estimates subtract stored dark mV and use `responsivity_a_per_w` and
+    `transimpedance_v_per_a`.
 
 (pdsettings)=
 ### `pdsettings`
@@ -864,7 +865,8 @@ off or no faults).
     "dark_measurement_samples": 0,
     "dark_measurement_target_samples": 0,
     "noise_rms_mV": 3.0,
-    "gain_v_p_uw": 47500.0
+    "responsivity_a_per_w": 0.93,
+    "transimpedance_v_per_a": 5.0e10
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -872,7 +874,8 @@ off or no faults).
   {
     "noise_rms_mV": 3.0,
     "dark_mv": 0.0,
-    "gain_v_p_uw": 47500.0,
+    "responsivity_a_per_w": 0.93,
+    "transimpedance_v_per_a": 5.0e10,
     "persistent": true
   }
   ```
@@ -880,7 +883,8 @@ off or no faults).
 - **Current set fields:**
   - `dark_mv`
   - `noise_rms_mV`
-  - `gain_v_p_uw`
+  - `responsivity_a_per_w`
+  - `transimpedance_v_per_a`
   - `persistent`
 
 - **Notes:** not all settings need to be included when setting; failure on any

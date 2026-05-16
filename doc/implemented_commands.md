@@ -335,11 +335,11 @@ for `commands.md`.
 ### `pdsettings/<yj|hk>`
 
 - Query returns channel dark settings, lowest dark, dark measurement state,
-  noise warning threshold, and gain.
+  noise warning threshold, responsivity, and transimpedance.
 - Effect request fields: optional `persistent` plus at least one of `dark_mv`,
-  `noise_rms_mV`, `gain_v_p_uw`.
-- Validation: dark is -5000..5000 mV; noise is 0..5000 mV; gain is
-  0.000001..1000000000.
+  `noise_rms_mV`, `responsivity_a_per_w`, `transimpedance_v_per_a`.
+- Validation: dark is -5000..5000 mV; noise is 0..5000 mV; responsivity is
+  0.000001..10 A/W; transimpedance is 1..1e12 V/A.
 - Data-less effect success response: `{"status":"ok"}`.
 - Board restriction: TIB only.
 - Side effects: updates runtime photodiode settings and optional persistence.

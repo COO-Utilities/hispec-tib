@@ -46,12 +46,14 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 #define KEY_PD_YJ_LOWEST_DARK_MV "pd/yj/lowest_dark_mv"
 #define KEY_PD_YJ_LOWEST_DARK_VALID "pd/yj/lowest_dark_valid"
 #define KEY_PD_YJ_NOISE_WARN_MV "pd/yj/noise_warn_rms_mv"
-#define KEY_PD_YJ_GAIN_V_PER_UW "pd/yj/gain_v_per_uw"
+#define KEY_PD_YJ_RESPONSIVITY_A_PER_W "pd/yj/responsivity_a_per_w"
+#define KEY_PD_YJ_TRANSIMPEDANCE_V_PER_A "pd/yj/transimpedance_v_per_a"
 #define KEY_PD_HK_DARK_MV "pd/hk/dark_mv"
 #define KEY_PD_HK_LOWEST_DARK_MV "pd/hk/lowest_dark_mv"
 #define KEY_PD_HK_LOWEST_DARK_VALID "pd/hk/lowest_dark_valid"
 #define KEY_PD_HK_NOISE_WARN_MV "pd/hk/noise_warn_rms_mv"
-#define KEY_PD_HK_GAIN_V_PER_UW "pd/hk/gain_v_per_uw"
+#define KEY_PD_HK_RESPONSIVITY_A_PER_W "pd/hk/responsivity_a_per_w"
+#define KEY_PD_HK_TRANSIMPEDANCE_V_PER_A "pd/hk/transimpedance_v_per_a"
 #define KEY_LASERBANK_HEATER_MODE "laserbank/heater"
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
@@ -122,12 +124,14 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
 	s->photodiode.channel[0].lowest_dark_valid = false;
 	s->photodiode.channel[0].noise_warn_rms_mv = 3.0f;
-	s->photodiode.channel[0].gain_v_per_uw = 47500.0f;
+	s->photodiode.channel[0].responsivity_a_per_w = 0.93;
+	s->photodiode.channel[0].transimpedance_v_per_a = 5.0e10;
 	s->photodiode.channel[1].dark_mv = 0.0f;
 	s->photodiode.channel[1].lowest_dark_mv = 0.0f;
 	s->photodiode.channel[1].lowest_dark_valid = false;
 	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
-	s->photodiode.channel[1].gain_v_per_uw = 3.0875f;
+	s->photodiode.channel[1].responsivity_a_per_w = 0.60971;
+	s->photodiode.channel[1].transimpedance_v_per_a = 2.375e9;
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
@@ -479,10 +483,17 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
-	if (strcmp(name, "yj/gain_v_per_uw") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[0].gain_v_per_uw,
-					 0.000001f, 1000000000.0f);
+	if (strcmp(name, "yj/responsivity_a_per_w") == 0) {
+		read_valid_double_or_warn(read_cb, cb_arg, name,
+					  &g_settings.snapshot.photodiode.channel[0].responsivity_a_per_w,
+					  0.000001, 10.0);
+		goto out;
+	}
+
+	if (strcmp(name, "yj/transimpedance_v_per_a") == 0) {
+		read_valid_double_or_warn(read_cb, cb_arg, name,
+					  &g_settings.snapshot.photodiode.channel[0].transimpedance_v_per_a,
+					  1.0, 1.0e12);
 		goto out;
 	}
 
@@ -513,10 +524,17 @@ static int settings_set_cb(const char *name, size_t len, settings_read_cb read_c
 		goto out;
 	}
 
-	if (strcmp(name, "hk/gain_v_per_uw") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[1].gain_v_per_uw,
-					 0.000001f, 1000000000.0f);
+	if (strcmp(name, "hk/responsivity_a_per_w") == 0) {
+		read_valid_double_or_warn(read_cb, cb_arg, name,
+					  &g_settings.snapshot.photodiode.channel[1].responsivity_a_per_w,
+					  0.000001, 10.0);
+		goto out;
+	}
+
+	if (strcmp(name, "hk/transimpedance_v_per_a") == 0) {
+		read_valid_double_or_warn(read_cb, cb_arg, name,
+					  &g_settings.snapshot.photodiode.channel[1].transimpedance_v_per_a,
+					  1.0, 1.0e12);
 		goto out;
 	}
 
@@ -726,7 +744,8 @@ static void persist_photodiode_channel(uint8_t channel,
 		persist_float(KEY_PD_YJ_LOWEST_DARK_MV, pd->lowest_dark_mv);
 		persist_bool(KEY_PD_YJ_LOWEST_DARK_VALID, pd->lowest_dark_valid);
 		persist_float(KEY_PD_YJ_NOISE_WARN_MV, pd->noise_warn_rms_mv);
-		persist_float(KEY_PD_YJ_GAIN_V_PER_UW, pd->gain_v_per_uw);
+		persist_double(KEY_PD_YJ_RESPONSIVITY_A_PER_W, pd->responsivity_a_per_w);
+		persist_double(KEY_PD_YJ_TRANSIMPEDANCE_V_PER_A, pd->transimpedance_v_per_a);
 		return;
 	}
 
@@ -735,7 +754,8 @@ static void persist_photodiode_channel(uint8_t channel,
 		persist_float(KEY_PD_HK_LOWEST_DARK_MV, pd->lowest_dark_mv);
 		persist_bool(KEY_PD_HK_LOWEST_DARK_VALID, pd->lowest_dark_valid);
 		persist_float(KEY_PD_HK_NOISE_WARN_MV, pd->noise_warn_rms_mv);
-		persist_float(KEY_PD_HK_GAIN_V_PER_UW, pd->gain_v_per_uw);
+		persist_double(KEY_PD_HK_RESPONSIVITY_A_PER_W, pd->responsivity_a_per_w);
+		persist_double(KEY_PD_HK_TRANSIMPEDANCE_V_PER_A, pd->transimpedance_v_per_a);
 	}
 }
 
@@ -839,12 +859,14 @@ static const char *const resettable_setting_keys[] = {
 	KEY_PD_YJ_LOWEST_DARK_MV,
 	KEY_PD_YJ_LOWEST_DARK_VALID,
 	KEY_PD_YJ_NOISE_WARN_MV,
-	KEY_PD_YJ_GAIN_V_PER_UW,
+	KEY_PD_YJ_RESPONSIVITY_A_PER_W,
+	KEY_PD_YJ_TRANSIMPEDANCE_V_PER_A,
 	KEY_PD_HK_DARK_MV,
 	KEY_PD_HK_LOWEST_DARK_MV,
 	KEY_PD_HK_LOWEST_DARK_VALID,
 	KEY_PD_HK_NOISE_WARN_MV,
-	KEY_PD_HK_GAIN_V_PER_UW,
+	KEY_PD_HK_RESPONSIVITY_A_PER_W,
+	KEY_PD_HK_TRANSIMPEDANCE_V_PER_A,
 	KEY_LASERBANK_HEATER_MODE,
 };
 
