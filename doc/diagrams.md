@@ -16,6 +16,7 @@ flowchart TD
   Devices --> Atten[attenuators]
   Devices --> Laser[laser bank and Maiman]
   Devices --> PD[photodiodes]
+  Devices --> TP[throughput_monitor]
   Devices --> Temp[temperature sensor]
   MQTT[MQTT ingress] --> InQ[inbound_queue]
   Serial[serial console] --> InQ
@@ -24,8 +25,9 @@ flowchart TD
   Exec --> Atten
   Exec --> Laser
   Exec --> PD
+  Exec --> TP
   Exec --> OutQ[outbound_queue]
-  PD --> OutQ
+  TP --> OutQ
   Warnings[app_warning_emit] --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
@@ -36,7 +38,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Start[main] --> Watchdog[configure watchdog]
+  Static[static MEMS, photodiode, temperature, throughput, SNTP threads self-gate] --> Start[main]
+  Start --> Watchdog[configure watchdog]
   Watchdog --> WdogOK{watchdog ready}
   WdogOK -- no --> Stop[stop boot]
   WdogOK -- yes --> Load[load settings]
@@ -49,7 +52,10 @@ flowchart TD
   Router --> Attens[setup profile attenuators]
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
-  Threads --> SNTP[start SNTP thread]
+  Threads --> LaserCtrl{TIB board}
+  LaserCtrl -- yes --> BankCtrl[start laserbank_control_thread]
+  LaserCtrl -- no --> SNTP[start SNTP runtime]
+  BankCtrl --> SNTP
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
   MQTTInit --> Loop[main MQTT/outbound loop]
@@ -136,7 +142,7 @@ flowchart TD
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
   Warning[app_warning_emit] --> OutQ
-  Photodiode[photodiode_thread] --> OutQ
+  Throughput[throughput_monitor_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
   Target -- serial --> Print[print topic and wrapped payload]
@@ -156,8 +162,10 @@ flowchart TD
   Note --> Active[set serial guard active]
   Active --> Schedule[schedule serial_guard_expire]
   MQTTCommand[MQTT command] --> Check{guard active}
-  Check -- yes --> Reject[serial_active_response and warning]
-  Check -- no --> Queue[queue command]
+  Check -- yes --> Safe{safe query}
+  Safe -- no --> Reject[serial_active_response and warning]
+  Safe -- yes --> Queue[queue command]
+  Check -- no --> Queue
   Schedule --> Expire[system workqueue callback]
   Expire --> Clear[clear serial guard active]
 ```
@@ -190,16 +198,53 @@ flowchart TD
   Complete -- yes --> Store{store requested}
   Store -- yes --> Persist[update photodiode settings]
   Store -- no --> Status[update dark status]
+  Complete -- no --> Status
   Dark -- no --> Noise[update residual noise]
-  Status --> Telemetry[enqueue outbound_queue]
-  Persist --> Telemetry
+  Status --> SleepPeriod[sleep to 20 ms period]
+  Persist --> SleepPeriod
   Noise --> Warn{noise above threshold}
   Warn -- yes --> Emit[app_warning_emit photodiode_noise]
-  Warn -- no --> Telemetry
-  Telemetry --> SleepPeriod[sleep to 20 ms period]
+  Warn -- no --> SleepPeriod
+  Emit --> SleepPeriod
 ```
 
-## 11. MEMS Router and Toggler Flow
+## 11. Throughput Monitor Flow
+
+```mermaid
+flowchart TD
+  Command[measure_throughput request] --> Stop{stop field present}
+  Stop -- yes --> StopReq[clear selected monitor or both monitors]
+  Stop -- no --> Validate[validate laser, fiber, format, autolevel, stopafter_s]
+  Validate --> Map[map laser to photodiode channel and attenuator]
+  Map --> PdPower[enable selected photodiode relay]
+  PdPower --> AutoStart{autolevel enabled}
+  AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
+  AutoStart -- no --> Arm[store monitor state under lock]
+  Seed --> Arm
+  Arm --> Ok[return status ok]
+  StopReq --> Ok
+
+  Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
+  Snapshot --> Active{channel active}
+  Active -- no --> Sleep[k_sleep 100 ms]
+  Active -- yes --> Timeout{stopafter expired}
+  Timeout -- yes --> Clear[clear monitor]
+  Timeout -- no --> PdOn{photodiode relay still on}
+  PdOn -- no --> Clear
+  PdOn -- yes --> Auto{autolevel}
+  Auto -- yes --> Adjust[adjust attenuator or laser level from PD mean]
+  Auto -- no --> Publish
+  Adjust --> Sync[write updated counters and level]
+  Sync --> Publish[build JSON or binary telemetry]
+  Publish --> OutQ[enqueue outbound_queue best effort]
+  OutQ --> Sleep
+  Clear --> Sleep
+
+  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable autolevel]
+  LaserChange[laser command changes same laser] --> StopMonitor[clear monitor]
+```
+
+## 12. MEMS Router and Toggler Flow
 
 ```mermaid
 flowchart TD
@@ -217,7 +262,7 @@ flowchart TD
   Classify --> Idle
 ```
 
-## 12. Split Command Flow
+## 13. Split Command Flow
 
 ```mermaid
 flowchart TD
@@ -236,7 +281,7 @@ flowchart TD
   Emit --> Response
 ```
 
-## 13. Settings Load, Update, and Persist Flow
+## 14. Settings Load, Update, and Persist Flow
 
 ```mermaid
 flowchart TD
@@ -252,7 +297,7 @@ flowchart TD
   BoardChange[board type changed] --> Clear[delete non-board app settings]
 ```
 
-## 14. Warning Publication Flow
+## 15. Warning Publication Flow
 
 ```mermaid
 flowchart TD
@@ -266,24 +311,27 @@ flowchart TD
   MQTT -- no --> Drop
 ```
 
-## 15. Temperature Sensing Flow
+## 16. Temperature Sensing Flow
 
 ```mermaid
 flowchart TD
   Thread[tempsensor_thread] --> Find[find DS18B20]
   Find --> Ready{device ready}
-  Ready -- no --> CacheErr[cache last_error]
+  Ready -- no --> InitErr[cache unavailable status]
+  InitErr --> Return[thread returns]
   Ready -- yes --> Fetch[sensor_sample_fetch]
   Fetch --> SensorGet[sensor_channel_get ambient]
   SensorGet --> Cache[update mutex-protected status]
-  CacheErr --> Sleep[k_sleep 1 s]
+  SensorGet -- error --> CacheErr[mark invalid and keep last value]
+  Fetch -- error --> CacheErr
   Cache --> Sleep
+  CacheErr --> Sleep[k_sleep 1 s]
   Sleep --> Fetch
   Command[temp query] --> Read[tempsense_get_status]
   Read --> Response[ambient payload or error]
 ```
 
-## 16. SNTP and Time Flow
+## 17. SNTP and Time Flow
 
 ```mermaid
 flowchart TD
@@ -300,7 +348,7 @@ flowchart TD
   SNTP -- fail --> Error[last_error and retry]
 ```
 
-## 17. Watchdog Flow
+## 18. Watchdog Flow
 
 ```mermaid
 flowchart TD
@@ -314,4 +362,140 @@ flowchart TD
   Loop --> Feed[wdt_feed]
   Feed --> Loop
   Feed -- failure --> Log[log watchdog feed failure]
+```
+
+## 19. Network and MQTT Reconfiguration Flow
+
+```mermaid
+flowchart TD
+  Loop[main loop] --> NetReady{network ready}
+  Loop --> Revision{MQTT settings revision changed}
+  Revision -- yes --> Load[load broker settings]
+  Load --> Apply[coo_mqtt_set_broker_config]
+  Apply -- reject --> Log[log rejected broker config]
+  Apply -- ok --> Changed{broker changed}
+  Changed -- yes --> SavePrior[save prior broker and arm revert-on-failure]
+  SavePrior --> DisconnectOld{MQTT connected}
+  Changed -- no --> NetReady
+  DisconnectOld -- yes --> Disconnect[mqtt_disconnect and clear subscribed flag]
+  DisconnectOld -- no --> NetReady
+  Disconnect --> NetReady
+
+  NetReady -- no --> ConnectedButBlocked{MQTT connected}
+  ConnectedButBlocked -- yes --> DropConn[mqtt_disconnect]
+  ConnectedButBlocked -- no --> DrainNoMqtt[drain outbound with MQTT unavailable]
+  DropConn --> DrainNoMqtt
+  DrainNoMqtt --> Sleep[k_sleep 20 ms]
+
+  NetReady -- yes --> Connected{MQTT connected}
+  Connected -- no --> Connect[coo_mqtt_connect]
+  Connect -- success --> ClearRevert[clear revert flag]
+  Connect -- failure and revert armed --> Warn[emit mqtt_broker_revert warning]
+  Warn --> Restore[restore prior broker and persisted settings]
+  Connect -- failure --> DrainNoMqtt
+  ClearRevert --> SubscribeNeeded{subscription active}
+  Connected -- yes --> SubscribeNeeded
+  SubscribeNeeded -- no --> Subscribe[subscribe cmd/<device>/req/#]
+  SubscribeNeeded -- yes --> Drain[drain outbound with MQTT available]
+  Subscribe --> Drain
+  Drain --> Process[coo_mqtt_process]
+  Process -- ok --> Loop
+  Process -- failure --> DisconnectProcess[mqtt_disconnect and clear subscribed flag]
+  DisconnectProcess --> Loop
+  Sleep --> Loop
+```
+
+## 20. Laser Bank Control Flow
+
+```mermaid
+flowchart TD
+  Thread[laserbank_control_thread] --> Cycle[run_heater_control_cycle]
+  Cycle --> Settings[read laserbank settings]
+  Settings --> Ambient[read cached ambient temperature]
+  Ambient --> Power[read bank power state and update on-time]
+  Power --> Mode{heater mode}
+
+  Mode -- override_on --> ForceOn[set heater on]
+  Mode -- override_off --> ForceOff[set heater off]
+  ForceOn --> OverrideWarn[rate-limited override warning]
+  ForceOff --> OverrideWarn
+  OverrideWarn --> Autooff[service laser auto-off deadlines]
+
+  Mode -- auto --> EnteredAuto{just entered auto and bank off}
+  EnteredAuto -- yes --> PowerBank[power bank on]
+  EnteredAuto -- no --> ReadTemps[read Maiman TEC temperatures]
+  PowerBank --> ReadTemps
+  ReadTemps --> Cache[refresh valid per-laser temperature cache]
+  Cache --> Summarize[summarize valid, stale, disabled, and warm state]
+  Summarize --> AllStaleCold{all stale and ambient below warm minimum}
+  AllStaleCold -- yes --> KeepPower[best-effort bank power on]
+  AllStaleCold -- no --> HeaterPolicy
+  KeepPower --> HeaterPolicy{heater policy}
+  HeaterPolicy -- any disabled below 15 C --> HeaterOn[set heater on]
+  HeaterPolicy -- disabled above threshold --> HeaterOff[set heater off]
+  HeaterPolicy -- all TECs enabled long enough --> HeaterOff
+  HeaterPolicy -- otherwise --> Autooff
+  HeaterOn --> Autooff
+  HeaterOff --> Autooff
+
+  Autooff --> Wait[wait for wake semaphore or poll interval]
+  Wake[heater command changes mode] --> Wait
+  Wait --> Cycle
+```
+
+## 21. Laser Output and Auto-Off Flow
+
+```mermaid
+flowchart TD
+  Request[laser level effect request] --> Parse[validate laser name, level, autooff_s]
+  Parse --> Settings[read laser channel settings]
+  Settings --> StopTP[stop throughput monitor for this laser]
+  StopTP --> SetOutput[hispec_laser_set_output_percent_autooff]
+  SetOutput --> Tuned{nonzero tune offset and level > 0}
+  Tuned -- yes --> Tune[apply wavelength tune using current and TEC]
+  Tuned -- no --> Percent[convert percent to diode current]
+  Tune --> Applied{hardware update ok}
+  Percent --> Applied
+  Applied -- no --> Error[return command error]
+  Applied -- yes --> LevelPositive{level > 0}
+  LevelPositive -- yes --> Deadline[store auto-off deadline or zero for no timeout]
+  LevelPositive -- no --> Clear[clear auto-off deadline]
+  Deadline --> Ok[return status ok]
+  Clear --> Ok
+
+  BankControl[laserbank_control_thread poll] --> Service[hispec_laser_service_autooff]
+  Service --> Expired{deadline expired}
+  Expired -- no --> Wait[poll interval]
+  Expired -- yes --> StopOutput[hispec_laser_stop_output]
+  StopOutput --> DisableTec{disable_tec_at_autooff}
+  DisableTec -- yes --> TecOff[stop current and TEC]
+  DisableTec -- no --> CurrentOff[stop current only]
+  TecOff --> Wait
+  CurrentOff --> Wait
+```
+
+## 22. Status Response Assembly Flow
+
+```mermaid
+flowchart TD
+  Request[status query] --> Parse[parse optional ip, lasers, attens flags]
+  Parse --> Base[read firmware, boot count, board, MEMS, relay status]
+  Base --> Temp[read cached ambient temperature]
+  Temp --> Bank[read laserbank_control status and bank on-time]
+  Bank --> PdOn[read photodiode relay on-time]
+  PdOn --> Build[append base JSON fields]
+
+  Build --> IncludeIP{ip requested}
+  IncludeIP -- yes --> IP[ip_get and embed payload]
+  IncludeIP -- no --> IncludeLasers
+  IP --> IncludeLasers{lasers requested}
+  IncludeLasers -- yes --> LaserLoop[read each laser status over Maiman when available]
+  IncludeLasers -- no --> IncludeAttens
+  LaserLoop --> IncludeAttens{attens requested}
+  IncludeAttens -- yes --> AttenLoop[read available attenuator channels over DAC]
+  IncludeAttens -- no --> Last
+  AttenLoop --> Last[append lastcommand]
+  Last --> Size{fixed payload still fits}
+  Size -- yes --> Response[return status payload]
+  Size -- no --> Error[return status response too large]
 ```
