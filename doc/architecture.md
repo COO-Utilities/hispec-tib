@@ -18,7 +18,8 @@ scheduling.
 Runtime ownership is:
 
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
-- `command.c`: MQTT/serial command normalization, dispatch, response builders.
+- `command.c`: app command queues, serial guard policy, request classification,
+  command table, and app/domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
@@ -40,6 +41,9 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   DHCP/static/fallback profile selection.
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
+- `command_dispatch.c`: fixed-buffer MQTT/serial command request, static
+  longest-prefix dispatch, response metadata, serial payload normalization, and
+  serial response printing helpers.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 - `pid.c`: generic PID helper, currently not central to the app runtime.
@@ -81,8 +85,9 @@ Board identity comes from exactly one active strap:
 ## Command Model
 
 MQTT subscribes to `cmd/<device>/req/#`. The suffix after that prefix is the
-command key. An MQTT response topic property is used when present; otherwise
-the default response topic is `cmd/<device>/resp/<key>`.
+command key. The shared command-dispatch helper copies the MQTT request into a
+fixed request object. An MQTT response topic property is used when present;
+otherwise the default response topic is `cmd/<device>/resp/<key>`.
 The `<device>` namespace is selected from the detected board strap: `tib` maps
 to `hsfib-tib`, `cal_hk` to `hsfib-rcal`, `cal_yj` to `hsfib-bcal`, and `as` to
 `hsfib-as`. The same name is used for telemetry under `dt/<device>/...` and as
@@ -99,7 +104,8 @@ request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
 `memsroute/route_loss` payloads that contain `laser`.
 
-Serial commands use the same classification after line normalization:
+Serial commands use the same classification after line normalization by the
+shared command-dispatch helper:
 `<key>` becomes an empty JSON payload, raw JSON is copied, `key=value` tokens
 are wrapped as JSON fields, and selected human shorthands are translated into
 the same payload shapes as MQTT. The old payload `msg_type` convention is not

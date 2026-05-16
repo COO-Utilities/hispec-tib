@@ -131,28 +131,7 @@ const struct DispatchEntry dispatch_table[] = {
 
 const struct DispatchEntry *find_dispatch(const char *key)
 {
-    const struct DispatchEntry *best = NULL;
-    size_t best_len = 0;
-
-    for (size_t i = 0; i < ARRAY_SIZE(dispatch_table); ++i) {
-        const char *candidate = dispatch_table[i].key;
-        size_t len = strlen(candidate);
-
-        if (strncmp(key, candidate, len) != 0) {
-            continue;
-        }
-
-        if (key[len] != '\0' && key[len] != '/') {
-            continue;
-        }
-
-        if (len > best_len) {
-            best = &dispatch_table[i];
-            best_len = len;
-        }
-    }
-
-    return best;
+    return coo_cmd_find_dispatch(dispatch_table, ARRAY_SIZE(dispatch_table), key);
 }
 
 static bool command_pd_dark_status_query(const struct Command *cmd)
@@ -211,13 +190,8 @@ struct OutMsg dispatch_command(const struct Command *cmd) {
         record_lastcommand(cmd);
     }
 
-    const struct DispatchEntry *entry = find_dispatch(cmd->key);
-    if (!entry) {
-        r = unknown_response(cmd);
-    } else {
-        DispatchFunc func = (cmd->msg_type == MSG_SET) ? entry->set_handler : entry->get_handler;
-        r = func==NULL ? unsupported_response(cmd) : func(cmd);
-    }
+    r = coo_cmd_dispatch(cmd, dispatch_table, ARRAY_SIZE(dispatch_table),
+                         unknown_response, unsupported_response);
     return r;
 }
 
@@ -294,44 +268,19 @@ static int parse_atten_key(const char *key,
     return 0;
 }
 
+static int command_format_response_topic(const char *key,
+                                         char *out,
+                                         size_t out_len,
+                                         void *user_data)
+{
+    ARG_UNUSED(user_data);
+
+    return app_mqtt_format_response_topic(key, out, out_len);
+}
+
 struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const char *msg) {
-    struct OutMsg r = { 0 };
-    r.msg_type = msgtyp;
-    r.target = (cmd && cmd->source == CMD_SRC_SERIAL) ? OUT_TARGET_SERIAL : OUT_TARGET_MQTT;
-    r.qos = MQTT_QOS_1_AT_LEAST_ONCE;
-
-    //        snprintf(r.payload, MAX_PAYLOAD_LEN, "{\"error\":\"Invalid route\"}");
-
-
-    /* MQTT 5 response_topic is authoritative when supplied; otherwise the
-     * firmware derives cmd/<device>/resp/<key> during ingress.
-     */
-    (void)app_mqtt_format_response_topic(cmd != NULL ? cmd->key : "",
-                                         r.topic, sizeof(r.topic));
-    if (cmd && strlen(cmd->response_topic) > 0 && strlen(cmd->response_topic) < sizeof(r.topic)) {
-        strncpy(r.topic, cmd->response_topic, sizeof(r.topic) - 1);
-    }
-
-    /* MQTT 5 correlation_data is opaque requester state and must be echoed
-     * exactly so clients can match command responses.
-     */
-    if (cmd && cmd->corr_len > 0 && cmd->corr_len <= sizeof(r.correlation_data)) {
-        memcpy(r.correlation_data, cmd->correlation_data, cmd->corr_len);
-        r.corr_len = cmd->corr_len;
-    }
-
-    if (msg != NULL && strlen(msg) >= sizeof(r.payload)) {
-        static const char overflow_msg[] = "{\"error\":\"response too large\"}";
-
-        r.msg_type = RESP_ERROR;
-        snprintk(r.payload, sizeof(r.payload), "%s", overflow_msg);
-        r.payload_len = strlen(r.payload);
-        return r;
-    }
-
-    snprintk(r.payload, sizeof(r.payload), "%s", msg != NULL ? msg : "");
-    r.payload_len = strlen(r.payload);
-    return r;
+    return coo_cmd_make_response(cmd, msgtyp, msg,
+                                 command_format_response_topic, NULL);
 }
 
 static struct OutMsg ok_response(const struct Command *cmd)
@@ -357,13 +306,7 @@ static struct OutMsg error_response_rc(const struct Command *cmd, const char *ms
 
 static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
 {
-    if (topic == NULL || out == NULL || topic->size == 0U || topic->size >= out_len) {
-        return false;
-    }
-
-    memcpy(out, topic->utf8, topic->size);
-    out[topic->size] = '\0';
-    return true;
+    return coo_cmd_copy_mqtt_utf8(topic, out, out_len);
 }
 
 static bool mqtt_get_allowed_during_serial_guard(const char *key)
@@ -392,7 +335,7 @@ static bool derive_default_response_topic(const char *key, char *topic_out, size
 
 static bool command_payload_empty(const struct Command *cmd)
 {
-    return cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0;
+    return coo_cmd_payload_empty(cmd);
 }
 
 static enum MsgType command_infer_msg_type(const struct Command *cmd)
@@ -580,45 +523,6 @@ static int append_serial_json_field(char *out, size_t out_len, size_t *off,
     return rc;
 }
 
-/* Convert a serial payload like "state=A stopafter_s=30" into a compact JSON
- * object. This function does not validate command-specific meaning; handlers
- * still parse and validate the resulting JSON in the normal dispatch path.
- */
-static int serial_payload_from_key_values(const char *payload, char *out, size_t out_len)
-{
-    const char *cursor = payload;
-    char token[128];
-    bool first = true;
-    size_t off = 0;
-    int written;
-
-    written = snprintk(out, out_len, "{");
-    if (written < 0 || written >= (int)out_len) {
-        return -ENOSPC;
-    }
-    off = (size_t)written;
-
-    while (next_serial_token(&cursor, token, sizeof(token))) {
-        char *eq = strchr(token, '=');
-
-        if (eq == NULL || eq == token || eq[1] == '\0') {
-            return -EINVAL;
-        }
-        *eq = '\0';
-
-        if (append_serial_json_field(out, out_len, &off, token, eq + 1, !first) != 0) {
-            return -EINVAL;
-        }
-        first = false;
-    }
-
-    written = snprintk(out + off, out_len - off, "}");
-    if (written < 0 || written >= (int)(out_len - off)) {
-        return -ENOSPC;
-    }
-    return 0;
-}
-
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
  * uses. This is deliberately a small translation table, not another dispatcher.
  * Examples: "power on", "serialguard off", "mems/foo A 0.5 30".
@@ -726,6 +630,17 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
+static int command_serial_payload_from_shorthand(const char *key,
+                                                 const char *payload,
+                                                 char *out,
+                                                 size_t out_len,
+                                                 void *user_data)
+{
+    ARG_UNUSED(user_data);
+
+    return serial_payload_from_shorthand(key, payload, out, out_len);
+}
+
 /* Top-level serial payload policy:
  * - no payload becomes "{}" and is dispatched as MSG_GET;
  * - raw JSON beginning with "{" is copied unchanged, not parsed or rebuilt;
@@ -735,27 +650,9 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
 static int normalize_serial_payload(const char *key, const char *payload,
                                     char *out, size_t out_len)
 {
-    payload = skip_serial_space(payload);
-    if (payload == NULL || payload[0] == '\0') {
-        int written = snprintk(out, out_len, "{}");
-
-        return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
-    }
-
-    if (payload[0] == '{') {
-        if (strlen(payload) >= out_len) {
-            return -ENOSPC;
-        }
-        strncpy(out, payload, out_len - 1U);
-        out[out_len - 1U] = '\0';
-        return 0;
-    }
-
-    if (strchr(payload, '=') != NULL) {
-        return serial_payload_from_key_values(payload, out, out_len);
-    }
-
-    return serial_payload_from_shorthand(key, payload, out, out_len);
+    return coo_cmd_normalize_serial_payload(key, payload,
+                                            command_serial_payload_from_shorthand,
+                                            NULL, out, out_len);
 }
 
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
@@ -974,28 +871,10 @@ void command_serial_thread(void *p1, void *p2, void *p3)
 
 static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
 {
-    struct mqtt_publish_param param;
-
-    if (client == NULL || out == NULL) {
-        return -EINVAL;
-    }
-
-    memset(&param, 0, sizeof(param));
-    param.message.topic.qos = out->qos;
-    param.message.topic.topic.utf8 = (uint8_t *)out->topic;
-    param.message.topic.topic.size = strlen(out->topic);
-    param.message.payload.data = (uint8_t *)out->payload;
-    param.message.payload.len = out->payload_len;
-    param.prop.correlation_data.data = (uint8_t *)out->correlation_data;
-    param.prop.correlation_data.len = out->corr_len;
-    param.message_id = mqtt_msg_id++;
-    param.dup_flag = 0U;
-    param.retain_flag = 0U;
-
     /* mqtt_publish() may block in the socket layer and is kept out of timing
      * sensitive work items and sampler threads.
      */
-    return mqtt_publish(client, &param);
+    return coo_cmd_publish_mqtt(client, out, &mqtt_msg_id);
 }
 
 static void build_outbound_queue_full_warning(struct OutMsg *out)
@@ -1036,39 +915,7 @@ static void publish_outbound_queue_full_warning(struct mqtt_client *client,
  */
 static void print_serial_response(const struct OutMsg *out)
 {
-    size_t len;
-    uint16_t col = 0U;
-
-    if (out == NULL) {
-        return;
-    }
-
-    printk("%s\n\t", out->topic[0] != '\0' ? out->topic : "serial");
-    col = 8U;
-    len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
-
-    for (size_t i = 0; i < len && out->payload[i] != '\0'; ++i) {
-        const char ch = out->payload[i];
-
-        if (ch == '\n' || col >= SERIAL_WRAP_COLUMN) {
-            printk("\n\t");
-            col = 8U;
-            if (ch == '\n') {
-                continue;
-            }
-        }
-
-        printk("%c", ch);
-        col++;
-
-        if ((ch == ',' || ch == '}') && col >= (SERIAL_WRAP_COLUMN - 8U) &&
-            i + 1U < len) {
-            printk("\n\t");
-            col = 8U;
-        }
-    }
-
-    printk("\n");
+    coo_cmd_print_serial_response(out, SERIAL_WRAP_COLUMN);
 }
 
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available)

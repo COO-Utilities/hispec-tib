@@ -16,75 +16,35 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/mqtt.h>
 #include <string.h>
+#include <coo_commons/command_dispatch.h>
 
-#define MAX_TOPIC_LEN 96
-#define MAX_KEY_LEN   48
-#define MAX_REQID_LEN 32
-#define MAX_SESSION_ID_LEN 48
-#define MAX_PAYLOAD_LEN CONFIG_COO_MQTT_PAYLOAD_SIZE
-/* MQTT 5 correlation_data is opaque requester state. This deployment uses
- * UUID64/UUID128-style request IDs, so larger values are not echoed.
- */
-#define MAX_CORRELATION_DATA 16
+#define MAX_TOPIC_LEN COO_CMD_TOPIC_MAX
+#define MAX_KEY_LEN COO_CMD_KEY_MAX
+#define MAX_REQID_LEN COO_CMD_REQID_MAX
+#define MAX_SESSION_ID_LEN COO_CMD_SESSION_ID_MAX
+#define MAX_PAYLOAD_LEN COO_CMD_PAYLOAD_MAX
+#define MAX_CORRELATION_DATA COO_CMD_CORRELATION_MAX
 #define MAX_PENDING_COMMANDS 2
 
-
-/** Command request/response type understood by the dispatcher and builders. */
-enum MsgType { MSG_GET, MSG_SET, ACK, RESP_OK, RESP_ERROR };
-
-/** Ingress path used for response routing and serial-guard policy. */
-enum CommandSource { CMD_SRC_MQTT = 0, CMD_SRC_SERIAL = 1 };
-
-/** Publication target for responses, warnings, and telemetry. */
-enum OutMsgTarget {
-	OUT_TARGET_MQTT = 0,
-	OUT_TARGET_SERIAL = 1,
-	/* Fire-and-forget MQTT publication, used for warnings/telemetry that
-	 * must not block command responses when MQTT is unavailable.
-	 */
-	OUT_TARGET_MQTT_BEST_EFFORT = 2,
-};
-
-struct Command {
-	enum MsgType msg_type;
-	enum CommandSource source;
-
-	char key[MAX_KEY_LEN];  //topic instead
-	char session_id[MAX_SESSION_ID_LEN]; //maybe or part of Mqtt?
-	char response_topic[MAX_TOPIC_LEN];
-	size_t payload_len;
-	char payload[MAX_PAYLOAD_LEN];
-	uint8_t correlation_data[MAX_CORRELATION_DATA];
-	uint32_t corr_len;
-};
-
-/** Fully formatted outbound response or publication. */
-struct OutMsg {
-	enum MsgType msg_type;  // RES, ACK, ERROR
-	enum OutMsgTarget target;
-	char topic[MAX_TOPIC_LEN];
-	uint8_t qos;
-	size_t payload_len;
-	char payload[MAX_PAYLOAD_LEN];
-	uint8_t correlation_data[MAX_CORRELATION_DATA];
-	size_t corr_len;
-};
-
-/** Work wrapper retained for possible Zephyr workqueue dispatch use. */
-struct CommandWork {
-	struct k_work work;
-	struct Command cmd;
-};
-
-
-typedef struct OutMsg (*DispatchFunc)(const struct Command *cmd) ;
-
-struct DispatchEntry {
-	const char   *key;           /* e.g. "memsroute", "laser1/flux", etc. */
-	DispatchFunc get_handler;    // may be none
-	DispatchFunc set_handler;    // may be none
-};
-
+/* Transitional app-local names retained while handlers move into domain files. */
+#define MSG_GET COO_CMD_QUERY
+#define MSG_SET COO_CMD_EFFECT
+#define ACK COO_CMD_ACK
+#define RESP_OK COO_CMD_RESP_OK
+#define RESP_ERROR COO_CMD_RESP_ERROR
+#define MsgType coo_cmd_msg_type
+#define CMD_SRC_MQTT COO_CMD_SOURCE_MQTT
+#define CMD_SRC_SERIAL COO_CMD_SOURCE_SERIAL
+#define CommandSource coo_cmd_source
+#define OUT_TARGET_MQTT COO_CMD_OUT_MQTT
+#define OUT_TARGET_SERIAL COO_CMD_OUT_SERIAL
+#define OUT_TARGET_MQTT_BEST_EFFORT COO_CMD_OUT_MQTT_BEST_EFFORT
+#define OutMsgTarget coo_cmd_out_target
+#define Command coo_cmd_request
+#define OutMsg coo_cmd_response
+#define CommandWork coo_cmd_work
+#define DispatchFunc coo_cmd_handler_fn
+#define DispatchEntry coo_cmd_dispatch_entry
 
 /* Handler prototypes for all commands (get/set where defined) */
 struct OutMsg memsroute_get(const struct Command *cmd);

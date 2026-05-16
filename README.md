@@ -68,7 +68,9 @@ GET; a key with payload is a SET. See:
 ## Runtime Shape
 
 - `main.c`: boot order, watchdog feed, network/MQTT loop, outbound publish.
-- `command.c`: MQTT/serial ingress, serial guard, dispatch, response queues.
+- `command.c`: app command queues, serial guard policy, command table, and
+  command handlers, using `lib/coo_commons/command_dispatch.c` for reusable
+  MQTT/serial request and response mechanics.
 - `devices.c`: board strap detection and board-profile setup.
 - `mems_switching.c`: MEMS switch state, routes, and toggler work.
 - `attenuator.c`: DAC-backed logical attenuator control and calibration.
