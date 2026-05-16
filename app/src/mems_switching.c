@@ -608,10 +608,6 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
     router->routes = routes;
     router->num_routes = num_routes;
 
-    //It is vital that at this point in the code the switches be initialized such that they WILL NOT toggle. Their
-    // needed states and potentially restored states must all align.
-    //TODO Verify this is the case.
-
     if (router->num_switches > 0U) {
         active_router = router;
         k_timer_start(&mems_router_timer,

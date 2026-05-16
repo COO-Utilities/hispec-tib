@@ -14,15 +14,17 @@ a replacement for `commands.md`.
   fixed buffer.
 - MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
   and echoed exactly in responses.
-- While serial guard is active, safe MQTT GETs are accepted, but MQTT SET/action
-  commands and legacy side-effect GET handlers are rejected.
-- Empty MQTT payload is GET.
-- Non-empty MQTT payload is SET unless it includes `msg_type:"get"`.
-- Serial `<key>` is GET.
-- Serial `<key> <payload>` is SET.
+- MQTT and serial share the same schema-based request classification in
+  `command_infer_msg_type()`.
+- Empty/no-payload requests are GET except no-payload actions such as `reboot`
+  and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
+- Non-empty payload requests are SET/action except documented payload-query
+  shapes for `status`, laser query endpoints, and `memsroute/route_loss`.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
 - All handlers run in `command_executor_thread()` and enqueue one response to
   `outbound_queue`.
+- Data-less success returns `{"status":"ok"}`. Data-bearing success returns the
+  data object. Failures include an `error` key.
 
 ## Dispatch Table
 
@@ -32,27 +34,28 @@ a replacement for `commands.md`.
 | `ip` | `cmd/<device>/req/ip` | `cmd/<device>/resp/ip` | `ip [payload]` |
 | `mqtt` | `cmd/<device>/req/mqtt` | `cmd/<device>/resp/mqtt` | `mqtt [payload]` |
 | `time` | `cmd/<device>/req/time` | `cmd/<device>/resp/time` | `time [payload]` |
-| `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot <payload>` |
+| `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot` |
 | `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` |
 | `memsroute` | `cmd/<device>/req/memsroute` | `cmd/<device>/resp/memsroute` | `memsroute [payload]` |
-| `memsroute/route_loss` | `cmd/<device>/req/memsroute/route_loss` | `cmd/<device>/resp/memsroute/route_loss` | `memsroute/route_loss [payload]` |
+| `memsroute/route_loss` | `cmd/<device>/req/memsroute/route_loss` | `cmd/<device>/resp/memsroute/route_loss` | `memsroute/route_loss <payload>` |
 | `mems` | `cmd/<device>/req/mems` | `cmd/<device>/resp/mems` | `mems` |
 | `mems/<switch>` | `cmd/<device>/req/mems/<switch>` | `cmd/<device>/resp/mems/<switch>` | `mems/<switch> [payload]` |
-| `split/<channel>` | `cmd/<device>/req/split/<channel>` | `cmd/<device>/resp/split/<channel>` | `split/<channel> [payload]` |
+| `split` | `cmd/<device>/req/split` | `cmd/<device>/resp/split` | `split <payload>` |
+| `split/<channel>` | `cmd/<device>/req/split/<channel>` | `cmd/<device>/resp/split/<channel>` | `split/<channel>` |
 | `measure_throughput` | `cmd/<device>/req/measure_throughput` | `cmd/<device>/resp/measure_throughput` | `measure_throughput <payload>` |
 | `laserbank/power` | `cmd/<device>/req/laserbank/power` | `cmd/<device>/resp/laserbank/power` | `laserbank/power[/mode] [payload]` |
-| `laserbank/clearfaults` | `cmd/<device>/req/laserbank/clearfaults` | `cmd/<device>/resp/laserbank/clearfaults` | `laserbank/clearfaults [payload]` |
-| `laserbank/heater` | `cmd/<device>/req/laserbank/heater` | `cmd/<device>/resp/laserbank/heater` | `laserbank/heater [auto|override_on|override_off]` |
-| `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser [payload]` |
-| `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune [payload]` |
-| `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status [payload]` |
-| `laser/engstatus` | `cmd/<device>/req/laser/engstatus` | `cmd/<device>/resp/laser/engstatus` | `laser/engstatus [payload]` |
-| `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings [payload]` |
+| `laserbank/clearfaults` | `cmd/<device>/req/laserbank/clearfaults` | `cmd/<device>/resp/laserbank/clearfaults` | `laserbank/clearfaults` |
+| `laserbank/heater` | `cmd/<device>/req/laserbank/heater` | `cmd/<device>/resp/laserbank/heater` | `laserbank/heater[/mode] [payload]` |
+| `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser <payload>` |
+| `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune <payload>` |
+| `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status <payload>` |
+| `laser/engstatus` | `cmd/<device>/req/laser/engstatus` | `cmd/<device>/resp/laser/engstatus` | `laser/engstatus <payload>` |
+| `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings <payload>` |
 | `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
 | `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
 | `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
-| `status` | `cmd/<device>/req/status` | `cmd/<device>/resp/status` | `status` |
+| `status` | `cmd/<device>/req/status` | `cmd/<device>/resp/status` | `status [payload]` |
 
 ## Command Details
 
@@ -62,8 +65,8 @@ a replacement for `commands.md`.
 - Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,measure_throughput,laser,laserbank,atten,pd,pdsettings"}`.
 - No hardware side effects, no settings writes, no direct publish.
 - Handler: `help_get()` in `app/src/command.c`.
-- Mismatch: help text is implementation-derived, not a full copy of
-  `commands.md`.
+- Mismatch: the response is a static summary, not a full endpoint list or
+  device-info payload.
 
 ### `ip`
 
@@ -71,9 +74,9 @@ a replacement for `commands.md`.
 - SET fields: `trydhcpfirst`, `preferdhcpdns`, `preferdhcpntp`, `ip`,
   `subnet`, `gateway`, `dns`, `ntp`, `persistent`.
 - Validation: bools must parse as bools; string fields must fit fixed IPv4
-  buffers; unsupported DHCP/DNS/NTP fields return partial status.
-- Response: success with `apply:"immediate"` for network changes,
-  `apply:"immediate"` for NTP-only changes, or partial support status.
+  buffers; unsupported DHCP/DNS/NTP fields are reported in a data response.
+- Data-less success response: `{"status":"ok"}`.
+- Partial support response: `{"dhcp":"ok|unsupported","dns":"ok|unsupported","ntp":"ok|unsupported"}`.
 - Side effects: applies runtime network changes through `network_reconfigure()`,
   updates runtime settings after successful apply, optional settings
   persistence, and NTP changes schedule SNTP sync.
@@ -88,7 +91,7 @@ a replacement for `commands.md`.
 - Validation: broker must be one `<host-or-ip>:<port>` value; hostname
   requires DNS support and must resolve before settings are updated unless
   numeric IPv4; port must be 1..65535.
-- Response: `{"status":"success","apply":"reconnect"}`.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: updates runtime broker settings; optional persistence; main
   loop reconnects later. If the new broker fails its first connection attempt,
   main restores the prior broker setting and emits `mqtt_broker_revert`.
@@ -99,9 +102,11 @@ a replacement for `commands.md`.
 
 ### `time`
 
-- GET returns UTC ms, cycle ticks, uptime, and SNTP status.
+- GET returns `utc` milliseconds from `CLOCK_REALTIME` and `uptime`
+  milliseconds from `k_uptime_get()`.
 - SET field: `linuxtime_ms`.
 - Validation: `linuxtime_ms` must parse as unsigned 64-bit milliseconds.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: SET calls `clock_settime()`.
 - Blocking: no bus I/O; no settings writes; no direct publish.
 - Serial shorthand: `time <linuxtime_ms>`.
@@ -109,25 +114,23 @@ a replacement for `commands.md`.
 
 ### `reboot`
 
-- SET schedules a named delayed reboot action after 250 ms.
-- GET is unsupported, so empty MQTT payload or bare serial `reboot` does not
-  reboot.
-- SET payload is not parsed; any non-empty MQTT payload dispatches SET.
-- Response: `{"status":"success"}` or schedule error.
+- No-payload action. MQTT empty payload and bare serial `reboot` schedule a
+  named delayed reboot action after 250 ms.
+- Payload is ignored if a caller supplies one.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: calls `sys_reboot(SYS_REBOOT_COLD)` from the scheduled action.
 - Handler: `reboot_set()` in `app/src/command.c`.
-- Mismatch: intended docs read like a no-payload action.
 
 ### `serialguard`
 
 - GET returns configured holdoff seconds, active state, and remaining ms.
 - SET fields: `seconds` or `value`, optional `persistent`.
 - Validation: seconds/value must parse as unsigned 32-bit.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: updates serial guard setting; optional persistence; serial SET
   refreshes the active guard window.
-- While active, serial guard rejects MQTT SET/action commands. Safe read-only
-  MQTT GETs are allowed; laser-bank power and raw laser register GETs remain
-  blocked because those legacy GET handlers can have side effects.
+- While active, serial guard rejects MQTT SET/action commands. It also blocks
+  all `laserbank/*` and `laser` GET-shaped requests even if they look read-only.
 - Serial shorthand: `serialguard off`, `serialguard <seconds> [persistent]`.
 - Handler: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
 
@@ -138,6 +141,7 @@ a replacement for `commands.md`.
 - SET fields: `input`, `output`.
 - Validation: route must exist in current board profile and every route switch
   must exist.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: sets MEMS switch requested states through the router.
 - Blocking/enqueue: can lock router state and update state applied by the MEMS
   router thread; no direct publish.
@@ -145,13 +149,15 @@ a replacement for `commands.md`.
 
 ### `memsroute/route_loss`
 
-- GET/query fields: `route`, `laser`.
+- Query payload fields: `route`, `laser`.
 - SET fields: `route`, one laser-name key containing either linear
   transmission or a string loss in dB, optional `persistent`.
+- Request classification: a payload containing `laser` is treated as query;
+  otherwise the request is treated as SET.
 - Validation: route and laser names must fit fixed route-loss record buffers;
   transmission must be in `(0, 1]`; dB loss must be non-negative.
-- Query response: `status`, `tx`, `loss_db`, and `configured`. Set response:
-  `{"status":"success"}`.
+- Query response: `tx`, `loss_db`, and `configured`.
+- Data-less SET success response: `{"status":"ok"}`.
 - Side effects: updates one app-owned route-loss record and optionally persists
   it under `routeloss/<route>/<laser>`.
 - Handler: `memsroute_get()`, `memsroute_set()` route-loss branch in
@@ -159,27 +165,30 @@ a replacement for `commands.md`.
 
 ### `mems` and `mems/<switch>`
 
-- `mems` GET returns all active profile switches.
-- `mems/<switch>` GET returns one switch.
+- `mems` GET returns all active profile switches with compact `state` and
+  `duty_cycle`.
+- `mems/<switch>` GET returns one switch with state, duty cycle,
+  requested/actual toggle rate, and stop-after.
 - `mems/<switch>` SET fields: `state`, optional `duty_cycle`,
   `toggle_rate_hz`, `stopafter_s`.
 - Validation: state is `A` or `B`; `duty_cycle` only valid with state `A`;
   `toggle_rate_hz` must be greater than zero; `stopafter_s` must be in range.
-- Response: state, duty cycle, requested and quantized toggle rate, stop-after.
+- SET success returns the same one-switch state object rather than the global
+  data-less `ok` response.
 - Side effects: updates router-owned MEMS switch state applied by the MEMS
   router thread.
 - Enqueue: can enqueue `mems_rate_quantized` warning.
 - Serial shorthand: `mems/<switch> A [duty_cycle] [stopafter_s]`.
 - Handler: `mems_get()`, `mems_set()` in `app/src/command.c`.
 
-### `split/<yj|hk>`
+### `split`
 
-- GET channel can come from key or payload field `channel`.
-- SET fields: `ratio1`, `ratio2`, optional `channel`, optional `stopafter_s`.
+- `split/<yj|hk>` GET reads one splitter channel.
+- `split` SET fields: `channel`, `ratio1`, `ratio2`, optional `stopafter_s`.
 - Rejected fields: `ratio3`, `toggle_rate_hz`.
 - Validation: channel is `yj` or `hk`; ratios are 0.0..1.0 and sum <= 1.0.
-- Response: requested ratios, actual quantized ratios, switch tick details, and
-  `stopsin_s`.
+- SET success returns requested ratios, actual quantized ratios, switch tick
+  details, and `stopsin_s`.
 - Side effects: applies three MEMS switches on AS split routes.
 - Enqueue: can enqueue `split_ratio_quantized` warning.
 - Board restriction: requires routes present in active board profile, normally
@@ -192,7 +201,7 @@ a replacement for `commands.md`.
 - Start fields: `laser`, `fiber`, optional `autolevel`, optional
   `stopafter_s`, optional `format` with `json` or `binary`.
 - Stop field: `stop` as `yj`, `hk`, or `all`.
-- Response: `{"status":"success"}` or `{"status":"error","msg":"..."}`.
+- Data-less success response: `{"status":"ok"}`.
 - Side effects: starts/stops throughput stream publication on `yj_tput` or
   `hk_tput`; can enable photodiode power and, with autolevel enabled, set
   attenuation and laser current.
@@ -208,6 +217,7 @@ a replacement for `commands.md`.
 - SET accepts `{"override":"auto|override_on|override_off"}`,
   `{"mode":"auto|override_on|override_off"}`, raw text, or a topic suffix such
   as `laserbank/power/override_on`.
+- SET success returns the same data shape as GET.
 - Board restriction: TIB only.
 - Side effects: `override_on` powers the bank and waits for Maiman boot;
   `override_off` best-effort writes all currents to 0 before powering the bank
@@ -215,37 +225,17 @@ a replacement for `commands.md`.
 - Handler: `laserbank_power()` in `app/src/command.c` and laser-bank domain
   helpers in `app/src/lasers.c`.
 
-### `laser`
-
-- GET accepts `{"name":"<laser>"}` and returns compact operational status.
-- SET accepts `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
-- Board restriction: TIB only.
-- Side effects: SET can power the bank, program TEC/current, stop an active
-  throughput monitor using that laser, and arm/reset firmware auto-off.
-- Handler: `laser_get()`, `laser_set()` in `app/src/command.c`; hardware work
-  is delegated to `app/src/lasers.c`.
-
-### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
-
-- `laser/tune` GET/SET manages the persisted wavelength tune offset.
-- `laser/status` is an alias of compact `laser` GET.
-- `laser/engstatus` returns raw Maiman engineering status and measured driver
-  values; unavailable numeric values are JSON `null`.
-- `laser/settings` GET/SET manages app-owned diode settings. Driver-backed
-  updates temporarily power the bank if needed, unless bank power is
-  `override_off`.
-- Handlers: `laser_tune_*()`, `laser_status_get()`,
-  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/command.c`.
-
 ### `laserbank/clearfaults`
 
-- GET and SET both call the same side-effect handler.
-- Payload ignored.
+- No-payload action; ingress classifies this as SET/action. The dispatch table
+  still points both GET and SET slots at the same handler.
+- Payload is ignored if supplied.
 - Board restriction: TIB only.
-- Side effects: power-cycles the laser bank, sleeps for the fault-clear off
-  interval, then sleeps 1000 ms if power is re-enabled.
-- Response: `status`, `laser_power`, `was_powered`, `off_ms`,
-  `fault_detection`.
+- Side effects: if the bank is powered and any driver reports overcurrent,
+  power-cycles the laser bank, sleeps for the fault-clear off interval, then
+  sleeps for bank boot after re-enabling power.
+- Response: `{"off_ms":0}` when no cycle was needed, or
+  `{"off_ms":250}` when the power cycle was performed.
 - Handler: `laserbank_clearfaults()` in `app/src/command.c`.
 
 ### `laserbank/heater`
@@ -253,7 +243,8 @@ a replacement for `commands.md`.
 - GET with no suffix reports heater auto/override control status.
 - SET accepts `override`/`state` string values `auto`, `override_on`, or
   `override_off`, including topic suffixes. The misspelled `overide_*` forms
-  are accepted for operator convenience.
+  are accepted.
+- SET success returns the same data shape as GET.
 - Board restriction: TIB only.
 - Side effects: updates the persisted laser-bank heater mode and wakes
   `laserbank_control_thread()`. `auto` runs the warmup policy; `override_on`
@@ -263,6 +254,34 @@ a replacement for `commands.md`.
   counts, control flags, and last error.
 - Handler: `laserbank_heater()` in `app/src/command.c`.
 
+### `laser`
+
+- Query payload: `{"name":"<laser>"}`. Returns compact operational status.
+- SET payload: `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
+- Request classification: payloads with `level` are SET; payloads without
+  `level` are GET.
+- Data-less SET success response: `{"status":"ok"}`.
+- Board restriction: TIB only.
+- Side effects: SET can power the bank, program TEC/current, stop an active
+  throughput monitor using that laser, and arm/reset firmware auto-off.
+- Handler: `laser_get()`, `laser_set()` in `app/src/command.c`; hardware work
+  is delegated to `app/src/lasers.c`.
+
+### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
+
+- `laser/tune` GET/SET manages the persisted wavelength tune offset. Payloads
+  with `tune_nm` or `delta_nm` are SET; name-only payloads are GET.
+- `laser/status` is an alias of compact `laser` GET.
+- `laser/engstatus` returns raw Maiman engineering status and measured driver
+  values; unavailable numeric values are JSON `null`.
+- `laser/settings` GET/SET manages app-owned diode settings. Payloads with a
+  nested `settings` object are SET; name-only payloads are GET.
+- Data-less SET success response: `{"status":"ok"}`.
+- Driver-backed updates temporarily power the bank if needed, unless bank power
+  is `override_off`.
+- Handlers: `laser_tune_*()`, `laser_status_get()`,
+  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/command.c`.
+
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 
 - GET returns total `db`, total `linear` transmission, both physical DAC
@@ -270,6 +289,7 @@ a replacement for `commands.md`.
 - SET field: `value` float.
 - `value` sets total linear transmission in `(0, 1]`; `valuedb` sets total
   attenuation dB.
+- Data-less SET success response: `{"status":"ok"}`.
 - Board restriction: TIB supports all logical channels below `NUM_ATTENUATORS`;
   CAL profiles support only logical channel 4.
 - Side effects: blocks on DAC I2C and can clamp DAC range.
@@ -283,6 +303,7 @@ a replacement for `commands.md`.
 - SET fields: `dac1[2]`, `dac2[2]`, optional `persistent`.
 - Validation: both arrays must contain exactly two floats: slope and offset for
   `b = slope * voltage + offset`.
+- Data-less SET success response: `{"status":"ok"}`.
 - Side effects: updates runtime coefficients, reapplies current attenuation,
   and optionally persists coefficients.
 - Blocking: DAC I2C and settings writes may block.
@@ -291,15 +312,17 @@ a replacement for `commands.md`.
 
 ### `pd`
 
-- GET field: optional `unit` with `power` or `volts`; for MQTT this requires
-  `msg_type:"get"` if payload is non-empty.
-- GET response includes YJ/HK values, errors, raw counts, mV, noise, rolling
-  windows, and uptime.
+- GET has no documented payload and returns power values, errors, raw counts,
+  mV, noise, rolling windows, and uptime.
+- Legacy implementation detail: `pd_get()` can still parse `unit:"volts"`, but
+  normal ingress sends any non-empty `pd` payload to `pd_set()`.
 - SET fields: `action`, `channel` or key suffix, plus action-specific fields.
 - Actions:
   - `measure_dark`: optional `duration_ms`, optional `store`.
   - `dark_status`: no additional fields.
   - `reset_lowest_dark`: optional `persistent`.
+- `measure_dark` and `dark_status` return dark-measurement state/result data.
+- `reset_lowest_dark` returns `{"status":"ok"}` on success.
 - Board restriction: TIB only.
 - Side effects: starts or reads sampler-owned dark calibration state; optional
   persistence is performed by photodiode/settings code.
@@ -313,6 +336,7 @@ a replacement for `commands.md`.
   `noise_rms_mV`, `gain_v_p_uw`.
 - Validation: dark is -5000..5000 mV; noise is 0..5000 mV; gain is
   0.000001..1000000000.
+- Data-less SET success response: `{"status":"ok"}`.
 - Board restriction: TIB only.
 - Side effects: updates runtime photodiode settings and optional persistence.
 - Handler: `pd_settings_get()`, `pd_settings_set()` in `app/src/command.c`.
@@ -320,17 +344,24 @@ a replacement for `commands.md`.
 ### `temp`
 
 - GET only.
-- Response: cached ambient temperature/age and TIB laser TEC temperatures.
-  Unavailable numeric values are JSON `null`.
+- Response: `ambient_c`, `laserbank_c`, and a `laser` object keyed by laser
+  name. Unavailable numeric values are JSON `null`.
 - Side effects: reads cached ambient state and can perform Modbus reads for
   laser TEC temperatures on TIB.
 - Handler: `temp_get()` in `app/src/command.c`.
 
 ### `status`
 
-- GET only.
-- Response: firmware version, boot count, uptime, board type/validity, MEMS
-  switch count, network ready/IP, laser power, and relay GPIO error state.
-- Side effects: none.
+- GET only. Payload may request optional sections: `ip`, `lasers`, `attens`.
+- Base response fields: firmware version, boot count, board type/validity,
+  MEMS switch count, relay GPIO error, ambient temperature, PD power on-time,
+  laser-bank power on-time, and `lastcommand`.
+- `laserbank_ontime` is integer seconds from runtime-only
+  `laserbank_control` tracking of the current bank-power interval.
+- Optional `ip` embeds the `ip` query response as JSON.
+- Optional `lasers` reads each laser status and reports `power_mw`,
+  `tec_on_time_s`, and `offin_s`.
+- Optional `attens` reads each available logical attenuator and reports
+  `level_%`.
+- Side effects: optional sections can perform Modbus and DAC reads.
 - Handler: `status_get()` in `app/src/command.c`.
-- Mismatch: `commands.md` documents a much larger payload.

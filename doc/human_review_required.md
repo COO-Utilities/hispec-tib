@@ -10,18 +10,23 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Command/API Mismatches
 
 ### Still Open
-- `commands.md` documents a larger nested `status` payload. Current
-  `status_get()` returns firmware version, boot count, uptime, board/network
-  state, MEMS switch count, IP, and laser-bank power only.
-- `commands.md` documents optional GET payloads for some commands. Current MQTT
-  ingress treats a non-empty payload as SET unless JSON includes
-  `msg_type:"get"`.
-- `reboot` is SET-only in code. Empty MQTT payloads and bare serial `reboot`
-  commands are rejected as unsupported.
-- The help response includes aggregate names such as `laserbank` and `power`,
-  not the exact currently implemented endpoint list.
+- `help_get()` returns a static command-name summary. `commands.md` describes a
+  command summary with device info, and the current string is not a complete
+  endpoint list with suffix forms such as `laserbank/power`,
+  `laserbank/heater`, `laser/status`, `pdsettings/<yj|hk>`, or `split/<yj|hk>`.
+- Serial guard documentation says safe read-only MQTT requests are allowed while
+  the guard is active. Current `mqtt_get_allowed_during_serial_guard()` blocks
+  all `laserbank/*` and `laser` GET-shaped requests, including read-like
+  `laserbank/power` and `laserbank/heater` queries, because this class of
+  handlers historically had side effects. Decide whether the stricter behavior
+  is intended or whether individual read-only endpoints should be allowed.
+- `pd_get()` still contains an implementation branch for a `unit:"volts"` query,
+  but normal request-shape inference now treats any non-empty `pd` payload as a
+  dark-measurement/action request. This branch is unreachable through the
+  documented MQTT/serial interface and should either be removed.
 
 ### LLM Resolved; Human Review Requested
+
 
 ## Hardware/Profile Decisions
 
@@ -36,19 +41,18 @@ LLMs Agents: Do NOT change heading names in this file.
 - `app/src/photodiode.h`: ADC resolution should come from devicetree.
 - `app/src/mems_switching.h`: MEMS switch pin fields may want stronger constness.
 - `app/src/mems_switching.c`: review static/non-static helper nesting.
-- `app/src/mems_switching.c`: verify first-boot unknown-state behavior.
 - `app/src/command.c`: internal split-route error is marked as theoretically
   impossible if compiled route tables are correct.
-- `app/src/devices.c`: final CAL switch/route names need an owner decision.
 - `app/src/maiman.h`: compare Maiman behavior against the referenced
   validation/test scripts.
-- 
+
 ## Deferred Owner-Specified Capabilities
 
 Do not design or implement these without a detailed owner specification:
 
 - Attenuator autocalibration and final default coefficient selection.
 - Broad `command.c` refactoring into domain-owned command helpers.
+- Verify boot switch state behavior.
 
 ## Open items
 
@@ -57,4 +61,4 @@ Do not design or implement these without a detailed owner specification:
 - Add test coverage for the attenuator model and inverse once calibration
   expectations are owner-approved.
 - Add automated tests for command parsing and non-hardware domain logic.
-- add an optional max flux level to measure_throughput
+- Add an optional maximum flux level to `measure_throughput`.

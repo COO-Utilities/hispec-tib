@@ -1047,7 +1047,6 @@ off or no faults).
     "ip": "<response of ip command query>",
     "temp_c": 0.0,
     "pd_ontime": 0,
-    "pd_offin_s": 0,
     "laserbank_ontime": 0,
     "lasers": {
       "<lasername>": {

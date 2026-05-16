@@ -3974,7 +3974,7 @@ struct OutMsg status_get(const struct Command *cmd)
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"pd_ontime\":%.1f,\"pd_offin_s\":0,"
+                        ",\"pd_ontime\":%.1f,"
                         "\"laserbank_ontime\":%u",
                         (double)MAX(hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_YJ_PHOTODIODE),
                                     hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE)),
