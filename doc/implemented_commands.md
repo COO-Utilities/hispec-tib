@@ -1,7 +1,8 @@
 # Implemented Commands
 
-This page is derived from `app/src/command.c`. It is a comparison artifact, not
-a replacement for `commands.md`.
+This page is derived from the static command table in `app/src/command.c` and
+the current command handlers. It is a comparison artifact, not a replacement
+for `commands.md`.
 
 ## Global Rules
 
@@ -212,7 +213,7 @@ a replacement for `commands.md`.
 - Binary telemetry is emitted as a fixed little-endian frame. JSON telemetry
   includes Unix time, channel/fiber label, flux estimates, PD windows, current
   attenuation, PD on-time, and laser-current on-time.
-- Handler: `measure_throughput_set()` in `app/src/command.c` and
+- Handler: `measure_throughput_set()` in `app/src/throughput_command.c` and
   `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
 
 ### `laserbank/power`

@@ -2,9 +2,10 @@
 
 ## Authority
 
-`commands.md` documents intended command/API behavior. Current C source in
-`app/src/command.c` is the implementation source of truth. This page compares
-the two without silently changing either contract.
+`commands.md` documents intended command/API behavior. The static command table
+in `app/src/command.c` and the current command handlers are the implementation
+source of truth. This page compares the two without silently changing either
+contract.
 
 ## Dispatch Model
 

@@ -28,6 +28,7 @@ Runtime ownership is:
   higher-level Maiman helper APIs.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
   sample windows.
+- `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
 - `tempsense.c`: DS18B20 polling and cache.
