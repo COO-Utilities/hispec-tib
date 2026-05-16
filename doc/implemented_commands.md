@@ -227,7 +227,7 @@ for `commands.md`.
 - Side effects: `override_on` powers the bank and waits for Maiman boot;
   `override_off` best-effort writes all currents to 0 before powering the bank
   off. `auto` returns bank power to demand-driven control.
-- Handler: `laserbank_power()` in `app/src/command.c` and laser-bank domain
+- Handler: `laserbank_power()` in `app/src/laser_command.c` and laser-bank domain
   helpers in `app/src/lasers.c`.
 
 ### `laserbank/clearfaults`
@@ -241,7 +241,7 @@ for `commands.md`.
   sleeps for bank boot after re-enabling power.
 - Response: `{"off_ms":0}` when no cycle was needed, or
   `{"off_ms":250}` when the power cycle was performed.
-- Handler: `laserbank_clearfaults()` in `app/src/command.c`.
+- Handler: `laserbank_clearfaults()` in `app/src/laser_command.c`.
 
 ### `laserbank/heater`
 
@@ -257,7 +257,7 @@ for `commands.md`.
   emits a best-effort warning every 20 minutes.
 - Response: heater mode, heater/bank state, ambient state, temperature freshness
   counts, control flags, and last error.
-- Handler: `laserbank_heater()` in `app/src/command.c`.
+- Handler: `laserbank_heater()` in `app/src/laser_command.c`.
 
 ### `laser`
 
@@ -269,7 +269,7 @@ for `commands.md`.
 - Board restriction: TIB only.
 - Side effects: effect requests can power the bank, program TEC/current, stop an active
   throughput monitor using that laser, and arm/reset firmware auto-off.
-- Handler: `laser_get()`, `laser_set()` in `app/src/command.c`; hardware work
+- Handler: `laser_get()`, `laser_set()` in `app/src/laser_command.c`; hardware work
   is delegated to `app/src/lasers.c`.
 
 ### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
@@ -285,7 +285,7 @@ for `commands.md`.
 - Driver-backed updates temporarily power the bank if needed, unless bank power
   is `override_off`.
 - Handlers: `laser_tune_*()`, `laser_status_get()`,
-  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/command.c`.
+  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/laser_command.c`.
 
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 

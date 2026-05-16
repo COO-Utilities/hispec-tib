@@ -28,6 +28,8 @@ Runtime ownership is:
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, estimates, and
   higher-level Maiman helper APIs.
+- `laser_command.c`: command-schema validation and response shaping for laser
+  and laser-bank requests.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
   sample windows.
 - `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.

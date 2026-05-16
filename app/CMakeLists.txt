@@ -25,6 +25,7 @@ target_sources(app PRIVATE
         src/attenuator_command.c
         src/command.c
         src/devices.c
+        src/laser_command.c
         src/lasers.c
         src/laserbank_control.c
         src/maiman.c
@@ -43,6 +44,7 @@ target_sources(app PRIVATE
         src/app_identity.h
         src/command.h
         src/devices.h
+        src/laser_command.h
         src/lasers.h
         src/laserbank_control.h
         src/maiman.h
