@@ -15,11 +15,15 @@ a replacement for `commands.md`.
 - MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
   and echoed exactly in responses.
 - MQTT and serial share the same schema-based request classification in
-  `command_infer_msg_type()`.
-- Empty/no-payload requests are GET except no-payload actions such as `reboot`
+  `command_infer_msg_type()`. The internal names `MSG_GET` and `MSG_SET` are
+  dispatch-slot names, not user-visible protocol verbs.
+- Empty/no-payload requests are queries except no-payload actions such as `reboot`
   and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
-- Non-empty payload requests are SET/action except documented payload-query
+- Non-empty payload requests are effect/action requests except documented query
   shapes for `status`, laser query endpoints, and `memsroute/route_loss`.
+- The old MQTT `msg_type` payload convention is not used by command ingress.
+- Pure queries are not recorded as `lastcommand`; known effect-capable requests
+  are recorded before handler execution.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
 - All handlers run in `command_executor_thread()` and enqueue one response to
   `outbound_queue`.
@@ -61,7 +65,7 @@ a replacement for `commands.md`.
 
 ### `help`
 
-- GET only. Payload ignored.
+- Query only. Payload ignored.
 - Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,measure_throughput,laser,laserbank,atten,pd,pdsettings"}`.
 - No hardware side effects, no settings writes, no direct publish.
 - Handler: `help_get()` in `app/src/command.c`.
@@ -70,8 +74,8 @@ a replacement for `commands.md`.
 
 ### `ip`
 
-- GET returns stored/manual IP settings, active IPv4 status, and NTP source.
-- SET fields: `trydhcpfirst`, `preferdhcpdns`, `preferdhcpntp`, `ip`,
+- Query returns stored/manual IP settings, active IPv4 status, and NTP source.
+- Effect request fields: `trydhcpfirst`, `preferdhcpdns`, `preferdhcpntp`, `ip`,
   `subnet`, `gateway`, `dns`, `ntp`, `persistent`.
 - Validation: bools must parse as bools; string fields must fit fixed IPv4
   buffers; unsupported DHCP/DNS/NTP fields are reported in a data response.
@@ -86,8 +90,8 @@ a replacement for `commands.md`.
 
 ### `mqtt`
 
-- GET returns `broker` as `<host-or-ip>:<port>` and `dns_supported`.
-- SET fields: `broker`, optional `persistent`.
+- Query returns `broker` as `<host-or-ip>:<port>` and `dns_supported`.
+- Effect request fields: `broker`, optional `persistent`.
 - Validation: broker must be one `<host-or-ip>:<port>` value; hostname
   requires DNS support and must resolve before settings are updated unless
   numeric IPv4; port must be 1..65535.
@@ -102,12 +106,12 @@ a replacement for `commands.md`.
 
 ### `time`
 
-- GET returns `utc` milliseconds from `CLOCK_REALTIME` and `uptime`
+- Query returns `utc` milliseconds from `CLOCK_REALTIME` and `uptime`
   milliseconds from `k_uptime_get()`.
-- SET field: `linuxtime_ms`.
+- Effect request field: `linuxtime_ms`.
 - Validation: `linuxtime_ms` must parse as unsigned 64-bit milliseconds.
 - Data-less success response: `{"status":"ok"}`.
-- Side effects: SET calls `clock_settime()`.
+- Side effects: effect requests call `clock_settime()`.
 - Blocking: no bus I/O; no settings writes; no direct publish.
 - Serial shorthand: `time <linuxtime_ms>`.
 - Handler: `time_get()`, `time_set()` in `app/src/command.c`.
@@ -123,22 +127,22 @@ a replacement for `commands.md`.
 
 ### `serialguard`
 
-- GET returns configured holdoff seconds, active state, and remaining ms.
-- SET fields: `seconds` or `value`, optional `persistent`.
+- Query returns configured holdoff seconds, active state, and remaining ms.
+- Effect request fields: `seconds` or `value`, optional `persistent`.
 - Validation: seconds/value must parse as unsigned 32-bit.
 - Data-less success response: `{"status":"ok"}`.
-- Side effects: updates serial guard setting; optional persistence; serial SET
-  refreshes the active guard window.
-- While active, serial guard rejects MQTT SET/action commands. It also blocks
-  all `laserbank/*` and `laser` GET-shaped requests even if they look read-only.
+- Side effects: updates serial guard setting; optional persistence; serial
+  effect requests refresh the active guard window.
+- While active, serial guard rejects MQTT effect/action requests. It also blocks
+  all `laserbank/*` and `laser` read-like requests even if they look read-only.
 - Serial shorthand: `serialguard off`, `serialguard <seconds> [persistent]`.
 - Handler: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
 
 ### `memsroute`
 
-- GET returns `{"active_routes": {"<output>":["<input>", "..."]}}`; outputs
+- Query returns `{"active_routes": {"<output>":["<input>", "..."]}}`; outputs
   with no active source report `["no source"]`.
-- SET fields: `input`, `output`.
+- Effect request fields: `input`, `output`.
 - Validation: route must exist in current board profile and every route switch
   must exist.
 - Data-less success response: `{"status":"ok"}`.
@@ -150,14 +154,14 @@ a replacement for `commands.md`.
 ### `memsroute/route_loss`
 
 - Query payload fields: `route`, `laser`.
-- SET fields: `route`, one laser-name key containing either linear
+- Effect request fields: `route`, one laser-name key containing either linear
   transmission or a string loss in dB, optional `persistent`.
 - Request classification: a payload containing `laser` is treated as query;
-  otherwise the request is treated as SET.
+  otherwise the request is treated as an effect request.
 - Validation: route and laser names must fit fixed route-loss record buffers;
   transmission must be in `(0, 1]`; dB loss must be non-negative.
 - Query response: `tx`, `loss_db`, and `configured`.
-- Data-less SET success response: `{"status":"ok"}`.
+- Data-less effect success response: `{"status":"ok"}`.
 - Side effects: updates one app-owned route-loss record and optionally persists
   it under `routeloss/<route>/<laser>`.
 - Handler: `memsroute_get()`, `memsroute_set()` route-loss branch in
@@ -165,15 +169,15 @@ a replacement for `commands.md`.
 
 ### `mems` and `mems/<switch>`
 
-- `mems` GET returns all active profile switches with compact `state` and
+- `mems` query returns all active profile switches with compact `state` and
   `duty_cycle`.
-- `mems/<switch>` GET returns one switch with state, duty cycle,
+- `mems/<switch>` query returns one switch with state, duty cycle,
   requested/actual toggle rate, and stop-after.
-- `mems/<switch>` SET fields: `state`, optional `duty_cycle`,
+- `mems/<switch>` effect request fields: `state`, optional `duty_cycle`,
   `toggle_rate_hz`, `stopafter_s`.
 - Validation: state is `A` or `B`; `duty_cycle` only valid with state `A`;
   `toggle_rate_hz` must be greater than zero; `stopafter_s` must be in range.
-- SET success returns the same one-switch state object rather than the global
+- Effect success returns the same one-switch state object rather than the global
   data-less `ok` response.
 - Side effects: updates router-owned MEMS switch state applied by the MEMS
   router thread.
@@ -183,11 +187,11 @@ a replacement for `commands.md`.
 
 ### `split`
 
-- `split/<yj|hk>` GET reads one splitter channel.
-- `split` SET fields: `channel`, `ratio1`, `ratio2`, optional `stopafter_s`.
+- `split/<yj|hk>` query reads one splitter channel.
+- `split` effect request fields: `channel`, `ratio1`, `ratio2`, optional `stopafter_s`.
 - Rejected fields: `ratio3`, `toggle_rate_hz`.
 - Validation: channel is `yj` or `hk`; ratios are 0.0..1.0 and sum <= 1.0.
-- SET success returns requested ratios, actual quantized ratios, switch tick
+- Effect success returns requested ratios, actual quantized ratios, switch tick
   details, and `stopsin_s`.
 - Side effects: applies three MEMS switches on AS split routes.
 - Enqueue: can enqueue `split_ratio_quantized` warning.
@@ -197,7 +201,7 @@ a replacement for `commands.md`.
 
 ### `measure_throughput`
 
-- SET-only action.
+- Action only.
 - Start fields: `laser`, `fiber`, optional `autolevel`, optional
   `stopafter_s`, optional `format` with `json` or `binary`.
 - Stop field: `stop` as `yj`, `hk`, or `all`.
@@ -213,11 +217,11 @@ a replacement for `commands.md`.
 
 ### `laserbank/power`
 
-- GET returns current laser-bank power override mode and GPIO power state.
-- SET accepts `{"override":"auto|override_on|override_off"}`,
+- Query returns current laser-bank power override mode and GPIO power state.
+- Effect request accepts `{"override":"auto|override_on|override_off"}`,
   `{"mode":"auto|override_on|override_off"}`, raw text, or a topic suffix such
   as `laserbank/power/override_on`.
-- SET success returns the same data shape as GET.
+- Effect success returns the same data shape as the query.
 - Board restriction: TIB only.
 - Side effects: `override_on` powers the bank and waits for Maiman boot;
   `override_off` best-effort writes all currents to 0 before powering the bank
@@ -227,8 +231,8 @@ a replacement for `commands.md`.
 
 ### `laserbank/clearfaults`
 
-- No-payload action; ingress classifies this as SET/action. The dispatch table
-  still points both GET and SET slots at the same handler.
+- No-payload action; ingress classifies this as an action. The dispatch table
+  still points both internal slots at the same handler.
 - Payload is ignored if supplied.
 - Board restriction: TIB only.
 - Side effects: if the bank is powered and any driver reports overcurrent,
@@ -240,11 +244,11 @@ a replacement for `commands.md`.
 
 ### `laserbank/heater`
 
-- GET with no suffix reports heater auto/override control status.
-- SET accepts `override`/`state` string values `auto`, `override_on`, or
+- Query with no suffix reports heater auto/override control status.
+- Effect request accepts `override`/`state` string values `auto`, `override_on`, or
   `override_off`, including topic suffixes. The misspelled `overide_*` forms
   are accepted.
-- SET success returns the same data shape as GET.
+- Effect success returns the same data shape as the query.
 - Board restriction: TIB only.
 - Side effects: updates the persisted laser-bank heater mode and wakes
   `laserbank_control_thread()`. `auto` runs the warmup policy; `override_on`
@@ -257,26 +261,26 @@ a replacement for `commands.md`.
 ### `laser`
 
 - Query payload: `{"name":"<laser>"}`. Returns compact operational status.
-- SET payload: `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
-- Request classification: payloads with `level` are SET; payloads without
-  `level` are GET.
-- Data-less SET success response: `{"status":"ok"}`.
+- Effect payload: `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
+- Request classification: payloads with `level` are effect requests; payloads without
+  `level` are queries.
+- Data-less effect success response: `{"status":"ok"}`.
 - Board restriction: TIB only.
-- Side effects: SET can power the bank, program TEC/current, stop an active
+- Side effects: effect requests can power the bank, program TEC/current, stop an active
   throughput monitor using that laser, and arm/reset firmware auto-off.
 - Handler: `laser_get()`, `laser_set()` in `app/src/command.c`; hardware work
   is delegated to `app/src/lasers.c`.
 
 ### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
 
-- `laser/tune` GET/SET manages the persisted wavelength tune offset. Payloads
-  with `tune_nm` or `delta_nm` are SET; name-only payloads are GET.
-- `laser/status` is an alias of compact `laser` GET.
+- `laser/tune` query/effect requests manage the persisted wavelength tune offset. Payloads
+  with `tune_nm` or `delta_nm` are effect requests; name-only payloads are queries.
+- `laser/status` is an alias of the compact `laser` query.
 - `laser/engstatus` returns raw Maiman engineering status and measured driver
   values; unavailable numeric values are JSON `null`.
-- `laser/settings` GET/SET manages app-owned diode settings. Payloads with a
-  nested `settings` object are SET; name-only payloads are GET.
-- Data-less SET success response: `{"status":"ok"}`.
+- `laser/settings` query/effect requests manage app-owned diode settings. Payloads with a
+  nested `settings` object are effect requests; name-only payloads are queries.
+- Data-less effect success response: `{"status":"ok"}`.
 - Driver-backed updates temporarily power the bank if needed, unless bank power
   is `override_off`.
 - Handlers: `laser_tune_*()`, `laser_status_get()`,
@@ -284,12 +288,12 @@ a replacement for `commands.md`.
 
 ### `atten/<laser>/value` and `atten/<laser>/valuedb`
 
-- GET returns total `db`, total `linear` transmission, both physical DAC
+- Query returns total `db`, total `linear` transmission, both physical DAC
   voltages, and both physical modeled dB values.
-- SET field: `value` float.
+- Effect request field: `value` float.
 - `value` sets total linear transmission in `(0, 1]`; `valuedb` sets total
   attenuation dB.
-- Data-less SET success response: `{"status":"ok"}`.
+- Data-less effect success response: `{"status":"ok"}`.
 - Board restriction: TIB supports all logical channels below `NUM_ATTENUATORS`;
   CAL profiles support only logical channel 4.
 - Side effects: blocks on DAC I2C and can clamp DAC range.
@@ -299,11 +303,11 @@ a replacement for `commands.md`.
 
 ### `atten/<laser>/coeff`
 
-- GET returns `dac1` and `dac2` coefficient arrays.
-- SET fields: `dac1[2]`, `dac2[2]`, optional `persistent`.
+- Query returns `dac1` and `dac2` coefficient arrays.
+- Effect request fields: `dac1[2]`, `dac2[2]`, optional `persistent`.
 - Validation: both arrays must contain exactly two floats: slope and offset for
   `b = slope * voltage + offset`.
-- Data-less SET success response: `{"status":"ok"}`.
+- Data-less effect success response: `{"status":"ok"}`.
 - Side effects: updates runtime coefficients, reapplies current attenuation,
   and optionally persists coefficients.
 - Blocking: DAC I2C and settings writes may block.
@@ -312,9 +316,9 @@ a replacement for `commands.md`.
 
 ### `pd`
 
-- GET has no documented payload and returns power values, errors, raw counts,
+- Query has no documented payload and returns power values, errors, raw counts,
   mV, noise, rolling windows, and uptime.
-- SET fields: `action`, `channel` or key suffix, plus action-specific fields.
+- Action request fields: `action`, `channel` or key suffix, plus action-specific fields.
 - Actions:
   - `measure_dark`: optional `duration_ms`, optional `store`.
   - `dark_status`: no additional fields.
@@ -322,26 +326,27 @@ a replacement for `commands.md`.
 - `measure_dark` and `dark_status` return dark-measurement state/result data.
 - `reset_lowest_dark` returns `{"status":"ok"}` on success.
 - Board restriction: TIB only.
-- Side effects: starts or reads sampler-owned dark calibration state; optional
-  persistence is performed by photodiode/settings code.
+- Side effects: `measure_dark` starts sampler-owned dark calibration state;
+  `dark_status` is a pure query; optional persistence is performed by
+  photodiode/settings code.
 - Handler: `pd_get()`, `pd_set()` in `app/src/command.c`.
 
 ### `pdsettings/<yj|hk>`
 
-- GET returns channel dark settings, lowest dark, dark measurement state,
+- Query returns channel dark settings, lowest dark, dark measurement state,
   noise warning threshold, and gain.
-- SET fields: optional `persistent` plus at least one of `dark_mv`,
+- Effect request fields: optional `persistent` plus at least one of `dark_mv`,
   `noise_rms_mV`, `gain_v_p_uw`.
 - Validation: dark is -5000..5000 mV; noise is 0..5000 mV; gain is
   0.000001..1000000000.
-- Data-less SET success response: `{"status":"ok"}`.
+- Data-less effect success response: `{"status":"ok"}`.
 - Board restriction: TIB only.
 - Side effects: updates runtime photodiode settings and optional persistence.
 - Handler: `pd_settings_get()`, `pd_settings_set()` in `app/src/command.c`.
 
 ### `temp`
 
-- GET only.
+- Query only.
 - Response: `ambient_c`, `laserbank_c`, and a `laser` object keyed by laser
   name. Unavailable numeric values are JSON `null`.
 - Side effects: reads cached ambient state and can perform Modbus reads for
@@ -350,7 +355,7 @@ a replacement for `commands.md`.
 
 ### `status`
 
-- GET only. Payload may request optional sections: `ip`, `lasers`, `attens`.
+- Query only. Payload may request optional sections: `ip`, `lasers`, `attens`.
 - Base response fields: firmware version, boot count, board type/validity,
   MEMS switch count, relay GPIO error, ambient temperature, PD power on-time,
   laser-bank power on-time, and `lastcommand`.

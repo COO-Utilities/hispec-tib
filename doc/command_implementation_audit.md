@@ -19,9 +19,10 @@ The suffix after the request prefix is copied into `Command.key`.
 exact match or followed by `/`. The `<device>` component is board-profile
 dependent: `hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
 
-Implemented dispatch entries:
+Implemented dispatch entries. The column names reflect internal C dispatch
+slots; the external API is documented as queries, effect requests, and actions.
 
-| Entry | GET handler | SET/action handler |
+| Entry | Query handler | Effect/action handler |
 | --- | --- | --- |
 | `help` | yes | no |
 | `ip` | yes | yes |
@@ -48,20 +49,22 @@ Implemented dispatch entries:
 | `temp` | yes | no |
 | `status` | yes | no |
 
-## GET and SET Selection
+## Request Classification
 
 MQTT and serial are normalized to a shared `Command` and then classified by
-`command_infer_msg_type()`.
+`command_infer_msg_type()`. The internal result still uses `MSG_GET` and
+`MSG_SET`, but those names are dispatch-slot names, not user-visible protocol
+verbs.
 
-Empty/no-payload requests are GET except:
+Empty/no-payload requests are queries except:
 
 - `reboot`
 - `laserbank/clearfaults`
 - topic-suffix `laserbank/power/<mode>`
 - topic-suffix `laserbank/heater/<mode>`
 
-Non-empty payload requests are SET/action except documented payload-query
-shapes:
+Non-empty payload requests are effect/action requests except documented
+payload-query shapes:
 
 - `status`
 - `laser/status`
@@ -71,7 +74,7 @@ shapes:
 - `laser/tune` when `tune_nm` and `delta_nm` are absent
 - `laser/settings` when the nested `settings` object is absent
 
-The old MQTT `msg_type:"get"` convention is not used by command ingress.
+The old MQTT `msg_type` payload convention is not used by command ingress.
 
 ## Response Rules
 
@@ -113,13 +116,12 @@ buffer and echoed exactly in responses.
 - `status` optional `lasers` and `attens` sections can perform Modbus and DAC
   reads. A large optional response can fail with `{"error":"status response too large"}`
   if it exceeds the fixed MQTT payload buffer.
-- `status` updates `lastcommand` before dispatch, so a status query reports
-  itself as the last command.
-- Serial guard is stricter than the prose for some GET-shaped commands:
+- `lastcommand` records effect-capable requests. Pure query requests are not recorded.
+- Serial guard is stricter than the prose for some read-like requests:
   `mqtt_get_allowed_during_serial_guard()` blocks all `laserbank/*` and `laser`
-  GETs while serial guard is active.
-- `laserbank/clearfaults` is both GET and SET in the dispatch table for legacy
-  reasons, but ingress classifies no-payload requests as SET/action.
+  queries while serial guard is active.
+- `laserbank/clearfaults` occupies both internal dispatch slots for legacy
+  reasons, but ingress classifies no-payload requests as an action.
 
 ## Blocking and Queueing Summary
 

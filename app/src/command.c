@@ -155,17 +155,60 @@ const struct DispatchEntry *find_dispatch(const char *key)
     return best;
 }
 
+static bool command_pd_dark_status_query(const struct Command *cmd)
+{
+    char action[20] = {0};
+
+    return cmd != NULL &&
+           coo_json_extract_string(cmd->payload, "action",
+                                   action, sizeof(action)) == COO_JSON_EXTRACT_OK &&
+           strcasecmp(action, "dark_status") == 0;
+}
+
+static bool command_should_record_lastcommand(const struct Command *cmd)
+{
+    const struct DispatchEntry *entry;
+
+    if (cmd == NULL) {
+        return false;
+    }
+
+    entry = find_dispatch(cmd->key);
+    if (entry == NULL) {
+        return false;
+    }
+
+    if (strcmp(entry->key, "laserbank/clearfaults") == 0) {
+        return true;
+    }
+
+    if (cmd->msg_type != MSG_SET || entry->set_handler == NULL) {
+        return false;
+    }
+
+    if (strcmp(entry->key, "pd") == 0 && command_pd_dark_status_query(cmd)) {
+        return false;
+    }
+
+    return true;
+}
+
+static void record_lastcommand(const struct Command *cmd)
+{
+    strncpy(last_command_name, cmd->key, sizeof(last_command_name) - 1);
+    last_command_name[sizeof(last_command_name) - 1] = '\0';
+    snprintk(last_command_source, sizeof(last_command_source), "%s",
+             cmd->source == CMD_SRC_SERIAL ? "serial" : "mqtt");
+    last_command_time_ms = k_uptime_get();
+}
+
 
 struct OutMsg dispatch_command(const struct Command *cmd) {
     LOG_INF("Dispatching: %s", cmd->key);
     struct OutMsg r;
 
-    if (cmd != NULL) {
-        strncpy(last_command_name, cmd->key, sizeof(last_command_name) - 1);
-        last_command_name[sizeof(last_command_name) - 1] = '\0';
-        snprintk(last_command_source, sizeof(last_command_source), "%s",
-                 cmd->source == CMD_SRC_SERIAL ? "serial" : "mqtt");
-        last_command_time_ms = k_uptime_get();
+    if (command_should_record_lastcommand(cmd)) {
+        record_lastcommand(cmd);
     }
 
     const struct DispatchEntry *entry = find_dispatch(cmd->key);

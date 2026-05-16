@@ -16,17 +16,12 @@ LLMs Agents: Do NOT change heading names in this file.
   `laserbank/heater`, `laser/status`, `pdsettings/<yj|hk>`, or `split/<yj|hk>`.
 - Serial guard documentation says safe read-only MQTT requests are allowed while
   the guard is active. Current `mqtt_get_allowed_during_serial_guard()` blocks
-  all `laserbank/*` and `laser` GET-shaped requests, including read-like
+  all `laserbank/*` and `laser` read-like requests, including
   `laserbank/power` and `laserbank/heater` queries, because this class of
   handlers historically had side effects. Decide whether the stricter behavior
   is intended or whether individual read-only endpoints should be allowed.
 
 ### LLM Resolved; Human Review Requested
-
-- MEMS review outcome: the pin fields are assigned once from const board-profile
-  tables during `mems_switch_init()`. True field-level constness would require a
-  separate config/runtime-state split; the local helper nesting was reduced
-  without widening the MEMS API.
 
 ## Hardware/Profile Decisions
 

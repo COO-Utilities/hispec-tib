@@ -88,14 +88,27 @@ to `hsfib-tib`, `cal_hk` to `hsfib-rcal`, `cal_yj` to `hsfib-bcal`, and `as` to
 `hsfib-as`. The same name is used for telemetry under `dt/<device>/...` and as
 the MQTT client ID.
 
-Empty MQTT payloads are GET. Non-empty MQTT payloads default to SET unless the
-JSON payload has `msg_type:"get"`. Serial commands have no get/set words:
-`<key>` is GET and `<key> <payload>` is SET after serial shorthand/key-value
-normalization.
+Requests are classified by schema and topic shape, not by user-visible method
+verbs. Internally, `command_infer_msg_type()` still selects the C dispatch-table
+query slot or effect/action slot.
 
-The command executor runs exactly one command at a time from `inbound_queue`.
+Empty or no-payload requests are queries except for no-payload actions such as
+`reboot`, `laserbank/clearfaults`, and laser-bank topic suffixes such as
+`laserbank/power/override_on`. Non-empty payloads normally mean an effect
+request, but documented query payloads remain queries: `status`, laser status
+endpoints, laser name-only queries, laser tune/settings readbacks, and
+`memsroute/route_loss` payloads that contain `laser`.
+
+Serial commands use the same classification after line normalization:
+`<key>` becomes an empty JSON payload, raw JSON is copied, `key=value` tokens
+are wrapped as JSON fields, and selected human shorthands are translated into
+the same payload shapes as MQTT. The old payload `msg_type` convention is not
+part of current ingress classification.
+
+The command executor runs exactly one request at a time from `inbound_queue`.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
-one response.
+one response. Pure queries are not recorded as `lastcommand`; known
+effect-capable requests are recorded before handler execution.
 
 ## Network And MQTT Runtime
 

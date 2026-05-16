@@ -79,15 +79,11 @@ flowchart TD
   Pub[MQTT publish callback] --> Prefix{topic under cmd/<device>/req}
   Prefix -- no --> Drop[ignore]
   Prefix -- yes --> Copy[copy key payload properties]
-  Copy --> Type{payload empty}
-  Type -- yes --> Get[MSG_GET]
-  Type -- no --> Parse[parse optional msg_type]
-  Parse --> SetOrGet[default MSG_SET unless msg_type get]
-  Get --> Guard{serial guard active}
-  SetOrGet --> Guard
-  Guard -- yes --> GetAllowed{safe GET}
-  GetAllowed -- no --> Reject[publish/enqueue serial guard error]
-  GetAllowed -- yes --> Enq{inbound_queue has space}
+  Copy --> Classify[command_infer_msg_type by key and payload shape]
+  Classify --> Guard{serial guard active}
+  Guard -- yes --> QueryAllowed{safe query}
+  QueryAllowed -- no --> Reject[publish/enqueue serial guard error]
+  QueryAllowed -- yes --> Enq{inbound_queue has space}
   Guard -- no --> Enq
   Enq -- yes --> Queue[queue Command]
   Enq -- no --> Busy[publish/enqueue busy error]
@@ -102,14 +98,15 @@ flowchart TD
   Line -- yes --> Guard[refresh serial guard]
   Guard --> Split[split key and payload]
   Split --> Payload{payload form}
-  Payload -- none --> Get[MSG_GET with empty JSON]
+  Payload -- none --> Empty[empty JSON payload]
   Payload -- raw JSON --> Copy[copy payload]
   Payload -- key=value --> KV[build JSON object]
   Payload -- shorthand --> Short[translate selected shorthand]
-  Copy --> Queue
-  KV --> Queue
-  Short --> Queue
-  Get --> Queue{inbound_queue has space}
+  Copy --> Classify[command_infer_msg_type by key and payload shape]
+  KV --> Classify
+  Short --> Classify
+  Empty --> Classify
+  Classify --> Queue{inbound_queue has space}
   Queue -- yes --> Enqueue[queue Command]
   Queue -- no --> Error[enqueue serial busy/error]
 ```
@@ -119,7 +116,10 @@ flowchart TD
 ```mermaid
 flowchart TD
   Wait[k_msgq_get inbound_queue K_FOREVER] --> Dispatch[find longest dispatch key]
-  Dispatch --> Found{handler exists for GET/SET}
+  Dispatch --> Record{effect-capable request}
+  Record -- yes --> Last[update lastcommand]
+  Record -- no --> Found{handler exists for selected path}
+  Last --> Found
   Found -- no entry --> Unknown[unknown response]
   Found -- no handler --> Unsupported[unsupported response]
   Found -- yes --> Handler[run handler]
@@ -221,11 +221,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Split[split set/get] --> Channel[channel from key or payload]
+  Split[split request] --> Channel[channel from key or payload]
   Channel --> Route[lookup yj_calin/hk_calin to split route]
-  Route --> Set{SET}
-  Set -- no --> Read[read switch status]
-  Set -- yes --> Ratios[validate ratio1 ratio2 and compute ratio3]
+  Route --> Effect{ratio payload present}
+  Effect -- no --> Read[read switch status]
+  Effect -- yes --> Ratios[validate ratio1 ratio2 and compute ratio3]
   Ratios --> Ticks[quantize ratios to MEMS ticks]
   Ticks --> Apply[set route switches with tick duty]
   Apply --> Read
@@ -244,7 +244,7 @@ flowchart TD
   Defaults --> Subsys[settings_subsys_init]
   Subsys --> Load[load app settings subtrees]
   Load --> Runtime[runtime settings snapshot]
-  Command[set command] --> Parse[validate JSON fields]
+  Command[effect request] --> Parse[validate JSON fields]
   Parse --> Update[update runtime snapshot]
   Update --> Persist{persistent true}
   Persist -- yes --> Save[settings_save_one keys]
@@ -274,12 +274,12 @@ flowchart TD
   Find --> Ready{device ready}
   Ready -- no --> CacheErr[cache last_error]
   Ready -- yes --> Fetch[sensor_sample_fetch]
-  Fetch --> Get[sensor_channel_get ambient]
-  Get --> Cache[update mutex-protected status]
+  Fetch --> SensorGet[sensor_channel_get ambient]
+  SensorGet --> Cache[update mutex-protected status]
   CacheErr --> Sleep[k_sleep 1 s]
   Cache --> Sleep
   Sleep --> Fetch
-  Command[temp GET] --> Read[tempsense_get_status]
+  Command[temp query] --> Read[tempsense_get_status]
   Read --> Response[ambient payload or error]
 ```
 
