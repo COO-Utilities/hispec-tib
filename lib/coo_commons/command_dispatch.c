@@ -10,7 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <zephyr/console/console.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+
+LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix)
 {
@@ -111,7 +115,7 @@ static const char *skip_serial_space(const char *s)
 	return s;
 }
 
-static bool next_serial_token(const char **cursor, char *out, size_t out_len)
+bool coo_cmd_serial_next_token(const char **cursor, char *out, size_t out_len)
 {
 	const char *start;
 	size_t len;
@@ -137,13 +141,13 @@ static bool next_serial_token(const char **cursor, char *out, size_t out_len)
 	return true;
 }
 
-static bool serial_token_has_extra(const char *cursor)
+bool coo_cmd_serial_has_extra(const char *cursor)
 {
 	cursor = skip_serial_space(cursor);
 	return cursor != NULL && *cursor != '\0';
 }
 
-static bool serial_token_is_number(const char *token)
+bool coo_cmd_serial_token_is_number(const char *token)
 {
 	char *end = NULL;
 
@@ -173,7 +177,7 @@ static const char *serial_token_bool_json(const char *token)
 	return NULL;
 }
 
-static int append_serial_json_value(char *out, size_t out_len, size_t *off,
+int coo_cmd_serial_append_json_value(char *out, size_t out_len, size_t *off,
 				    const char *token)
 {
 	const char *bool_json = serial_token_bool_json(token);
@@ -185,7 +189,7 @@ static int append_serial_json_value(char *out, size_t out_len, size_t *off,
 
 	if (bool_json != NULL) {
 		written = snprintk(out + *off, out_len - *off, "%s", bool_json);
-	} else if (serial_token_is_number(token) || strcasecmp(token, "null") == 0) {
+	} else if (coo_cmd_serial_token_is_number(token) || strcasecmp(token, "null") == 0) {
 		written = snprintk(out + *off, out_len - *off, "%s", token);
 	} else {
 		if (strchr(token, '"') != NULL || strchr(token, '\\') != NULL) {
@@ -201,7 +205,7 @@ static int append_serial_json_value(char *out, size_t out_len, size_t *off,
 	return 0;
 }
 
-static int append_serial_json_field(char *out, size_t out_len, size_t *off,
+int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
 				    const char *key, const char *token,
 				    bool comma)
 {
@@ -220,7 +224,7 @@ static int append_serial_json_field(char *out, size_t out_len, size_t *off,
 	}
 	*off += (size_t)written;
 
-	return append_serial_json_value(out, out_len, off, token);
+	return coo_cmd_serial_append_json_value(out, out_len, off, token);
 }
 
 static int serial_payload_from_key_values(const char *payload, char *out,
@@ -238,7 +242,7 @@ static int serial_payload_from_key_values(const char *payload, char *out,
 	}
 	off = (size_t)written;
 
-	while (next_serial_token(&cursor, token, sizeof(token))) {
+	while (coo_cmd_serial_next_token(&cursor, token, sizeof(token))) {
 		char *eq = strchr(token, '=');
 
 		if (eq == NULL || eq == token || eq[1] == '\0') {
@@ -246,7 +250,7 @@ static int serial_payload_from_key_values(const char *payload, char *out,
 		}
 		*eq = '\0';
 
-		if (append_serial_json_field(out, out_len, &off, token, eq + 1,
+		if (coo_cmd_serial_append_json_field(out, out_len, &off, token, eq + 1,
 					     !first) != 0) {
 			return -EINVAL;
 		}
@@ -264,8 +268,8 @@ static int serial_payload_from_value(const char *payload, char *out, size_t out_
 	size_t off = 0U;
 	int written;
 
-	if (!next_serial_token(&cursor, token, sizeof(token)) ||
-	    serial_token_has_extra(cursor)) {
+	if (!coo_cmd_serial_next_token(&cursor, token, sizeof(token)) ||
+	    coo_cmd_serial_has_extra(cursor)) {
 		return -EINVAL;
 	}
 
@@ -274,7 +278,7 @@ static int serial_payload_from_value(const char *payload, char *out, size_t out_
 		return -ENOSPC;
 	}
 	off = (size_t)written;
-	if (append_serial_json_value(out, out_len, &off, token) != 0) {
+	if (coo_cmd_serial_append_json_value(out, out_len, &off, token) != 0) {
 		return -EINVAL;
 	}
 	written = snprintk(out + off, out_len - off, "}");
@@ -396,6 +400,157 @@ struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
 	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
 }
 
+struct coo_cmd_response coo_cmd_invalid_response(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			     "{\"error\":\"Invalid or unrecognized command\"}");
+}
+
+struct coo_cmd_response coo_cmd_unknown_response(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			     "{\"error\":\"Unknown request\"}");
+}
+
+struct coo_cmd_response coo_cmd_unsupported_response(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			     "{\"error\":\"Unsupported operation\"}");
+}
+
+struct coo_cmd_response coo_cmd_busy_response(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"busy\"}");
+}
+
+struct coo_cmd_response coo_cmd_serial_active_response(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			     "{\"error\":\"try later. local serial commands active\"}");
+}
+
+static int append_json_string(char *buf, size_t buf_len, size_t *off,
+			      const char *text)
+{
+	const char *s = text != NULL ? text : "";
+
+	if (buf == NULL || off == NULL || *off >= buf_len) {
+		return -EINVAL;
+	}
+
+	for (; *s != '\0'; ++s) {
+		int written;
+
+		if (*s == '"' || *s == '\\') {
+			written = snprintk(buf + *off, buf_len - *off, "\\%c", *s);
+		} else if ((unsigned char)*s < 0x20U) {
+			written = snprintk(buf + *off, buf_len - *off, "?");
+		} else {
+			written = snprintk(buf + *off, buf_len - *off, "%c", *s);
+		}
+
+		if (written < 0 || written >= (int)(buf_len - *off)) {
+			return -ENOSPC;
+		}
+		*off += (size_t)written;
+	}
+
+	return 0;
+}
+
+int coo_cmd_build_warning(struct coo_cmd_response *out,
+			  const char *topic,
+			  const char *code,
+			  const char *msg,
+			  const char *context)
+{
+	size_t off;
+	int written;
+
+	if (out == NULL || topic == NULL ||
+	    strlen(topic) >= sizeof(out->topic)) {
+		return -EINVAL;
+	}
+
+	memset(out, 0, sizeof(*out));
+	out->msg_type = COO_CMD_RESP_OK;
+	out->target = COO_CMD_OUT_MQTT_BEST_EFFORT;
+	out->qos = 0U;
+	strncpy(out->topic, topic, sizeof(out->topic) - 1U);
+
+	written = snprintk(out->payload, sizeof(out->payload),
+			   "{\"severity\":\"warning\",\"code\":\"");
+	if (written < 0 || written >= (int)sizeof(out->payload)) {
+		return -ENOSPC;
+	}
+	off = (size_t)written;
+
+	if (append_json_string(out->payload, sizeof(out->payload), &off, code) != 0) {
+		return -ENOSPC;
+	}
+
+	written = snprintk(out->payload + off, sizeof(out->payload) - off,
+			   "\",\"msg\":\"");
+	if (written < 0 || written >= (int)(sizeof(out->payload) - off)) {
+		return -ENOSPC;
+	}
+	off += (size_t)written;
+
+	if (append_json_string(out->payload, sizeof(out->payload), &off, msg) != 0) {
+		return -ENOSPC;
+	}
+
+	written = snprintk(out->payload + off, sizeof(out->payload) - off,
+			   "\",\"context\":\"");
+	if (written < 0 || written >= (int)(sizeof(out->payload) - off)) {
+		return -ENOSPC;
+	}
+	off += (size_t)written;
+
+	if (append_json_string(out->payload, sizeof(out->payload), &off, context) != 0) {
+		return -ENOSPC;
+	}
+
+	written = snprintk(out->payload + off, sizeof(out->payload) - off,
+			   "\",\"uptime_ms\":%lld}",
+			   (long long)k_uptime_get());
+	if (written < 0 || written >= (int)(sizeof(out->payload) - off)) {
+		return -ENOSPC;
+	}
+	off += (size_t)written;
+	out->payload_len = off;
+	return 0;
+}
+
+int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
+			 const char *topic,
+			 const char *code,
+			 const char *msg,
+			 const char *context)
+{
+	struct coo_cmd_response out;
+	int rc;
+
+	LOG_WRN("%s: %s%s%s",
+		code != NULL ? code : "warning",
+		msg != NULL ? msg : "",
+		context != NULL && context[0] != '\0' ? " context=" : "",
+		context != NULL ? context : "");
+
+	rc = coo_cmd_build_warning(&out, topic, code, msg, context);
+	if (rc != 0) {
+		LOG_WRN("warning payload too large; MQTT warning dropped");
+		return rc;
+	}
+
+	if (outbound_queue == NULL || k_msgq_put(outbound_queue, &out, K_NO_WAIT) != 0) {
+		LOG_WRN("warning MQTT queue full; warning was only logged locally");
+		return -ENOSPC;
+	}
+
+	return 0;
+}
+
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
 			 uint16_t *message_id)
@@ -419,6 +574,153 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 	param.retain_flag = 0U;
 
 	return mqtt_publish(client, &param);
+}
+
+void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
+{
+	struct coo_cmd_runtime *runtime = p1;
+	struct coo_cmd_request cmd;
+	struct coo_cmd_response out;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	if (runtime == NULL || runtime->inbound_queue == NULL ||
+	    runtime->outbound_queue == NULL) {
+		LOG_ERR("command runtime executor missing queues");
+		return;
+	}
+
+	while (1) {
+		/* K_FOREVER sleeps until ingress queues a complete command. */
+		k_msgq_get(runtime->inbound_queue, &cmd, K_FOREVER);
+		if (runtime->execute_handler != NULL) {
+			out = runtime->execute_handler(&cmd);
+		} else {
+			out = coo_cmd_dispatch(&cmd,
+					       runtime->dispatch_table,
+					       runtime->dispatch_count,
+					       runtime->unknown_handler,
+					       runtime->unsupported_handler);
+		}
+		if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+			LOG_WRN("Outbound queue full; dropping command response");
+		}
+	}
+}
+
+void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3)
+{
+	struct coo_cmd_runtime *runtime = p1;
+	char *line;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	if (runtime == NULL || runtime->serial_line_handler == NULL) {
+		LOG_ERR("command runtime serial thread missing line handler");
+		return;
+	}
+
+	/* Initialize Zephyr's line-oriented console input once for this thread. */
+	console_getline_init();
+
+	while (1) {
+		/* Blocks until a full line is available from the configured console. */
+		line = console_getline();
+		if (line != NULL && line[0] != '\0') {
+			runtime->serial_line_handler(line, runtime->serial_line_user_data);
+		}
+	}
+}
+
+static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
+						struct mqtt_client *client,
+						bool mqtt_available)
+{
+	struct coo_cmd_response warning;
+	uint16_t wrap_column = runtime != NULL && runtime->serial_wrap_column != 0U ?
+		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
+
+	if (runtime == NULL || runtime->warning_topic == NULL ||
+	    coo_cmd_build_warning(&warning, runtime->warning_topic,
+				  "outbound_queue_full",
+				  "outbound queue reached capacity",
+				  "command_drain") != 0) {
+		return;
+	}
+
+	coo_cmd_print_serial_response(&warning, wrap_column);
+
+	if (mqtt_available &&
+	    coo_cmd_publish_mqtt(client, &warning, runtime->mqtt_msg_id) != 0) {
+		LOG_WRN("Failed to publish outbound_queue_full warning");
+	}
+}
+
+void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
+				    struct mqtt_client *client,
+				    bool mqtt_available)
+{
+	struct coo_cmd_response out;
+	int budget = 8;
+	bool outbound_full;
+	uint16_t wrap_column;
+
+	if (runtime == NULL || runtime->outbound_queue == NULL ||
+	    runtime->mqtt_msg_id == NULL) {
+		return;
+	}
+	wrap_column = runtime->serial_wrap_column != 0U ?
+		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
+
+	outbound_full = (k_msgq_num_free_get(runtime->outbound_queue) == 0U);
+	if (outbound_full) {
+		if (!runtime->outbound_full_warning_seen ||
+		    (mqtt_available && !runtime->outbound_full_warning_mqtt_seen)) {
+			publish_outbound_queue_full_warning(runtime, client, mqtt_available);
+			runtime->outbound_full_warning_seen = true;
+			if (mqtt_available) {
+				runtime->outbound_full_warning_mqtt_seen = true;
+			}
+		}
+	} else {
+		runtime->outbound_full_warning_seen = false;
+		runtime->outbound_full_warning_mqtt_seen = false;
+	}
+
+	while (budget-- > 0 &&
+	       k_msgq_get(runtime->outbound_queue, &out, K_NO_WAIT) == 0) {
+		const bool best_effort = (out.target == COO_CMD_OUT_MQTT_BEST_EFFORT);
+
+		if (out.target == COO_CMD_OUT_SERIAL) {
+			coo_cmd_print_serial_response(&out, wrap_column);
+			continue;
+		}
+
+		if (!mqtt_available) {
+			if (best_effort) {
+				LOG_DBG("Dropping best-effort MQTT msg while MQTT unavailable");
+				continue;
+			}
+			if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+				LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
+			}
+			continue;
+		}
+
+		if (coo_cmd_publish_mqtt(client, &out, runtime->mqtt_msg_id) != 0) {
+			if (best_effort) {
+				LOG_WRN("Best-effort MQTT publish failed; dropping msg");
+				continue;
+			}
+			LOG_WRN("MQTT publish failed; will retry");
+			if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+				LOG_WRN("Dropping MQTT msg (queue full after publish failure)");
+			}
+			break;
+		}
+	}
 }
 
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,

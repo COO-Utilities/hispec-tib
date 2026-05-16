@@ -22,7 +22,6 @@
 #include <app_version.h>
 #include <time.h>
 #include <zephyr/net/net_ip.h>
-#include <zephyr/console/console.h>
 
 #include "devices.h"
 #include "laserbank_control.h"
@@ -58,8 +57,9 @@ static atomic_t serial_network_ignore_active;
 static char last_command_name[MAX_KEY_LEN];
 static char last_command_source[8] = "unknown";
 static int64_t last_command_time_ms;
+static char command_warning_topic[MAX_TOPIC_LEN];
 
-static void print_serial_response(const struct OutMsg *out);
+static void command_serial_line_handler(char *line, void *user_data);
 
 
 /* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
@@ -109,6 +109,19 @@ const struct DispatchEntry dispatch_table[] = {
     { "status",     status_get,       NULL  },
 };
 
+static struct coo_cmd_runtime command_runtime = {
+    .inbound_queue = &inbound_queue,
+    .outbound_queue = &outbound_queue,
+    .execute_handler = dispatch_command,
+    .dispatch_table = dispatch_table,
+    .dispatch_count = ARRAY_SIZE(dispatch_table),
+    .unknown_handler = unknown_response,
+    .unsupported_handler = unsupported_response,
+    .mqtt_msg_id = &mqtt_msg_id,
+    .warning_topic = command_warning_topic,
+    .serial_wrap_column = SERIAL_WRAP_COLUMN,
+    .serial_line_handler = command_serial_line_handler,
+};
 
 const struct DispatchEntry *find_dispatch(const char *key)
 {
@@ -310,126 +323,6 @@ static void enqueue_serial_error(const char *msg)
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
 }
 
-static const char *skip_serial_space(const char *s)
-{
-    while (s != NULL && (*s == ' ' || *s == '\t')) {
-        s++;
-    }
-    return s;
-}
-
-static bool next_serial_token(const char **cursor, char *out, size_t out_len)
-{
-    const char *start;
-    size_t len;
-
-    if (cursor == NULL || *cursor == NULL || out == NULL || out_len == 0U) {
-        return false;
-    }
-
-    start = skip_serial_space(*cursor);
-    if (*start == '\0') {
-        *cursor = start;
-        return false;
-    }
-
-    len = strcspn(start, " \t");
-    if (len >= out_len) {
-        len = out_len - 1U;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    *cursor = start + strcspn(start, " \t");
-    return true;
-}
-
-static bool serial_token_has_extra(const char *cursor)
-{
-    cursor = skip_serial_space(cursor);
-    return cursor != NULL && *cursor != '\0';
-}
-
-static bool serial_token_is_number(const char *token)
-{
-    char *end = NULL;
-
-    if (token == NULL || token[0] == '\0') {
-        return false;
-    }
-
-    (void)strtod(token, &end);
-    return end != token && end != NULL && *end == '\0';
-}
-
-static const char *serial_token_bool_json(const char *token)
-{
-    if (token == NULL) {
-        return NULL;
-    }
-
-    if (strcasecmp(token, "true") == 0 || strcasecmp(token, "on") == 0 ||
-        strcasecmp(token, "yes") == 0) {
-        return "true";
-    }
-    if (strcasecmp(token, "false") == 0 || strcasecmp(token, "off") == 0 ||
-        strcasecmp(token, "no") == 0) {
-        return "false";
-    }
-
-    return NULL;
-}
-
-static int append_serial_json_value(char *out, size_t out_len, size_t *off,
-                                    const char *token)
-{
-    const char *bool_json = serial_token_bool_json(token);
-    int written;
-
-    if (out == NULL || off == NULL || token == NULL) {
-        return -EINVAL;
-    }
-
-    if (bool_json != NULL) {
-        written = snprintk(out + *off, out_len - *off, "%s", bool_json);
-    } else if (serial_token_is_number(token) || strcasecmp(token, "null") == 0) {
-        written = snprintk(out + *off, out_len - *off, "%s", token);
-    } else {
-        if (strchr(token, '"') != NULL || strchr(token, '\\') != NULL) {
-            return -EINVAL;
-        }
-        written = snprintk(out + *off, out_len - *off, "\"%s\"", token);
-    }
-
-    if (written < 0 || written >= (int)(out_len - *off)) {
-        return -ENOSPC;
-    }
-    *off += (size_t)written;
-    return 0;
-}
-
-static int append_serial_json_field(char *out, size_t out_len, size_t *off,
-                                    const char *key, const char *token,
-                                    bool comma)
-{
-    int written;
-    int rc;
-
-    if (key == NULL || token == NULL || key[0] == '\0' ||
-        strchr(key, '"') != NULL || strchr(key, '\\') != NULL) {
-        return -EINVAL;
-    }
-
-    written = snprintk(out + *off, out_len - *off, "%s\"%s\":", comma ? "," : "", key);
-    if (written < 0 || written >= (int)(out_len - *off)) {
-        return -ENOSPC;
-    }
-    *off += (size_t)written;
-
-    rc = append_serial_json_value(out, out_len, off, token);
-    return rc;
-}
-
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
  * uses. This is deliberately a small translation table, not another dispatcher.
  * Examples: "power on", "serialguard off", "mems/foo A 0.5 30".
@@ -444,12 +337,12 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     size_t off = 0;
     int written;
 
-    if (!next_serial_token(&cursor, t0, sizeof(t0))) {
+    if (!coo_cmd_serial_next_token(&cursor, t0, sizeof(t0))) {
         return -EINVAL;
     }
-    (void)next_serial_token(&cursor, t1, sizeof(t1));
-    (void)next_serial_token(&cursor, t2, sizeof(t2));
-    if (serial_token_has_extra(cursor)) {
+    (void)coo_cmd_serial_next_token(&cursor, t1, sizeof(t1));
+    (void)coo_cmd_serial_next_token(&cursor, t2, sizeof(t2));
+    if (coo_cmd_serial_has_extra(cursor)) {
         return -EINVAL;
     }
 
@@ -459,15 +352,15 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
             return -ENOSPC;
         }
         off = (size_t)written;
-        if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+        if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
             return -EINVAL;
         }
         if (t1[0] != '\0' &&
-            append_serial_json_field(out, out_len, &off, "duty_cycle", t1, true) != 0) {
+            coo_cmd_serial_append_json_field(out, out_len, &off, "duty_cycle", t1, true) != 0) {
             return -EINVAL;
         }
         if (t2[0] != '\0' &&
-            append_serial_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
+            coo_cmd_serial_append_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
             return -EINVAL;
         }
         written = snprintk(out + off, out_len - off, "}");
@@ -482,11 +375,11 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
             return -ENOSPC;
         }
         off = (size_t)written;
-        if (append_serial_json_value(out, out_len, &off, seconds) != 0) {
+        if (coo_cmd_serial_append_json_value(out, out_len, &off, seconds) != 0) {
             return -EINVAL;
         }
         if (t1[0] != '\0' &&
-            append_serial_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
+            coo_cmd_serial_append_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
             return -EINVAL;
         }
         written = snprintk(out + off, out_len - off, "}");
@@ -499,11 +392,11 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
             return -ENOSPC;
         }
         off = (size_t)written;
-        if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+        if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
             return -EINVAL;
         }
         if (t1[0] != '\0' &&
-            append_serial_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
+            coo_cmd_serial_append_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
             return -EINVAL;
         }
         if (t2[0] != '\0') {
@@ -514,7 +407,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     }
 
     if (strcmp(key, "time") == 0) {
-        if (!serial_token_is_number(t0)) {
+        if (!coo_cmd_serial_token_is_number(t0)) {
             return -EINVAL;
         }
         written = snprintk(out, out_len, "{\"linuxtime_ms\":%s}", t0);
@@ -530,7 +423,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         return -ENOSPC;
     }
     off = (size_t)written;
-    if (append_serial_json_value(out, out_len, &off, t0) != 0) {
+    if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
         return -EINVAL;
     }
     written = snprintk(out + off, out_len - off, "}");
@@ -737,149 +630,34 @@ void command_parse_serial_line(char *line)
     }
 }
 
+static void command_serial_line_handler(char *line, void *user_data)
+{
+    ARG_UNUSED(user_data);
+
+    command_parse_serial_line(line);
+}
+
 void command_executor_thread(void *p1, void *p2, void *p3)
 {
-    struct Command cmd;
-    struct OutMsg out;
-
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    while (1) {
-        /* K_FOREVER sleeps this thread until ingress queues a complete command. */
-        k_msgq_get(&inbound_queue, &cmd, K_FOREVER);
-        out = dispatch_command(&cmd);
-        if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
-            LOG_WRN("Outbound queue full; dropping command response");
-        }
-    }
+    coo_cmd_runtime_executor_thread(&command_runtime, NULL, NULL);
 }
 
 void command_serial_thread(void *p1, void *p2, void *p3)
 {
-
-    char *line;
-
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    /* Initialize Zephyr's line-oriented console input once for this thread. */
-    console_getline_init();
-
-    while (1) {
-        /* Blocks until a full line is available from the configured console. */
-        line = console_getline();
-        if (line != NULL && line[0] != '\0') {
-            command_parse_serial_line(line);
-        }
-    }
-
-}
-
-static int publish_outmsg(struct mqtt_client *client, const struct OutMsg *out)
-{
-    /* mqtt_publish() may block in the socket layer and is kept out of timing
-     * sensitive work items and sampler threads.
-     */
-    return coo_cmd_publish_mqtt(client, out, &mqtt_msg_id);
-}
-
-static void build_outbound_queue_full_warning(struct OutMsg *out)
-{
-    if (out == NULL) {
-        return;
-    }
-
-    memset(out, 0, sizeof(*out));
-    out->msg_type = RESP_OK;
-    out->target = OUT_TARGET_MQTT_BEST_EFFORT;
-    out->qos = 0U;
-    (void)app_mqtt_format_data_topic("warning", out->topic, sizeof(out->topic));
-    snprintk(out->payload, sizeof(out->payload),
-             "{\"severity\":\"warning\",\"code\":\"outbound_queue_full\","
-             "\"msg\":\"outbound queue reached capacity\",\"context\":\"command_drain\","
-             "\"uptime_ms\":%lld}",
-             (long long)k_uptime_get());
-    out->payload_len = strlen(out->payload);
-}
-
-static void publish_outbound_queue_full_warning(struct mqtt_client *client,
-                                                bool mqtt_available)
-{
-    struct OutMsg warning;
-
-    build_outbound_queue_full_warning(&warning);
-    print_serial_response(&warning);
-
-    if (mqtt_available && publish_outmsg(client, &warning) != 0) {
-        LOG_WRN("Failed to publish outbound_queue_full warning");
-    }
-}
-
-/* Serial responses intentionally reuse the OutMsg generated for MQTT. The
- * topic is printed first, then the payload is wrapped at print time with tab
- * indentation so response builders do not need serial-specific formatting.
- */
-static void print_serial_response(const struct OutMsg *out)
-{
-    coo_cmd_print_serial_response(out, SERIAL_WRAP_COLUMN);
+    coo_cmd_runtime_serial_thread(&command_runtime, NULL, NULL);
 }
 
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available)
 {
-    struct OutMsg out;
-    int budget = 8;
-    static bool full_warning_seen;
-    static bool full_warning_mqtt_seen;
-    bool outbound_full;
-
-    outbound_full = (k_msgq_num_free_get(&outbound_queue) == 0U);
-    if (outbound_full) {
-        if (!full_warning_seen || (mqtt_available && !full_warning_mqtt_seen)) {
-            publish_outbound_queue_full_warning(client, mqtt_available);
-            full_warning_seen = true;
-            if (mqtt_available) {
-                full_warning_mqtt_seen = true;
-            }
-        }
-    } else {
-        full_warning_seen = false;
-        full_warning_mqtt_seen = false;
-    }
-
-    while (budget-- > 0 && k_msgq_get(&outbound_queue, &out, K_NO_WAIT) == 0) {
-        const bool best_effort = (out.target == OUT_TARGET_MQTT_BEST_EFFORT);
-
-        if (out.target == OUT_TARGET_SERIAL) {
-            print_serial_response(&out);
-            continue;
-        }
-
-        if (!mqtt_available) {
-            if (best_effort) {
-                LOG_DBG("Dropping best-effort MQTT msg while MQTT unavailable");
-                continue;
-            }
-            if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
-                LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
-            }
-            continue;
-        }
-
-        if (publish_outmsg(client, &out) != 0) {
-            if (best_effort) {
-                LOG_WRN("Best-effort MQTT publish failed; dropping msg");
-                continue;
-            }
-            LOG_WRN("MQTT publish failed; will retry");
-            if (k_msgq_put(&outbound_queue, &out, K_NO_WAIT) != 0) {
-                LOG_WRN("Dropping MQTT msg (queue full after publish failure)");
-            }
-            break;
-        }
-    }
+    coo_cmd_runtime_drain_outbound(&command_runtime, client, mqtt_available);
 }
 
 static bool power_enabled(void) {
@@ -1153,6 +931,12 @@ int command_runtime_init(void)
 {
     int rc;
 
+    rc = app_mqtt_format_data_topic("warning", command_warning_topic,
+                                    sizeof(command_warning_topic));
+    if (rc != 0) {
+        return rc;
+    }
+
     rc = app_scheduled_actions_init();
     if (rc != 0) {
         return rc;
@@ -1176,28 +960,23 @@ int command_runtime_init(void)
 
 
 struct OutMsg invalid_command_response(const struct Command *cmd) {
-    const char *err = "{\"error\":\"Invalid or unrecognized command\"}";
-    return coo_cmd_reply(cmd, RESP_ERROR, err);
+    return coo_cmd_invalid_response(cmd);
 }
 
 struct OutMsg unknown_response(const struct Command *cmd) {
-    const char *err = "{\"error\":\"Unknown request\"}";
-    return coo_cmd_reply(cmd, RESP_ERROR, err);
+    return coo_cmd_unknown_response(cmd);
 }
 
 struct OutMsg unsupported_response(const struct Command *cmd) {
-    const char *err = "{\"error\":\"Unsupported operation\"}";
-    return coo_cmd_reply(cmd, RESP_ERROR, err);
+    return coo_cmd_unsupported_response(cmd);
 }
 
 struct OutMsg busy_response(const struct Command *cmd) {
-    const char *err = "{\"error\":\"busy\"}";
-    return coo_cmd_reply(cmd, RESP_ERROR,  err);
+    return coo_cmd_busy_response(cmd);
 }
 
 struct OutMsg serial_active_response(const struct Command *cmd) {
-    const char *err = "{\"error\":\"try later. local serial commands active\"}";
-    return coo_cmd_reply(cmd, RESP_ERROR,  err);
+    return coo_cmd_serial_active_response(cmd);
 }
 
 struct OutMsg help_get(const struct Command *cmd)

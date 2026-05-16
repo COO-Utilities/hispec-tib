@@ -111,6 +111,34 @@ typedef int (*coo_cmd_serial_shorthand_fn)(const char *key,
 					   size_t out_len,
 					   void *user_data);
 
+typedef void (*coo_cmd_serial_line_fn)(char *line, void *user_data);
+
+/**
+ * @brief Runtime wiring for a simple command executor and output drain.
+ *
+ * The application owns the queues, command table, optional execute hook, line
+ * parser, warning topic, and MQTT message-id storage. If execute_handler is
+ * NULL, the executor uses the static dispatch table directly. The runtime
+ * helpers do not allocate memory; they block only in the executor queue wait,
+ * Zephyr console line read, and MQTT publish path used by the outbound drain.
+ */
+struct coo_cmd_runtime {
+	struct k_msgq *inbound_queue;
+	struct k_msgq *outbound_queue;
+	coo_cmd_handler_fn execute_handler;
+	const struct coo_cmd_dispatch_entry *dispatch_table;
+	size_t dispatch_count;
+	coo_cmd_handler_fn unknown_handler;
+	coo_cmd_handler_fn unsupported_handler;
+	uint16_t *mqtt_msg_id;
+	const char *warning_topic;
+	uint16_t serial_wrap_column;
+	coo_cmd_serial_line_fn serial_line_handler;
+	void *serial_line_user_data;
+	bool outbound_full_warning_seen;
+	bool outbound_full_warning_mqtt_seen;
+};
+
 /** Return true when @p key starts with @p prefix and is exact or slash-delimited. */
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
 
@@ -155,6 +183,24 @@ int coo_cmd_normalize_serial_payload(const char *key,
 				     char *out,
 				     size_t out_len);
 
+/** Return the next whitespace-delimited serial token and advance @p cursor. */
+bool coo_cmd_serial_next_token(const char **cursor, char *out, size_t out_len);
+
+/** Return true when non-space payload text remains at @p cursor. */
+bool coo_cmd_serial_has_extra(const char *cursor);
+
+/** Return true when @p token is a complete JSON-compatible number token. */
+bool coo_cmd_serial_token_is_number(const char *token);
+
+/** Append one token as a JSON value, preserving numbers/bools/null. */
+int coo_cmd_serial_append_json_value(char *out, size_t out_len, size_t *off,
+				     const char *token);
+
+/** Append one `"key":value` field, optionally preceded by a comma. */
+int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
+				     const char *key, const char *token,
+				     bool comma);
+
 /**
  * @brief Build a response that preserves request routing metadata.
  *
@@ -196,10 +242,62 @@ struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
 					 const char *msg,
 					 int rc);
 
+/** @brief Build the standard malformed-command error response. */
+struct coo_cmd_response coo_cmd_invalid_response(const struct coo_cmd_request *cmd);
+
+/** @brief Build the standard unknown-command error response. */
+struct coo_cmd_response coo_cmd_unknown_response(const struct coo_cmd_request *cmd);
+
+/** @brief Build the standard unsupported-operation error response. */
+struct coo_cmd_response coo_cmd_unsupported_response(const struct coo_cmd_request *cmd);
+
+/** @brief Build the standard busy error response. */
+struct coo_cmd_response coo_cmd_busy_response(const struct coo_cmd_request *cmd);
+
+/** @brief Build the standard serial-guard-active error response. */
+struct coo_cmd_response coo_cmd_serial_active_response(const struct coo_cmd_request *cmd);
+
+/**
+ * @brief Build a best-effort warning publication.
+ *
+ * The caller supplies the already formatted warning topic, usually a telemetry
+ * topic such as `dt/<device>/warning`. The response target is
+ * COO_CMD_OUT_MQTT_BEST_EFFORT and the payload is a compact warning JSON
+ * object with severity, code, msg, context, and uptime_ms.
+ */
+int coo_cmd_build_warning(struct coo_cmd_response *out,
+			  const char *topic,
+			  const char *code,
+			  const char *msg,
+			  const char *context);
+
+/**
+ * @brief Log and enqueue one best-effort warning without blocking.
+ *
+ * Warnings are lossy by design. This helper never publishes MQTT directly and
+ * returns an error if the payload cannot be built or the queue is full.
+ */
+int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
+			 const char *topic,
+			 const char *code,
+			 const char *msg,
+			 const char *context);
+
 /** Publish a formatted MQTT response/publication. May block in the socket layer. */
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
 			 uint16_t *message_id);
+
+/** Execute commands from runtime->inbound_queue and enqueue one response each. */
+void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3);
+
+/** Read Zephyr console lines and pass them to runtime->serial_line_handler. */
+void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3);
+
+/** Drain outbound serial/MQTT responses with bounded retry behavior. */
+void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
+				    struct mqtt_client *client,
+				    bool mqtt_available);
 
 /** Print a serial response as topic then tab-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,

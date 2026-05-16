@@ -1,9 +1,10 @@
 /**
  * @file app_warning.h
- * @brief Best-effort warning logging and MQTT publication entry point.
+ * @brief HISPEC warning topic wrapper.
  *
- * Warnings enqueue outbound MQTT messages without blocking command execution or
- * timing-sensitive work. Delivery is intentionally lossy.
+ * The reusable command dispatch layer owns warning JSON construction and
+ * non-blocking outbound queueing. This app-local wrapper supplies the HISPEC
+ * warning topic so handlers do not repeat topic formatting.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -16,8 +17,8 @@
  * @brief Emit a lightweight warning to local logs and best-effort MQTT.
  *
  * Warnings are for suspicious or degraded conditions that should be visible but
- * should not make a command fail by themselves. Publication uses a non-blocking
- * queue put and may be dropped if MQTT is unavailable or the queue is full.
+ * should not make a command fail by themselves. Emission may enqueue an outbound
+ * MQTT warning and never publishes directly from the caller's context.
  *
  * @param code Short stable warning code, for example "serial_guard_active".
  * @param msg Human-readable warning text.
