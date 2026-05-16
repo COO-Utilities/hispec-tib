@@ -86,6 +86,7 @@ struct hispec_laser_status {
 	bool lock_tec_selfheat;
 	bool ready_to_operate;
 	float current_set_ma;
+	float level_percent;
 	float current_measured_ma;
 	float current_min_ma;
 	float current_max_ma;
@@ -197,14 +198,14 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
 /**
  * @brief Power-cycle the laser bank to clear latched Maiman overcurrent faults.
  *
- * Side effect: disables and re-enables the whole bank supply. This is not a
- * per-laser reset and should not be used while another channel is intentionally
- * emitting.
+ * If the bank is off or no powered driver reports an overcurrent fault, this
+ * is a no-op and @p actual_off_ms is set to 0. Otherwise this disables and
+ * re-enables the whole bank supply, sleeps for the requested off interval, and
+ * reports the interval through @p actual_off_ms. This is not a per-laser reset
+ * and should not be used while another channel is intentionally emitting.
  */
-int hispec_laser_bank_clear_faults(uint32_t off_ms);
-
-/** @brief Report whether any powered driver currently shows overcurrent fault. */
-int hispec_laser_bank_any_overcurrent_fault(bool *fault);
+int hispec_laser_bank_clear_faults(uint32_t off_ms,
+				   uint32_t *actual_off_ms);
 
 /**
  * @brief Set one relay-box output: YJ PD power, HK PD power, or bank heater.
@@ -294,12 +295,18 @@ int hispec_laser_set_pulse(enum hispec_laser_id id, float frequency_hz, float du
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
 int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
 
-/** @brief Get/update app-owned laser channel settings and apply driver-backed values. */
+/**
+ * @brief Get/update app-owned laser channel settings.
+ *
+ * The laser module validates the complete settings record and decides whether
+ * driver-backed values changed enough to require Maiman reprogramming. Updates
+ * may sleep, power the bank temporarily, stop emission, write Modbus registers,
+ * and persist app-owned settings when requested.
+ */
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out);
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
-					 bool apply_driver,
 					 bool persist);
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
 				   bool persist);

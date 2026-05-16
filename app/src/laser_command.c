@@ -6,7 +6,6 @@
 #include "laser_command.h"
 
 #include <errno.h>
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -116,7 +115,6 @@ struct OutMsg laserbank_power(const struct Command *cmd)
 
 struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 {
-	bool fault = false;
 	uint32_t off_ms = 0U;
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int rc;
@@ -125,23 +123,9 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 		return coo_cmd_error(cmd, "laser bank unavailable on this board");
 	}
 
-	if (!hispec_laser_bank_power_is_enabled()) {
-		return coo_cmd_reply(cmd, RESP_OK, "{\"off_ms\":0}");
-	}
-	rc = hispec_laser_bank_any_overcurrent_fault(&fault);
+	rc = hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS, &off_ms);
 	if (rc != 0) {
-		return coo_cmd_error_rc(cmd, "overcurrent status unavailable", rc);
-	}
-	if (!fault) {
-		return coo_cmd_reply(cmd, RESP_OK, "{\"off_ms\":0}");
-	}
-	if (hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS) != 0) {
-		return coo_cmd_error(cmd, "laser bank power cycle failed");
-	}
-	off_ms = LASERBANK_FAULT_CLEAR_OFF_MS;
-
-	if (!hispec_laser_bank_power_is_enabled()) {
-		return coo_cmd_error(cmd, "laser bank power cycle could not turn on");
+		return coo_cmd_error_rc(cmd, "laser bank fault clear failed", rc);
 	}
 
 	snprintf(payload, sizeof(payload), "{\"off_ms\":%u}", off_ms);
@@ -297,31 +281,10 @@ static struct OutMsg laser_error_response(const struct Command *cmd,
 	return coo_cmd_error_rc(cmd, msg, rc);
 }
 
-static float laser_status_level(const struct hispec_laser_status *status)
-{
-	const laserprops_t *props;
-	float range;
-
-	if (status == NULL || status->properties == NULL ||
-	    status->current_set_ma != status->current_set_ma) {
-		return LASERPROP_NA;
-	}
-	props = status->properties;
-	range = props->nominal_current_ma - props->threshold_current_ma;
-	if (range <= 0.0f) {
-		return LASERPROP_NA;
-	}
-	if (status->current_set_ma <= 0.0f) {
-		return 0.0f;
-	}
-	return 100.0f * (status->current_set_ma - props->threshold_current_ma) / range;
-}
-
 static int laser_append_compact_status(char *payload, size_t payload_len,
 				       const struct hispec_laser_status *status)
 {
 	size_t off = 0U;
-	float level = laser_status_level(status);
 	const laserprops_t *props = status->properties;
 
 	if (coo_json_append(payload, payload_len, &off,
@@ -341,7 +304,8 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 					  status->current_set_ma, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"level\":") != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, &off, level, 2) != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  status->level_percent, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"power_mw\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
@@ -559,7 +523,6 @@ struct OutMsg laser_settings_get(const struct Command *cmd)
 
 static int laser_parse_settings_update(const char *json,
 				       struct app_laser_channel_settings *settings,
-				       bool *driver_changed,
 				       bool *changed)
 {
 	double range[2] = {0};
@@ -570,43 +533,31 @@ static int laser_parse_settings_update(const char *json,
 	bool bval;
 	int rc;
 
-	if (json == NULL || settings == NULL || driver_changed == NULL || changed == NULL) {
+	if (json == NULL || settings == NULL || changed == NULL) {
 		return -EINVAL;
 	}
 
-#define LASER_PARSE_FLOAT(key, field, minv, maxv, driver) do { \
+#define LASER_PARSE_FLOAT(key, field) do { \
 		rc = coo_json_extract_float(json, key, &fval); \
 		if (rc == COO_JSON_EXTRACT_ERR) return -EINVAL; \
 		if (rc == COO_JSON_EXTRACT_OK) { \
-			if (!(fval >= (minv) && fval <= (maxv))) return -ERANGE; \
 			(field) = fval; \
 			*changed = true; \
-			if (driver) *driver_changed = true; \
 		} \
 	} while (0)
 
-	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma,
-			  0.0f, 1000.0f, false);
-	LASER_PARSE_FLOAT("max_current_ma", settings->properties.max_current_ma,
-			  0.0f, 1000.0f, true);
-	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma,
-			  0.0f, 1000.0f, false);
-	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma,
-			  0.0f, 100.0f, false);
-	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm,
-			  1.0f, 10000.0f, false);
+	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma);
+	LASER_PARSE_FLOAT("max_current_ma", settings->properties.max_current_ma);
+	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma);
+	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma);
+	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
 	LASER_PARSE_FLOAT("current_set_calibration_pct",
-			  settings->current_set_calibration_pct,
-			  95.0f, 105.0f, true);
+			  settings->current_set_calibration_pct);
 	LASER_PARSE_FLOAT("current_set_calibration_%",
-			  settings->current_set_calibration_pct,
-			  95.0f, 105.0f, true);
-	LASER_PARSE_FLOAT("default_operating_temp_c", settings->properties.operating_temp_c,
-			  15.0f, 40.0f, false);
-	LASER_PARSE_FLOAT("dlambda_dT_nm_per_k", settings->properties.dlambda_dT_nm_per_k,
-			  -10.0f, 10.0f, false);
-	LASER_PARSE_FLOAT("dlambda_dA_nm_per_ma", settings->properties.dlambda_dA_nm_per_ma,
-			  -10.0f, 10.0f, false);
+			  settings->current_set_calibration_pct);
+	LASER_PARSE_FLOAT("default_operating_temp_c", settings->properties.operating_temp_c);
+	LASER_PARSE_FLOAT("dlambda_dT_nm_per_k", settings->properties.dlambda_dT_nm_per_k);
+	LASER_PARSE_FLOAT("dlambda_dA_nm_per_ma", settings->properties.dlambda_dA_nm_per_ma);
 
 #undef LASER_PARSE_FLOAT
 
@@ -616,7 +567,7 @@ static int laser_parse_settings_update(const char *json,
 		return -EINVAL;
 	}
 	if (rc == COO_JSON_EXTRACT_OK) {
-		if (range_len != 2U || range[0] < 15.0 || range[1] > 40.0 || range[0] > range[1]) {
+		if (range_len != 2U) {
 			return -ERANGE;
 		}
 		settings->properties.operating_temp_range_c.min_c = (float)range[0];
@@ -633,19 +584,16 @@ static int laser_parse_settings_update(const char *json,
 		    uval <= UINT16_MAX) {
 			settings->properties.tec_pid.kp = (uint16_t)uval;
 			*changed = true;
-			*driver_changed = true;
 		}
 		if (coo_json_extract_u32(pid_json, "i", &uval) == COO_JSON_EXTRACT_OK &&
 		    uval <= UINT16_MAX) {
 			settings->properties.tec_pid.ki = (uint16_t)uval;
 			*changed = true;
-			*driver_changed = true;
 		}
 		if (coo_json_extract_u32(pid_json, "d", &uval) == COO_JSON_EXTRACT_OK &&
 		    uval <= UINT16_MAX) {
 			settings->properties.tec_pid.kd = (uint16_t)uval;
 			*changed = true;
-			*driver_changed = true;
 		}
 	}
 
@@ -678,7 +626,6 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 	char settings_json[MAX_PAYLOAD_LEN] = {0};
 	const char *json;
 	bool changed = false;
-	bool driver_changed = false;
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
@@ -698,7 +645,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 	}
 	json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
 
-	rc = laser_parse_settings_update(json, &settings, &driver_changed, &changed);
+	rc = laser_parse_settings_update(json, &settings, &changed);
 	if (rc != 0) {
 		return laser_error_response(cmd, "invalid laser settings", rc);
 	}
@@ -707,7 +654,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 	}
 
 	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_update_channel_settings(id, &settings, driver_changed, true);
+	rc = hispec_laser_update_channel_settings(id, &settings, true);
 	if (rc != 0) {
 		return laser_error_response(cmd, "laser settings update failed", rc);
 	}

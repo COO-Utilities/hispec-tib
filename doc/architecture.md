@@ -26,8 +26,8 @@ Runtime ownership is:
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
 - `maiman.c`: raw/scaled Modbus register transactions.
-- `lasers.c`: laser-bank power sequencing, driver verification, estimates, and
-  higher-level Maiman helper APIs.
+- `lasers.c`: laser-bank power sequencing, driver verification, laser settings
+  validation, output estimates, and higher-level Maiman helper APIs.
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
