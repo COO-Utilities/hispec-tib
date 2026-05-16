@@ -27,7 +27,7 @@ target_sources(app PRIVATE
         src/devices.c
         src/laser_command.c
         src/lasers.c
-        src/laserbank_control.c
+        src/laserbank_tempcontrol.c
         src/maiman.c
         src/mems_command.c
         src/photodiode.c
@@ -46,7 +46,7 @@ target_sources(app PRIVATE
         src/devices.h
         src/laser_command.h
         src/lasers.h
-        src/laserbank_control.h
+        src/laserbank_tempcontrol.h
         src/maiman.h
         src/mems_command.h
         src/laser_properties.h

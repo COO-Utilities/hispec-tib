@@ -21,7 +21,7 @@
 #include <zephyr/net/net_ip.h>
 
 #include "devices.h"
-#include "laserbank_control.h"
+#include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "app_identity.h"
 #include "app_settings.h"
@@ -1172,7 +1172,7 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
 struct OutMsg status_get(const struct Command *cmd)
 {
     struct tempsense_status ts = {0};
-    struct laserbank_control_status bank = {0};
+    struct laserbank_tempcontrol_status bank = {0};
     bool include_ip = false;
     bool include_lasers = false;
     bool include_attens = false;
@@ -1194,7 +1194,7 @@ struct OutMsg status_get(const struct Command *cmd)
     }
 
     tempsense_get_status(&ts);
-    laserbank_control_get_status(&bank);
+    laserbank_tempcontrol_get_status(&bank);
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fwversion\":\"%s\",\"bootcount\":%u,"
                         "\"board_type\":\"%s\",\"board_valid\":%s,"

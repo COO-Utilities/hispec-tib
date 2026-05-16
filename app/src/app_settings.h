@@ -18,7 +18,7 @@
 #include <zephyr/net/net_ip.h>
 
 #include "laser_properties.h"
-#include "laserbank_control.h"
+#include "laserbank_tempcontrol.h"
 
 struct app_ip_settings {
 	bool try_dhcp_first;

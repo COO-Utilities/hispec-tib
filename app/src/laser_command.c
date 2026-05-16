@@ -15,7 +15,7 @@
 
 #include "app_settings.h"
 #include "devices.h"
-#include "laserbank_control.h"
+#include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "throughput_monitor.h"
 
@@ -132,11 +132,11 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
-static void laserbank_control_status_payload(char *payload, size_t payload_len)
+static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
 {
-	struct laserbank_control_status status = {0};
+	struct laserbank_tempcontrol_status status = {0};
 
-	laserbank_control_get_status(&status);
+	laserbank_tempcontrol_get_status(&status);
 	snprintk(payload, payload_len,
 		 "{\"heater_mode\":\"%s\","
 		 "\"heater_on\":%s,\"bank_power\":%s,"
@@ -241,13 +241,13 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
 			return coo_cmd_reply(cmd, RESP_ERROR,
 					     "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
 		}
-		int rc = laserbank_control_set_heater_mode(mode, true);
+		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);
 		if (rc != 0) {
 			return coo_cmd_error_rc(cmd, "laser bank heater relay unavailable", rc);
 		}
 	}
 
-	laserbank_control_status_payload(payload, sizeof(payload));
+	laserbank_tempcontrol_status_payload(payload, sizeof(payload));
 	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 

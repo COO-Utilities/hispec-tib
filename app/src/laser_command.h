@@ -4,7 +4,7 @@
  *
  * These handlers parse documented MQTT/serial command payloads, validate
  * command-schema fields, shape responses, and delegate hardware behavior to
- * lasers.c and laserbank_control.c. Handlers may sleep or block indirectly
+ * lasers.c and laserbank_tempcontrol.c. Handlers may sleep or block indirectly
  * through those domain modules and may notify throughput monitoring when laser
  * output state changes.
  */

@@ -1,13 +1,13 @@
 /**
- * @file laserbank_control.c
- * @brief Laser-bank heater auto/override policy loop.
+ * @file laserbank_tempcontrol.c
+ * @brief Laser-bank temperature-control policy loop.
  *
  * The loop owns automatic bank pre-warm decisions for TIB. It never publishes
  * MQTT directly; warnings are best-effort messages queued through
  * app_warning_emit().
  */
 
-#include "laserbank_control.h"
+#include "laserbank_tempcontrol.h"
 
 #include <errno.h>
 #include <string.h>
@@ -21,7 +21,7 @@
 #include "lasers.h"
 #include "tempsense.h"
 
-LOG_MODULE_REGISTER(laserbank_control, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
 #define LASERBANK_WARM_MIN_C 15.0f
 #define LASERBANK_COLD_OFF_C 20.0f
@@ -33,9 +33,9 @@ struct laserbank_cached_channel {
 	int64_t last_valid_ms;
 };
 
-struct laserbank_control_runtime {
+struct laserbank_tempcontrol_runtime {
 	struct laserbank_cached_channel channel[HISPEC_LASER_COUNT];
-	struct laserbank_control_status status;
+	struct laserbank_tempcontrol_status status;
 	int64_t last_poll_ms;
 	int64_t all_tecs_enabled_since_ms;
 	int64_t last_override_warning_ms;
@@ -44,7 +44,7 @@ struct laserbank_control_runtime {
 	bool have_previous_mode;
 };
 
-static struct laserbank_control_runtime control;
+static struct laserbank_tempcontrol_runtime control;
 static K_MUTEX_DEFINE(control_lock);
 static K_SEM_DEFINE(control_wake, 0, 1);
 
@@ -79,7 +79,7 @@ static bool channel_is_stale(const struct laserbank_cached_channel *channel,
 {
 	return channel == NULL || !channel->valid ||
 	       channel->last_valid_ms <= 0 ||
-	       now_ms - channel->last_valid_ms > LASERBANK_CONTROL_TEMP_STALE_MS;
+	       now_ms - channel->last_valid_ms > LASERBANK_TEMPCONTROL_TEMP_STALE_MS;
 }
 
 /* Track the current laser-bank supply on interval in RAM only. Zero is a safe
@@ -104,7 +104,7 @@ static void update_bank_power_runtime_locked(bool bank_powered, int64_t now_ms)
 	}
 }
 
-static void copy_status_locked(struct laserbank_control_status *out)
+static void copy_status_locked(struct laserbank_tempcontrol_status *out)
 {
 	if (out == NULL) {
 		return;
@@ -118,7 +118,7 @@ static void copy_status_locked(struct laserbank_control_status *out)
 	}
 }
 
-void laserbank_control_get_status(struct laserbank_control_status *out)
+void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out)
 {
 	bool bank_powered = false;
 	int64_t now_ms = k_uptime_get();
@@ -133,7 +133,7 @@ void laserbank_control_get_status(struct laserbank_control_status *out)
 	k_mutex_unlock(&control_lock);
 }
 
-int laserbank_control_set_heater_mode(enum laserbank_heater_mode mode,
+int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 				      bool persist)
 {
 	struct app_laserbank_settings settings;
@@ -233,7 +233,7 @@ static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 
 	if (control.last_override_warning_ms > 0 &&
 	    now_ms - control.last_override_warning_ms <
-		    LASERBANK_CONTROL_OVERRIDE_WARNING_MS) {
+		    LASERBANK_TEMPCONTROL_OVERRIDE_WARNING_MS) {
 		return;
 	}
 
@@ -344,7 +344,7 @@ static void run_heater_control_cycle(void)
 	} else if (control.status.any_disabled_above_off_threshold ||
 		   (control.status.all_tecs_enabled &&
 		    control.status.all_tecs_enabled_ms >=
-			    LASERBANK_CONTROL_POLL_INTERVAL_MS)) {
+			    LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS)) {
 		k_mutex_unlock(&control_lock);
 		apply_heater(false);
 	} else {
@@ -352,7 +352,7 @@ static void run_heater_control_cycle(void)
 	}
 }
 
-void laserbank_control_thread(void *p1, void *p2, void *p3)
+void laserbank_tempcontrol_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
@@ -362,6 +362,6 @@ void laserbank_control_thread(void *p1, void *p2, void *p3)
 		run_heater_control_cycle();
 		hispec_laser_service_autooff();
 		(void)k_sem_take(&control_wake,
-				 K_MSEC(LASERBANK_CONTROL_POLL_INTERVAL_MS));
+				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
 	}
 }

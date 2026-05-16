@@ -60,7 +60,7 @@ attenuator state, and laser estimates, then enqueues best-effort telemetry to
 
 ## Laser-Bank Control Thread
 
-`laserbank_control_thread()` is created only for the TIB profile. It owns
+`laserbank_tempcontrol_thread()` is created only for the TIB profile. It owns
 heater auto/override policy, polls Maiman TEC temperature/state at a fixed
 interval, reads the cached ambient temperature, and drives the auxiliary
 laser-bank heater GPIO. It does not publish MQTT directly; override warnings

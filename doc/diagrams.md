@@ -53,7 +53,7 @@ flowchart TD
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
   Threads --> LaserCtrl{TIB board}
-  LaserCtrl -- yes --> BankCtrl[start laserbank_control_thread]
+  LaserCtrl -- yes --> BankCtrl[start laserbank_tempcontrol_thread]
   LaserCtrl -- no --> SNTP[start SNTP runtime]
   BankCtrl --> SNTP
   SNTP --> Network[start network]
@@ -409,7 +409,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[laserbank_control_thread] --> Cycle[run_heater_control_cycle]
+  Thread[laserbank_tempcontrol_thread] --> Cycle[run_heater_control_cycle]
   Cycle --> Settings[read laserbank settings]
   Settings --> Ambient[read cached ambient temperature]
   Ambient --> Power[read bank power state and update on-time]
@@ -463,7 +463,7 @@ flowchart TD
   Deadline --> Ok[return status ok]
   Clear --> Ok
 
-  BankControl[laserbank_control_thread poll] --> Service[hispec_laser_service_autooff]
+  BankControl[laserbank_tempcontrol_thread poll] --> Service[hispec_laser_service_autooff]
   Service --> Expired{deadline expired}
   Expired -- no --> Wait[poll interval]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]
@@ -481,7 +481,7 @@ flowchart TD
   Request[status query] --> Parse[parse optional ip, lasers, attens flags]
   Parse --> Base[read firmware, boot count, board, MEMS, relay status]
   Base --> Temp[read cached ambient temperature]
-  Temp --> Bank[read laserbank_control status and bank on-time]
+  Temp --> Bank[read laserbank_tempcontrol status and bank on-time]
   Bank --> PdOn[read photodiode relay on-time]
   PdOn --> Build[append base JSON fields]
 
