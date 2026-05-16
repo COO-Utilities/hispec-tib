@@ -314,8 +314,6 @@ a replacement for `commands.md`.
 
 - GET has no documented payload and returns power values, errors, raw counts,
   mV, noise, rolling windows, and uptime.
-- Legacy implementation detail: `pd_get()` can still parse `unit:"volts"`, but
-  normal ingress sends any non-empty `pd` payload to `pd_set()`.
 - SET fields: `action`, `channel` or key suffix, plus action-specific fields.
 - Actions:
   - `measure_dark`: optional `duration_ms`, optional `store`.

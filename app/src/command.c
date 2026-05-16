@@ -2537,9 +2537,7 @@ struct OutMsg memsroute_set(const struct Command *cmd) {
         int rc;
 
         if (sw==NULL) {
-            //NB this should be an impossible error if compiled code is correct
-            LOG_ERR("Internal route error: Switch %s not found\n", step->switch_name);
-            return _msg_builder(cmd, RESP_ERROR, "{\"error\":\"Internal route error\"}");
+            return error_response(cmd, "route references missing switch");
         }
 
         rc = mems_switch_set_state(sw, step->state, 1, 0, 0.0f);
@@ -3613,66 +3611,43 @@ static int pd_parse_channel_from_payload_or_key(const struct Command *cmd,
 struct OutMsg pd_get(const struct Command *cmd)
 {
     struct photodiode_status status;
-    char unit[12] = "power";
     char payload[MAX_PAYLOAD_LEN] = {0};
+    struct app_photodiode_settings settings;
     float yj_value;
     float hk_value;
     float yj_err;
     float hk_err;
-    int parse_rc;
+    float yj_gain;
+    float hk_gain;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
         return error_response(cmd, "photodiodes unavailable on this board");
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "unit", unit, sizeof(unit));
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid unit");
-    }
-    if (strcasecmp(unit, "power") != 0 && strcasecmp(unit, "volts") != 0) {
-        return error_response(cmd, "unit must be power or volts");
-    }
-
     photodiode_get_status(&status);
+    app_settings_get_photodiode(&settings);
 
-    if (strcasecmp(unit, "volts") == 0) {
-        yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].mv / 1000.0f;
-        hk_value = status.channel[PHOTODIODE_CHANNEL_HK].mv / 1000.0f;
-        yj_err = status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / 1000.0f;
-        hk_err = status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / 1000.0f;
-        snprintk(unit, sizeof(unit), "volts");
-    } else {
-        yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
-        hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
+    yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
+    hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
+    yj_gain = settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw;
+    hk_gain = settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw;
 
-        struct app_photodiode_settings settings;
-        float yj_gain;
-        float hk_gain;
+    yj_err = (yj_gain > 0.0f) ?
+        status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / (yj_gain * 1000.0f) :
+        0.0f;
 
-        app_settings_get_photodiode(&settings);
-        yj_gain = settings.channel[PHOTODIODE_CHANNEL_YJ].gain_v_per_uw;
-        hk_gain = settings.channel[PHOTODIODE_CHANNEL_HK].gain_v_per_uw;
-
-        yj_err = (yj_gain > 0.0f) ?
-            status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv / (yj_gain * 1000.0f) :
-            0.0f;
-
-        hk_err = (hk_gain > 0.0f) ?
-            status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / (hk_gain * 1000.0f) :
-            0.0f;
-
-        snprintk(unit, sizeof(unit), "power");
-    }
+    hk_err = (hk_gain > 0.0f) ?
+        status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv / (hk_gain * 1000.0f) :
+        0.0f;
 
     snprintk(payload, sizeof(payload),
-             "{\"unit\":\"%s\",\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
+             "{\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
              "\"hkvalue\":%.6f,\"hkvalue_err\":%.6f,"
              "\"yj_raw\":%d,\"hk_raw\":%d,\"yj_mv\":%.3f,\"hk_mv\":%.3f,"
              "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
              "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
              "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
              "\"uptime\":%lld}",
-             unit,
              (double)yj_value,
              (double)yj_err,
              (double)hk_value,

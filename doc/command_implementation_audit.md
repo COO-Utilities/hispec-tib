@@ -106,9 +106,7 @@ buffer and echoed exactly in responses.
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
-- None known as command endpoints. `pd_get()` still has unreachable legacy code
-  for `unit:"volts"` query payloads, but the current documented interface does
-  not route non-empty `pd` payloads to GET.
+- None known.
 
 ## High-Risk Implementation Notes
 

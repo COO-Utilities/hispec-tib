@@ -44,7 +44,7 @@ enum mems_switch_type {
  */
 struct mems_switch {
     const struct device *gpio_dev;
-    //todo shouldn't these pins be constant?
+    /* Assigned once by mems_switch_init() from the active board profile. */
     gpio_pin_t pin_a;
     gpio_pin_t pin_b;
     enum mems_switch_type switch_type;

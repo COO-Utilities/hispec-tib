@@ -101,7 +101,7 @@ static uint32_t seconds_to_cycles(const struct mems_switch *sw, uint32_t seconds
 }
 
 
-static struct mems_switch *mems_router_find_switch_unlocked(const struct mems_router *router, const char *name)
+static struct mems_switch *mems_router_find_switch_locked(const struct mems_router *router, const char *name)
 {
     for (uint8_t i = 0; i < router->num_switches; ++i) {
         if (strncmp(router->switches[i]->name, name, MEMS_SWITCH_NAME_LEN) == 0) {
@@ -192,9 +192,9 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
     return 0;
 }
 
-static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
-                                          float duty_cycle, uint32_t stop_after_s,
-                                          float requested_toggle_rate_hz)
+int mems_switch_set_state(struct mems_switch *sw, char state,
+                          float duty_cycle, uint32_t stop_after_s,
+                          float requested_toggle_rate_hz)
 {
     struct mems_router *router;
     uint32_t previous_period_cycles;
@@ -503,17 +503,6 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
 }
 
 
-int mems_switch_set_state(struct mems_switch *sw,
-                                    char state,
-                                    float duty_cycle,
-                                    uint32_t stop_after_s,
-                                    float requested_toggle_rate_hz)
-{
-    // todo is this static/nonstatic nesting needed?
-    return mems_switch_set_state_internal(sw, state, duty_cycle, stop_after_s,
-                                          requested_toggle_rate_hz);
-}
-
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
                                 uint32_t state_ticks, uint32_t period_ticks,
                                 uint32_t stop_after_s)
@@ -619,9 +608,17 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
 
 struct mems_switch *mems_router_find_switch(const struct mems_router *router, const char *name)
 {
-    //todo Why not just make mems_router_find_switch_unlocked a non-static function. This nesting is cryptic and unapproachable to maintainers coming from python
-    // and should be documented
-    return mems_router_find_switch_unlocked(router, name);
+    struct mems_switch *sw;
+
+    if (router == NULL || name == NULL) {
+        return NULL;
+    }
+
+    k_mutex_lock((struct k_mutex *)&router->lock, K_FOREVER);
+    sw = mems_router_find_switch_locked(router, name);
+    k_mutex_unlock((struct k_mutex *)&router->lock);
+
+    return sw;
 }
 
 // Find route and return pointer/step count, or NULL/-1 if not found
@@ -656,7 +653,7 @@ uint8_t mems_router_active_routes(const struct mems_router *router,
         bool match = true;
         for (uint8_t j = 0; j < route->num_steps; ++j) {
             const struct mems_route_step *step = &route->steps[j];
-            struct mems_switch *sw = mems_router_find_switch_unlocked(router, step->switch_name);
+            struct mems_switch *sw = mems_router_find_switch_locked(router, step->switch_name);
             if (!sw || sw->state != step->state || sw->remaining_toggle_cycles>0) {
                 match = false;
                 break;

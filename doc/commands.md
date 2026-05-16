@@ -767,7 +767,6 @@ off or no faults).
 - **No payload -> photodiode values:**
   ```json
   {
-    "unit": "power",
     "yjvalue": 0.0,
     "yjvalue_err": 0.0,
     "hkvalue": 0.0,

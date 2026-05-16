@@ -20,13 +20,13 @@ LLMs Agents: Do NOT change heading names in this file.
   `laserbank/power` and `laserbank/heater` queries, because this class of
   handlers historically had side effects. Decide whether the stricter behavior
   is intended or whether individual read-only endpoints should be allowed.
-- `pd_get()` still contains an implementation branch for a `unit:"volts"` query,
-  but normal request-shape inference now treats any non-empty `pd` payload as a
-  dark-measurement/action request. This branch is unreachable through the
-  documented MQTT/serial interface and should either be removed.
 
 ### LLM Resolved; Human Review Requested
 
+- MEMS review outcome: the pin fields are assigned once from const board-profile
+  tables during `mems_switch_init()`. True field-level constness would require a
+  separate config/runtime-state split; the local helper nesting was reduced
+  without widening the MEMS API.
 
 ## Hardware/Profile Decisions
 
@@ -39,10 +39,6 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Source TODOs Preserved
 
 - `app/src/photodiode.h`: ADC resolution should come from devicetree.
-- `app/src/mems_switching.h`: MEMS switch pin fields may want stronger constness.
-- `app/src/mems_switching.c`: review static/non-static helper nesting.
-- `app/src/command.c`: internal split-route error is marked as theoretically
-  impossible if compiled route tables are correct.
 - `app/src/maiman.h`: compare Maiman behavior against the referenced
   validation/test scripts.
 
