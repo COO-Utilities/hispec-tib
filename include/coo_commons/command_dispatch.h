@@ -169,6 +169,23 @@ bool coo_cmd_copy_mqtt_utf8(const struct mqtt_utf8 *topic,
 			    char *out,
 			    size_t out_len);
 
+/** Format `cmd/<device_id>/req/` for MQTT command subscription and parsing. */
+int coo_cmd_format_request_prefix(const char *device_id,
+				  char *buf,
+				  size_t buf_len);
+
+/** Format `cmd/<device_id>/resp/<key>` for default command responses. */
+int coo_cmd_format_response_topic(const char *device_id,
+				  const char *key,
+				  char *buf,
+				  size_t buf_len);
+
+/** Format `dt/<device_id>/<suffix>` for warning and telemetry publications. */
+int coo_cmd_format_data_topic(const char *device_id,
+			      const char *suffix,
+			      char *buf,
+			      size_t buf_len);
+
 /**
  * @brief Normalize a serial payload into compact JSON.
  *

@@ -25,7 +25,6 @@
 
 #include "app_identity.h"
 #include "app_settings.h"
-#include "app_warning.h"
 #include "command.h"
 #include "devices.h"
 #include "laserbank_control.h"
@@ -300,8 +299,9 @@ int main(void)
 		int written;
 		size_t prefix_len;
 
-		rc = app_mqtt_format_request_prefix(mqtt_cmd_subscription,
-						    sizeof(mqtt_cmd_subscription));
+		rc = coo_cmd_format_request_prefix(app_mqtt_device_id(),
+						   mqtt_cmd_subscription,
+						   sizeof(mqtt_cmd_subscription));
 		if (rc != 0) {
 			LOG_ERR("MQTT command topic prefix too long (%d)", rc);
 			return rc;

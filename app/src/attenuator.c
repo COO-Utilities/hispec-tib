@@ -4,7 +4,7 @@
  */
 
 #include "attenuator.h"
-#include "app_warning.h"
+#include "command.h"
 #include "drivers/dac/dac7578.h"
 
 #include <errno.h>

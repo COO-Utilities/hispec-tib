@@ -16,6 +16,65 @@
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
+static int format_device_topic(const char *device_id, char *buf, size_t buf_len,
+			       const char *prefix, const char *suffix)
+{
+	int written;
+
+	if (device_id == NULL || device_id[0] == '\0' || buf == NULL ||
+	    buf_len == 0U || prefix == NULL) {
+		return -EINVAL;
+	}
+
+	written = snprintk(buf, buf_len, "%s%s%s",
+			   prefix, device_id, suffix != NULL ? suffix : "");
+	return (written < 0 || written >= (int)buf_len) ? -ENOSPC : 0;
+}
+
+int coo_cmd_format_request_prefix(const char *device_id,
+				  char *buf,
+				  size_t buf_len)
+{
+	return format_device_topic(device_id, buf, buf_len, "cmd/", "/req/");
+}
+
+int coo_cmd_format_response_topic(const char *device_id,
+				  const char *key,
+				  char *buf,
+				  size_t buf_len)
+{
+	char suffix[96];
+	int written;
+
+	written = snprintk(suffix, sizeof(suffix), "/resp/%s",
+			   key != NULL ? key : "");
+	if (written < 0 || written >= (int)sizeof(suffix)) {
+		return -ENOSPC;
+	}
+
+	return format_device_topic(device_id, buf, buf_len, "cmd/", suffix);
+}
+
+int coo_cmd_format_data_topic(const char *device_id,
+			      const char *suffix,
+			      char *buf,
+			      size_t buf_len)
+{
+	char topic_suffix[64];
+	int written;
+
+	if (suffix == NULL || suffix[0] == '\0') {
+		return -EINVAL;
+	}
+
+	written = snprintk(topic_suffix, sizeof(topic_suffix), "/%s", suffix);
+	if (written < 0 || written >= (int)sizeof(topic_suffix)) {
+		return -ENOSPC;
+	}
+
+	return format_device_topic(device_id, buf, buf_len, "dt/", topic_suffix);
+}
+
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix)
 {
 	size_t len;

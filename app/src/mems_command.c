@@ -17,7 +17,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
-#include "app_warning.h"
+#include "command.h"
 #include "mems_switching.h"
 
 #include <coo_commons/json_utils.h>

@@ -37,7 +37,7 @@ Runtime ownership is:
 - `tempsense.c`: DS18B20 polling and cache.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: Zephyr settings-backed app configuration and calibration.
-- `app_warning.c`: local warning log plus best-effort MQTT warning publication.
+- `app_identity.c`: selected board-profile MQTT device ID.
 
 Project-local wrappers under `lib/coo_commons` are intentionally small:
 
@@ -46,8 +46,8 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
 - `command_dispatch.c`: fixed-buffer MQTT/serial command request, static
-  longest-prefix dispatch, response metadata, serial payload normalization, and
-  serial response printing helpers.
+  longest-prefix dispatch, topic formatting, response metadata, warning JSON,
+  serial payload normalization, and serial response printing helpers.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 - `pid.c`: generic PID helper, currently not central to the app runtime.

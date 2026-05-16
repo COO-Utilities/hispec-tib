@@ -127,6 +127,19 @@ void command_parse_serial_line(char *line);
  */
 void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available);
 
+/**
+ * @brief Emit a lightweight warning to local logs and best-effort MQTT.
+ *
+ * Warnings are for suspicious or degraded conditions that should be visible but
+ * should not make a command fail by themselves. Emission uses the command
+ * outbound queue and never publishes directly from the caller's context.
+ *
+ * @param code Short stable warning code, for example "serial_guard_active".
+ * @param msg Human-readable warning text.
+ * @param context Optional short context string, such as a command key.
+ */
+void app_warning_emit(const char *code, const char *msg, const char *context);
+
 
 extern struct k_msgq inbound_queue;
 extern struct k_msgq outbound_queue;

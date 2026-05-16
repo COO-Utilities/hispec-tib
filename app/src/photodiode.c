@@ -15,7 +15,7 @@
 
 #include "photodiode.h"
 #include "app_settings.h"
-#include "app_warning.h"
+#include "command.h"
 #include "devices.h"
 
 

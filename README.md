@@ -79,7 +79,7 @@ GET; a key with payload is a SET. See:
 - `tempsense.c`: DS18B20 ambient temperature cache.
 - `sntp_sync.c`: SNTP sync and time status.
 - `app_settings.c`: Zephyr settings-backed app state.
-- `app_warning.c`: best-effort warning publication.
+- `app_identity.c`: selected board-profile MQTT device ID.
 
 Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 

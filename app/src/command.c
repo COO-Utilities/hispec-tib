@@ -29,7 +29,6 @@
 #include "app_identity.h"
 #include "app_settings.h"
 #include "app_scheduled_actions.h"
-#include "app_warning.h"
 #include "attenuator.h"
 #include "attenuator_command.h"
 #include "maiman.h"
@@ -250,7 +249,8 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
 
 static bool derive_default_response_topic(const char *key, char *topic_out, size_t topic_out_len)
 {
-    return app_mqtt_format_response_topic(key, topic_out, topic_out_len) == 0;
+    return coo_cmd_format_response_topic(app_mqtt_device_id(), key,
+                                         topic_out, topic_out_len) == 0;
 }
 
 static bool command_payload_empty(const struct Command *cmd)
@@ -317,7 +317,8 @@ static void enqueue_serial_error(const char *msg)
 
     out.target = OUT_TARGET_SERIAL;
     out.msg_type = RESP_ERROR;
-    (void)app_mqtt_format_response_topic("serial", out.topic, sizeof(out.topic));
+    (void)coo_cmd_format_response_topic(app_mqtt_device_id(), "serial",
+                                        out.topic, sizeof(out.topic));
     out.payload_len = snprintk(out.payload, sizeof(out.payload),
                                "{\"error\":\"%s\"}", msg);
     (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
@@ -468,7 +469,8 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         return;
     }
 
-    if (app_mqtt_format_request_prefix(cmd_prefix, sizeof(cmd_prefix)) != 0) {
+    if (coo_cmd_format_request_prefix(app_mqtt_device_id(),
+                                      cmd_prefix, sizeof(cmd_prefix)) != 0) {
         return;
     }
     prefix_len = strlen(cmd_prefix);
@@ -635,6 +637,18 @@ static void command_serial_line_handler(char *line, void *user_data)
     ARG_UNUSED(user_data);
 
     command_parse_serial_line(line);
+}
+
+void app_warning_emit(const char *code, const char *msg, const char *context)
+{
+    char topic[MAX_TOPIC_LEN] = {0};
+
+    if (coo_cmd_format_data_topic(app_mqtt_device_id(), "warning",
+                                  topic, sizeof(topic)) != 0) {
+        return;
+    }
+
+    (void)coo_cmd_warning_emit(&outbound_queue, topic, code, msg, context);
 }
 
 void command_executor_thread(void *p1, void *p2, void *p3)
@@ -931,8 +945,9 @@ int command_runtime_init(void)
 {
     int rc;
 
-    rc = app_mqtt_format_data_topic("warning", command_warning_topic,
-                                    sizeof(command_warning_topic));
+    rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "warning",
+                                   command_warning_topic,
+                                   sizeof(command_warning_topic));
     if (rc != 0) {
         return rc;
     }

@@ -304,9 +304,10 @@ static void publish_sample(const struct throughput_state *state,
 
 	msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
 	msg.qos = 0;
-	(void)app_mqtt_format_data_topic(state->channel == PHOTODIODE_CHANNEL_YJ ?
-					 "yj_tput" : "hk_tput",
-					 msg.topic, sizeof(msg.topic));
+	(void)coo_cmd_format_data_topic(app_mqtt_device_id(),
+					state->channel == PHOTODIODE_CHANNEL_YJ ?
+					"yj_tput" : "hk_tput",
+					msg.topic, sizeof(msg.topic));
 
 	if (state->binary) {
 		put_bytes((uint8_t *)msg.payload, sizeof(msg.payload), &off,

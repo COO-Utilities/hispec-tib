@@ -21,7 +21,6 @@ target_sources(app PRIVATE
         src/app_identity.c
         src/app_scheduled_actions.c
         src/app_settings.c
-        src/app_warning.c
         src/attenuator.c
         src/attenuator_command.c
         src/command.c
@@ -41,7 +40,6 @@ target_sources(app PRIVATE
         src/attenuator_command.h
         src/app_scheduled_actions.h
         src/app_settings.h
-        src/app_warning.h
         src/app_identity.h
         src/command.h
         src/devices.h

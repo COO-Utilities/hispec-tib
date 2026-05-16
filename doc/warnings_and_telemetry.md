@@ -7,7 +7,8 @@ Warnings are emitted with `app_warning_emit(code, msg, context)`.
 Behavior:
 
 - Logs locally with `LOG_WRN`.
-- Builds JSON with severity, code, message, context, and uptime.
+- Uses the command-dispatch warning helper to build JSON with severity, code,
+  message, context, and uptime.
 - Enqueues one `OUT_TARGET_MQTT_BEST_EFFORT` message to `outbound_queue` with
   `K_NO_WAIT`.
 - Drops the MQTT warning if the queue is full, MQTT is unavailable, or publish
