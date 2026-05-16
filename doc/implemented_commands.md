@@ -300,7 +300,7 @@ for `commands.md`.
 - Side effects: blocks on DAC I2C and can clamp DAC range.
 - Enqueue: can enqueue `attenuator_clamped` warning.
 - Handler: `atten_setting_get()`, `atten_setting_set()` in
-  `app/src/command.c`.
+  `app/src/attenuator_command.c`.
 
 ### `atten/<laser>/coeff`
 
@@ -313,7 +313,7 @@ for `commands.md`.
   and optionally persists coefficients.
 - Blocking: DAC I2C and settings writes may block.
 - Handler: `atten_setting_get()`, `atten_setting_set()` in
-  `app/src/command.c`.
+  `app/src/attenuator_command.c`.
 
 ### `pd`
 

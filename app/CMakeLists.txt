@@ -23,6 +23,7 @@ target_sources(app PRIVATE
         src/app_settings.c
         src/app_warning.c
         src/attenuator.c
+        src/attenuator_command.c
         src/command.c
         src/devices.c
         src/lasers.c
@@ -36,6 +37,7 @@ target_sources(app PRIVATE
         src/tempsense.h
         src/mems_switching.c
         src/attenuator.h
+        src/attenuator_command.h
         src/app_scheduled_actions.h
         src/app_settings.h
         src/app_warning.h

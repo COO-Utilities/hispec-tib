@@ -32,6 +32,7 @@
 #include "app_scheduled_actions.h"
 #include "app_warning.h"
 #include "attenuator.h"
+#include "attenuator_command.h"
 #include "maiman.h"
 #include "mems_switching.h"
 #include "photodiode_command.h"
@@ -80,28 +81,6 @@ K_MSGQ_DEFINE(outbound_queue,
 extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
-
-static bool attenuator_channel_available(uint8_t attenuator_index)
-{
-    enum hispec_board_type board = devices_board_type();
-
-    if (board == HISPEC_BOARD_TIB) {
-        return attenuator_index < NUM_ATTENUATORS;
-    }
-
-    if (board == HISPEC_BOARD_CAL_YJ || board == HISPEC_BOARD_CAL_HK) {
-        uint8_t cal_attenuator_index;
-
-        return attenuator_index_from_laser_id(HISPEC_LASER_1510_H,
-                                              &cal_attenuator_index) == 0 &&
-               attenuator_index == cal_attenuator_index;
-    }
-
-    return false;
-}
-
-
-
 
 const struct DispatchEntry dispatch_table[] = {
     { "help",      help_get,         NULL             },
@@ -232,42 +211,6 @@ int parse_key_pair(const char *key,
 }
 
 
-
-static int parse_atten_key(const char *key,
-                           char *laser_name, size_t laser_name_len,
-                           char *setting, size_t setting_len)
-{
-    const char prefix[] = "atten/";
-    const char *laser_start;
-    const char *slash;
-    size_t laser_len;
-    size_t parsed_setting_len;
-
-    if (key == NULL || laser_name == NULL || setting == NULL ||
-        strncmp(key, prefix, strlen(prefix)) != 0) {
-        return -EINVAL;
-    }
-
-    laser_start = key + strlen(prefix);
-    slash = strchr(laser_start, '/');
-    if (slash == NULL) {
-        return -EINVAL;
-    }
-
-    laser_len = (size_t)(slash - laser_start);
-    parsed_setting_len = strcspn(slash + 1, "/");
-    if (laser_len == 0U || laser_len >= laser_name_len ||
-        parsed_setting_len == 0U || parsed_setting_len >= setting_len ||
-        (slash + 1)[parsed_setting_len] != '\0') {
-        return -EINVAL;
-    }
-
-    memcpy(laser_name, laser_start, laser_len);
-    laser_name[laser_len] = '\0';
-    memcpy(setting, slash + 1, parsed_setting_len);
-    setting[parsed_setting_len] = '\0';
-    return 0;
-}
 
 static int command_format_response_topic(const char *key,
                                          char *out,
@@ -3199,160 +3142,6 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
            laser_error_response(cmd, "laser engineering status failed", rc);
 }
 
-struct OutMsg atten_setting_get(const struct Command *cmd) {
-
-    char laser_name[16], setting[16];
-    if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
-                        setting, sizeof(setting)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse atten/setting\"}");
-    }
-
-    enum hispec_laser_id laser_id;
-    uint8_t attenuator_index;
-
-    if (hispec_laser_id_from_name(laser_name, &laser_id) != 0 ||
-        attenuator_index_from_laser_id(laser_id, &attenuator_index) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
-    }
-    if (!attenuator_channel_available(attenuator_index)) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"error\":\"Attenuator unavailable on this board\"}");
-    }
-
-    char payload[MAX_PAYLOAD_LEN]={0};
-    if (strcasecmp(setting, "coeff") == 0) {
-        snprintf(payload, MAX_PAYLOAD_LEN,
-                 "{\"dac1\":[%.8f,%.8f],\"dac2\":[%.8f,%.8f]}",
-                 attenuators[attenuator_index].coeff1.slope,
-                 attenuators[attenuator_index].coeff1.offset,
-                 attenuators[attenuator_index].coeff2.slope,
-                 attenuators[attenuator_index].coeff2.offset);
-    } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
-        struct attenuator_status status = {0};
-
-        if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"error\":\"Failed to read attenuator\"}");
-        }
-        snprintf(payload, MAX_PAYLOAD_LEN,
-                 "{\"db\":%.4f,\"linear\":%.6f,"
-                 "\"voltage1\":%.4f,\"voltage2\":%.4f,"
-                 "\"db1\":%.4f,\"db2\":%.4f}",
-                 status.attenuation_db,
-                 status.linear,
-                 status.voltage1,
-                 status.voltage2,
-                 status.attenuation_db1,
-                 status.attenuation_db2);
-    } else {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
-    }
-
-    return _msg_builder(cmd, RESP_OK, payload);
-}
-
-struct OutMsg atten_setting_set(const struct Command *cmd) {
-
-    char laser_name[16], setting[16];
-    if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
-                        setting, sizeof(setting)) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Failed to parse laser/setting\"}");
-    }
-
-    enum hispec_laser_id laser_id;
-    uint8_t attenuator_index;
-
-    if (hispec_laser_id_from_name(laser_name, &laser_id) != 0 ||
-        attenuator_index_from_laser_id(laser_id, &attenuator_index) != 0) {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid attenuator\"}");
-    }
-    if (!attenuator_channel_available(attenuator_index)) {
-        return _msg_builder(cmd, RESP_ERROR,
-                            "{\"error\":\"Attenuator unavailable on this board\"}");
-    }
-
-    if (strcasecmp(setting, "coeff") == 0) {
-
-        double dac1_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
-        double dac2_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
-        size_t dac1_len = 0U;
-        size_t dac2_len = 0U;
-        struct app_attenuator_channel_settings stored_coeffs = {0};
-        bool persist = false;
-        int parse_rc;
-        struct attenuator_status status = {0};
-
-        parse_rc = coo_json_extract_double_array(cmd->payload, "dac1",
-                                                 dac1_coeffs,
-                                                 ATTENUATOR_COEFF_COUNT,
-                                                 &dac1_len);
-        if (parse_rc != COO_JSON_EXTRACT_OK || dac1_len != ATTENUATOR_COEFF_COUNT) {
-            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Improper arguments\"}");
-        }
-
-        parse_rc = coo_json_extract_double_array(cmd->payload, "dac2",
-                                                 dac2_coeffs,
-                                                 ATTENUATOR_COEFF_COUNT,
-                                                 &dac2_len);
-        if (parse_rc != COO_JSON_EXTRACT_OK || dac2_len != ATTENUATOR_COEFF_COUNT) {
-            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Improper arguments\"}");
-        }
-
-        parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-        if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid persistent flag\"}");
-        }
-
-        if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"error\":\"Failed to read attenuator\"}");
-        }
-
-        attenuators[attenuator_index].coeff1.slope = dac1_coeffs[0];
-        attenuators[attenuator_index].coeff1.offset = dac1_coeffs[1];
-        attenuators[attenuator_index].coeff2.slope = dac2_coeffs[0];
-        attenuators[attenuator_index].coeff2.offset = dac2_coeffs[1];
-        stored_coeffs.physical[0].slope = dac1_coeffs[0];
-        stored_coeffs.physical[0].offset = dac1_coeffs[1];
-        stored_coeffs.physical[1].slope = dac2_coeffs[0];
-        stored_coeffs.physical[1].offset = dac2_coeffs[1];
-
-        if (!attenuator_set_db(&attenuators[attenuator_index], status.attenuation_db)) {
-            return _msg_builder(cmd, RESP_ERROR,
-                                "{\"error\":\"Failed to apply coefficients\"}");
-        }
-        app_settings_update_attenuator_channel(attenuator_index, &stored_coeffs, persist);
-
-    } else if (strcasecmp(setting, "value") == 0 || strcasecmp(setting, "valuedb") == 0) {
-
-        double value;
-
-        if (coo_json_extract_double(cmd->payload, "value", &value) !=
-            COO_JSON_EXTRACT_OK) {
-            return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Missing setting value\"}");
-        }
-
-        if (strcasecmp(setting, "value") == 0) {
-            if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
-                return _msg_builder(cmd, RESP_ERROR,
-                                    "{\"error\":\"Invalid linear transmission\"}");
-            }
-        } else {
-            if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
-                return _msg_builder(cmd, RESP_ERROR,
-                                    "{\"error\":\"Invalid dB attenuation\"}");
-            }
-        }
-
-    } else {
-        return _msg_builder(cmd, RESP_ERROR,"{\"error\":\"Invalid setting\"}");
-    }
-
-    throughput_monitor_note_attenuator_changed(attenuator_index);
-
-    return ok_response(cmd);
-}
-
 struct OutMsg status_get(const struct Command *cmd)
 {
     struct tempsense_status ts = {0};
@@ -3449,7 +3238,7 @@ struct OutMsg status_get(const struct Command *cmd)
             bool valid;
 
             if (attenuator_index_from_laser_id((enum hispec_laser_id)i, &atten_index) != 0 ||
-                !attenuator_channel_available(atten_index)) {
+                !devices_attenuator_channel_available(atten_index)) {
                 continue;
             }
 

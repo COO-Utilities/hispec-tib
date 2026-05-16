@@ -23,6 +23,8 @@ Runtime ownership is:
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
+- `attenuator_command.c`: command-schema validation for `atten` value and
+  coefficient requests.
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, estimates, and
   higher-level Maiman helper APIs.

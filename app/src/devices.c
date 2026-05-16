@@ -587,6 +587,17 @@ const char *devices_board_type_name(void)
 	return current_profile()->name;
 }
 
+bool devices_attenuator_channel_available(uint8_t attenuator_index)
+{
+	const struct board_profile *profile = current_profile();
+	uint8_t first = profile->attenuator_first;
+	uint8_t count = profile->attenuator_count;
+
+	return attenuator_index < NUM_ATTENUATORS &&
+	       attenuator_index >= first &&
+	       attenuator_index < first + count;
+}
+
 static bool device_ready_or_log(const struct device *dev, const char *label)
 {
 	if (dev == NULL) {

@@ -75,6 +75,14 @@ enum hispec_board_type devices_board_type(void);
 /** @brief Return the short stable board type name used in logs/settings. */
 const char *devices_board_type_name(void);
 
+/**
+ * @brief Return true when a logical attenuator belongs to the active profile.
+ *
+ * This is a profile/board-presence check only. It does not probe DAC readiness
+ * or perform I2C; callers still need to handle transient DAC failures.
+ */
+bool devices_attenuator_channel_available(uint8_t attenuator_index);
+
 /** @brief Check/configure devices required by the detected board profile. */
 bool devices_ready(void);
 
