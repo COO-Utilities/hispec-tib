@@ -9,52 +9,12 @@
 #include <string.h>
 #include <strings.h>
 
-#include "app_identity.h"
 #include "app_settings.h"
 #include "devices.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 
 #include <coo_commons/json_utils.h>
-
-static int pd_format_response_topic(const char *key,
-				    char *out,
-				    size_t out_len,
-				    void *user_data)
-{
-	ARG_UNUSED(user_data);
-
-	return app_mqtt_format_response_topic(key, out, out_len);
-}
-
-static struct OutMsg pd_cmd_response(const struct Command *cmd,
-				     enum MsgType msg_type,
-				     const char *payload)
-{
-	return coo_cmd_make_response(cmd, msg_type, payload,
-				     pd_format_response_topic, NULL);
-}
-
-static struct OutMsg pd_cmd_ok(const struct Command *cmd)
-{
-	return pd_cmd_response(cmd, RESP_OK, "{\"status\":\"ok\"}");
-}
-
-static struct OutMsg pd_cmd_error(const struct Command *cmd, const char *msg)
-{
-	char payload[MAX_PAYLOAD_LEN];
-
-	snprintk(payload, sizeof(payload), "{\"error\":\"%s\"}", msg);
-	return pd_cmd_response(cmd, RESP_ERROR, payload);
-}
-
-static struct OutMsg pd_cmd_error_rc(const struct Command *cmd, const char *msg, int rc)
-{
-	char payload[MAX_PAYLOAD_LEN];
-
-	snprintk(payload, sizeof(payload), "{\"error\":\"%s\",\"rc\":%d}", msg, rc);
-	return pd_cmd_response(cmd, RESP_ERROR, payload);
-}
 
 static int pd_extract_optional_double_range(const char *payload,
 					    const char *key,
@@ -143,7 +103,7 @@ struct OutMsg pd_get(const struct Command *cmd)
 	float hk_err;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return pd_cmd_error(cmd, "photodiodes unavailable on this board");
+		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
 	}
 
 	photodiode_get_status(&status);
@@ -181,7 +141,7 @@ struct OutMsg pd_get(const struct Command *cmd)
 		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
 		 (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
 		 status.uptime_ms);
-	return pd_cmd_response(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 static struct OutMsg pd_dark_status_response(const struct Command *cmd,
@@ -213,7 +173,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 			 (double)result->configured_dark_mv,
 			 (double)result->lowest_dark_mv,
 			 result->lowest_dark_valid ? "true" : "false");
-		return pd_cmd_response(cmd, RESP_OK, payload);
+		return coo_cmd_reply(cmd, RESP_OK, payload);
 	}
 
 	if (status->state == PHOTODIODE_DARK_ERROR) {
@@ -225,7 +185,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 			 status->duration_ms,
 			 status->samples,
 			 status->target_samples);
-		return pd_cmd_response(cmd, RESP_ERROR, payload);
+		return coo_cmd_reply(cmd, RESP_ERROR, payload);
 	}
 
 	snprintk(payload, sizeof(payload),
@@ -237,7 +197,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 		 status->duration_ms,
 		 status->samples,
 		 status->target_samples);
-	return pd_cmd_response(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg pd_set(const struct Command *cmd)
@@ -251,43 +211,43 @@ struct OutMsg pd_set(const struct Command *cmd)
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return pd_cmd_error(cmd, "photodiodes unavailable on this board");
+		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "action", action, sizeof(action));
 	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-		return pd_cmd_error(cmd, "missing action");
+		return coo_cmd_error(cmd, "missing action");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return pd_cmd_error(cmd, "invalid action");
+		return coo_cmd_error(cmd, "invalid action");
 	}
 
 	rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
 	if (rc != 0) {
-		return pd_cmd_error(cmd, "channel must be yj or hk");
+		return coo_cmd_error(cmd, "channel must be yj or hk");
 	}
 
 	if (strcasecmp(action, "measure_dark") == 0) {
 		struct photodiode_dark_status status;
 
 		if (throughput_monitor_autolevel_active(channel)) {
-			return pd_cmd_error(cmd,
+			return coo_cmd_error(cmd,
 					    "dark measurement blocked by autolevel throughput monitor");
 		}
 
 		parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
 		if (parse_rc == COO_JSON_EXTRACT_ERR) {
-			return pd_cmd_error(cmd, "invalid duration_ms");
+			return coo_cmd_error(cmd, "invalid duration_ms");
 		}
 
 		parse_rc = coo_json_extract_bool(cmd->payload, "store", &store);
 		if (parse_rc == COO_JSON_EXTRACT_ERR) {
-			return pd_cmd_error(cmd, "invalid store");
+			return coo_cmd_error(cmd, "invalid store");
 		}
 
 		rc = photodiode_start_dark_measurement(channel, duration_ms, store, &status);
 		if (rc != 0) {
-			return pd_cmd_error_rc(cmd, "dark measurement failed", rc);
+			return coo_cmd_error_rc(cmd, "dark measurement failed", rc);
 		}
 		return pd_dark_status_response(cmd, &status);
 	}
@@ -297,7 +257,7 @@ struct OutMsg pd_set(const struct Command *cmd)
 
 		rc = photodiode_get_dark_status(channel, &status);
 		if (rc != 0) {
-			return pd_cmd_error(cmd, "dark status unavailable");
+			return coo_cmd_error(cmd, "dark status unavailable");
 		}
 
 		return pd_dark_status_response(cmd, &status);
@@ -306,17 +266,17 @@ struct OutMsg pd_set(const struct Command *cmd)
 	if (strcasecmp(action, "reset_lowest_dark") == 0) {
 		parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
 		if (parse_rc == COO_JSON_EXTRACT_ERR) {
-			return pd_cmd_error(cmd, "invalid persistent");
+			return coo_cmd_error(cmd, "invalid persistent");
 		}
 
 		rc = photodiode_reset_lowest_dark(channel, persist);
 		if (rc != 0) {
-			return pd_cmd_error(cmd, "reset failed");
+			return coo_cmd_error(cmd, "reset failed");
 		}
-		return pd_cmd_ok(cmd);
+		return coo_cmd_ok(cmd);
 	}
 
-	return pd_cmd_error(cmd, "unknown action");
+	return coo_cmd_error(cmd, "unknown action");
 }
 
 static int pd_settings_channel_json(char *payload, size_t payload_len,
@@ -362,22 +322,22 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return pd_cmd_error(cmd, "photodiodes unavailable on this board");
+		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
 	}
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {
-		return pd_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
 	rc = pd_settings_channel_json(payload, sizeof(payload), channel,
 				      &settings.channel[channel]);
 	if (rc != 0) {
-		return pd_cmd_error(cmd, "pdsettings response too large");
+		return coo_cmd_error(cmd, "pdsettings response too large");
 	}
 
-	return pd_cmd_response(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg pd_settings_set(const struct Command *cmd)
@@ -391,12 +351,12 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return pd_cmd_error(cmd, "photodiodes unavailable on this board");
+		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
 	}
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {
-		return pd_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
@@ -404,7 +364,7 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 
 	parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return pd_cmd_error(cmd, "invalid persistent");
+		return coo_cmd_error(cmd, "invalid persistent");
 	}
 
 	if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
@@ -419,15 +379,15 @@ struct OutMsg pd_settings_set(const struct Command *cmd)
 	    pd_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
 					     &channel_settings.transimpedance_v_per_a,
 					     &changed, 1.0, 1.0e12) != 0) {
-		return pd_cmd_error(cmd, "invalid pdsettings value");
+		return coo_cmd_error(cmd, "invalid pdsettings value");
 	}
 
 	if (!changed) {
-		return pd_cmd_error(cmd, "no pdsettings fields supplied");
+		return coo_cmd_error(cmd, "no pdsettings fields supplied");
 	}
 
 	app_settings_update_photodiode_channel((uint8_t)channel,
 					       &channel_settings,
 					       persist);
-	return pd_cmd_ok(cmd);
+	return coo_cmd_ok(cmd);
 }

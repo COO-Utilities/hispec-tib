@@ -211,44 +211,6 @@ int parse_key_pair(const char *key,
 
 }
 
-
-
-static int command_format_response_topic(const char *key,
-                                         char *out,
-                                         size_t out_len,
-                                         void *user_data)
-{
-    ARG_UNUSED(user_data);
-
-    return app_mqtt_format_response_topic(key, out, out_len);
-}
-
-struct OutMsg _msg_builder(const struct Command *cmd, enum MsgType msgtyp, const char *msg) {
-    return coo_cmd_make_response(cmd, msgtyp, msg,
-                                 command_format_response_topic, NULL);
-}
-
-static struct OutMsg ok_response(const struct Command *cmd)
-{
-    return _msg_builder(cmd, RESP_OK, "{\"status\":\"ok\"}");
-}
-
-static struct OutMsg error_response(const struct Command *cmd, const char *msg)
-{
-    char payload[MAX_PAYLOAD_LEN];
-
-    snprintk(payload, sizeof(payload), "{\"error\":\"%s\"}", msg);
-    return _msg_builder(cmd, RESP_ERROR, payload);
-}
-
-static struct OutMsg error_response_rc(const struct Command *cmd, const char *msg, int rc)
-{
-    char payload[MAX_PAYLOAD_LEN];
-
-    snprintk(payload, sizeof(payload), "{\"error\":\"%s\",\"rc\":%d}", msg, rc);
-    return _msg_builder(cmd, RESP_ERROR, payload);
-}
-
 static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
 {
     return coo_cmd_copy_mqtt_utf8(topic, out, out_len);
@@ -632,6 +594,19 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
     memcpy(cmd.key, suffix, suffix_len);
     cmd.key[suffix_len] = '\0';
 
+    if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
+        struct OutMsg r = invalid_command_response(&cmd);
+        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
+        return;
+    }
+
+    if (pub->prop.response_topic.utf8 != NULL &&
+        pub->prop.response_topic.size > 0U &&
+        pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
+        memcpy(cmd.response_topic, pub->prop.response_topic.utf8, pub->prop.response_topic.size);
+        cmd.response_topic[pub->prop.response_topic.size] = '\0';
+    }
+
     if (pub->message.payload.len >= MAX_PAYLOAD_LEN) {
         struct OutMsg r = invalid_command_response(&cmd);
         (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
@@ -647,17 +622,6 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
         cmd.payload_len = strlen(cmd.payload);
     }
     cmd.msg_type = command_infer_msg_type(&cmd);
-
-    if (pub->prop.response_topic.utf8 != NULL &&
-        pub->prop.response_topic.size > 0U &&
-        pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
-        memcpy(cmd.response_topic, pub->prop.response_topic.utf8, pub->prop.response_topic.size);
-        cmd.response_topic[pub->prop.response_topic.size] = '\0';
-    } else if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
-        struct OutMsg r = invalid_command_response(&cmd);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-        return;
-    }
 
     if (pub->prop.correlation_data.len > 0U &&
         pub->prop.correlation_data.len <= sizeof(cmd.correlation_data)) {
@@ -973,18 +937,18 @@ struct OutMsg laserbank_power(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return error_response(cmd, "laser bank unavailable on this board");
+        return coo_cmd_error(cmd, "laser bank unavailable on this board");
     }
 
     if (cmd != NULL &&
         (cmd->msg_type == MSG_SET ||
          command_suffix_after(cmd, "laserbank/power")[0] != '\0')) {
         if (!parse_laserbank_power_request(cmd, &mode)) {
-            return error_response(cmd, "override must be auto, override_on, or override_off");
+            return coo_cmd_error(cmd, "override must be auto, override_on, or override_off");
         }
         rc = hispec_laser_bank_power_mode_set(mode);
         if (rc != 0) {
-            return error_response_rc(cmd, "laser bank power mode failed", rc);
+            return coo_cmd_error_rc(cmd, "laser bank power mode failed", rc);
         }
     }
 
@@ -993,7 +957,7 @@ struct OutMsg laserbank_power(const struct Command *cmd)
              "{\"mode\":\"%s\",\"powered\":%s}",
              hispec_laser_bank_power_mode_name(mode),
              hispec_laser_bank_power_is_enabled() ? "true" : "false");
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg laserbank_clearfaults(const struct Command *cmd)
@@ -1004,31 +968,31 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
     int rc;
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return error_response(cmd, "laser bank unavailable on this board");
+        return coo_cmd_error(cmd, "laser bank unavailable on this board");
     }
 
     if (!power_enabled()) {
-        return _msg_builder(cmd, RESP_OK, "{\"off_ms\":0}");
+        return coo_cmd_reply(cmd, RESP_OK, "{\"off_ms\":0}");
     }
     rc = hispec_laser_bank_any_overcurrent_fault(&fault);
     if (rc != 0) {
-        return error_response_rc(cmd, "overcurrent status unavailable", rc);
+        return coo_cmd_error_rc(cmd, "overcurrent status unavailable", rc);
     }
     if (!fault) {
-        return _msg_builder(cmd, RESP_OK, "{\"off_ms\":0}");
+        return coo_cmd_reply(cmd, RESP_OK, "{\"off_ms\":0}");
     }
     if (hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS) != 0) {
-        return error_response(cmd, "laser bank power cycle failed");
+        return coo_cmd_error(cmd, "laser bank power cycle failed");
     }
     off_ms = LASERBANK_FAULT_CLEAR_OFF_MS;
 
     if (!power_enabled()) {
-        return error_response(cmd, "laser bank power cycle could not turn on");
+        return coo_cmd_error(cmd, "laser bank power cycle could not turn on");
     }
 
     snprintf(payload, sizeof(payload),
              "{\"off_ms\":%u}", off_ms);
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 static const char *command_suffix_after(const struct Command *cmd, const char *prefix)
@@ -1148,24 +1112,24 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
     char payload[MAX_PAYLOAD_LEN] = {0};
 
     if (devices_board_type() != HISPEC_BOARD_TIB) {
-        return error_response(cmd, "laser bank unavailable on this board");
+        return coo_cmd_error(cmd, "laser bank unavailable on this board");
     }
 
     if (cmd != NULL &&
         (cmd->msg_type == MSG_SET ||
          command_suffix_after(cmd, "laserbank/heater")[0] != '\0')) {
         if (!parse_heater_request(cmd, &mode)) {
-            return _msg_builder(cmd, RESP_ERROR,
+            return coo_cmd_reply(cmd, RESP_ERROR,
                                 "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
         }
         int rc = laserbank_control_set_heater_mode(mode, true);
         if (rc != 0) {
-            return error_response_rc(cmd, "laser bank heater relay unavailable", rc);
+            return coo_cmd_error_rc(cmd, "laser bank heater relay unavailable", rc);
         }
     }
 
     laserbank_control_status_payload(payload, sizeof(payload));
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 static void serial_guard_expire_handler(enum app_scheduled_action_id id, void *user_data)
@@ -1213,32 +1177,32 @@ int command_runtime_init(void)
 
 struct OutMsg invalid_command_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"Invalid or unrecognized command\"}";
-    return _msg_builder(cmd, RESP_ERROR, err);
+    return coo_cmd_reply(cmd, RESP_ERROR, err);
 }
 
 struct OutMsg unknown_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"Unknown request\"}";
-    return _msg_builder(cmd, RESP_ERROR, err);
+    return coo_cmd_reply(cmd, RESP_ERROR, err);
 }
 
 struct OutMsg unsupported_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"Unsupported operation\"}";
-    return _msg_builder(cmd, RESP_ERROR, err);
+    return coo_cmd_reply(cmd, RESP_ERROR, err);
 }
 
 struct OutMsg busy_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"busy\"}";
-    return _msg_builder(cmd, RESP_ERROR,  err);
+    return coo_cmd_reply(cmd, RESP_ERROR,  err);
 }
 
 struct OutMsg serial_active_response(const struct Command *cmd) {
     const char *err = "{\"error\":\"try later. local serial commands active\"}";
-    return _msg_builder(cmd, RESP_ERROR,  err);
+    return coo_cmd_reply(cmd, RESP_ERROR,  err);
 }
 
 struct OutMsg help_get(const struct Command *cmd)
 {
-    return _msg_builder(cmd, RESP_OK,
+    return coo_cmd_reply(cmd, RESP_OK,
                         "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
                         "memsroute,mems,split,measure_throughput,laser,laserbank,"
                         "atten,pd,pdsettings\"}");
@@ -1282,7 +1246,7 @@ struct OutMsg ip_get(const struct Command *cmd)
              ntp_source,
              ntp_server);
 
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 static void network_config_from_app_ip(const struct app_ip_settings *ip_cfg,
@@ -1367,7 +1331,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return error_response(cmd, "invalid trydhcpfirst");
+            return coo_cmd_error(cmd, "invalid trydhcpfirst");
         }
     }
 
@@ -1381,7 +1345,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return error_response(cmd, "invalid preferdhcpdns");
+            return coo_cmd_error(cmd, "invalid preferdhcpdns");
         }
     }
 
@@ -1395,7 +1359,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return error_response(cmd, "invalid preferdhcpntp");
+            return coo_cmd_error(cmd, "invalid preferdhcpntp");
         }
     }
 
@@ -1406,7 +1370,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid ip");
+        return coo_cmd_error(cmd, "invalid ip");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf));
@@ -1416,7 +1380,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid subnet");
+        return coo_cmd_error(cmd, "invalid subnet");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf));
@@ -1426,7 +1390,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         changed = true;
         network_changed = true;
     } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid gateway");
+        return coo_cmd_error(cmd, "invalid gateway");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf));
@@ -1441,7 +1405,7 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return error_response(cmd, "invalid dns");
+            return coo_cmd_error(cmd, "invalid dns");
         }
     }
 
@@ -1457,17 +1421,17 @@ struct OutMsg ip_set(const struct Command *cmd)
             changed = true;
             ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return error_response(cmd, "invalid ntp");
+            return coo_cmd_error(cmd, "invalid ntp");
         }
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid persistent");
+        return coo_cmd_error(cmd, "invalid persistent");
     }
 
     if (!changed && !(unsupported_dhcp || unsupported_dns || unsupported_ntp)) {
-        return error_response(cmd, "no recognized ip fields");
+        return coo_cmd_error(cmd, "no recognized ip fields");
     }
 
     if (network_changed) {
@@ -1477,7 +1441,7 @@ struct OutMsg ip_set(const struct Command *cmd)
         network_config_from_app_ip(&ip_cfg, &net_cfg);
         rc = network_reconfigure(&net_cfg);
         if (rc != 0) {
-            return error_response_rc(cmd, "network reconfigure failed", rc);
+            return coo_cmd_error_rc(cmd, "network reconfigure failed", rc);
         }
     }
 
@@ -1496,10 +1460,10 @@ struct OutMsg ip_set(const struct Command *cmd)
                  unsupported_dhcp ? "unsupported" : "ok",
                  unsupported_dns ? "unsupported" : "ok",
                  unsupported_ntp ? "unsupported" : "ok");
-        return _msg_builder(cmd, RESP_OK, response);
+        return coo_cmd_reply(cmd, RESP_OK, response);
     }
 
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg mqtt_get(const struct Command *cmd)
@@ -1523,7 +1487,7 @@ struct OutMsg mqtt_get(const struct Command *cmd)
              "{\"broker\":\"%s\",\"dns_supported\":%s}",
              endpoint,
              dns_supported ? "true" : "false");
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg mqtt_set(const struct Command *cmd)
@@ -1540,20 +1504,20 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_string(cmd->payload, "broker", endpoint, sizeof(endpoint));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return error_response(cmd, "missing broker");
+        return coo_cmd_error(cmd, "missing broker");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid broker");
+        return coo_cmd_error(cmd, "invalid broker");
     }
     if (!coo_mqtt_parse_broker_endpoint(endpoint, &broker_cfg)) {
-        return error_response(cmd, "broker must be host-or-ip:port");
+        return coo_cmd_error(cmd, "broker must be host-or-ip:port");
     }
     rc = coo_mqtt_resolve_broker_config(&broker_cfg, resolved_ip, sizeof(resolved_ip));
     if (rc == -ENOTSUP) {
-        return error_response(cmd, "broker hostname requires DNS");
+        return coo_cmd_error(cmd, "broker hostname requires DNS");
     }
     if (rc != 0) {
-        return error_response(cmd, "broker host did not resolve");
+        return coo_cmd_error(cmd, "broker host did not resolve");
     }
     strncpy(mqtt_cfg.broker_host, broker_cfg.host, sizeof(mqtt_cfg.broker_host) - 1U);
     mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
@@ -1561,11 +1525,11 @@ struct OutMsg mqtt_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid persistent");
+        return coo_cmd_error(cmd, "invalid persistent");
     }
 
     app_settings_update_mqtt(&mqtt_cfg, persist);
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg time_get(const struct Command *cmd)
@@ -1581,7 +1545,7 @@ struct OutMsg time_get(const struct Command *cmd)
              "{\"utc\":%llu,\"uptime\":%lld}",
              (unsigned long long)utc_ms, (long long)k_uptime_get());
 
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg time_set(const struct Command *cmd)
@@ -1592,20 +1556,20 @@ struct OutMsg time_set(const struct Command *cmd)
 
     parse_rc = coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return error_response(cmd, "missing linuxtime_ms");
+        return coo_cmd_error(cmd, "missing linuxtime_ms");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid linuxtime_ms");
+        return coo_cmd_error(cmd, "invalid linuxtime_ms");
     }
 
     ts.tv_sec = utc_ms / 1000ULL;
     ts.tv_nsec = (utc_ms % 1000ULL) * 1000000ULL;
 
     if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
-        return error_response(cmd, "clock_settime failed");
+        return coo_cmd_error(cmd, "clock_settime failed");
     }
 
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg reboot_set(const struct Command *cmd)
@@ -1614,10 +1578,10 @@ struct OutMsg reboot_set(const struct Command *cmd)
 
     rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_REBOOT, K_MSEC(250));
     if (rc < 0) {
-        return error_response(cmd, "failed to schedule reboot");
+        return coo_cmd_error(cmd, "failed to schedule reboot");
     }
 
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg serial_guard_get(const struct Command *cmd)
@@ -1632,7 +1596,7 @@ struct OutMsg serial_guard_get(const struct Command *cmd)
              app_settings_get_serial_holdoff_s(),
              command_network_mqtt_allowed() ? "false" : "true",
              (long long)remaining_ms);
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg serial_guard_set(const struct Command *cmd)
@@ -1646,22 +1610,22 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
     parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
     parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
     if (parse_rc_seconds == COO_JSON_EXTRACT_ERR || parse_rc_value == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid seconds");
+        return coo_cmd_error(cmd, "invalid seconds");
     }
     if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
         parse_rc_value == COO_JSON_EXTRACT_MISSING) {
-        return error_response(cmd, "missing seconds");
+        return coo_cmd_error(cmd, "missing seconds");
     }
 
     parse_rc_persist = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc_persist == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid persistent");
+        return coo_cmd_error(cmd, "invalid persistent");
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
     if (cmd->source == CMD_SRC_SERIAL) {
         command_serial_note_activity();
     }
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 
@@ -1685,14 +1649,14 @@ static int command_laser_id_from_payload(const struct Command *cmd,
 
 static struct OutMsg laser_unavailable(const struct Command *cmd)
 {
-    return error_response(cmd, "laser bank unavailable on this board");
+    return coo_cmd_error(cmd, "laser bank unavailable on this board");
 }
 
 static struct OutMsg laser_error_response(const struct Command *cmd,
                                           const char *msg,
                                           int rc)
 {
-    return error_response_rc(cmd, msg, rc);
+    return coo_cmd_error_rc(cmd, msg, rc);
 }
 
 static float laser_status_level(const struct hispec_laser_status *status)
@@ -1784,7 +1748,7 @@ struct OutMsg laser_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
 
     rc = hispec_laser_get_status(id, &status);
@@ -1792,9 +1756,9 @@ struct OutMsg laser_get(const struct Command *cmd)
         return laser_error_response(cmd, "laser status failed", rc);
     }
     if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
-        return error_response(cmd, "laser response too large");
+        return coo_cmd_error(cmd, "laser response too large");
     }
-    return rc == 0 ? _msg_builder(cmd, RESP_OK, payload) :
+    return rc == 0 ? coo_cmd_reply(cmd, RESP_OK, payload) :
            laser_error_response(cmd, "laser status failed", rc);
 }
 
@@ -1812,11 +1776,11 @@ struct OutMsg laser_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
     parse_rc = coo_json_extract_float(cmd->payload, "level", &level);
     if (parse_rc != COO_JSON_EXTRACT_OK || level < 0.0f || level > 100.0f) {
-        return error_response(cmd, "level must be 0..100");
+        return coo_cmd_error(cmd, "level must be 0..100");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
@@ -1825,7 +1789,7 @@ struct OutMsg laser_set(const struct Command *cmd)
     autooff_s = settings.autooff_s;
     parse_rc = coo_json_extract_u32(cmd->payload, "autooff_s", &autooff_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid autooff_s");
+        return coo_cmd_error(cmd, "invalid autooff_s");
     }
 
     throughput_monitor_note_laser_changed(id);
@@ -1833,7 +1797,7 @@ struct OutMsg laser_set(const struct Command *cmd)
     if (rc != 0) {
         return laser_error_response(cmd, "laser level failed", rc);
     }
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg laser_tune_get(const struct Command *cmd)
@@ -1846,13 +1810,13 @@ struct OutMsg laser_tune_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
     snprintk(payload, sizeof(payload),
              "{\"name\":\"%s\",\"tune_nm\":%.4f}",
              hispec_laser_name(id),
              (double)hispec_laser_get_tune_delta_nm(id));
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg laser_tune_set(const struct Command *cmd)
@@ -1867,21 +1831,21 @@ struct OutMsg laser_tune_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
     parse_rc = coo_json_extract_float(cmd->payload, "tune_nm", &delta_nm);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         parse_rc = coo_json_extract_float(cmd->payload, "delta_nm", &delta_nm);
     }
     if (parse_rc != COO_JSON_EXTRACT_OK) {
-        return error_response(cmd, "missing tune_nm");
+        return coo_cmd_error(cmd, "missing tune_nm");
     }
     throughput_monitor_note_laser_changed(id);
     rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
     if (rc != 0) {
         return laser_error_response(cmd, "laser tune failed", rc);
     }
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 static int laser_settings_payload(char *payload, size_t payload_len,
@@ -1943,16 +1907,16 @@ struct OutMsg laser_settings_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
         return laser_error_response(cmd, "laser settings unavailable", rc);
     }
     if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
-        return error_response(cmd, "laser settings response too large");
+        return coo_cmd_error(cmd, "laser settings response too large");
     }
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 static int laser_parse_settings_update(const char *json,
@@ -2083,7 +2047,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
     rc = hispec_laser_get_channel_settings(id, &settings);
     if (rc != 0) {
@@ -2092,7 +2056,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 
     rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
     if (rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid settings object");
+        return coo_cmd_error(cmd, "invalid settings object");
     }
     json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
 
@@ -2101,7 +2065,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
         return laser_error_response(cmd, "invalid laser settings", rc);
     }
     if (!changed) {
-        return error_response(cmd, "no laser settings fields supplied");
+        return coo_cmd_error(cmd, "no laser settings fields supplied");
     }
 
     throughput_monitor_note_laser_changed(id);
@@ -2109,7 +2073,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
     if (rc != 0) {
         return laser_error_response(cmd, "laser settings update failed", rc);
     }
-    return ok_response(cmd);
+    return coo_cmd_ok(cmd);
 }
 
 struct OutMsg laser_status_get(const struct Command *cmd)
@@ -2141,7 +2105,7 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
         return laser_unavailable(cmd);
     }
     if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
-        return error_response(cmd, "missing or invalid laser name");
+        return coo_cmd_error(cmd, "missing or invalid laser name");
     }
 
     rc = hispec_laser_get_status(id, &s);
@@ -2210,9 +2174,9 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
         json_append_named_float(payload, sizeof(payload), &off,
                                 "ntc_t_coeff", s.ntc_t_coefficient_per_c, 6) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-        return error_response(cmd, "laser engineering status response too large");
+        return coo_cmd_error(cmd, "laser engineering status response too large");
     }
-    return rc == 0 ? _msg_builder(cmd, RESP_OK, payload) :
+    return rc == 0 ? coo_cmd_reply(cmd, RESP_OK, payload) :
            laser_error_response(cmd, "laser engineering status failed", rc);
 }
 
@@ -2229,15 +2193,15 @@ struct OutMsg status_get(const struct Command *cmd)
 
     parse_rc = coo_json_extract_bool(cmd->payload, "ip", &include_ip);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid ip");
+        return coo_cmd_error(cmd, "invalid ip");
     }
     parse_rc = coo_json_extract_bool(cmd->payload, "lasers", &include_lasers);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid lasers");
+        return coo_cmd_error(cmd, "invalid lasers");
     }
     parse_rc = coo_json_extract_bool(cmd->payload, "attens", &include_attens);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return error_response(cmd, "invalid attens");
+        return coo_cmd_error(cmd, "invalid attens");
     }
 
     tempsense_get_status(&ts);
@@ -2261,7 +2225,7 @@ struct OutMsg status_get(const struct Command *cmd)
                         (double)MAX(hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_YJ_PHOTODIODE),
                                     hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE)),
                         bank.bank_power_on_time_s) != 0) {
-        return error_response(cmd, "status response too large");
+        return coo_cmd_error(cmd, "status response too large");
     }
 
     if (include_ip) {
@@ -2270,13 +2234,13 @@ struct OutMsg status_get(const struct Command *cmd)
         if (ip.msg_type != RESP_OK ||
             coo_json_append(payload, sizeof(payload), &off,
                             ",\"ip\":%s", ip.payload) != 0) {
-            return error_response(cmd, "status response too large");
+            return coo_cmd_error(cmd, "status response too large");
         }
     }
 
     if (include_lasers) {
         if (coo_json_append(payload, sizeof(payload), &off, ",\"lasers\":{") != 0) {
-            return error_response(cmd, "status response too large");
+            return coo_cmd_error(cmd, "status response too large");
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
             struct hispec_laser_status laser = {0};
@@ -2292,11 +2256,11 @@ struct OutMsg status_get(const struct Command *cmd)
                                 ",\"tec_on_time_s\":%.1f,\"offin_s\":%lld}",
                                 rc == 0 ? (double)laser.tec_on_time_s : 0.0,
                                 rc == 0 ? (long long)laser.off_in_s : 0LL) != 0) {
-                return error_response(cmd, "status response too large");
+                return coo_cmd_error(cmd, "status response too large");
             }
         }
         if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-            return error_response(cmd, "status response too large");
+            return coo_cmd_error(cmd, "status response too large");
         }
     }
 
@@ -2304,7 +2268,7 @@ struct OutMsg status_get(const struct Command *cmd)
         bool first = true;
 
         if (coo_json_append(payload, sizeof(payload), &off, ",\"attens\":{") != 0) {
-            return error_response(cmd, "status response too large");
+            return coo_cmd_error(cmd, "status response too large");
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
             uint8_t atten_index;
@@ -2325,12 +2289,12 @@ struct OutMsg status_get(const struct Command *cmd)
                 coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                               valid ? atten.linear * 100.0 : (double)NAN, 3) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-                return error_response(cmd, "status response too large");
+                return coo_cmd_error(cmd, "status response too large");
             }
             first = false;
         }
         if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-            return error_response(cmd, "status response too large");
+            return coo_cmd_error(cmd, "status response too large");
         }
     }
 
@@ -2340,10 +2304,10 @@ struct OutMsg status_get(const struct Command *cmd)
                         last_command_name,
                         last_command_source,
                         (long long)last_command_time_ms) != 0) {
-        return error_response(cmd, "status response too large");
+        return coo_cmd_error(cmd, "status response too large");
     }
 
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg temp_get(const struct Command *cmd)
@@ -2373,7 +2337,7 @@ struct OutMsg temp_get(const struct Command *cmd)
                         "{\"ambient_c\":") != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : NAN, 3) != 0) {
-        return error_response(cmd, "temp response too large");
+        return coo_cmd_error(cmd, "temp response too large");
     }
 
     if (coo_json_append(payload, sizeof(payload), &off,
@@ -2383,7 +2347,7 @@ struct OutMsg temp_get(const struct Command *cmd)
                                       3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
                         ",\"laser\":{") != 0) {
-        return error_response(cmd, "temp response too large");
+        return coo_cmd_error(cmd, "temp response too large");
     }
     for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
         if (coo_json_append(payload, sizeof(payload), &off,
@@ -2394,12 +2358,12 @@ struct OutMsg temp_get(const struct Command *cmd)
                                           laser_rc == 0 && bank.channel[i].valid ?
                                           bank.channel[i].tec_temperature_c : NAN,
                                           3) != 0) {
-            return error_response(cmd, "temp response too large");
+            return coo_cmd_error(cmd, "temp response too large");
         }
     }
     if (coo_json_append(payload, sizeof(payload), &off, "}}") != 0) {
-        return error_response(cmd, "temp response too large");
+        return coo_cmd_error(cmd, "temp response too large");
     }
 
-    return _msg_builder(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, RESP_OK, payload);
 }

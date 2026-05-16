@@ -158,8 +158,11 @@ int coo_cmd_normalize_serial_payload(const char *key,
 /**
  * @brief Build a response that preserves request routing metadata.
  *
- * The formatter is called for the default response topic. A request-provided
- * response_topic overrides it when present and fitting the fixed topic buffer.
+ * When @p format_topic is non-NULL, it is called for the default response
+ * topic. A request-provided response_topic overrides it when present and
+ * fitting the fixed topic buffer. When @p format_topic is NULL, the already
+ * normalized cmd->response_topic is used directly.
+ *
  * MQTT correlation data is echoed exactly when it fits the request buffer.
  */
 struct coo_cmd_response
@@ -168,6 +171,30 @@ coo_cmd_make_response(const struct coo_cmd_request *cmd,
 		      const char *payload,
 		      coo_cmd_format_response_topic_fn format_topic,
 		      void *user_data);
+
+/**
+ * @brief Build a response using the request's normalized response topic.
+ *
+ * Applications that normalize cmd->response_topic before dispatch should use
+ * this helper rather than repeating a local response-topic wrapper in each
+ * command adapter.
+ */
+struct coo_cmd_response
+coo_cmd_reply(const struct coo_cmd_request *cmd,
+		 enum coo_cmd_msg_type msg_type,
+		 const char *payload);
+
+/** @brief Build the standard data-less success response: {"status":"ok"}. */
+struct coo_cmd_response coo_cmd_ok(const struct coo_cmd_request *cmd);
+
+/** @brief Build a structured error response with one error string. */
+struct coo_cmd_response coo_cmd_error(const struct coo_cmd_request *cmd,
+				      const char *msg);
+
+/** @brief Build a structured error response with one error string and rc. */
+struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
+					 const char *msg,
+					 int rc);
 
 /** Publish a formatted MQTT response/publication. May block in the socket layer. */
 int coo_cmd_publish_mqtt(struct mqtt_client *client,

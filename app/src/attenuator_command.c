@@ -9,7 +9,6 @@
 #include <string.h>
 #include <strings.h>
 
-#include "app_identity.h"
 #include "app_settings.h"
 #include "attenuator.h"
 #include "devices.h"
@@ -17,29 +16,6 @@
 #include "throughput_monitor.h"
 
 #include <coo_commons/json_utils.h>
-
-static int atten_format_response_topic(const char *key,
-				       char *out,
-				       size_t out_len,
-				       void *user_data)
-{
-	ARG_UNUSED(user_data);
-
-	return app_mqtt_format_response_topic(key, out, out_len);
-}
-
-static struct OutMsg atten_cmd_response(const struct Command *cmd,
-					enum MsgType msg_type,
-					const char *payload)
-{
-	return coo_cmd_make_response(cmd, msg_type, payload,
-				     atten_format_response_topic, NULL);
-}
-
-static struct OutMsg atten_cmd_ok(const struct Command *cmd)
-{
-	return atten_cmd_response(cmd, RESP_OK, "{\"status\":\"ok\"}");
-}
 
 static int parse_atten_key(const char *key,
 			   char *laser_name,
@@ -113,14 +89,14 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 
 	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
 	if (rc == -EINVAL) {
-		return atten_cmd_response(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, RESP_ERROR,
 					  "{\"error\":\"Failed to parse atten/setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return atten_cmd_response(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return atten_cmd_response(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -136,7 +112,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 		struct attenuator_status status = {0};
 
 		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Failed to read attenuator\"}");
 		}
 		snprintk(payload, sizeof(payload),
@@ -150,10 +126,10 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 			 status.attenuation_db1,
 			 status.attenuation_db2);
 	} else {
-		return atten_cmd_response(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
-	return atten_cmd_response(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
 struct OutMsg atten_setting_set(const struct Command *cmd)
@@ -164,14 +140,14 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
 	if (rc == -EINVAL) {
-		return atten_cmd_response(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, RESP_ERROR,
 					  "{\"error\":\"Failed to parse laser/setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return atten_cmd_response(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return atten_cmd_response(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -190,7 +166,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac1_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac1_len != ATTENUATOR_COEFF_COUNT) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
@@ -199,13 +175,13 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac2_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac2_len != ATTENUATOR_COEFF_COUNT) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
 		parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
 		if (parse_rc == COO_JSON_EXTRACT_ERR) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Invalid persistent flag\"}");
 		}
 
@@ -220,7 +196,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 		if (attenuator_apply_coefficients_preserve_db(
 			    &attenuators[attenuator_index], physical) != 0) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Failed to apply coefficients\"}");
 		}
 		app_settings_update_attenuator_channel(attenuator_index,
@@ -232,26 +208,26 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 		if (coo_json_extract_double(cmd->payload, "value", &value) !=
 		    COO_JSON_EXTRACT_OK) {
-			return atten_cmd_response(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, RESP_ERROR,
 						  "{\"error\":\"Missing setting value\"}");
 		}
 
 		if (strcasecmp(setting, "value") == 0) {
 			if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
-				return atten_cmd_response(cmd, RESP_ERROR,
+				return coo_cmd_reply(cmd, RESP_ERROR,
 							  "{\"error\":\"Invalid linear transmission\"}");
 			}
 		} else {
 			if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
-				return atten_cmd_response(cmd, RESP_ERROR,
+				return coo_cmd_reply(cmd, RESP_ERROR,
 							  "{\"error\":\"Invalid dB attenuation\"}");
 			}
 		}
 	} else {
-		return atten_cmd_response(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
 	throughput_monitor_note_attenuator_changed(attenuator_index);
 
-	return atten_cmd_ok(cmd);
+	return coo_cmd_ok(cmd);
 }

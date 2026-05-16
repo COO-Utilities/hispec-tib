@@ -362,6 +362,40 @@ coo_cmd_make_response(const struct coo_cmd_request *cmd,
 	return r;
 }
 
+struct coo_cmd_response
+coo_cmd_reply(const struct coo_cmd_request *cmd,
+		 enum coo_cmd_msg_type msg_type,
+		 const char *payload)
+{
+	return coo_cmd_make_response(cmd, msg_type, payload, NULL, NULL);
+}
+
+struct coo_cmd_response coo_cmd_ok(const struct coo_cmd_request *cmd)
+{
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, "{\"status\":\"ok\"}");
+}
+
+struct coo_cmd_response coo_cmd_error(const struct coo_cmd_request *cmd,
+				      const char *msg)
+{
+	char payload[COO_CMD_PAYLOAD_MAX];
+
+	snprintk(payload, sizeof(payload), "{\"error\":\"%s\"}",
+		 msg != NULL ? msg : "");
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
+}
+
+struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
+					 const char *msg,
+					 int rc)
+{
+	char payload[COO_CMD_PAYLOAD_MAX];
+
+	snprintk(payload, sizeof(payload), "{\"error\":\"%s\",\"rc\":%d}",
+		 msg != NULL ? msg : "", rc);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
+}
+
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
 			 uint16_t *message_id)
