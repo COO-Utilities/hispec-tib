@@ -19,7 +19,7 @@ Runtime ownership is:
 
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
 - `command.c`: app command queues, serial guard policy, request classification,
-  command table, and app/domain command handlers.
+  command table, and app/cross-domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
@@ -28,6 +28,7 @@ Runtime ownership is:
   higher-level Maiman helper APIs.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
   sample windows.
+- `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.

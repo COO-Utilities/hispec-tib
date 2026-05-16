@@ -29,6 +29,7 @@ target_sources(app PRIVATE
         src/laserbank_control.c
         src/maiman.c
         src/photodiode.c
+        src/photodiode_command.c
         src/throughput_command.c
         src/throughput_monitor.c
         src/tempsense.c
@@ -46,6 +47,7 @@ target_sources(app PRIVATE
         src/maiman.h
         src/laser_properties.h
         src/photodiode.h
+        src/photodiode_command.h
         src/throughput_command.h
         src/throughput_monitor.h
         src/mems_switching.h

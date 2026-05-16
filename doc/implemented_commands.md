@@ -330,7 +330,7 @@ for `commands.md`.
 - Side effects: `measure_dark` starts sampler-owned dark calibration state;
   `dark_status` is a pure query; optional persistence is performed by
   photodiode/settings code.
-- Handler: `pd_get()`, `pd_set()` in `app/src/command.c`.
+- Handler: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`.
 
 ### `pdsettings/<yj|hk>`
 
@@ -343,7 +343,8 @@ for `commands.md`.
 - Data-less effect success response: `{"status":"ok"}`.
 - Board restriction: TIB only.
 - Side effects: updates runtime photodiode settings and optional persistence.
-- Handler: `pd_settings_get()`, `pd_settings_set()` in `app/src/command.c`.
+- Handler: `pd_settings_get()`, `pd_settings_set()` in
+  `app/src/photodiode_command.c`.
 
 ### `temp`
 
