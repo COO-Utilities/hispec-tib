@@ -1,10 +1,11 @@
 /**
  * @file command.c
- * @brief Command normalization, execution, and outbound response publication.
+ * @brief HISPEC command table, request classification, and app command handlers.
  *
- * The module owns the static command table and the two Zephyr message queues
- * that connect ingress, command execution, and MQTT/serial output. Hardware
- * side effects are still delegated to the domain modules where practical.
+ * The common command runtime owns MQTT/serial topic handling, executor loops,
+ * warning publication, and outbound drain behavior. This file supplies the
+ * static command table, HISPEC request classification rules, serial shorthand
+ * callback, scheduled actions, and command handlers that cut across domains.
  */
 
 #include "command.h"
@@ -12,7 +13,6 @@
 #include <errno.h>
 #include <math.h>
 #include <strings.h>
-#include <zephyr/drivers/uart.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
@@ -44,7 +44,6 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define SERIAL_LINE_MAX 220
 #define SERIAL_WRAP_COLUMN 80U
 
 static uint16_t mqtt_msg_id = 1;
@@ -52,9 +51,6 @@ static atomic_t serial_network_ignore_active;
 static char last_command_name[MAX_KEY_LEN];
 static char last_command_source[8] = "unknown";
 static int64_t last_command_time_ms;
-static char command_warning_topic[MAX_TOPIC_LEN];
-
-static void command_serial_line_handler(char *line, void *user_data);
 
 
 /* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
@@ -104,19 +100,7 @@ const struct DispatchEntry dispatch_table[] = {
     { "status",     status_get,       NULL  },
 };
 
-static struct coo_cmd_runtime command_runtime = {
-    .inbound_queue = &inbound_queue,
-    .outbound_queue = &outbound_queue,
-    .execute_handler = dispatch_command,
-    .dispatch_table = dispatch_table,
-    .dispatch_count = ARRAY_SIZE(dispatch_table),
-    .unknown_handler = unknown_response,
-    .unsupported_handler = unsupported_response,
-    .mqtt_msg_id = &mqtt_msg_id,
-    .warning_topic = command_warning_topic,
-    .serial_wrap_column = SERIAL_WRAP_COLUMN,
-    .serial_line_handler = command_serial_line_handler,
-};
+static struct coo_cmd_runtime command_runtime;
 
 const struct DispatchEntry *find_dispatch(const char *key)
 {
@@ -219,11 +203,6 @@ int parse_key_pair(const char *key,
 
 }
 
-static bool copy_topic(const struct mqtt_utf8 *topic, char *out, size_t out_len)
-{
-    return coo_cmd_copy_mqtt_utf8(topic, out, out_len);
-}
-
 static bool mqtt_get_allowed_during_serial_guard(const char *key)
 {
     const struct DispatchEntry *entry = find_dispatch(key);
@@ -243,21 +222,18 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
     return true;
 }
 
-static bool derive_default_response_topic(const char *key, char *topic_out, size_t topic_out_len)
-{
-    return coo_cmd_format_response_topic(app_mqtt_device_id(), key,
-                                         topic_out, topic_out_len) == 0;
-}
-
 static bool command_payload_empty(const struct Command *cmd)
 {
     return coo_cmd_payload_empty(cmd);
 }
 
-static enum MsgType command_infer_msg_type(const struct Command *cmd)
+static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
+                                                    void *user_data)
 {
     float fval;
     char text[32];
+
+    ARG_UNUSED(user_data);
 
     if (cmd == NULL) {
         return MSG_GET;
@@ -307,25 +283,13 @@ static enum MsgType command_infer_msg_type(const struct Command *cmd)
     return MSG_SET;
 }
 
-static void enqueue_serial_error(const char *msg)
-{
-    struct OutMsg out = {0};
-
-    out.target = OUT_TARGET_SERIAL;
-    out.msg_type = RESP_ERROR;
-    (void)coo_cmd_format_response_topic(app_mqtt_device_id(), "serial",
-                                        out.topic, sizeof(out.topic));
-    out.payload_len = snprintk(out.payload, sizeof(out.payload),
-                               "{\"error\":\"%s\"}", msg);
-    (void)k_msgq_put(&outbound_queue, &out, K_NO_WAIT);
-}
-
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
  * uses. This is deliberately a small translation table, not another dispatcher.
  * Examples: "power on", "serialguard off", "mems/foo A 0.5 30".
  */
 static int serial_payload_from_shorthand(const char *key, const char *payload,
-                                         char *out, size_t out_len)
+                                         char *out, size_t out_len,
+                                         void *user_data)
 {
     const char *cursor = payload;
     char t0[96] = {0};
@@ -333,6 +297,8 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     char t2[96] = {0};
     size_t off = 0;
     int written;
+
+    ARG_UNUSED(user_data);
 
     if (!coo_cmd_serial_next_token(&cursor, t0, sizeof(t0))) {
         return -EINVAL;
@@ -427,126 +393,17 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
-static int command_serial_payload_from_shorthand(const char *key,
-                                                 const char *payload,
-                                                 char *out,
-                                                 size_t out_len,
-                                                 void *user_data)
-{
-    ARG_UNUSED(user_data);
-
-    return serial_payload_from_shorthand(key, payload, out, out_len);
-}
-
-/* Top-level serial payload policy:
- * - no payload becomes "{}" and is dispatched as MSG_GET;
- * - raw JSON beginning with "{" is copied unchanged, not parsed or rebuilt;
- * - key=value tokens are wrapped into a JSON object;
- * - selected shorthands are translated by serial_payload_from_shorthand().
- */
-static int normalize_serial_payload(const char *key, const char *payload,
-                                    char *out, size_t out_len)
-{
-    return coo_cmd_normalize_serial_payload(key, payload,
-                                            command_serial_payload_from_shorthand,
-                                            NULL, out, out_len);
-}
-
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
 {
-    struct Command cmd = {0};
-    char req_topic[MAX_TOPIC_LEN];
-    const char *suffix;
-    char cmd_prefix[MAX_TOPIC_LEN];
-    size_t prefix_len;
-    size_t suffix_len;
-
-    if (pub == NULL || !copy_topic(&pub->message.topic.topic, req_topic, sizeof(req_topic))) {
-        return;
-    }
-
-    if (coo_cmd_format_request_prefix(app_mqtt_device_id(),
-                                      cmd_prefix, sizeof(cmd_prefix)) != 0) {
-        return;
-    }
-    prefix_len = strlen(cmd_prefix);
-    if (strncmp(req_topic, cmd_prefix, prefix_len) != 0) {
-        return;
-    }
-
-    suffix = req_topic + prefix_len;
-    suffix_len = strlen(suffix);
-    if (suffix_len == 0U || suffix_len >= sizeof(cmd.key)) {
-        LOG_WRN("Invalid MQTT command topic suffix");
-        return;
-    }
-
-    cmd.source = CMD_SRC_MQTT;
-    memcpy(cmd.key, suffix, suffix_len);
-    cmd.key[suffix_len] = '\0';
-
-    if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
-        struct OutMsg r = invalid_command_response(&cmd);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-        return;
-    }
-
-    if (pub->prop.response_topic.utf8 != NULL &&
-        pub->prop.response_topic.size > 0U &&
-        pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
-        memcpy(cmd.response_topic, pub->prop.response_topic.utf8, pub->prop.response_topic.size);
-        cmd.response_topic[pub->prop.response_topic.size] = '\0';
-    }
-
-    if (pub->message.payload.len >= MAX_PAYLOAD_LEN) {
-        struct OutMsg r = invalid_command_response(&cmd);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-        return;
-    }
-
-    if (pub->message.payload.len > 0U) {
-        memcpy(cmd.payload, pub->message.payload.data, pub->message.payload.len);
-        cmd.payload[pub->message.payload.len] = '\0';
-        cmd.payload_len = pub->message.payload.len;
-    } else {
-        snprintk(cmd.payload, sizeof(cmd.payload), "{}");
-        cmd.payload_len = strlen(cmd.payload);
-    }
-    cmd.msg_type = command_infer_msg_type(&cmd);
-
-    if (pub->prop.correlation_data.len > 0U &&
-        pub->prop.correlation_data.len <= sizeof(cmd.correlation_data)) {
-        memcpy(cmd.correlation_data,
-               pub->prop.correlation_data.data,
-               pub->prop.correlation_data.len);
-        cmd.corr_len = pub->prop.correlation_data.len;
-    } else if (pub->prop.correlation_data.len > sizeof(cmd.correlation_data)) {
-        LOG_WRN("MQTT correlation_data too long (%zu > %zu); response will not echo it",
-                pub->prop.correlation_data.len, sizeof(cmd.correlation_data));
-    }
-
-    if (!command_network_mqtt_allowed() &&
-        (cmd.msg_type != MSG_GET || !mqtt_get_allowed_during_serial_guard(cmd.key))) {
-        struct OutMsg r = serial_active_response(&cmd);
-
-        LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-        app_warning_emit("serial_guard_active",
-                         "MQTT command rejected while serial command guard is active",
-                         cmd.key);
-        return;
-    }
-
-    if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
-        struct OutMsg r = busy_response(&cmd);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-    }
+    coo_cmd_runtime_handle_mqtt_publish(&command_runtime, pub);
 }
 
-void command_serial_note_activity(void)
+static void command_serial_note_activity(void *user_data)
 {
     const uint32_t holdoff_s = app_settings_get_serial_holdoff_s();
     int rc;
+
+    ARG_UNUSED(user_data);
 
     if (holdoff_s == 0U) {
         (void)atomic_clear(&serial_network_ignore_active);
@@ -563,111 +420,18 @@ void command_serial_note_activity(void)
     }
 }
 
-bool command_network_mqtt_allowed(void)
+static bool command_network_mqtt_allowed(void)
 {
     return atomic_get(&serial_network_ignore_active) == 0;
 }
 
-void command_parse_serial_line(char *line)
-{
-    struct Command cmd = {0};
-    char *cursor = line;
-    char *key;
-    char *payload = NULL;
-    char *sep;
-
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-
-    if (*cursor == '\0') {
-        return;
-    }
-
-    command_serial_note_activity();
-
-    /* Serial syntax is one line: "<key> [payload]". Payload text is normalized
-     * to JSON, then classified with the same documented request shapes as MQTT.
-     */
-    sep = strpbrk(cursor, " \t");
-    if (sep == NULL) {
-        key = cursor;
-    } else {
-        *sep = '\0';
-        key = cursor;
-        cursor = sep + 1;
-        while (*cursor == ' ' || *cursor == '\t') {
-            cursor++;
-        }
-        payload = cursor;
-    }
-
-    if (key == NULL || *key == '\0') {
-        enqueue_serial_error("missing command key");
-        return;
-    }
-
-    cmd.source = CMD_SRC_SERIAL;
-    strncpy(cmd.key, key, sizeof(cmd.key) - 1);
-    cmd.key[sizeof(cmd.key) - 1] = '\0';
-    if (!derive_default_response_topic(cmd.key, cmd.response_topic, sizeof(cmd.response_topic))) {
-        enqueue_serial_error("invalid command key");
-        return;
-    }
-
-    if (normalize_serial_payload(cmd.key, payload, cmd.payload, sizeof(cmd.payload)) != 0) {
-        enqueue_serial_error("invalid serial payload");
-        return;
-    }
-    cmd.payload_len = strlen(cmd.payload);
-    cmd.msg_type = command_infer_msg_type(&cmd);
-
-    if (k_msgq_put(&inbound_queue, &cmd, K_NO_WAIT) != 0) {
-        struct OutMsg r = busy_response(&cmd);
-        (void)k_msgq_put(&outbound_queue, &r, K_NO_WAIT);
-    }
-}
-
-static void command_serial_line_handler(char *line, void *user_data)
+static bool command_mqtt_accept(const struct Command *cmd, void *user_data)
 {
     ARG_UNUSED(user_data);
 
-    command_parse_serial_line(line);
-}
-
-void app_warning_emit(const char *code, const char *msg, const char *context)
-{
-    char topic[MAX_TOPIC_LEN] = {0};
-
-    if (coo_cmd_format_data_topic(app_mqtt_device_id(), "warning",
-                                  topic, sizeof(topic)) != 0) {
-        return;
-    }
-
-    (void)coo_cmd_warning_emit(&outbound_queue, topic, code, msg, context);
-}
-
-void command_executor_thread(void *p1, void *p2, void *p3)
-{
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-
-    coo_cmd_runtime_executor_thread(&command_runtime, NULL, NULL);
-}
-
-void command_serial_thread(void *p1, void *p2, void *p3)
-{
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-
-    coo_cmd_runtime_serial_thread(&command_runtime, NULL, NULL);
-}
-
-void command_drain_outbound_queue(struct mqtt_client *client, bool mqtt_available)
-{
-    coo_cmd_runtime_drain_outbound(&command_runtime, client, mqtt_available);
+    return command_network_mqtt_allowed() ||
+           (cmd != NULL && cmd->msg_type == MSG_GET &&
+            mqtt_get_allowed_during_serial_guard(cmd->key));
 }
 
 static void serial_guard_expire_handler(enum app_scheduled_action_id id, void *user_data)
@@ -689,11 +453,25 @@ static void reboot_action_handler(enum app_scheduled_action_id id, void *user_da
 
 int command_runtime_init(void)
 {
+    const struct coo_cmd_runtime_config cfg = {
+        .device_id = app_mqtt_device_id(),
+        .inbound_queue = &inbound_queue,
+        .outbound_queue = &outbound_queue,
+        .execute_handler = dispatch_command,
+        .dispatch_table = dispatch_table,
+        .dispatch_count = ARRAY_SIZE(dispatch_table),
+        .unknown_handler = unknown_response,
+        .unsupported_handler = unsupported_response,
+        .mqtt_msg_id = &mqtt_msg_id,
+        .serial_wrap_column = SERIAL_WRAP_COLUMN,
+        .classify = command_infer_msg_type,
+        .mqtt_accept = command_mqtt_accept,
+        .serial_activity = command_serial_note_activity,
+        .serial_shorthand = serial_payload_from_shorthand,
+    };
     int rc;
 
-    rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "warning",
-                                   command_warning_topic,
-                                   sizeof(command_warning_topic));
+    rc = coo_cmd_runtime_configure(&command_runtime, &cfg);
     if (rc != 0) {
         return rc;
     }
@@ -713,6 +491,11 @@ int command_runtime_init(void)
                                          reboot_action_handler, NULL);
 }
 
+struct coo_cmd_runtime *command_runtime_get(void)
+{
+    return &command_runtime;
+}
+
 
 
 
@@ -720,24 +503,12 @@ int command_runtime_init(void)
 /* COMMAND HANDLERS */
 
 
-struct OutMsg invalid_command_response(const struct Command *cmd) {
-    return coo_cmd_invalid_response(cmd);
-}
-
 struct OutMsg unknown_response(const struct Command *cmd) {
     return coo_cmd_unknown_response(cmd);
 }
 
 struct OutMsg unsupported_response(const struct Command *cmd) {
     return coo_cmd_unsupported_response(cmd);
-}
-
-struct OutMsg busy_response(const struct Command *cmd) {
-    return coo_cmd_busy_response(cmd);
-}
-
-struct OutMsg serial_active_response(const struct Command *cmd) {
-    return coo_cmd_serial_active_response(cmd);
 }
 
 struct OutMsg help_get(const struct Command *cmd)
@@ -1163,7 +934,7 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
     if (cmd->source == CMD_SRC_SERIAL) {
-        command_serial_note_activity();
+        command_serial_note_activity(NULL);
     }
     return coo_cmd_ok(cmd);
 }

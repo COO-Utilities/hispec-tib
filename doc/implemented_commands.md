@@ -26,7 +26,7 @@ for `commands.md`.
 - Pure queries are not recorded as `lastcommand`; known effect-capable requests
   are recorded before handler execution.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
-- All handlers run in `command_executor_thread()` and enqueue one response to
+- All handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one response to
   `outbound_queue`.
 - Data-less success returns `{"status":"ok"}`. Data-bearing success returns the
   data object. Failures include an `error` key.

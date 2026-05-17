@@ -16,6 +16,52 @@
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
+int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
+			      const struct coo_cmd_runtime_config *cfg)
+{
+	int rc;
+
+	if (runtime == NULL || cfg == NULL || cfg->device_id == NULL ||
+	    cfg->device_id[0] == '\0' || cfg->inbound_queue == NULL ||
+	    cfg->outbound_queue == NULL || cfg->mqtt_msg_id == NULL ||
+	    strlen(cfg->device_id) >= sizeof(runtime->device_id)) {
+		return -EINVAL;
+	}
+
+	memset(runtime, 0, sizeof(*runtime));
+	strncpy(runtime->device_id, cfg->device_id, sizeof(runtime->device_id) - 1U);
+	rc = coo_cmd_format_request_prefix(runtime->device_id,
+					   runtime->request_prefix,
+					   sizeof(runtime->request_prefix));
+	if (rc != 0) {
+		return rc;
+	}
+	rc = coo_cmd_format_data_topic(runtime->device_id, "warning",
+				       runtime->warning_topic,
+				       sizeof(runtime->warning_topic));
+	if (rc != 0) {
+		return rc;
+	}
+
+	runtime->inbound_queue = cfg->inbound_queue;
+	runtime->outbound_queue = cfg->outbound_queue;
+	runtime->execute_handler = cfg->execute_handler;
+	runtime->dispatch_table = cfg->dispatch_table;
+	runtime->dispatch_count = cfg->dispatch_count;
+	runtime->unknown_handler = cfg->unknown_handler;
+	runtime->unsupported_handler = cfg->unsupported_handler;
+	runtime->mqtt_msg_id = cfg->mqtt_msg_id;
+	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
+				      cfg->serial_wrap_column :
+				      COO_CMD_SERIAL_WRAP_COLUMN;
+	runtime->classify = cfg->classify;
+	runtime->mqtt_accept = cfg->mqtt_accept;
+	runtime->serial_activity = cfg->serial_activity;
+	runtime->serial_shorthand = cfg->serial_shorthand;
+	runtime->user_data = cfg->user_data;
+	return 0;
+}
+
 static int format_device_topic(const char *device_id, char *buf, size_t buf_len,
 			       const char *prefix, const char *suffix)
 {
@@ -610,6 +656,20 @@ int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
 	return 0;
 }
 
+int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
+				 const char *code,
+				 const char *msg,
+				 const char *context)
+{
+	if (runtime == NULL || runtime->warning_topic[0] == '\0') {
+		return -EINVAL;
+	}
+
+	return coo_cmd_warning_emit(runtime->outbound_queue,
+				   runtime->warning_topic,
+				   code, msg, context);
+}
+
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
 			 uint16_t *message_id)
@@ -676,8 +736,8 @@ void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-	if (runtime == NULL || runtime->serial_line_handler == NULL) {
-		LOG_ERR("command runtime serial thread missing line handler");
+	if (runtime == NULL) {
+		LOG_ERR("command runtime serial thread missing runtime");
 		return;
 	}
 
@@ -688,8 +748,214 @@ void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3)
 		/* Blocks until a full line is available from the configured console. */
 		line = console_getline();
 		if (line != NULL && line[0] != '\0') {
-			runtime->serial_line_handler(line, runtime->serial_line_user_data);
+			coo_cmd_runtime_handle_serial_line(runtime, line);
 		}
+	}
+}
+
+static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
+					      const struct coo_cmd_request *cmd)
+{
+	if (runtime != NULL && runtime->classify != NULL) {
+		return runtime->classify(cmd, runtime->user_data);
+	}
+
+	return coo_cmd_payload_empty(cmd) ? COO_CMD_QUERY : COO_CMD_EFFECT;
+}
+
+static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
+				     const struct coo_cmd_response *out)
+{
+	if (runtime == NULL || runtime->outbound_queue == NULL || out == NULL) {
+		return;
+	}
+
+	if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+		LOG_WRN("Outbound queue full; dropping immediate command response");
+	}
+}
+
+static void runtime_enqueue_serial_error(struct coo_cmd_runtime *runtime, const char *msg)
+{
+	struct coo_cmd_response out = {0};
+
+	if (runtime == NULL) {
+		return;
+	}
+
+	out.target = COO_CMD_OUT_SERIAL;
+	out.msg_type = COO_CMD_RESP_ERROR;
+	out.qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	(void)coo_cmd_format_response_topic(runtime->device_id, "serial",
+					    out.topic, sizeof(out.topic));
+	out.payload_len = snprintk(out.payload, sizeof(out.payload),
+				   "{\"error\":\"%s\"}", msg);
+	runtime_enqueue_response(runtime, &out);
+}
+
+void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *line)
+{
+	struct coo_cmd_request cmd = {0};
+	char *cursor = line;
+	char *key;
+	char *payload = NULL;
+	char *sep;
+
+	if (runtime == NULL || line == NULL) {
+		return;
+	}
+
+	while (*cursor == ' ' || *cursor == '\t') {
+		cursor++;
+	}
+	if (*cursor == '\0') {
+		return;
+	}
+
+	if (runtime->serial_activity != NULL) {
+		runtime->serial_activity(runtime->user_data);
+	}
+
+	sep = strpbrk(cursor, " \t");
+	if (sep == NULL) {
+		key = cursor;
+	} else {
+		*sep = '\0';
+		key = cursor;
+		cursor = sep + 1;
+		while (*cursor == ' ' || *cursor == '\t') {
+			cursor++;
+		}
+		payload = cursor;
+	}
+
+	if (key == NULL || *key == '\0') {
+		runtime_enqueue_serial_error(runtime, "missing command key");
+		return;
+	}
+
+	cmd.source = COO_CMD_SOURCE_SERIAL;
+	strncpy(cmd.key, key, sizeof(cmd.key) - 1U);
+	if (coo_cmd_format_response_topic(runtime->device_id, cmd.key,
+					  cmd.response_topic,
+					  sizeof(cmd.response_topic)) != 0) {
+		runtime_enqueue_serial_error(runtime, "invalid command key");
+		return;
+	}
+
+	if (coo_cmd_normalize_serial_payload(cmd.key, payload,
+					     runtime->serial_shorthand,
+					     runtime->user_data,
+					     cmd.payload,
+					     sizeof(cmd.payload)) != 0) {
+		runtime_enqueue_serial_error(runtime, "invalid serial payload");
+		return;
+	}
+	cmd.payload_len = strlen(cmd.payload);
+	cmd.msg_type = runtime_classify(runtime, &cmd);
+
+	if (k_msgq_put(runtime->inbound_queue, &cmd, K_NO_WAIT) != 0) {
+		struct coo_cmd_response out = coo_cmd_busy_response(&cmd);
+
+		runtime_enqueue_response(runtime, &out);
+	}
+}
+
+void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
+					 const struct mqtt_publish_param *pub)
+{
+	struct coo_cmd_request cmd = {0};
+	char req_topic[COO_CMD_TOPIC_MAX];
+	const char *suffix;
+	size_t prefix_len;
+	size_t suffix_len;
+
+	if (runtime == NULL || pub == NULL ||
+	    !coo_cmd_copy_mqtt_utf8(&pub->message.topic.topic,
+				    req_topic, sizeof(req_topic))) {
+		return;
+	}
+
+	prefix_len = strlen(runtime->request_prefix);
+	if (prefix_len == 0U ||
+	    strncmp(req_topic, runtime->request_prefix, prefix_len) != 0) {
+		return;
+	}
+
+	suffix = req_topic + prefix_len;
+	suffix_len = strlen(suffix);
+	if (suffix_len == 0U || suffix_len >= sizeof(cmd.key)) {
+		LOG_WRN("Invalid MQTT command topic suffix");
+		return;
+	}
+
+	cmd.source = COO_CMD_SOURCE_MQTT;
+	memcpy(cmd.key, suffix, suffix_len);
+	cmd.key[suffix_len] = '\0';
+
+	if (coo_cmd_format_response_topic(runtime->device_id, cmd.key,
+					  cmd.response_topic,
+					  sizeof(cmd.response_topic)) != 0) {
+		struct coo_cmd_response out = coo_cmd_invalid_response(&cmd);
+
+		runtime_enqueue_response(runtime, &out);
+		return;
+	}
+
+	if (pub->prop.response_topic.utf8 != NULL &&
+	    pub->prop.response_topic.size > 0U &&
+	    pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
+		memcpy(cmd.response_topic, pub->prop.response_topic.utf8,
+		       pub->prop.response_topic.size);
+		cmd.response_topic[pub->prop.response_topic.size] = '\0';
+	}
+
+	if (pub->message.payload.len >= sizeof(cmd.payload)) {
+		struct coo_cmd_response out = coo_cmd_invalid_response(&cmd);
+
+		runtime_enqueue_response(runtime, &out);
+		return;
+	}
+
+	if (pub->message.payload.len > 0U) {
+		memcpy(cmd.payload, pub->message.payload.data,
+		       pub->message.payload.len);
+		cmd.payload[pub->message.payload.len] = '\0';
+		cmd.payload_len = pub->message.payload.len;
+	} else {
+		snprintk(cmd.payload, sizeof(cmd.payload), "{}");
+		cmd.payload_len = strlen(cmd.payload);
+	}
+	cmd.msg_type = runtime_classify(runtime, &cmd);
+
+	if (pub->prop.correlation_data.len > 0U &&
+	    pub->prop.correlation_data.len <= sizeof(cmd.correlation_data)) {
+		memcpy(cmd.correlation_data, pub->prop.correlation_data.data,
+		       pub->prop.correlation_data.len);
+		cmd.corr_len = pub->prop.correlation_data.len;
+	} else if (pub->prop.correlation_data.len > sizeof(cmd.correlation_data)) {
+		LOG_WRN("MQTT correlation_data too long (%zu > %zu); response will not echo it",
+			pub->prop.correlation_data.len, sizeof(cmd.correlation_data));
+	}
+
+	if (runtime->mqtt_accept != NULL &&
+	    !runtime->mqtt_accept(&cmd, runtime->user_data)) {
+		struct coo_cmd_response out = coo_cmd_serial_active_response(&cmd);
+
+		LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
+		runtime_enqueue_response(runtime, &out);
+		(void)coo_cmd_runtime_warning_emit(
+			runtime,
+			"serial_guard_active",
+			"MQTT command rejected while serial command guard is active",
+			cmd.key);
+		return;
+	}
+
+	if (k_msgq_put(runtime->inbound_queue, &cmd, K_NO_WAIT) != 0) {
+		struct coo_cmd_response out = coo_cmd_busy_response(&cmd);
+
+		runtime_enqueue_response(runtime, &out);
 	}
 }
 
@@ -701,7 +967,7 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 	uint16_t wrap_column = runtime != NULL && runtime->serial_wrap_column != 0U ?
 		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
 
-	if (runtime == NULL || runtime->warning_topic == NULL ||
+	if (runtime == NULL || runtime->warning_topic[0] == '\0' ||
 	    coo_cmd_build_warning(&warning, runtime->warning_topic,
 				  "outbound_queue_full",
 				  "outbound queue reached capacity",

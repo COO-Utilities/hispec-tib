@@ -16,10 +16,11 @@
  * @file command_dispatch.h
  * @brief Fixed-buffer command request, dispatch, and response helpers.
  *
- * This utility is intentionally small. Applications own their queues, command
- * table, request classification policy, and domain handlers. The helper only
- * provides reusable static dispatch, bounded serial payload normalization, and
- * transport-shaped response handling for MQTT plus line-oriented serial.
+ * This utility is intentionally small. Applications own their command table,
+ * request classification policy, domain handlers, and project-specific serial
+ * shorthands. The helper owns reusable fixed-buffer MQTT/serial topic handling,
+ * static dispatch, bounded serial payload normalization, warning publication,
+ * and transport-shaped response handling.
  */
 
 #define COO_CMD_TOPIC_MAX 96
@@ -111,18 +112,49 @@ typedef int (*coo_cmd_serial_shorthand_fn)(const char *key,
 					   size_t out_len,
 					   void *user_data);
 
-typedef void (*coo_cmd_serial_line_fn)(char *line, void *user_data);
+typedef enum coo_cmd_msg_type (*coo_cmd_classify_fn)(
+	const struct coo_cmd_request *cmd,
+	void *user_data);
+
+typedef bool (*coo_cmd_mqtt_accept_fn)(const struct coo_cmd_request *cmd,
+				       void *user_data);
+
+typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
 
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, command table, optional execute hook, line
- * parser, warning topic, and MQTT message-id storage. If execute_handler is
- * NULL, the executor uses the static dispatch table directly. The runtime
+ * The application owns the queues, command table, optional execute hook, and
+ * MQTT message-id storage. The runtime owns the copied device identity and the
+ * request/response/warning topic formatting derived from it. If execute_handler
+ * is NULL, the executor uses the static dispatch table directly. The runtime
  * helpers do not allocate memory; they block only in the executor queue wait,
  * Zephyr console line read, and MQTT publish path used by the outbound drain.
  */
 struct coo_cmd_runtime {
+	struct k_msgq *inbound_queue;
+	struct k_msgq *outbound_queue;
+	char device_id[32];
+	char request_prefix[COO_CMD_TOPIC_MAX];
+	char warning_topic[COO_CMD_TOPIC_MAX];
+	coo_cmd_handler_fn execute_handler;
+	const struct coo_cmd_dispatch_entry *dispatch_table;
+	size_t dispatch_count;
+	coo_cmd_handler_fn unknown_handler;
+	coo_cmd_handler_fn unsupported_handler;
+	uint16_t *mqtt_msg_id;
+	uint16_t serial_wrap_column;
+	coo_cmd_classify_fn classify;
+	coo_cmd_mqtt_accept_fn mqtt_accept;
+	coo_cmd_serial_activity_fn serial_activity;
+	coo_cmd_serial_shorthand_fn serial_shorthand;
+	void *user_data;
+	bool outbound_full_warning_seen;
+	bool outbound_full_warning_mqtt_seen;
+};
+
+struct coo_cmd_runtime_config {
+	const char *device_id;
 	struct k_msgq *inbound_queue;
 	struct k_msgq *outbound_queue;
 	coo_cmd_handler_fn execute_handler;
@@ -131,13 +163,23 @@ struct coo_cmd_runtime {
 	coo_cmd_handler_fn unknown_handler;
 	coo_cmd_handler_fn unsupported_handler;
 	uint16_t *mqtt_msg_id;
-	const char *warning_topic;
 	uint16_t serial_wrap_column;
-	coo_cmd_serial_line_fn serial_line_handler;
-	void *serial_line_user_data;
-	bool outbound_full_warning_seen;
-	bool outbound_full_warning_mqtt_seen;
+	coo_cmd_classify_fn classify;
+	coo_cmd_mqtt_accept_fn mqtt_accept;
+	coo_cmd_serial_activity_fn serial_activity;
+	coo_cmd_serial_shorthand_fn serial_shorthand;
+	void *user_data;
 };
+
+/**
+ * @brief Initialize a command runtime with stable app identity and callbacks.
+ *
+ * Copies @p cfg->device_id and preformats the request and warning topics.
+ * Applications normally call this once after board identity is known and
+ * before starting runtime executor/serial threads.
+ */
+int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
+			      const struct coo_cmd_runtime_config *cfg);
 
 /** Return true when @p key starts with @p prefix and is exact or slash-delimited. */
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
@@ -308,13 +350,27 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 /** Execute commands from runtime->inbound_queue and enqueue one response each. */
 void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3);
 
-/** Read Zephyr console lines and pass them to runtime->serial_line_handler. */
+/** Read Zephyr console lines and queue normalized serial commands. */
 void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3);
+
+/** Copy and queue one MQTT publish as a normalized command request. */
+void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
+					 const struct mqtt_publish_param *pub);
+
+/** Parse one console line and queue a normalized serial command request. */
+void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime,
+					char *line);
 
 /** Drain outbound serial/MQTT responses with bounded retry behavior. */
 void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 				    struct mqtt_client *client,
 				    bool mqtt_available);
+
+/** Emit a best-effort warning using runtime identity and outbound queue. */
+int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
+				 const char *code,
+				 const char *msg,
+				 const char *context);
 
 /** Print a serial response as topic then tab-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,

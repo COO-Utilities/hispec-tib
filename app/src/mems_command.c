@@ -387,7 +387,7 @@ static void split_emit_quantization_warning(uint8_t channel_index,
              (double)state->actual[0],
              (double)state->actual[1],
              (double)state->actual[2]);
-    app_warning_emit("split_ratio_quantized",
+    coo_cmd_runtime_warning_emit(command_runtime_get(), "split_ratio_quantized",
                      "requested split ratio was quantized to MEMS ticks",
                      context);
 }
@@ -762,7 +762,7 @@ struct OutMsg mems_set(const struct Command *cmd)
                      "switch=%s requested=%.3f actual=%.3f",
                      sw->name, (double)toggle_rate_hz,
                      (double)status.toggle_rate_hz);
-            app_warning_emit("mems_rate_quantized",
+            coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_rate_quantized",
                              "requested MEMS toggle rate was quantized",
                              context);
         }

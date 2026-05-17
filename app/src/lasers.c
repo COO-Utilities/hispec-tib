@@ -709,7 +709,7 @@ int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled
 	}
 	if (!devices_relay_gpio_online()) {
 		if (aux_output_is_photodiode(output)) {
-			app_warning_emit("relay_gpio_offline",
+			coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
 					 "photodiode relay command ignored because relay GPIO expander is offline",
 					 enabled ? "enable" : "disable");
 			return 0;

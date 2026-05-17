@@ -28,7 +28,7 @@ flowchart TD
   Exec --> TP
   Exec --> OutQ[outbound_queue]
   TP --> OutQ
-  Warnings[app_warning_emit] --> OutQ
+  Warnings[coo_cmd_runtime_warning_emit] --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
   MainLoop --> Console[serial print]
@@ -70,7 +70,7 @@ flowchart TD
   Ready -- no --> Sleep[k_sleep 20 ms]
   Ready -- yes --> Connected{MQTT connected}
   Connected -- no --> Connect[coo_mqtt_connect]
-  Connected -- yes --> Drain[command_drain_outbound_queue]
+  Connected -- yes --> Drain[coo_cmd_runtime_drain_outbound]
   Connect --> Subscribe[subscribe cmd/<device>/req/#]
   Subscribe --> Drain
   Drain --> Process[coo_mqtt_process poll/read]
@@ -141,7 +141,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
-  Warning[app_warning_emit] --> OutQ
+  Warning[coo_cmd_runtime_warning_emit] --> OutQ
   Throughput[throughput_monitor_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
@@ -158,12 +158,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  SerialLine[serial command received] --> Note[command_serial_note_activity]
+  SerialLine[serial command received] --> Note[runtime serial activity hook]
   Note --> Active[set serial guard active]
   Active --> Schedule[schedule serial_guard_expire]
   MQTTCommand[MQTT command] --> Check{guard active}
   Check -- yes --> Safe{safe query}
-  Safe -- no --> Reject[serial_active_response and warning]
+  Safe -- no --> Reject[coo_cmd_serial_active_response and warning]
   Safe -- yes --> Queue[queue command]
   Check -- no --> Queue
   Schedule --> Expire[system workqueue callback]
@@ -203,7 +203,7 @@ flowchart TD
   Status --> SleepPeriod[sleep to 20 ms period]
   Persist --> SleepPeriod
   Noise --> Warn{noise above threshold}
-  Warn -- yes --> Emit[app_warning_emit photodiode_noise]
+  Warn -- yes --> Emit[coo_cmd_runtime_warning_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
 ```

@@ -3,8 +3,8 @@
  * @brief Laser-bank temperature-control policy loop.
  *
  * The loop owns automatic bank pre-warm decisions for TIB. It never publishes
- * MQTT directly; warnings are best-effort messages queued through
- * app_warning_emit().
+ * MQTT directly; warnings are best-effort messages queued through the command
+ * runtime.
  */
 
 #include "laserbank_tempcontrol.h"
@@ -237,7 +237,7 @@ static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 		return;
 	}
 
-	app_warning_emit("laserbank_heater_override",
+	coo_cmd_runtime_warning_emit(command_runtime_get(), "laserbank_heater_override",
 			 "laser bank heater override is active; automatic warmup is disabled",
 			 laserbank_heater_mode_name(mode));
 	control.last_override_warning_ms = now_ms;

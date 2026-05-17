@@ -409,7 +409,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
                  photodiode_channel_names[channel],
                  (double)noise_rms,
                  (double)settings->noise_warn_rms_mv);
-        app_warning_emit("photodiode_noise",
+        coo_cmd_runtime_warning_emit(command_runtime_get(), "photodiode_noise",
                          "photodiode residual noise exceeded warning threshold",
                          context);
 

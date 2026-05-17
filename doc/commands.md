@@ -66,11 +66,11 @@ the console.
 
 Top-level implementation path:
 
-1. `command_serial_thread()` reads one console line.
-2. `command_parse_serial_line()` splits the line into `<key>` and optional payload.
-3. `normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
-4. `command_executor_thread()` dispatches the command through `dispatch_command()`.
-5. `command_drain_outbound_queue()` prints serial responses with `print_serial_response()`.
+1. `coo_cmd_runtime_serial_thread()` reads one console line.
+2. `coo_cmd_runtime_handle_serial_line()` splits the line into `<key>` and optional payload.
+3. `coo_cmd_normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
+4. `coo_cmd_runtime_executor_thread()` dispatches the command through the app command table.
+5. `coo_cmd_runtime_drain_outbound()` prints serial responses with `coo_cmd_print_serial_response()`.
 
 No-payload serial request form is just the key:
 
@@ -155,7 +155,7 @@ for normal serial operation.
 (warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
-- **Top-level helper:** `app_warning_emit()`
+- **Top-level helper:** `coo_cmd_runtime_warning_emit(command_runtime_get(), code, msg, context)`
 - **Queue behavior:** best-effort MQTT through `OUT_TARGET_MQTT_BEST_EFFORT`;
   logs locally and drops if MQTT is unavailable or the outbound queue is full.
 - **Warning payload:**

@@ -162,7 +162,7 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
         snprintk(context, sizeof(context),
                  "channel=%u requested=%.3f clamped=%.3f",
                  dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
-        app_warning_emit("attenuator_clamped",
+        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
                          "attenuator command exceeded DAC range and was clamped",
                          context);
     }
@@ -245,7 +245,7 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
     if (attenuation_db > max_total_db) {
         snprintk(context, sizeof(context),
                  "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
-        app_warning_emit("attenuator_clamped",
+        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
                          "attenuator command exceeded modeled range and was clamped",
                          context);
         attenuation_db = max_total_db;

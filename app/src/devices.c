@@ -678,7 +678,7 @@ static void emit_relay_gpio_offline_warning_once(int error)
 	k_mutex_unlock(&relay_gpio_lock);
 
 	snprintf(context, sizeof(context), "rc=%d", error);
-	app_warning_emit("relay_gpio_offline",
+	coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
 			 "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
 			 context);
 }

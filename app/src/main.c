@@ -214,6 +214,7 @@ int main(void)
 	struct network_config net_cfg;
 	struct coo_mqtt_broker_config mqtt_cfg;
 	struct coo_mqtt_broker_config prior_mqtt_cfg = {0};
+	struct coo_cmd_runtime *cmd_runtime;
 
 	LOG_INF("HiSPEC-FIB PCB  %s\n", APP_VERSION_STRING);
 
@@ -249,22 +250,23 @@ int main(void)
 	}
 
 	app_settings_increment_boot_count();
-	(void)devices_ready();
-	setup_mems_switches_and_routes();
-	setup_attenuators();
-
 	rc = command_runtime_init();
 	if (rc != 0) {
 		LOG_ERR("Command runtime init failed (%d)", rc);
 		return rc;
 	}
+	cmd_runtime = command_runtime_get();
+
+	(void)devices_ready();
+	setup_mems_switches_and_routes();
+	setup_attenuators();
 
 	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
-			command_executor_thread, NULL, NULL, NULL,
+			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
 			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
 
 	k_thread_create(&serial_thread_data, serial_stack, K_THREAD_STACK_SIZEOF(serial_stack),
-			command_serial_thread, NULL, NULL, NULL,
+			coo_cmd_runtime_serial_thread, cmd_runtime, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
@@ -299,13 +301,9 @@ int main(void)
 		int written;
 		size_t prefix_len;
 
-		rc = coo_cmd_format_request_prefix(app_mqtt_device_id(),
-						   mqtt_cmd_subscription,
-						   sizeof(mqtt_cmd_subscription));
-		if (rc != 0) {
-			LOG_ERR("MQTT command topic prefix too long (%d)", rc);
-			return rc;
-		}
+		strncpy(mqtt_cmd_subscription, cmd_runtime->request_prefix,
+			sizeof(mqtt_cmd_subscription) - 1U);
+		mqtt_cmd_subscription[sizeof(mqtt_cmd_subscription) - 1U] = '\0';
 		prefix_len = strlen(mqtt_cmd_subscription);
 		written = snprintk(mqtt_cmd_subscription + prefix_len,
 				   sizeof(mqtt_cmd_subscription) - prefix_len, "#");
@@ -320,7 +318,7 @@ int main(void)
 
 	while (1) {
 		/* MQTT stays connected whenever the network is ready. Serial override
-		 * rejection happens in command_handle_mqtt_publish(), so requesters get
+		 * rejection happens in the command runtime, so requesters get
 		 * an explicit response instead of a silent disconnect.
 		 */
 		bool mqtt_can_run = network_is_ready();
@@ -367,7 +365,7 @@ int main(void)
 				snprintk(context, sizeof(context),
 					 "host=%s port=%u rc=%d",
 					 mqtt_cfg.host, mqtt_cfg.port, rc);
-				app_warning_emit("mqtt_broker_revert",
+				coo_cmd_runtime_warning_emit(command_runtime_get(), "mqtt_broker_revert",
 						 "MQTT broker connection failed; reverting to prior broker",
 						 context);
 				LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
@@ -387,7 +385,8 @@ int main(void)
 			}
 		}
 
-		command_drain_outbound_queue(&client_ctx, coo_mqtt_is_connected() && mqtt_can_run);
+		coo_cmd_runtime_drain_outbound(cmd_runtime, &client_ctx,
+					       coo_mqtt_is_connected() && mqtt_can_run);
 
 		if (coo_mqtt_is_connected()) {
 			rc = coo_mqtt_process(&client_ctx);

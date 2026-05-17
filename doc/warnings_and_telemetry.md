@@ -2,7 +2,7 @@
 
 ## Warning Flow
 
-Warnings are emitted with `app_warning_emit(code, msg, context)`.
+Warnings are emitted with `coo_cmd_runtime_warning_emit(command_runtime_get(), code, msg, context)`.
 
 Behavior:
 

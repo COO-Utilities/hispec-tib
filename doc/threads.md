@@ -15,7 +15,7 @@ not delayed by command handlers.
 
 ## Command Executor Thread
 
-`command_executor_thread()` blocks on `k_msgq_get(&inbound_queue, K_FOREVER)`.
+`coo_cmd_runtime_executor_thread()` blocks on `k_msgq_get(&inbound_queue, K_FOREVER)`.
 It dispatches one command and tries one non-blocking enqueue to
 `outbound_queue`. Handler blocking varies by command:
 
@@ -29,7 +29,7 @@ It dispatches one command and tries one non-blocking enqueue to
 
 ## Serial Thread
 
-`command_serial_thread()` calls `console_getline()` and blocks until a complete
+`coo_cmd_runtime_serial_thread()` calls `console_getline()` and blocks until a complete
 line is available. Non-empty lines refresh serial guard and enqueue a normalized
 command. Serial output is not printed from this thread; it is printed when the
 main loop drains `outbound_queue`.
@@ -64,7 +64,7 @@ attenuator state, and laser estimates, then enqueues best-effort telemetry to
 heater auto/override policy, polls Maiman TEC temperature/state at a fixed
 interval, reads the cached ambient temperature, and drives the auxiliary
 laser-bank heater GPIO. It does not publish MQTT directly; override warnings
-are queued through `app_warning_emit()`.
+are queued through `coo_cmd_runtime_warning_emit()`.
 
 ## MEMS Router Thread
 
