@@ -5,8 +5,8 @@ config COO_COMMONS
 	bool "COO common libraries"
 	default y
 	help
-	  Enable COO common libraries including PID controller,
-	  network utilities, JSON helpers, and MQTT client.
+	  Enable COO common libraries including network utilities,
+	  JSON helpers, and MQTT client.
 
 if COO_COMMONS
 
