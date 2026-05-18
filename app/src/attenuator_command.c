@@ -55,7 +55,7 @@ static int parse_atten_key(const char *key,
 	return 0;
 }
 
-static int attenuator_index_from_command(const struct Command *cmd,
+static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 					 char *setting,
 					 size_t setting_len,
 					 uint8_t *attenuator_index)
@@ -80,7 +80,7 @@ static int attenuator_index_from_command(const struct Command *cmd,
 	return 0;
 }
 
-struct OutMsg atten_setting_get(const struct Command *cmd)
+struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 {
 	char setting[16] = {0};
 	uint8_t attenuator_index;
@@ -89,14 +89,14 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 
 	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
 	if (rc == -EINVAL) {
-		return coo_cmd_reply(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse atten/setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return coo_cmd_reply(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -112,7 +112,7 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 		struct attenuator_status status = {0};
 
 		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Failed to read attenuator\"}");
 		}
 		snprintk(payload, sizeof(payload),
@@ -126,13 +126,13 @@ struct OutMsg atten_setting_get(const struct Command *cmd)
 			 status.attenuation_db1,
 			 status.attenuation_db2);
 	} else {
-		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg atten_setting_set(const struct Command *cmd)
+struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 {
 	char setting[16] = {0};
 	uint8_t attenuator_index;
@@ -140,14 +140,14 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
 	if (rc == -EINVAL) {
-		return coo_cmd_reply(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse laser/setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return coo_cmd_reply(cmd, RESP_ERROR,
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -166,7 +166,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac1_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac1_len != ATTENUATOR_COEFF_COUNT) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
@@ -175,13 +175,13 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac2_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac2_len != ATTENUATOR_COEFF_COUNT) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
 		parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
 		if (parse_rc == COO_JSON_EXTRACT_ERR) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Invalid persistent flag\"}");
 		}
 
@@ -196,7 +196,7 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 		if (attenuator_apply_coefficients_preserve_db(
 			    &attenuators[attenuator_index], physical) != 0) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Failed to apply coefficients\"}");
 		}
 		app_settings_update_attenuator_channel(attenuator_index,
@@ -208,23 +208,23 @@ struct OutMsg atten_setting_set(const struct Command *cmd)
 
 		if (coo_json_extract_double(cmd->payload, "value", &value) !=
 		    COO_JSON_EXTRACT_OK) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Missing setting value\"}");
 		}
 
 		if (strcasecmp(setting, "value") == 0) {
 			if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(cmd, RESP_ERROR,
+				return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 							  "{\"error\":\"Invalid linear transmission\"}");
 			}
 		} else {
 			if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(cmd, RESP_ERROR,
+				return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 							  "{\"error\":\"Invalid dB attenuation\"}");
 			}
 		}
 	} else {
-		return coo_cmd_reply(cmd, RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
 	throughput_monitor_note_attenuator_changed(attenuator_index);

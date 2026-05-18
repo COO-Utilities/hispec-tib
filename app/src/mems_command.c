@@ -203,7 +203,7 @@ static int route_loss_parse_scalar_token(const char *start, const char **end,
     return 0;
 }
 
-static int route_loss_extract_field_transmission(const struct Command *cmd,
+static int route_loss_extract_field_transmission(const struct coo_cmd_request *cmd,
                                                  const char *field,
                                                  double *transmission)
 {
@@ -239,7 +239,7 @@ static int route_loss_extract_field_transmission(const struct Command *cmd,
     return -EINVAL;
 }
 
-static int route_loss_extract_value(const struct Command *cmd,
+static int route_loss_extract_value(const struct coo_cmd_request *cmd,
                                     char *laser, size_t laser_len,
                                     double *transmission)
 {
@@ -260,7 +260,7 @@ static int route_loss_extract_value(const struct Command *cmd,
     return -ENOENT;
 }
 
-static int route_loss_extract_split_tuple(const struct Command *cmd,
+static int route_loss_extract_split_tuple(const struct coo_cmd_request *cmd,
                                           double transmission[MEMS_SPLIT_OUTPUT_COUNT])
 {
     const char *cursor;
@@ -315,7 +315,7 @@ static int route_loss_append_tx(char *payload, size_t payload_len, size_t *offse
     return coo_json_append(payload, payload_len, offset, "%.6f", tx);
 }
 
-static struct OutMsg route_loss_query_response(const struct Command *cmd,
+static struct coo_cmd_response route_loss_query_response(const struct coo_cmd_request *cmd,
                                                const char *route)
 {
     char payload[MAX_PAYLOAD_LEN] = {0};
@@ -346,7 +346,7 @@ static struct OutMsg route_loss_query_response(const struct Command *cmd,
         if (coo_json_append(payload, sizeof(payload), &offset, "]}") != 0) {
             return coo_cmd_error(cmd, "route_loss response too large");
         }
-        return coo_cmd_reply(cmd, RESP_OK, payload);
+        return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
     }
 
     if (coo_json_append(payload, sizeof(payload), &offset, "\"lasers\":{") != 0) {
@@ -370,10 +370,10 @@ static struct OutMsg route_loss_query_response(const struct Command *cmd,
         return coo_cmd_error(cmd, "route_loss response too large");
     }
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_request)
+static struct coo_cmd_response route_loss_handle(const struct coo_cmd_request *cmd, bool set_request)
 {
     char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
     char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
@@ -450,7 +450,7 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
     return coo_cmd_ok(cmd);
 }
 
-struct OutMsg memsroute_get(const struct Command *cmd)
+struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd)
 {
     struct mems_route_key active[MEMS_ROUTER_MAX_ROUTES];
     const char *outputs[MEMS_ROUTER_MAX_ROUTES];
@@ -489,7 +489,7 @@ struct OutMsg memsroute_get(const struct Command *cmd)
         return coo_cmd_error(cmd, "response too large");
     }
 
-    return coo_cmd_reply(cmd, RESP_OK, buf);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, buf);
 }
 
 static float split_abs_float(float value)
@@ -497,7 +497,7 @@ static float split_abs_float(float value)
     return value < 0.0f ? -value : value;
 }
 
-static struct OutMsg split_channel_response(const struct Command *cmd,
+static struct coo_cmd_response split_channel_response(const struct coo_cmd_request *cmd,
                                             const struct mems_split_state *state,
                                             uint8_t channel_index)
 {
@@ -560,7 +560,7 @@ static struct OutMsg split_channel_response(const struct Command *cmd,
         return coo_cmd_error(cmd, "split response too large");
     }
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
 static void split_emit_quantization_warning(uint8_t channel_index,
@@ -604,7 +604,7 @@ static int split_channel_index_from_key(const char *key, uint8_t *index)
     return mems_split_channel_index(channel, index);
 }
 
-static int split_parse_channel(const struct Command *cmd, uint8_t *channel_index)
+static int split_parse_channel(const struct coo_cmd_request *cmd, uint8_t *channel_index)
 {
     char channel[8] = {0};
     int parse_rc;
@@ -625,7 +625,7 @@ static int split_parse_channel(const struct Command *cmd, uint8_t *channel_index
     return mems_split_channel_index(channel, channel_index);
 }
 
-struct OutMsg splitting_get(const struct Command *cmd)
+struct coo_cmd_response splitting_get(const struct coo_cmd_request *cmd)
 {
     struct mems_split_state state = {0};
     uint8_t channel_index;
@@ -644,7 +644,7 @@ struct OutMsg splitting_get(const struct Command *cmd)
     return split_channel_response(cmd, &state, channel_index);
 }
 
-struct OutMsg splitting_set(const struct Command *cmd)
+struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd)
 {
     struct mems_split_state state = {0};
     uint8_t channel_index;
@@ -710,7 +710,7 @@ struct OutMsg splitting_set(const struct Command *cmd)
         if (failed_switch != NULL) {
             snprintk(payload, sizeof(payload),
                      "{\"error\":\"failed setting %s\"}", failed_switch);
-            return coo_cmd_reply(cmd, RESP_ERROR, payload);
+            return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
         }
         return coo_cmd_error(cmd, "split route unavailable");
     }
@@ -719,7 +719,7 @@ struct OutMsg splitting_set(const struct Command *cmd)
     return split_channel_response(cmd, &state, channel_index);
 }
 
-struct OutMsg memsroute_set(const struct Command *cmd)
+struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd)
 {
     struct mems_route_id route_id = {0};
     const struct mems_route *route;
@@ -756,7 +756,7 @@ struct OutMsg memsroute_set(const struct Command *cmd)
                  "{\"error\":\"Setting switch %s to %c failed\"}",
                  failed_switch == NULL ? "unknown" : failed_switch,
                  failed_state == '\0' ? '?' : failed_state);
-        return coo_cmd_reply(cmd, RESP_ERROR, payload);
+        return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
     }
 
     LOG_INF("Set route %s -> %s", route_id.input, route_id.output);
@@ -776,7 +776,7 @@ static void mems_format_state(const struct mems_switch_status *status,
     snprintk(out, out_len, "?");
 }
 
-static struct OutMsg mems_response_for_switch(const struct Command *cmd,
+static struct coo_cmd_response mems_response_for_switch(const struct coo_cmd_request *cmd,
                                               const struct mems_switch *sw)
 {
     struct mems_switch_status status = {0};
@@ -796,10 +796,10 @@ static struct OutMsg mems_response_for_switch(const struct Command *cmd,
              (double)status.toggle_rate_hz,
              status.stopafter_s);
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg mems_get(const struct Command *cmd)
+struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
 {
     if (strcmp(cmd->key, "mems") == 0) {
         char payload[MAX_PAYLOAD_LEN] = {0};
@@ -839,7 +839,7 @@ struct OutMsg mems_get(const struct Command *cmd)
         if (written < 0 || written >= (int)(sizeof(payload) - off)) {
             return coo_cmd_error(cmd, "mems response too large");
         }
-        return coo_cmd_reply(cmd, RESP_OK, payload);
+        return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
     }
 
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
@@ -857,7 +857,7 @@ struct OutMsg mems_get(const struct Command *cmd)
     return mems_response_for_switch(cmd, sw);
 }
 
-struct OutMsg mems_set(const struct Command *cmd)
+struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
 {
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};

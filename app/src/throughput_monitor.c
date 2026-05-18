@@ -241,7 +241,7 @@ static void publish_sample(const struct throughput_state *state,
 	struct app_photodiode_settings pd_settings;
 	struct attenuator_transmission_estimate atten = {0};
 	struct hispec_laser_flux_estimate laser_flux = {0};
-	struct OutMsg msg = {0};
+	struct coo_cmd_response msg = {0};
 	size_t off = 0U;
 	char pd_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 	char laser_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
@@ -297,7 +297,7 @@ static void publish_sample(const struct throughput_state *state,
 		}
 	}
 
-	msg.target = OUT_TARGET_MQTT_BEST_EFFORT;
+	msg.target = COO_CMD_OUT_MQTT_BEST_EFFORT;
 	msg.qos = 0;
 	(void)coo_cmd_format_data_topic(app_mqtt_device_id(),
 					state->channel == PHOTODIODE_CHANNEL_YJ ?

@@ -20,7 +20,7 @@
  * attenuator belongs to the active board profile, and may block on DAC I2C for
  * value readback. It does not modify hardware or settings.
  */
-struct OutMsg atten_setting_get(const struct Command *cmd);
+struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd);
 
 /**
  * @brief Update one logical attenuator's value or model coefficients.
@@ -30,6 +30,6 @@ struct OutMsg atten_setting_get(const struct Command *cmd);
  * block on DAC I2C and can enqueue attenuator range warnings through the domain
  * driver.
  */
-struct OutMsg atten_setting_set(const struct Command *cmd);
+struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd);
 
 #endif /* HISPEC_ATTENUATOR_COMMAND_H */

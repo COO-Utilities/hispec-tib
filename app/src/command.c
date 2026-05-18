@@ -58,7 +58,7 @@ static int64_t last_command_time_ms;
  * hardware commands pile up.
  */
 K_MSGQ_DEFINE(inbound_queue,
-              sizeof(struct Command),
+              sizeof(struct coo_cmd_request),
               MAX_PENDING_COMMANDS,      /* depth */
               4);     /* 4‐byte align */
 
@@ -66,7 +66,7 @@ K_MSGQ_DEFINE(inbound_queue,
  * queue. The main loop owns MQTT publish retries and serial printing.
  */
 K_MSGQ_DEFINE(outbound_queue,
-              sizeof(struct OutMsg),
+              sizeof(struct coo_cmd_response),
               8,
               4);
 
@@ -74,7 +74,7 @@ extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
 
-const struct DispatchEntry dispatch_table[] = {
+const struct coo_cmd_dispatch_entry dispatch_table[] = {
     { "help",      help_get,         NULL             },
     { "ip",        ip_get,           ip_set           },
     { "mqtt",      mqtt_get,         mqtt_set         },
@@ -102,12 +102,12 @@ const struct DispatchEntry dispatch_table[] = {
 
 static struct coo_cmd_runtime command_runtime;
 
-const struct DispatchEntry *find_dispatch(const char *key)
+const struct coo_cmd_dispatch_entry *find_dispatch(const char *key)
 {
     return coo_cmd_find_dispatch(dispatch_table, ARRAY_SIZE(dispatch_table), key);
 }
 
-static bool command_pd_dark_status_query(const struct Command *cmd)
+static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
 {
     char action[20] = {0};
 
@@ -117,9 +117,9 @@ static bool command_pd_dark_status_query(const struct Command *cmd)
            strcasecmp(action, "dark_status") == 0;
 }
 
-static bool command_should_record_lastcommand(const struct Command *cmd)
+static bool command_should_record_lastcommand(const struct coo_cmd_request *cmd)
 {
-    const struct DispatchEntry *entry;
+    const struct coo_cmd_dispatch_entry *entry;
 
     if (cmd == NULL) {
         return false;
@@ -134,7 +134,7 @@ static bool command_should_record_lastcommand(const struct Command *cmd)
         return true;
     }
 
-    if (cmd->msg_type != MSG_SET || entry->set_handler == NULL) {
+    if (cmd->msg_type != COO_CMD_EFFECT || entry->set_handler == NULL) {
         return false;
     }
 
@@ -145,19 +145,19 @@ static bool command_should_record_lastcommand(const struct Command *cmd)
     return true;
 }
 
-static void record_lastcommand(const struct Command *cmd)
+static void record_lastcommand(const struct coo_cmd_request *cmd)
 {
     strncpy(last_command_name, cmd->key, sizeof(last_command_name) - 1);
     last_command_name[sizeof(last_command_name) - 1] = '\0';
     snprintk(last_command_source, sizeof(last_command_source), "%s",
-             cmd->source == CMD_SRC_SERIAL ? "serial" : "mqtt");
+             cmd->source == COO_CMD_SOURCE_SERIAL ? "serial" : "mqtt");
     last_command_time_ms = k_uptime_get();
 }
 
 
-struct OutMsg dispatch_command(const struct Command *cmd) {
+struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
     LOG_INF("Dispatching: %s", cmd->key);
-    struct OutMsg r;
+    struct coo_cmd_response r;
 
     if (command_should_record_lastcommand(cmd)) {
         record_lastcommand(cmd);
@@ -205,7 +205,7 @@ int parse_key_pair(const char *key,
 
 static bool mqtt_get_allowed_during_serial_guard(const char *key)
 {
-    const struct DispatchEntry *entry = find_dispatch(key);
+    const struct coo_cmd_dispatch_entry *entry = find_dispatch(key);
 
     if (entry == NULL || entry->get_handler == NULL) {
         return false;
@@ -222,7 +222,7 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
     return true;
 }
 
-static bool command_payload_empty(const struct Command *cmd)
+static bool command_payload_empty(const struct coo_cmd_request *cmd)
 {
     return coo_cmd_payload_empty(cmd);
 }
@@ -251,7 +251,7 @@ static bool route_loss_payload_has_value(const char *payload)
     return strstr(payload, "\"split\"") != NULL;
 }
 
-static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
+static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request *cmd,
                                                     void *user_data)
 {
     float fval;
@@ -259,7 +259,7 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
     ARG_UNUSED(user_data);
 
     if (cmd == NULL) {
-        return MSG_GET;
+        return COO_CMD_QUERY;
     }
 
     if (command_payload_empty(cmd)) {
@@ -267,30 +267,30 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
             strcmp(cmd->key, "laserbank/clearfaults") == 0 ||
             strncmp(cmd->key, "laserbank/power/", strlen("laserbank/power/")) == 0 ||
             strncmp(cmd->key, "laserbank/heater/", strlen("laserbank/heater/")) == 0) {
-            return MSG_SET;
+            return COO_CMD_EFFECT;
         }
-        return MSG_GET;
+        return COO_CMD_QUERY;
     }
 
     if (strcmp(cmd->key, "status") == 0 ||
         strcmp(cmd->key, "laser/status") == 0 ||
         strcmp(cmd->key, "laser/engstatus") == 0) {
-        return MSG_GET;
+        return COO_CMD_QUERY;
     }
 
     if (strcmp(cmd->key, "memsroute/route_loss") == 0) {
-        return route_loss_payload_has_value(cmd->payload) ? MSG_SET : MSG_GET;
+        return route_loss_payload_has_value(cmd->payload) ? COO_CMD_EFFECT : COO_CMD_QUERY;
     }
 
     if (strcmp(cmd->key, "laser") == 0) {
         return coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
-               MSG_SET : MSG_GET;
+               COO_CMD_EFFECT : COO_CMD_QUERY;
     }
 
     if (strcmp(cmd->key, "laser/tune") == 0) {
         return coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
                coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
-               MSG_SET : MSG_GET;
+               COO_CMD_EFFECT : COO_CMD_QUERY;
     }
 
     if (strcmp(cmd->key, "laser/settings") == 0) {
@@ -298,10 +298,10 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
 
         return coo_json_extract_object(cmd->payload, "settings",
                                        settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
-               MSG_SET : MSG_GET;
+               COO_CMD_EFFECT : COO_CMD_QUERY;
     }
 
-    return MSG_SET;
+    return COO_CMD_EFFECT;
 }
 
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
@@ -446,12 +446,12 @@ static bool command_network_mqtt_allowed(void)
     return atomic_get(&serial_network_ignore_active) == 0;
 }
 
-static bool command_mqtt_accept(const struct Command *cmd, void *user_data)
+static bool command_mqtt_accept(const struct coo_cmd_request *cmd, void *user_data)
 {
     ARG_UNUSED(user_data);
 
     return command_network_mqtt_allowed() ||
-           (cmd != NULL && cmd->msg_type == MSG_GET &&
+           (cmd != NULL && cmd->msg_type == COO_CMD_QUERY &&
             mqtt_get_allowed_during_serial_guard(cmd->key));
 }
 
@@ -524,23 +524,23 @@ struct coo_cmd_runtime *command_runtime_get(void)
 /* COMMAND HANDLERS */
 
 
-struct OutMsg unknown_response(const struct Command *cmd) {
+struct coo_cmd_response unknown_response(const struct coo_cmd_request *cmd) {
     return coo_cmd_unknown_response(cmd);
 }
 
-struct OutMsg unsupported_response(const struct Command *cmd) {
+struct coo_cmd_response unsupported_response(const struct coo_cmd_request *cmd) {
     return coo_cmd_unsupported_response(cmd);
 }
 
-struct OutMsg help_get(const struct Command *cmd)
+struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
 {
-    return coo_cmd_reply(cmd, RESP_OK,
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK,
                         "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
                         "memsroute,mems,split,measure_throughput,laser,laserbank,"
                         "atten,pd,pdsettings\"}");
 }
 
-struct OutMsg ip_get(const struct Command *cmd)
+struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd)
 {
     struct app_ip_settings ip_cfg;
     struct network_ipv4_info net = {0};
@@ -578,7 +578,7 @@ struct OutMsg ip_get(const struct Command *cmd)
              ntp_source,
              ntp_server);
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
 static void network_config_from_app_ip(const struct app_ip_settings *ip_cfg,
@@ -622,7 +622,7 @@ static void network_config_from_app_ip(const struct app_ip_settings *ip_cfg,
 #endif
 }
 
-struct OutMsg ip_set(const struct Command *cmd)
+struct coo_cmd_response ip_set(const struct coo_cmd_request *cmd)
 {
     struct app_ip_settings ip_cfg;
     char response[MAX_PAYLOAD_LEN];
@@ -792,13 +792,13 @@ struct OutMsg ip_set(const struct Command *cmd)
                  unsupported_dhcp ? "unsupported" : "ok",
                  unsupported_dns ? "unsupported" : "ok",
                  unsupported_ntp ? "unsupported" : "ok");
-        return coo_cmd_reply(cmd, RESP_OK, response);
+        return coo_cmd_reply(cmd, COO_CMD_RESP_OK, response);
     }
 
     return coo_cmd_ok(cmd);
 }
 
-struct OutMsg mqtt_get(const struct Command *cmd)
+struct coo_cmd_response mqtt_get(const struct coo_cmd_request *cmd)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
@@ -819,10 +819,10 @@ struct OutMsg mqtt_get(const struct Command *cmd)
              "{\"broker\":\"%s\",\"dns_supported\":%s}",
              endpoint,
              dns_supported ? "true" : "false");
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg mqtt_set(const struct Command *cmd)
+struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
@@ -864,7 +864,7 @@ struct OutMsg mqtt_set(const struct Command *cmd)
     return coo_cmd_ok(cmd);
 }
 
-struct OutMsg time_get(const struct Command *cmd)
+struct coo_cmd_response time_get(const struct coo_cmd_request *cmd)
 {
     struct timespec ts = {0};
     uint64_t utc_ms;
@@ -877,10 +877,10 @@ struct OutMsg time_get(const struct Command *cmd)
              "{\"utc\":%llu,\"uptime\":%lld}",
              (unsigned long long)utc_ms, (long long)k_uptime_get());
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg time_set(const struct Command *cmd)
+struct coo_cmd_response time_set(const struct coo_cmd_request *cmd)
 {
     uint64_t utc_ms = 0;
     struct timespec ts = {0};
@@ -904,7 +904,7 @@ struct OutMsg time_set(const struct Command *cmd)
     return coo_cmd_ok(cmd);
 }
 
-struct OutMsg reboot_set(const struct Command *cmd)
+struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd)
 {
     int rc;
 
@@ -916,7 +916,7 @@ struct OutMsg reboot_set(const struct Command *cmd)
     return coo_cmd_ok(cmd);
 }
 
-struct OutMsg serial_guard_get(const struct Command *cmd)
+struct coo_cmd_response serial_guard_get(const struct coo_cmd_request *cmd)
 {
     char payload[MAX_PAYLOAD_LEN];
     int64_t remaining_ms = 0;
@@ -928,10 +928,10 @@ struct OutMsg serial_guard_get(const struct Command *cmd)
              app_settings_get_serial_holdoff_s(),
              command_network_mqtt_allowed() ? "false" : "true",
              (long long)remaining_ms);
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg serial_guard_set(const struct Command *cmd)
+struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
 {
     uint32_t holdoff_s = 0;
     bool persist = false;
@@ -954,14 +954,14 @@ struct OutMsg serial_guard_set(const struct Command *cmd)
         return coo_cmd_error(cmd, "invalid persistent");
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
-    if (cmd->source == CMD_SRC_SERIAL) {
+    if (cmd->source == COO_CMD_SOURCE_SERIAL) {
         command_serial_note_activity(NULL);
     }
     return coo_cmd_ok(cmd);
 }
 
 
-struct OutMsg status_get(const struct Command *cmd)
+struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
 {
     struct tempsense_status ts = {0};
     struct laserbank_tempcontrol_status bank = {0};
@@ -1010,9 +1010,9 @@ struct OutMsg status_get(const struct Command *cmd)
     }
 
     if (include_ip) {
-        struct OutMsg ip = ip_get(cmd);
+        struct coo_cmd_response ip = ip_get(cmd);
 
-        if (ip.msg_type != RESP_OK ||
+        if (ip.msg_type != COO_CMD_RESP_OK ||
             coo_json_append(payload, sizeof(payload), &off,
                             ",\"ip\":%s", ip.payload) != 0) {
             return coo_cmd_error(cmd, "status response too large");
@@ -1088,10 +1088,10 @@ struct OutMsg status_get(const struct Command *cmd)
         return coo_cmd_error(cmd, "status response too large");
     }
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg temp_get(const struct Command *cmd)
+struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
 {
     struct tempsense_status ts = {0};
     struct hispec_laser_bank_temperature_status bank = {0};
@@ -1146,5 +1146,5 @@ struct OutMsg temp_get(const struct Command *cmd)
         return coo_cmd_error(cmd, "temp response too large");
     }
 
-    return coo_cmd_reply(cmd, RESP_OK, payload);
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }

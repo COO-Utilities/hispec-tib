@@ -26,46 +26,26 @@
 #define MAX_CORRELATION_DATA COO_CMD_CORRELATION_MAX
 #define MAX_PENDING_COMMANDS 2
 
-/* Transitional app-local names retained while handlers move into domain files. */
-#define MSG_GET COO_CMD_QUERY
-#define MSG_SET COO_CMD_EFFECT
-#define ACK COO_CMD_ACK
-#define RESP_OK COO_CMD_RESP_OK
-#define RESP_ERROR COO_CMD_RESP_ERROR
-#define MsgType coo_cmd_msg_type
-#define CMD_SRC_MQTT COO_CMD_SOURCE_MQTT
-#define CMD_SRC_SERIAL COO_CMD_SOURCE_SERIAL
-#define CommandSource coo_cmd_source
-#define OUT_TARGET_MQTT COO_CMD_OUT_MQTT
-#define OUT_TARGET_SERIAL COO_CMD_OUT_SERIAL
-#define OUT_TARGET_MQTT_BEST_EFFORT COO_CMD_OUT_MQTT_BEST_EFFORT
-#define OutMsgTarget coo_cmd_out_target
-#define Command coo_cmd_request
-#define OutMsg coo_cmd_response
-#define CommandWork coo_cmd_work
-#define DispatchFunc coo_cmd_handler_fn
-#define DispatchEntry coo_cmd_dispatch_entry
-
 /* Handler prototypes for command.c-owned commands (get/set where defined). */
-struct OutMsg help_get(const struct Command *cmd);
-struct OutMsg ip_get(const struct Command *cmd);
-struct OutMsg ip_set(const struct Command *cmd);
-struct OutMsg mqtt_get(const struct Command *cmd);
-struct OutMsg mqtt_set(const struct Command *cmd);
-struct OutMsg time_get(const struct Command *cmd);
-struct OutMsg time_set(const struct Command *cmd);
-struct OutMsg reboot_set(const struct Command *cmd);
-struct OutMsg serial_guard_get(const struct Command *cmd);
-struct OutMsg serial_guard_set(const struct Command *cmd);
+struct coo_cmd_response help_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response ip_set(const struct coo_cmd_request *cmd);
+struct coo_cmd_response mqtt_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd);
+struct coo_cmd_response time_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response time_set(const struct coo_cmd_request *cmd);
+struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd);
+struct coo_cmd_response serial_guard_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd);
 
-struct OutMsg status_get(const struct Command *cmd);
-struct OutMsg temp_get(const struct Command *cmd);
+struct coo_cmd_response status_get(const struct coo_cmd_request *cmd);
+struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd);
 
 
-struct OutMsg unknown_response(const struct Command *cmd);
-struct OutMsg unsupported_response(const struct Command *cmd);
+struct coo_cmd_response unknown_response(const struct coo_cmd_request *cmd);
+struct coo_cmd_response unsupported_response(const struct coo_cmd_request *cmd);
 /** Dispatch one normalized command to the longest matching command-table entry. */
-struct OutMsg dispatch_command(const struct Command *cmd);
+struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd);
 
 /**
  * @brief Initialize command runtime identity, queues, hooks, and delayed actions.

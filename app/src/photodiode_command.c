@@ -57,7 +57,7 @@ static int pd_parse_channel_name(const char *name, enum photodiode_channel *chan
 	return -ENOENT;
 }
 
-static int pd_parse_channel_from_key(const struct Command *cmd,
+static int pd_parse_channel_from_key(const struct coo_cmd_request *cmd,
 				     enum photodiode_channel *channel)
 {
 	const char *slash = strchr(cmd->key, '/');
@@ -69,7 +69,7 @@ static int pd_parse_channel_from_key(const struct Command *cmd,
 	return pd_parse_channel_name(slash + 1, channel);
 }
 
-static int pd_parse_channel_from_payload_or_key(const struct Command *cmd,
+static int pd_parse_channel_from_payload_or_key(const struct coo_cmd_request *cmd,
 						enum photodiode_channel *channel)
 {
 	char channel_name[8] = {0};
@@ -92,7 +92,7 @@ static int pd_parse_channel_from_payload_or_key(const struct Command *cmd,
 	return pd_parse_channel_name(channel_name, channel);
 }
 
-struct OutMsg pd_get(const struct Command *cmd)
+struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 {
 	struct photodiode_status status;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -141,10 +141,10 @@ struct OutMsg pd_get(const struct Command *cmd)
 		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
 		 (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
 		 status.uptime_ms);
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct OutMsg pd_dark_status_response(const struct Command *cmd,
+static struct coo_cmd_response pd_dark_status_response(const struct coo_cmd_request *cmd,
 					     const struct photodiode_dark_status *status)
 {
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -173,7 +173,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 			 (double)result->configured_dark_mv,
 			 (double)result->lowest_dark_mv,
 			 result->lowest_dark_valid ? "true" : "false");
-		return coo_cmd_reply(cmd, RESP_OK, payload);
+		return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 	}
 
 	if (status->state == PHOTODIODE_DARK_ERROR) {
@@ -185,7 +185,7 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 			 status->duration_ms,
 			 status->samples,
 			 status->target_samples);
-		return coo_cmd_reply(cmd, RESP_ERROR, payload);
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
 	}
 
 	snprintk(payload, sizeof(payload),
@@ -197,10 +197,10 @@ static struct OutMsg pd_dark_status_response(const struct Command *cmd,
 		 status->duration_ms,
 		 status->samples,
 		 status->target_samples);
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg pd_set(const struct Command *cmd)
+struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 {
 	char action[32] = {0};
 	enum photodiode_channel channel;
@@ -314,7 +314,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
 }
 
-struct OutMsg pd_settings_get(const struct Command *cmd)
+struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd)
 {
 	struct app_photodiode_settings settings;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -337,10 +337,10 @@ struct OutMsg pd_settings_get(const struct Command *cmd)
 		return coo_cmd_error(cmd, "pdsettings response too large");
 	}
 
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg pd_settings_set(const struct Command *cmd)
+struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 {
 	struct app_photodiode_settings settings;
 	struct app_pd_channel_settings channel_settings;

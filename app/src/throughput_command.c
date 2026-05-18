@@ -15,7 +15,7 @@
 
 LOG_MODULE_DECLARE(throughput_monitor, LOG_LEVEL_INF);
 
-struct OutMsg measure_throughput_set(const struct Command *cmd)
+struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd)
 {
 	char stop[8] = {0};
 	char laser_name[16] = {0};

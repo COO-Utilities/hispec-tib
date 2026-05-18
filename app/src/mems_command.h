@@ -18,21 +18,21 @@
  */
 
 /** Query active MEMS routes or route-loss settings. */
-struct OutMsg memsroute_get(const struct Command *cmd);
+struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd);
 
 /** Apply one MEMS route or route-loss setting. */
-struct OutMsg memsroute_set(const struct Command *cmd);
+struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd);
 
 /** Query all MEMS switches or one switch. */
-struct OutMsg mems_get(const struct Command *cmd);
+struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd);
 
 /** Apply one MEMS switch state or toggle profile. */
-struct OutMsg mems_set(const struct Command *cmd);
+struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd);
 
 /** Query one AS splitter channel, usually with command key split/yj or split/hk. */
-struct OutMsg splitting_get(const struct Command *cmd);
+struct coo_cmd_response splitting_get(const struct coo_cmd_request *cmd);
 
 /** Apply one AS-PCB splitter channel using channel, ratio1, and ratio2. */
-struct OutMsg splitting_set(const struct Command *cmd);
+struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd);
 
 #endif /* HISPEC_MEMS_COMMAND_H */

@@ -23,7 +23,7 @@
 
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
 
-static const char *command_suffix_after(const struct Command *cmd, const char *prefix)
+static const char *command_suffix_after(const struct coo_cmd_request *cmd, const char *prefix)
 {
 	const char *suffix;
 	size_t prefix_len;
@@ -62,7 +62,7 @@ static bool parse_laserbank_power_mode_text(const char *text,
 	return false;
 }
 
-static bool parse_laserbank_power_request(const struct Command *cmd,
+static bool parse_laserbank_power_request(const struct coo_cmd_request *cmd,
 					  enum hispec_laser_bank_power_mode *mode)
 {
 	const char *suffix = command_suffix_after(cmd, "laserbank/power");
@@ -83,7 +83,7 @@ static bool parse_laserbank_power_request(const struct Command *cmd,
 	return parse_laserbank_power_mode_text(cmd->payload, mode);
 }
 
-struct OutMsg laserbank_power(const struct Command *cmd)
+struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_bank_power_mode mode;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -94,7 +94,7 @@ struct OutMsg laserbank_power(const struct Command *cmd)
 	}
 
 	if (cmd != NULL &&
-	    (cmd->msg_type == MSG_SET ||
+	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     command_suffix_after(cmd, "laserbank/power")[0] != '\0')) {
 		if (!parse_laserbank_power_request(cmd, &mode)) {
 			return coo_cmd_error(cmd, "override must be auto, override_on, or override_off");
@@ -110,10 +110,10 @@ struct OutMsg laserbank_power(const struct Command *cmd)
 		 "{\"mode\":\"%s\",\"powered\":%s}",
 		 hispec_laser_bank_power_mode_name(mode),
 		 hispec_laser_bank_power_is_enabled() ? "true" : "false");
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg laserbank_clearfaults(const struct Command *cmd)
+struct coo_cmd_response laserbank_clearfaults(const struct coo_cmd_request *cmd)
 {
 	uint32_t off_ms = 0U;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -129,7 +129,7 @@ struct OutMsg laserbank_clearfaults(const struct Command *cmd)
 	}
 
 	snprintf(payload, sizeof(payload), "{\"off_ms\":%u}", off_ms);
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
 static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
@@ -188,7 +188,7 @@ static bool parse_heater_mode_text(const char *text,
 	return false;
 }
 
-static bool parse_heater_request(const struct Command *cmd,
+static bool parse_heater_request(const struct coo_cmd_request *cmd,
 				 enum laserbank_heater_mode *mode)
 {
 	const char *suffix = command_suffix_after(cmd, "laserbank/heater");
@@ -225,7 +225,7 @@ static bool parse_heater_request(const struct Command *cmd,
 	return parse_heater_mode_text(cmd->payload, mode);
 }
 
-struct OutMsg laserbank_heater(const struct Command *cmd)
+struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
 {
 	enum laserbank_heater_mode mode;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -235,10 +235,10 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
 	}
 
 	if (cmd != NULL &&
-	    (cmd->msg_type == MSG_SET ||
+	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     command_suffix_after(cmd, "laserbank/heater")[0] != '\0')) {
 		if (!parse_heater_request(cmd, &mode)) {
-			return coo_cmd_reply(cmd, RESP_ERROR,
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
 		}
 		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);
@@ -248,10 +248,10 @@ struct OutMsg laserbank_heater(const struct Command *cmd)
 	}
 
 	laserbank_tempcontrol_status_payload(payload, sizeof(payload));
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-static int command_laser_id_from_payload(const struct Command *cmd,
+static int command_laser_id_from_payload(const struct coo_cmd_request *cmd,
 					 enum hispec_laser_id *id,
 					 char *name,
 					 size_t name_len)
@@ -269,12 +269,12 @@ static int command_laser_id_from_payload(const struct Command *cmd,
 	return hispec_laser_id_from_name(name, id);
 }
 
-static struct OutMsg laser_unavailable(const struct Command *cmd)
+static struct coo_cmd_response laser_unavailable(const struct coo_cmd_request *cmd)
 {
 	return coo_cmd_error(cmd, "laser bank unavailable on this board");
 }
 
-static struct OutMsg laser_error_response(const struct Command *cmd,
+static struct coo_cmd_response laser_error_response(const struct coo_cmd_request *cmd,
 					  const char *msg,
 					  int rc)
 {
@@ -338,7 +338,7 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	return 0;
 }
 
-struct OutMsg laser_get(const struct Command *cmd)
+struct coo_cmd_response laser_get(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	struct hispec_laser_status status = {0};
@@ -360,11 +360,11 @@ struct OutMsg laser_get(const struct Command *cmd)
 	if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
 		return coo_cmd_error(cmd, "laser response too large");
 	}
-	return rc == 0 ? coo_cmd_reply(cmd, RESP_OK, payload) :
+	return rc == 0 ? coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload) :
 	       laser_error_response(cmd, "laser status failed", rc);
 }
 
-struct OutMsg laser_set(const struct Command *cmd)
+struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
@@ -402,7 +402,7 @@ struct OutMsg laser_set(const struct Command *cmd)
 	return coo_cmd_ok(cmd);
 }
 
-struct OutMsg laser_tune_get(const struct Command *cmd)
+struct coo_cmd_response laser_tune_get(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	char name[16] = {0};
@@ -418,10 +418,10 @@ struct OutMsg laser_tune_get(const struct Command *cmd)
 		 "{\"name\":\"%s\",\"tune_nm\":%.4f}",
 		 hispec_laser_name(id),
 		 (double)hispec_laser_get_tune_delta_nm(id));
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct OutMsg laser_tune_set(const struct Command *cmd)
+struct coo_cmd_response laser_tune_set(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	char name[16] = {0};
@@ -497,7 +497,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 	return written >= 0 && written < (int)payload_len ? 0 : -ENOSPC;
 }
 
-struct OutMsg laser_settings_get(const struct Command *cmd)
+struct coo_cmd_response laser_settings_get(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
@@ -518,7 +518,7 @@ struct OutMsg laser_settings_get(const struct Command *cmd)
 	if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
 		return coo_cmd_error(cmd, "laser settings response too large");
 	}
-	return coo_cmd_reply(cmd, RESP_OK, payload);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
 static int laser_parse_settings_update(const char *json,
@@ -618,7 +618,7 @@ static int laser_parse_settings_update(const char *json,
 	return 0;
 }
 
-struct OutMsg laser_settings_set(const struct Command *cmd)
+struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
@@ -661,7 +661,7 @@ struct OutMsg laser_settings_set(const struct Command *cmd)
 	return coo_cmd_ok(cmd);
 }
 
-struct OutMsg laser_status_get(const struct Command *cmd)
+struct coo_cmd_response laser_status_get(const struct coo_cmd_request *cmd)
 {
 	return laser_get(cmd);
 }
@@ -677,7 +677,7 @@ static int json_append_named_float(char *payload, size_t payload_len,
 					     value, precision);
 }
 
-struct OutMsg laser_engstatus_get(const struct Command *cmd)
+struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_id id;
 	struct hispec_laser_status s = {0};
@@ -761,6 +761,6 @@ struct OutMsg laser_engstatus_get(const struct Command *cmd)
 	    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
 		return coo_cmd_error(cmd, "laser engineering status response too large");
 	}
-	return rc == 0 ? coo_cmd_reply(cmd, RESP_OK, payload) :
+	return rc == 0 ? coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload) :
 	       laser_error_response(cmd, "laser engineering status failed", rc);
 }
