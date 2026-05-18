@@ -35,29 +35,9 @@ target_sources(app PRIVATE
         src/throughput_command.c
         src/throughput_monitor.c
         src/tempsense.c
-        src/tempsense.h
         src/mems_switching.c
-        src/attenuator.h
-        src/attenuator_command.h
-        src/app_scheduled_actions.h
-        src/app_settings.h
-        src/app_identity.h
-        src/command.h
-        src/devices.h
-        src/laser_command.h
-        src/lasers.h
-        src/laserbank_tempcontrol.h
-        src/maiman.h
-        src/mems_command.h
-        src/laser_properties.h
-        src/photodiode.h
-        src/photodiode_command.h
-        src/throughput_command.h
-        src/throughput_monitor.h
-        src/mems_switching.h
 )
 
 target_sources_ifdef(CONFIG_SNTP app PRIVATE
         src/sntp_sync.c
-        src/sntp_sync.h
 )
