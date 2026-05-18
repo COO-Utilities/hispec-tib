@@ -42,7 +42,7 @@ config COO_JSON
 	default n
 	help
 	  Enable lightweight JSON helper wrappers used by command handling
-	  (msg_type parsing, keyed primitive extraction, and key splitting).
+	  (keyed primitive extraction and key splitting).
 
 config COO_MQTT
 	bool "COO MQTT client wrapper"

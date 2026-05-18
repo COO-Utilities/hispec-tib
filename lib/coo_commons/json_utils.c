@@ -19,11 +19,6 @@
 #include <zephyr/sys/util.h>
 #include <stdio.h>
 #include <string.h>
-#include <strings.h>
-
-struct json_type_msg {
-	char msg_type[8];
-};
 
 #define COO_JSON_DOUBLE_ARRAY_MAX 8U
 
@@ -92,34 +87,6 @@ static int find_json_key_value(const char *json,
 	}
 
 	return COO_JSON_EXTRACT_OK;
-}
-
-bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_out)
-{
-	struct json_type_msg msg = {0};
-	const struct json_obj_descr descr[] = {
-		JSON_OBJ_DESCR_PRIM(struct json_type_msg, msg_type, JSON_TOK_STRING)
-	};
-
-	if (payload == NULL || msg_type_out == NULL) {
-		return false;
-	}
-
-	int rc = json_obj_parse((char *)payload, strlen(payload), descr, ARRAY_SIZE(descr), &msg);
-	if (rc < 0) {
-		return false;
-	}
-
-	/* Case-insensitive check for supported types */
-	if (strncasecmp(msg.msg_type, "get", 4) == 0) {
-		*msg_type_out = COO_MSG_GET;
-		return true;
-	}
-	if (strncasecmp(msg.msg_type, "set", 4) == 0) {
-		*msg_type_out = COO_MSG_SET;
-		return true;
-	}
-	return false;
 }
 
 int coo_json_extract_bool(const char *json, const char *key, bool *value)
