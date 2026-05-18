@@ -497,7 +497,7 @@ struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
                         "atten,pd,pdsettings\"}");
 }
 
-struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd)
+static int ip_status_payload(char *payload, size_t payload_len)
 {
     struct app_ip_settings ip_cfg;
     struct network_ipv4_info net = {0};
@@ -509,7 +509,7 @@ struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd)
     const char *ntp_source = "unsupported";
     const char *ntp_server = "";
 #endif
-    char payload[MAX_PAYLOAD_LEN];
+    int written;
 
     app_settings_get_ip(&ip_cfg);
     (void)network_get_ipv4_info(&net);
@@ -519,21 +519,32 @@ struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd)
     ntp_server = sntp.server;
 #endif
 
-    snprintk(payload, sizeof(payload),
-             "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
-             "\"preferdhcpdns\":%s,\"preferdhcpntp\":%s,"
-             "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"},"
-             "\"active\":{\"ready\":%s,\"ip\":\"%s\"},"
-             "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\"}}",
-             network_ipv4_source_str(net.source),
-             ip_cfg.try_dhcp_first ? "true" : "false",
-             ip_cfg.prefer_dhcp_dns ? "true" : "false",
-             ip_cfg.prefer_dhcp_ntp ? "true" : "false",
-             ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway, ip_cfg.dns, ip_cfg.ntp,
-             net.link_ready ? "true" : "false",
-             net.ip,
-             ntp_source,
-             ntp_server);
+    written = snprintk(payload, payload_len,
+                       "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
+                       "\"preferdhcpdns\":%s,\"preferdhcpntp\":%s,"
+                       "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"},"
+                       "\"active\":{\"ready\":%s,\"ip\":\"%s\"},"
+                       "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\"}}",
+                       network_ipv4_source_str(net.source),
+                       ip_cfg.try_dhcp_first ? "true" : "false",
+                       ip_cfg.prefer_dhcp_dns ? "true" : "false",
+                       ip_cfg.prefer_dhcp_ntp ? "true" : "false",
+                       ip_cfg.ip, ip_cfg.subnet, ip_cfg.gateway, ip_cfg.dns, ip_cfg.ntp,
+                       net.link_ready ? "true" : "false",
+                       net.ip,
+                       ntp_source,
+                       ntp_server);
+
+    return (written >= 0 && (size_t)written < payload_len) ? 0 : -ENOSPC;
+}
+
+struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd)
+{
+    char payload[MAX_PAYLOAD_LEN];
+
+    if (ip_status_payload(payload, sizeof(payload)) != 0) {
+        return coo_cmd_error(cmd, "ip response too large");
+    }
 
     return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
@@ -967,11 +978,11 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
     }
 
     if (include_ip) {
-        struct coo_cmd_response ip = ip_get(cmd);
+        char ip_payload[MAX_PAYLOAD_LEN];
 
-        if (ip.msg_type != COO_CMD_RESP_OK ||
+        if (ip_status_payload(ip_payload, sizeof(ip_payload)) != 0 ||
             coo_json_append(payload, sizeof(payload), &off,
-                            ",\"ip\":%s", ip.payload) != 0) {
+                            ",\"ip\":%s", ip_payload) != 0) {
             return coo_cmd_error(cmd, "status response too large");
         }
     }
