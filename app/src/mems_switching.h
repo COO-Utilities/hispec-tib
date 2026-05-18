@@ -17,6 +17,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #define MEMS_SOURCEDEST_MAX_LEN 24
 #define MEMS_SWITCH_ELECTRICAL_PULSE_MS 20U  //datasheet says pulse width >=15ms
@@ -114,6 +115,8 @@ struct mems_split_switch_duty {
 struct mems_split_state {
     float requested[MEMS_SPLIT_OUTPUT_COUNT];
     float actual[MEMS_SPLIT_OUTPUT_COUNT];
+    float output[MEMS_SPLIT_OUTPUT_COUNT];
+    float transmission[MEMS_SPLIT_OUTPUT_COUNT];
     struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
     uint32_t stopsin_s;
 };
@@ -211,13 +214,20 @@ const char *mems_split_channel_name(uint8_t channel_index);
 /** @brief Map an AS split channel name such as "yj" or "hk" to an index. */
 int mems_split_channel_index(const char *channel, uint8_t *index);
 
+/** @brief Format the app-settings route name used by one AS split channel. */
+int mems_split_route_name(uint8_t channel_index, char *out, size_t out_len);
+
+/** @brief Return the app-settings key for one split output transmission. */
+const char *mems_split_output_loss_key(uint8_t output_index);
+
 /**
  * @brief Read current AS split route state into @p out.
  *
  * The route is selected from the board MEMS route table. This can sleep on the
- * router mutex while reading switch snapshots. If @p requested is non-NULL it
- * becomes the stored requested ratio for future responses; otherwise the last
- * requested ratio is retained.
+ * router mutex while reading switch snapshots and on settings while reading
+ * split transmissions. If @p requested is non-NULL it becomes the stored
+ * requested ratio for future responses; otherwise the last requested ratio is
+ * retained.
  */
 int mems_split_read_channel_state(const struct mems_router *router,
                                   uint8_t channel_index,
@@ -228,9 +238,11 @@ int mems_split_read_channel_state(const struct mems_router *router,
  * @brief Apply one AS split channel as three output ratios.
  *
  * The user-facing command provides ratio1 and ratio2; this domain helper
- * receives all three normalized ratios and converts them to exact MEMS ticks.
- * It can sleep on the router mutex through MEMS switch operations, does not
- * publish warnings, and does not parse command payloads.
+ * receives all three normalized output ratios, applies route-loss transmission
+ * correction, and converts the corrected duty targets to exact MEMS ticks. It
+ * can sleep on the router mutex through MEMS switch operations and on settings
+ * while reading split transmissions. It does not publish warnings or parse
+ * command payloads.
  */
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,

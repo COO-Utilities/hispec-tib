@@ -12,6 +12,7 @@
  */
 
 #include <coo_commons/json_utils.h>
+#include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <zephyr/data/json.h>
@@ -25,6 +26,15 @@ struct json_type_msg {
 };
 
 #define COO_JSON_DOUBLE_ARRAY_MAX 8U
+
+const char *coo_json_skip_ws(const char *text)
+{
+	while (text != NULL && isspace((unsigned char)*text)) {
+		text++;
+	}
+
+	return text;
+}
 
 /**
  * @brief Extract one JSON field by key using Zephyr's descriptor parser.

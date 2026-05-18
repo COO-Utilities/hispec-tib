@@ -70,7 +70,7 @@ payload-query shapes:
 - `status`
 - `laser/status`
 - `laser/engstatus`
-- `memsroute/route_loss` when `laser` is present
+- `memsroute/route_loss` when the payload contains only `route`
 - `laser` when `level` is absent
 - `laser/tune` when `tune_nm` and `delta_nm` are absent
 - `laser/settings` when the nested `settings` object is absent

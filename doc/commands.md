@@ -219,24 +219,50 @@ while serial guard is active and attenuator DAC-range clamping.
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": "0.32 dB",
+    "persistent": false
+  }
+  ```
+  or:
+  ```json
+  {
+    "route": "yj_calin_to_yj_split",
+    "split": ["0.32 dB", "0.32 dB", 0.93],
     "persistent": true
   }
   ```
-- **Payload -> one route-loss record:**
+- **Payload -> route-loss records for one route:**
   ```json
   {
-    "route": "yj_sm_to_yj_pd",
-    "laser": "1430yj"
+    "route": "yj_sm_to_yj_pd"
   }
   ```
   ```json
-  {"tx":0.93,"loss_db":0.3188,"configured":true}
+  {
+    "route": "yj_sm_to_yj_pd",
+    "lasers": {
+      "1028y": 1.0,
+      "1270j": 1.0,
+      "1430yj": 0.93,
+      "1430hk": 1.0,
+      "1510h": 1.0,
+      "2330k": 1.0
+    }
+  }
+  ```
+  For a split route:
+  ```json
+  {
+    "route": "yj_calin_to_yj_split",
+    "split": [0.93, 0.93, 1.0]
+  }
   ```
 
-Route-loss records are app settings keyed by route name and laser name. Missing route-loss
+Route-loss records are app settings keyed by route name and laser name or split. Missing route-loss
 records are treated as loss-free transmission, `tx = 1.0`. Numeric values are
 linear transmission in `(0, 1]`. Strings ending in `dB`, `db`, or `DB` are route
-loss in dB and convert to `tx = 10^(-loss_db / 10)`. Route loses are only used on the TIB for throughput monitoring. 
+loss in dB and convert to `tx = 10^(-loss_db / 10)`. The split identifier must be a three-tuple, though dB loss and
+transmission may be mixed. Route losses are used on the TIB for throughput monitoring
+and the AS for splitting fraction correction.
 
 
 (mems)=
@@ -1100,8 +1126,10 @@ off or no faults).
   ```json
   {
     "channel": "yj",
-    "requested_ratio": [0.33, 0.33, 0.34],
-    "actual_ratio": [0.33, 0.33, 0.34],
+    "ratio_ask": [0.33, 0.33, 0.34],
+    "ratio_actual": [0.33, 0.33, 0.34],
+    "ratio_out": [0.33, 0.33, 0.34],
+    "split_transmission": [1.0, 1.0, 1.0],
     "switches": [
       {
         "name": "yj_as1",
@@ -1151,11 +1179,18 @@ off or no faults).
   - Users cannot set `toggle_rate_hz` for `split`. The firmware uses the
     fastest period allowed by `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the
     requested ratios to integer MEMS ticks.
-  - `requested_ratio` and `actual_ratio` are arrays ordered as
-    `[ratio1, ratio2, ratio3]`.
+  - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
+    arrays ordered as `[ratio1, ratio2, ratio3]`.
+  - `ratio_ask` is the requested output split. `ratio_actual` is the MEMS duty
+    split after transmission correction and integer tick quantization.
+    `ratio_out` is the estimated optical output split after applying
+    `split_transmission`.
   - Each switch report gives the selected route state, the selected-state
     duty-cycle float, and the exact integer timing as
     `numerator / denominator` ticks with `tick_ms` milliseconds per tick.
   - If the attained ratio differs from the requested ratio because MEMS timing
     is quantized, the firmware emits `split_ratio_quantized` on
     `dt/<device>/warning`.
+  - The route-loss split tuple sets `split_transmission`. Set all three split
+    transmissions to the same value, or leave them unset, to disable relative
+    split correction.

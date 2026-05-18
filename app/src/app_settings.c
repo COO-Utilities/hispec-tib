@@ -1295,12 +1295,11 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 }
 
 int app_settings_get_route_loss(const char *route, const char *laser,
-				double *transmission, bool *configured)
+				double *transmission)
 {
 	int index;
 
-	if (transmission == NULL || configured == NULL ||
-	    route == NULL || laser == NULL) {
+	if (transmission == NULL || route == NULL || laser == NULL) {
 		return -EINVAL;
 	}
 	if (route[0] == '\0' || laser[0] == '\0' ||
@@ -1310,13 +1309,11 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 	}
 
 	*transmission = 1.0;
-	*configured = false;
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);
 	if (index >= 0) {
 		*transmission = g_settings.snapshot.route_loss.record[index].transmission;
-		*configured = true;
 	}
 	k_mutex_unlock(&g_settings.lock);
 

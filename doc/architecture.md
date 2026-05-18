@@ -108,7 +108,7 @@ Empty or no-payload requests are queries except for no-payload actions such as
 `laserbank/power/override_on`. Non-empty payloads normally mean an effect
 request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
-`memsroute/route_loss` payloads that contain `laser`.
+`memsroute/route_loss` payloads that contain only `route`.
 
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:

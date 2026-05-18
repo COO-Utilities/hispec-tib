@@ -199,11 +199,11 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 /**
  * @brief Get one route-loss record.
  *
- * Missing records are not errors; @p configured is false and @p transmission
- * is returned as 1.0 so optical math can treat unspecified routes as loss-free.
+ * Missing records are not errors; @p transmission is returned as 1.0 so
+ * optical math can treat unspecified routes as loss-free.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
-				double *transmission, bool *configured);
+				double *transmission);
 /**
  * @brief Store or update one route-loss record.
  *

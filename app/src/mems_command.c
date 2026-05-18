@@ -109,15 +109,33 @@ static bool memsroute_is_route_loss_key(const char *key)
     return strcmp(key, "memsroute/route_loss") == 0;
 }
 
-static bool route_loss_laser_name_is_known(const char *laser)
+static const char *route_loss_json_value_for_key(const char *json, const char *key)
 {
-    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
-        if (strcmp(route_loss_laser_names[i], laser) == 0) {
-            return true;
-        }
+    char pattern[40];
+    const char *match;
+    const char *colon;
+    int written;
+
+    if (json == NULL || key == NULL) {
+        return NULL;
     }
 
-    return false;
+    written = snprintk(pattern, sizeof(pattern), "\"%s\"", key);
+    if (written < 0 || written >= (int)sizeof(pattern)) {
+        return NULL;
+    }
+
+    match = strstr(json, pattern);
+    if (match == NULL) {
+        return NULL;
+    }
+
+    colon = strchr(match + strlen(pattern), ':');
+    if (colon == NULL) {
+        return NULL;
+    }
+
+    return coo_json_skip_ws(colon + 1);
 }
 
 static int route_loss_parse_db_string(const char *text, double *transmission)
@@ -149,61 +167,209 @@ static int route_loss_parse_db_string(const char *text, double *transmission)
     return (*transmission > 0.0 && *transmission <= 1.0) ? 0 : -ERANGE;
 }
 
+static int route_loss_parse_scalar_token(const char *start, const char **end,
+                                         double *transmission)
+{
+    char db_text[24] = {0};
+    char *parse_end = NULL;
+    double tx;
+    size_t len;
+
+    if (start == NULL || end == NULL || transmission == NULL) {
+        return -EINVAL;
+    }
+
+    start = coo_json_skip_ws(start);
+    if (*start == '"') {
+        start++;
+        len = strcspn(start, "\"");
+        if (start[len] != '"' || len == 0U || len >= sizeof(db_text)) {
+            return -EINVAL;
+        }
+        memcpy(db_text, start, len);
+        db_text[len] = '\0';
+        *end = start + len + 1;
+        return route_loss_parse_db_string(db_text, transmission);
+    }
+
+    errno = 0;
+    tx = strtod(start, &parse_end);
+    if (errno != 0 || parse_end == start || !(tx > 0.0 && tx <= 1.0)) {
+        return -ERANGE;
+    }
+
+    *transmission = tx;
+    *end = parse_end;
+    return 0;
+}
+
+static int route_loss_extract_field_transmission(const struct Command *cmd,
+                                                 const char *field,
+                                                 double *transmission)
+{
+    char db_text[24] = {0};
+    double tx = 0.0;
+    int rc_num;
+    int rc_str;
+    int parse_rc;
+
+    rc_num = coo_json_extract_double(cmd->payload, field, &tx);
+    if (rc_num == COO_JSON_EXTRACT_OK) {
+        if (!(tx > 0.0 && tx <= 1.0)) {
+            return -ERANGE;
+        }
+        *transmission = tx;
+        return 0;
+    }
+
+    rc_str = coo_json_extract_string(cmd->payload, field, db_text, sizeof(db_text));
+    if (rc_str == COO_JSON_EXTRACT_OK) {
+        parse_rc = route_loss_parse_db_string(db_text, &tx);
+        if (parse_rc != 0) {
+            return parse_rc;
+        }
+        *transmission = tx;
+        return 0;
+    }
+
+    if (rc_num == COO_JSON_EXTRACT_MISSING && rc_str == COO_JSON_EXTRACT_MISSING) {
+        return -ENOENT;
+    }
+
+    return -EINVAL;
+}
+
 static int route_loss_extract_value(const struct Command *cmd,
                                     char *laser, size_t laser_len,
                                     double *transmission)
 {
     for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
         const char *candidate = route_loss_laser_names[i];
-        double tx = 0.0;
-        char db_text[24] = {0};
         int rc;
 
-        rc = coo_json_extract_double(cmd->payload, candidate, &tx);
-        if (rc == COO_JSON_EXTRACT_OK) {
-            if (!(tx > 0.0 && tx <= 1.0)) {
-                return -ERANGE;
-            }
+        rc = route_loss_extract_field_transmission(cmd, candidate, transmission);
+        if (rc == 0) {
             snprintk(laser, laser_len, "%s", candidate);
-            *transmission = tx;
             return 0;
         }
-        if (rc != COO_JSON_EXTRACT_MISSING &&
-            coo_json_extract_string(cmd->payload, candidate, db_text,
-                                    sizeof(db_text)) == COO_JSON_EXTRACT_OK) {
-            int parse_rc = route_loss_parse_db_string(db_text, &tx);
-
-            if (parse_rc != 0) {
-                return parse_rc;
-            }
-            snprintk(laser, laser_len, "%s", candidate);
-            *transmission = tx;
-            return 0;
+        if (rc != -ENOENT) {
+            return rc;
         }
     }
 
     return -ENOENT;
 }
 
-static struct OutMsg route_loss_query_response(const struct Command *cmd,
-                                               const char *route,
-                                               const char *laser)
+static int route_loss_extract_split_tuple(const struct Command *cmd,
+                                          double transmission[MEMS_SPLIT_OUTPUT_COUNT])
 {
-    char payload[MAX_PAYLOAD_LEN] = {0};
-    double tx = 1.0;
-    double loss_db = 0.0;
-    bool configured = false;
+    const char *cursor;
     int rc;
 
-    rc = app_settings_get_route_loss(route, laser, &tx, &configured);
-    if (rc != 0) {
-        return coo_cmd_error(cmd, "invalid route_loss key");
+    cursor = route_loss_json_value_for_key(cmd->payload, "split");
+    if (cursor == NULL) {
+        return -ENOENT;
+    }
+    if (*cursor != '[') {
+        return -EINVAL;
+    }
+    cursor++;
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        cursor = coo_json_skip_ws(cursor);
+        rc = route_loss_parse_scalar_token(cursor, &cursor, &transmission[i]);
+        if (rc != 0) {
+            return rc;
+        }
+
+        cursor = coo_json_skip_ws(cursor);
+        if (i + 1U < MEMS_SPLIT_OUTPUT_COUNT) {
+            if (*cursor != ',') {
+                return -EINVAL;
+            }
+            cursor++;
+        }
     }
 
-    loss_db = -10.0 * log10(tx);
-    snprintk(payload, sizeof(payload),
-             "{\"tx\":%.9f,\"loss_db\":%.6f,\"configured\":%s}",
-             tx, loss_db, configured ? "true" : "false");
+    cursor = coo_json_skip_ws(cursor);
+    return *cursor == ']' ? 0 : -EINVAL;
+}
+
+static bool route_loss_route_is_split(const char *route)
+{
+    char split_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_CHANNEL_COUNT; ++i) {
+        (void)mems_split_route_name(i, split_route, sizeof(split_route));
+        if (strcmp(route, split_route) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int route_loss_append_tx(char *payload, size_t payload_len, size_t *offset,
+                                double tx)
+{
+    return coo_json_append(payload, payload_len, offset, "%.6f", tx);
+}
+
+static struct OutMsg route_loss_query_response(const struct Command *cmd,
+                                               const char *route)
+{
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t offset = 0U;
+
+    if (coo_json_append(payload, sizeof(payload), &offset,
+                        "{\"route\":\"%s\",", route) != 0) {
+        return coo_cmd_error(cmd, "route_loss response too large");
+    }
+
+    if (route_loss_route_is_split(route)) {
+        if (coo_json_append(payload, sizeof(payload), &offset, "\"split\":[") != 0) {
+            return coo_cmd_error(cmd, "route_loss response too large");
+        }
+        for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+            const char *loss_key = mems_split_output_loss_key(i);
+            double tx = 1.0;
+
+            (void)app_settings_get_route_loss(route, loss_key, &tx);
+            if (i > 0U &&
+                coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
+                return coo_cmd_error(cmd, "route_loss response too large");
+            }
+            if (route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
+                return coo_cmd_error(cmd, "route_loss response too large");
+            }
+        }
+        if (coo_json_append(payload, sizeof(payload), &offset, "]}") != 0) {
+            return coo_cmd_error(cmd, "route_loss response too large");
+        }
+        return coo_cmd_reply(cmd, RESP_OK, payload);
+    }
+
+    if (coo_json_append(payload, sizeof(payload), &offset, "\"lasers\":{") != 0) {
+        return coo_cmd_error(cmd, "route_loss response too large");
+    }
+    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
+        double tx = 1.0;
+
+        (void)app_settings_get_route_loss(route, route_loss_laser_names[i], &tx);
+        if (i > 0U &&
+            coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
+            return coo_cmd_error(cmd, "route_loss response too large");
+        }
+        if (coo_json_append(payload, sizeof(payload), &offset, "\"%s\":",
+                            route_loss_laser_names[i]) != 0 ||
+            route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
+            return coo_cmd_error(cmd, "route_loss response too large");
+        }
+    }
+    if (coo_json_append(payload, sizeof(payload), &offset, "}}") != 0) {
+        return coo_cmd_error(cmd, "route_loss response too large");
+    }
+
     return coo_cmd_reply(cmd, RESP_OK, payload);
 }
 
@@ -211,8 +377,11 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
 {
     char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
     char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
+    double split_tx[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double tx = 1.0;
     bool persist = false;
+    int split_rc;
+    int laser_rc;
     int parse_rc;
 
     parse_rc = coo_json_extract_string(cmd->payload, "route", route, sizeof(route));
@@ -220,32 +389,56 @@ static struct OutMsg route_loss_handle(const struct Command *cmd, bool set_reque
         return coo_cmd_error(cmd, "missing or invalid route");
     }
 
-    parse_rc = route_loss_extract_value(cmd, laser, sizeof(laser), &tx);
-    if (parse_rc == -ENOENT) {
-        parse_rc = coo_json_extract_string(cmd->payload, "laser", laser, sizeof(laser));
-        if (parse_rc == COO_JSON_EXTRACT_OK) {
-            if (!route_loss_laser_name_is_known(laser)) {
-                return coo_cmd_error(cmd, "invalid route_loss laser");
-            }
-            return route_loss_query_response(cmd, route, laser);
-        }
-        return coo_cmd_error(cmd, "missing route_loss laser value");
-    }
-    if (!set_request) {
-        return coo_cmd_error(cmd, "route_loss query uses laser field");
-    }
-    if (parse_rc == -ERANGE) {
-        return coo_cmd_error(cmd, "route_loss out of range");
-    }
-    if (parse_rc != 0) {
-        return coo_cmd_error(cmd, "invalid route_loss value");
-    }
-
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return coo_cmd_error(cmd, "invalid persistent");
     }
 
+    split_rc = route_loss_extract_split_tuple(cmd, split_tx);
+    laser_rc = route_loss_extract_value(cmd, laser, sizeof(laser), &tx);
+
+    if (!set_request) {
+        if (split_rc != -ENOENT || laser_rc != -ENOENT ||
+            parse_rc == COO_JSON_EXTRACT_OK) {
+            return coo_cmd_error(cmd, "route_loss query uses route only");
+        }
+        return route_loss_query_response(cmd, route);
+    }
+
+    if (split_rc == 0 && laser_rc == 0) {
+        return coo_cmd_error(cmd, "route_loss uses split or laser value");
+    }
+    if (split_rc == -ERANGE || laser_rc == -ERANGE) {
+        return coo_cmd_error(cmd, "route_loss out of range");
+    }
+    if (split_rc != 0 && split_rc != -ENOENT) {
+        return coo_cmd_error(cmd, "invalid split route_loss");
+    }
+    if (laser_rc != 0 && laser_rc != -ENOENT) {
+        return coo_cmd_error(cmd, "invalid route_loss value");
+    }
+
+    if (split_rc == 0) {
+        if (!route_loss_route_is_split(route)) {
+            return coo_cmd_error(cmd, "route_loss split route invalid");
+        }
+        for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+            const char *loss_key = mems_split_output_loss_key(i);
+
+            parse_rc = app_settings_set_route_loss(route, loss_key, split_tx[i], persist);
+            if (parse_rc == -ENOSPC) {
+                return coo_cmd_error(cmd, "route_loss table full");
+            }
+            if (parse_rc != 0) {
+                return coo_cmd_error(cmd, "invalid route_loss key");
+            }
+        }
+        return coo_cmd_ok(cmd);
+    }
+
+    if (laser_rc == -ENOENT) {
+        return coo_cmd_error(cmd, "missing route_loss value");
+    }
     parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
     if (parse_rc == -ENOSPC) {
         return coo_cmd_error(cmd, "route_loss table full");
@@ -318,8 +511,10 @@ static struct OutMsg split_channel_response(const struct Command *cmd,
 
     written = snprintk(payload, sizeof(payload),
              "{\"channel\":\"%s\","
-             "\"requested_ratio\":[%.4f,%.4f,%.4f],"
-             "\"actual_ratio\":[%.4f,%.4f,%.4f],"
+             "\"ratio_ask\":[%.4f,%.4f,%.4f],"
+             "\"ratio_actual\":[%.4f,%.4f,%.4f],"
+             "\"ratio_out\":[%.4f,%.4f,%.4f],"
+             "\"split_transmission\":[%.6f,%.6f,%.6f],"
              "\"switches\":["
              "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
              "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u},"
@@ -335,6 +530,12 @@ static struct OutMsg split_channel_response(const struct Command *cmd,
              (double)state->actual[0],
              (double)state->actual[1],
              (double)state->actual[2],
+             (double)state->output[0],
+             (double)state->output[1],
+             (double)state->output[2],
+             (double)state->transmission[0],
+             (double)state->transmission[1],
+             (double)state->transmission[2],
              state->switches[0].name,
              state->switches[0].state,
              (double)state->switches[0].duty_cycle,
@@ -372,21 +573,21 @@ static void split_emit_quantization_warning(uint8_t channel_index,
         return;
     }
 
-    if (split_abs_float(state->actual[0] - state->requested[0]) <= 0.0005f &&
-        split_abs_float(state->actual[1] - state->requested[1]) <= 0.0005f &&
-        split_abs_float(state->actual[2] - state->requested[2]) <= 0.0005f) {
+    if (split_abs_float(state->output[0] - state->requested[0]) <= 0.0005f &&
+        split_abs_float(state->output[1] - state->requested[1]) <= 0.0005f &&
+        split_abs_float(state->output[2] - state->requested[2]) <= 0.0005f) {
         return;
     }
 
     snprintk(context, sizeof(context),
-             "channel=%s requested=%.4f/%.4f/%.4f actual=%.4f/%.4f/%.4f",
+             "channel=%s ask=%.4f/%.4f/%.4f out=%.4f/%.4f/%.4f",
              channel_name,
              (double)state->requested[0],
              (double)state->requested[1],
              (double)state->requested[2],
-             (double)state->actual[0],
-             (double)state->actual[1],
-             (double)state->actual[2]);
+             (double)state->output[0],
+             (double)state->output[1],
+             (double)state->output[2]);
     coo_cmd_runtime_warning_emit(command_runtime_get(), "split_ratio_quantized",
                      "requested split ratio was quantized to MEMS ticks",
                      context);

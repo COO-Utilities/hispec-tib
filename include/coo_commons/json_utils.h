@@ -28,6 +28,9 @@ enum coo_json_extract_status {
 	COO_JSON_EXTRACT_ERR = 1,
 };
 
+/** Return @p text advanced past ASCII JSON whitespace. */
+const char *coo_json_skip_ws(const char *text);
+
 bool coo_json_parse_msg_type(const char *payload, enum coo_msg_type *msg_type_out);
 
 /* Return values use enum coo_json_extract_status. */

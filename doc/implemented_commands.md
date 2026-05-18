@@ -150,23 +150,27 @@ for `commands.md`.
 - Side effects: sets MEMS switch requested states through the router.
 - Blocking/enqueue: can lock router state and update state applied by the MEMS
   router thread; no direct publish.
-- Handler: `memsroute_get()`, `memsroute_set()` in `app/src/command.c`.
+- Handler: `memsroute_get()`, `memsroute_set()` in `app/src/mems_command.c`.
 
 ### `memsroute/route_loss`
 
-- Query payload fields: `route`, `laser`.
-- Effect request fields: `route`, one laser-name key containing either linear
-  transmission or a string loss in dB, optional `persistent`.
-- Request classification: a payload containing `laser` is treated as query;
-  otherwise the request is treated as an effect request.
+- Query payload fields: `route`.
+- Effect request fields: `route`, either one laser-name key or the `split`
+  three-tuple containing linear transmissions or string losses in dB, optional
+  `persistent`.
+- Request classification: a payload with a route-loss value is treated as an
+  effect request; a payload containing only `route` is treated as query.
 - Validation: route and laser names must fit fixed route-loss record buffers;
-  transmission must be in `(0, 1]`; dB loss must be non-negative.
-- Query response: `tx`, `loss_db`, and `configured`.
+  transmission must be in `(0, 1]`; dB loss must be non-negative; `split` must
+  contain exactly three values.
+- Query response: route plus all known laser transmissions, or the three split
+  transmissions for split routes.
 - Data-less effect success response: `{"status":"ok"}`.
-- Side effects: updates one app-owned route-loss record and optionally persists
-  it under `routeloss/<route>/<laser>`.
+- Side effects: updates one app-owned route-loss record, or all three split
+  route-loss records, and optionally persists them under
+  `routeloss/<route>/<name>`.
 - Handler: `memsroute_get()`, `memsroute_set()` route-loss branch in
-  `app/src/command.c`.
+  `app/src/mems_command.c`.
 
 ### `mems` and `mems/<switch>`
 
@@ -184,7 +188,7 @@ for `commands.md`.
   router thread.
 - Enqueue: can enqueue `mems_rate_quantized` warning.
 - Serial shorthand: `mems/<switch> A [duty_cycle] [stopafter_s]`.
-- Handler: `mems_get()`, `mems_set()` in `app/src/command.c`.
+- Handler: `mems_get()`, `mems_set()` in `app/src/mems_command.c`.
 
 ### `split`
 
@@ -198,7 +202,7 @@ for `commands.md`.
 - Enqueue: can enqueue `split_ratio_quantized` warning.
 - Board restriction: requires routes present in active board profile, normally
   the AS profile.
-- Handler: `splitting_get()`, `splitting_set()` in `app/src/command.c`.
+- Handler: `splitting_get()`, `splitting_set()` in `app/src/mems_command.c`.
 
 ### `measure_throughput`
 

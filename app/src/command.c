@@ -227,11 +227,34 @@ static bool command_payload_empty(const struct Command *cmd)
     return coo_cmd_payload_empty(cmd);
 }
 
+static bool route_loss_payload_has_value(const char *payload)
+{
+    static const char *const route_loss_value_keys[] = {
+        "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k", "split",
+    };
+    char text[32];
+    double value;
+
+    if (payload == NULL) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_value_keys); ++i) {
+        const char *key = route_loss_value_keys[i];
+
+        if (coo_json_extract_double(payload, key, &value) == COO_JSON_EXTRACT_OK ||
+            coo_json_extract_string(payload, key, text, sizeof(text)) == COO_JSON_EXTRACT_OK) {
+            return true;
+        }
+    }
+
+    return strstr(payload, "\"split\"") != NULL;
+}
+
 static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
                                                     void *user_data)
 {
     float fval;
-    char text[32];
 
     ARG_UNUSED(user_data);
 
@@ -256,9 +279,7 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct Command *cmd,
     }
 
     if (strcmp(cmd->key, "memsroute/route_loss") == 0) {
-        return coo_json_extract_string(cmd->payload, "laser",
-                                       text, sizeof(text)) != COO_JSON_EXTRACT_MISSING ?
-               MSG_GET : MSG_SET;
+        return route_loss_payload_has_value(cmd->payload) ? MSG_SET : MSG_GET;
     }
 
     if (strcmp(cmd->key, "laser") == 0) {

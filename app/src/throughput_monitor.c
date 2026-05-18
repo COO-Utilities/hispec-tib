@@ -258,8 +258,6 @@ static void publish_sample(const struct throughput_state *state,
 	double tp_rms_err = NAN;
 	double pd_ontime_s;
 	double laser_current_ontime_s;
-	bool pd_route_configured;
-	bool laser_route_configured;
 
 	if (laser_name == NULL ||
 	    !attenuator_estimate_transmission(&attenuators[state->attenuator_index],
@@ -274,11 +272,8 @@ static void publish_sample(const struct throughput_state *state,
 	laser_current_ontime_s = hispec_laser_current_on_time_s(state->laser);
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
 	route_name_for_laser(laser_route, sizeof(laser_route), laser_name, state->fiber);
-	(void)app_settings_get_route_loss(pd_route, laser_name, &pd_route_tx, &pd_route_configured);
-	(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx,
-					  &laser_route_configured);
-	ARG_UNUSED(pd_route_configured);
-	ARG_UNUSED(laser_route_configured);
+	(void)app_settings_get_route_loss(pd_route, laser_name, &pd_route_tx);
+	(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx);
 
 	pd_flux = photodiode_photon_flux_from_mv(
 		pd->net_mv, laser_flux.wavelength_nm,

@@ -4,6 +4,8 @@
  */
 
 #include "mems_switching.h"
+#include "app_settings.h"
+
 #include <ctype.h>
 #include <errno.h>
 #include <zephyr/kernel.h>
@@ -31,6 +33,9 @@ static struct mems_router *active_router;
 static const char *split_channel_names[MEMS_SPLIT_CHANNEL_COUNT] = {"yj", "hk"};
 static const char *split_route_inputs[MEMS_SPLIT_CHANNEL_COUNT] = {"yj_calin", "hk_calin"};
 static const char *split_route_outputs[MEMS_SPLIT_CHANNEL_COUNT] = {"yj_split", "hk_split"};
+static const char *split_output_loss_keys[MEMS_SPLIT_OUTPUT_COUNT] = {
+    "split1", "split2", "split3",
+};
 static struct mems_split_state g_split_state[MEMS_SPLIT_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(split_state_lock);
 
@@ -715,6 +720,7 @@ uint8_t mems_router_active_routes(const struct mems_router *router,
     return n_found;
 }
 
+//TODO: TFD or relocation to _command.c
 const char *mems_split_channel_name(uint8_t channel_index)
 {
     if (channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
@@ -724,6 +730,8 @@ const char *mems_split_channel_name(uint8_t channel_index)
     return split_channel_names[channel_index];
 }
 
+//TODO: TFD or relocation to _command.c and/or combination with mems_split_channel_name
+//TODO GLOBALLY: the names that llm is coming up with sometimes make it profoundly hard to reason about where the actual work is done. to with, this is merely  channel index getter by name but reads like an action "'Split mems channel-index.' or "Split mems channel (by index)." In the case of splitting using split (action) and splitting (domain/namespace hint) may help
 int mems_split_channel_index(const char *channel, uint8_t *index)
 {
     if (channel == NULL || index == NULL) {
@@ -738,6 +746,29 @@ int mems_split_channel_index(const char *channel, uint8_t *index)
     }
 
     return -ENOENT;
+}
+
+int mems_split_route_name(uint8_t channel_index, char *out, size_t out_len)
+{
+    int written;
+
+    if (out == NULL || out_len == 0U || channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
+        return -EINVAL;
+    }
+
+    written = snprintk(out, out_len, "%s_to_%s",
+                       split_route_inputs[channel_index],
+                       split_route_outputs[channel_index]);
+    return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
+}
+
+const char *mems_split_output_loss_key(uint8_t output_index)
+{
+    if (output_index >= MEMS_SPLIT_OUTPUT_COUNT) {
+        return NULL;
+    }
+
+    return split_output_loss_keys[output_index];
 }
 
 static const struct mems_route *split_route_for_channel(const struct mems_router *router,
@@ -769,11 +800,90 @@ static uint32_t split_period_ticks(void)
     return period_ticks;
 }
 
-static uint32_t split_ratio_to_ticks(float ratio, uint32_t period_ticks)
+static uint32_t split_ratio_to_ticks(double ratio, uint32_t period_ticks)
 {
-    uint32_t ticks = (uint32_t)(ratio * (float)period_ticks + 0.5f);
+    uint32_t ticks = (uint32_t)(ratio * (double)period_ticks + 0.5);
 
     return MIN(ticks, period_ticks);
+}
+
+static void split_read_transmissions(const char *route_name,
+                                     float transmission[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    if (route_name == NULL || transmission == NULL) {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        const char *loss_key = mems_split_output_loss_key(i);
+        double tx = 1.0;
+
+        (void)app_settings_get_route_loss(route_name, loss_key, &tx);
+        transmission[i] = (float)tx;
+    }
+}
+
+static void split_output_ratio_from_actual(const float actual[MEMS_SPLIT_OUTPUT_COUNT],
+                                           const float transmission[MEMS_SPLIT_OUTPUT_COUNT],
+                                           float output[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    double delivered[MEMS_SPLIT_OUTPUT_COUNT];
+    double total = 0.0;
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        delivered[i] = (double)actual[i] * (double)transmission[i];
+        total += delivered[i];
+    }
+
+    if (!(total > 0.0)) {
+        memset(output, 0, MEMS_SPLIT_OUTPUT_COUNT * sizeof(output[0]));
+        return;
+    }
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        output[i] = (float)(delivered[i] / total);
+    }
+}
+
+static int split_correct_for_transmission(const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                          const float transmission[MEMS_SPLIT_OUTPUT_COUNT],
+                                          double corrected[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    const double ra = requested[0];
+    const double rb = requested[1];
+    const double ta = transmission[0];
+    const double tb = transmission[1];
+    const double tc = transmission[2];
+    double denom;
+
+    if (!(ta > 0.0 && tb > 0.0 && tc > 0.0)) {
+        return -ERANGE;
+    }
+
+    /* Solve for MEMS duty cycles whose transmitted outputs normalize back to
+     * the requested ratios after the three split-path transmissions are applied.
+     */
+    denom = ta * tb - ra * ta * tb - rb * ta * tb +
+            rb * ta * tc + ra * tb * tc;
+    if (!(denom > 0.0)) {
+        return -ERANGE;
+    }
+
+    corrected[0] = (ra * tb * tc) / denom;
+    corrected[1] = (rb * ta * tc) / denom;
+    corrected[2] = 1.0 - corrected[0] - corrected[1];
+
+    if (corrected[0] < -0.000001 || corrected[1] < -0.000001 ||
+        corrected[2] < -0.000001 || corrected[0] > 1.000001 ||
+        corrected[1] > 1.000001 || corrected[2] > 1.000001) {
+        return -ERANGE;
+    }
+
+    for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+        corrected[i] = CLAMP(corrected[i], 0.0, 1.0);
+    }
+
+    return 0;
 }
 
 static uint32_t split_selected_numerator(const struct mems_switch_status *status,
@@ -814,6 +924,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
 {
     const struct mems_route *route;
     struct mems_split_state next = {0};
+    char route_name[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
     float sw1_duty;
     float sw3_duty;
 
@@ -825,6 +936,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
     if (route == NULL || route->num_steps != MEMS_SPLIT_ROUTE_SWITCH_COUNT) {
         return -EINVAL;
     }
+    (void)mems_split_route_name(channel_index, route_name, sizeof(route_name));
 
     if (requested != NULL) {
         memcpy(next.requested, requested, sizeof(next.requested));
@@ -867,6 +979,8 @@ int mems_split_read_channel_state(const struct mems_router *router,
     next.actual[0] = sw1_duty;
     next.actual[1] = sw3_duty > sw1_duty ? sw3_duty - sw1_duty : 0.0f;
     split_clamp_actual(next.actual);
+    split_read_transmissions(route_name, next.transmission);
+    split_output_ratio_from_actual(next.actual, next.transmission, next.output);
 
     k_mutex_lock(&split_state_lock, K_FOREVER);
     g_split_state[channel_index] = next;
@@ -876,11 +990,14 @@ int mems_split_read_channel_state(const struct mems_router *router,
         *out = next;
     }
 
-    LOG_INF("Split %s actual %.4f %.4f %.4f",
+    LOG_INF("Split %s actual %.4f %.4f %.4f output %.4f %.4f %.4f",
             split_channel_names[channel_index],
             (double)next.actual[0],
             (double)next.actual[1],
-            (double)next.actual[2]);
+            (double)next.actual[2],
+            (double)next.output[0],
+            (double)next.output[1],
+            (double)next.output[2]);
 
     return 0;
 }
@@ -896,6 +1013,10 @@ int mems_split_apply_channel(const struct mems_router *router,
     uint32_t period_ticks;
     uint32_t output_ticks[MEMS_SPLIT_OUTPUT_COUNT];
     uint32_t switch_ticks[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
+    char route_name[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
+    float transmission[MEMS_SPLIT_OUTPUT_COUNT];
+    double corrected[MEMS_SPLIT_OUTPUT_COUNT];
+    int rc;
 
     if (router == NULL || requested == NULL ||
         channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
@@ -914,9 +1035,16 @@ int mems_split_apply_channel(const struct mems_router *router,
         return -EINVAL;
     }
 
+    (void)mems_split_route_name(channel_index, route_name, sizeof(route_name));
+    split_read_transmissions(route_name, transmission);
+    rc = split_correct_for_transmission(requested, transmission, corrected);
+    if (rc != 0) {
+        return rc;
+    }
+
     period_ticks = split_period_ticks();
-    output_ticks[0] = split_ratio_to_ticks(requested[0], period_ticks);
-    output_ticks[1] = split_ratio_to_ticks(requested[1], period_ticks);
+    output_ticks[0] = split_ratio_to_ticks(corrected[0], period_ticks);
+    output_ticks[1] = split_ratio_to_ticks(corrected[1], period_ticks);
     if (output_ticks[0] + output_ticks[1] > period_ticks) {
         output_ticks[1] = period_ticks - output_ticks[0];
     }
