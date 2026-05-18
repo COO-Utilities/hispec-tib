@@ -780,7 +780,7 @@ off or no faults).
     second, and override any individual physical set point made through the C
     attenuator API.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
-  - Coefficients are loaded from persistent settings during
+  - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define `b = slope * voltage + offset` for the
     attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.
   - `persistent` is optional and defaults to false. A non-persistent coefficient
@@ -915,8 +915,8 @@ off or no faults).
 
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
-  command keys and separate persistent settings keys. Dark and lowest-dark
-  values are persisted through the settings subsystem.
+  command keys and separate app NVS records. Dark and lowest-dark values are
+  persisted through app settings.
 
 (ip)=
 ### `ip`
