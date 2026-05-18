@@ -345,7 +345,7 @@ flowchart TD
   Wake --> Server
   Server -- none --> Retry[thread waits retry interval]
   Server -- present --> SNTP[sntp_simple blocking call]
-  SNTP -- success --> Clock[clock_settime]
+  SNTP -- success --> Clock[realtime clock update]
   Clock --> Status[synced status]
   Status --> Resync[thread waits hourly resync]
   SNTP -- fail --> Error[last_error and retry]

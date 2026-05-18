@@ -19,6 +19,7 @@
 
 #include <coo_commons/json_utils.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
@@ -112,7 +113,7 @@ static uint64_t realtime_ms(void)
 {
 	struct timespec ts = {0};
 
-	clock_gettime(CLOCK_REALTIME, &ts);
+	(void)sys_clock_gettime(SYS_CLOCK_REALTIME, &ts);
 	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 }
 

@@ -15,6 +15,7 @@
 #include <strings.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 #include <app_version.h>
 #include <time.h>
@@ -838,7 +839,9 @@ struct coo_cmd_response time_get(const struct coo_cmd_request *cmd)
     uint64_t utc_ms;
     char payload[MAX_PAYLOAD_LEN];
 
-    clock_gettime(CLOCK_REALTIME, &ts);
+    if (sys_clock_gettime(SYS_CLOCK_REALTIME, &ts) != 0) {
+        return coo_cmd_error(cmd, "clock read failed");
+    }
     utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 
     snprintk(payload, sizeof(payload),
@@ -865,8 +868,8 @@ struct coo_cmd_response time_set(const struct coo_cmd_request *cmd)
     ts.tv_sec = utc_ms / 1000ULL;
     ts.tv_nsec = (utc_ms % 1000ULL) * 1000000ULL;
 
-    if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
-        return coo_cmd_error(cmd, "clock_settime failed");
+    if (sys_clock_settime(SYS_CLOCK_REALTIME, &ts) != 0) {
+        return coo_cmd_error(cmd, "clock set failed");
     }
 
     return coo_cmd_ok(cmd);

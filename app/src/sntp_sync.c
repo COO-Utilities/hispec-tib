@@ -3,7 +3,8 @@
  * @brief Low-priority SNTP sync, retry, and hourly resync logic.
  *
  * The SNTP thread chooses manual or DHCP NTP source, calls sntp_simple(),
- * updates CLOCK_REALTIME on success, and records status for `time` and `ip`.
+ * updates Zephyr's realtime clock on success, and records status for `time`
+ * and `ip`.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -19,6 +20,7 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/sntp.h>
+#include <zephyr/sys/clock.h>
 
 #include <coo_commons/network.h>
 
@@ -164,6 +166,7 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 {
 	struct timespec ts = {0};
 	uint64_t utc_ms;
+	int rc;
 
 	if (sntp_time == NULL) {
 		return -EINVAL;
@@ -171,8 +174,9 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 
 	ts.tv_sec = (time_t)sntp_time->seconds;
 	ts.tv_nsec = (long)(((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32);
-	if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
-		return -errno;
+	rc = sys_clock_settime(SYS_CLOCK_REALTIME, &ts);
+	if (rc != 0) {
+		return rc;
 	}
 
 	utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);

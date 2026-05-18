@@ -152,7 +152,7 @@ fails, firmware restores the prior broker setting and emits a best-effort
 `mqtt_broker_revert` warning.
 
 SNTP is independent of manual `time` commands. Manual time setting updates
-`CLOCK_REALTIME`; it does not mark SNTP state as manual. If SNTP is configured
+Zephyr's realtime clock; it does not mark SNTP state as manual. If SNTP is configured
 and later succeeds, it will update the clock again, and failures remain visible
 through `time`, `ip`, and status paths that report SNTP state.
 SNTP network waits run in a low-priority SNTP thread, not on the system

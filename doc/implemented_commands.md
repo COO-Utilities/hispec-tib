@@ -107,12 +107,12 @@ for `commands.md`.
 
 ### `time`
 
-- Query returns `utc` milliseconds from `CLOCK_REALTIME` and `uptime`
+- Query returns `utc` milliseconds from Zephyr's realtime clock and `uptime`
   milliseconds from `k_uptime_get()`.
 - Effect request field: `linuxtime_ms`.
 - Validation: `linuxtime_ms` must parse as unsigned 64-bit milliseconds.
 - Data-less success response: `{"status":"ok"}`.
-- Side effects: effect requests call `clock_settime()`.
+- Side effects: effect requests update Zephyr's realtime clock.
 - Blocking: no bus I/O; no NVS writes; no direct publish.
 - Serial shorthand: `time <linuxtime_ms>`.
 - Handler: `time_get()`, `time_set()` in `app/src/command.c`.
