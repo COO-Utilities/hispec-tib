@@ -248,7 +248,7 @@ int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
  * @brief Program diode-specific limits into the Maiman driver.
  *
  * Writes settings that must be restored if a Maiman module is replaced:
- * current max, TEC current limit, TEC PID, and CW mode. If @p save_to_eeprom is
+ * current max, current calibration, TEC current limit, and TEC PID. If @p save_to_eeprom is
  * true, the module's EEPROM save command is sent afterward.
  */
 int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_eeprom);
@@ -288,9 +288,6 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent);
 
 /** @brief Set the TEC temperature setpoint and start the TEC if needed. */
 int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c);
-
-/** @brief Configure pulse frequency and duration without starting emission. */
-int hispec_laser_set_pulse(enum hispec_laser_id id, float frequency_hz, float duration_ms);
 
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
 int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);

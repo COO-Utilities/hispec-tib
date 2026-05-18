@@ -936,9 +936,6 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
 		return -EIO;
 	}
-	if (!maiman_set_frequency(drv, 0.0f)) {
-		return -EIO;
-	}
 
 	return 0;
 }
@@ -1455,37 +1452,6 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperatur
 	} else if (rc == 0) {
 		output_estimate_set_locked(id, laser_output_estimate[id].current_ma,
 					   temperature_c);
-	}
-	k_mutex_unlock(&laser_lock);
-
-	return rc;
-}
-
-int hispec_laser_set_pulse(enum hispec_laser_id id, float frequency_hz, float duration_ms)
-{
-	const struct hispec_laser_driver_profile *profile;
-	maiman_driver_t drv;
-	int rc;
-
-	rc = profile_for_id(id, &profile);
-	if (rc != 0) {
-		return rc;
-	}
-	if (!float_is_valid(frequency_hz) || !float_is_valid(duration_ms) ||
-	    frequency_hz < 0.0f || duration_ms < 0.0f) {
-		return -ERANGE;
-	}
-
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	rc = ensure_bank_powered_locked();
-	if (rc == 0) {
-		maiman_init(&drv, profile->node_id);
-		rc = verify_driver_locked(profile, &drv, NULL);
-	}
-	if (rc == 0 &&
-	    (!maiman_set_frequency(&drv, frequency_hz) ||
-	     !maiman_set_duration(&drv, duration_ms))) {
-		rc = -EIO;
 	}
 	k_mutex_unlock(&laser_lock);
 

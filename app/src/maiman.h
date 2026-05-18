@@ -33,16 +33,10 @@
 #define REG_SERIAL_NUMBER                   0x0003
 #define REG_STATE_OF_DEVICE_COMMAND         0x0004
 #define REG_LOCK_STATUS                     0x0005
-#define REG_FREQUENCY                       0x0006
-#define REG_DURATION                        0x0007
 #define REG_CURRENT                         0x0008
 #define REG_SAVE_PARAMETERS                 0x0009
 #define REG_RESET_PARAMETERS                0x000A
 
-#define REG_FREQUENCY_MIN                   0x0020
-#define REG_FREQUENCY_MAX                   0x0021
-#define REG_DURATION_MIN                    0x0022
-#define REG_DURATION_MAX                    0x0023
 #define REG_CURRENT_MIN                     0x0024
 #define REG_CURRENT_MAX                     0x0025
 #define REG_NTC_TEMPERATURE_MIN             0x0026
@@ -52,7 +46,6 @@
 
 #define REG_CURRENT_MEASURED                0x0040
 #define REG_VOLTAGE_MEASURED                0x0041
-#define REG_NTC_TEMPERATURE_MEASURED        0x0042
 #define REG_PCB_TEMPERATURE_MEASURED        0x0043
 
 #define REG_TEC_TEMPERATURE_VALUE           0x0070
@@ -83,14 +76,11 @@ bool maiman_get_register_address(const char *name, laser_address_t *address_out)
 
 /* Divider constants from the SF8025 v5.4 device metadata used by the
  * validation notebooks. Values returned by this layer are engineering units:
- * mA, V, Hz, ms, deg C, A, or raw PID/register units as named.
+ * mA, V, deg C, A, or raw PID/register units as named.
  */
-#define DIVIDER_FREQUENCY                   10.0f
-#define DIVIDER_DURATION                    10.0f
 #define DIVIDER_CURRENT                     10.0f
 #define DIVIDER_VOLTAGE                     10.0f
 #define DIVIDER_PCB_TEMPERATURE             10.0f
-#define DIVIDER_NTC_TEMPERATURE             10.0f
 #define DIVIDER_TEC_TEMPERATURE             100.0f
 #define DIVIDER_TEC_CURRENT                 10.0f
 #define DIVIDER_TEC_VOLTAGE                 10.0f
@@ -174,11 +164,8 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 /* ----- Measurement getters ----- */
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
 float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
-float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
 float maiman_get_tec_temperature_value(maiman_driver_t *drv);
 float maiman_get_current_measured(maiman_driver_t *drv);
-float maiman_get_frequency(maiman_driver_t *drv);
-float maiman_get_duration(maiman_driver_t *drv);
 bool  maiman_get_current(maiman_driver_t *drv, float *value);
 float maiman_get_voltage_measured(maiman_driver_t *drv);
 float maiman_get_current_min(maiman_driver_t *drv);
@@ -218,8 +205,6 @@ bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 bool maiman_set_current(maiman_driver_t *drv, float current);
 bool maiman_set_current_max(maiman_driver_t *drv, float current);
 bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent);
-bool maiman_set_frequency(maiman_driver_t *drv, float frequency);
-bool maiman_set_duration(maiman_driver_t *drv, float duration);
 bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c);
 bool maiman_set_tec_current_limit(maiman_driver_t *drv, float current_a);
 bool maiman_get_tec_pid(maiman_driver_t *drv, tec_pid_t *pid);
