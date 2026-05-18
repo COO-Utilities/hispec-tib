@@ -74,7 +74,7 @@ extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
 
-const struct coo_cmd_dispatch_entry dispatch_table[] = {
+static const struct coo_cmd_dispatch_entry dispatch_table[] = {
     { "help",      help_get,         NULL             },
     { "ip",        ip_get,           ip_set           },
     { "mqtt",      mqtt_get,         mqtt_set         },
@@ -89,7 +89,7 @@ const struct coo_cmd_dispatch_entry dispatch_table[] = {
     { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
     { "laserbank/heater", laserbank_heater, laserbank_heater },
     { "laser/engstatus", laser_engstatus_get, NULL },
-    { "laser/status", laser_status_get, NULL },
+    { "laser/status", laser_get, NULL },
     { "laser/settings", laser_settings_get, laser_settings_set },
     { "laser/tune", laser_tune_get, laser_tune_set },
     { "laser",      laser_get, laser_set },
@@ -102,7 +102,7 @@ const struct coo_cmd_dispatch_entry dispatch_table[] = {
 
 static struct coo_cmd_runtime command_runtime;
 
-const struct coo_cmd_dispatch_entry *find_dispatch(const char *key)
+static const struct coo_cmd_dispatch_entry *find_dispatch(const char *key)
 {
     return coo_cmd_find_dispatch(dispatch_table, ARRAY_SIZE(dispatch_table), key);
 }
@@ -155,7 +155,7 @@ static void record_lastcommand(const struct coo_cmd_request *cmd)
 }
 
 
-struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
+static struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
     LOG_INF("Dispatching: %s", cmd->key);
     struct coo_cmd_response r;
 
@@ -164,43 +164,8 @@ struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
     }
 
     r = coo_cmd_dispatch(cmd, dispatch_table, ARRAY_SIZE(dispatch_table),
-                         unknown_response, unsupported_response);
+                         coo_cmd_unknown_response, coo_cmd_unsupported_response);
     return r;
-}
-
-
-int parse_key_pair(const char *key,
-                   char *out_name, size_t max_name,
-                   char *out_setting, size_t max_setting)
-{
-    /* Find the first slash */
-    const char *slash = strchr(key, '/');
-    if (!slash) {
-        return -1;
-    }
-
-    size_t name_len = slash - key;
-    if (name_len == 0 || name_len >= max_name) {
-        /* Name empty or too long for buffer (including null) */
-        return -2;
-    }
-
-    /* Copy name */
-    memcpy(out_name, key, name_len);
-    out_name[name_len] = '\0';
-
-    /* Copy setting, up to max_setting-1 characters, null terminated */
-    const char *setting_start = slash + 1;
-    size_t setting_len = strcspn(setting_start, "/"); /* Up to next '/', or full string */
-    if (setting_len == 0 || setting_len >= max_setting) {
-        /* Setting empty or too long for buffer */
-        return -3;
-    }
-    memcpy(out_setting, setting_start, setting_len);
-    out_setting[setting_len] = '\0';
-
-    return 0;
-
 }
 
 static bool mqtt_get_allowed_during_serial_guard(const char *key)
@@ -481,8 +446,8 @@ int command_runtime_init(void)
         .execute_handler = dispatch_command,
         .dispatch_table = dispatch_table,
         .dispatch_count = ARRAY_SIZE(dispatch_table),
-        .unknown_handler = unknown_response,
-        .unsupported_handler = unsupported_response,
+        .unknown_handler = coo_cmd_unknown_response,
+        .unsupported_handler = coo_cmd_unsupported_response,
         .mqtt_msg_id = &mqtt_msg_id,
         .serial_wrap_column = SERIAL_WRAP_COLUMN,
         .classify = command_infer_msg_type,
@@ -523,14 +488,6 @@ struct coo_cmd_runtime *command_runtime_get(void)
 
 /* COMMAND HANDLERS */
 
-
-struct coo_cmd_response unknown_response(const struct coo_cmd_request *cmd) {
-    return coo_cmd_unknown_response(cmd);
-}
-
-struct coo_cmd_response unsupported_response(const struct coo_cmd_request *cmd) {
-    return coo_cmd_unsupported_response(cmd);
-}
 
 struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
 {

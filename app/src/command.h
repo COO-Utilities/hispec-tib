@@ -41,12 +41,6 @@ struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd);
 struct coo_cmd_response status_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd);
 
-
-struct coo_cmd_response unknown_response(const struct coo_cmd_request *cmd);
-struct coo_cmd_response unsupported_response(const struct coo_cmd_request *cmd);
-/** Dispatch one normalized command to the longest matching command-table entry. */
-struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd);
-
 /**
  * @brief Initialize command runtime identity, queues, hooks, and delayed actions.
  *

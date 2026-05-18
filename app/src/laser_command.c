@@ -274,13 +274,6 @@ static struct coo_cmd_response laser_unavailable(const struct coo_cmd_request *c
 	return coo_cmd_error(cmd, "laser bank unavailable on this board");
 }
 
-static struct coo_cmd_response laser_error_response(const struct coo_cmd_request *cmd,
-					  const char *msg,
-					  int rc)
-{
-	return coo_cmd_error_rc(cmd, msg, rc);
-}
-
 static int laser_append_compact_status(char *payload, size_t payload_len,
 				       const struct hispec_laser_status *status)
 {
@@ -355,13 +348,13 @@ struct coo_cmd_response laser_get(const struct coo_cmd_request *cmd)
 
 	rc = hispec_laser_get_status(id, &status);
 	if (rc != 0 && !status.bank_powered) {
-		return laser_error_response(cmd, "laser status failed", rc);
+		return coo_cmd_error_rc(cmd, "laser status failed", rc);
 	}
 	if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
 		return coo_cmd_error(cmd, "laser response too large");
 	}
 	return rc == 0 ? coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload) :
-	       laser_error_response(cmd, "laser status failed", rc);
+	       coo_cmd_error_rc(cmd, "laser status failed", rc);
 }
 
 struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
@@ -386,7 +379,7 @@ struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser settings unavailable", rc);
+		return coo_cmd_error_rc(cmd, "laser settings unavailable", rc);
 	}
 	autooff_s = settings.autooff_s;
 	parse_rc = coo_json_extract_u32(cmd->payload, "autooff_s", &autooff_s);
@@ -397,7 +390,7 @@ struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
 	throughput_monitor_note_laser_changed(id);
 	rc = hispec_laser_set_output_percent_autooff(id, level, autooff_s);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser level failed", rc);
+		return coo_cmd_error_rc(cmd, "laser level failed", rc);
 	}
 	return coo_cmd_ok(cmd);
 }
@@ -445,7 +438,7 @@ struct coo_cmd_response laser_tune_set(const struct coo_cmd_request *cmd)
 	throughput_monitor_note_laser_changed(id);
 	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser tune failed", rc);
+		return coo_cmd_error_rc(cmd, "laser tune failed", rc);
 	}
 	return coo_cmd_ok(cmd);
 }
@@ -513,7 +506,7 @@ struct coo_cmd_response laser_settings_get(const struct coo_cmd_request *cmd)
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser settings unavailable", rc);
+		return coo_cmd_error_rc(cmd, "laser settings unavailable", rc);
 	}
 	if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
 		return coo_cmd_error(cmd, "laser settings response too large");
@@ -636,7 +629,7 @@ struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd)
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser settings unavailable", rc);
+		return coo_cmd_error_rc(cmd, "laser settings unavailable", rc);
 	}
 
 	rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
@@ -647,7 +640,7 @@ struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd)
 
 	rc = laser_parse_settings_update(json, &settings, &changed);
 	if (rc != 0) {
-		return laser_error_response(cmd, "invalid laser settings", rc);
+		return coo_cmd_error_rc(cmd, "invalid laser settings", rc);
 	}
 	if (!changed) {
 		return coo_cmd_error(cmd, "no laser settings fields supplied");
@@ -656,14 +649,9 @@ struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd)
 	throughput_monitor_note_laser_changed(id);
 	rc = hispec_laser_update_channel_settings(id, &settings, true);
 	if (rc != 0) {
-		return laser_error_response(cmd, "laser settings update failed", rc);
+		return coo_cmd_error_rc(cmd, "laser settings update failed", rc);
 	}
 	return coo_cmd_ok(cmd);
-}
-
-struct coo_cmd_response laser_status_get(const struct coo_cmd_request *cmd)
-{
-	return laser_get(cmd);
 }
 
 static int json_append_named_float(char *payload, size_t payload_len,
@@ -762,5 +750,5 @@ struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd)
 		return coo_cmd_error(cmd, "laser engineering status response too large");
 	}
 	return rc == 0 ? coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload) :
-	       laser_error_response(cmd, "laser engineering status failed", rc);
+	       coo_cmd_error_rc(cmd, "laser engineering status failed", rc);
 }
