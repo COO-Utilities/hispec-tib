@@ -24,7 +24,7 @@ It dispatches one command and tries one non-blocking enqueue to
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
 - TIB laser-bank heater auto mode runs in its own low-priority thread and can
   block on Modbus temperature polling and heater GPIO writes.
-- Settings commands can block on Zephyr settings backend writes.
+- Persistent settings commands can block on Zephyr NVS writes.
 - Reboot and serial guard commands schedule delayable work.
 
 ## Serial Thread

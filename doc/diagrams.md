@@ -286,15 +286,18 @@ flowchart TD
 ```mermaid
 flowchart TD
   Boot[boot] --> Defaults[initialize defaults]
-  Defaults --> Subsys[settings_subsys_init]
-  Subsys --> Load[load app settings subtrees]
+  Defaults --> Mount[mount app NVS partition]
+  Mount --> Schema{schema marker valid}
+  Schema -- no --> Clear[clear old app storage layout]
+  Schema -- yes --> Load[load app NVS records]
+  Clear --> Load
   Load --> Runtime[runtime settings snapshot]
   Command[effect request] --> Parse[validate JSON fields]
   Parse --> Update[update runtime snapshot]
   Update --> Persist{persistent true}
-  Persist -- yes --> Save[settings_save_one keys]
+  Persist -- yes --> Save[write numeric NVS record]
   Persist -- no --> Volatile[runtime only]
-  BoardChange[board type changed] --> Clear[delete non-board app settings]
+  BoardChange[board type changed] --> BoardClear[delete non-board app records]
 ```
 
 ## 15. Warning Publication Flow

@@ -38,7 +38,7 @@ Runtime ownership is:
   and optional autolevel control.
 - `tempsense.c`: DS18B20 polling and cache.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
-- `app_settings.c`: Zephyr settings-backed app configuration and calibration.
+- `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.
 
 Project-local wrappers under `lib/coo_commons` are intentionally small:

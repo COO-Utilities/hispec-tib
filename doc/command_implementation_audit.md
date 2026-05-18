@@ -130,7 +130,7 @@ buffer and echoed exactly in responses.
 - Responses are enqueued to `outbound_queue` and published or printed later.
 - Attenuator commands can block on DAC I2C.
 - Laser and Maiman commands can block on Modbus RTU and laser-bank boot sleeps.
-- Settings updates can block on the Zephyr settings backend.
+- Persistent settings updates can block on Zephyr NVS writes.
 - `status` optional laser/attenuator sections can block on Modbus/DAC reads.
 - MEMS and split commands update router state and can enqueue warnings but do
   not publish directly.

@@ -1,10 +1,10 @@
 /**
  * @file app_settings.h
- * @brief Zephyr settings-backed app configuration and calibration ownership.
+ * @brief Direct-NVS app configuration and calibration ownership.
  *
- * App-owned top-level settings subtrees store board identity, boot count,
- * operator network/MQTT configuration, serial guard duration, attenuator
- * coefficients, and photodiode calibration/response settings.
+ * App-owned numeric NVS IDs store board identity, boot count, operator
+ * network/MQTT configuration, serial guard duration, attenuator coefficients,
+ * photodiode calibration/response settings, laser policy, and route loss.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -124,10 +124,11 @@ struct app_settings_snapshot {
 };
 
 /**
- * @brief Initialize Zephyr settings, load app subtrees, and keep defaults on failure.
+ * @brief Mount app NVS storage, load persisted values, and keep defaults on failure.
  *
- * Calls `settings_subsys_init()` and `settings_load_subtree()`, so it may
- * block on the configured settings backend.
+ * Uses Zephyr NVS directly with app-owned numeric IDs, so it may block on
+ * flash I/O. If the stored schema marker is missing or incompatible, app NVS
+ * storage is cleared and defaults are used.
  */
 int app_settings_init(void);
 void app_settings_get_snapshot(struct app_settings_snapshot *out);
@@ -154,7 +155,7 @@ void app_settings_get_attenuator(struct app_attenuator_settings *out);
  *
  * @param channel Zero-based logical attenuator channel index.
  * @param atten Channel coefficient settings copied into the runtime snapshot.
- * @param persist If true, save this channel's coefficients through Zephyr settings.
+ * @param persist If true, save this channel's coefficients through Zephyr NVS.
  */
 void app_settings_update_attenuator_channel(uint8_t channel,
 					    const struct app_attenuator_channel_settings *atten,
@@ -168,7 +169,7 @@ void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bo
  *
  * @param channel Zero-based photodiode channel index.
  * @param pd Channel settings to copy into the runtime snapshot.
- * @param persist If true, save only this channel's keys through Zephyr settings.
+ * @param persist If true, save only this channel's NVS record.
  */
 void app_settings_update_photodiode_channel(uint8_t channel,
 					    const struct app_pd_channel_settings *pd,
@@ -208,8 +209,8 @@ int app_settings_get_route_loss(const char *route, const char *laser,
  * @brief Store or update one route-loss record.
  *
  * The record is keyed only by route and laser names. It does not change MEMS
- * route structs or switch state. If @p persist is true, the value is saved via
- * Zephyr settings and may block on the backend.
+ * route structs or switch state. If @p persist is true, the indexed route-loss
+ * record is saved via Zephyr NVS and may block on flash I/O.
  */
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
