@@ -73,7 +73,6 @@ struct hispec_laser_status {
 	bool operation_started;
 	bool current_set_internal;
 	bool enable_internal;
-	bool external_ntc_denied;
 	bool interlock_denied;
 	bool tec_started;
 	bool tec_set_internal;
@@ -81,7 +80,6 @@ struct hispec_laser_status {
 	bool lock_interlock;
 	bool lock_ld_overcurrent;
 	bool lock_ld_overheat;
-	bool lock_external_ntc_interlock;
 	bool lock_tec_error;
 	bool lock_tec_selfheat;
 	bool ready_to_operate;

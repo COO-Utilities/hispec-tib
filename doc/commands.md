@@ -554,8 +554,9 @@ optional laser section of `status`.
 
 Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
 Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
-serial/device-id verification, and interlock flags. This command may be slower than `laser/status` because it reads
-many Modbus registers.
+serial/device-id verification, and the active internal interlock flags. External-NTC-specific helper fields are not
+reported; use the raw state and lock registers for driver-level diagnosis. This command may be slower than
+`laser/status` because it reads many Modbus registers.
 
 
 (laser-settings)=

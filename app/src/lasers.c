@@ -1111,7 +1111,6 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	out->operation_started = (out->device_state & OPERATION_STATE_STARTED) != 0U;
 	out->current_set_internal = (out->device_state & CURRENT_SET_INTERNAL) != 0U;
 	out->enable_internal = (out->device_state & ENABLE_INTERNAL) != 0U;
-	out->external_ntc_denied = (out->device_state & EXTERNAL_NTC_INTERLOCK_DENIED) != 0U;
 	out->interlock_denied = (out->device_state & INTERLOCK_DENIED) != 0U;
 	out->tec_started = (out->tec_state & TEC_OPERATION_STATE_STARTED) != 0U;
 	out->tec_set_internal = (out->tec_state & TEC_SET_INTERNAL) != 0U;
@@ -1119,8 +1118,6 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	out->lock_interlock = (out->lock_status & LOCK_STATE_INTERLOCK) != 0U;
 	out->lock_ld_overcurrent = (out->lock_status & LOCK_STATE_LD_OVERCURRENT) != 0U;
 	out->lock_ld_overheat = (out->lock_status & LOCK_STATE_LD_OVERHEAT) != 0U;
-	out->lock_external_ntc_interlock =
-		(out->lock_status & LOCK_STATE_EXTERNAL_NTC_INTERLOCK) != 0U;
 	out->lock_tec_error = (out->lock_status & LOCK_STATE_TEC_ERROR) != 0U;
 	out->lock_tec_selfheat = (out->lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U;
 	out->ready_to_operate = out->tec_started &&
