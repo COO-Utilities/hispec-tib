@@ -14,7 +14,6 @@
 
 #include "app_settings.h"
 #include "devices.h"
-#include "housekeeping.h"
 
 #include <errno.h>
 #include <math.h>
@@ -614,22 +613,21 @@ static float level_percent_for_current(const laserprops_t *props, float current_
 	return 100.0f * (current_ma - props->threshold_current_ma) / range;
 }
 
-int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_status *out)
+int hispec_laser_bank_read_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
 {
 	int rc;
 
-	if (out == NULL) {
+	if (channels == NULL) {
 		return -EINVAL;
 	}
 
-	memset(out, 0, sizeof(*out));
+	memset(channels, 0,
+	       sizeof(struct hispec_laser_channel_temperature) * HISPEC_LASER_COUNT);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		out->channel[i].id = laser_profiles[i].id;
-		out->channel[i].tec_temperature_c = LASERPROP_NA;
+		channels[i].id = laser_profiles[i].id;
+		channels[i].tec_temperature_c = LASERPROP_NA;
 	}
-
-	(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
-				     &out->heater_enabled);
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	if (!bank_power_is_enabled_locked()) {
@@ -639,21 +637,18 @@ int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_sta
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		maiman_driver_t drv;
-		uint16_t tec_state = 0U;
 		float tec_temp = LASERPROP_NA;
+		bool tec_started = false;
 		bool temp_ok;
 		bool state_ok;
 
 		maiman_init(&drv, laser_profiles[i].node_id);
-		temp_ok = maiman_read_scaled(&drv, REG_TEC_TEMPERATURE_MEASURED,
-					     DIVIDER_TEC_TEMPERATURE, true,
-					     &tec_temp);
-		state_ok = maiman_read_u16(&drv, REG_STATE_OF_TEC_COMMAND, &tec_state);
+		temp_ok = maiman_read_tec_temperature_measured(&drv, &tec_temp);
+		state_ok = maiman_read_tec_started(&drv, &tec_started);
 
-		out->channel[i].valid = temp_ok && state_ok;
-		out->channel[i].tec_temperature_c = tec_temp;
-		out->channel[i].tec_enabled =
-			state_ok && ((tec_state & TEC_OPERATION_STATE_STARTED) != 0U);
+		channels[i].valid = temp_ok && state_ok;
+		channels[i].tec_temperature_c = tec_temp;
+		channels[i].tec_enabled = state_ok && tec_started;
 	}
 
 	rc = 0;

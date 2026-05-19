@@ -1169,7 +1169,7 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
 struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
 {
     struct housekeeping_temperature_status ts = {0};
-    struct hispec_laser_bank_temperature_status bank = {0};
+    struct hispec_laser_channel_temperature channel_temp[HISPEC_LASER_COUNT] = {0};
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t off = 0U;
     double bank_sum = 0.0;
@@ -1178,11 +1178,11 @@ struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
 
     housekeeping_get_temperature_status(&ts);
     if (devices_board_type() == HISPEC_BOARD_TIB) {
-        laser_rc = hispec_laser_bank_read_temperatures(&bank);
+        laser_rc = hispec_laser_bank_read_temperatures(channel_temp);
         if (laser_rc == 0) {
             for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-                if (bank.channel[i].valid) {
-                    bank_sum += (double)bank.channel[i].tec_temperature_c;
+                if (channel_temp[i].valid) {
+                    bank_sum += (double)channel_temp[i].tec_temperature_c;
                     bank_count++;
                 }
             }
@@ -1211,8 +1211,8 @@ struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
                             i == 0U ? "" : ",",
                             hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
             coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                          laser_rc == 0 && bank.channel[i].valid ?
-                                          bank.channel[i].tec_temperature_c : NAN,
+                                          laser_rc == 0 && channel_temp[i].valid ?
+                                          channel_temp[i].tec_temperature_c : NAN,
                                           3) != 0) {
             return coo_cmd_error(cmd, "temp response too large");
         }

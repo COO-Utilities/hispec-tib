@@ -172,6 +172,7 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 
 
 /* ----- Measurement getters ----- */
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value);
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
 float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
 float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
@@ -197,7 +198,9 @@ uint16_t maiman_get_device_id(maiman_driver_t *drv);
 uint16_t maiman_get_serial_number(maiman_driver_t *drv);
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
+bool maiman_read_raw_tec_status(maiman_driver_t *drv, uint16_t *status);
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
+bool maiman_read_tec_started(maiman_driver_t *drv, bool *started);
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
 bool maiman_is_operation_started(maiman_driver_t *drv);
 bool maiman_is_current_set_internal(maiman_driver_t *drv);

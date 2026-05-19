@@ -152,25 +152,6 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 	return 0;
 }
 
-static void refresh_cached_temperatures(const struct hispec_laser_bank_temperature_status *poll,
-					int64_t now_ms)
-{
-	if (poll == NULL) {
-		return;
-	}
-
-	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		if (!poll->channel[i].valid) {
-			continue;
-		}
-
-		control.channel[i].valid = true;
-		control.channel[i].tec_enabled = poll->channel[i].tec_enabled;
-		control.channel[i].tec_temperature_c = poll->channel[i].tec_temperature_c;
-		control.channel[i].last_valid_ms = now_ms;
-	}
-}
-
 static void summarize_temperature_state(const struct housekeeping_temperature_status *ambient,
 					int64_t now_ms)
 {
@@ -265,12 +246,14 @@ static void apply_heater(bool enable)
 static void run_heater_control_cycle(void)
 {
 	struct app_laserbank_settings settings;
-	struct hispec_laser_bank_temperature_status poll = {0};
+	struct hispec_laser_channel_temperature poll[HISPEC_LASER_COUNT] = {0};
 	struct housekeeping_temperature_status ambient = {0};
+	bool heater_on = false;
 	bool entered_auto;
 	bool all_stale;
 	bool bank_powered;
 	int64_t now_ms = k_uptime_get();
+	int heater_rc;
 	int rc;
 
 	app_settings_get_laserbank(&settings);
@@ -315,18 +298,30 @@ static void run_heater_control_cycle(void)
 		}
 	}
 
-	rc = hispec_laser_bank_read_temperatures(&poll);
+	rc = hispec_laser_bank_read_temperatures(poll);
 	now_ms = k_uptime_get();
 	bank_powered = hispec_laser_bank_power_is_enabled();
+	heater_rc = housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER, &heater_on);
 
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.last_poll_ms = now_ms;
 	update_bank_power_runtime_locked(bank_powered, now_ms);
 	if (rc == 0) {
-		refresh_cached_temperatures(&poll, now_ms);
-		control.status.heater_on = poll.heater_enabled;
+		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+			if (!poll[i].valid) {
+				continue;
+			}
+
+			control.channel[i].valid = true;
+			control.channel[i].tec_enabled = poll[i].tec_enabled;
+			control.channel[i].tec_temperature_c = poll[i].tec_temperature_c;
+			control.channel[i].last_valid_ms = now_ms;
+		}
 	} else {
 		control.status.last_error = rc;
+	}
+	if (heater_rc == 0) {
+		control.status.heater_on = heater_on;
 	}
 
 	summarize_temperature_state(&ambient, now_ms);

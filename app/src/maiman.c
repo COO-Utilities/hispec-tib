@@ -224,12 +224,17 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 	return maiman_write_u16(drv, address, raw);
 }
 
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value)
+{
+	return maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MEASURED,
+				  DIVIDER_TEC_TEMPERATURE, true, value);
+}
+
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv)
 {
 	float value;
 
-	if (maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MEASURED,
-			       DIVIDER_TEC_TEMPERATURE, true, &value)) {
+	if (maiman_read_tec_temperature_measured(drv, &value)) {
 		return value;
 	}
 	return -273.15f;
@@ -462,14 +467,31 @@ uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv)
 	return 0U;
 }
 
+bool maiman_read_raw_tec_status(maiman_driver_t *drv, uint16_t *status)
+{
+	return maiman_read_u16(drv, REG_STATE_OF_TEC_COMMAND, status);
+}
+
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv)
 {
 	uint16_t raw;
 
-	if (maiman_read_u16(drv, REG_STATE_OF_TEC_COMMAND, &raw)) {
+	if (maiman_read_raw_tec_status(drv, &raw)) {
 		return raw;
 	}
 	return 0U;
+}
+
+bool maiman_read_tec_started(maiman_driver_t *drv, bool *started)
+{
+	uint16_t raw;
+
+	if (started == NULL || !maiman_read_raw_tec_status(drv, &raw)) {
+		return false;
+	}
+
+	*started = (raw & TEC_OPERATION_STATE_STARTED) != 0U;
+	return true;
 }
 
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask)
