@@ -52,10 +52,8 @@ flowchart TD
   Router --> Attens[setup profile attenuators]
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
-  Threads --> LaserCtrl{TIB board}
-  LaserCtrl -- yes --> BankCtrl[start laserbank_tempcontrol_thread]
-  LaserCtrl -- no --> SNTP[start SNTP runtime]
-  BankCtrl --> SNTP
+  Threads --> Housekeeping[start housekeeping thread]
+  Housekeeping --> SNTP[start SNTP runtime]
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
   MQTTInit --> Loop[main MQTT/outbound loop]
@@ -318,18 +316,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[tempsensor_thread] --> Find[find DS18B20]
+  Thread[housekeeping_thread] --> Find[find DS18B20]
   Find --> Ready{device ready}
   Ready -- no --> InitErr[cache unavailable status]
-  InitErr --> Return[thread returns]
+  InitErr --> Wait[next housekeeping tick]
   Ready -- yes --> Fetch[sensor_sample_fetch]
   Fetch --> SensorGet[sensor_channel_get ambient]
   SensorGet --> Cache[update mutex-protected status]
   SensorGet -- error --> CacheErr[mark invalid and keep last value]
   Fetch -- error --> CacheErr
-  Cache --> Sleep
-  CacheErr --> Sleep[k_sleep 1 s]
-  Sleep --> Fetch
+  Cache --> Wait
+  CacheErr --> Wait
+  Wait --> Thread
   Command[temp query] --> Read[tempsense_get_status]
   Read --> Response[ambient payload or error]
 ```
@@ -412,7 +410,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[laserbank_tempcontrol_thread] --> Cycle[run_heater_control_cycle]
+  Thread[housekeeping_thread] --> Cycle[run laserbank temp-control pass]
   Cycle --> Settings[read laserbank settings]
   Settings --> Ambient[read cached ambient temperature]
   Ambient --> Power[read bank power state and update on-time]
@@ -466,7 +464,7 @@ flowchart TD
   Deadline --> Ok[return status ok]
   Clear --> Ok
 
-  BankControl[laserbank_tempcontrol_thread poll] --> Service[hispec_laser_service_autooff]
+  BankControl[housekeeping_thread poll] --> Service[hispec_laser_service_autooff]
   Service --> Expired{deadline expired}
   Expired -- no --> Wait[poll interval]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]

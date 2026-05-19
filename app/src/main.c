@@ -27,10 +27,9 @@
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
-#include "laserbank_tempcontrol.h"
+#include "housekeeping.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
-#include "tempsense.h"
 #if defined(CONFIG_SNTP)
 #include "sntp_sync.h"
 #endif
@@ -43,14 +42,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define SERIAL_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 500
 #define PHOTODIODE_PRIORITY 3
-#define LASERBANK_TEMPCONTROL_STACK_SIZE 1100
-#define LASERBANK_TEMPCONTROL_PRIORITY 5
+#define HOUSEKEEPING_STACK_SIZE 1300
+#define HOUSEKEEPING_PRIORITY 5
 #define THROUGHPUT_MONITOR_STACK_SIZE 1800
 #define THROUGHPUT_MONITOR_PRIORITY 7
-
-#define TEMPSENSOR_STACK_SIZE 500
-#define TEMPSENSOR_PRIORITY 11
-
 
 #define WDT_TIMEOUT_MS 6000
 
@@ -63,16 +58,12 @@ static struct k_thread exec_thread_data;
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
 
-static K_THREAD_STACK_DEFINE(laserbank_tempcontrol_stack, LASERBANK_TEMPCONTROL_STACK_SIZE);
-static struct k_thread laserbank_tempcontrol_thread_data;
+static K_THREAD_STACK_DEFINE(housekeeping_stack, HOUSEKEEPING_STACK_SIZE);
+static struct k_thread housekeeping_thread_data;
 
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
 		PHOTODIODE_PRIORITY, 0, 0);
-
-K_THREAD_DEFINE(temp_tid, TEMPSENSOR_STACK_SIZE,
-		tempsensor_thread, NULL, NULL, NULL,
-		TEMPSENSOR_PRIORITY, 0, 0);
 
 K_THREAD_DEFINE(throughput_monitor_tid, THROUGHPUT_MONITOR_STACK_SIZE,
 		throughput_monitor_thread, NULL, NULL, NULL,
@@ -269,13 +260,11 @@ int main(void)
 			coo_cmd_runtime_serial_thread, cmd_runtime, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
-	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		k_thread_create(&laserbank_tempcontrol_thread_data,
-				laserbank_tempcontrol_stack,
-				K_THREAD_STACK_SIZEOF(laserbank_tempcontrol_stack),
-				laserbank_tempcontrol_thread, NULL, NULL, NULL,
-				LASERBANK_TEMPCONTROL_PRIORITY, 0, K_NO_WAIT);
-	}
+	k_thread_create(&housekeeping_thread_data,
+			housekeeping_stack,
+			K_THREAD_STACK_SIZEOF(housekeeping_stack),
+			housekeeping_thread, NULL, NULL, NULL,
+			HOUSEKEEPING_PRIORITY, 0, K_NO_WAIT);
 
 #if defined(CONFIG_SNTP)
 	sntp_sync_init();

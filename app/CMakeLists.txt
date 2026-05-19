@@ -25,6 +25,7 @@ target_sources(app PRIVATE
         src/attenuator_command.c
         src/command.c
         src/devices.c
+        src/housekeeping.c
         src/laser_command.c
         src/lasers.c
         src/laserbank_tempcontrol.c
@@ -34,7 +35,6 @@ target_sources(app PRIVATE
         src/photodiode_command.c
         src/throughput_command.c
         src/throughput_monitor.c
-        src/tempsense.c
         src/mems_switching.c
 )
 

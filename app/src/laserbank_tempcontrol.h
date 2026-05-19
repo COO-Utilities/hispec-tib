@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <zephyr/kernel.h>
 
 #define LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS 10000U
 #define LASERBANK_TEMPCONTROL_TEMP_STALE_MS (2U * LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS)
@@ -39,8 +40,11 @@ struct laserbank_tempcontrol_status {
 	uint32_t last_poll_age_ms;
 };
 
-/** Background control loop; blocks on sleeps, GPIO, and Maiman Modbus I/O. */
-void laserbank_tempcontrol_thread(void *p1, void *p2, void *p3);
+/** Run one heater-policy and autooff service pass. May block on GPIO/Modbus I/O. */
+void laserbank_tempcontrol_run_once(void);
+
+/** Wait for a command-side heater-mode wake request. */
+bool laserbank_tempcontrol_wait_for_wake(k_timeout_t timeout);
 
 /** Copy the latest temperature-control loop state. */
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);

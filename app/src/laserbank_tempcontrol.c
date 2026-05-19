@@ -352,16 +352,13 @@ static void run_heater_control_cycle(void)
 	}
 }
 
-void laserbank_tempcontrol_thread(void *p1, void *p2, void *p3)
+void laserbank_tempcontrol_run_once(void)
 {
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
+	run_heater_control_cycle();
+	hispec_laser_service_autooff();
+}
 
-	while (true) {
-		run_heater_control_cycle();
-		hispec_laser_service_autooff();
-		(void)k_sem_take(&control_wake,
-				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
-	}
+bool laserbank_tempcontrol_wait_for_wake(k_timeout_t timeout)
+{
+	return k_sem_take(&control_wake, timeout) == 0;
 }

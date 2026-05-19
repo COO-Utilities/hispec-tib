@@ -45,11 +45,15 @@ dark/noise/window state.
 If the timer reports missed periods, the thread logs the missed count and takes
 one current sample. Missed ADC sampling periods are not replayed.
 
-## Temperature Thread
+## Housekeeping Thread
 
-`tempsensor_thread()` finds the DS18B20 sensor, then once per second calls
-`sensor_sample_fetch()` and `sensor_channel_get()` for ambient temperature. It
-updates a mutex-protected cache used by the `temp` command.
+`housekeeping_thread()` owns slow background work that does not need a
+timing-critical actor. It samples the DS18B20 ambient sensor once per second
+and updates the cache used by the `temp` command. On TIB boards it also runs
+laser-bank heater policy, polls Maiman TEC temperature/state at the configured
+heater-control interval, services laser autooff, and drives the auxiliary
+laser-bank heater GPIO. It does not publish MQTT directly; override warnings
+are queued through `coo_cmd_runtime_warning_emit()`.
 
 ## Throughput Monitor Thread
 
@@ -57,14 +61,6 @@ updates a mutex-protected cache used by the `temp` command.
 optional autolevel control. It reads photodiode snapshots, route-loss settings,
 attenuator state, and laser estimates, then enqueues best-effort telemetry to
 `outbound_queue`.
-
-## Laser-Bank Control Thread
-
-`laserbank_tempcontrol_thread()` is created only for the TIB profile. It owns
-heater auto/override policy, polls Maiman TEC temperature/state at a fixed
-interval, reads the cached ambient temperature, and drives the auxiliary
-laser-bank heater GPIO. It does not publish MQTT directly; override warnings
-are queued through `coo_cmd_runtime_warning_emit()`.
 
 ## MEMS Router Thread
 
@@ -103,12 +99,11 @@ Current configured priorities:
 - MEMS router thread: 2.
 - Photodiode thread: 3.
 - Main MQTT/outbound/watchdog thread: 4.
-- Laser-bank control thread: 5.
+- Housekeeping thread: 5.
 - Command executor: 6.
 - Serial thread: 6.
 - Throughput monitor thread: 7.
 - SNTP thread: 10.
-- Temperature thread: 11.
 
 Lower numeric values are higher priority in Zephyr preemptive priorities. The
 priority order keeps physical MEMS and ADC cadence ahead of network, command,

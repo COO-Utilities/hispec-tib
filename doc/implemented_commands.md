@@ -256,7 +256,7 @@ for `commands.md`.
 - Effect success returns the same data shape as the query.
 - Board restriction: TIB only.
 - Side effects: updates the persisted laser-bank heater mode and wakes
-  `laserbank_tempcontrol_thread()`. `auto` runs the warmup policy; `override_on`
+  housekeeping. `auto` runs the warmup policy; `override_on`
   and `override_off` force heater state from the control thread. Override mode
   emits a best-effort warning every 20 minutes.
 - Response: heater mode, heater/bank state, ambient state, temperature freshness
