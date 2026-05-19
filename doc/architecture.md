@@ -18,8 +18,8 @@ scheduling.
 Runtime ownership is:
 
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
-- `command.c`: app command queues, serial guard policy, request classification,
-  command table, and app/cross-domain command handlers.
+- `command.c`: app command queues, static command behavior table, serial guard
+  policy, request classification, and app/cross-domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
@@ -72,8 +72,9 @@ APIs directly.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
 8. Command runtime registers named scheduled actions.
-9. Executor and serial threads are created. Photodiode and temperature threads
-   were defined statically and self-gate on board/device availability.
+9. Executor, serial, and housekeeping threads are created. Photodiode and
+   throughput monitor threads were defined statically and self-gate on
+   board/device availability.
 10. SNTP, network, MQTT client, broker settings, and command subscription are
     initialized.
 11. The main loop feeds the watchdog, keeps MQTT connected when network is
@@ -102,8 +103,8 @@ to `hsfib-tib`, `cal_hk` to `hsfib-rcal`, `cal_yj` to `hsfib-bcal`, and `as` to
 the MQTT client ID.
 
 Requests are classified by schema and topic shape, not by user-visible method
-verbs. Internally, `command_infer_msg_type()` still selects the C dispatch-table
-query slot or effect/action slot.
+verbs. The app's static command behavior table owns the default query/effect
+policy and names the special payload rules used by `command_infer_msg_type()`.
 
 Empty or no-payload requests are queries except for no-payload actions such as
 `reboot`, `laserbank/clearfaults`, and laser-bank topic suffixes such as
@@ -115,9 +116,9 @@ endpoints, laser name-only queries, laser tune/settings readbacks, and
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:
 `<key>` becomes an empty JSON payload, raw JSON is copied, `key=value` tokens
-are wrapped as JSON fields, and selected human shorthands are translated into
-the same payload shapes as MQTT. The old payload `msg_type` convention is not
-part of current ingress classification.
+are wrapped as JSON fields, and command-table-selected human shorthands are
+translated into the same payload shapes as MQTT. The old payload `msg_type`
+convention is not part of current ingress classification.
 
 The command executor runs exactly one request at a time from `inbound_queue`.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return

@@ -2,10 +2,10 @@
 
 ## Authority
 
-`commands.md` documents intended command/API behavior. The static command table
-in `app/src/command.c` and the current command handlers are the implementation
-source of truth. This page compares the two without silently changing either
-contract.
+`commands.md` documents intended command/API behavior. The static command
+behavior table in `app/src/command.c` and the current command handlers are the
+implementation source of truth. This page compares the two without silently
+changing either contract.
 
 ## Dispatch Model
 
@@ -16,9 +16,10 @@ cmd/<device>/req/#
 ```
 
 The suffix after the request prefix is copied into `Command.key`.
-`dispatch_command()` chooses the longest dispatch-table key that is either an
-exact match or followed by `/`. The `<device>` component is board-profile
-dependent: `hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
+`dispatch_command()` chooses the longest command-behavior-table key that is
+either an exact match or followed by `/`. The `<device>` component is
+board-profile dependent: `hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or
+`hsfib-as`.
 
 Implemented dispatch entries. The column names reflect internal C dispatch
 slots; the external API is documented as queries, effect requests, and actions.
@@ -37,7 +38,7 @@ slots; the external API is documented as queries, effect requests, and actions.
 | `split` | yes | yes |
 | `measure_throughput` | no | yes |
 | `laserbank/power` | yes | yes |
-| `laserbank/clearfaults` | yes, same action handler | yes, same action handler |
+| `laserbank/clearfaults` | no | yes |
 | `laserbank/heater` | yes | yes |
 | `laser/engstatus` | yes | no |
 | `laser/status` | yes | no |

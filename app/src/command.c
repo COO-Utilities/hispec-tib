@@ -4,8 +4,8 @@
  *
  * The common command runtime owns MQTT/serial topic handling, executor loops,
  * warning publication, and outbound drain behavior. This file supplies the
- * static command table, HISPEC request classification rules, serial shorthand
- * callback, scheduled actions, and command handlers that cut across domains.
+ * static command behavior table, serial shorthand callback, scheduled actions,
+ * and command handlers that cut across domains.
  */
 
 #include "command.h"
@@ -75,37 +75,148 @@ extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
 
-static const struct coo_cmd_dispatch_entry dispatch_table[] = {
-    { "help",      help_get,         NULL             },
-    { "ip",        ip_get,           ip_set           },
-    { "mqtt",      mqtt_get,         mqtt_set         },
-    { "time",      time_get,         time_set         },
-    { "reboot",    NULL,             reboot_set       },
-    { "serialguard", serial_guard_get, serial_guard_set },
-    { "memsroute",  memsroute_get,    memsroute_set    },
-    { "mems",       mems_get,         mems_set         },
-    { "split",      splitting_get,    splitting_set    },
-    { "measure_throughput", NULL, measure_throughput_set },
-    { "laserbank/power", laserbank_power, laserbank_power },
-    { "laserbank/clearfaults", laserbank_clearfaults, laserbank_clearfaults },
-    { "laserbank/heater", laserbank_heater, laserbank_heater },
-    { "laser/engstatus", laser_engstatus_get, NULL },
-    { "laser/status", laser_get, NULL },
-    { "laser/settings", laser_settings_get, laser_settings_set },
-    { "laser/tune", laser_tune_get, laser_tune_set },
-    { "laser",      laser_get, laser_set },
-    { "atten",      atten_setting_get,  atten_setting_set  },
-    { "pdsettings", pd_settings_get, pd_settings_set },
-    { "pd",         pd_get,          pd_set          },
-    { "temp",       temp_get,         NULL             },
-    { "status",     status_get,       NULL  },
+enum command_class_policy {
+    COMMAND_CLASS_DEFAULT = 0,
+    COMMAND_CLASS_ALWAYS_QUERY,
+    COMMAND_CLASS_ALWAYS_EFFECT,
+    COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT,
+    COMMAND_CLASS_ROUTE_LOSS,
+    COMMAND_CLASS_LASER_LEVEL,
+    COMMAND_CLASS_LASER_TUNE,
+    COMMAND_CLASS_LASER_SETTINGS,
 };
+
+enum command_last_policy {
+    COMMAND_LAST_DEFAULT = 0,
+    COMMAND_LAST_SKIP_PD_DARK_STATUS,
+};
+
+enum command_serial_policy {
+    COMMAND_SERIAL_VALUE = 0,
+    COMMAND_SERIAL_MEMS_SWITCH,
+    COMMAND_SERIAL_MQTT_BROKER,
+    COMMAND_SERIAL_TIME_SET,
+    COMMAND_SERIAL_SERIAL_GUARD,
+};
+
+struct command_spec {
+    const char *key;
+    coo_cmd_handler_fn get_handler;
+    coo_cmd_handler_fn set_handler;
+    enum command_class_policy class_policy;
+    enum command_last_policy last_policy;
+    enum command_serial_policy serial_policy;
+    bool mqtt_query_allowed_during_serial_guard;
+    const char *help_name;
+};
+
+#define CMD_SPEC_EX(_key, _get, _set, _class, _serial, _guard, _help) \
+    { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
+      .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
+      .serial_policy = (_serial), \
+      .mqtt_query_allowed_during_serial_guard = (_guard), .help_name = (_help) }
+
+#define CMD_SPEC(_key, _get, _set, _class, _guard, _help) \
+    CMD_SPEC_EX(_key, _get, _set, _class, COMMAND_SERIAL_VALUE, _guard, _help)
+
+/*
+ * One static row owns the app-level behavior for a command key: dispatch,
+ * request classification, serial-guard query allowance, and help coverage.
+ * Longest exact-or-slash-prefix matching lets explicit subcommands override
+ * a parent row without creating a dynamic registry.
+ */
+static const struct command_spec command_specs[] = {
+    CMD_SPEC("help", help_get, NULL, COMMAND_CLASS_DEFAULT, true, "help"),
+    CMD_SPEC("ip", ip_get, ip_set, COMMAND_CLASS_DEFAULT, true, "ip"),
+    CMD_SPEC_EX("mqtt", mqtt_get, mqtt_set, COMMAND_CLASS_DEFAULT,
+                COMMAND_SERIAL_MQTT_BROKER, true, "mqtt"),
+    CMD_SPEC_EX("time", time_get, time_set, COMMAND_CLASS_DEFAULT,
+                COMMAND_SERIAL_TIME_SET, true, "time"),
+    CMD_SPEC("temp", temp_get, NULL, COMMAND_CLASS_DEFAULT, true, "temp"),
+    CMD_SPEC("status", status_get, NULL, COMMAND_CLASS_ALWAYS_QUERY, true, "status"),
+    CMD_SPEC("reboot", NULL, reboot_set, COMMAND_CLASS_ALWAYS_EFFECT, false, "reboot"),
+    CMD_SPEC_EX("serialguard", serial_guard_get, serial_guard_set,
+                COMMAND_CLASS_DEFAULT, COMMAND_SERIAL_SERIAL_GUARD,
+                true, "serialguard"),
+    CMD_SPEC("memsroute/route_loss", memsroute_get, memsroute_set,
+             COMMAND_CLASS_ROUTE_LOSS, true, NULL),
+    CMD_SPEC("memsroute", memsroute_get, memsroute_set,
+             COMMAND_CLASS_DEFAULT, true, "memsroute"),
+    CMD_SPEC_EX("mems", mems_get, mems_set, COMMAND_CLASS_DEFAULT,
+                COMMAND_SERIAL_MEMS_SWITCH, true, "mems"),
+    CMD_SPEC("split", splitting_get, splitting_set,
+             COMMAND_CLASS_DEFAULT, true, "split"),
+    CMD_SPEC("measure_throughput", NULL, measure_throughput_set,
+             COMMAND_CLASS_DEFAULT, false, "measure_throughput"),
+    CMD_SPEC("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
+             false, "laser"),
+    CMD_SPEC("laser/tune", laser_tune_get, laser_tune_set,
+             COMMAND_CLASS_LASER_TUNE, true, NULL),
+    CMD_SPEC("laser/status", laser_get, NULL,
+             COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+    CMD_SPEC("laser/engstatus", laser_engstatus_get, NULL,
+             COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+    CMD_SPEC("laser/settings", laser_settings_get, laser_settings_set,
+             COMMAND_CLASS_LASER_SETTINGS, true, NULL),
+    CMD_SPEC("laserbank/power", laserbank_power, laserbank_power,
+             COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, "laserbank"),
+    CMD_SPEC("laserbank/clearfaults", NULL, laserbank_clearfaults,
+             COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
+    CMD_SPEC("laserbank/heater", laserbank_heater, laserbank_heater,
+             COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, NULL),
+    CMD_SPEC("atten", atten_setting_get, atten_setting_set,
+             COMMAND_CLASS_DEFAULT, true, "atten"),
+    { .key = "pd", .get_handler = pd_get, .set_handler = pd_set,
+      .class_policy = COMMAND_CLASS_DEFAULT,
+      .last_policy = COMMAND_LAST_SKIP_PD_DARK_STATUS,
+      .mqtt_query_allowed_during_serial_guard = true,
+      .help_name = "pd" },
+    CMD_SPEC("pdsettings", pd_settings_get, pd_settings_set,
+             COMMAND_CLASS_DEFAULT, true, "pdsettings"),
+};
+
+#undef CMD_SPEC
+#undef CMD_SPEC_EX
 
 static struct coo_cmd_runtime command_runtime;
 
-static const struct coo_cmd_dispatch_entry *find_dispatch(const char *key)
+static const struct command_spec *find_command_spec(const char *key)
 {
-    return coo_cmd_find_dispatch(dispatch_table, ARRAY_SIZE(dispatch_table), key);
+    const struct command_spec *best = NULL;
+    size_t best_len = 0U;
+
+    if (key == NULL) {
+        return NULL;
+    }
+
+    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
+        const size_t len = strlen(command_specs[i].key);
+
+        if (!coo_cmd_key_matches_prefix(key, command_specs[i].key)) {
+            continue;
+        }
+        if (len > best_len) {
+            best = &command_specs[i];
+            best_len = len;
+        }
+    }
+
+    return best;
+}
+
+static const char *command_suffix_after_spec(const struct coo_cmd_request *cmd,
+                                             const struct command_spec *spec)
+{
+    const char *suffix;
+    size_t key_len;
+
+    if (cmd == NULL || spec == NULL) {
+        return "";
+    }
+
+    key_len = strlen(spec->key);
+    suffix = cmd->key + key_len;
+    return suffix[0] == '/' ? suffix + 1 : suffix;
 }
 
 static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
@@ -120,26 +231,23 @@ static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
 
 static bool command_should_record_lastcommand(const struct coo_cmd_request *cmd)
 {
-    const struct coo_cmd_dispatch_entry *entry;
+    const struct command_spec *spec;
 
     if (cmd == NULL) {
         return false;
     }
 
-    entry = find_dispatch(cmd->key);
-    if (entry == NULL) {
+    spec = find_command_spec(cmd->key);
+    if (spec == NULL) {
         return false;
     }
 
-    if (strcmp(entry->key, "laserbank/clearfaults") == 0) {
-        return true;
-    }
-
-    if (cmd->msg_type != COO_CMD_EFFECT || entry->set_handler == NULL) {
+    if (cmd->msg_type != COO_CMD_EFFECT || spec->set_handler == NULL) {
         return false;
     }
 
-    if (strcmp(entry->key, "pd") == 0 && command_pd_dark_status_query(cmd)) {
+    if (spec->last_policy == COMMAND_LAST_SKIP_PD_DARK_STATUS &&
+        command_pd_dark_status_query(cmd)) {
         return false;
     }
 
@@ -157,35 +265,36 @@ static void record_lastcommand(const struct coo_cmd_request *cmd)
 
 
 static struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
+    const struct command_spec *spec = find_command_spec(cmd != NULL ? cmd->key : NULL);
+    coo_cmd_handler_fn handler;
     LOG_INF("Dispatching: %s", cmd->key);
-    struct coo_cmd_response r;
 
     if (command_should_record_lastcommand(cmd)) {
         record_lastcommand(cmd);
     }
 
-    r = coo_cmd_dispatch(cmd, dispatch_table, ARRAY_SIZE(dispatch_table),
-                         coo_cmd_unknown_response, coo_cmd_unsupported_response);
-    return r;
+    if (spec == NULL) {
+        return coo_cmd_unknown_response(cmd);
+    }
+
+    handler = cmd->msg_type == COO_CMD_EFFECT ?
+              spec->set_handler : spec->get_handler;
+    if (handler == NULL) {
+        return coo_cmd_unsupported_response(cmd);
+    }
+
+    return handler(cmd);
 }
 
 static bool mqtt_get_allowed_during_serial_guard(const char *key)
 {
-    const struct coo_cmd_dispatch_entry *entry = find_dispatch(key);
+    const struct command_spec *spec = find_command_spec(key);
 
-    if (entry == NULL || entry->get_handler == NULL) {
+    if (spec == NULL || spec->get_handler == NULL) {
         return false;
     }
 
-    /* Some legacy GET handlers currently have side effects. Keep those blocked
-     * under serial guard until their command shape is corrected.
-     */
-    if (strncmp(entry->key, "laserbank/", strlen("laserbank/")) == 0 ||
-        strcmp(entry->key, "laser") == 0) {
-        return false;
-    }
-
-    return true;
+    return spec->mqtt_query_allowed_during_serial_guard;
 }
 
 static bool command_payload_empty(const struct coo_cmd_request *cmd)
@@ -220,6 +329,8 @@ static bool route_loss_payload_has_value(const char *payload)
 static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request *cmd,
                                                     void *user_data)
 {
+    const struct command_spec *spec;
+    bool payload_empty;
     float fval;
 
     ARG_UNUSED(user_data);
@@ -228,46 +339,41 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request
         return COO_CMD_QUERY;
     }
 
-    if (command_payload_empty(cmd)) {
-        if (strcmp(cmd->key, "reboot") == 0 ||
-            strcmp(cmd->key, "laserbank/clearfaults") == 0 ||
-            strncmp(cmd->key, "laserbank/power/", strlen("laserbank/power/")) == 0 ||
-            strncmp(cmd->key, "laserbank/heater/", strlen("laserbank/heater/")) == 0) {
-            return COO_CMD_EFFECT;
-        }
-        return COO_CMD_QUERY;
+    spec = find_command_spec(cmd->key);
+    payload_empty = command_payload_empty(cmd);
+
+    if (spec == NULL) {
+        return payload_empty ? COO_CMD_QUERY : COO_CMD_EFFECT;
     }
 
-    if (strcmp(cmd->key, "status") == 0 ||
-        strcmp(cmd->key, "laser/status") == 0 ||
-        strcmp(cmd->key, "laser/engstatus") == 0) {
+    switch (spec->class_policy) {
+    case COMMAND_CLASS_ALWAYS_QUERY:
         return COO_CMD_QUERY;
-    }
-
-    if (strcmp(cmd->key, "memsroute/route_loss") == 0) {
+    case COMMAND_CLASS_ALWAYS_EFFECT:
+        return COO_CMD_EFFECT;
+    case COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT:
+        return (!payload_empty || command_suffix_after_spec(cmd, spec)[0] != '\0') ?
+               COO_CMD_EFFECT : COO_CMD_QUERY;
+    case COMMAND_CLASS_ROUTE_LOSS:
         return route_loss_payload_has_value(cmd->payload) ? COO_CMD_EFFECT : COO_CMD_QUERY;
-    }
-
-    if (strcmp(cmd->key, "laser") == 0) {
+    case COMMAND_CLASS_LASER_LEVEL:
         return coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
                COO_CMD_EFFECT : COO_CMD_QUERY;
-    }
-
-    if (strcmp(cmd->key, "laser/tune") == 0) {
+    case COMMAND_CLASS_LASER_TUNE:
         return coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
                coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
                COO_CMD_EFFECT : COO_CMD_QUERY;
-    }
-
-    if (strcmp(cmd->key, "laser/settings") == 0) {
+    case COMMAND_CLASS_LASER_SETTINGS: {
         char settings_json[MAX_PAYLOAD_LEN];
 
         return coo_json_extract_object(cmd->payload, "settings",
                                        settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
                COO_CMD_EFFECT : COO_CMD_QUERY;
     }
-
-    return COO_CMD_EFFECT;
+    case COMMAND_CLASS_DEFAULT:
+    default:
+        return payload_empty ? COO_CMD_QUERY : COO_CMD_EFFECT;
+    }
 }
 
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
@@ -278,6 +384,9 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
                                          char *out, size_t out_len,
                                          void *user_data)
 {
+    const struct command_spec *spec = find_command_spec(key);
+    const enum command_serial_policy serial_policy =
+        spec != NULL ? spec->serial_policy : COMMAND_SERIAL_VALUE;
     const char *cursor = payload;
     char t0[96] = {0};
     char t1[96] = {0};
@@ -296,7 +405,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         return -EINVAL;
     }
 
-    if (strncmp(key, "mems/", 5) == 0) {
+    if (serial_policy == COMMAND_SERIAL_MEMS_SWITCH && strchr(key, '/') != NULL) {
         written = snprintk(out, out_len, "{\"state\":");
         if (written < 0 || written >= (int)out_len) {
             return -ENOSPC;
@@ -317,7 +426,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
     }
 
-    if (strcmp(key, "serialguard") == 0) {
+    if (serial_policy == COMMAND_SERIAL_SERIAL_GUARD) {
         const char *seconds = (strcasecmp(t0, "off") == 0) ? "0" : t0;
 
         written = snprintk(out, out_len, "{\"seconds\":");
@@ -336,7 +445,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
     }
 
-    if (strcmp(key, "mqtt") == 0) {
+    if (serial_policy == COMMAND_SERIAL_MQTT_BROKER) {
         written = snprintk(out, out_len, "{\"broker\":");
         if (written < 0 || written >= (int)out_len) {
             return -ENOSPC;
@@ -356,7 +465,7 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
     }
 
-    if (strcmp(key, "time") == 0) {
+    if (serial_policy == COMMAND_SERIAL_TIME_SET) {
         if (!coo_cmd_serial_token_is_number(t0)) {
             return -EINVAL;
         }
@@ -445,8 +554,8 @@ int command_runtime_init(void)
         .inbound_queue = &inbound_queue,
         .outbound_queue = &outbound_queue,
         .execute_handler = dispatch_command,
-        .dispatch_table = dispatch_table,
-        .dispatch_count = ARRAY_SIZE(dispatch_table),
+        .dispatch_table = NULL,
+        .dispatch_count = 0U,
         .unknown_handler = coo_cmd_unknown_response,
         .unsupported_handler = coo_cmd_unsupported_response,
         .mqtt_msg_id = &mqtt_msg_id,
@@ -492,10 +601,31 @@ struct coo_cmd_runtime *command_runtime_get(void)
 
 struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
 {
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK,
-                        "{\"help\":\"help,ip,mqtt,time,temp,status,reboot,serialguard,"
-                        "memsroute,mems,split,measure_throughput,laser,laserbank,"
-                        "atten,pd,pdsettings\"}");
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t off = 0U;
+    bool first = true;
+
+    if (coo_json_append(payload, sizeof(payload), &off, "{\"help\":\"") != 0) {
+        return coo_cmd_error(cmd, "help response too large");
+    }
+
+    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
+        if (command_specs[i].help_name == NULL) {
+            continue;
+        }
+        if (coo_json_append(payload, sizeof(payload), &off, "%s%s",
+                            first ? "" : ",",
+                            command_specs[i].help_name) != 0) {
+            return coo_cmd_error(cmd, "help response too large");
+        }
+        first = false;
+    }
+
+    if (coo_json_append(payload, sizeof(payload), &off, "\"}") != 0) {
+        return coo_cmd_error(cmd, "help response too large");
+    }
+
+    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
 static int ip_status_payload(char *payload, size_t payload_len)

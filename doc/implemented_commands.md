@@ -1,8 +1,8 @@
 # Implemented Commands
 
-This page is derived from the static command table in `app/src/command.c` and
-the current command handlers. It is a comparison artifact, not a replacement
-for `commands.md`.
+This page is derived from the static command behavior table in
+`app/src/command.c` and the current command handlers. It is a comparison
+artifact, not a replacement for `commands.md`.
 
 ## Global Rules
 
@@ -15,9 +15,10 @@ for `commands.md`.
   fixed buffer.
 - MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
   and echoed exactly in responses.
-- MQTT and serial share the same schema-based request classification in
-  `command_infer_msg_type()`. The internal names `MSG_GET` and `MSG_SET` are
-  dispatch-slot names, not user-visible protocol verbs.
+- MQTT and serial share the same schema-based request classification selected
+  by the static command behavior table and applied by `command_infer_msg_type()`.
+  The internal names `MSG_GET` and `MSG_SET` are dispatch-slot names, not
+  user-visible protocol verbs.
 - Empty/no-payload requests are queries except no-payload actions such as `reboot`
   and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
 - Non-empty payload requests are effect/action requests except documented query
@@ -70,8 +71,8 @@ for `commands.md`.
 - Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,measure_throughput,laser,laserbank,atten,pd,pdsettings"}`.
 - No hardware side effects, no NVS writes, no direct publish.
 - Handler: `help_get()` in `app/src/command.c`.
-- Mismatch: the response is a static summary, not a full endpoint list or
-  device-info payload.
+- Mismatch: the response is generated from command-table help names, but is
+  still a summary, not a full endpoint list or device-info payload.
 
 ### `ip`
 
