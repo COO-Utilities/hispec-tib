@@ -224,9 +224,8 @@ artifact, not a replacement for `commands.md`.
 ### `laserbank/power`
 
 - Query returns current laser-bank power override mode and GPIO power state.
-- Effect request accepts `{"override":"auto|override_on|override_off"}`,
-  `{"mode":"auto|override_on|override_off"}`, raw text, or a topic suffix such
-  as `laserbank/power/override_on`.
+- Effect request accepts `{"override":"auto|override_on|override_off"}` or a
+  topic suffix such as `laserbank/power/override_on`.
 - Effect success returns the same data shape as the query.
 - Board restriction: TIB only.
 - Side effects: `override_on` powers the bank and waits for Maiman boot;
@@ -251,7 +250,7 @@ artifact, not a replacement for `commands.md`.
 ### `laserbank/heater`
 
 - Query with no suffix reports heater auto/override control status.
-- Effect request accepts `override`/`state` string values `auto`, `override_on`, or
+- Effect request accepts `override` string values `auto`, `override_on`, or
   `override_off`, including topic suffixes.
 - Effect success returns the same data shape as the query.
 - Board restriction: TIB only.

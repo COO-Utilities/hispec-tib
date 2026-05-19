@@ -25,17 +25,13 @@
 static const struct coo_json_string_choice laserbank_power_mode_choices[] = {
 	{ "auto", HISPEC_LASER_BANK_POWER_AUTO },
 	{ "override_on", HISPEC_LASER_BANK_POWER_OVERRIDE_ON },
-	{ "on", HISPEC_LASER_BANK_POWER_OVERRIDE_ON },
 	{ "override_off", HISPEC_LASER_BANK_POWER_OVERRIDE_OFF },
-	{ "off", HISPEC_LASER_BANK_POWER_OVERRIDE_OFF },
 };
 
 static const struct coo_json_string_choice heater_mode_choices[] = {
 	{ "auto", LASERBANK_HEATER_MODE_AUTO },
 	{ "override_on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
-	{ "on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
 	{ "override_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
-	{ "off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
 };
 
 static bool parse_laserbank_power_mode_text(const char *text,
@@ -58,7 +54,7 @@ static bool parse_laserbank_power_request(const struct coo_cmd_request *cmd,
 {
 	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
 						      "laserbank/power");
-	char text[20] = {0};
+	int value;
 
 	if (parse_laserbank_power_mode_text(suffix, mode)) {
 		return true;
@@ -66,13 +62,14 @@ static bool parse_laserbank_power_request(const struct coo_cmd_request *cmd,
 	if (coo_cmd_payload_empty(cmd)) {
 		return false;
 	}
-	if (coo_json_extract_string(cmd->payload, "override", text, sizeof(text)) ==
-	    COO_JSON_EXTRACT_OK ||
-	    coo_json_extract_string(cmd->payload, "mode", text, sizeof(text)) ==
-	    COO_JSON_EXTRACT_OK) {
-		return parse_laserbank_power_mode_text(text, mode);
+	if (coo_json_extract_string_choice(cmd->payload, "override",
+					   laserbank_power_mode_choices,
+					   ARRAY_SIZE(laserbank_power_mode_choices),
+					   &value) == COO_JSON_EXTRACT_OK) {
+		*mode = (enum hispec_laser_bank_power_mode)value;
+		return true;
 	}
-	return parse_laserbank_power_mode_text(cmd->payload, mode);
+	return false;
 }
 
 struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
@@ -173,9 +170,7 @@ static bool parse_heater_request(const struct coo_cmd_request *cmd,
 {
 	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
 						      "laserbank/heater");
-	char state[20] = {0};
-	bool flag;
-	int rc;
+	int value;
 
 	if (parse_heater_mode_text(suffix, mode)) {
 		return true;
@@ -185,25 +180,14 @@ static bool parse_heater_request(const struct coo_cmd_request *cmd,
 		return false;
 	}
 
-	if (coo_json_extract_string(cmd->payload, "override", state, sizeof(state)) ==
-	    COO_JSON_EXTRACT_OK ||
-	    coo_json_extract_string(cmd->payload, "state", state, sizeof(state)) ==
-	    COO_JSON_EXTRACT_OK) {
-		return parse_heater_mode_text(state, mode);
-	}
-
-	rc = coo_json_extract_bool(cmd->payload, "override_on", &flag);
-	if (rc == COO_JSON_EXTRACT_OK && flag) {
-		*mode = LASERBANK_HEATER_MODE_OVERRIDE_ON;
+	if (coo_json_extract_string_choice(cmd->payload, "override",
+					   heater_mode_choices,
+					   ARRAY_SIZE(heater_mode_choices),
+					   &value) == COO_JSON_EXTRACT_OK) {
+		*mode = (enum laserbank_heater_mode)value;
 		return true;
 	}
-	rc = coo_json_extract_bool(cmd->payload, "override_off", &flag);
-	if (rc == COO_JSON_EXTRACT_OK && flag) {
-		*mode = LASERBANK_HEATER_MODE_OVERRIDE_OFF;
-		return true;
-	}
-
-	return parse_heater_mode_text(cmd->payload, mode);
+	return false;
 }
 
 struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
