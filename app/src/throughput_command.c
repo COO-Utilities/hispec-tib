@@ -5,8 +5,7 @@
 
 #include "throughput_command.h"
 
-#include <ctype.h>
-#include <strings.h>
+#include <zephyr/sys/util.h>
 
 #include "devices.h"
 #include "throughput_monitor.h"
@@ -15,16 +14,36 @@
 
 LOG_MODULE_DECLARE(throughput_monitor, LOG_LEVEL_INF);
 
+enum throughput_format {
+	THROUGHPUT_FORMAT_JSON = 0,
+	THROUGHPUT_FORMAT_BINARY,
+};
+
+static const struct coo_json_string_choice stop_choices[] = {
+	{ "yj", PHOTODIODE_CHANNEL_YJ },
+	{ "hk", PHOTODIODE_CHANNEL_HK },
+	{ "all", PHOTODIODE_CHANNEL_COUNT },
+};
+
+static const struct coo_json_string_choice fiber_choices[] = {
+	{ "m", 'M' },
+	{ "s", 'S' },
+};
+
+static const struct coo_json_string_choice format_choices[] = {
+	{ "json", THROUGHPUT_FORMAT_JSON },
+	{ "binary", THROUGHPUT_FORMAT_BINARY },
+};
+
 struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd)
 {
 	char stop[8] = {0};
 	char laser_name[16] = {0};
-	char fiber_text[4] = "M";
-	char format[8] = "json";
 	struct throughput_monitor_request request = {0};
 	struct throughput_monitor_status status = {0};
 	uint32_t stopafter_s = 0U;
 	bool autolevel = true;
+	int choice_value;
 	int parse_rc;
 	int rc;
 
@@ -34,23 +53,13 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 
 	parse_rc = coo_json_extract_string(cmd->payload, "stop", stop, sizeof(stop));
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
-		uint8_t channel;
-
-		if (strcasecmp(stop, "all") == 0) {
-			rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &status);
-			return rc == 0 ? coo_cmd_ok(cmd) :
-				coo_cmd_error(cmd, "stop failed");
-		}
-
-		if (strcasecmp(stop, "yj") == 0) {
-			channel = PHOTODIODE_CHANNEL_YJ;
-		} else if (strcasecmp(stop, "hk") == 0) {
-			channel = PHOTODIODE_CHANNEL_HK;
-		} else {
+		if (coo_json_match_string_choice(stop, stop_choices,
+						 ARRAY_SIZE(stop_choices),
+						 &choice_value) != 0) {
 			return coo_cmd_error(cmd, "stop must be yj, hk, or all");
 		}
 
-		rc = throughput_monitor_stop(channel, &status);
+		rc = throughput_monitor_stop((uint8_t)choice_value, &status);
 		if (rc != 0) {
 			return coo_cmd_error(cmd, "stop failed");
 		}
@@ -68,15 +77,17 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 		return coo_cmd_error(cmd, "missing or invalid laser");
 	}
 
-	parse_rc = coo_json_extract_string(cmd->payload, "fiber",
-					   fiber_text, sizeof(fiber_text));
-	if (parse_rc == COO_JSON_EXTRACT_ERR || fiber_text[0] == '\0' ||
-	    fiber_text[1] != '\0') {
+	parse_rc = coo_json_extract_string_choice(cmd->payload, "fiber",
+						  fiber_choices,
+						  ARRAY_SIZE(fiber_choices),
+						  &choice_value);
+	if (parse_rc == COO_JSON_EXTRACT_ERR) {
 		return coo_cmd_error(cmd, "fiber must be M or S");
 	}
-	fiber_text[0] = (char)toupper((unsigned char)fiber_text[0]);
-	if (fiber_text[0] != 'M' && fiber_text[0] != 'S') {
-		return coo_cmd_error(cmd, "fiber must be M or S");
+	if (parse_rc == COO_JSON_EXTRACT_OK) {
+		request.fiber = (char)choice_value;
+	} else {
+		request.fiber = 'M';
 	}
 
 	if (coo_json_extract_optional_bool(cmd->payload, "autolevel",
@@ -89,16 +100,17 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 		return coo_cmd_error(cmd, "invalid stopafter_s");
 	}
 
-	parse_rc = coo_json_extract_string(cmd->payload, "format",
-					   format, sizeof(format));
-	if (parse_rc == COO_JSON_EXTRACT_ERR ||
-	    (strcasecmp(format, "json") != 0 && strcasecmp(format, "binary") != 0)) {
+	parse_rc = coo_json_extract_string_choice(cmd->payload, "format",
+						  format_choices,
+						  ARRAY_SIZE(format_choices),
+						  &choice_value);
+	if (parse_rc == COO_JSON_EXTRACT_ERR) {
 		return coo_cmd_error(cmd, "format must be json or binary");
 	}
+	request.binary = parse_rc == COO_JSON_EXTRACT_OK &&
+			 choice_value == THROUGHPUT_FORMAT_BINARY;
 
 	request.autolevel = autolevel;
-	request.binary = strcasecmp(format, "binary") == 0;
-	request.fiber = fiber_text[0];
 	request.stopafter_s = stopafter_s;
 
 	rc = throughput_monitor_start(&request, &status);
