@@ -204,16 +204,6 @@ static const struct command_spec *find_command_spec(const char *key)
     return best;
 }
 
-static const char *command_suffix_after_spec(const struct coo_cmd_request *cmd,
-                                             const struct command_spec *spec)
-{
-    if (cmd == NULL || spec == NULL) {
-        return "";
-    }
-
-    return coo_cmd_key_suffix_after(cmd->key, spec->key);
-}
-
 static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
 {
     char action[20] = {0};
@@ -292,11 +282,6 @@ static bool mqtt_get_allowed_during_serial_guard(const char *key)
     return spec->mqtt_query_allowed_during_serial_guard;
 }
 
-static bool command_payload_empty(const struct coo_cmd_request *cmd)
-{
-    return coo_cmd_payload_empty(cmd);
-}
-
 static bool route_loss_payload_has_value(const char *payload)
 {
     static const char *const route_loss_value_keys[] = {
@@ -335,7 +320,7 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request
     }
 
     spec = find_command_spec(cmd->key);
-    payload_empty = command_payload_empty(cmd);
+    payload_empty = coo_cmd_payload_empty(cmd);
 
     if (spec == NULL) {
         return payload_empty ? COO_CMD_QUERY : COO_CMD_EFFECT;
@@ -347,7 +332,7 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request
     case COMMAND_CLASS_ALWAYS_EFFECT:
         return COO_CMD_EFFECT;
     case COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT:
-        return (!payload_empty || command_suffix_after_spec(cmd, spec)[0] != '\0') ?
+        return (!payload_empty || coo_cmd_key_suffix_after(cmd->key, spec->key)[0] != '\0') ?
                COO_CMD_EFFECT : COO_CMD_QUERY;
     case COMMAND_CLASS_ROUTE_LOSS:
         return route_loss_payload_has_value(cmd->payload) ? COO_CMD_EFFECT : COO_CMD_QUERY;
