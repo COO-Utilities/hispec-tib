@@ -34,48 +34,36 @@ static const struct coo_json_string_choice heater_mode_choices[] = {
 	{ "override_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
 };
 
-static bool parse_laserbank_power_mode_text(const char *text,
-					    enum hispec_laser_bank_power_mode *mode)
+static bool parse_laserbank_override_request(const struct coo_cmd_request *cmd,
+					     const char *key,
+					     const struct coo_json_string_choice *choices,
+					     size_t choice_count,
+					     int *mode_value)
 {
-	int value;
+	const char *suffix;
 
-	if (mode != NULL &&
-	    coo_json_match_string_choice(text, laserbank_power_mode_choices,
-					 ARRAY_SIZE(laserbank_power_mode_choices),
-					 &value) == 0) {
-		*mode = (enum hispec_laser_bank_power_mode)value;
-		return true;
+	if (mode_value == NULL) {
+		return false;
 	}
-	return false;
-}
 
-static bool parse_laserbank_power_request(const struct coo_cmd_request *cmd,
-					  enum hispec_laser_bank_power_mode *mode)
-{
-	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
-						      "laserbank/power");
-	int value;
-
-	if (parse_laserbank_power_mode_text(suffix, mode)) {
+	suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL, key);
+	if (coo_json_match_string_choice(suffix, choices, choice_count,
+					 mode_value) == 0) {
 		return true;
 	}
 	if (coo_cmd_payload_empty(cmd)) {
 		return false;
 	}
-	if (coo_json_extract_string_choice(cmd->payload, "override",
-					   laserbank_power_mode_choices,
-					   ARRAY_SIZE(laserbank_power_mode_choices),
-					   &value) == COO_JSON_EXTRACT_OK) {
-		*mode = (enum hispec_laser_bank_power_mode)value;
-		return true;
-	}
-	return false;
+	return coo_json_extract_string_choice(cmd->payload, "override",
+					      choices, choice_count,
+					      mode_value) == COO_JSON_EXTRACT_OK;
 }
 
 struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_bank_power_mode mode;
 	char payload[MAX_PAYLOAD_LEN] = {0};
+	int mode_value;
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
@@ -85,9 +73,13 @@ struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/power")[0] != '\0')) {
-		if (!parse_laserbank_power_request(cmd, &mode)) {
+		if (!parse_laserbank_override_request(cmd, "laserbank/power",
+						      laserbank_power_mode_choices,
+						      ARRAY_SIZE(laserbank_power_mode_choices),
+						      &mode_value)) {
 			return coo_cmd_error(cmd, "override must be auto, override_on, or override_off");
 		}
+		mode = (enum hispec_laser_bank_power_mode)mode_value;
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
 			return coo_cmd_error_rc(cmd, "laser bank power mode failed", rc);
@@ -150,50 +142,11 @@ static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_l
 		 status.last_poll_age_ms);
 }
 
-static bool parse_heater_mode_text(const char *text,
-				   enum laserbank_heater_mode *mode)
-{
-	int value;
-
-	if (mode != NULL &&
-	    coo_json_match_string_choice(text, heater_mode_choices,
-					 ARRAY_SIZE(heater_mode_choices),
-					 &value) == 0) {
-		*mode = (enum laserbank_heater_mode)value;
-		return true;
-	}
-	return false;
-}
-
-static bool parse_heater_request(const struct coo_cmd_request *cmd,
-				 enum laserbank_heater_mode *mode)
-{
-	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
-						      "laserbank/heater");
-	int value;
-
-	if (parse_heater_mode_text(suffix, mode)) {
-		return true;
-	}
-
-	if (coo_cmd_payload_empty(cmd)) {
-		return false;
-	}
-
-	if (coo_json_extract_string_choice(cmd->payload, "override",
-					   heater_mode_choices,
-					   ARRAY_SIZE(heater_mode_choices),
-					   &value) == COO_JSON_EXTRACT_OK) {
-		*mode = (enum laserbank_heater_mode)value;
-		return true;
-	}
-	return false;
-}
-
 struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
 {
 	enum laserbank_heater_mode mode;
 	char payload[MAX_PAYLOAD_LEN] = {0};
+	int mode_value;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
 		return coo_cmd_error(cmd, "laser bank unavailable on this board");
@@ -202,10 +155,14 @@ struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/heater")[0] != '\0')) {
-		if (!parse_heater_request(cmd, &mode)) {
+		if (!parse_laserbank_override_request(cmd, "laserbank/heater",
+						      heater_mode_choices,
+						      ARRAY_SIZE(heater_mode_choices),
+						      &mode_value)) {
 			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
 		}
+		mode = (enum laserbank_heater_mode)mode_value;
 		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);
 		if (rc != 0) {
 			return coo_cmd_error_rc(cmd, "laser bank heater relay unavailable", rc);
