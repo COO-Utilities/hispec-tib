@@ -18,8 +18,8 @@
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
+#include "housekeeping.h"
 #include "lasers.h"
-#include "tempsense.h"
 
 LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
@@ -171,7 +171,7 @@ static void refresh_cached_temperatures(const struct hispec_laser_bank_temperatu
 	}
 }
 
-static void summarize_temperature_state(const struct tempsense_status *ambient,
+static void summarize_temperature_state(const struct housekeeping_temperature_status *ambient,
 					int64_t now_ms)
 {
 	bool all_enabled = true;
@@ -266,7 +266,7 @@ static void run_heater_control_cycle(void)
 {
 	struct app_laserbank_settings settings;
 	struct hispec_laser_bank_temperature_status poll = {0};
-	struct tempsense_status ambient = {0};
+	struct housekeeping_temperature_status ambient = {0};
 	bool entered_auto;
 	bool all_stale;
 	bool bank_powered;
@@ -274,7 +274,7 @@ static void run_heater_control_cycle(void)
 	int rc;
 
 	app_settings_get_laserbank(&settings);
-	tempsense_get_status(&ambient);
+	housekeeping_get_temperature_status(&ambient);
 	bank_powered = hispec_laser_bank_power_is_enabled();
 
 	k_mutex_lock(&control_lock, K_FOREVER);

@@ -328,7 +328,7 @@ flowchart TD
   Cache --> Wait
   CacheErr --> Wait
   Wait --> Thread
-  Command[temp query] --> Read[tempsense_get_status]
+  Command[temp query] --> Read[housekeeping_get_temperature_status]
   Read --> Response[ambient payload or error]
 ```
 

@@ -6,6 +6,19 @@
 #ifndef HISPEC_HOUSEKEEPING_H
 #define HISPEC_HOUSEKEEPING_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
+struct housekeeping_temperature_status {
+	float ambient_c;
+	uint32_t age_ms;
+	int last_error;
+	bool valid;
+};
+
+/** Copy the ambient-temperature cache and compute age from Zephyr uptime. */
+void housekeeping_get_temperature_status(struct housekeeping_temperature_status *out);
+
 /**
  * Background housekeeping actor. Samples ambient temperature, runs TIB
  * laser-bank heater policy, and services slow power timeouts. It can sleep and

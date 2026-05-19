@@ -19,40 +19,39 @@
 
 #include "devices.h"
 #include "laserbank_tempcontrol.h"
-#include "tempsense.h"
 
 LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 
 #define HOUSEKEEPING_TEMP_INTERVAL_MS 1000U
 
-static struct tempsense_status tempsense;
-static K_MUTEX_DEFINE(tempsense_lock);
+static struct housekeeping_temperature_status temperature_status;
+static K_MUTEX_DEFINE(temperature_status_lock);
 static int64_t last_sample_ms;
-static const struct device *tempsense_dev;
-static bool tempsense_initialized;
+static const struct device *temperature_dev;
+static bool temperature_initialized;
 
-static void tempsense_update(float ambient_c, int error, bool valid)
+static void temperature_update(float ambient_c, int error, bool valid)
 {
-	k_mutex_lock(&tempsense_lock, K_FOREVER);
-	tempsense.ambient_c = ambient_c;
-	tempsense.last_error = error;
-	tempsense.valid = valid;
+	k_mutex_lock(&temperature_status_lock, K_FOREVER);
+	temperature_status.ambient_c = ambient_c;
+	temperature_status.last_error = error;
+	temperature_status.valid = valid;
 	last_sample_ms = valid ? k_uptime_get() : 0;
-	tempsense.age_ms = 0;
-	k_mutex_unlock(&tempsense_lock);
+	temperature_status.age_ms = 0;
+	k_mutex_unlock(&temperature_status_lock);
 }
 
-static void tempsense_mark_error(int error)
+static void temperature_mark_error(int error)
 {
-	k_mutex_lock(&tempsense_lock, K_FOREVER);
-	tempsense.last_error = error;
-	tempsense.valid = false;
+	k_mutex_lock(&temperature_status_lock, K_FOREVER);
+	temperature_status.last_error = error;
+	temperature_status.valid = false;
 	last_sample_ms = 0;
-	tempsense.age_ms = UINT32_MAX;
-	k_mutex_unlock(&tempsense_lock);
+	temperature_status.age_ms = UINT32_MAX;
+	k_mutex_unlock(&temperature_status_lock);
 }
 
-void tempsense_get_status(struct tempsense_status *out)
+void housekeeping_get_temperature_status(struct housekeeping_temperature_status *out)
 {
 	int64_t now;
 
@@ -60,12 +59,12 @@ void tempsense_get_status(struct tempsense_status *out)
 		return;
 	}
 
-	k_mutex_lock(&tempsense_lock, K_FOREVER);
-	*out = tempsense;
+	k_mutex_lock(&temperature_status_lock, K_FOREVER);
+	*out = temperature_status;
 	now = k_uptime_get();
 	out->age_ms = (out->valid && last_sample_ms > 0) ?
 		      (uint32_t)(now - last_sample_ms) : UINT32_MAX;
-	k_mutex_unlock(&tempsense_lock);
+	k_mutex_unlock(&temperature_status_lock);
 }
 
 static const struct device *get_ds18b20_device(void)
@@ -86,52 +85,52 @@ static const struct device *get_ds18b20_device(void)
 	return dev;
 }
 
-static int tempsense_init_once(void)
+static int temperature_init_once(void)
 {
 	int rc = 0;
 
-	if (tempsense_initialized) {
-		return tempsense_dev == NULL ? -ENODEV : 0;
+	if (temperature_initialized) {
+		return temperature_dev == NULL ? -ENODEV : 0;
 	}
 
-	tempsense_dev = get_ds18b20_device();
-	if (tempsense_dev == NULL) {
+	temperature_dev = get_ds18b20_device();
+	if (temperature_dev == NULL) {
 		rc = -ENODEV;
 	}
-	tempsense_update(0.0f, rc, false);
-	tempsense_initialized = true;
+	temperature_update(0.0f, rc, false);
+	temperature_initialized = true;
 	return rc;
 }
 
-static int tempsense_sample_once(void)
+static int temperature_sample_once(void)
 {
 	struct sensor_value temp;
 	float ambient_c;
 	int rc;
 
-	rc = tempsense_init_once();
+	rc = temperature_init_once();
 	if (rc != 0) {
 		return rc;
 	}
 
 	/* Refresh the Zephyr sensor sample before reading the temperature channel. */
-	rc = sensor_sample_fetch(tempsense_dev);
+	rc = sensor_sample_fetch(temperature_dev);
 	if (rc != 0) {
 		LOG_ERR("DS18B20 sample fetch failed: %d", rc);
-		tempsense_mark_error(rc);
+		temperature_mark_error(rc);
 		return rc;
 	}
 
 	/* SENSOR_CHAN_AMBIENT_TEMP returns Celsius in integer + micro unit parts. */
-	rc = sensor_channel_get(tempsense_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+	rc = sensor_channel_get(temperature_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp);
 	if (rc != 0) {
 		LOG_ERR("DS18B20 channel read failed: %d", rc);
-		tempsense_mark_error(rc);
+		temperature_mark_error(rc);
 		return rc;
 	}
 
 	ambient_c = sensor_value_to_double(&temp);
-	tempsense_update(ambient_c, 0, true);
+	temperature_update(ambient_c, 0, true);
 	return 0;
 }
 
@@ -149,7 +148,7 @@ void housekeeping_thread(void *p1, void *p2, void *p3)
 		int64_t now = k_uptime_get();
 
 		if (now >= next_temp_ms) {
-			(void)tempsense_sample_once();
+			(void)temperature_sample_once();
 			next_temp_ms = now + HOUSEKEEPING_TEMP_INTERVAL_MS;
 		}
 

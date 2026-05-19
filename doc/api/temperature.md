@@ -1,6 +1,6 @@
 # Temperature Sensing
 
 ```{eval-rst}
-.. doxygenfile:: app/src/tempsense.h
+.. doxygenfile:: app/src/housekeeping.h
    :project: hispec_tib
 ```

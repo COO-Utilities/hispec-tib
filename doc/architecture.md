@@ -38,7 +38,6 @@ Runtime ownership is:
   and optional autolevel control.
 - `housekeeping.c`: slow ambient-temperature sampling, laser-bank heater
   policy cadence, and slow power timeout service.
-- `tempsense.h`: ambient-temperature status API backed by housekeeping.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.

@@ -38,7 +38,7 @@
 #if defined(CONFIG_SNTP)
 #include "sntp_sync.h"
 #endif
-#include "tempsense.h"
+#include "housekeeping.h"
 #include <coo_commons/json_utils.h>
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
@@ -1058,7 +1058,7 @@ struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
 
 struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
 {
-    struct tempsense_status ts = {0};
+    struct housekeeping_temperature_status ts = {0};
     struct laserbank_tempcontrol_status bank = {0};
     bool include_ip = false;
     bool include_lasers = false;
@@ -1079,7 +1079,7 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
         return coo_cmd_error(cmd, "invalid attens");
     }
 
-    tempsense_get_status(&ts);
+    housekeeping_get_temperature_status(&ts);
     laserbank_tempcontrol_get_status(&bank);
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fwversion\":\"%s\",\"bootcount\":%u,"
@@ -1187,7 +1187,7 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
 
 struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
 {
-    struct tempsense_status ts = {0};
+    struct housekeeping_temperature_status ts = {0};
     struct hispec_laser_bank_temperature_status bank = {0};
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t off = 0U;
@@ -1195,7 +1195,7 @@ struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd)
     uint8_t bank_count = 0U;
     int laser_rc = 0;
 
-    tempsense_get_status(&ts);
+    housekeeping_get_temperature_status(&ts);
     if (devices_board_type() == HISPEC_BOARD_TIB) {
         laser_rc = hispec_laser_bank_read_temperatures(&bank);
         if (laser_rc == 0) {
