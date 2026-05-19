@@ -634,31 +634,43 @@ static bool all_board_straps_mapped(void)
 	return true;
 }
 
+static int board_straps_configure_inputs(void)
+{
+	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
+		int rc = gpio_pin_configure_dt(board_straps[i].gpio, GPIO_INPUT);
+
+		if (rc != 0) {
+			LOG_ERR("Failed to configure board strap %s (%d)",
+				board_straps[i].name, rc);
+			return rc;
+		}
+	}
+
+	/* Strap pins are high-impedance solder jumpers. Configure them once from
+	 * devicetree and let the weak pullups settle before sampling the bank.
+	 */
+	k_busy_wait(100);
+	return 0;
+}
+
 static int board_strap_read_active(const struct board_strap *strap, bool *active, int *raw_level)
 {
+	int logical;
 	int raw;
-	int rc;
 
 	if (strap == NULL || active == NULL || raw_level == NULL || strap->gpio->port == NULL) {
 		return -ENODEV;
 	}
-	/* gpio_pin_configure_dt() applies the pull-up from the overlay. Board straps
-	 * are physical solder jumpers, so read the physical level and apply the
-	 * active-low flag explicitly: unconnected pulled-up pins are inactive, and
-	 * straps shorted to ground are active.
-	 */
-	rc = gpio_pin_configure_dt(strap->gpio, GPIO_INPUT);
-	if (rc != 0) {
-		return rc;
-	}
-
 	raw = gpio_pin_get_raw(strap->gpio->port, strap->gpio->pin);
 	if (raw < 0) {
 		return raw;
 	}
+	logical = gpio_pin_get_dt(strap->gpio);
+	if (logical < 0) {
+		return logical;
+	}
 
-	*active = (strap->gpio->dt_flags & GPIO_ACTIVE_LOW) != 0 ?
-		  (raw == 0) : (raw != 0);
+	*active = logical != 0;
 	*raw_level = raw;
 	return 0;
 }
@@ -673,6 +685,12 @@ int devices_detect_board_type(void)
 		LOG_ERR("Board type strap GPIOs are not mapped in devicetree");
 		set_current_profile(&unknown_profile, true);
 		return -ENODEV;
+	}
+
+	first_error = board_straps_configure_inputs();
+	if (first_error != 0) {
+		set_current_profile(&unknown_profile, true);
+		return first_error;
 	}
 
 	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {

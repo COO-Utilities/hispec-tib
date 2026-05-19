@@ -206,6 +206,7 @@ int main(void)
 	struct coo_mqtt_broker_config prior_mqtt_cfg = {0};
 	struct coo_cmd_runtime *cmd_runtime;
 	int64_t next_mqtt_connect_ms = 0;
+	bool board_devices_ready;
 
 	LOG_INF("HISPEC-FIB PCB  %s\n", APP_VERSION_STRING);
 	devices_capture_boot_reset_cause();
@@ -250,7 +251,7 @@ int main(void)
 	cmd_runtime = command_runtime_get();
 	devices_queue_boot_reset_telemetry();
 
-	(void)devices_ready();
+	board_devices_ready = devices_ready();
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
@@ -266,19 +267,23 @@ int main(void)
 
 	housekeeping_start();
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		k_thread_create(&photodiode_thread_data,
-				photodiode_stack,
-				K_THREAD_STACK_SIZEOF(photodiode_stack),
-				photodiode_thread, NULL, NULL, NULL,
-				PHOTODIODE_PRIORITY, 0, K_NO_WAIT);
-		k_thread_name_set(&photodiode_thread_data, "photodiode");
-		k_thread_create(&throughput_monitor_thread_data,
-				throughput_monitor_stack,
-				K_THREAD_STACK_SIZEOF(throughput_monitor_stack),
-				throughput_monitor_thread, NULL, NULL, NULL,
-				THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
-		k_thread_name_set(&throughput_monitor_thread_data, "throughput");
-		laserbank_tempcontrol_start();
+		if (board_devices_ready) {
+			k_thread_create(&photodiode_thread_data,
+					photodiode_stack,
+					K_THREAD_STACK_SIZEOF(photodiode_stack),
+					photodiode_thread, NULL, NULL, NULL,
+					PHOTODIODE_PRIORITY, 0, K_NO_WAIT);
+			k_thread_name_set(&photodiode_thread_data, "photodiode");
+			k_thread_create(&throughput_monitor_thread_data,
+					throughput_monitor_stack,
+					K_THREAD_STACK_SIZEOF(throughput_monitor_stack),
+					throughput_monitor_thread, NULL, NULL, NULL,
+					THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
+			k_thread_name_set(&throughput_monitor_thread_data, "throughput");
+			laserbank_tempcontrol_start();
+		} else {
+			LOG_WRN("TIB background workers disabled because board devices are not ready");
+		}
 	}
 
 #if defined(CONFIG_SNTP)
