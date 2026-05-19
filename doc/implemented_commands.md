@@ -63,313 +63,184 @@ artifact, not a replacement for `commands.md`.
 | `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
 | `status` | `cmd/<device>/req/status` | `cmd/<device>/resp/status` | `status [payload]` |
 
-## Command Details
+## Implementation Map
+
+This section intentionally avoids restating payload and response schemas. Use
+`commands.md` for protocol behavior; this page records where the behavior lives,
+which slow resources it can touch, and known implementation-specific caveats.
 
 ### `help`
 
-- Query only. Payload ignored.
-- Response: `{"help":"help,ip,mqtt,time,temp,status,reboot,serialguard,memsroute,mems,split,measure_throughput,laser,laserbank,atten,pd,pdsettings"}`.
-- No hardware side effects, no NVS writes, no direct publish.
-- Handler: `help_get()` in `app/src/command.c`.
-- Mismatch: the response is generated from command-table help names, but is
-  still a summary, not a full endpoint list or device-info payload.
+- Owner: `help_get()` in `app/src/command.c`.
+- Notes: no hardware side effects, no NVS writes, no direct publish.
+- Known mismatch: response is a generated command-name summary, not the fuller
+  device-info payload described by `commands.md`.
 
 ### `ip`
 
-- Query returns stored/manual IP settings, active IPv4 status, and NTP source.
-- Effect request fields: `trydhcpfirst`, `preferdhcpdns`, `preferdhcpntp`, `ip`,
-  `subnet`, `gateway`, `dns`, `ntp`, `persistent`.
-- Validation: bools must parse as bools; string fields must fit fixed IPv4
-  buffers; unsupported DHCP/DNS/NTP fields are reported in a data response.
-- Data-less success response: `{"status":"ok"}`.
-- Partial support response: `{"dhcp":"ok|unsupported","dns":"ok|unsupported","ntp":"ok|unsupported"}`.
-- Side effects: applies runtime network changes through `network_reconfigure()`,
-  updates runtime settings after successful apply, optional NVS
-  persistence, and NTP changes schedule SNTP sync.
-- Blocking: runtime network reconfigure can wait for DHCP; NVS writes may
-  block. No direct publish.
-- Handler: `ip_get()`, `ip_set()` in `app/src/command.c`.
+- Owner: `ip_get()`, `ip_set()` in `app/src/command.c`, with runtime network
+  apply in `lib/coo_commons/network.c`.
+- Side effects: can reconfigure IPv4, update runtime settings, optionally write
+  NVS, and schedule SNTP sync after NTP setting changes.
+- Blocking: DHCP waits, DNS/NTP validation, and NVS writes can block.
+- Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `mqtt`
 
-- Query returns `broker` as `<host-or-ip>:<port>` and `dns_supported`.
-- Effect request fields: `broker`, optional `persistent`.
-- Validation: broker must be one `<host-or-ip>:<port>` value; hostname
-  requires DNS support and must resolve before settings are updated unless
-  numeric IPv4; port must be 1..65535.
-- Data-less success response: `{"status":"ok"}`.
-- Side effects: updates runtime broker settings; optional persistence; main
-  loop reconnects later. If the new broker fails its first connection attempt,
-  main restores the prior broker setting and emits `mqtt_broker_revert`.
-- Blocking: hostname resolution and NVS writes may block. No direct
-  publish.
-- Serial shorthand: `mqtt <host-or-ip>:<port> [persistent]`.
-- Handler: `mqtt_get()`, `mqtt_set()` in `app/src/command.c`.
+- Owner: `mqtt_get()`, `mqtt_set()` in `app/src/command.c`.
+- Side effects: updates runtime broker settings and optional NVS persistence;
+  `main()` reconnects later and can restore the prior broker after a failed
+  first connection.
+- Blocking/enqueue: hostname resolution and NVS writes can block; failed first
+  connection emits `mqtt_broker_revert`.
+- Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `time`
 
-- Query returns `utc` milliseconds from Zephyr's realtime clock and `uptime`
-  milliseconds from `k_uptime_get()`.
-- Effect request field: `linuxtime_ms`.
-- Validation: `linuxtime_ms` must parse as unsigned 64-bit milliseconds.
-- Data-less success response: `{"status":"ok"}`.
+- Owner: `time_get()`, `time_set()` in `app/src/command.c`.
 - Side effects: effect requests update Zephyr's realtime clock.
-- Blocking: no bus I/O; no NVS writes; no direct publish.
-- Serial shorthand: `time <linuxtime_ms>`.
-- Handler: `time_get()`, `time_set()` in `app/src/command.c`.
+- Blocking: no bus I/O, no NVS writes, no direct publish.
+- Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `reboot`
 
-- No-payload action. MQTT empty payload and bare serial `reboot` schedule a
-  named delayed reboot action after 250 ms.
-- Payload is ignored if a caller supplies one.
-- Data-less success response: `{"status":"ok"}`.
-- Side effects: calls `sys_reboot(SYS_REBOOT_COLD)` from the scheduled action.
-- Handler: `reboot_set()` in `app/src/command.c`.
+- Owner: `reboot_set()` in `app/src/command.c` plus
+  `app_scheduled_actions.c`.
+- Side effects: schedules a named delayed reboot action, which calls
+  `sys_reboot(SYS_REBOOT_COLD)` after the response has had time to enqueue.
 
 ### `serialguard`
 
-- Query returns configured holdoff seconds, active state, and remaining ms.
-- Effect request fields: `seconds` or `value`, optional `persistent`.
-- Validation: seconds/value must parse as unsigned 32-bit.
-- Data-less success response: `{"status":"ok"}`.
-- Side effects: updates serial guard setting; optional persistence; serial
+- Owner: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
+- Side effects: updates runtime holdoff, optional NVS persistence, and serial
   effect requests refresh the active guard window.
-- While active, serial guard rejects MQTT effect/action requests. It also blocks
-  all `laserbank/*` and `laser` read-like requests even if they look read-only.
-- Serial shorthand: `serialguard off`, `serialguard <seconds> [persistent]`.
-- Handler: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
+- Guard behavior: active guard rejects MQTT effect/action requests and also
+  blocks `laserbank/*` and `laser` read-like requests.
+- Serial shorthand remains implemented in `app/src/command.c`.
 
-### `memsroute`
+### `memsroute` and `memsroute/route_loss`
 
-- Query returns `{"active_routes": {"<output>":["<input>", "..."]}}`; outputs
-  with no active source report `["no source"]`.
-- Effect request fields: `input`, `output`.
-- Validation: route must exist in current board profile and every route switch
-  must exist.
-- Data-less success response: `{"status":"ok"}`.
-- Side effects: sets MEMS switch requested states through the router.
-- Blocking/enqueue: can lock router state and update state applied by the MEMS
-  router thread; no direct publish.
-- Handler: `memsroute_get()`, `memsroute_set()` in `app/src/mems_command.c`.
-
-### `memsroute/route_loss`
-
-- Query payload fields: `route`.
-- Effect request fields: `route`, either one laser-name key or the `split`
-  three-tuple containing linear transmissions or string losses in dB, optional
-  `persistent`.
-- Request classification: a payload with a route-loss value is treated as an
-  effect request; a payload containing only `route` is treated as query.
-- Validation: route and laser names must fit fixed route-loss record buffers;
-  transmission must be in `(0, 1]`; dB loss must be non-negative; `split` must
-  contain exactly three values.
-- Query response: route plus all known laser transmissions, or the three split
-  transmissions for split routes.
-- Data-less effect success response: `{"status":"ok"}`.
-- Side effects: updates one app-owned route-loss record, or all three split
-  route-loss records, and optionally persists them under
-  `routeloss/<route>/<name>`.
-- Handler: `memsroute_get()`, `memsroute_set()` route-loss branch in
+- Owner: `memsroute_get()`, `memsroute_set()` in
   `app/src/mems_command.c`.
+- Side effects: route changes update router-owned MEMS switch requests applied
+  by `mems_router_thread()`.
+- Route-loss side effects: updates app-owned route-loss records and optional
+  NVS persistence under `routeloss/<route>/<name>`.
+- Blocking: can lock router/settings state; no direct publish.
 
 ### `mems` and `mems/<switch>`
 
-- `mems` query returns all active profile switches with compact `state` and
-  `duty_cycle`.
-- `mems/<switch>` query returns one switch with state, duty cycle,
-  requested/actual toggle rate, and stop-after.
-- `mems/<switch>` effect request fields: `state`, optional `duty_cycle`,
-  `toggle_rate_hz`, `stopafter_s`.
-- Validation: state is `A` or `B`; `duty_cycle` only valid with state `A`;
-  `toggle_rate_hz` must be greater than zero; `stopafter_s` must be in range.
-- Effect success returns the same one-switch state object rather than the global
-  data-less `ok` response.
-- Side effects: updates router-owned MEMS switch state applied by the MEMS
-  router thread.
-- Enqueue: can enqueue `mems_rate_quantized` warning.
-- Serial shorthand: `mems/<switch> A [duty_cycle] [stopafter_s]`.
-- Handler: `mems_get()`, `mems_set()` in `app/src/mems_command.c`.
+- Owner: `mems_get()`, `mems_set()` in `app/src/mems_command.c`, with switch
+  timing owned by `app/src/mems_switching.c`.
+- Side effects: updates requested switch state applied by `mems_router_thread()`.
+- Enqueue: can emit `mems_rate_quantized` warnings.
+- Serial shorthand remains implemented in `app/src/mems_command.c`.
 
 ### `split`
 
-- `split/<yj|hk>` query reads one splitter channel.
-- `split` effect request fields: `channel`, `ratio1`, `ratio2`, optional `stopafter_s`.
-- Rejected fields: `ratio3`, `toggle_rate_hz`.
-- Validation: channel is `yj` or `hk`; ratios are 0.0..1.0 and sum <= 1.0.
-- Effect success returns requested ratios, actual quantized ratios, switch tick
-  details, and `stopsin_s`.
-- Side effects: applies three MEMS switches on AS split routes.
-- Enqueue: can enqueue `split_ratio_quantized` warning.
-- Board restriction: requires routes present in active board profile, normally
-  the AS profile.
-- Handler: `splitting_get()`, `splitting_set()` in `app/src/mems_command.c`.
+- Owner: `splitting_get()`, `splitting_set()` in `app/src/mems_command.c`.
+- Side effects: applies the three MEMS switches that make up an AS splitter
+  route.
+- Enqueue: can emit `split_ratio_quantized` warnings.
+- Board restriction: requires routes present in the active board profile,
+  normally the AS profile.
 
 ### `measure_throughput`
 
-- Action only.
-- Start fields: `laser`, `fiber`, optional `autolevel`, optional
-  `stopafter_s`, optional `format` with `json` or `binary`.
-- Stop field: `stop` as `yj`, `hk`, or `all`.
-- Data-less success response: `{"status":"ok"}`.
-- Side effects: starts/stops throughput stream publication on `yj_tput` or
-  `hk_tput`; can enable photodiode power and, with autolevel enabled, set
-  attenuation and laser current.
-- Binary telemetry is emitted as a fixed little-endian frame. JSON telemetry
-  includes Unix time, channel/fiber label, flux estimates, PD windows, current
-  attenuation, PD on-time, and laser-current on-time.
-- Handler: `measure_throughput_set()` in `app/src/throughput_command.c` and
+- Owner: `measure_throughput_set()` in `app/src/throughput_command.c` and
   `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
+- Side effects: starts or stops throughput telemetry, can enable photodiode
+  power, and with autolevel enabled can set attenuation and laser current.
+- Enqueue: telemetry is best-effort through `outbound_queue`; command handlers
+  do not publish directly.
 
 ### `laserbank/power`
 
-- Query returns current laser-bank power override mode and GPIO power state.
-- Effect request accepts `{"override":"auto|override_on|override_off"}` or a
-  topic suffix such as `laserbank/power/override_on`.
-- Effect success returns the same data shape as the query.
+- Owner: `laserbank_power()` in `app/src/laser_command.c`; bank power behavior
+  lives in `app/src/lasers.c`.
 - Board restriction: TIB only.
-- Side effects: `override_on` powers the bank and waits for Maiman boot;
-  `override_off` best-effort writes all currents to 0 before powering the bank
-  off. `auto` returns bank power to demand-driven control.
-- Handler: `laserbank_power()` in `app/src/laser_command.c` and laser-bank domain
-  helpers in `app/src/lasers.c`.
+- Side effects: override-on powers the bank and waits for Maiman boot;
+  override-off best-effort writes currents to 0 before powering the bank off.
+- Blocking: Modbus and bank boot/off sleeps can block the command executor.
 
 ### `laserbank/clearfaults`
 
-- No-payload action; ingress classifies this as an action. The dispatch table
-  still points both internal slots at the same handler.
-- Payload is ignored if supplied.
+- Owner: `laserbank_clearfaults()` in `app/src/laser_command.c`.
 - Board restriction: TIB only.
-- Side effects: if the bank is powered and any driver reports overcurrent,
-  power-cycles the laser bank, sleeps for the fault-clear off interval, then
-  sleeps for bank boot after re-enabling power.
-- Response: `{"off_ms":0}` when no cycle was needed, or
-  `{"off_ms":250}` when the power cycle was performed.
-- Handler: `laserbank_clearfaults()` in `app/src/laser_command.c`.
+- Side effects: when the bank is powered and a driver reports overcurrent, the
+  command power-cycles the bank and waits through the fault-clear and boot
+  intervals.
+- Classification note: the dispatch table points both internal slots at the
+  action handler; ingress classifies this as a no-payload action.
 
 ### `laserbank/heater`
 
-- Query with no suffix reports heater auto/override control status.
-- Effect request accepts `override` string values `auto`, `override_on`, or
-  `override_off`, including topic suffixes.
-- Effect success returns the same data shape as the query.
+- Owner: `laserbank_heater()` in `app/src/laser_command.c`, persisted mode in
+  `app_settings.c`, policy in `laserbank_tempcontrol.c`, and cadence/GPIO
+  execution through `housekeeping_thread()`.
 - Board restriction: TIB only.
-- Side effects: updates the persisted laser-bank heater mode and wakes
-  housekeeping. `auto` runs the warmup policy; `override_on`
-  and `override_off` force heater state from housekeeping. Override mode
-  emits a best-effort warning every 20 minutes.
-- Response: heater mode, heater/bank state, ambient state, temperature freshness
-  counts, control flags, and last error.
-- Handler: `laserbank_heater()` in `app/src/laser_command.c`.
+- Side effects: updates persisted heater mode, wakes housekeeping, and can force
+  the auxiliary heater state when override mode is active.
+- Enqueue: heater override mode emits a best-effort warning every 20 minutes.
 
 ### `laser`
 
-- Query payload: `{"name":"<laser>"}`. Returns compact operational status.
-- Effect payload: `{"name":"<laser>","level":0..100,"autooff_s":<optional>}`.
-- Request classification: payloads with `level` are effect requests; payloads without
-  `level` are queries.
-- Data-less effect success response: `{"status":"ok"}`.
+- Owner: request parsing and response shaping in `app/src/laser_command.c`;
+  hardware sequencing and state live in `app/src/lasers.c`.
 - Board restriction: TIB only.
-- Side effects: effect requests can power the bank, program TEC/current, stop an active
-  throughput monitor using that laser, and arm/reset firmware auto-off.
-- Handler: `laser_get()`, `laser_set()` in `app/src/laser_command.c`; hardware work
-  is delegated to `app/src/lasers.c`.
+- Side effects: effect requests can power the bank, program TEC/current, stop an
+  active throughput monitor using that laser, and arm or reset firmware
+  auto-off.
+- Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
 ### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
 
-- `laser/tune` query/effect requests manage the persisted wavelength tune offset. Payloads
-  with `tune_nm` or `delta_nm` are effect requests; name-only payloads are queries.
-- `laser/status` is an alias of the compact `laser` query.
-- `laser/engstatus` returns raw Maiman engineering status and measured driver
-  values; unavailable numeric values are JSON `null`.
-- `laser/settings` query/effect requests manage app-owned diode settings. Payloads with a
-  nested `settings` object are effect requests; name-only payloads are queries.
-- Data-less effect success response: `{"status":"ok"}`.
-- Driver-backed updates temporarily power the bank if needed, unless bank power
-  is `override_off`.
-- Handlers: `laser_tune_*()`, `laser_status_get()`,
-  `laser_engstatus_get()`, and `laser_settings_*()` in `app/src/laser_command.c`.
+- Owner: `laser_command.c` handlers with hardware work in `lasers.c` and
+  app-owned persisted settings in `app_settings.c`.
+- Notes: `laser/status` is the compact `laser` query alias; `laser/engstatus`
+  reads raw Maiman engineering state; tune/settings can update app-owned values.
+- Side effects: driver-backed settings updates temporarily power the bank if
+  needed unless bank power is `override_off`.
 
-### `atten/<laser>/value` and `atten/<laser>/valuedb`
+### `atten/<laser>/value`, `atten/<laser>/valuedb`, and `atten/<laser>/coeff`
 
-- Query returns total `db`, total `linear` transmission, both physical DAC
-  voltages, and both physical modeled dB values.
-- Effect request field: `value` float.
-- `value` sets total linear transmission in `(0, 1]`; `valuedb` sets total
-  attenuation dB.
-- Data-less effect success response: `{"status":"ok"}`.
-- Board restriction: TIB supports all logical channels below `NUM_ATTENUATORS`;
-  CAL profiles support only logical channel 4.
-- Side effects: blocks on DAC I2C and can clamp DAC range.
-- Enqueue: can enqueue `attenuator_clamped` warning.
-- Handler: `atten_setting_get()`, `atten_setting_set()` in
-  `app/src/attenuator_command.c`.
-
-### `atten/<laser>/coeff`
-
-- Query returns `dac1` and `dac2` coefficient arrays.
-- Effect request fields: `dac1[2]`, `dac2[2]`, optional `persistent`.
-- Validation: both arrays must contain exactly two floats: slope and offset for
-  `b = slope * voltage + offset`.
-- Data-less effect success response: `{"status":"ok"}`.
-- Side effects: updates runtime coefficients, reapplies current attenuation,
-  and optionally persists coefficients.
-- Blocking: DAC I2C and NVS writes may block.
-- Handler: `atten_setting_get()`, `atten_setting_set()` in
-  `app/src/attenuator_command.c`.
+- Owner: `atten_setting_get()`, `atten_setting_set()` in
+  `app/src/attenuator_command.c`; DAC behavior in `app/src/attenuator.c`.
+- Board restriction: TIB supports all configured logical attenuators; CAL
+  profiles support only their configured logical channel.
+- Side effects: value changes block on DAC I2C; coefficient changes update
+  runtime coefficients, reapply current attenuation, and can persist to NVS.
+- Enqueue: value changes can emit `attenuator_clamped`.
 
 ### `pd`
 
-- Query has no documented payload and returns power values, errors, raw counts,
-  mV, noise, rolling windows, and uptime.
-- Action request fields: `action`, `channel` or key suffix, plus action-specific fields.
-- Actions:
-  - `measure_dark`: optional `duration_ms`, optional `store`.
-  - `dark_status`: no additional fields.
-  - `reset_lowest_dark`: optional `persistent`.
-- `measure_dark` and `dark_status` return dark-measurement state/result data.
-- `reset_lowest_dark` returns `{"status":"ok"}` on success.
+- Owner: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`; sampling and
+  dark measurement state in `app/src/photodiode.c`.
 - Board restriction: TIB only.
-- Side effects: `measure_dark` starts sampler-owned dark calibration state;
-  `dark_status` is a pure query; optional persistence is performed by
-  photodiode/settings code.
-- Handler: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`.
+- Side effects: dark measurement starts sampler-owned calibration state;
+  persistence is delegated to photodiode/settings code.
+- Query note: dark-status action is classified as a pure query and does not
+  update `lastcommand`.
 
 ### `pdsettings/<yj|hk>`
 
-- Query returns channel dark settings, lowest dark, dark measurement state,
-  noise warning threshold, responsivity, and transimpedance.
-- Effect request fields: optional `persistent` plus at least one of `dark_mv`,
-  `noise_rms_mV`, `responsivity_a_per_w`, `transimpedance_v_per_a`.
-- Validation: dark is -5000..5000 mV; noise is 0..5000 mV; responsivity is
-  0.000001..10 A/W; transimpedance is 1..1e12 V/A.
-- Data-less effect success response: `{"status":"ok"}`.
-- Board restriction: TIB only.
-- Side effects: updates runtime photodiode settings and optional persistence.
-- Handler: `pd_settings_get()`, `pd_settings_set()` in
+- Owner: `pd_settings_get()`, `pd_settings_set()` in
   `app/src/photodiode_command.c`.
+- Board restriction: TIB only.
+- Side effects: updates runtime photodiode calibration/settings and optional
+  NVS persistence.
 
 ### `temp`
 
-- Query only.
-- Response: `ambient_c`, `laserbank_c`, and a `laser` object keyed by laser
-  name. Unavailable numeric values are JSON `null`.
+- Owner: `temp_get()` in `app/src/command.c`, cached ambient state in
+  `housekeeping.c`, and laser-bank temperature reads through `lasers.c`.
 - Side effects: reads cached ambient state and can perform Modbus reads for
   laser TEC temperatures on TIB.
-- Handler: `temp_get()` in `app/src/command.c`.
 
 ### `status`
 
-- Query only. Payload may request optional sections: `ip`, `lasers`, `attens`.
-- Base response fields: firmware version, boot count, board type/validity,
-  MEMS switch count, relay GPIO error, ambient temperature, PD power on-time,
-  laser-bank power on-time, and `lastcommand`.
-- `laserbank_ontime` is integer seconds from runtime-only
-  `laserbank_tempcontrol` tracking of the current bank-power interval.
-- Optional `ip` embeds the `ip` query response as JSON.
-- Optional `lasers` reads each laser status and reports `power_mw`,
-  `tec_on_time_s`, and `offin_s`.
-- Optional `attens` reads each available logical attenuator and reports
-  `level_%`.
-- Side effects: optional sections can perform Modbus and DAC reads.
-- Handler: `status_get()` in `app/src/command.c`.
+- Owner: `status_get()` in `app/src/command.c`.
+- Notes: base status is cache-oriented; optional sections embed current IP,
+  laser, and attenuator data.
+- Side effects: optional laser and attenuator sections can perform Modbus and
+  DAC reads; large optional responses can exceed the fixed payload buffer.
