@@ -22,7 +22,7 @@ It dispatches one command and tries one non-blocking enqueue to
 - MEMS commands can sleep on router mutexes but do not perform bus I/O directly.
 - Attenuator commands can block on DAC I2C.
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
-- TIB laser-bank heater auto mode runs in its own low-priority thread and can
+- TIB laser-bank heater auto mode runs from the housekeeping thread and can
   block on Modbus temperature polling and heater GPIO writes.
 - Persistent settings commands can block on Zephyr NVS writes.
 - Reboot and serial guard commands schedule delayable work.

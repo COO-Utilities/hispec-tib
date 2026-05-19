@@ -256,7 +256,7 @@ artifact, not a replacement for `commands.md`.
 - Board restriction: TIB only.
 - Side effects: updates the persisted laser-bank heater mode and wakes
   housekeeping. `auto` runs the warmup policy; `override_on`
-  and `override_off` force heater state from the control thread. Override mode
+  and `override_off` force heater state from housekeeping. Override mode
   emits a best-effort warning every 20 minutes.
 - Response: heater mode, heater/bank state, ambient state, temperature freshness
   counts, control flags, and last error.

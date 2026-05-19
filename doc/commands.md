@@ -716,8 +716,8 @@ off or no faults).
   `cmd/<device>/req/laserbank/heater/override_on`, or
   `cmd/<device>/req/laserbank/heater/override_off`.
 
-- **Notes:** `auto` is the default at boot. In `auto`, the TIB-only control
-  thread powers the laser bank so the Maiman temperature monitors can
+- **Notes:** `auto` is the default at boot. In `auto`, housekeeping
+  powers the laser bank so the Maiman temperature monitors can
   initialize, polls TEC temperatures at a fixed interval, and drives the
   laser-bank heater. Any disabled TEC below 15 C turns the heater on. Any
   disabled TEC above the ambient-dependent off threshold turns it off. If all
