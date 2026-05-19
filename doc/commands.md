@@ -717,13 +717,14 @@ off or no faults).
   `cmd/<device>/req/laserbank/heater/override_on`, or
   `cmd/<device>/req/laserbank/heater/override_off`.
 
-- **Notes:** `auto` is the default at boot. In `auto`, housekeeping
-  powers the laser bank so the Maiman temperature monitors can
-  initialize, polls TEC temperatures at a fixed interval, and drives the
-  laser-bank heater. Any disabled TEC below 15 C turns the heater on. Any
-  disabled TEC above the ambient-dependent off threshold turns it off. If all
-  TECs remain enabled for at least one control interval, the heater is turned
-  off. `override_on` and `override_off` force the heater state and suspend the
+- **Notes:** `auto` is the default at boot. In `auto`, laser-bank
+  temperature-control work powers the bank so the Maiman temperature monitors
+  can initialize, polls TEC temperatures at a fixed interval, and drives the
+  laser-bank heater through housekeeping relay-power helpers. Any disabled TEC
+  below 15 C turns the heater on. Any disabled TEC above the ambient-dependent
+  off threshold turns it off. If all TECs remain enabled for at least one
+  control interval, the heater is turned off. `override_on` and `override_off`
+  force the heater state and suspend the
   automatic warmup policy. While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
   If the off-board DS2408 relay expander is offline, set requests return an I/O

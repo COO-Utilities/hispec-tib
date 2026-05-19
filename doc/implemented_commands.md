@@ -176,11 +176,12 @@ which slow resources it can touch, and known implementation-specific caveats.
 ### `laserbank/heater`
 
 - Owner: `laserbank_heater()` in `app/src/laser_command.c`, persisted mode in
-  `app_settings.c`, policy in `laserbank_tempcontrol.c`, and cadence/GPIO
-  execution through `housekeeping_thread()`.
+  `app_settings.c`, policy/cadence in `laserbank_tempcontrol.c`, and relay GPIO
+  writes through `housekeeping_power_set()`.
 - Board restriction: TIB only.
-- Side effects: updates persisted heater mode, wakes housekeeping, and can force
-  the auxiliary heater state when override mode is active.
+- Side effects: updates persisted heater mode, reschedules heater-policy
+  delayable work, and can force the auxiliary heater state when override mode
+  is active.
 - Enqueue: heater override mode emits a best-effort warning every 20 minutes.
 
 ### `laser`

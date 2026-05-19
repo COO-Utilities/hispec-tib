@@ -37,8 +37,10 @@ Runtime ownership is:
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
-- `housekeeping.c`: slow ambient-temperature sampling, relay-box power state
-  and on-time tracking, and laser-bank heater policy cadence.
+- `housekeeping.c`: slow ambient-temperature sampling delayable work,
+  relay-box power state, and relay-output on-time tracking.
+- `laserbank_tempcontrol.c`: laser-bank heater policy delayable work and
+  related status.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.
@@ -71,9 +73,9 @@ APIs directly.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
 8. Command runtime registers named scheduled actions.
-9. Executor, serial, and housekeeping threads are created. Photodiode and
-   throughput monitor threads were defined statically and self-gate on
-   board/device availability.
+9. Executor and serial threads are created. Photodiode and throughput monitor
+   threads were defined statically and self-gate on board/device availability.
+   Ambient-temperature and laser-bank heater delayable work are started.
 10. SNTP, network, MQTT client, broker settings, and command subscription are
     initialized.
 11. The main loop feeds the watchdog, keeps MQTT connected when network is

@@ -2,9 +2,9 @@
  * @file laserbank_tempcontrol.c
  * @brief Laser-bank temperature-control policy loop.
  *
- * The loop owns automatic bank pre-warm decisions for TIB. It never publishes
- * MQTT directly; warnings are best-effort messages queued through the command
- * runtime.
+ * The delayable work owns automatic bank pre-warm decisions for TIB. It never
+ * publishes MQTT directly; warnings are best-effort messages queued through the
+ * command runtime.
  */
 
 #include "laserbank_tempcontrol.h"
@@ -45,7 +45,9 @@ struct laserbank_tempcontrol_runtime {
 
 static struct laserbank_tempcontrol_runtime control;
 static K_MUTEX_DEFINE(control_lock);
-static K_SEM_DEFINE(control_wake, 0, 1);
+
+static void tempcontrol_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(tempcontrol_work, tempcontrol_work_handler);
 
 const char *laserbank_heater_mode_name(enum laserbank_heater_mode mode)
 {
@@ -66,11 +68,6 @@ static bool heater_mode_is_valid(enum laserbank_heater_mode mode)
 	return mode == LASERBANK_HEATER_MODE_AUTO ||
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_ON ||
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_OFF;
-}
-
-static void wake_control_thread(void)
-{
-	k_sem_give(&control_wake);
 }
 
 static bool channel_is_stale(const struct laserbank_cached_channel *channel,
@@ -124,7 +121,7 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 	app_settings_get_laserbank(&settings);
 	settings.heater_mode = mode;
 	app_settings_update_laserbank(&settings, persist);
-	wake_control_thread();
+	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
 	return 0;
 }
 
@@ -328,7 +325,22 @@ void laserbank_tempcontrol_run_once(void)
 	run_heater_control_cycle();
 }
 
-bool laserbank_tempcontrol_wait_for_wake(k_timeout_t timeout)
+static void tempcontrol_work_handler(struct k_work *work)
 {
-	return k_sem_take(&control_wake, timeout) == 0;
+	ARG_UNUSED(work);
+
+	if (devices_board_type() != HISPEC_BOARD_TIB) {
+		return;
+	}
+
+	laserbank_tempcontrol_run_once();
+	(void)k_work_reschedule(&tempcontrol_work,
+				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
+}
+
+void laserbank_tempcontrol_start(void)
+{
+	if (devices_board_type() == HISPEC_BOARD_TIB) {
+		(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
+	}
 }

@@ -45,11 +45,11 @@ int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
 float housekeeping_power_on_time_s(enum housekeeping_power_output output);
 
 /**
- * Background housekeeping actor. Samples ambient temperature, runs TIB
- * laser-bank heater policy, and tracks slow relay power state. It can sleep and
- * may indirectly block on sensor, Modbus, or GPIO I/O through the domain
- * modules it calls.
+ * Start ambient-temperature cache refresh work.
+ *
+ * The delayable work runs in Zephyr system workqueue context and may block
+ * briefly on DS18B20 sensor I/O. Relay power helpers remain direct calls.
  */
-void housekeeping_thread(void *p1, void *p2, void *p3);
+void housekeeping_start(void);
 
 #endif /* HISPEC_HOUSEKEEPING_H */

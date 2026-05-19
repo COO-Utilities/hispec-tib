@@ -22,8 +22,9 @@ It dispatches one command and tries one non-blocking enqueue to
 - MEMS commands can sleep on router mutexes but do not perform bus I/O directly.
 - Attenuator commands can block on DAC I2C.
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
-- TIB laser-bank heater auto mode runs from the housekeeping thread and can
-  block on Modbus temperature polling and heater GPIO writes.
+- TIB laser-bank heater auto mode runs from laser-bank temperature-control
+  delayable work and can block on Modbus temperature polling and heater GPIO
+  writes.
 - Persistent settings commands can block on Zephyr NVS writes.
 - Reboot and serial guard commands schedule delayable work.
 
@@ -44,16 +45,6 @@ dark/noise/window state.
 
 If the timer reports missed periods, the thread logs the missed count and takes
 one current sample. Missed ADC sampling periods are not replayed.
-
-## Housekeeping Thread
-
-`housekeeping_thread()` owns slow background work that does not need a
-timing-critical actor. It samples the DS18B20 ambient sensor once per second
-and updates the cache used by the `temp` command. On TIB boards it also runs
-laser-bank heater policy, polls Maiman TEC temperature/state at the configured
-heater-control interval, and drives the auxiliary laser-bank heater GPIO. It
-does not publish MQTT directly; override warnings are queued through
-`coo_cmd_runtime_warning_emit()`.
 
 ## Throughput Monitor Thread
 
@@ -91,8 +82,13 @@ The following delayable work items run in Zephyr system workqueue context:
 - Laser auto-off expiration. This work is owned by `lasers.c`; it is scheduled
   only when a laser command arms a timeout and may block briefly on Modbus while
   stopping an expired output.
+- Ambient temperature sampling. This work is owned by `housekeeping.c` and may
+  block briefly on DS18B20 sensor I/O while refreshing the `temp` cache.
+- Laser-bank heater policy. This work is owned by `laserbank_tempcontrol.c` and
+  may block on Maiman Modbus polling and slow relay GPIO I/O.
 
-Physical timing loops and SNTP do not run on the system workqueue.
+Physical MEMS and photodiode timing loops and SNTP do not run on the system
+workqueue.
 
 ## Thread Priorities
 
@@ -101,7 +97,6 @@ Current configured priorities:
 - MEMS router thread: 2.
 - Photodiode thread: 3.
 - Main MQTT/outbound/watchdog thread: 4.
-- Housekeeping thread: 5.
 - Command executor: 6.
 - Serial thread: 6.
 - Throughput monitor thread: 7.

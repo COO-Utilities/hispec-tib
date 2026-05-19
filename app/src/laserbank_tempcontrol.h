@@ -8,7 +8,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <zephyr/kernel.h>
 
 #define LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS 10000U
 #define LASERBANK_TEMPCONTROL_TEMP_STALE_MS (2U * LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS)
@@ -41,8 +40,14 @@ struct laserbank_tempcontrol_status {
 /** Run one heater-policy pass. May block on GPIO/Modbus I/O. */
 void laserbank_tempcontrol_run_once(void);
 
-/** Wait for a command-side heater-mode wake request. */
-bool laserbank_tempcontrol_wait_for_wake(k_timeout_t timeout);
+/**
+ * Start the TIB heater-policy delayable work.
+ *
+ * The work runs in Zephyr system workqueue context and may block on Modbus and
+ * relay GPIO I/O. Heater-mode commands reschedule the same work for immediate
+ * policy application.
+ */
+void laserbank_tempcontrol_start(void);
 
 /** Copy the latest temperature-control loop state. */
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);

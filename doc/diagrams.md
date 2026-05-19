@@ -38,7 +38,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Static[static MEMS, photodiode, temperature, throughput, SNTP threads self-gate] --> Start[main]
+  Static[static MEMS, photodiode, throughput, SNTP threads self-gate] --> Start[main]
   Start --> Watchdog[configure watchdog]
   Watchdog --> WdogOK{watchdog ready}
   WdogOK -- no --> Stop[stop boot]
@@ -52,8 +52,8 @@ flowchart TD
   Router --> Attens[setup profile attenuators]
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
-  Threads --> Housekeeping[start housekeeping thread]
-  Housekeeping --> SNTP[start SNTP runtime]
+  Threads --> Work[start ambient and laser-bank delayable work]
+  Work --> SNTP[start SNTP runtime]
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
   MQTTInit --> Loop[main MQTT/outbound loop]
@@ -316,10 +316,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[housekeeping_thread] --> Find[find DS18B20]
+  Work[ambient temperature delayable work] --> Find[find DS18B20]
   Find --> Ready{device ready}
   Ready -- no --> InitErr[cache unavailable status]
-  InitErr --> Wait[next housekeeping tick]
+  InitErr --> Wait[next ambient sample]
   Ready -- yes --> Fetch[sensor_sample_fetch]
   Fetch --> SensorGet[sensor_channel_get ambient]
   SensorGet --> Cache[update mutex-protected status]
@@ -327,7 +327,7 @@ flowchart TD
   Fetch -- error --> CacheErr
   Cache --> Wait
   CacheErr --> Wait
-  Wait --> Thread
+  Wait --> Work
   Command[temp query] --> Read[housekeeping_get_temperature_status]
   Read --> Response[ambient payload or error]
 ```
@@ -410,10 +410,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[housekeeping_thread] --> Cycle[run laserbank temp-control pass]
+  Work[laser-bank temp-control delayable work] --> Cycle[run laserbank temp-control pass]
   Cycle --> Settings[read laserbank settings]
   Settings --> Ambient[read cached ambient temperature]
-  Ambient --> Power[read bank power state and update on-time]
+  Ambient --> Power[read bank power state]
   Power --> Mode{heater mode}
 
   Mode -- override_on --> ForceOn[set heater on]

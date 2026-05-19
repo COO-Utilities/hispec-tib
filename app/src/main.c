@@ -28,6 +28,7 @@
 #include "command.h"
 #include "devices.h"
 #include "housekeeping.h"
+#include "laserbank_tempcontrol.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
@@ -42,8 +43,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define SERIAL_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 500
 #define PHOTODIODE_PRIORITY 3
-#define HOUSEKEEPING_STACK_SIZE 1300
-#define HOUSEKEEPING_PRIORITY 5
 #define THROUGHPUT_MONITOR_STACK_SIZE 1800
 #define THROUGHPUT_MONITOR_PRIORITY 7
 
@@ -57,9 +56,6 @@ static struct k_thread exec_thread_data;
 
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
-
-static K_THREAD_STACK_DEFINE(housekeeping_stack, HOUSEKEEPING_STACK_SIZE);
-static struct k_thread housekeeping_thread_data;
 
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
@@ -260,11 +256,8 @@ int main(void)
 			coo_cmd_runtime_serial_thread, cmd_runtime, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
-	k_thread_create(&housekeeping_thread_data,
-			housekeeping_stack,
-			K_THREAD_STACK_SIZEOF(housekeeping_stack),
-			housekeeping_thread, NULL, NULL, NULL,
-			HOUSEKEEPING_PRIORITY, 0, K_NO_WAIT);
+	housekeeping_start();
+	laserbank_tempcontrol_start();
 
 #if defined(CONFIG_SNTP)
 	sntp_sync_init();

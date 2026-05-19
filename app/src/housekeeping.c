@@ -2,9 +2,9 @@
  * @file housekeeping.c
  * @brief Slow background polling for ambient sensing and power policy.
  *
- * This actor owns slow periodic work that does not need a timing-critical
- * thread: ambient temperature sampling, laser-bank heater policy, and
- * relay-box power state.
+ * This module owns slow relay-box power state and ambient temperature sampling.
+ * Ambient sampling runs as delayable work because it is cache refresh, not a
+ * timing-critical loop.
  */
 
 #include "housekeeping.h"
@@ -21,7 +21,6 @@
 
 #include "command.h"
 #include "devices.h"
-#include "laserbank_tempcontrol.h"
 
 LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 
@@ -40,6 +39,9 @@ static int64_t last_sample_ms;
 static const struct device *temperature_dev;
 static bool temperature_initialized;
 static struct power_on_time_runtime power_on_time[HOUSEKEEPING_POWER_OUTPUT_COUNT];
+
+static void temperature_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(temperature_work, temperature_work_handler);
 
 static void temperature_update(float ambient_c, int error, bool valid)
 {
@@ -262,47 +264,15 @@ float housekeeping_power_on_time_s(enum housekeeping_power_output output)
 	return (float)ms / 1000.0f;
 }
 
-void housekeeping_thread(void *p1, void *p2, void *p3)
+static void temperature_work_handler(struct k_work *work)
 {
-	int64_t next_temp_ms = 0;
-	int64_t next_laserbank_ms = 0;
-	bool laserbank_wake = false;
+	ARG_UNUSED(work);
 
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
+	(void)temperature_sample_once();
+	(void)k_work_reschedule(&temperature_work, K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
+}
 
-	while (true) {
-		int64_t now = k_uptime_get();
-
-		if (now >= next_temp_ms) {
-			(void)temperature_sample_once();
-			next_temp_ms = now + HOUSEKEEPING_TEMP_INTERVAL_MS;
-		}
-
-		if (devices_board_type() == HISPEC_BOARD_TIB &&
-		    (laserbank_wake || now >= next_laserbank_ms)) {
-			laserbank_tempcontrol_run_once();
-			next_laserbank_ms = k_uptime_get() +
-					    LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS;
-			laserbank_wake = false;
-		}
-
-		now = k_uptime_get();
-		int64_t wait_ms = next_temp_ms - now;
-
-		if (devices_board_type() == HISPEC_BOARD_TIB) {
-			wait_ms = MIN(wait_ms, next_laserbank_ms - now);
-		}
-		if (wait_ms < 0) {
-			wait_ms = 0;
-		}
-
-		if (devices_board_type() == HISPEC_BOARD_TIB) {
-			laserbank_wake =
-				laserbank_tempcontrol_wait_for_wake(K_MSEC(wait_ms));
-		} else {
-			k_sleep(K_MSEC(wait_ms));
-		}
-	}
+void housekeeping_start(void)
+{
+	(void)k_work_reschedule(&temperature_work, K_NO_WAIT);
 }
