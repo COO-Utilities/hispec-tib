@@ -131,8 +131,7 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
     if (raw == NULL || channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
         return -EINVAL;
     }
-    if (devices_board_type() != HISPEC_BOARD_TIB ||
-        adc_dev == NULL || !device_is_ready(adc_dev)) {
+    if (adc_dev == NULL || !device_is_ready(adc_dev)) {
         return -ENODEV;
     }
 
@@ -474,8 +473,7 @@ int photodiode_start_dark_measurement(enum photodiode_channel channel,
     if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
         return -EINVAL;
     }
-    if (devices_board_type() != HISPEC_BOARD_TIB ||
-        adc_dev == NULL || !device_is_ready(adc_dev)) {
+    if (adc_dev == NULL || !device_is_ready(adc_dev)) {
         return -ENODEV;
     }
 
@@ -539,18 +537,6 @@ void photodiode_thread(void *p1, void *p2, void *p3)
     ARG_UNUSED(p3);
 
     k_sleep(K_MSEC(10));
-
-    while (!devices_board_type_checked()) {
-        k_sleep(K_MSEC(10));
-    }
-
-    if (devices_board_type() != HISPEC_BOARD_TIB) {
-        LOG_INF("Photodiode monitor disabled for board type %s",
-                devices_board_type_name());
-        while (1) {
-            k_sleep(K_HOURS(1));
-        }
-    }
 
     while (adc_dev == NULL || !device_is_ready(adc_dev)) {
         LOG_ERR("ADS1115 not ready");

@@ -37,9 +37,6 @@ struct laserbank_tempcontrol_status {
 	uint32_t last_poll_age_ms;
 };
 
-/** Run one heater-policy pass. May block on GPIO/Modbus I/O. */
-void laserbank_tempcontrol_run_once(void);
-
 /**
  * Start the TIB heater-policy delayable work.
  *

@@ -13,7 +13,6 @@
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
-#include "devices.h"
 #include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "throughput_monitor.h"
@@ -66,10 +65,6 @@ struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 	int mode_value;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "laser bank unavailable on this board");
-	}
-
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/power")[0] != '\0')) {
@@ -99,10 +94,6 @@ struct coo_cmd_response laserbank_clearfaults(const struct coo_cmd_request *cmd)
 	uint32_t off_ms = 0U;
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int rc;
-
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "laser bank unavailable on this board");
-	}
 
 	rc = hispec_laser_bank_clear_faults(LASERBANK_FAULT_CLEAR_OFF_MS, &off_ms);
 	if (rc != 0) {
@@ -148,10 +139,6 @@ struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int mode_value;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "laser bank unavailable on this board");
-	}
-
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/heater")[0] != '\0')) {
@@ -189,11 +176,6 @@ static int command_laser_id_from_payload(const struct coo_cmd_request *cmd,
 		return -EINVAL;
 	}
 	return hispec_laser_id_from_name(name, id);
-}
-
-static struct coo_cmd_response laser_unavailable(const struct coo_cmd_request *cmd)
-{
-	return coo_cmd_error(cmd, "laser bank unavailable on this board");
 }
 
 static int laser_append_compact_status(char *payload, size_t payload_len,
@@ -261,9 +243,6 @@ struct coo_cmd_response laser_get(const struct coo_cmd_request *cmd)
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -289,9 +268,6 @@ struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
 	int parse_rc;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -323,9 +299,6 @@ struct coo_cmd_response laser_tune_get(const struct coo_cmd_request *cmd)
 	char name[16] = {0};
 	char payload[MAX_PAYLOAD_LEN];
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -344,9 +317,6 @@ struct coo_cmd_response laser_tune_set(const struct coo_cmd_request *cmd)
 	int parse_rc;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -420,9 +390,6 @@ struct coo_cmd_response laser_settings_get(const struct coo_cmd_request *cmd)
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -528,9 +495,6 @@ struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd)
 	bool changed = false;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}
@@ -581,9 +545,6 @@ struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd)
 	size_t off = 0U;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return laser_unavailable(cmd);
-	}
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(cmd, "missing or invalid laser name");
 	}

@@ -38,7 +38,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Static[static MEMS, photodiode, throughput, SNTP threads self-gate] --> Start[main]
+  Static[static MEMS and SNTP threads] --> Start[main]
   Start --> Watchdog[configure watchdog]
   Watchdog --> WdogOK{watchdog ready}
   WdogOK -- no --> Stop[stop boot]
@@ -52,8 +52,11 @@ flowchart TD
   Router --> Attens[setup profile attenuators]
   Attens --> Runtime[register scheduled actions]
   Runtime --> Threads[start executor and serial threads]
-  Threads --> Work[start ambient and laser-bank delayable work]
-  Work --> SNTP[start SNTP runtime]
+  Threads --> Work[start ambient delayable work]
+  Work --> TibActors{TIB profile}
+  TibActors -- yes --> TibStart[start photodiode, throughput, and laser-bank work]
+  TibActors -- no --> SNTP[start SNTP runtime]
+  TibStart --> SNTP
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
   MQTTInit --> Loop[main MQTT/outbound loop]
@@ -186,9 +189,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Thread[photodiode_thread] --> Board{TIB and ADC ready}
-  Board -- no --> Sleep[k_sleep retry]
-  Board -- yes --> Sample[read ADS1115 YJ and HK]
+  Thread[photodiode_thread started only on TIB] --> Adc{ADC ready}
+  Adc -- no --> Sleep[k_sleep retry]
+  Adc -- yes --> Sample[read ADS1115 YJ and HK]
   Sample --> Convert[counts to mV and power estimate]
   Convert --> Dark{dark measurement active}
   Dark -- yes --> Accumulate[accumulate dark stats]
@@ -439,8 +442,8 @@ flowchart TD
   HeaterOn --> Wait
   HeaterOff --> Wait
 
-  Wait[wait for wake semaphore or poll interval]
-  Wake[heater command changes mode] --> Wait
+  Wait[reschedule after poll interval]
+  Wake[heater command changes mode] --> Cycle
   Wait --> Cycle
 ```
 

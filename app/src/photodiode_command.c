@@ -10,7 +10,6 @@
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
-#include "devices.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 
@@ -107,10 +106,6 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 	float hk_value;
 	float yj_err;
 	float hk_err;
-
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
-	}
 
 	photodiode_get_status(&status);
 	app_settings_get_photodiode(&settings);
@@ -217,10 +212,6 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 	bool persist = true;
 	int parse_rc;
 	int rc;
-
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
-	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "action",
 					   action_text, sizeof(action_text));
@@ -335,10 +326,6 @@ struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd)
 	enum photodiode_channel channel;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
-	}
-
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {
 		return coo_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
@@ -362,10 +349,6 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 	bool persist = false;
 	bool changed = false;
 	int rc;
-
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
-	}
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {

@@ -73,9 +73,9 @@ APIs directly.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
 8. Command runtime registers named scheduled actions.
-9. Executor and serial threads are created. Photodiode and throughput monitor
-   threads were defined statically and self-gate on board/device availability.
-   Ambient-temperature and laser-bank heater delayable work are started.
+9. Executor and serial threads are created. Ambient-temperature delayable work
+   is started. On the TIB profile, main also starts the photodiode thread,
+   throughput monitor thread, and laser-bank heater delayable work.
 10. SNTP, network, MQTT client, broker settings, and command subscription are
     initialized.
 11. The main loop feeds the watchdog, keeps MQTT connected when network is
@@ -126,6 +126,9 @@ The command executor runs exactly one request at a time from `inbound_queue`.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response. Pure queries are not recorded as `lastcommand`; known
 effect-capable requests are recorded before handler execution.
+The static command table rejects TIB-only command families before they reach
+laser, photodiode, throughput, or laser-bank command handlers on other board
+profiles.
 
 ## Network And MQTT Runtime
 

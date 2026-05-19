@@ -37,21 +37,21 @@ main loop drains `outbound_queue`.
 
 ## Photodiode Thread
 
-`photodiode_thread()` is active only for the TIB profile. It waits for board
-strap detection and ADS1115 readiness. A `k_timer` provides the 20 ms sampling
-cadence and the timer callback only wakes the photodiode thread; ADS1115 bus
-I/O remains in thread context. The thread samples YJ and HK channels and updates
-dark/noise/window state.
+`main()` starts `photodiode_thread()` only for the TIB profile after board
+detection and device setup. The thread waits for ADS1115 readiness. A `k_timer`
+provides the 20 ms sampling cadence and the timer callback only wakes the
+photodiode thread; ADS1115 bus I/O remains in thread context. The thread samples
+YJ and HK channels and updates dark/noise/window state.
 
 If the timer reports missed periods, the thread logs the missed count and takes
 one current sample. Missed ADC sampling periods are not replayed.
 
 ## Throughput Monitor Thread
 
-`throughput_monitor_thread()` owns `measure_throughput` stream publication and
-optional autolevel control. It reads photodiode snapshots, route-loss settings,
-attenuator state, and laser estimates, then enqueues best-effort telemetry to
-`outbound_queue`.
+`main()` starts `throughput_monitor_thread()` only for the TIB profile. It owns
+`measure_throughput` stream publication and optional autolevel control. It reads
+photodiode snapshots, route-loss settings, attenuator state, and laser
+estimates, then enqueues best-effort telemetry to `outbound_queue`.
 
 ## MEMS Router Thread
 

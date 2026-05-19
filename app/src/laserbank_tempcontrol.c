@@ -94,14 +94,8 @@ static void copy_status_locked(struct laserbank_tempcontrol_status *out)
 
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out)
 {
-	bool bank_powered = false;
-
-	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		bank_powered = hispec_laser_bank_power_is_enabled();
-	}
-
 	k_mutex_lock(&control_lock, K_FOREVER);
-	control.status.bank_powered = bank_powered;
+	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
 	copy_status_locked(out);
 	k_mutex_unlock(&control_lock);
 }
@@ -221,22 +215,18 @@ static void run_heater_control_cycle(void)
 	struct app_laserbank_settings settings;
 	struct hispec_laser_channel_temperature poll[HISPEC_LASER_COUNT] = {0};
 	struct housekeeping_temperature_status ambient = {0};
-	bool heater_on = false;
 	bool entered_auto;
 	bool all_stale;
-	bool bank_powered;
 	int64_t now_ms = k_uptime_get();
-	int heater_rc;
 	int rc;
 
 	app_settings_get_laserbank(&settings);
 	housekeeping_get_temperature_status(&ambient);
-	bank_powered = hispec_laser_bank_power_is_enabled();
 
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.status.available = true;
 	control.status.heater_mode = settings.heater_mode;
-	control.status.bank_powered = bank_powered;
+	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
 	control.status.ambient_valid = ambient.valid;
 	control.status.ambient_c = ambient.ambient_c;
 	control.status.ambient_age_ms = ambient.age_ms;
@@ -253,7 +243,6 @@ static void run_heater_control_cycle(void)
 
 		apply_heater(force_on);
 		k_mutex_lock(&control_lock, K_FOREVER);
-		control.status.heater_on = force_on;
 		maybe_emit_override_warning(settings.heater_mode, now_ms);
 		k_mutex_unlock(&control_lock);
 		return;
@@ -273,12 +262,10 @@ static void run_heater_control_cycle(void)
 
 	rc = hispec_laser_bank_read_temperatures(poll);
 	now_ms = k_uptime_get();
-	bank_powered = hispec_laser_bank_power_is_enabled();
-	heater_rc = housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER, &heater_on);
 
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.last_poll_ms = now_ms;
-	control.status.bank_powered = bank_powered;
+	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
 	if (rc == 0) {
 		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 			if (!poll[i].valid) {
@@ -293,9 +280,8 @@ static void run_heater_control_cycle(void)
 	} else {
 		control.status.last_error = rc;
 	}
-	if (heater_rc == 0) {
-		control.status.heater_on = heater_on;
-	}
+	(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+				     &control.status.heater_on);
 
 	summarize_temperature_state(&ambient, now_ms);
 	all_stale = control.status.stale_temp_count == HISPEC_LASER_COUNT;
@@ -320,27 +306,16 @@ static void run_heater_control_cycle(void)
 	}
 }
 
-void laserbank_tempcontrol_run_once(void)
-{
-	run_heater_control_cycle();
-}
-
 static void tempcontrol_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return;
-	}
-
-	laserbank_tempcontrol_run_once();
+	run_heater_control_cycle();
 	(void)k_work_reschedule(&tempcontrol_work,
 				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
 }
 
 void laserbank_tempcontrol_start(void)
 {
-	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
-	}
+	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
 }

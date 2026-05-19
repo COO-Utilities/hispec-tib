@@ -29,6 +29,8 @@ artifact, not a replacement for `commands.md`.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
 - All handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one response to
   `outbound_queue`.
+- The static command behavior table rejects TIB-only commands before dispatch on
+  non-TIB board profiles.
 - Data-less success returns `{"status":"ok"}`. Data-bearing success returns the
   data object. Failures include an `error` key.
 

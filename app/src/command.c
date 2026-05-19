@@ -9,7 +9,6 @@
  */
 
 #include "command.h"
-// #include "devices.h"
 #include <errno.h>
 #include <math.h>
 #include <strings.h>
@@ -98,6 +97,11 @@ enum command_serial_policy {
     COMMAND_SERIAL_SERIAL_GUARD,
 };
 
+enum command_board_policy {
+    COMMAND_BOARD_ANY = 0,
+    COMMAND_BOARD_TIB_ONLY,
+};
+
 struct command_spec {
     const char *key;
     coo_cmd_handler_fn get_handler;
@@ -105,6 +109,7 @@ struct command_spec {
     enum command_class_policy class_policy;
     enum command_last_policy last_policy;
     enum command_serial_policy serial_policy;
+    enum command_board_policy board_policy;
     bool mqtt_query_allowed_during_serial_guard;
     const char *help_name;
 };
@@ -112,11 +117,17 @@ struct command_spec {
 #define CMD_SPEC_EX(_key, _get, _set, _class, _serial, _guard, _help) \
     { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
       .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
-      .serial_policy = (_serial), \
+      .serial_policy = (_serial), .board_policy = COMMAND_BOARD_ANY, \
       .mqtt_query_allowed_during_serial_guard = (_guard), .help_name = (_help) }
 
 #define CMD_SPEC(_key, _get, _set, _class, _guard, _help) \
     CMD_SPEC_EX(_key, _get, _set, _class, COMMAND_SERIAL_VALUE, _guard, _help)
+
+#define CMD_SPEC_TIB(_key, _get, _set, _class, _guard, _help) \
+    { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
+      .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
+      .serial_policy = COMMAND_SERIAL_VALUE, .board_policy = COMMAND_BOARD_TIB_ONLY, \
+      .mqtt_query_allowed_during_serial_guard = (_guard), .help_name = (_help) }
 
 /*
  * One static row owns the app-level behavior for a command key: dispatch,
@@ -145,36 +156,38 @@ static const struct command_spec command_specs[] = {
                 COMMAND_SERIAL_MEMS_SWITCH, true, "mems"),
     CMD_SPEC("split", splitting_get, splitting_set,
              COMMAND_CLASS_DEFAULT, true, "split"),
-    CMD_SPEC("measure_throughput", NULL, measure_throughput_set,
-             COMMAND_CLASS_DEFAULT, false, "measure_throughput"),
-    CMD_SPEC("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
-             false, "laser"),
-    CMD_SPEC("laser/tune", laser_tune_get, laser_tune_set,
-             COMMAND_CLASS_LASER_TUNE, true, NULL),
-    CMD_SPEC("laser/status", laser_get, NULL,
-             COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
-    CMD_SPEC("laser/engstatus", laser_engstatus_get, NULL,
-             COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
-    CMD_SPEC("laser/settings", laser_settings_get, laser_settings_set,
-             COMMAND_CLASS_LASER_SETTINGS, true, NULL),
-    CMD_SPEC("laserbank/power", laserbank_power, laserbank_power,
-             COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, "laserbank"),
-    CMD_SPEC("laserbank/clearfaults", NULL, laserbank_clearfaults,
-             COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
-    CMD_SPEC("laserbank/heater", laserbank_heater, laserbank_heater,
-             COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, NULL),
+    CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
+                 COMMAND_CLASS_DEFAULT, false, "measure_throughput"),
+    CMD_SPEC_TIB("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
+                 false, "laser"),
+    CMD_SPEC_TIB("laser/tune", laser_tune_get, laser_tune_set,
+                 COMMAND_CLASS_LASER_TUNE, true, NULL),
+    CMD_SPEC_TIB("laser/status", laser_get, NULL,
+                 COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+    CMD_SPEC_TIB("laser/engstatus", laser_engstatus_get, NULL,
+                 COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+    CMD_SPEC_TIB("laser/settings", laser_settings_get, laser_settings_set,
+                 COMMAND_CLASS_LASER_SETTINGS, true, NULL),
+    CMD_SPEC_TIB("laserbank/power", laserbank_power, laserbank_power,
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, "laserbank"),
+    CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
+                 COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
+    CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, NULL),
     CMD_SPEC("atten", atten_setting_get, atten_setting_set,
              COMMAND_CLASS_DEFAULT, true, "atten"),
     { .key = "pd", .get_handler = pd_get, .set_handler = pd_set,
       .class_policy = COMMAND_CLASS_DEFAULT,
       .last_policy = COMMAND_LAST_SKIP_PD_DARK_STATUS,
+      .board_policy = COMMAND_BOARD_TIB_ONLY,
       .mqtt_query_allowed_during_serial_guard = true,
       .help_name = "pd" },
-    CMD_SPEC("pdsettings", pd_settings_get, pd_settings_set,
-             COMMAND_CLASS_DEFAULT, true, "pdsettings"),
+    CMD_SPEC_TIB("pdsettings", pd_settings_get, pd_settings_set,
+                 COMMAND_CLASS_DEFAULT, true, "pdsettings"),
 };
 
 #undef CMD_SPEC
+#undef CMD_SPEC_TIB
 #undef CMD_SPEC_EX
 
 static struct coo_cmd_runtime command_runtime;
@@ -211,6 +224,19 @@ static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
            coo_json_extract_string(cmd->payload, "action",
                                    action, sizeof(action)) == COO_JSON_EXTRACT_OK &&
            strcasecmp(action, "dark_status") == 0;
+}
+
+static bool command_board_allowed(const struct command_spec *spec)
+{
+    if (spec == NULL || spec->board_policy == COMMAND_BOARD_ANY) {
+        return true;
+    }
+
+    if (spec->board_policy == COMMAND_BOARD_TIB_ONLY) {
+        return devices_board_type() == HISPEC_BOARD_TIB;
+    }
+
+    return false;
 }
 
 static bool command_should_record_lastcommand(const struct coo_cmd_request *cmd)
@@ -259,6 +285,9 @@ static struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cm
 
     if (spec == NULL) {
         return coo_cmd_unknown_response(cmd);
+    }
+    if (!command_board_allowed(spec)) {
+        return coo_cmd_error(cmd, "command unavailable on this board");
     }
 
     handler = cmd->msg_type == COO_CMD_EFFECT ?

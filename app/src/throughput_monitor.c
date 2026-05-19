@@ -380,10 +380,6 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-	while (!devices_board_type_checked()) {
-		k_sleep(K_MSEC(20));
-	}
-
 	while (1) {
 		struct photodiode_status pd_status;
 		struct throughput_state local[PHOTODIODE_CHANNEL_COUNT];

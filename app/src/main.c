@@ -57,13 +57,11 @@ static struct k_thread exec_thread_data;
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
 
-K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
-		photodiode_thread, NULL, NULL, NULL,
-		PHOTODIODE_PRIORITY, 0, 0);
+static K_THREAD_STACK_DEFINE(photodiode_stack, PHOTODIODE_STACK_SIZE);
+static struct k_thread photodiode_thread_data;
 
-K_THREAD_DEFINE(throughput_monitor_tid, THROUGHPUT_MONITOR_STACK_SIZE,
-		throughput_monitor_thread, NULL, NULL, NULL,
-		THROUGHPUT_MONITOR_PRIORITY, 0, 0);
+static K_THREAD_STACK_DEFINE(throughput_monitor_stack, THROUGHPUT_MONITOR_STACK_SIZE);
+static struct k_thread throughput_monitor_thread_data;
 
 static void load_network_config(struct network_config *cfg)
 {
@@ -257,7 +255,19 @@ int main(void)
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
 
 	housekeeping_start();
-	laserbank_tempcontrol_start();
+	if (devices_board_type() == HISPEC_BOARD_TIB) {
+		k_thread_create(&photodiode_thread_data,
+				photodiode_stack,
+				K_THREAD_STACK_SIZEOF(photodiode_stack),
+				photodiode_thread, NULL, NULL, NULL,
+				PHOTODIODE_PRIORITY, 0, K_NO_WAIT);
+		k_thread_create(&throughput_monitor_thread_data,
+				throughput_monitor_stack,
+				K_THREAD_STACK_SIZEOF(throughput_monitor_stack),
+				throughput_monitor_thread, NULL, NULL, NULL,
+				THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
+		laserbank_tempcontrol_start();
+	}
 
 #if defined(CONFIG_SNTP)
 	sntp_sync_init();

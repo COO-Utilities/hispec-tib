@@ -7,7 +7,6 @@
 
 #include <zephyr/sys/util.h>
 
-#include "devices.h"
 #include "throughput_monitor.h"
 
 #include <coo_commons/json_utils.h>
@@ -46,10 +45,6 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 	int choice_value;
 	int parse_rc;
 	int rc;
-
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return coo_cmd_error(cmd, "measure_throughput unavailable on this board");
-	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "stop", stop, sizeof(stop));
 	if (parse_rc == COO_JSON_EXTRACT_OK) {

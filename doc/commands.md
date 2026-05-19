@@ -58,6 +58,8 @@ Draft 0.1
     - `qos`: response QoS
 - Commands have serial port duals. Serial commands use a simpler line format
   for interactive bring-up and debugging.
+- Board-specific commands are rejected before their domain handler runs when
+  the selected board strap does not provide that hardware.
 
 ## Serial Command Form
 
