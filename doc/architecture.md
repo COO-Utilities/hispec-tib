@@ -54,7 +54,6 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   serial payload normalization, and serial response printing helpers.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
-- `pid.c`: generic PID helper, currently not central to the app runtime.
 
 The application otherwise uses Zephyr GPIO, I2C, ADC, DAC, UART, Modbus,
 settings/NVS, watchdog, console, networking, MQTT, SNTP, sensor, and 1-Wire

@@ -13,7 +13,4 @@
 .. doxygenfile:: include/coo_commons/json_utils.h
    :project: hispec_tib
 
-.. doxygenfile:: include/coo_commons/pid.h
-   :project: hispec_tib
-
 ```
