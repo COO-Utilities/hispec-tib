@@ -281,17 +281,6 @@ float maiman_get_tec_current_limit(maiman_driver_t *drv)
 	return -1.0f;
 }
 
-float maiman_get_tec_current_set_calibration(maiman_driver_t *drv)
-{
-	float value;
-
-	if (maiman_read_scaled(drv, REG_TEC_CURRENT_SET_CALIBRATION,
-			       DIVIDER_TEC_CURRENT_SET_CALIBRATION, false, &value)) {
-		return value;
-	}
-	return -1.0f;
-}
-
 float maiman_get_tec_voltage(maiman_driver_t *drv)
 {
 	float value;
@@ -355,85 +344,11 @@ uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv)
 	return 0U;
 }
 
-bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask)
-{
-	uint16_t status = maiman_get_raw_status(drv);
-
-	return (status & bitmask) != 0U;
-}
-
-bool maiman_is_operation_started(maiman_driver_t *drv)
-{
-	return maiman_is_bit_set(drv, OPERATION_STATE_STARTED);
-}
-
-bool maiman_is_current_set_internal(maiman_driver_t *drv)
-{
-	return maiman_is_bit_set(drv, CURRENT_SET_INTERNAL);
-}
-
-bool maiman_is_enable_internal(maiman_driver_t *drv)
-{
-	return maiman_is_bit_set(drv, ENABLE_INTERNAL);
-}
-
-bool maiman_is_interlock_denied(maiman_driver_t *drv)
-{
-	return maiman_is_bit_set(drv, INTERLOCK_DENIED);
-}
-
-static bool maiman_is_tec_bit_set(maiman_driver_t *drv, uint16_t bitmask)
+bool maiman_is_tec_started(maiman_driver_t *drv)
 {
 	uint16_t status = maiman_get_raw_tec_status(drv);
 
-	return (status & bitmask) != 0U;
-}
-
-bool maiman_is_tec_started(maiman_driver_t *drv)
-{
-	return maiman_is_tec_bit_set(drv, TEC_OPERATION_STATE_STARTED);
-}
-
-bool maiman_is_tec_set_internal(maiman_driver_t *drv)
-{
-	return maiman_is_tec_bit_set(drv, TEC_SET_INTERNAL);
-}
-
-bool maiman_is_tec_enable_internal(maiman_driver_t *drv)
-{
-	return maiman_is_tec_bit_set(drv, TEC_ENABLE_INTERNAL);
-}
-
-static bool maiman_is_lock_bit_set(maiman_driver_t *drv, uint16_t bitmask)
-{
-	uint16_t status = maiman_get_raw_lock_status(drv);
-
-	return (status & bitmask) != 0U;
-}
-
-bool maiman_is_lockstate_interlock(maiman_driver_t *drv)
-{
-	return maiman_is_lock_bit_set(drv, LOCK_STATE_INTERLOCK);
-}
-
-bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv)
-{
-	return maiman_is_lock_bit_set(drv, LOCK_STATE_LD_OVERCURRENT);
-}
-
-bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv)
-{
-	return maiman_is_lock_bit_set(drv, LOCK_STATE_LD_OVERHEAT);
-}
-
-bool maiman_is_lockstate_tec_error(maiman_driver_t *drv)
-{
-	return maiman_is_lock_bit_set(drv, LOCK_STATE_TEC_ERROR);
-}
-
-bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv)
-{
-	return maiman_is_lock_bit_set(drv, LOCK_STATE_TEC_SELFHEAT);
+	return (status & TEC_OPERATION_STATE_STARTED) != 0U;
 }
 
 bool maiman_set_current(maiman_driver_t *drv, float current)

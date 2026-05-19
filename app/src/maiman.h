@@ -88,7 +88,6 @@
 #define DIVIDER_TEC_CURRENT                 10.0f
 #define DIVIDER_TEC_VOLTAGE                 10.0f
 #define DIVIDER_CURRENT_SET_CALIBRATION     100.0f
-#define DIVIDER_TEC_CURRENT_SET_CALIBRATION 100.0f
 #define DIVIDER_NTC_COEFFICIENT             1.0f
 
 // Device state bitmasks
@@ -176,7 +175,6 @@ float maiman_get_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
 float maiman_get_tec_current_measured(maiman_driver_t *drv);
 float maiman_get_tec_current_limit(maiman_driver_t *drv);
-float maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_tec_voltage(maiman_driver_t *drv);
 
 /* ----- Status and control ----- */
@@ -185,19 +183,7 @@ uint16_t maiman_get_serial_number(maiman_driver_t *drv);
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
-bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
-bool maiman_is_operation_started(maiman_driver_t *drv);
-bool maiman_is_current_set_internal(maiman_driver_t *drv);
-bool maiman_is_enable_internal(maiman_driver_t *drv);
-bool maiman_is_interlock_denied(maiman_driver_t *drv);
 bool maiman_is_tec_started(maiman_driver_t *drv);
-bool maiman_is_tec_set_internal(maiman_driver_t *drv);
-bool maiman_is_tec_enable_internal(maiman_driver_t *drv);
-bool maiman_is_lockstate_interlock(maiman_driver_t *drv);
-bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv);
-bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv);
-bool maiman_is_lockstate_tec_error(maiman_driver_t *drv);
-bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 
 /* ----- Setpoint and commands ----- */
 bool maiman_set_current(maiman_driver_t *drv, float current);
