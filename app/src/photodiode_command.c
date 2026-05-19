@@ -6,7 +6,8 @@
 #include "photodiode_command.h"
 
 #include <errno.h>
-#include <strings.h>
+
+#include <zephyr/sys/util.h>
 
 #include "app_settings.h"
 #include "devices.h"
@@ -16,17 +17,35 @@
 #include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
 
+enum pd_action {
+	PD_ACTION_MEASURE_DARK = 0,
+	PD_ACTION_DARK_STATUS,
+	PD_ACTION_RESET_LOWEST_DARK,
+};
+
+static const struct coo_json_string_choice pd_channel_choices[] = {
+	{ "yj", PHOTODIODE_CHANNEL_YJ },
+	{ "hk", PHOTODIODE_CHANNEL_HK },
+};
+
+static const struct coo_json_string_choice pd_action_choices[] = {
+	{ "measure_dark", PD_ACTION_MEASURE_DARK },
+	{ "dark_status", PD_ACTION_DARK_STATUS },
+	{ "reset_lowest_dark", PD_ACTION_RESET_LOWEST_DARK },
+};
+
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
-	if (name == NULL || channel == NULL) {
+	int value;
+
+	if (channel == NULL) {
 		return -EINVAL;
 	}
-	if (strcasecmp(name, "yj") == 0) {
-		*channel = PHOTODIODE_CHANNEL_YJ;
-		return 0;
-	}
-	if (strcasecmp(name, "hk") == 0) {
-		*channel = PHOTODIODE_CHANNEL_HK;
+
+	if (coo_json_match_string_choice(name, pd_channel_choices,
+					 ARRAY_SIZE(pd_channel_choices),
+					 &value) == 0) {
+		*channel = (enum photodiode_channel)value;
 		return 0;
 	}
 
@@ -52,16 +71,22 @@ static int pd_parse_channel_from_key(const struct coo_cmd_request *cmd,
 static int pd_parse_channel_from_payload_or_key(const struct coo_cmd_request *cmd,
 						enum photodiode_channel *channel)
 {
-	char channel_name[8] = {0};
+	int value;
 	int parse_rc;
+
+	if (channel == NULL) {
+		return -EINVAL;
+	}
 
 	parse_rc = pd_parse_channel_from_key(cmd, channel);
 	if (parse_rc == 0) {
 		return 0;
 	}
 
-	parse_rc = coo_json_extract_string(cmd->payload, "channel",
-					   channel_name, sizeof(channel_name));
+	parse_rc = coo_json_extract_string_choice(cmd->payload, "channel",
+						  pd_channel_choices,
+						  ARRAY_SIZE(pd_channel_choices),
+						  &value);
 	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
 		return -ENOENT;
 	}
@@ -69,7 +94,8 @@ static int pd_parse_channel_from_payload_or_key(const struct coo_cmd_request *cm
 		return -EINVAL;
 	}
 
-	return pd_parse_channel_name(channel_name, channel);
+	*channel = (enum photodiode_channel)value;
+	return 0;
 }
 
 struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
@@ -182,7 +208,9 @@ static struct coo_cmd_response pd_dark_status_response(const struct coo_cmd_requ
 
 struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 {
-	char action[32] = {0};
+	enum pd_action action;
+	char action_text[32] = {0};
+	int action_value;
 	enum photodiode_channel channel;
 	uint32_t duration_ms = 0U;
 	bool store = false;
@@ -194,20 +222,28 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 		return coo_cmd_error(cmd, "photodiodes unavailable on this board");
 	}
 
-	parse_rc = coo_json_extract_string(cmd->payload, "action", action, sizeof(action));
+	parse_rc = coo_json_extract_string(cmd->payload, "action",
+					   action_text, sizeof(action_text));
 	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
 		return coo_cmd_error(cmd, "missing action");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
 		return coo_cmd_error(cmd, "invalid action");
 	}
+	if (coo_json_match_string_choice(action_text, pd_action_choices,
+					 ARRAY_SIZE(pd_action_choices),
+					 &action_value) != 0) {
+		return coo_cmd_error(cmd, "unknown action");
+	}
+	action = (enum pd_action)action_value;
 
 	rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
 	if (rc != 0) {
 		return coo_cmd_error(cmd, "channel must be yj or hk");
 	}
 
-	if (strcasecmp(action, "measure_dark") == 0) {
+	switch (action) {
+	case PD_ACTION_MEASURE_DARK: {
 		struct photodiode_dark_status status;
 
 		if (throughput_monitor_autolevel_active(channel)) {
@@ -231,8 +267,7 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 		}
 		return pd_dark_status_response(cmd, &status);
 	}
-
-	if (strcasecmp(action, "dark_status") == 0) {
+	case PD_ACTION_DARK_STATUS: {
 		struct photodiode_dark_status status;
 
 		rc = photodiode_get_dark_status(channel, &status);
@@ -242,8 +277,7 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 
 		return pd_dark_status_response(cmd, &status);
 	}
-
-	if (strcasecmp(action, "reset_lowest_dark") == 0) {
+	case PD_ACTION_RESET_LOWEST_DARK:
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 						   &persist, NULL) != 0) {
 			return coo_cmd_error(cmd, "invalid persistent");
@@ -254,9 +288,9 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 			return coo_cmd_error(cmd, "reset failed");
 		}
 		return coo_cmd_ok(cmd);
+	default:
+		return coo_cmd_error(cmd, "unknown action");
 	}
-
-	return coo_cmd_error(cmd, "unknown action");
 }
 
 static int pd_settings_channel_json(char *payload, size_t payload_len,

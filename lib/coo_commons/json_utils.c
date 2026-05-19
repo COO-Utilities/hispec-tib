@@ -19,6 +19,7 @@
 #include <zephyr/sys/util.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #define COO_JSON_DOUBLE_ARRAY_MAX 8U
 
@@ -29,6 +30,26 @@ const char *coo_json_skip_ws(const char *text)
 	}
 
 	return text;
+}
+
+int coo_json_match_string_choice(const char *text,
+				 const struct coo_json_string_choice *choices,
+				 size_t choice_count,
+				 int *value)
+{
+	if (text == NULL || choices == NULL || value == NULL) {
+		return -EINVAL;
+	}
+
+	for (size_t i = 0U; i < choice_count; ++i) {
+		if (choices[i].name != NULL &&
+		    strcasecmp(text, choices[i].name) == 0) {
+			*value = choices[i].value;
+			return 0;
+		}
+	}
+
+	return -ENOENT;
 }
 
 /**
@@ -387,6 +408,28 @@ int coo_json_extract_string(const char *json, const char *key, char *out, size_t
 				   out_len,
 				   0U,
 				   0U);
+}
+
+int coo_json_extract_string_choice(const char *json,
+				   const char *key,
+				   const struct coo_json_string_choice *choices,
+				   size_t choice_count,
+				   int *value)
+{
+	char text[32] = {0};
+	int rc;
+
+	if (choices == NULL || choice_count == 0U || value == NULL) {
+		return COO_JSON_EXTRACT_ERR;
+	}
+
+	rc = coo_json_extract_string(json, key, text, sizeof(text));
+	if (rc != COO_JSON_EXTRACT_OK) {
+		return rc;
+	}
+
+	return coo_json_match_string_choice(text, choices, choice_count, value) == 0 ?
+	       COO_JSON_EXTRACT_OK : COO_JSON_EXTRACT_ERR;
 }
 
 int coo_json_extract_object(const char *json, const char *key, char *out, size_t out_len)

@@ -23,8 +23,24 @@ enum coo_json_extract_status {
 	COO_JSON_EXTRACT_ERR = 1,
 };
 
+struct coo_json_string_choice {
+	const char *name;
+	int value;
+};
+
 /** Return @p text advanced past ASCII JSON whitespace. */
 const char *coo_json_skip_ws(const char *text);
+
+/**
+ * Match @p text against a case-insensitive static string-choice table.
+ *
+ * This helper only validates the command token and writes the associated
+ * integer value; command modules still own the table and enum meaning.
+ */
+int coo_json_match_string_choice(const char *text,
+				 const struct coo_json_string_choice *choices,
+				 size_t choice_count,
+				 int *value);
 
 /* Return values use enum coo_json_extract_status. */
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
@@ -87,6 +103,17 @@ int coo_json_extract_optional_double_range(const char *json, const char *key,
 					   double *value, bool *changed,
 					   double min_value, double max_value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
+/**
+ * Extract a JSON string field and match it against a static choice table.
+ *
+ * Return values use enum coo_json_extract_status. Missing fields remain
+ * distinguishable from malformed JSON or unknown values.
+ */
+int coo_json_extract_string_choice(const char *json,
+				   const char *key,
+				   const struct coo_json_string_choice *choices,
+				   size_t choice_count,
+				   int *value);
 /**
  * @brief Copy a nested JSON object value into @p out.
  *
