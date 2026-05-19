@@ -203,6 +203,7 @@ static int sntp_sync_now_internal(void)
 	set_status_server(source, server);
 
 	if (source == SNTP_SYNC_SOURCE_NONE) {
+		LOG_WRN("SNTP sync skipped: no manual or DHCP NTP server configured");
 		return -ENOENT;
 	}
 
@@ -212,6 +213,8 @@ static int sntp_sync_now_internal(void)
 	 */
 	rc = sntp_simple(server, SNTP_SYNC_TIMEOUT_MS, &sntp_time);
 	if (rc != 0) {
+		LOG_WRN("SNTP sync failed (%s: %s rc=%d)",
+			sntp_sync_source_str(source), server, rc);
 		return rc;
 	}
 
@@ -243,7 +246,6 @@ static void sntp_sync_thread(void *p1, void *p2, void *p3)
 
 		rc = sntp_sync_now_internal();
 		if (rc != 0) {
-			LOG_WRN("SNTP sync failed (%d)", rc);
 			set_status_result(rc, 0U);
 			next_ms = SNTP_SYNC_RETRY_INTERVAL_MS;
 		} else {

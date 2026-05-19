@@ -39,8 +39,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
 #define EXECUTOR_STACK_SIZE 6144
 #define EXECUTOR_PRIORITY 6
-#define SERIAL_STACK_SIZE 1400
-#define SERIAL_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
 #define PHOTODIODE_PRIORITY 3
 #define THROUGHPUT_MONITOR_STACK_SIZE 1800
@@ -54,10 +52,6 @@ static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
 
 static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
 static struct k_thread exec_thread_data;
-
-//TODO Can we make this simply an event in the command thread? an if readline then read
-static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
-static struct k_thread serial_thread_data;
 
 static K_THREAD_STACK_DEFINE(photodiode_stack, PHOTODIODE_STACK_SIZE);
 static struct k_thread photodiode_thread_data;
@@ -260,11 +254,6 @@ int main(void)
 			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(&exec_thread_data, "command_exec");
 
-	k_thread_create(&serial_thread_data, serial_stack, K_THREAD_STACK_SIZEOF(serial_stack),
-			coo_cmd_runtime_serial_thread, cmd_runtime, NULL, NULL,
-			SERIAL_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(&serial_thread_data, "serial_console");
-
 	housekeeping_start();
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
 		if (board_devices_ready) {
@@ -332,6 +321,8 @@ int main(void)
 		 */
 		bool mqtt_can_run = network_is_ready();
 		uint32_t current_mqtt_revision = app_settings_get_mqtt_revision();
+
+		coo_cmd_runtime_serial_poll(cmd_runtime);
 
 		if (current_mqtt_revision != mqtt_cfg_revision) {
 			struct coo_mqtt_broker_config new_mqtt_cfg;

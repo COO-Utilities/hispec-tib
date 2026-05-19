@@ -16,6 +16,11 @@
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
+#define SERIAL_POLL_CHAR_BUDGET 64
+
+static void serial_reset_line(struct coo_cmd_runtime *runtime);
+static int runtime_init_serial_console(struct coo_cmd_runtime *runtime);
+
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg)
 {
@@ -56,7 +61,8 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->serial_activity = cfg->serial_activity;
 	runtime->serial_shorthand = cfg->serial_shorthand;
 	runtime->user_data = cfg->user_data;
-	return 0;
+
+	return runtime_init_serial_console(runtime);
 }
 
 static int format_device_topic(const char *device_id, char *buf, size_t buf_len,
@@ -764,31 +770,6 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	}
 }
 
-void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3)
-{
-	struct coo_cmd_runtime *runtime = p1;
-	char *line;
-
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
-
-	if (runtime == NULL) {
-		LOG_ERR("command runtime serial thread missing runtime");
-		return;
-	}
-
-	/* Initialize Zephyr's line-oriented console input once for this thread. */
-	console_getline_init();
-
-	while (1) {
-		/* Blocks until a full line is available from the configured console. */
-		line = console_getline();
-		if (line != NULL && line[0] != '\0') {
-			coo_cmd_runtime_handle_serial_line(runtime, line);
-		}
-	}
-}
-
 static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 					      const struct coo_cmd_request *cmd)
 {
@@ -813,25 +794,27 @@ static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
 
 static void runtime_enqueue_serial_error(struct coo_cmd_runtime *runtime, const char *msg)
 {
-	struct coo_cmd_response out = {0};
+	struct coo_cmd_response *out;
 
 	if (runtime == NULL) {
 		return;
 	}
 
-	out.target = COO_CMD_OUT_SERIAL;
-	out.msg_type = COO_CMD_RESP_ERROR;
-	out.qos = MQTT_QOS_1_AT_LEAST_ONCE;
+	out = &runtime->outbound_scratch;
+	memset(out, 0, sizeof(*out));
+	out->target = COO_CMD_OUT_SERIAL;
+	out->msg_type = COO_CMD_RESP_ERROR;
+	out->qos = MQTT_QOS_1_AT_LEAST_ONCE;
 	(void)coo_cmd_format_response_topic(runtime->device_id, "serial",
-					    out.topic, sizeof(out.topic));
-	out.payload_len = snprintk(out.payload, sizeof(out.payload),
-				   "{\"error\":\"%s\"}", msg);
-	runtime_enqueue_response(runtime, &out);
+					    out->topic, sizeof(out->topic));
+	out->payload_len = snprintk(out->payload, sizeof(out->payload),
+				    "{\"error\":\"%s\"}", msg);
+	runtime_enqueue_response(runtime, out);
 }
 
 void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *line)
 {
-	struct coo_cmd_request cmd = {0};
+	struct coo_cmd_request *cmd;
 	char *cursor = line;
 	char *key;
 	char *payload = NULL;
@@ -870,37 +853,124 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 		return;
 	}
 
-	cmd.source = COO_CMD_SOURCE_SERIAL;
-	strncpy(cmd.key, key, sizeof(cmd.key) - 1U);
-	if (coo_cmd_format_response_topic(runtime->device_id, cmd.key,
-					  cmd.response_topic,
-					  sizeof(cmd.response_topic)) != 0) {
+	cmd = &runtime->ingress_cmd;
+	memset(cmd, 0, sizeof(*cmd));
+	cmd->source = COO_CMD_SOURCE_SERIAL;
+	strncpy(cmd->key, key, sizeof(cmd->key) - 1U);
+	if (coo_cmd_format_response_topic(runtime->device_id, cmd->key,
+					  cmd->response_topic,
+					  sizeof(cmd->response_topic)) != 0) {
 		runtime_enqueue_serial_error(runtime, "invalid command key");
 		return;
 	}
 
-	if (coo_cmd_normalize_serial_payload(cmd.key, payload,
+	if (coo_cmd_normalize_serial_payload(cmd->key, payload,
 					     runtime->serial_shorthand,
 					     runtime->user_data,
-					     cmd.payload,
-					     sizeof(cmd.payload)) != 0) {
+					     cmd->payload,
+					     sizeof(cmd->payload)) != 0) {
 		runtime_enqueue_serial_error(runtime, "invalid serial payload");
 		return;
 	}
-	cmd.payload_len = strlen(cmd.payload);
-	cmd.msg_type = runtime_classify(runtime, &cmd);
+	cmd->payload_len = strlen(cmd->payload);
+	cmd->msg_type = runtime_classify(runtime, cmd);
 
-	if (k_msgq_put(runtime->inbound_queue, &cmd, K_NO_WAIT) != 0) {
-		struct coo_cmd_response out = coo_cmd_busy_response(&cmd);
+	if (k_msgq_put(runtime->inbound_queue, cmd, K_NO_WAIT) != 0) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
-		runtime_enqueue_response(runtime, &out);
+		*out = coo_cmd_busy_response(cmd);
+		runtime_enqueue_response(runtime, out);
+	}
+}
+
+static void serial_reset_line(struct coo_cmd_runtime *runtime)
+{
+	runtime->serial_line_len = 0U;
+	runtime->serial_line[0] = '\0';
+	runtime->serial_line_overflow = false;
+}
+
+static void serial_accept_char(struct coo_cmd_runtime *runtime, char ch)
+{
+	if (ch == '\r' || ch == '\n') {
+		if (runtime->serial_line_overflow) {
+			runtime_enqueue_serial_error(runtime, "serial line too long");
+		} else if (runtime->serial_line_len > 0U) {
+			runtime->serial_line[runtime->serial_line_len] = '\0';
+			coo_cmd_runtime_handle_serial_line(runtime, runtime->serial_line);
+		}
+		serial_reset_line(runtime);
+		return;
+	}
+
+	if (ch == '\b' || ch == 0x7f) {
+		if (runtime->serial_line_len > 0U) {
+			runtime->serial_line_len--;
+			runtime->serial_line[runtime->serial_line_len] = '\0';
+		}
+		return;
+	}
+
+	if ((unsigned char)ch < 0x20U && ch != '\t') {
+		return;
+	}
+
+	if (runtime->serial_line_len + 1U >= sizeof(runtime->serial_line)) {
+		runtime->serial_line_overflow = true;
+		return;
+	}
+
+	runtime->serial_line[runtime->serial_line_len++] = ch;
+	runtime->serial_line[runtime->serial_line_len] = '\0';
+}
+
+static int runtime_init_serial_console(struct coo_cmd_runtime *runtime)
+{
+	int rc;
+
+	if (runtime == NULL) {
+		return -EINVAL;
+	}
+
+	rc = console_init();
+	if (rc != 0) {
+		return rc;
+	}
+
+	console_set_rx_timeout(K_NO_WAIT);
+	serial_reset_line(runtime);
+	runtime->serial_initialized = true;
+	return 0;
+}
+
+void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime)
+{
+	int budget = SERIAL_POLL_CHAR_BUDGET;
+
+	if (runtime == NULL || !runtime->serial_initialized) {
+		return;
+	}
+
+	while (budget-- > 0) {
+		char ch;
+		ssize_t read_len = console_read(NULL, &ch, sizeof(ch));
+
+		if (read_len == 1) {
+			serial_accept_char(runtime, ch);
+			continue;
+		}
+
+		if (read_len < 0 && read_len != -EAGAIN) {
+			LOG_WRN("Serial console read failed (%zd)", read_len);
+		}
+		break;
 	}
 }
 
 void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 					 const struct mqtt_publish_param *pub)
 {
-	struct coo_cmd_request cmd = {0};
+	struct coo_cmd_request *cmd;
 	char req_topic[COO_CMD_TOPIC_MAX];
 	const char *suffix;
 	size_t prefix_len;
@@ -911,6 +981,8 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 				    req_topic, sizeof(req_topic))) {
 		return;
 	}
+	cmd = &runtime->ingress_cmd;
+	memset(cmd, 0, sizeof(*cmd));
 
 	prefix_len = strlen(runtime->request_prefix);
 	if (prefix_len == 0U ||
@@ -920,78 +992,82 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 
 	suffix = req_topic + prefix_len;
 	suffix_len = strlen(suffix);
-	if (suffix_len == 0U || suffix_len >= sizeof(cmd.key)) {
+	if (suffix_len == 0U || suffix_len >= sizeof(cmd->key)) {
 		LOG_WRN("Invalid MQTT command topic suffix");
 		return;
 	}
 
-	cmd.source = COO_CMD_SOURCE_MQTT;
-	memcpy(cmd.key, suffix, suffix_len);
-	cmd.key[suffix_len] = '\0';
+	cmd->source = COO_CMD_SOURCE_MQTT;
+	memcpy(cmd->key, suffix, suffix_len);
+	cmd->key[suffix_len] = '\0';
 
-	if (coo_cmd_format_response_topic(runtime->device_id, cmd.key,
-					  cmd.response_topic,
-					  sizeof(cmd.response_topic)) != 0) {
-		struct coo_cmd_response out = coo_cmd_invalid_response(&cmd);
+	if (coo_cmd_format_response_topic(runtime->device_id, cmd->key,
+					  cmd->response_topic,
+					  sizeof(cmd->response_topic)) != 0) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
-		runtime_enqueue_response(runtime, &out);
+		*out = coo_cmd_invalid_response(cmd);
+		runtime_enqueue_response(runtime, out);
 		return;
 	}
 
 	if (pub->prop.response_topic.utf8 != NULL &&
 	    pub->prop.response_topic.size > 0U &&
-	    pub->prop.response_topic.size < sizeof(cmd.response_topic)) {
-		memcpy(cmd.response_topic, pub->prop.response_topic.utf8,
+	    pub->prop.response_topic.size < sizeof(cmd->response_topic)) {
+		memcpy(cmd->response_topic, pub->prop.response_topic.utf8,
 		       pub->prop.response_topic.size);
-		cmd.response_topic[pub->prop.response_topic.size] = '\0';
+		cmd->response_topic[pub->prop.response_topic.size] = '\0';
 	}
 
-	if (pub->message.payload.len >= sizeof(cmd.payload)) {
-		struct coo_cmd_response out = coo_cmd_invalid_response(&cmd);
+	if (pub->message.payload.len >= sizeof(cmd->payload)) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
-		runtime_enqueue_response(runtime, &out);
+		*out = coo_cmd_invalid_response(cmd);
+		runtime_enqueue_response(runtime, out);
 		return;
 	}
 
 	if (pub->message.payload.len > 0U) {
-		memcpy(cmd.payload, pub->message.payload.data,
+		memcpy(cmd->payload, pub->message.payload.data,
 		       pub->message.payload.len);
-		cmd.payload[pub->message.payload.len] = '\0';
-		cmd.payload_len = pub->message.payload.len;
+		cmd->payload[pub->message.payload.len] = '\0';
+		cmd->payload_len = pub->message.payload.len;
 	} else {
-		snprintk(cmd.payload, sizeof(cmd.payload), "{}");
-		cmd.payload_len = strlen(cmd.payload);
+		snprintk(cmd->payload, sizeof(cmd->payload), "{}");
+		cmd->payload_len = strlen(cmd->payload);
 	}
-	cmd.msg_type = runtime_classify(runtime, &cmd);
+	cmd->msg_type = runtime_classify(runtime, cmd);
 
 	if (pub->prop.correlation_data.len > 0U &&
-	    pub->prop.correlation_data.len <= sizeof(cmd.correlation_data)) {
-		memcpy(cmd.correlation_data, pub->prop.correlation_data.data,
+	    pub->prop.correlation_data.len <= sizeof(cmd->correlation_data)) {
+		memcpy(cmd->correlation_data, pub->prop.correlation_data.data,
 		       pub->prop.correlation_data.len);
-		cmd.corr_len = pub->prop.correlation_data.len;
-	} else if (pub->prop.correlation_data.len > sizeof(cmd.correlation_data)) {
+		cmd->corr_len = pub->prop.correlation_data.len;
+	} else if (pub->prop.correlation_data.len > sizeof(cmd->correlation_data)) {
 		LOG_WRN("MQTT correlation_data too long (%zu > %zu); response will not echo it",
-			pub->prop.correlation_data.len, sizeof(cmd.correlation_data));
+			pub->prop.correlation_data.len, sizeof(cmd->correlation_data));
 	}
 
 	if (runtime->mqtt_accept != NULL &&
-	    !runtime->mqtt_accept(&cmd, runtime->user_data)) {
-		struct coo_cmd_response out = coo_cmd_serial_active_response(&cmd);
+	    !runtime->mqtt_accept(cmd, runtime->user_data)) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
-		LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd.key);
-		runtime_enqueue_response(runtime, &out);
+		*out = coo_cmd_serial_active_response(cmd);
+		LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd->key);
+		runtime_enqueue_response(runtime, out);
 		(void)coo_cmd_runtime_warning_emit(
 			runtime,
 			"serial_guard_active",
 			"MQTT command rejected while serial command guard is active",
-			cmd.key);
+			cmd->key);
 		return;
 	}
 
-	if (k_msgq_put(runtime->inbound_queue, &cmd, K_NO_WAIT) != 0) {
-		struct coo_cmd_response out = coo_cmd_busy_response(&cmd);
+	if (k_msgq_put(runtime->inbound_queue, cmd, K_NO_WAIT) != 0) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
-		runtime_enqueue_response(runtime, &out);
+		*out = coo_cmd_busy_response(cmd);
+		runtime_enqueue_response(runtime, out);
 	}
 }
 
@@ -999,22 +1075,27 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 						struct mqtt_client *client,
 						bool mqtt_available)
 {
-	struct coo_cmd_response warning;
+	struct coo_cmd_response *warning;
 	uint16_t wrap_column = runtime != NULL && runtime->serial_wrap_column != 0U ?
 		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
 
+	if (runtime == NULL) {
+		return;
+	}
+
+	warning = &runtime->warning_scratch;
 	if (runtime == NULL || runtime->warning_topic[0] == '\0' ||
-	    coo_cmd_build_warning(&warning, runtime->warning_topic,
+	    coo_cmd_build_warning(warning, runtime->warning_topic,
 				  "outbound_queue_full",
 				  "outbound queue reached capacity",
 				  "command_drain") != 0) {
 		return;
 	}
 
-	coo_cmd_print_serial_response(&warning, wrap_column);
+	coo_cmd_print_serial_response(warning, wrap_column);
 
 	if (mqtt_available &&
-	    coo_cmd_publish_mqtt(client, &warning, runtime->mqtt_msg_id) != 0) {
+	    coo_cmd_publish_mqtt(client, warning, runtime->mqtt_msg_id) != 0) {
 		LOG_WRN("Failed to publish outbound_queue_full warning");
 	}
 }
@@ -1023,7 +1104,7 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 				    struct mqtt_client *client,
 				    bool mqtt_available)
 {
-	struct coo_cmd_response out;
+	struct coo_cmd_response *out;
 	int budget = 8;
 	bool outbound_full;
 	uint16_t wrap_column;
@@ -1034,6 +1115,7 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 	}
 	wrap_column = runtime->serial_wrap_column != 0U ?
 		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
+	out = &runtime->outbound_scratch;
 
 	outbound_full = (k_msgq_num_free_get(runtime->outbound_queue) == 0U);
 	if (outbound_full) {
@@ -1051,11 +1133,11 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 	}
 
 	while (budget-- > 0 &&
-	       k_msgq_get(runtime->outbound_queue, &out, K_NO_WAIT) == 0) {
-		const bool best_effort = (out.target == COO_CMD_OUT_MQTT_BEST_EFFORT);
+	       k_msgq_get(runtime->outbound_queue, out, K_NO_WAIT) == 0) {
+		const bool best_effort = (out->target == COO_CMD_OUT_MQTT_BEST_EFFORT);
 
-		if (out.target == COO_CMD_OUT_SERIAL) {
-			coo_cmd_print_serial_response(&out, wrap_column);
+		if (out->target == COO_CMD_OUT_SERIAL) {
+			coo_cmd_print_serial_response(out, wrap_column);
 			continue;
 		}
 
@@ -1064,19 +1146,19 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 				LOG_DBG("Dropping best-effort MQTT msg while MQTT unavailable");
 				continue;
 			}
-			if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+			if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
 				LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
 			}
 			continue;
 		}
 
-		if (coo_cmd_publish_mqtt(client, &out, runtime->mqtt_msg_id) != 0) {
+		if (coo_cmd_publish_mqtt(client, out, runtime->mqtt_msg_id) != 0) {
 			if (best_effort) {
 				LOG_WRN("Best-effort MQTT publish failed; dropping msg");
 				continue;
 			}
 			LOG_WRN("MQTT publish failed; will retry");
-			if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+			if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
 				LOG_WRN("Dropping MQTT msg (queue full after publish failure)");
 			}
 			break;

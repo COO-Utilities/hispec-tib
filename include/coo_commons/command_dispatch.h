@@ -30,6 +30,12 @@
 #define COO_CMD_CORRELATION_MAX 16
 #define COO_CMD_SERIAL_WRAP_COLUMN 80U
 
+#if defined(CONFIG_CONSOLE_INPUT_MAX_LINE_LEN)
+#define COO_CMD_SERIAL_LINE_MAX CONFIG_CONSOLE_INPUT_MAX_LINE_LEN
+#else
+#define COO_CMD_SERIAL_LINE_MAX 128
+#endif
+
 #if defined(CONFIG_COO_MQTT_PAYLOAD_SIZE)
 #define COO_CMD_PAYLOAD_MAX CONFIG_COO_MQTT_PAYLOAD_SIZE
 #else
@@ -121,8 +127,7 @@ typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
  * The application owns the queues, execute callback, and MQTT message-id
  * storage. The runtime owns the copied device identity and topic formatting
  * derived from it. The runtime helpers do not allocate memory; they block only
- * in the executor queue wait, Zephyr console line read, and MQTT publish path
- * used by the outbound drain.
+ * in the executor queue wait and MQTT publish path used by the outbound drain.
  */
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
@@ -140,6 +145,13 @@ struct coo_cmd_runtime {
 	void *user_data;
 	bool outbound_full_warning_seen;
 	bool outbound_full_warning_mqtt_seen;
+	bool serial_initialized;
+	bool serial_line_overflow;
+	size_t serial_line_len;
+	char serial_line[COO_CMD_SERIAL_LINE_MAX];
+	struct coo_cmd_request ingress_cmd;
+	struct coo_cmd_response outbound_scratch;
+	struct coo_cmd_response warning_scratch;
 };
 
 struct coo_cmd_runtime_config {
@@ -159,9 +171,10 @@ struct coo_cmd_runtime_config {
 /**
  * @brief Initialize a command runtime with stable app identity and callbacks.
  *
- * Copies @p cfg->device_id and preformats the request and warning topics.
- * Applications normally call this once after board identity is known and
- * before starting runtime executor/serial threads.
+ * Copies @p cfg->device_id, preformats the request and warning topics, and
+ * initializes nonblocking Zephyr console input for serial commands.
+ * Applications normally call this once after board identity is known and before
+ * starting the runtime executor.
  */
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg);
@@ -351,8 +364,8 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 /** Execute commands from runtime->inbound_queue and enqueue one response each. */
 void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3);
 
-/** Read Zephyr console lines and queue normalized serial commands. */
-void coo_cmd_runtime_serial_thread(void *p1, void *p2, void *p3);
+/** Poll buffered console characters and queue completed serial commands. */
+void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime);
 
 /** Copy and queue one MQTT publish as a normalized command request. */
 void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
