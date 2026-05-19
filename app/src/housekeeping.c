@@ -22,6 +22,7 @@
 #include "command.h"
 #include "devices.h"
 #include "laserbank_tempcontrol.h"
+#include "throughput_monitor.h"
 
 LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 
@@ -266,6 +267,7 @@ void housekeeping_thread(void *p1, void *p2, void *p3)
 {
 	int64_t next_temp_ms = 0;
 	int64_t next_laserbank_ms = 0;
+	int64_t next_throughput_ms = 0;
 	bool laserbank_wake = false;
 
 	ARG_UNUSED(p1);
@@ -289,10 +291,19 @@ void housekeeping_thread(void *p1, void *p2, void *p3)
 		}
 
 		now = k_uptime_get();
+		if (devices_board_type() == HISPEC_BOARD_TIB &&
+		    now >= next_throughput_ms) {
+			throughput_monitor_run_once();
+			next_throughput_ms = k_uptime_get() +
+					     THROUGHPUT_MONITOR_INTERVAL_MS;
+		}
+
+		now = k_uptime_get();
 		int64_t wait_ms = next_temp_ms - now;
 
 		if (devices_board_type() == HISPEC_BOARD_TIB) {
 			wait_ms = MIN(wait_ms, next_laserbank_ms - now);
+			wait_ms = MIN(wait_ms, next_throughput_ms - now);
 		}
 		if (wait_ms < 0) {
 			wait_ms = 0;

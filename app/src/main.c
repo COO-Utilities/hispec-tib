@@ -29,7 +29,6 @@
 #include "devices.h"
 #include "housekeeping.h"
 #include "photodiode.h"
-#include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
 #include "sntp_sync.h"
 #endif
@@ -44,8 +43,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define PHOTODIODE_PRIORITY 3
 #define HOUSEKEEPING_STACK_SIZE 1300
 #define HOUSEKEEPING_PRIORITY 5
-#define THROUGHPUT_MONITOR_STACK_SIZE 1800
-#define THROUGHPUT_MONITOR_PRIORITY 7
 
 #define WDT_TIMEOUT_MS 6000
 
@@ -64,10 +61,6 @@ static struct k_thread housekeeping_thread_data;
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
 		PHOTODIODE_PRIORITY, 0, 0);
-
-K_THREAD_DEFINE(throughput_monitor_tid, THROUGHPUT_MONITOR_STACK_SIZE,
-		throughput_monitor_thread, NULL, NULL, NULL,
-		THROUGHPUT_MONITOR_PRIORITY, 0, 0);
 
 static void load_network_config(struct network_config *cfg)
 {

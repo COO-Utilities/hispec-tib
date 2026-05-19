@@ -219,7 +219,8 @@ artifact, not a replacement for `commands.md`.
   includes Unix time, channel/fiber label, flux estimates, PD windows, current
   attenuation, PD on-time, and laser-current on-time.
 - Handler: `measure_throughput_set()` in `app/src/throughput_command.c` and
-  `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
+  `throughput_monitor_run_once()` in `app/src/throughput_monitor.c`, called by
+  housekeeping.
 
 ### `laserbank/power`
 

@@ -25,7 +25,6 @@
 
 LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 
-#define TP_INTERVAL_MS 100U
 #define TP_ADC_USABLE_MV 5000.0
 #define TP_LOW_FRACTION 0.20
 #define TP_HIGH_FRACTION 0.80
@@ -374,70 +373,62 @@ static void publish_sample(const struct throughput_state *state,
 	(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
 }
 
-void throughput_monitor_thread(void *p1, void *p2, void *p3)
+void throughput_monitor_run_once(void)
 {
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
+	struct photodiode_status pd_status;
+	struct throughput_state local[PHOTODIODE_CHANNEL_COUNT];
+	int64_t now = k_uptime_get();
+	uint64_t time_ms = realtime_ms();
 
-	while (!devices_board_type_checked()) {
-		k_sleep(K_MSEC(20));
+	if (!devices_board_type_checked() || devices_board_type() != HISPEC_BOARD_TIB) {
+		return;
 	}
 
-	while (1) {
-		struct photodiode_status pd_status;
-		struct throughput_state local[PHOTODIODE_CHANNEL_COUNT];
-		int64_t now = k_uptime_get();
-		uint64_t time_ms = realtime_ms();
+	photodiode_get_status(&pd_status);
 
-		photodiode_get_status(&pd_status);
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	memcpy(local, monitors, sizeof(local));
+	k_mutex_unlock(&monitors_lock);
 
-		k_mutex_lock(&monitors_lock, K_FOREVER);
-		memcpy(local, monitors, sizeof(local));
-		k_mutex_unlock(&monitors_lock);
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		bool pd_power = false;
+		struct attenuator_transmission_estimate atten = {0};
 
-		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-			bool pd_power = false;
-			struct attenuator_transmission_estimate atten = {0};
-
-			if (!local[i].active) {
-				continue;
-			}
-
-			if (local[i].stopafter_s > 0U &&
-			    now - local[i].started_ms >= (int64_t)local[i].stopafter_s * 1000) {
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				stop_locked((enum photodiode_channel)i);
-				k_mutex_unlock(&monitors_lock);
-				continue;
-			}
-
-			if (housekeeping_power_get((enum housekeeping_power_output)i,
-						       &pd_power) == 0 && !pd_power) {
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				stop_locked((enum photodiode_channel)i);
-				k_mutex_unlock(&monitors_lock);
-				continue;
-			}
-
-			if (local[i].autolevel &&
-			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
-							     0.0, 0.0, &atten)) {
-				(void)autolevel_adjust(&local[i], &pd_status.channel[i],
-						       &atten);
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				if (monitors[i].active && monitors[i].laser == local[i].laser) {
-					monitors[i].level_percent = local[i].level_percent;
-					monitors[i].high_count = local[i].high_count;
-					monitors[i].low_count = local[i].low_count;
-				}
-				k_mutex_unlock(&monitors_lock);
-			}
-
-			publish_sample(&local[i], &pd_status.channel[i], time_ms);
+		if (!local[i].active) {
+			continue;
 		}
 
-		k_sleep(K_MSEC(TP_INTERVAL_MS));
+		if (local[i].stopafter_s > 0U &&
+		    now - local[i].started_ms >= (int64_t)local[i].stopafter_s * 1000) {
+			k_mutex_lock(&monitors_lock, K_FOREVER);
+			stop_locked((enum photodiode_channel)i);
+			k_mutex_unlock(&monitors_lock);
+			continue;
+		}
+
+		if (housekeeping_power_get((enum housekeeping_power_output)i,
+					   &pd_power) == 0 && !pd_power) {
+			k_mutex_lock(&monitors_lock, K_FOREVER);
+			stop_locked((enum photodiode_channel)i);
+			k_mutex_unlock(&monitors_lock);
+			continue;
+		}
+
+		if (local[i].autolevel &&
+		    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
+						     0.0, 0.0, &atten)) {
+			(void)autolevel_adjust(&local[i], &pd_status.channel[i],
+					       &atten);
+			k_mutex_lock(&monitors_lock, K_FOREVER);
+			if (monitors[i].active && monitors[i].laser == local[i].laser) {
+				monitors[i].level_percent = local[i].level_percent;
+				monitors[i].high_count = local[i].high_count;
+				monitors[i].low_count = local[i].low_count;
+			}
+			k_mutex_unlock(&monitors_lock);
+		}
+
+		publish_sample(&local[i], &pd_status.channel[i], time_ms);
 	}
 }
 

@@ -31,8 +31,16 @@ struct throughput_monitor_status {
 	bool autolevel;
 };
 
-/** Background thread; sleeps between best-effort stream publications. */
-void throughput_monitor_thread(void *p1, void *p2, void *p3);
+#define THROUGHPUT_MONITOR_INTERVAL_MS 100U
+
+/**
+ * Run one throughput/autolevel service pass.
+ *
+ * This may enqueue best-effort telemetry and may block indirectly when
+ * autolevel adjusts attenuators or laser output. It does not publish MQTT
+ * directly.
+ */
+void throughput_monitor_run_once(void);
 
 /** Start or replace the monitor associated with the request's photodiode. */
 int throughput_monitor_start(const struct throughput_monitor_request *request,

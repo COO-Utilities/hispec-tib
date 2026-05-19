@@ -38,7 +38,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Static[static MEMS, photodiode, temperature, throughput, SNTP threads self-gate] --> Start[main]
+  Static[static MEMS, photodiode, SNTP threads self-gate] --> Start[main]
   Start --> Watchdog[configure watchdog]
   Watchdog --> WdogOK{watchdog ready}
   WdogOK -- no --> Stop[stop boot]
@@ -140,7 +140,7 @@ flowchart TD
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
   Warning[coo_cmd_runtime_warning_emit] --> OutQ
-  Throughput[throughput_monitor_thread] --> OutQ
+  Throughput[throughput monitor service pass] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
   Target -- serial --> Print[print topic and wrapped payload]
@@ -222,9 +222,9 @@ flowchart TD
   Arm --> Ok[return status ok]
   StopReq --> Ok
 
-  Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
+  Thread[housekeeping calls throughput_monitor_run_once every 100 ms] --> Snapshot[copy monitor state]
   Snapshot --> Active{channel active}
-  Active -- no --> Sleep[k_sleep 100 ms]
+  Active -- no --> Wait[wait for next housekeeping throughput pass]
   Active -- yes --> Timeout{stopafter expired}
   Timeout -- yes --> Clear[clear monitor]
   Timeout -- no --> PdOn{photodiode relay still on}

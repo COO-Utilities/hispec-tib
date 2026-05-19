@@ -22,8 +22,8 @@ It dispatches one command and tries one non-blocking enqueue to
 - MEMS commands can sleep on router mutexes but do not perform bus I/O directly.
 - Attenuator commands can block on DAC I2C.
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
-- TIB laser-bank heater auto mode runs in its own low-priority thread and can
-  block on Modbus temperature polling and heater GPIO writes.
+- TIB laser-bank heater auto mode and throughput monitoring run in the
+  housekeeping thread and can block on Modbus, DAC, and relay GPIO work.
 - Persistent settings commands can block on Zephyr NVS writes.
 - Reboot and serial guard commands schedule delayable work.
 
@@ -51,16 +51,16 @@ one current sample. Missed ADC sampling periods are not replayed.
 timing-critical actor. It samples the DS18B20 ambient sensor once per second
 and updates the cache used by the `temp` command. On TIB boards it also runs
 laser-bank heater policy, polls Maiman TEC temperature/state at the configured
-heater-control interval, services laser autooff, and drives the auxiliary
-laser-bank heater GPIO. It does not publish MQTT directly; override warnings
-are queued through `coo_cmd_runtime_warning_emit()`.
+heater-control interval, services laser autooff, drives relay-box power state,
+and runs the throughput monitor service pass. It does not publish MQTT directly;
+override warnings are queued through `coo_cmd_runtime_warning_emit()`.
 
-## Throughput Monitor Thread
+## Throughput Monitor Service
 
-`throughput_monitor_thread()` owns `measure_throughput` stream publication and
-optional autolevel control. It reads photodiode snapshots, route-loss settings,
-attenuator state, and laser estimates, then enqueues best-effort telemetry to
-`outbound_queue`.
+`throughput_monitor_run_once()` owns `measure_throughput` stream publication
+and optional autolevel control. Housekeeping calls it every 100 ms on TIB. The
+service pass reads photodiode snapshots, route-loss settings, attenuator state,
+and laser estimates, then enqueues best-effort telemetry to `outbound_queue`.
 
 ## MEMS Router Thread
 
@@ -102,7 +102,6 @@ Current configured priorities:
 - Housekeeping thread: 5.
 - Command executor: 6.
 - Serial thread: 6.
-- Throughput monitor thread: 7.
 - SNTP thread: 10.
 
 Lower numeric values are higher priority in Zephyr preemptive priorities. The
