@@ -37,16 +37,17 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
-#define EXECUTOR_STACK_SIZE 1400
+#define EXECUTOR_STACK_SIZE 6144
 #define EXECUTOR_PRIORITY 6
 #define SERIAL_STACK_SIZE 1400
 #define SERIAL_PRIORITY 6
-#define PHOTODIODE_STACK_SIZE 500
+#define PHOTODIODE_STACK_SIZE 2048 //1400
 #define PHOTODIODE_PRIORITY 3
 #define THROUGHPUT_MONITOR_STACK_SIZE 1800
 #define THROUGHPUT_MONITOR_PRIORITY 7
 
 #define WDT_TIMEOUT_MS 6000
+#define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;
 static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
@@ -54,6 +55,7 @@ static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
 static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
 static struct k_thread exec_thread_data;
 
+//TODO Can we make this simply an event in the command thread? an if readline then read
 static K_THREAD_STACK_DEFINE(serial_stack, SERIAL_STACK_SIZE);
 static struct k_thread serial_thread_data;
 
@@ -141,18 +143,20 @@ static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
 	app_settings_update_mqtt(&mqtt_cfg, true);
 }
 
-static void wdt_callback(const struct device *wdt_dev, int channel_id)
-{
-	ARG_UNUSED(wdt_dev);
-	ARG_UNUSED(channel_id);
-	LOG_ERR("Watchdog callback triggered - resetting");
-}
-
+/**
+ * @brief Configure the hardware watchdog used by the main network/MQTT loop.
+ *
+ * The STM32 IWDG resets the MCU if the main loop stops feeding it. It does not
+ * use an application callback in this build, because Zephyr's STM32 IWDG driver
+ * only supports callbacks when early-wakeup interrupt support is enabled. Setup
+ * writes hardware watchdog registers and can briefly wait for them to settle.
+ */
 static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 {
 	const struct device *wdt;
 	struct wdt_timeout_cfg wdt_config;
 	int wdt_channel_id;
+	int rc;
 
 	wdt = DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0));
 	if (!wdt || !device_is_ready(wdt)) {
@@ -164,15 +168,16 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	wdt_config.flags = WDT_FLAG_RESET_SOC;
 	wdt_config.window.min = 0U;
 	wdt_config.window.max = WDT_TIMEOUT_MS;
-	wdt_config.callback = wdt_callback;
+	wdt_config.callback = NULL;
 
 	wdt_channel_id = wdt_install_timeout(wdt, &wdt_config);
 	if (wdt_channel_id < 0) {
 		return wdt_channel_id;
 	}
 
-	if (wdt_setup(wdt, WDT_OPT_PAUSE_HALTED_BY_DBG) < 0) {
-		return -EIO;
+	rc = wdt_setup(wdt, WDT_OPT_PAUSE_HALTED_BY_DBG);
+	if (rc < 0) {
+		return rc;
 	}
 
 	*wdt_out = wdt;
@@ -200,8 +205,10 @@ int main(void)
 	struct coo_mqtt_broker_config mqtt_cfg;
 	struct coo_mqtt_broker_config prior_mqtt_cfg = {0};
 	struct coo_cmd_runtime *cmd_runtime;
+	int64_t next_mqtt_connect_ms = 0;
 
-	LOG_INF("HiSPEC-FIB PCB  %s\n", APP_VERSION_STRING);
+	LOG_INF("HISPEC-FIB PCB  %s\n", APP_VERSION_STRING);
+	devices_capture_boot_reset_cause();
 
 	/* Watchdog availability is a boot requirement. The main loop feeds it only
 	 * from the MQTT/network path so a wedged main path can still reset the MCU.
@@ -241,6 +248,7 @@ int main(void)
 		return rc;
 	}
 	cmd_runtime = command_runtime_get();
+	devices_queue_boot_reset_telemetry();
 
 	(void)devices_ready();
 	setup_mems_switches_and_routes();
@@ -249,10 +257,12 @@ int main(void)
 	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
 			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
 			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&exec_thread_data, "command_exec");
 
 	k_thread_create(&serial_thread_data, serial_stack, K_THREAD_STACK_SIZEOF(serial_stack),
 			coo_cmd_runtime_serial_thread, cmd_runtime, NULL, NULL,
 			SERIAL_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&serial_thread_data, "serial_console");
 
 	housekeeping_start();
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
@@ -261,11 +271,13 @@ int main(void)
 				K_THREAD_STACK_SIZEOF(photodiode_stack),
 				photodiode_thread, NULL, NULL, NULL,
 				PHOTODIODE_PRIORITY, 0, K_NO_WAIT);
+		k_thread_name_set(&photodiode_thread_data, "photodiode");
 		k_thread_create(&throughput_monitor_thread_data,
 				throughput_monitor_stack,
 				K_THREAD_STACK_SIZEOF(throughput_monitor_stack),
 				throughput_monitor_thread, NULL, NULL, NULL,
 				THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
+		k_thread_name_set(&throughput_monitor_thread_data, "throughput");
 		laserbank_tempcontrol_start();
 	}
 
@@ -346,7 +358,8 @@ int main(void)
 			mqtt_subscribed = false;
 		}
 
-		if (!coo_mqtt_is_connected() && mqtt_can_run) {
+		if (!coo_mqtt_is_connected() && mqtt_can_run &&
+		    k_uptime_get() >= next_mqtt_connect_ms) {
 			rc = coo_mqtt_connect(&client_ctx);
 			if (rc == 0) {
 				mqtt_subscribed = false;
@@ -367,6 +380,9 @@ int main(void)
 				restore_mqtt_config(&mqtt_cfg);
 				mqtt_cfg_revision = app_settings_get_mqtt_revision();
 				mqtt_revert_on_connect_failure = false;
+			}
+			if (rc != 0) {
+				next_mqtt_connect_ms = k_uptime_get() + MQTT_CONNECT_RETRY_MS;
 			}
 		}
 

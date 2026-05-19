@@ -12,6 +12,7 @@
 #define __DEVICE_C__
 
 #include "devices.h"
+#include "app_identity.h"
 #include "app_settings.h"
 #include "command.h"
 #include "mems_switching.h"
@@ -19,6 +20,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
@@ -192,6 +194,8 @@ static K_MUTEX_DEFINE(relay_gpio_lock);
 static bool relay_gpio_online;
 static int relay_gpio_last_error = -ENODEV;
 static bool relay_gpio_warning_emitted;
+static uint32_t boot_reset_cause;
+static bool boot_reset_cause_valid;
 
 struct board_strap {
 	const struct gpio_dt_spec *gpio;
@@ -205,6 +209,151 @@ static const struct board_strap board_straps[] = {
 	{&board_type_cal_hk_gpio, HISPEC_BOARD_CAL_HK, "cal_hk"},
 	{&board_type_as_gpio, HISPEC_BOARD_AS, "as"},
 };
+
+static const char *reset_cause_name(uint32_t bit)
+{
+	switch (bit) {
+	case RESET_PIN:
+		return "pin";
+	case RESET_SOFTWARE:
+		return "software";
+	case RESET_BROWNOUT:
+		return "brownout";
+	case RESET_POR:
+		return "power_on";
+	case RESET_WATCHDOG:
+		return "watchdog";
+	case RESET_DEBUG:
+		return "debug";
+	case RESET_SECURITY:
+		return "security";
+	case RESET_LOW_POWER_WAKE:
+		return "low_power_wake";
+	case RESET_CPU_LOCKUP:
+		return "cpu_lockup";
+	case RESET_PARITY:
+		return "parity";
+	case RESET_PLL:
+		return "pll";
+	case RESET_CLOCK:
+		return "clock";
+	case RESET_HARDWARE:
+		return "hardware";
+	case RESET_USER:
+		return "user";
+	case RESET_TEMPERATURE:
+		return "temperature";
+	case RESET_BOOTLOADER:
+		return "bootloader";
+	case RESET_FLASH:
+		return "flash";
+	default:
+		return NULL;
+	}
+}
+
+static void format_reset_cause_list(uint32_t cause, char *buf, size_t buf_len)
+{
+	size_t off = 0U;
+	bool first = true;
+
+	if (buf == NULL || buf_len == 0U) {
+		return;
+	}
+
+	buf[0] = '\0';
+	if (cause == 0U) {
+		(void)snprintk(buf, buf_len, "unknown");
+		return;
+	}
+
+	for (uint32_t bit = BIT(0); bit != 0U; bit <<= 1) {
+		const char *name;
+
+		if ((cause & bit) == 0U) {
+			continue;
+		}
+
+		name = reset_cause_name(bit);
+		if (name == NULL) {
+			continue;
+		}
+
+		off += snprintk(&buf[off], buf_len - off, "%s%s",
+				first ? "" : ",", name);
+		if (off >= buf_len) {
+			buf[buf_len - 1U] = '\0';
+			return;
+		}
+		first = false;
+	}
+
+	if (first) {
+		(void)snprintk(buf, buf_len, "unknown");
+	}
+}
+
+void devices_capture_boot_reset_cause(void)
+{
+	uint32_t cause = 0U;
+	char cause_text[128];
+	int rc;
+
+	rc = hwinfo_get_reset_cause(&cause);
+	if (rc != 0) {
+		LOG_WRN("Reset cause unavailable (%d)", rc);
+		return;
+	}
+
+	boot_reset_cause = cause;
+	boot_reset_cause_valid = true;
+	format_reset_cause_list(cause, cause_text, sizeof(cause_text));
+
+	if ((cause & RESET_WATCHDOG) != 0U) {
+		LOG_WRN("Previous boot ended in watchdog reset; reset_cause=%s", cause_text);
+	} else {
+		LOG_INF("Reset cause: %s", cause_text);
+	}
+
+	rc = hwinfo_clear_reset_cause();
+	if (rc != 0) {
+		LOG_WRN("Failed to clear reset cause flags (%d)", rc);
+	}
+}
+
+void devices_queue_boot_reset_telemetry(void)
+{
+	struct coo_cmd_response msg = {0};
+	char cause_text[128];
+	int rc;
+
+	if (!boot_reset_cause_valid || (boot_reset_cause & RESET_WATCHDOG) == 0U) {
+		return;
+	}
+
+	format_reset_cause_list(boot_reset_cause, cause_text, sizeof(cause_text));
+	msg.target = COO_CMD_OUT_MQTT;
+	msg.qos = 0;
+	rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "boot",
+				       msg.topic, sizeof(msg.topic));
+	if (rc != 0) {
+		LOG_WRN("Failed to format boot telemetry topic (%d)", rc);
+		return;
+	}
+
+	msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),
+				   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
+				   "\"watchdog\":true,\"raw_reset_cause\":%u}",
+				   cause_text, boot_reset_cause);
+	if (msg.payload_len >= sizeof(msg.payload)) {
+		LOG_WRN("Boot telemetry payload too large");
+		return;
+	}
+
+	if (k_msgq_put(&outbound_queue, &msg, K_FOREVER) != 0) {
+		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
+	}
+}
 
 #define ROUTE_DEF(input_, output_, steps_) \
 	{ .key = { .input_name = (input_), .output_name = (output_) }, \
@@ -485,29 +634,32 @@ static bool all_board_straps_mapped(void)
 	return true;
 }
 
-static int board_strap_read_active(const struct board_strap *strap, bool *active)
+static int board_strap_read_active(const struct board_strap *strap, bool *active, int *raw_level)
 {
-	int value;
+	int raw;
 	int rc;
 
-	if (strap == NULL || active == NULL || strap->gpio->port == NULL) {
+	if (strap == NULL || active == NULL || raw_level == NULL || strap->gpio->port == NULL) {
 		return -ENODEV;
 	}
-	/* gpio_pin_configure_dt() applies the GPIO_ACTIVE_LOW and GPIO_PULL_UP
-	 * flags from the overlay. gpio_pin_get_dt() then returns logical active
-	 * state, so an active-low jumper shorted to ground reads as true.
+	/* gpio_pin_configure_dt() applies the pull-up from the overlay. Board straps
+	 * are physical solder jumpers, so read the physical level and apply the
+	 * active-low flag explicitly: unconnected pulled-up pins are inactive, and
+	 * straps shorted to ground are active.
 	 */
 	rc = gpio_pin_configure_dt(strap->gpio, GPIO_INPUT);
 	if (rc != 0) {
 		return rc;
 	}
 
-	value = gpio_pin_get_dt(strap->gpio);
-	if (value < 0) {
-		return value;
+	raw = gpio_pin_get_raw(strap->gpio->port, strap->gpio->pin);
+	if (raw < 0) {
+		return raw;
 	}
 
-	*active = (value != 0);
+	*active = (strap->gpio->dt_flags & GPIO_ACTIVE_LOW) != 0 ?
+		  (raw == 0) : (raw != 0);
+	*raw_level = raw;
 	return 0;
 }
 
@@ -525,7 +677,8 @@ int devices_detect_board_type(void)
 
 	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
 		bool active = false;
-		int rc = board_strap_read_active(&board_straps[i], &active);
+		int raw_level = -1;
+		int rc = board_strap_read_active(&board_straps[i], &active, &raw_level);
 
 		if (rc != 0) {
 			LOG_ERR("Failed to read board strap %s (%d)", board_straps[i].name, rc);
@@ -535,7 +688,10 @@ int devices_detect_board_type(void)
 			continue;
 		}
 
-		LOG_DBG("Board strap %s active=%d", board_straps[i].name, active ? 1 : 0);
+		LOG_INF("Board strap %s flags=0x%x raw=%d active=%d",
+			board_straps[i].name,
+			board_straps[i].gpio->dt_flags,
+			raw_level, active ? 1 : 0);
 		if (active) {
 			active_count++;
 			detected = board_straps[i].board;

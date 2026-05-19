@@ -92,6 +92,22 @@ bool devices_relay_gpio_online(void);
 /** @brief Last DS2408 relay GPIO setup error, or 0 when online. */
 int devices_relay_gpio_last_error(void);
 
+/**
+ * @brief Capture and clear hardware reset-cause flags for this boot.
+ *
+ * On STM32 this uses Zephyr hwinfo to read RCC reset flags, including
+ * watchdog reset. Call once early in boot before later code can clear them.
+ */
+void devices_capture_boot_reset_cause(void);
+
+/**
+ * @brief Queue retained watchdog boot telemetry for MQTT retry.
+ *
+ * Uses the captured reset cause and enqueues a non-best-effort MQTT telemetry
+ * message if the prior reset included watchdog expiration.
+ */
+void devices_queue_boot_reset_telemetry(void);
+
 /** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);
 

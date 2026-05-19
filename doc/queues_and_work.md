@@ -14,9 +14,11 @@ command responses, warnings, and telemetry to the main loop. The main loop is
 the only path that calls `mqtt_publish()`.
 
 Non-best-effort MQTT messages are requeued when MQTT is unavailable or publish
-fails. Best-effort messages (i.e. warnings and telemetry) are dropped when unavailable or
-failed. If the main loop observes `outbound_queue` at capacity while draining, it emits
-an `outbound_queue_full` warning directly to serial and to MQTT when connected.
+fails. Best-effort messages (i.e. warnings and periodic telemetry) are dropped
+when unavailable or failed. Boot watchdog telemetry uses the non-best-effort
+target so it is retried until MQTT is available. If the main loop observes
+`outbound_queue` at capacity while draining, it emits an `outbound_queue_full`
+warning directly to serial and to MQTT when connected.
 
 Throughput monitoring enqueues photodiode stream telemetry
 to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample

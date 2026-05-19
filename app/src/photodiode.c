@@ -37,6 +37,21 @@ static const struct adc_channel_cfg *const pd_adc_cfg[PHOTODIODE_CHANNEL_COUNT] 
     &hk_cfg_dt,
 };
 
+#define PD_YJ_ADC_CHANNEL_NODE DT_CHILD(DT_NODELABEL(adc1115), channel_0)
+#define PD_HK_ADC_CHANNEL_NODE DT_CHILD(DT_NODELABEL(adc1115), channel_2)
+#define ADS1115_DT_RESOLUTION DT_PROP(PD_YJ_ADC_CHANNEL_NODE, zephyr_resolution)
+
+BUILD_ASSERT(DT_PROP(PD_HK_ADC_CHANNEL_NODE, zephyr_resolution) == ADS1115_DT_RESOLUTION,
+             "photodiode ADS1115 channels must use the same resolution");
+
+/* Zephyr's ADS1115 driver exposes the muxed device as ADC channel 0 only.
+ * The physical ADS input is selected by input_positive from devicetree.
+ * For single-ended ADS1115 reads, Zephyr expects the usable positive code
+ * range: one bit less than the signed conversion register width.
+ */
+#define ADS1115_ZEPHYR_CHANNEL_ID 0U
+#define ADS1115_SINGLE_ENDED_SEQUENCE_RESOLUTION (ADS1115_DT_RESOLUTION - 1U)
+
 const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
     "yj",
     "hk",
@@ -118,11 +133,12 @@ static K_MUTEX_DEFINE(pd_runtime_lock);
 
 static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
 {
+    struct adc_channel_cfg cfg = *pd_adc_cfg[channel];
     struct adc_sequence seq = {
-        .channels = 0,
+        .channels = BIT(ADS1115_ZEPHYR_CHANNEL_ID),
         .buffer = raw,
         .buffer_size = sizeof(*raw),
-        .resolution = ADC_RESOLUTION,
+        .resolution = ADS1115_SINGLE_ENDED_SEQUENCE_RESOLUTION,
         .oversampling = 0,
         .calibrate = false,
     };
@@ -135,7 +151,8 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
         return -ENODEV;
     }
 
-    rc = adc_channel_setup(adc_dev, pd_adc_cfg[channel]);
+    cfg.channel_id = ADS1115_ZEPHYR_CHANNEL_ID;
+    rc = adc_channel_setup(adc_dev, &cfg);
     if (rc == 0) {
         rc = adc_read(adc_dev, &seq);
     }

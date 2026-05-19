@@ -63,7 +63,8 @@ APIs directly.
 
 ## Boot Sequence
 
-1. `main()` starts and initializes the watchdog.
+1. `main()` reads and clears the hardware reset cause, then initializes the
+   watchdog.
 2. `app_settings_init()` loads defaults and then stored app settings.
 3. `devices_detect_board_type()` reads four active-low strap GPIOs.
 4. `app_settings_note_board_type()` persists board type and clears other app
@@ -190,6 +191,7 @@ items are centralized in `human_review_required.md`.
 - Static memory and bounded queues are preferred.
 - Domain modules own hardware sequencing; command handlers own command schema.
 - Timing-sensitive paths should not perform MQTT publish calls.
-- Warnings and telemetry are best-effort.
+- Warnings and periodic telemetry are best-effort. Watchdog boot telemetry is
+  queued as non-best-effort so it is retried until MQTT is available.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.

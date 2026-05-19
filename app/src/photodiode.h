@@ -14,7 +14,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define ADC_RESOLUTION 16  //TODO get this from zephyr,resolution = < 16 >; in the DT
 #define PUBLISH_INTERVAL_MS 20
 
 #define PHOTODIODE_CHANNEL_COUNT 2

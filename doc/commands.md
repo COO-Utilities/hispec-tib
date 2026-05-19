@@ -151,6 +151,7 @@ for normal serial operation.
 - [`split`](#split)
 - Telemetry: `yj_tput`, `hk_tput`
 - Warnings: [`dt/<device>/warning`](#warning-publication)
+- Boot telemetry: [`dt/<device>/boot`](#boot-telemetry)
 
 ---
 
@@ -175,6 +176,25 @@ Warnings do not imply command failure unless the command response also reports
 an error. Warning delivery is intentionally lossy and is not mirrored into
 sticky status fields. Current warning emitters include MQTT command rejection
 while serial guard is active and attenuator DAC-range clamping.
+
+(boot-telemetry)=
+### Boot Telemetry
+- **Publish topic:** `dt/<device>/boot`
+- **When published:** after a boot where Zephyr hwinfo reports the prior reset
+  cause included watchdog expiration.
+- **Delivery:** non-best-effort MQTT outbound message; the main loop requeues it
+  until MQTT is available or publish succeeds.
+- **Payload:**
+  ```json
+  {
+    "event": "boot",
+    "reset_cause": "watchdog",
+    "watchdog": true,
+    "raw_reset_cause": 16
+  }
+  ```
+- **Notes:** `reset_cause` may contain a comma-separated list if hardware reset
+  flags report multiple causes for the same boot.
 
 (help)=
 ### `help`
