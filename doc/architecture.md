@@ -27,7 +27,8 @@ Runtime ownership is:
   coefficient requests.
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, laser settings
-  validation, output estimates, and higher-level Maiman helper APIs.
+  validation, output estimates, auto-off delayable work, and higher-level Maiman
+  helper APIs.
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
@@ -38,8 +39,6 @@ Runtime ownership is:
   and optional autolevel control.
 - `housekeeping.c`: slow ambient-temperature sampling, relay-box power state
   and on-time tracking, and laser-bank heater policy cadence.
-- `lasers.c`: laser-bank power, Maiman sequencing, laser output state,
-  auto-off timeout actor, and laser estimates.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.

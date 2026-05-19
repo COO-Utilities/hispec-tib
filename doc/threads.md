@@ -55,13 +55,6 @@ heater-control interval, and drives the auxiliary laser-bank heater GPIO. It
 does not publish MQTT directly; override warnings are queued through
 `coo_cmd_runtime_warning_emit()`.
 
-## Laser Timeout Thread
-
-`hispec_laser_timeout_thread()` runs only for the TIB profile. It sleeps until a
-laser command arms or refreshes an auto-off deadline, then stops expired laser
-outputs from the laser domain. Stop sequencing can block on Modbus and may stop
-the TEC according to each laser's `disable_tec_at_autooff` setting.
-
 ## Throughput Monitor Thread
 
 `throughput_monitor_thread()` owns `measure_throughput` stream publication and
@@ -95,9 +88,11 @@ The following delayable work items run in Zephyr system workqueue context:
 - Network reconnect work.
 - Serial guard expiration.
 - Delayed reboot.
+- Laser auto-off expiration. This work is owned by `lasers.c`; it is scheduled
+  only when a laser command arms a timeout and may block briefly on Modbus while
+  stopping an expired output.
 
-Work handlers should remain short. Physical timing loops and SNTP do not run on
-the system workqueue.
+Physical timing loops and SNTP do not run on the system workqueue.
 
 ## Thread Priorities
 

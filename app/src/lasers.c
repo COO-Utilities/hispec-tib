@@ -38,7 +38,6 @@ LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
  * command is talking to the Maiman modules.
  */
 static K_MUTEX_DEFINE(laser_lock);
-static K_SEM_DEFINE(laser_autooff_wake_sem, 0, 1);
 
 struct on_time_runtime {
 	bool active;
@@ -122,12 +121,12 @@ BUILD_ASSERT(ARRAY_SIZE(laser_profiles) == HISPEC_LASER_COUNT,
 
 static int profile_for_id(enum hispec_laser_id id,
 			  const struct hispec_laser_driver_profile **profile);
+static int64_t next_autooff_deadline_locked(void);
 static void hispec_laser_service_autooff(void);
+static void laser_autooff_reschedule(void);
+static void laser_autooff_work_handler(struct k_work *work);
 
-static void laser_autooff_wake(void)
-{
-	k_sem_give(&laser_autooff_wake_sem);
-}
+static K_WORK_DELAYABLE_DEFINE(laser_autooff_work, laser_autooff_work_handler);
 
 static void ensure_laser_runtime_settings_locked(void)
 {
@@ -510,7 +509,7 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
 	}
 	k_mutex_unlock(&laser_lock);
 	if (rc == 0 && !enabled) {
-		laser_autooff_wake();
+		laser_autooff_reschedule();
 	}
 
 	return rc;
@@ -782,6 +781,21 @@ static k_timeout_t laser_autooff_wait_timeout(void)
 
 	wait_ms = next_deadline - k_uptime_get();
 	return wait_ms <= 0 ? K_NO_WAIT : K_MSEC(wait_ms);
+}
+
+static void laser_autooff_reschedule(void)
+{
+	const k_timeout_t timeout = laser_autooff_wait_timeout();
+
+	/* This delayable work runs on Zephyr's system workqueue. Auto-off is slow
+	 * best-effort cleanup, not a timing path, and the only blocking work here is
+	 * the Modbus stop sequence for an expired output.
+	 */
+	if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
+		(void)k_work_cancel_delayable(&laser_autooff_work);
+	} else {
+		(void)k_work_reschedule(&laser_autooff_work, timeout);
+	}
 }
 
 static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile *profile,
@@ -1154,7 +1168,7 @@ int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec)
 	rc = stop_output_locked(profile, stop_tec);
 	k_mutex_unlock(&laser_lock);
 	if (rc == 0) {
-		laser_autooff_wake();
+		laser_autooff_reschedule();
 	}
 	return rc;
 }
@@ -1167,7 +1181,7 @@ int hispec_laser_stop_all_outputs(bool stop_tecs)
 	rc = zero_all_driver_currents_locked(stop_tecs);
 	k_mutex_unlock(&laser_lock);
 	if (rc == 0) {
-		laser_autooff_wake();
+		laser_autooff_reschedule();
 	}
 	return rc;
 }
@@ -1313,7 +1327,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 			laser_autooff_deadline_ms[id] = LASER_AUTOFF_NO_DEADLINE;
 		}
 		k_mutex_unlock(&laser_lock);
-		laser_autooff_wake();
+		laser_autooff_reschedule();
 	}
 
 	return rc;
@@ -1578,20 +1592,12 @@ static void hispec_laser_service_autooff(void)
 	}
 }
 
-void hispec_laser_timeout_thread(void *p1, void *p2, void *p3)
+static void laser_autooff_work_handler(struct k_work *work)
 {
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
+	ARG_UNUSED(work);
 
-	while (true) {
-		/* The actor sleeps until the nearest known laser auto-off deadline
-		 * or until a command changes the deadline set. Stop sequencing may
-		 * block on Modbus and therefore stays out of the system workqueue.
-		 */
-		(void)k_sem_take(&laser_autooff_wake_sem, laser_autooff_wait_timeout());
-		hispec_laser_service_autooff();
-	}
+	hispec_laser_service_autooff();
+	laser_autooff_reschedule();
 }
 
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma)

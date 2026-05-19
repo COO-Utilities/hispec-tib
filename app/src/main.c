@@ -28,7 +28,6 @@
 #include "command.h"
 #include "devices.h"
 #include "housekeeping.h"
-#include "lasers.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
@@ -45,8 +44,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define PHOTODIODE_PRIORITY 3
 #define HOUSEKEEPING_STACK_SIZE 1300
 #define HOUSEKEEPING_PRIORITY 5
-#define LASER_TIMEOUT_STACK_SIZE 1400
-#define LASER_TIMEOUT_PRIORITY 5
 #define THROUGHPUT_MONITOR_STACK_SIZE 1800
 #define THROUGHPUT_MONITOR_PRIORITY 7
 
@@ -63,9 +60,6 @@ static struct k_thread serial_thread_data;
 
 static K_THREAD_STACK_DEFINE(housekeeping_stack, HOUSEKEEPING_STACK_SIZE);
 static struct k_thread housekeeping_thread_data;
-
-static K_THREAD_STACK_DEFINE(laser_timeout_stack, LASER_TIMEOUT_STACK_SIZE);
-static struct k_thread laser_timeout_thread_data;
 
 K_THREAD_DEFINE(photodiode_tid, PHOTODIODE_STACK_SIZE,
 		photodiode_thread, NULL, NULL, NULL,
@@ -271,14 +265,6 @@ int main(void)
 			K_THREAD_STACK_SIZEOF(housekeeping_stack),
 			housekeeping_thread, NULL, NULL, NULL,
 			HOUSEKEEPING_PRIORITY, 0, K_NO_WAIT);
-
-	if (devices_board_type() == HISPEC_BOARD_TIB) {
-		k_thread_create(&laser_timeout_thread_data,
-				laser_timeout_stack,
-				K_THREAD_STACK_SIZEOF(laser_timeout_stack),
-				hispec_laser_timeout_thread, NULL, NULL, NULL,
-				LASER_TIMEOUT_PRIORITY, 0, K_NO_WAIT);
-	}
 
 #if defined(CONFIG_SNTP)
 	sntp_sync_init();

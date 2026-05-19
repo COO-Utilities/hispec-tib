@@ -461,13 +461,13 @@ flowchart TD
   Applied -- yes --> LevelPositive{level > 0}
   LevelPositive -- yes --> Deadline[store auto-off deadline or zero for no timeout]
   LevelPositive -- no --> Clear[clear auto-off deadline]
-  Deadline --> WakeTimeout[wake laser timeout thread]
+  Deadline --> ScheduleTimeout[reschedule laser auto-off work]
   Clear --> Ok
-  WakeTimeout --> Ok
+  ScheduleTimeout --> Ok
 
-  TimeoutActor[laser timeout thread] --> Service[service expired auto-off deadlines]
+  TimeoutActor[laser auto-off delayable work] --> Service[service expired auto-off deadlines]
   Service --> Expired{deadline expired}
-  Expired -- no --> Wait[nearest deadline or wake]
+  Expired -- no --> Wait[reschedule nearest deadline]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]
   StopOutput --> DisableTec{disable_tec_at_autooff}
   DisableTec -- yes --> TecOff[stop current and TEC]
