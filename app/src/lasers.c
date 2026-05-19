@@ -863,6 +863,14 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
 		return -EIO;
 	}
+	/* All HISPEC laser operation is continuous-wave. Normalize installed
+	 * drivers during profile programming so stale pulse-mode register values
+	 * cannot survive a module replacement or manual reconfiguration.
+	 */
+	if (!maiman_set_frequency(drv, 0.0f) ||
+	    !maiman_set_duration(drv, 0.0f)) {
+		return -EIO;
+	}
 
 	return 0;
 }

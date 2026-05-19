@@ -33,15 +33,22 @@ static const MaimanRegister register_table[] = {
 	{"STATE_OF_DEVICE_COMMAND", REG_STATE_OF_DEVICE_COMMAND},
 	{"STATE_OF_DEVICE", REG_STATE_OF_DEVICE_COMMAND},
 	{"LOCK_STATUS", REG_LOCK_STATUS},
+	{"FREQUENCY", REG_FREQUENCY},
+	{"DURATION", REG_DURATION},
 	{"CURRENT", REG_CURRENT},
 	{"SAVE_PARAMETERS", REG_SAVE_PARAMETERS},
 	{"RESET_PARAMETERS", REG_RESET_PARAMETERS},
+	{"FREQUENCY_MIN", REG_FREQUENCY_MIN},
+	{"FREQUENCY_MAX", REG_FREQUENCY_MAX},
+	{"DURATION_MIN", REG_DURATION_MIN},
+	{"DURATION_MAX", REG_DURATION_MAX},
 	{"CURRENT_MIN", REG_CURRENT_MIN},
 	{"CURRENT_MAX", REG_CURRENT_MAX},
 	{"CURRENT_MAX_LIMIT", REG_CURRENT_MAX_LIMIT},
 	{"CURRENT_PROTECTION_THRESHOLD", REG_CURRENT_PROTECTION_THRESHOLD},
 	{"CURRENT_MEASURED", REG_CURRENT_MEASURED},
 	{"VOLTAGE_MEASURED", REG_VOLTAGE_MEASURED},
+	{"NTC_TEMPERATURE_MEASURED", REG_NTC_TEMPERATURE_MEASURED},
 	{"PCB_TEMPERATURE_MEASURED", REG_PCB_TEMPERATURE_MEASURED},
 	{"TEC_TEMPERATURE_VALUE", REG_TEC_TEMPERATURE_VALUE},
 	{"TEC_TEMPERATURE_MAX", REG_TEC_TEMPERATURE_MAX},
@@ -239,6 +246,17 @@ float maiman_get_pcb_temperature_measured(maiman_driver_t *drv)
 	return -273.15f;
 }
 
+float maiman_get_ntc_temperature_measured(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_NTC_TEMPERATURE_MEASURED,
+			       DIVIDER_NTC_TEMPERATURE, true, &value)) {
+		return value;
+	}
+	return -273.15f;
+}
+
 float maiman_get_tec_temperature_value(maiman_driver_t *drv)
 {
 	float value;
@@ -255,6 +273,26 @@ float maiman_get_current_measured(maiman_driver_t *drv)
 	float value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MEASURED, DIVIDER_CURRENT, false, &value)) {
+		return value;
+	}
+	return -1.0f;
+}
+
+float maiman_get_frequency(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, &value)) {
+		return value;
+	}
+	return -1.0f;
+}
+
+float maiman_get_duration(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_DURATION, DIVIDER_DURATION, false, &value)) {
 		return value;
 	}
 	return -1.0f;
@@ -540,6 +578,16 @@ bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_
 	return maiman_write_scaled(drv, REG_CURRENT_SET_CALIBRATION,
 				   DIVIDER_CURRENT_SET_CALIBRATION, false,
 				   calibration_percent);
+}
+
+bool maiman_set_frequency(maiman_driver_t *drv, float frequency)
+{
+	return maiman_write_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, frequency);
+}
+
+bool maiman_set_duration(maiman_driver_t *drv, float duration)
+{
+	return maiman_write_scaled(drv, REG_DURATION, DIVIDER_DURATION, false, duration);
 }
 
 bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c)
