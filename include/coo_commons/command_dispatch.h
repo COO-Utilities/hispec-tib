@@ -205,6 +205,20 @@ int coo_cmd_key_suffix_segment_copy(const char *key,
 				    char *suffix,
 				    size_t suffix_len);
 
+/**
+ * Copy two slash-delimited suffix segments after a command-key prefix.
+ *
+ * Returns 0 for keys like `atten/1028y/value` with prefix `atten`. Exact
+ * matches, missing segments, extra nested segments, missing inputs, and
+ * too-small output buffers fail with a negative errno value.
+ */
+int coo_cmd_key_suffix_pair_copy(const char *key,
+				 const char *prefix,
+				 char *first,
+				 size_t first_len,
+				 char *second,
+				 size_t second_len);
+
 /** Longest exact-or-slash-prefix match in a static command table. */
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,

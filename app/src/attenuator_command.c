@@ -6,7 +6,6 @@
 #include "attenuator_command.h"
 
 #include <errno.h>
-#include <string.h>
 #include <strings.h>
 
 #include "app_settings.h"
@@ -15,45 +14,8 @@
 #include "lasers.h"
 #include "throughput_monitor.h"
 
+#include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
-
-static int parse_atten_key(const char *key,
-			   char *laser_name,
-			   size_t laser_name_len,
-			   char *setting,
-			   size_t setting_len)
-{
-	const char prefix[] = "atten/";
-	const char *laser_start;
-	const char *slash;
-	size_t laser_len;
-	size_t parsed_setting_len;
-
-	if (key == NULL || laser_name == NULL || setting == NULL ||
-	    strncmp(key, prefix, strlen(prefix)) != 0) {
-		return -EINVAL;
-	}
-
-	laser_start = key + strlen(prefix);
-	slash = strchr(laser_start, '/');
-	if (slash == NULL) {
-		return -EINVAL;
-	}
-
-	laser_len = (size_t)(slash - laser_start);
-	parsed_setting_len = strcspn(slash + 1, "/");
-	if (laser_len == 0U || laser_len >= laser_name_len ||
-	    parsed_setting_len == 0U || parsed_setting_len >= setting_len ||
-	    (slash + 1)[parsed_setting_len] != '\0') {
-		return -EINVAL;
-	}
-
-	memcpy(laser_name, laser_start, laser_len);
-	laser_name[laser_len] = '\0';
-	memcpy(setting, slash + 1, parsed_setting_len);
-	setting[parsed_setting_len] = '\0';
-	return 0;
-}
 
 static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 					 char *setting,
@@ -63,8 +25,10 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 	char laser_name[16] = {0};
 	enum hispec_laser_id laser_id;
 
-	if (parse_atten_key(cmd->key, laser_name, sizeof(laser_name),
-			    setting, setting_len) != 0) {
+	if (cmd == NULL ||
+	    coo_cmd_key_suffix_pair_copy(cmd->key, "atten",
+					 laser_name, sizeof(laser_name),
+					 setting, setting_len) != 0) {
 		return -EINVAL;
 	}
 

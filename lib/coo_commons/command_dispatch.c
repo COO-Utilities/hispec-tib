@@ -186,6 +186,59 @@ int coo_cmd_key_suffix_segment_copy(const char *key,
 	return 0;
 }
 
+int coo_cmd_key_suffix_pair_copy(const char *key,
+				 const char *prefix,
+				 char *first,
+				 size_t first_len,
+				 char *second,
+				 size_t second_len)
+{
+	const char *start;
+	const char *slash;
+	size_t prefix_len;
+	size_t first_parsed_len;
+	size_t second_parsed_len;
+
+	if (key == NULL || prefix == NULL || first == NULL || second == NULL ||
+	    first_len == 0U || second_len == 0U) {
+		return -EINVAL;
+	}
+	first[0] = '\0';
+	second[0] = '\0';
+
+	if (!coo_cmd_key_matches_prefix(key, prefix)) {
+		return -EINVAL;
+	}
+
+	prefix_len = strlen(prefix);
+	if (key[prefix_len] != '/') {
+		return -ENOENT;
+	}
+
+	start = key + prefix_len + 1U;
+	slash = strchr(start, '/');
+	if (slash == NULL) {
+		return -EINVAL;
+	}
+
+	first_parsed_len = (size_t)(slash - start);
+	second_parsed_len = strcspn(slash + 1, "/");
+	if (first_parsed_len == 0U ||
+	    second_parsed_len == 0U ||
+	    (slash + 1)[second_parsed_len] != '\0') {
+		return -EINVAL;
+	}
+	if (first_parsed_len >= first_len || second_parsed_len >= second_len) {
+		return -ENOSPC;
+	}
+
+	memcpy(first, start, first_parsed_len);
+	first[first_parsed_len] = '\0';
+	memcpy(second, slash + 1, second_parsed_len);
+	second[second_parsed_len] = '\0';
+	return 0;
+}
+
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,
 		      size_t table_len,

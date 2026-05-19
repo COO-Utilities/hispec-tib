@@ -6,7 +6,6 @@
 #include "photodiode_command.h"
 
 #include <errno.h>
-#include <string.h>
 #include <strings.h>
 
 #include "app_settings.h"
@@ -14,6 +13,7 @@
 #include "photodiode.h"
 #include "throughput_monitor.h"
 
+#include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
 
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
@@ -36,13 +36,17 @@ static int pd_parse_channel_name(const char *name, enum photodiode_channel *chan
 static int pd_parse_channel_from_key(const struct coo_cmd_request *cmd,
 				     enum photodiode_channel *channel)
 {
-	const char *slash = strchr(cmd->key, '/');
+	char channel_name[8] = {0};
 
-	if (slash == NULL || slash[1] == '\0') {
+	if (cmd == NULL ||
+	    (coo_cmd_key_suffix_segment_copy(cmd->key, "pd", channel_name,
+					     sizeof(channel_name)) != 0 &&
+	     coo_cmd_key_suffix_segment_copy(cmd->key, "pdsettings", channel_name,
+					     sizeof(channel_name)) != 0)) {
 		return -ENOENT;
 	}
 
-	return pd_parse_channel_name(slash + 1, channel);
+	return pd_parse_channel_name(channel_name, channel);
 }
 
 static int pd_parse_channel_from_payload_or_key(const struct coo_cmd_request *cmd,
