@@ -1392,11 +1392,12 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid)
 	return rc;
 }
 
-static int validate_laser_settings(const struct app_laser_channel_settings *settings)
+static int validate_laser_settings(const struct hispec_laser_driver_profile *profile,
+				   const struct app_laser_channel_settings *settings)
 {
 	const laserprops_t *props;
 
-	if (settings == NULL) {
+	if (profile == NULL || profile->properties == NULL || settings == NULL) {
 		return -EINVAL;
 	}
 
@@ -1407,6 +1408,7 @@ static int validate_laser_settings(const struct app_laser_channel_settings *sett
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !float_is_valid(props->wavelength_nm) ||
 	    !float_is_valid(settings->current_set_calibration_pct) ||
+	    !float_is_valid(props->tec_max_current_a) ||
 	    !float_is_valid(props->dlambda_dT_nm_per_k) ||
 	    !float_is_valid(props->dlambda_dA_nm_per_ma) ||
 	    props->threshold_current_ma < 0.0f ||
@@ -1421,6 +1423,8 @@ static int validate_laser_settings(const struct app_laser_channel_settings *sett
 	    props->wavelength_nm > 10000.0f ||
 	    settings->current_set_calibration_pct < 95.0f ||
 	    settings->current_set_calibration_pct > 105.0f ||
+	    props->tec_max_current_a <= 0.0f ||
+	    props->tec_max_current_a > profile->properties->tec_max_current_a ||
 	    props->dlambda_dT_nm_per_k < -10.0f ||
 	    props->dlambda_dT_nm_per_k > 10.0f ||
 	    props->dlambda_dA_nm_per_ma < -10.0f ||
@@ -1484,7 +1488,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		return rc;
 	}
 
-	rc = validate_laser_settings(settings);
+	rc = validate_laser_settings(profile, settings);
 	if (rc != 0) {
 		return rc;
 	}

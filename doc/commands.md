@@ -605,6 +605,7 @@ many Modbus registers.
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
       "current_set_calibration_pct": 0.0,
+      "tec_max_current_a": 0.0,
       "default_operating_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
       "tec_pid": {
@@ -648,7 +649,7 @@ many Modbus registers.
   - Ranges:
     - Operating temp range: limited to [15,40] strong advice to limit to 17,38
     - current_set_calibration: 95 - 105 in steps of .01
-    - TEC max current is clipped to datasheet maximums that are compiled in.
+    - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
 
 
 (laserbank-power)=

@@ -509,6 +509,7 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("current_set_calibration_%",
 			  settings->current_set_calibration_pct);
 	LASER_PARSE_FLOAT("default_operating_temp_c", settings->properties.operating_temp_c);
+	LASER_PARSE_FLOAT("tec_max_current_a", settings->properties.tec_max_current_a);
 	LASER_PARSE_FLOAT("dlambda_dT_nm_per_k", settings->properties.dlambda_dT_nm_per_k);
 	LASER_PARSE_FLOAT("dlambda_dA_nm_per_ma", settings->properties.dlambda_dA_nm_per_ma);
 
