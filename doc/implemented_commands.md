@@ -252,8 +252,7 @@ artifact, not a replacement for `commands.md`.
 
 - Query with no suffix reports heater auto/override control status.
 - Effect request accepts `override`/`state` string values `auto`, `override_on`, or
-  `override_off`, including topic suffixes. The misspelled `overide_*` forms
-  are accepted.
+  `override_off`, including topic suffixes.
 - Effect success returns the same data shape as the query.
 - Board restriction: TIB only.
 - Side effects: updates the persisted laser-bank heater mode and wakes

@@ -33,10 +33,8 @@ static const struct coo_json_string_choice laserbank_power_mode_choices[] = {
 static const struct coo_json_string_choice heater_mode_choices[] = {
 	{ "auto", LASERBANK_HEATER_MODE_AUTO },
 	{ "override_on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
-	{ "overide_on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
 	{ "on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
 	{ "override_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
-	{ "overide_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
 	{ "off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
 };
 
