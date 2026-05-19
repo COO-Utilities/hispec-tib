@@ -726,8 +726,8 @@ struct coo_cmd_response ip_set(const struct coo_cmd_request *cmd)
         }
     }
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+                                       &persist, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid persistent");
     }
 
@@ -824,8 +824,8 @@ struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd)
     mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
     mqtt_cfg.broker_port = broker_cfg.port;
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+                                       &persist, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid persistent");
     }
 
@@ -908,7 +908,6 @@ struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
     bool persist = false;
     int parse_rc_seconds;
     int parse_rc_value;
-    int parse_rc_persist;
 
     parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
     parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
@@ -920,8 +919,8 @@ struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
         return coo_cmd_error(cmd, "missing seconds");
     }
 
-    parse_rc_persist = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-    if (parse_rc_persist == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+                                       &persist, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid persistent");
     }
     app_settings_set_serial_holdoff_s(holdoff_s, persist);
@@ -941,18 +940,17 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
     bool include_attens = false;
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t off = 0U;
-    int parse_rc;
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "ip", &include_ip);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "ip",
+                                       &include_ip, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid ip");
     }
-    parse_rc = coo_json_extract_bool(cmd->payload, "lasers", &include_lasers);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "lasers",
+                                       &include_lasers, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid lasers");
     }
-    parse_rc = coo_json_extract_bool(cmd->payload, "attens", &include_attens);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    if (coo_json_extract_optional_bool(cmd->payload, "attens",
+                                       &include_attens, NULL) != 0) {
         return coo_cmd_error(cmd, "invalid attens");
     }
 

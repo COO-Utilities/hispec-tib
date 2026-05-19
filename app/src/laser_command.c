@@ -6,6 +6,7 @@
 #include "laser_command.h"
 
 #include <errno.h>
+#include <float.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -382,8 +383,8 @@ struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd)
 		return coo_cmd_error_rc(cmd, "laser settings unavailable", rc);
 	}
 	autooff_s = settings.autooff_s;
-	parse_rc = coo_json_extract_u32(cmd->payload, "autooff_s", &autooff_s);
-	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s",
+					  &autooff_s, NULL) != 0) {
 		return coo_cmd_error(cmd, "invalid autooff_s");
 	}
 
@@ -521,9 +522,6 @@ static int laser_parse_settings_update(const char *json,
 	double range[2] = {0};
 	size_t range_len = 0U;
 	char pid_json[128] = {0};
-	float fval;
-	uint32_t uval;
-	bool bval;
 	int rc;
 
 	if (json == NULL || settings == NULL || changed == NULL) {
@@ -531,12 +529,10 @@ static int laser_parse_settings_update(const char *json,
 	}
 
 #define LASER_PARSE_FLOAT(key, field) do { \
-		rc = coo_json_extract_float(json, key, &fval); \
-		if (rc == COO_JSON_EXTRACT_ERR) return -EINVAL; \
-		if (rc == COO_JSON_EXTRACT_OK) { \
-			(field) = fval; \
-			*changed = true; \
-		} \
+		if (coo_json_extract_optional_float_range(json, key, &(field), \
+							  changed, -FLT_MAX, \
+							  FLT_MAX) != 0) \
+			return -EINVAL; \
 	} while (0)
 
 	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma);
@@ -573,39 +569,28 @@ static int laser_parse_settings_update(const char *json,
 		return -EINVAL;
 	}
 	if (rc == COO_JSON_EXTRACT_OK) {
-		if (coo_json_extract_u32(pid_json, "p", &uval) == COO_JSON_EXTRACT_OK &&
-		    uval <= UINT16_MAX) {
-			settings->properties.tec_pid.kp = (uint16_t)uval;
-			*changed = true;
-		}
-		if (coo_json_extract_u32(pid_json, "i", &uval) == COO_JSON_EXTRACT_OK &&
-		    uval <= UINT16_MAX) {
-			settings->properties.tec_pid.ki = (uint16_t)uval;
-			*changed = true;
-		}
-		if (coo_json_extract_u32(pid_json, "d", &uval) == COO_JSON_EXTRACT_OK &&
-		    uval <= UINT16_MAX) {
-			settings->properties.tec_pid.kd = (uint16_t)uval;
-			*changed = true;
+		if (coo_json_extract_optional_u16(pid_json, "p",
+						  &settings->properties.tec_pid.kp,
+						  changed) != 0 ||
+		    coo_json_extract_optional_u16(pid_json, "i",
+						  &settings->properties.tec_pid.ki,
+						  changed) != 0 ||
+		    coo_json_extract_optional_u16(pid_json, "d",
+						  &settings->properties.tec_pid.kd,
+						  changed) != 0) {
+			return -EINVAL;
 		}
 	}
 
-	rc = coo_json_extract_bool(json, "disable_tec_at_autooff", &bval);
-	if (rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_bool(json, "disable_tec_at_autooff",
+					   &settings->disable_tec_at_autooff,
+					   changed) != 0) {
 		return -EINVAL;
-	}
-	if (rc == COO_JSON_EXTRACT_OK) {
-		settings->disable_tec_at_autooff = bval;
-		*changed = true;
 	}
 
-	rc = coo_json_extract_u32(json, "autooff_s", &uval);
-	if (rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_u32(json, "autooff_s",
+					  &settings->autooff_s, changed) != 0) {
 		return -EINVAL;
-	}
-	if (rc == COO_JSON_EXTRACT_OK) {
-		settings->autooff_s = uval;
-		*changed = true;
 	}
 
 	return 0;

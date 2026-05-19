@@ -16,30 +16,6 @@
 
 #include <coo_commons/json_utils.h>
 
-static int pd_extract_optional_double_range(const char *payload,
-					    const char *key,
-					    double *target,
-					    bool *changed,
-					    double min_value,
-					    double max_value)
-{
-	double value;
-	int parse_rc;
-
-	parse_rc = coo_json_extract_double(payload, key, &value);
-	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-		return 0;
-	}
-	if (parse_rc == COO_JSON_EXTRACT_ERR ||
-	    value < min_value || value > max_value) {
-		return -EINVAL;
-	}
-
-	*target = value;
-	*changed = true;
-	return 0;
-}
-
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
 	if (name == NULL || channel == NULL) {
@@ -235,13 +211,13 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 					    "dark measurement blocked by autolevel throughput monitor");
 		}
 
-		parse_rc = coo_json_extract_u32(cmd->payload, "duration_ms", &duration_ms);
-		if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		if (coo_json_extract_optional_u32(cmd->payload, "duration_ms",
+						  &duration_ms, NULL) != 0) {
 			return coo_cmd_error(cmd, "invalid duration_ms");
 		}
 
-		parse_rc = coo_json_extract_bool(cmd->payload, "store", &store);
-		if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		if (coo_json_extract_optional_bool(cmd->payload, "store",
+						   &store, NULL) != 0) {
 			return coo_cmd_error(cmd, "invalid store");
 		}
 
@@ -264,8 +240,8 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 	}
 
 	if (strcasecmp(action, "reset_lowest_dark") == 0) {
-		parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-		if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+						   &persist, NULL) != 0) {
 			return coo_cmd_error(cmd, "invalid persistent");
 		}
 
@@ -347,7 +323,6 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 	enum photodiode_channel channel;
 	bool persist = false;
 	bool changed = false;
-	int parse_rc;
 	int rc;
 
 	if (devices_board_type() != HISPEC_BOARD_TIB) {
@@ -362,8 +337,8 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 	app_settings_get_photodiode(&settings);
 	channel_settings = settings.channel[channel];
 
-	parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+					   &persist, NULL) != 0) {
 		return coo_cmd_error(cmd, "invalid persistent");
 	}
 
@@ -373,12 +348,12 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 	    coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
 						  &channel_settings.noise_warn_rms_mv,
 						  &changed, 0.0f, 5000.0f) != 0 ||
-	    pd_extract_optional_double_range(cmd->payload, "responsivity_a_per_w",
-					     &channel_settings.responsivity_a_per_w,
-					     &changed, 0.000001, 10.0) != 0 ||
-	    pd_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
-					     &channel_settings.transimpedance_v_per_a,
-					     &changed, 1.0, 1.0e12) != 0) {
+	    coo_json_extract_optional_double_range(cmd->payload, "responsivity_a_per_w",
+						   &channel_settings.responsivity_a_per_w,
+						   &changed, 0.000001, 10.0) != 0 ||
+	    coo_json_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
+						   &channel_settings.transimpedance_v_per_a,
+						   &changed, 1.0, 1.0e12) != 0) {
 		return coo_cmd_error(cmd, "invalid pdsettings value");
 	}
 

@@ -49,6 +49,43 @@ int coo_json_extract_double_array(const char *json, const char *key,
 int coo_json_extract_optional_float_range(const char *json, const char *key,
 					  float *value, bool *changed,
 					  float min_value, float max_value);
+/**
+ * @brief Parse an optional bool field.
+ *
+ * Missing fields are not errors and leave @p value unchanged. When @p changed
+ * is non-NULL, it is set true only when the field was present.
+ *
+ * @retval 0 Field was missing or parsed.
+ * @retval -EINVAL Bad arguments or malformed JSON field.
+ */
+int coo_json_extract_optional_bool(const char *json, const char *key,
+				   bool *value, bool *changed);
+/**
+ * @brief Parse an optional unsigned integer field.
+ *
+ * Missing fields are not errors and leave @p value unchanged. When @p changed
+ * is non-NULL, it is set true only when the field was present.
+ *
+ * @retval 0 Field was missing or parsed.
+ * @retval -EINVAL Bad arguments or malformed JSON field.
+ */
+int coo_json_extract_optional_u32(const char *json, const char *key,
+				  uint32_t *value, bool *changed);
+/** Parse an optional unsigned integer field into a uint16_t destination. */
+int coo_json_extract_optional_u16(const char *json, const char *key,
+				  uint16_t *value, bool *changed);
+/**
+ * @brief Parse an optional double field and reject values outside a range.
+ *
+ * Missing fields are not errors and leave @p value unchanged. On success with
+ * a present field, @p value is updated and @p changed is set true.
+ *
+ * @retval 0 Field was missing or parsed within range.
+ * @retval -EINVAL Bad arguments, malformed JSON field, or out-of-range value.
+ */
+int coo_json_extract_optional_double_range(const char *json, const char *key,
+					   double *value, bool *changed,
+					   double min_value, double max_value);
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 /**
  * @brief Copy a nested JSON object value into @p out.

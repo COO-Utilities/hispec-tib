@@ -179,8 +179,8 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
-		parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
-		if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+						   &persist, NULL) != 0) {
 			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Invalid persistent flag\"}");
 		}

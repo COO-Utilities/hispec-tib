@@ -275,6 +275,106 @@ int coo_json_extract_optional_float_range(const char *json, const char *key,
 	return 0;
 }
 
+int coo_json_extract_optional_bool(const char *json, const char *key,
+				   bool *value, bool *changed)
+{
+	bool parsed;
+	int rc;
+
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	rc = coo_json_extract_bool(json, key, &parsed);
+	if (rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (rc == COO_JSON_EXTRACT_ERR) {
+		return -EINVAL;
+	}
+
+	*value = parsed;
+	if (changed != NULL) {
+		*changed = true;
+	}
+	return 0;
+}
+
+int coo_json_extract_optional_u32(const char *json, const char *key,
+				  uint32_t *value, bool *changed)
+{
+	uint32_t parsed;
+	int rc;
+
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	rc = coo_json_extract_u32(json, key, &parsed);
+	if (rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (rc == COO_JSON_EXTRACT_ERR) {
+		return -EINVAL;
+	}
+
+	*value = parsed;
+	if (changed != NULL) {
+		*changed = true;
+	}
+	return 0;
+}
+
+int coo_json_extract_optional_u16(const char *json, const char *key,
+				  uint16_t *value, bool *changed)
+{
+	uint32_t parsed;
+	bool present = false;
+
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	parsed = *value;
+	if (coo_json_extract_optional_u32(json, key, &parsed, &present) != 0 ||
+	    parsed > UINT16_MAX) {
+		return -EINVAL;
+	}
+	if (present) {
+		*value = (uint16_t)parsed;
+		if (changed != NULL) {
+			*changed = true;
+		}
+	}
+
+	return 0;
+}
+
+int coo_json_extract_optional_double_range(const char *json, const char *key,
+					   double *value, bool *changed,
+					   double min_value, double max_value)
+{
+	double parsed;
+	int rc;
+
+	if (value == NULL || changed == NULL || !(min_value <= max_value)) {
+		return -EINVAL;
+	}
+
+	rc = coo_json_extract_double(json, key, &parsed);
+	if (rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (rc == COO_JSON_EXTRACT_ERR ||
+	    !(parsed >= min_value && parsed <= max_value)) {
+		return -EINVAL;
+	}
+
+	*value = parsed;
+	*changed = true;
+	return 0;
+}
+
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len)
 {
 	if (out == NULL || out_len == 0U) {

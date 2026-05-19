@@ -688,8 +688,8 @@ struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd)
     }
     requested[2] = 1.0f - requested[0] - requested[1];
 
-    parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
-    if (parse_rc == COO_JSON_EXTRACT_ERR ||
+    if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
+                                      &stopafter_s, NULL) != 0 ||
         stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return coo_cmd_error(cmd, "invalid stopafter_s");
     }

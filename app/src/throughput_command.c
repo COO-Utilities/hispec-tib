@@ -79,13 +79,13 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 		return coo_cmd_error(cmd, "fiber must be M or S");
 	}
 
-	parse_rc = coo_json_extract_bool(cmd->payload, "autolevel", &autolevel);
-	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_bool(cmd->payload, "autolevel",
+					   &autolevel, NULL) != 0) {
 		return coo_cmd_error(cmd, "invalid autolevel");
 	}
 
-	parse_rc = coo_json_extract_u32(cmd->payload, "stopafter_s", &stopafter_s);
-	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+	if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
+					  &stopafter_s, NULL) != 0) {
 		return coo_cmd_error(cmd, "invalid stopafter_s");
 	}
 
