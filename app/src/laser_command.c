@@ -9,7 +9,6 @@
 #include <float.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <strings.h>
 
 #include <zephyr/sys/util.h>
 
@@ -23,22 +22,34 @@
 
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
 
+static const struct coo_json_string_choice laserbank_power_mode_choices[] = {
+	{ "auto", HISPEC_LASER_BANK_POWER_AUTO },
+	{ "override_on", HISPEC_LASER_BANK_POWER_OVERRIDE_ON },
+	{ "on", HISPEC_LASER_BANK_POWER_OVERRIDE_ON },
+	{ "override_off", HISPEC_LASER_BANK_POWER_OVERRIDE_OFF },
+	{ "off", HISPEC_LASER_BANK_POWER_OVERRIDE_OFF },
+};
+
+static const struct coo_json_string_choice heater_mode_choices[] = {
+	{ "auto", LASERBANK_HEATER_MODE_AUTO },
+	{ "override_on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
+	{ "overide_on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
+	{ "on", LASERBANK_HEATER_MODE_OVERRIDE_ON },
+	{ "override_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
+	{ "overide_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
+	{ "off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
+};
+
 static bool parse_laserbank_power_mode_text(const char *text,
 					    enum hispec_laser_bank_power_mode *mode)
 {
-	if (text == NULL || mode == NULL) {
-		return false;
-	}
-	if (strcasecmp(text, "auto") == 0) {
-		*mode = HISPEC_LASER_BANK_POWER_AUTO;
-		return true;
-	}
-	if (strcasecmp(text, "override_on") == 0 || strcasecmp(text, "on") == 0) {
-		*mode = HISPEC_LASER_BANK_POWER_OVERRIDE_ON;
-		return true;
-	}
-	if (strcasecmp(text, "override_off") == 0 || strcasecmp(text, "off") == 0) {
-		*mode = HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
+	int value;
+
+	if (mode != NULL &&
+	    coo_json_match_string_choice(text, laserbank_power_mode_choices,
+					 ARRAY_SIZE(laserbank_power_mode_choices),
+					 &value) == 0) {
+		*mode = (enum hispec_laser_bank_power_mode)value;
 		return true;
 	}
 	return false;
@@ -147,27 +158,15 @@ static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_l
 static bool parse_heater_mode_text(const char *text,
 				   enum laserbank_heater_mode *mode)
 {
-	if (text == NULL || mode == NULL) {
-		return false;
-	}
+	int value;
 
-	if (strcasecmp(text, "auto") == 0) {
-		*mode = LASERBANK_HEATER_MODE_AUTO;
+	if (mode != NULL &&
+	    coo_json_match_string_choice(text, heater_mode_choices,
+					 ARRAY_SIZE(heater_mode_choices),
+					 &value) == 0) {
+		*mode = (enum laserbank_heater_mode)value;
 		return true;
 	}
-	if (strcasecmp(text, "override_on") == 0 ||
-	    strcasecmp(text, "overide_on") == 0 ||
-	    strcasecmp(text, "on") == 0) {
-		*mode = LASERBANK_HEATER_MODE_OVERRIDE_ON;
-		return true;
-	}
-	if (strcasecmp(text, "override_off") == 0 ||
-	    strcasecmp(text, "overide_off") == 0 ||
-	    strcasecmp(text, "off") == 0) {
-		*mode = LASERBANK_HEATER_MODE_OVERRIDE_OFF;
-		return true;
-	}
-
 	return false;
 }
 
