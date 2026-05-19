@@ -207,16 +207,11 @@ static const struct command_spec *find_command_spec(const char *key)
 static const char *command_suffix_after_spec(const struct coo_cmd_request *cmd,
                                              const struct command_spec *spec)
 {
-    const char *suffix;
-    size_t key_len;
-
     if (cmd == NULL || spec == NULL) {
         return "";
     }
 
-    key_len = strlen(spec->key);
-    suffix = cmd->key + key_len;
-    return suffix[0] == '/' ? suffix + 1 : suffix;
+    return coo_cmd_key_suffix_after(cmd->key, spec->key);
 }
 
 static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)

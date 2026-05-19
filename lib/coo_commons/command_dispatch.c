@@ -137,6 +137,18 @@ bool coo_cmd_key_matches_prefix(const char *key, const char *prefix)
 	return key[len] == '\0' || key[len] == '/';
 }
 
+const char *coo_cmd_key_suffix_after(const char *key, const char *prefix)
+{
+	size_t len;
+
+	if (!coo_cmd_key_matches_prefix(key, prefix)) {
+		return "";
+	}
+
+	len = strlen(prefix);
+	return key[len] == '/' ? key + len + 1U : "";
+}
+
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,
 		      size_t table_len,

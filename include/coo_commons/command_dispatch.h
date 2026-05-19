@@ -184,6 +184,15 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 /** Return true when @p key starts with @p prefix and is exact or slash-delimited. */
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
 
+/**
+ * Return the suffix after an exact or slash-delimited command-key prefix.
+ *
+ * Returns an empty string for exact matches, missing inputs, or non-matches.
+ * For `laserbank/power/auto` with prefix `laserbank/power`, this returns
+ * `auto`.
+ */
+const char *coo_cmd_key_suffix_after(const char *key, const char *prefix);
+
 /** Longest exact-or-slash-prefix match in a static command table. */
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,

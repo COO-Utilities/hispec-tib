@@ -9,7 +9,6 @@
 #include <float.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <strings.h>
 
 #include <zephyr/sys/util.h>
@@ -23,24 +22,6 @@
 #include <coo_commons/json_utils.h>
 
 #define LASERBANK_FAULT_CLEAR_OFF_MS 250U
-
-static const char *command_suffix_after(const struct coo_cmd_request *cmd, const char *prefix)
-{
-	const char *suffix;
-	size_t prefix_len;
-
-	if (cmd == NULL || prefix == NULL) {
-		return "";
-	}
-
-	prefix_len = strlen(prefix);
-	if (strncmp(cmd->key, prefix, prefix_len) != 0) {
-		return "";
-	}
-
-	suffix = cmd->key + prefix_len;
-	return suffix[0] == '/' ? suffix + 1 : suffix;
-}
 
 static bool parse_laserbank_power_mode_text(const char *text,
 					    enum hispec_laser_bank_power_mode *mode)
@@ -66,13 +47,14 @@ static bool parse_laserbank_power_mode_text(const char *text,
 static bool parse_laserbank_power_request(const struct coo_cmd_request *cmd,
 					  enum hispec_laser_bank_power_mode *mode)
 {
-	const char *suffix = command_suffix_after(cmd, "laserbank/power");
+	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
+						      "laserbank/power");
 	char text[20] = {0};
 
 	if (parse_laserbank_power_mode_text(suffix, mode)) {
 		return true;
 	}
-	if (cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0) {
+	if (coo_cmd_payload_empty(cmd)) {
 		return false;
 	}
 	if (coo_json_extract_string(cmd->payload, "override", text, sizeof(text)) ==
@@ -96,7 +78,7 @@ struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
-	     command_suffix_after(cmd, "laserbank/power")[0] != '\0')) {
+	     coo_cmd_key_suffix_after(cmd->key, "laserbank/power")[0] != '\0')) {
 		if (!parse_laserbank_power_request(cmd, &mode)) {
 			return coo_cmd_error(cmd, "override must be auto, override_on, or override_off");
 		}
@@ -192,7 +174,8 @@ static bool parse_heater_mode_text(const char *text,
 static bool parse_heater_request(const struct coo_cmd_request *cmd,
 				 enum laserbank_heater_mode *mode)
 {
-	const char *suffix = command_suffix_after(cmd, "laserbank/heater");
+	const char *suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL,
+						      "laserbank/heater");
 	char state[20] = {0};
 	bool flag;
 	int rc;
@@ -201,7 +184,7 @@ static bool parse_heater_request(const struct coo_cmd_request *cmd,
 		return true;
 	}
 
-	if (cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0) {
+	if (coo_cmd_payload_empty(cmd)) {
 		return false;
 	}
 
@@ -237,7 +220,7 @@ struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd)
 
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
-	     command_suffix_after(cmd, "laserbank/heater")[0] != '\0')) {
+	     coo_cmd_key_suffix_after(cmd->key, "laserbank/heater")[0] != '\0')) {
 		if (!parse_heater_request(cmd, &mode)) {
 			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
