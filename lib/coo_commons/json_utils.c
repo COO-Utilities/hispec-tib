@@ -416,7 +416,7 @@ int coo_json_extract_string_choice(const char *json,
 				   size_t choice_count,
 				   int *value)
 {
-	char text[32] = {0};
+	char text[COO_JSON_STRING_CHOICE_MAX] = {0};
 	int rc;
 
 	if (choices == NULL || choice_count == 0U || value == NULL) {

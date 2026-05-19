@@ -23,6 +23,9 @@ enum coo_json_extract_status {
 	COO_JSON_EXTRACT_ERR = 1,
 };
 
+/* Fixed buffer used by coo_json_extract_string_choice(). */
+#define COO_JSON_STRING_CHOICE_MAX 32U
+
 struct coo_json_string_choice {
 	const char *name;
 	int value;
