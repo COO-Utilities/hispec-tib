@@ -71,9 +71,9 @@ APIs directly.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
 8. Command runtime registers named scheduled actions.
-9. Executor, serial, and housekeeping threads are created. The photodiode
-   thread is defined statically and self-gates on board/device availability;
-   throughput monitoring runs as a named housekeeping service pass.
+9. Executor, serial, and housekeeping threads are created. Photodiode and
+   throughput monitor threads were defined statically and self-gate on
+   board/device availability.
 10. SNTP, network, MQTT client, broker settings, and command subscription are
     initialized.
 11. The main loop feeds the watchdog, keeps MQTT connected when network is

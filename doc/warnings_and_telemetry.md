@@ -37,9 +37,8 @@ Current warning codes seen in code:
 
 ## Throughput Telemetry
 
-Throughput telemetry is produced by `throughput_monitor_run_once()` when
-`measure_throughput` is active. Housekeeping calls that service pass every
-100 ms on TIB. Telemetry is published on:
+Throughput telemetry is produced by `throughput_monitor_thread()` when
+`measure_throughput` is active. It is published on:
 
 ```text
 dt/<device>/yj_tput
