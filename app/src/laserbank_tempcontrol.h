@@ -40,7 +40,7 @@ struct laserbank_tempcontrol_status {
 	uint32_t last_poll_age_ms;
 };
 
-/** Run one heater-policy and autooff service pass. May block on GPIO/Modbus I/O. */
+/** Run one heater-policy pass. May block on GPIO/Modbus I/O. */
 void laserbank_tempcontrol_run_once(void);
 
 /** Wait for a command-side heater-mode wake request. */

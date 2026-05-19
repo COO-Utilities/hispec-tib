@@ -355,7 +355,6 @@ static void run_heater_control_cycle(void)
 void laserbank_tempcontrol_run_once(void)
 {
 	run_heater_control_cycle();
-	hispec_laser_service_autooff();
 }
 
 bool laserbank_tempcontrol_wait_for_wake(k_timeout_t timeout)

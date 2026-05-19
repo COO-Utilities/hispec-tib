@@ -420,7 +420,7 @@ flowchart TD
   Mode -- override_off --> ForceOff[set heater off]
   ForceOn --> OverrideWarn[rate-limited override warning]
   ForceOff --> OverrideWarn
-  OverrideWarn --> Autooff[service laser auto-off deadlines]
+  OverrideWarn --> Wait
 
   Mode -- auto --> EnteredAuto{just entered auto and bank off}
   EnteredAuto -- yes --> PowerBank[power bank on]
@@ -435,11 +435,11 @@ flowchart TD
   HeaterPolicy -- any disabled below 15 C --> HeaterOn[set heater on]
   HeaterPolicy -- disabled above threshold --> HeaterOff[set heater off]
   HeaterPolicy -- all TECs enabled long enough --> HeaterOff
-  HeaterPolicy -- otherwise --> Autooff
-  HeaterOn --> Autooff
-  HeaterOff --> Autooff
+  HeaterPolicy -- otherwise --> Wait
+  HeaterOn --> Wait
+  HeaterOff --> Wait
 
-  Autooff --> Wait[wait for wake semaphore or poll interval]
+  Wait[wait for wake semaphore or poll interval]
   Wake[heater command changes mode] --> Wait
   Wait --> Cycle
 ```
@@ -461,12 +461,13 @@ flowchart TD
   Applied -- yes --> LevelPositive{level > 0}
   LevelPositive -- yes --> Deadline[store auto-off deadline or zero for no timeout]
   LevelPositive -- no --> Clear[clear auto-off deadline]
-  Deadline --> Ok[return status ok]
+  Deadline --> WakeTimeout[wake laser timeout thread]
   Clear --> Ok
+  WakeTimeout --> Ok
 
-  BankControl[housekeeping_thread poll] --> Service[hispec_laser_service_autooff]
+  TimeoutActor[laser timeout thread] --> Service[service expired auto-off deadlines]
   Service --> Expired{deadline expired}
-  Expired -- no --> Wait[poll interval]
+  Expired -- no --> Wait[nearest deadline or wake]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]
   StopOutput --> DisableTec{disable_tec_at_autooff}
   DisableTec -- yes --> TecOff[stop current and TEC]

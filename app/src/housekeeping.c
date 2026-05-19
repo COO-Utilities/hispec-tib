@@ -3,8 +3,8 @@
  * @brief Slow background polling for ambient sensing and power policy.
  *
  * This actor owns slow periodic work that does not need a timing-critical
- * thread: ambient temperature sampling, laser-bank heater policy, laser
- * autooff service, and relay-box power state.
+ * thread: ambient temperature sampling, laser-bank heater policy, and
+ * relay-box power state.
  */
 
 #include "housekeeping.h"

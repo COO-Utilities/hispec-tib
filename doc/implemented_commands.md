@@ -190,7 +190,7 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Board restriction: TIB only.
 - Side effects: effect requests can power the bank, program TEC/current, stop an
   active throughput monitor using that laser, and arm or reset firmware
-  auto-off.
+  auto-off handled by the laser timeout thread.
 - Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
 ### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`

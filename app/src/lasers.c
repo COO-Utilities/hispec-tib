@@ -31,11 +31,14 @@ LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
 #define PLANCK_J_S 6.62607015e-34
 #define LIGHT_M_PER_S 299792458.0
 
+#define LASER_AUTOFF_NO_DEADLINE 0LL
+
 /* One mutex protects the shared RS-485 bus sequencing and bank-power GPIO.
  * k_mutex_lock() sleeps the calling thread instead of busy-waiting while another
  * command is talking to the Maiman modules.
  */
 static K_MUTEX_DEFINE(laser_lock);
+static K_SEM_DEFINE(laser_autooff_wake_sem, 0, 1);
 
 struct on_time_runtime {
 	bool active;
@@ -119,6 +122,12 @@ BUILD_ASSERT(ARRAY_SIZE(laser_profiles) == HISPEC_LASER_COUNT,
 
 static int profile_for_id(enum hispec_laser_id id,
 			  const struct hispec_laser_driver_profile **profile);
+static void hispec_laser_service_autooff(void);
+
+static void laser_autooff_wake(void)
+{
+	k_sem_give(&laser_autooff_wake_sem);
+}
 
 static void ensure_laser_runtime_settings_locked(void)
 {
@@ -140,7 +149,7 @@ static void ensure_laser_runtime_settings_locked(void)
 		laser_output_estimate[i].tec_temperature_c =
 			stored.channel[i].properties.operating_temp_c;
 		laser_output_estimate[i].valid = true;
-		laser_autooff_deadline_ms[i] = 0;
+		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
 	}
 
 	laser_runtime_initialized = true;
@@ -395,13 +404,13 @@ static int zero_all_driver_currents_locked(bool stop_tecs)
 		if (stop_tecs && !maiman_stop_tec(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
-		commit_current_runtime_locked((enum hispec_laser_id)i, true);
-		output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
-					   laser_output_estimate[i].tec_temperature_c);
-		laser_autooff_deadline_ms[i] = 0;
-		if (stop_tecs) {
-			on_time_runtime_update_locked(laser_tec_runtime,
-						      ARRAY_SIZE(laser_tec_runtime),
+			commit_current_runtime_locked((enum hispec_laser_id)i, true);
+			output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
+						   laser_output_estimate[i].tec_temperature_c);
+			laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
+			if (stop_tecs) {
+				on_time_runtime_update_locked(laser_tec_runtime,
+							      ARRAY_SIZE(laser_tec_runtime),
 						      (enum hispec_laser_id)i, false);
 		}
 	}
@@ -500,6 +509,9 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
 		rc = bank_power_set_locked(enabled, transitioned);
 	}
 	k_mutex_unlock(&laser_lock);
+	if (rc == 0 && !enabled) {
+		laser_autooff_wake();
+	}
 
 	return rc;
 }
@@ -734,6 +746,42 @@ static int check_ocp_limit_locked(const struct hispec_laser_driver_profile *prof
 	}
 
 	return 0;
+}
+
+static int64_t next_autooff_deadline_locked(void)
+{
+	int64_t next = LASER_AUTOFF_NO_DEADLINE;
+
+	ensure_laser_runtime_settings_locked();
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		const int64_t deadline = laser_autooff_deadline_ms[i];
+
+		if (deadline <= LASER_AUTOFF_NO_DEADLINE) {
+			continue;
+		}
+		if (next == LASER_AUTOFF_NO_DEADLINE || deadline < next) {
+			next = deadline;
+		}
+	}
+
+	return next;
+}
+
+static k_timeout_t laser_autooff_wait_timeout(void)
+{
+	int64_t next_deadline;
+	int64_t wait_ms;
+
+	k_mutex_lock(&laser_lock, K_FOREVER);
+	next_deadline = next_autooff_deadline_locked();
+	k_mutex_unlock(&laser_lock);
+
+	if (next_deadline == LASER_AUTOFF_NO_DEADLINE) {
+		return K_FOREVER;
+	}
+
+	wait_ms = next_deadline - k_uptime_get();
+	return wait_ms <= 0 ? K_NO_WAIT : K_MSEC(wait_ms);
 }
 
 static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile *profile,
@@ -1084,7 +1132,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	commit_current_runtime_locked(profile->id, true);
 	output_estimate_set_locked(profile->id, 0.0f,
 				   laser_output_estimate[profile->id].tec_temperature_c);
-	laser_autooff_deadline_ms[profile->id] = 0;
+	laser_autooff_deadline_ms[profile->id] = LASER_AUTOFF_NO_DEADLINE;
 	if (stop_tec) {
 		on_time_runtime_update_locked(laser_tec_runtime, ARRAY_SIZE(laser_tec_runtime),
 					      profile->id, false);
@@ -1105,6 +1153,9 @@ int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec)
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	rc = stop_output_locked(profile, stop_tec);
 	k_mutex_unlock(&laser_lock);
+	if (rc == 0) {
+		laser_autooff_wake();
+	}
 	return rc;
 }
 
@@ -1115,6 +1166,9 @@ int hispec_laser_stop_all_outputs(bool stop_tecs)
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	rc = zero_all_driver_currents_locked(stop_tecs);
 	k_mutex_unlock(&laser_lock);
+	if (rc == 0) {
+		laser_autooff_wake();
+	}
 	return rc;
 }
 
@@ -1253,11 +1307,13 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 		k_mutex_lock(&laser_lock, K_FOREVER);
 		if (percent > 0.0f) {
 			laser_autooff_deadline_ms[id] =
-				autooff_s == 0U ? 0 : k_uptime_get() + (int64_t)autooff_s * 1000LL;
+				autooff_s == 0U ? LASER_AUTOFF_NO_DEADLINE :
+				k_uptime_get() + (int64_t)autooff_s * 1000LL;
 		} else {
-			laser_autooff_deadline_ms[id] = 0;
+			laser_autooff_deadline_ms[id] = LASER_AUTOFF_NO_DEADLINE;
 		}
 		k_mutex_unlock(&laser_lock);
+		laser_autooff_wake();
 	}
 
 	return rc;
@@ -1501,7 +1557,7 @@ float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
 	return value;
 }
 
-void hispec_laser_service_autooff(void)
+static void hispec_laser_service_autooff(void)
 {
 	int64_t now = k_uptime_get();
 
@@ -1519,6 +1575,22 @@ void hispec_laser_service_autooff(void)
 		if (expired) {
 			(void)hispec_laser_stop_output((enum hispec_laser_id)i, stop_tec);
 		}
+	}
+}
+
+void hispec_laser_timeout_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	while (true) {
+		/* The actor sleeps until the nearest known laser auto-off deadline
+		 * or until a command changes the deadline set. Stop sequencing may
+		 * block on Modbus and therefore stays out of the system workqueue.
+		 */
+		(void)k_sem_take(&laser_autooff_wake_sem, laser_autooff_wait_timeout());
+		hispec_laser_service_autooff();
 	}
 }
 

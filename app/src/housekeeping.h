@@ -46,7 +46,7 @@ float housekeeping_power_on_time_s(enum housekeeping_power_output output);
 
 /**
  * Background housekeeping actor. Samples ambient temperature, runs TIB
- * laser-bank heater policy, and services slow power timeouts. It can sleep and
+ * laser-bank heater policy, and tracks slow relay power state. It can sleep and
  * may indirectly block on sensor, Modbus, or GPIO I/O through the domain
  * modules it calls.
  */

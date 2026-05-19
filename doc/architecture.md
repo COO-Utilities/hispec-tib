@@ -37,8 +37,9 @@ Runtime ownership is:
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
 - `housekeeping.c`: slow ambient-temperature sampling, relay-box power state
-  and on-time tracking, laser-bank heater policy cadence, and slow power
-  timeout service.
+  and on-time tracking, and laser-bank heater policy cadence.
+- `lasers.c`: laser-bank power, Maiman sequencing, laser output state,
+  auto-off timeout actor, and laser estimates.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.

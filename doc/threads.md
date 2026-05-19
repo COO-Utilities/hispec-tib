@@ -51,9 +51,16 @@ one current sample. Missed ADC sampling periods are not replayed.
 timing-critical actor. It samples the DS18B20 ambient sensor once per second
 and updates the cache used by the `temp` command. On TIB boards it also runs
 laser-bank heater policy, polls Maiman TEC temperature/state at the configured
-heater-control interval, services laser autooff, and drives the auxiliary
-laser-bank heater GPIO. It does not publish MQTT directly; override warnings
-are queued through `coo_cmd_runtime_warning_emit()`.
+heater-control interval, and drives the auxiliary laser-bank heater GPIO. It
+does not publish MQTT directly; override warnings are queued through
+`coo_cmd_runtime_warning_emit()`.
+
+## Laser Timeout Thread
+
+`hispec_laser_timeout_thread()` runs only for the TIB profile. It sleeps until a
+laser command arms or refreshes an auto-off deadline, then stops expired laser
+outputs from the laser domain. Stop sequencing can block on Modbus and may stop
+the TEC according to each laser's `disable_tec_at_autooff` setting.
 
 ## Throughput Monitor Thread
 

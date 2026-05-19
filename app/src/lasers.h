@@ -284,7 +284,15 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
 				   bool persist);
 float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
-void hispec_laser_service_autooff(void);
+
+/**
+ * @brief Laser-owned timeout actor for firmware auto-off deadlines.
+ *
+ * This sleeps until a command arms or refreshes a laser auto-off deadline, then
+ * stops expired outputs in thread context. It may block on Modbus and change TEC
+ * state according to each laser's `disable_tec_at_autooff` setting.
+ */
+void hispec_laser_timeout_thread(void *p1, void *p2, void *p3);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);
