@@ -77,6 +77,11 @@ static const char *const route_loss_laser_names[] = {
     "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k",
 };
 
+static const struct coo_json_string_choice mems_switch_state_choices[] = {
+    { "A", 'A' },
+    { "B", 'B' },
+};
+
 static bool memsroute_is_route_loss_key(const char *key)
 {
     return strcmp(key, "memsroute/route_loss") == 0;
@@ -841,6 +846,7 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
     bool has_duty_cycle = false;
     bool has_stopafter_s = false;
     bool has_toggle_rate_hz = false;
+    int state_value;
     int parse_rc;
     int rc;
 
@@ -859,10 +865,12 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
         return coo_cmd_error(cmd, "Failed to parse switch state");
     }
 
-    requested_state[0] = (char)toupper((unsigned char)requested_state[0]);
-    if (requested_state[0] != 'A' && requested_state[0] != 'B') {
+    if (coo_json_match_string_choice(requested_state, mems_switch_state_choices,
+                                     ARRAY_SIZE(mems_switch_state_choices),
+                                     &state_value) != 0) {
         return coo_cmd_error(cmd, "Invalid switch state");
     }
+    requested_state[0] = (char)state_value;
 
     parse_rc = coo_json_extract_float(cmd->payload, "duty_cycle", &duty_cycle);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
