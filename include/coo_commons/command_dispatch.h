@@ -193,6 +193,18 @@ bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
  */
 const char *coo_cmd_key_suffix_after(const char *key, const char *prefix);
 
+/**
+ * Copy one slash-delimited suffix segment after a command-key prefix.
+ *
+ * Returns 0 for keys like `mems/yj_cal_laser` with prefix `mems`. Exact
+ * matches, nested suffixes, missing inputs, and too-small output buffers fail
+ * with a negative errno value.
+ */
+int coo_cmd_key_suffix_segment_copy(const char *key,
+				    const char *prefix,
+				    char *suffix,
+				    size_t suffix_len);
+
 /** Longest exact-or-slash-prefix match in a static command table. */
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,

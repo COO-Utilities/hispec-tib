@@ -149,6 +149,43 @@ const char *coo_cmd_key_suffix_after(const char *key, const char *prefix)
 	return key[len] == '/' ? key + len + 1U : "";
 }
 
+int coo_cmd_key_suffix_segment_copy(const char *key,
+				    const char *prefix,
+				    char *suffix,
+				    size_t suffix_len)
+{
+	const char *start;
+	size_t prefix_len;
+	size_t parsed_len;
+
+	if (key == NULL || prefix == NULL || suffix == NULL || suffix_len == 0U) {
+		return -EINVAL;
+	}
+	suffix[0] = '\0';
+
+	if (!coo_cmd_key_matches_prefix(key, prefix)) {
+		return -EINVAL;
+	}
+
+	prefix_len = strlen(prefix);
+	if (key[prefix_len] != '/') {
+		return -ENOENT;
+	}
+
+	start = key + prefix_len + 1U;
+	parsed_len = strcspn(start, "/");
+	if (parsed_len == 0U || start[parsed_len] != '\0') {
+		return -EINVAL;
+	}
+	if (parsed_len >= suffix_len) {
+		return -ENOSPC;
+	}
+
+	memcpy(suffix, start, parsed_len);
+	suffix[parsed_len] = '\0';
+	return 0;
+}
+
 const struct coo_cmd_dispatch_entry *
 coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,
 		      size_t table_len,

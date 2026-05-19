@@ -20,39 +20,12 @@
 #include "command.h"
 #include "mems_switching.h"
 
+#include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
 
 LOG_MODULE_REGISTER(mems_command, LOG_LEVEL_DBG);
 
 extern struct mems_router router;
-
-static int mems_parse_key_suffix(const char *key,
-                                 const char *prefix,
-                                 char *suffix,
-                                 size_t suffix_len)
-{
-    size_t prefix_len;
-    size_t parsed_len;
-
-    if (key == NULL || prefix == NULL || suffix == NULL) {
-        return -EINVAL;
-    }
-
-    prefix_len = strlen(prefix);
-    if (strncmp(key, prefix, prefix_len) != 0) {
-        return -EINVAL;
-    }
-
-    parsed_len = strcspn(key + prefix_len, "/");
-    if (parsed_len == 0U || parsed_len >= suffix_len ||
-        (key + prefix_len)[parsed_len] != '\0') {
-        return -EINVAL;
-    }
-
-    memcpy(suffix, key + prefix_len, parsed_len);
-    suffix[parsed_len] = '\0';
-    return 0;
-}
 
 static bool memsroute_output_seen(const char *const *outputs, uint8_t count,
                                   const char *output_name)
@@ -597,7 +570,7 @@ static int split_channel_index_from_key(const char *key, uint8_t *index)
 {
     char channel[8] = {0};
 
-    if (mems_parse_key_suffix(key, "split/", channel, sizeof(channel)) != 0) {
+    if (coo_cmd_key_suffix_segment_copy(key, "split", channel, sizeof(channel)) != 0) {
         return -ENOENT;
     }
 
@@ -843,8 +816,8 @@ struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
     }
 
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
-    if (mems_parse_key_suffix(cmd->key, "mems/", mems_switch,
-                              sizeof(mems_switch)) != 0) {
+    if (coo_cmd_key_suffix_segment_copy(cmd->key, "mems", mems_switch,
+                                        sizeof(mems_switch)) != 0) {
         return coo_cmd_error(cmd, "Failed to parse mems switch name");
     }
 
@@ -871,8 +844,8 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
     int parse_rc;
     int rc;
 
-    if (mems_parse_key_suffix(cmd->key, "mems/", mems_switch,
-                              sizeof(mems_switch)) != 0) {
+    if (coo_cmd_key_suffix_segment_copy(cmd->key, "mems", mems_switch,
+                                        sizeof(mems_switch)) != 0) {
         return coo_cmd_error(cmd, "Failed to parse mems switch name");
     }
 
