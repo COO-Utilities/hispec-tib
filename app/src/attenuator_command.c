@@ -6,7 +6,8 @@
 #include "attenuator_command.h"
 
 #include <errno.h>
-#include <strings.h>
+
+#include <zephyr/sys/util.h>
 
 #include "app_settings.h"
 #include "attenuator.h"
@@ -17,19 +18,38 @@
 #include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
 
+enum attenuator_setting {
+	ATTENUATOR_SETTING_COEFF = 0,
+	ATTENUATOR_SETTING_VALUE,
+	ATTENUATOR_SETTING_VALUEDB,
+};
+
+static const struct coo_json_string_choice attenuator_setting_choices[] = {
+	{ "coeff", ATTENUATOR_SETTING_COEFF },
+	{ "value", ATTENUATOR_SETTING_VALUE },
+	{ "valuedb", ATTENUATOR_SETTING_VALUEDB },
+};
+
 static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
-					 char *setting,
-					 size_t setting_len,
+					 enum attenuator_setting *setting,
 					 uint8_t *attenuator_index)
 {
 	char laser_name[16] = {0};
+	char setting_name[16] = {0};
 	enum hispec_laser_id laser_id;
+	int setting_value;
 
-	if (cmd == NULL ||
+	if (cmd == NULL || setting == NULL || attenuator_index == NULL ||
 	    coo_cmd_key_suffix_pair_copy(cmd->key, "atten",
 					 laser_name, sizeof(laser_name),
-					 setting, setting_len) != 0) {
+					 setting_name, sizeof(setting_name)) != 0) {
 		return -EINVAL;
+	}
+
+	if (coo_json_match_string_choice(setting_name, attenuator_setting_choices,
+					 ARRAY_SIZE(attenuator_setting_choices),
+					 &setting_value) != 0) {
+		return -ENOTSUP;
 	}
 
 	if (hispec_laser_id_from_name(laser_name, &laser_id) != 0 ||
@@ -41,20 +61,24 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 		return -ENODEV;
 	}
 
+	*setting = (enum attenuator_setting)setting_value;
 	return 0;
 }
 
 struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 {
-	char setting[16] = {0};
+	enum attenuator_setting setting;
 	uint8_t attenuator_index;
 	int rc;
 	char payload[MAX_PAYLOAD_LEN] = {0};
 
-	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
+	rc = attenuator_index_from_command(cmd, &setting, &attenuator_index);
 	if (rc == -EINVAL) {
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse atten/setting\"}");
+	}
+	if (rc == -ENOTSUP) {
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 	if (rc == -ENOENT) {
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
@@ -64,15 +88,17 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
-	if (strcasecmp(setting, "coeff") == 0) {
+	switch (setting) {
+	case ATTENUATOR_SETTING_COEFF:
 		snprintk(payload, sizeof(payload),
 			 "{\"dac1\":[%.8f,%.8f],\"dac2\":[%.8f,%.8f]}",
 			 attenuators[attenuator_index].coeff1.slope,
 			 attenuators[attenuator_index].coeff1.offset,
 			 attenuators[attenuator_index].coeff2.slope,
 			 attenuators[attenuator_index].coeff2.offset);
-	} else if (strcasecmp(setting, "value") == 0 ||
-		   strcasecmp(setting, "valuedb") == 0) {
+		break;
+	case ATTENUATOR_SETTING_VALUE:
+	case ATTENUATOR_SETTING_VALUEDB: {
 		struct attenuator_status status = {0};
 
 		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
@@ -89,7 +115,9 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 			 status.voltage2,
 			 status.attenuation_db1,
 			 status.attenuation_db2);
-	} else {
+		break;
+	}
+	default:
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
@@ -98,14 +126,17 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 
 struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 {
-	char setting[16] = {0};
+	enum attenuator_setting setting;
 	uint8_t attenuator_index;
 	int rc;
 
-	rc = attenuator_index_from_command(cmd, setting, sizeof(setting), &attenuator_index);
+	rc = attenuator_index_from_command(cmd, &setting, &attenuator_index);
 	if (rc == -EINVAL) {
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse laser/setting\"}");
+	}
+	if (rc == -ENOTSUP) {
+		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 	if (rc == -ENOENT) {
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
@@ -115,7 +146,8 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
-	if (strcasecmp(setting, "coeff") == 0) {
+	switch (setting) {
+	case ATTENUATOR_SETTING_COEFF: {
 		double dac1_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
 		double dac2_coeffs[ATTENUATOR_COEFF_COUNT] = {0};
 		size_t dac1_len = 0U;
@@ -166,8 +198,10 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 		app_settings_update_attenuator_channel(attenuator_index,
 						       &stored_coeffs,
 						       persist);
-	} else if (strcasecmp(setting, "value") == 0 ||
-		   strcasecmp(setting, "valuedb") == 0) {
+		break;
+	}
+	case ATTENUATOR_SETTING_VALUE:
+	case ATTENUATOR_SETTING_VALUEDB: {
 		double value;
 
 		if (coo_json_extract_double(cmd->payload, "value", &value) !=
@@ -176,7 +210,7 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 						  "{\"error\":\"Missing setting value\"}");
 		}
 
-		if (strcasecmp(setting, "value") == 0) {
+		if (setting == ATTENUATOR_SETTING_VALUE) {
 			if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
 				return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
 							  "{\"error\":\"Invalid linear transmission\"}");
@@ -187,7 +221,9 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 							  "{\"error\":\"Invalid dB attenuation\"}");
 			}
 		}
-	} else {
+		break;
+	}
+	default:
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
