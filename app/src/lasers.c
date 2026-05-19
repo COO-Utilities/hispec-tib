@@ -1,6 +1,6 @@
 /**
  * @file lasers.c
- * @brief Laser-bank power, relay outputs, Maiman status, and tuning helpers.
+ * @brief Laser-bank power, Maiman status, and tuning helpers.
  *
  * A module mutex serializes shared RS-485/GPIO operations. Functions can block
  * on Modbus RTU, sleep for bank boot/fault-clear delays, and modify driver
@@ -13,8 +13,8 @@
 #include "lasers.h"
 
 #include "app_settings.h"
-#include "command.h"
 #include "devices.h"
+#include "housekeeping.h"
 
 #include <errno.h>
 #include <math.h>
@@ -31,7 +31,7 @@ LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
 #define PLANCK_J_S 6.62607015e-34
 #define LIGHT_M_PER_S 299792458.0
 
-/* One mutex protects the shared RS-485 bus sequencing and the bank/relay GPIOs.
+/* One mutex protects the shared RS-485 bus sequencing and bank-power GPIO.
  * k_mutex_lock() sleeps the calling thread instead of busy-waiting while another
  * command is talking to the Maiman modules.
  */
@@ -51,7 +51,6 @@ struct laser_output_estimate_state {
 
 static struct on_time_runtime laser_current_runtime[HISPEC_LASER_COUNT];
 static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
-static struct on_time_runtime aux_power_runtime[HISPEC_LASER_AUX_BANK_HEATER + 1];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
 static struct laser_output_estimate_state laser_output_estimate[HISPEC_LASER_COUNT];
 static int64_t laser_autooff_deadline_ms[HISPEC_LASER_COUNT];
@@ -604,109 +603,6 @@ static float level_percent_for_current(const laserprops_t *props, float current_
 	return 100.0f * (current_ma - props->threshold_current_ma) / range;
 }
 
-static const struct gpio_dt_spec *aux_gpio(enum hispec_laser_aux_output output)
-{
-	switch (output) {
-	case HISPEC_LASER_AUX_YJ_PHOTODIODE:
-		return &yj_power_gpio;
-	case HISPEC_LASER_AUX_HK_PHOTODIODE:
-		return &hk_power_gpio;
-	case HISPEC_LASER_AUX_BANK_HEATER:
-		return &heater_power_gpio;
-	default:
-		return NULL;
-	}
-}
-
-static bool aux_output_is_photodiode(enum hispec_laser_aux_output output)
-{
-	return output == HISPEC_LASER_AUX_YJ_PHOTODIODE ||
-	       output == HISPEC_LASER_AUX_HK_PHOTODIODE;
-}
-
-int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled)
-{
-	const struct gpio_dt_spec *gpio = aux_gpio(output);
-	int rc;
-
-	if (gpio == NULL) {
-		return -EINVAL;
-	}
-	if (!devices_relay_gpio_online()) {
-		if (aux_output_is_photodiode(output)) {
-			coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
-					 "photodiode relay command ignored because relay GPIO expander is offline",
-					 enabled ? "enable" : "disable");
-			return 0;
-		}
-		return -EIO;
-	}
-
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	/* Relay GPIOs are logical Zephyr GPIOs; devicetree active flags handle
-	 * the DS2408's open-drain electrical behavior.
-	 */
-	rc = gpio_pin_set_dt(gpio, enabled ? 1 : 0);
-	if (rc == 0) {
-		on_time_runtime_update_locked(aux_power_runtime, ARRAY_SIZE(aux_power_runtime),
-					      output, enabled);
-	}
-
-	k_mutex_unlock(&laser_lock);
-	return rc;
-}
-
-int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enabled)
-{
-	const struct gpio_dt_spec *gpio = aux_gpio(output);
-	int rc = 0;
-	int val;
-
-	if (gpio == NULL || enabled == NULL) {
-		return -EINVAL;
-	}
-	if (!devices_relay_gpio_online()) {
-		return -EIO;
-	}
-
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	val = gpio_pin_get_dt(gpio);
-	if (val < 0) {
-		rc = val;
-		goto out;
-	}
-	*enabled = val > 0;
-
-out:
-	k_mutex_unlock(&laser_lock);
-	return rc;
-}
-
-float hispec_laser_aux_power_on_time_s(enum hispec_laser_aux_output output)
-{
-	float value;
-
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	value = on_time_runtime_seconds_locked(aux_power_runtime, ARRAY_SIZE(aux_power_runtime),
-					       output);
-	k_mutex_unlock(&laser_lock);
-
-	return value;
-}
-
-static bool aux_power_get_locked(enum hispec_laser_aux_output output)
-{
-	const struct gpio_dt_spec *gpio = aux_gpio(output);
-	int val;
-
-	if (gpio == NULL) {
-		return false;
-	}
-
-	val = gpio_pin_get_dt(gpio);
-	return val > 0;
-}
-
 int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_status *out)
 {
 	int rc;
@@ -721,9 +617,10 @@ int hispec_laser_bank_read_temperatures(struct hispec_laser_bank_temperature_sta
 		out->channel[i].tec_temperature_c = LASERPROP_NA;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	out->heater_enabled = aux_power_get_locked(HISPEC_LASER_AUX_BANK_HEATER);
+	(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+				     &out->heater_enabled);
 
+	k_mutex_lock(&laser_lock, K_FOREVER);
 	if (!bank_power_is_enabled_locked()) {
 		rc = 0;
 		goto out_unlock;

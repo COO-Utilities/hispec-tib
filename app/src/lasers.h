@@ -1,10 +1,10 @@
 /**
  * @file lasers.h
- * @brief Higher-level TIB laser-bank GPIO, relay, and Maiman helper APIs.
+ * @brief Higher-level TIB laser-bank power and Maiman helper APIs.
  *
- * These helpers may sleep, block on Modbus, change laser-bank power/relay
- * state, and write Maiman EEPROM-backed parameters. Most are not yet exposed by
- * the current command dispatch table.
+ * These helpers may sleep, block on Modbus, change laser-bank power, and write
+ * Maiman EEPROM-backed parameters. Most are not yet exposed by the current
+ * command dispatch table.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -33,12 +33,6 @@ enum hispec_laser_id {
 	HISPEC_LASER_2330_K,
 	HISPEC_LASER_COUNT,
 	HISPEC_LASER_UNKNOWN = -1,
-};
-
-enum hispec_laser_aux_output {
-	HISPEC_LASER_AUX_YJ_PHOTODIODE = 0,
-	HISPEC_LASER_AUX_HK_PHOTODIODE,
-	HISPEC_LASER_AUX_BANK_HEATER,
 };
 
 enum hispec_laser_bank_power_mode {
@@ -204,25 +198,6 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
  */
 int hispec_laser_bank_clear_faults(uint32_t off_ms,
 				   uint32_t *actual_off_ms);
-
-/**
- * @brief Set one relay-box output: YJ PD power, HK PD power, or bank heater.
- *
- * Side effect: writes a logical GPIO value through Zephyr's gpio_pin_set_dt();
- * active-low/high board flags are handled by the GPIO API.
- */
-int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled);
-
-/** @brief Read one relay-box output's logical state. */
-int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enabled);
-
-/**
- * @brief Return relay-output on-time tracked since boot.
- *
- * The laser/relay module owns this because it owns relay writes. It does not
- * read back or infer pre-boot relay state.
- */
-float hispec_laser_aux_power_on_time_s(enum hispec_laser_aux_output output);
 
 /**
  * @brief Poll TEC temperatures and TEC-running state for the full laser bank.

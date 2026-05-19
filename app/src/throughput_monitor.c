@@ -16,6 +16,7 @@
 #include "attenuator.h"
 #include "command.h"
 #include "devices.h"
+#include "housekeeping.h"
 
 #include <coo_commons/json_utils.h>
 #include <zephyr/sys/byteorder.h>
@@ -31,9 +32,9 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 #define TP_INSTANT_BAD_SAMPLES 5U
 #define TP_MIN_ATTEN_TX 1.0e-9
 
-BUILD_ASSERT((int)HISPEC_LASER_AUX_YJ_PHOTODIODE == (int)PHOTODIODE_CHANNEL_YJ,
+BUILD_ASSERT((int)HOUSEKEEPING_POWER_YJ_PHOTODIODE == (int)PHOTODIODE_CHANNEL_YJ,
 	     "YJ photodiode relay index must match photodiode channel");
-BUILD_ASSERT((int)HISPEC_LASER_AUX_HK_PHOTODIODE == (int)PHOTODIODE_CHANNEL_HK,
+BUILD_ASSERT((int)HOUSEKEEPING_POWER_HK_PHOTODIODE == (int)PHOTODIODE_CHANNEL_HK,
 	     "HK photodiode relay index must match photodiode channel");
 BUILD_ASSERT(IS_ENABLED(CONFIG_LITTLE_ENDIAN),
 	     "throughput binary telemetry uses little-endian float layout");
@@ -269,7 +270,7 @@ static void publish_sample(const struct throughput_state *state,
 	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
-	pd_ontime_s = hispec_laser_aux_power_on_time_s((enum hispec_laser_aux_output)state->channel);
+	pd_ontime_s = housekeeping_power_on_time_s((enum housekeeping_power_output)state->channel);
 	laser_current_ontime_s = hispec_laser_current_on_time_s(state->laser);
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
 	route_name_for_laser(laser_route, sizeof(laser_route), laser_name, state->fiber);
@@ -411,7 +412,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (hispec_laser_aux_power_get((enum hispec_laser_aux_output)i,
+			if (housekeeping_power_get((enum housekeeping_power_output)i,
 						       &pd_power) == 0 && !pd_power) {
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				stop_locked((enum photodiode_channel)i);
@@ -461,7 +462,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return rc;
 	}
 
-	rc = hispec_laser_aux_power_set((enum hispec_laser_aux_output)channel, true);
+	rc = housekeeping_power_set((enum housekeeping_power_output)channel, true);
 	if (rc != 0) {
 		return rc;
 	}

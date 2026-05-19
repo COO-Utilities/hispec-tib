@@ -1097,8 +1097,8 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
         coo_json_append(payload, sizeof(payload), &off,
                         ",\"pd_ontime\":%.1f,"
                         "\"laserbank_ontime\":%u",
-                        (double)MAX(hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_YJ_PHOTODIODE),
-                                    hispec_laser_aux_power_on_time_s(HISPEC_LASER_AUX_HK_PHOTODIODE)),
+                        (double)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
+                                    housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE)),
                         bank.bank_power_on_time_s) != 0) {
         return coo_cmd_error(cmd, "status response too large");
     }

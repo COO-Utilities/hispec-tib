@@ -36,8 +36,9 @@ Runtime ownership is:
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
-- `housekeeping.c`: slow ambient-temperature sampling, laser-bank heater
-  policy cadence, and slow power timeout service.
+- `housekeeping.c`: slow ambient-temperature sampling, relay-box power state
+  and on-time tracking, laser-bank heater policy cadence, and slow power
+  timeout service.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.
 - `app_settings.c`: direct-NVS app configuration and calibration.
 - `app_identity.c`: selected board-profile MQTT device ID.
@@ -83,7 +84,8 @@ APIs directly.
 Board identity comes from exactly one active strap:
 
 - `tib`: 8 MEMS switches, TIB routes, six logical attenuator channels, laser
-  bank GPIOs, DS2408 relay outputs, Modbus, ADS1115 photodiodes.
+  bank GPIO, housekeeping-owned DS2408 relay outputs, Modbus, ADS1115
+  photodiodes.
 - `cal_yj`: 7 MEMS switches, CAL routes, one logical CAL attenuator channel (TIB's H channel).
 - `cal_hk`: same firmware profile shape as CAL YJ.
 - `as`: 6 MEMS switches, AS routes, no attenuators.

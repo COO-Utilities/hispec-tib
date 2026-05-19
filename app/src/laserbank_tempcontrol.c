@@ -247,7 +247,7 @@ static void apply_heater(bool enable)
 {
 	int rc;
 
-	rc = hispec_laser_aux_power_set(HISPEC_LASER_AUX_BANK_HEATER, enable);
+	rc = housekeeping_power_set(HOUSEKEEPING_POWER_BANK_HEATER, enable);
 	if (rc != 0) {
 		k_mutex_lock(&control_lock, K_FOREVER);
 		control.status.last_error = rc;
