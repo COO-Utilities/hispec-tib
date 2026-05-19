@@ -22,7 +22,6 @@
 #include <zephyr/net/net_ip.h>
 
 #include "devices.h"
-#include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "app_identity.h"
 #include "app_settings.h"
@@ -1040,7 +1039,6 @@ struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
 struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
 {
     struct housekeeping_temperature_status ts = {0};
-    struct laserbank_tempcontrol_status bank = {0};
     bool include_ip = false;
     bool include_lasers = false;
     bool include_attens = false;
@@ -1061,7 +1059,6 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
     }
 
     housekeeping_get_temperature_status(&ts);
-    laserbank_tempcontrol_get_status(&bank);
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fwversion\":\"%s\",\"bootcount\":%u,"
                         "\"board_type\":\"%s\",\"board_valid\":%s,"
@@ -1080,7 +1077,7 @@ struct coo_cmd_response status_get(const struct coo_cmd_request *cmd)
                         "\"laserbank_ontime\":%u",
                         (double)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
                                     housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE)),
-                        bank.bank_power_on_time_s) != 0) {
+                        hispec_laser_bank_power_on_duration_s()) != 0) {
         return coo_cmd_error(cmd, "status response too large");
     }
 

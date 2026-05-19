@@ -55,6 +55,7 @@ static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
 static struct laser_output_estimate_state laser_output_estimate[HISPEC_LASER_COUNT];
 static int64_t laser_autooff_deadline_ms[HISPEC_LASER_COUNT];
+static int64_t bank_power_started_ms;
 static bool laser_runtime_initialized;
 static enum hispec_laser_bank_power_mode bank_power_mode = HISPEC_LASER_BANK_POWER_AUTO;
 
@@ -375,12 +376,39 @@ int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv)
 	return 0;
 }
 
-static bool bank_power_is_enabled_locked(void)
+static void bank_power_runtime_note_locked(bool enabled, int64_t now_ms)
+{
+	if (enabled && bank_power_started_ms <= 0) {
+		bank_power_started_ms = now_ms;
+	} else if (!enabled) {
+		bank_power_started_ms = 0;
+	}
+}
+
+static int bank_power_read_locked(bool *enabled)
 {
 	int val;
 
+	if (enabled == NULL) {
+		return -EINVAL;
+	}
+
 	val = gpio_pin_get_dt(&laser_power_gpio);
-	return val > 0;
+	if (val < 0) {
+		return val;
+	}
+
+	*enabled = val > 0;
+	bank_power_runtime_note_locked(*enabled, k_uptime_get());
+	return 0;
+}
+
+static bool bank_power_is_enabled_locked(void)
+{
+	bool enabled = false;
+
+	(void)bank_power_read_locked(&enabled);
+	return enabled;
 }
 
 static int zero_all_driver_currents_locked(bool stop_tecs)
@@ -477,6 +505,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned)
 	if (rc != 0) {
 		return rc;
 	}
+	bank_power_runtime_note_locked(enabled, k_uptime_get());
 
 	if (transitioned != NULL) {
 		*transitioned = true;
@@ -512,6 +541,25 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
 	}
 
 	return rc;
+}
+
+uint32_t hispec_laser_bank_power_on_duration_s(void)
+{
+	uint32_t duration_s = 0U;
+	bool bank_powered = false;
+	int64_t now_ms;
+
+	k_mutex_lock(&laser_lock, K_FOREVER);
+	now_ms = k_uptime_get();
+	(void)bank_power_read_locked(&bank_powered);
+	if (bank_powered && bank_power_started_ms > 0) {
+		int64_t elapsed_s = (now_ms - bank_power_started_ms) / 1000;
+
+		duration_s = elapsed_s > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed_s;
+	}
+	k_mutex_unlock(&laser_lock);
+
+	return duration_s;
 }
 
 int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode)

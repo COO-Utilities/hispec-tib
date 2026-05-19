@@ -170,6 +170,14 @@ int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
  */
 bool hispec_laser_bank_power_is_enabled(void);
 
+/**
+ * @brief Return the current laser-bank supply on-duration in seconds.
+ *
+ * The laser-bank power owner latches this runtime-only value when the bank
+ * supply is observed or driven on. It returns 0 when the bank is off.
+ */
+uint32_t hispec_laser_bank_power_on_duration_s(void);
+
 /** @brief Get or set the runtime laser-bank power override mode. */
 enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
 const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
