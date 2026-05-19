@@ -19,7 +19,7 @@
  * This utility is intentionally small. Applications own their command table,
  * request classification policy, domain handlers, and project-specific serial
  * shorthands. The helper owns reusable fixed-buffer MQTT/serial topic handling,
- * static dispatch, bounded serial payload normalization, warning publication,
+ * executor plumbing, bounded serial payload normalization, warning publication,
  * and transport-shaped response handling.
  */
 
@@ -37,7 +37,7 @@
 #endif
 
 /**
- * @brief Request/response class used by the static dispatcher.
+ * @brief Request/response class used by the command executor.
  *
  * Requests use only COO_CMD_QUERY and COO_CMD_EFFECT. Responses use only
  * COO_CMD_RESP_OK and COO_CMD_RESP_ERROR. The enum remains shared so existing
@@ -95,12 +95,6 @@ struct coo_cmd_work {
 
 typedef struct coo_cmd_response (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd);
 
-struct coo_cmd_dispatch_entry {
-	const char *key;
-	coo_cmd_handler_fn get_handler;
-	coo_cmd_handler_fn set_handler;
-};
-
 typedef int (*coo_cmd_format_response_topic_fn)(const char *key,
 						char *out,
 						size_t out_len,
@@ -124,12 +118,11 @@ typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, command table, optional execute hook, and
- * MQTT message-id storage. The runtime owns the copied device identity and the
- * request/response/warning topic formatting derived from it. If execute_handler
- * is NULL, the executor uses the static dispatch table directly. The runtime
- * helpers do not allocate memory; they block only in the executor queue wait,
- * Zephyr console line read, and MQTT publish path used by the outbound drain.
+ * The application owns the queues, execute callback, and MQTT message-id
+ * storage. The runtime owns the copied device identity and topic formatting
+ * derived from it. The runtime helpers do not allocate memory; they block only
+ * in the executor queue wait, Zephyr console line read, and MQTT publish path
+ * used by the outbound drain.
  */
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
@@ -138,10 +131,6 @@ struct coo_cmd_runtime {
 	char request_prefix[COO_CMD_TOPIC_MAX];
 	char warning_topic[COO_CMD_TOPIC_MAX];
 	coo_cmd_handler_fn execute_handler;
-	const struct coo_cmd_dispatch_entry *dispatch_table;
-	size_t dispatch_count;
-	coo_cmd_handler_fn unknown_handler;
-	coo_cmd_handler_fn unsupported_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
 	coo_cmd_classify_fn classify;
@@ -158,10 +147,6 @@ struct coo_cmd_runtime_config {
 	struct k_msgq *inbound_queue;
 	struct k_msgq *outbound_queue;
 	coo_cmd_handler_fn execute_handler;
-	const struct coo_cmd_dispatch_entry *dispatch_table;
-	size_t dispatch_count;
-	coo_cmd_handler_fn unknown_handler;
-	coo_cmd_handler_fn unsupported_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
 	coo_cmd_classify_fn classify;
@@ -218,25 +203,6 @@ int coo_cmd_key_suffix_pair_copy(const char *key,
 				 size_t first_len,
 				 char *second,
 				 size_t second_len);
-
-/** Longest exact-or-slash-prefix match in a static command table. */
-const struct coo_cmd_dispatch_entry *
-coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,
-		      size_t table_len,
-		      const char *key);
-
-/**
- * @brief Dispatch one normalized request through a static table.
- *
- * @p unknown_handler is called when no table entry matches. @p unsupported_handler
- * is called when the matching entry has no handler for the request kind.
- */
-struct coo_cmd_response
-coo_cmd_dispatch(const struct coo_cmd_request *cmd,
-		 const struct coo_cmd_dispatch_entry *table,
-		 size_t table_len,
-		 coo_cmd_handler_fn unknown_handler,
-		 coo_cmd_handler_fn unsupported_handler);
 
 /** True for a missing, empty, or "{}" payload. */
 bool coo_cmd_payload_empty(const struct coo_cmd_request *cmd);

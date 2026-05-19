@@ -24,6 +24,7 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	if (runtime == NULL || cfg == NULL || cfg->device_id == NULL ||
 	    cfg->device_id[0] == '\0' || cfg->inbound_queue == NULL ||
 	    cfg->outbound_queue == NULL || cfg->mqtt_msg_id == NULL ||
+	    cfg->execute_handler == NULL ||
 	    strlen(cfg->device_id) >= sizeof(runtime->device_id)) {
 		return -EINVAL;
 	}
@@ -46,10 +47,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->inbound_queue = cfg->inbound_queue;
 	runtime->outbound_queue = cfg->outbound_queue;
 	runtime->execute_handler = cfg->execute_handler;
-	runtime->dispatch_table = cfg->dispatch_table;
-	runtime->dispatch_count = cfg->dispatch_count;
-	runtime->unknown_handler = cfg->unknown_handler;
-	runtime->unsupported_handler = cfg->unsupported_handler;
 	runtime->mqtt_msg_id = cfg->mqtt_msg_id;
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
 				      cfg->serial_wrap_column :
@@ -237,61 +234,6 @@ int coo_cmd_key_suffix_pair_copy(const char *key,
 	memcpy(second, slash + 1, second_parsed_len);
 	second[second_parsed_len] = '\0';
 	return 0;
-}
-
-const struct coo_cmd_dispatch_entry *
-coo_cmd_find_dispatch(const struct coo_cmd_dispatch_entry *table,
-		      size_t table_len,
-		      const char *key)
-{
-	const struct coo_cmd_dispatch_entry *best = NULL;
-	size_t best_len = 0U;
-
-	if (table == NULL || key == NULL) {
-		return NULL;
-	}
-
-	for (size_t i = 0U; i < table_len; ++i) {
-		size_t len;
-
-		if (!coo_cmd_key_matches_prefix(key, table[i].key)) {
-			continue;
-		}
-
-		len = strlen(table[i].key);
-		if (len > best_len) {
-			best = &table[i];
-			best_len = len;
-		}
-	}
-
-	return best;
-}
-
-struct coo_cmd_response
-coo_cmd_dispatch(const struct coo_cmd_request *cmd,
-		 const struct coo_cmd_dispatch_entry *table,
-		 size_t table_len,
-		 coo_cmd_handler_fn unknown_handler,
-		 coo_cmd_handler_fn unsupported_handler)
-{
-	const struct coo_cmd_dispatch_entry *entry;
-	coo_cmd_handler_fn handler;
-
-	entry = coo_cmd_find_dispatch(table, table_len, cmd != NULL ? cmd->key : NULL);
-	if (entry == NULL) {
-		return unknown_handler != NULL ? unknown_handler(cmd) :
-		       (struct coo_cmd_response){0};
-	}
-
-	handler = (cmd != NULL && cmd->msg_type == COO_CMD_EFFECT) ?
-		  entry->set_handler : entry->get_handler;
-	if (handler == NULL) {
-		return unsupported_handler != NULL ? unsupported_handler(cmd) :
-		       (struct coo_cmd_response){0};
-	}
-
-	return handler(cmd);
 }
 
 bool coo_cmd_payload_empty(const struct coo_cmd_request *cmd)
@@ -815,15 +757,7 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	while (1) {
 		/* K_FOREVER sleeps until ingress queues a complete command. */
 		k_msgq_get(runtime->inbound_queue, &cmd, K_FOREVER);
-		if (runtime->execute_handler != NULL) {
-			out = runtime->execute_handler(&cmd);
-		} else {
-			out = coo_cmd_dispatch(&cmd,
-					       runtime->dispatch_table,
-					       runtime->dispatch_count,
-					       runtime->unknown_handler,
-					       runtime->unsupported_handler);
-		}
+		out = runtime->execute_handler(&cmd);
 		if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
 			LOG_WRN("Outbound queue full; dropping command response");
 		}
