@@ -656,8 +656,8 @@ struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd)
 			    "\"raw_state\":%u,\"raw_lock\":%u,\"raw_tec\":%u,"
 			    "\"op_started\":%s,\"ready\":%s,"
 			    "\"curr_set_internal\":%s,\"enable_internal\":%s,"
-			    "\"interlock_denied\":%s,"
-			    "\"interlock\":%s,"
+			    "\"ext_ntc_denied\":%s,\"interlock_denied\":%s,"
+			    "\"interlock\":%s,\"ext_ntc_interlock\":%s,"
 			    "\"ld_overcurrent\":%s,\"ld_overheat\":%s,"
 			    "\"tec_started\":%s,\"tec_set_internal\":%s,"
 			    "\"tec_enable_internal\":%s,\"tec_error\":%s,"
@@ -670,8 +670,10 @@ struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd)
 			    s.ready_to_operate ? "true" : "false",
 			    s.current_set_internal ? "true" : "false",
 			    s.enable_internal ? "true" : "false",
+			    s.external_ntc_denied ? "true" : "false",
 			    s.interlock_denied ? "true" : "false",
 			    s.lock_interlock ? "true" : "false",
+			    s.lock_external_ntc_interlock ? "true" : "false",
 			    s.lock_ld_overcurrent ? "true" : "false",
 			    s.lock_ld_overheat ? "true" : "false",
 			    s.tec_started ? "true" : "false",

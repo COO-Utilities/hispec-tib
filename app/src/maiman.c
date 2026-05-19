@@ -5,11 +5,14 @@
 
 #include "maiman.h"
 
+#include <ctype.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(maiman, LOG_LEVEL_DBG);
 
@@ -17,6 +20,89 @@ LOG_MODULE_REGISTER(maiman, LOG_LEVEL_DBG);
  * https://docs.zephyrproject.org/apidoc/latest/group__modbus.html
  * https://docs.zephyrproject.org/latest/samples/subsys/modbus/rtu_client/README.html
  */
+
+typedef struct {
+	const char *name;
+	const laser_address_t address;
+} MaimanRegister;
+
+static const MaimanRegister register_table[] = {
+	{"DEVICE_ID", REG_DEVICE_ID},
+	{"CHANGEABLE_PARAMETERS", REG_CHANGEABLE_PARAMETERS},
+	{"SERIAL_NUMBER", REG_SERIAL_NUMBER},
+	{"STATE_OF_DEVICE_COMMAND", REG_STATE_OF_DEVICE_COMMAND},
+	{"STATE_OF_DEVICE", REG_STATE_OF_DEVICE_COMMAND},
+	{"LOCK_STATUS", REG_LOCK_STATUS},
+	{"FREQUENCY", REG_FREQUENCY},
+	{"DURATION", REG_DURATION},
+	{"CURRENT", REG_CURRENT},
+	{"SAVE_PARAMETERS", REG_SAVE_PARAMETERS},
+	{"RESET_PARAMETERS", REG_RESET_PARAMETERS},
+	{"FREQUENCY_MIN", REG_FREQUENCY_MIN},
+	{"FREQUENCY_MAX", REG_FREQUENCY_MAX},
+	{"DURATION_MIN", REG_DURATION_MIN},
+	{"DURATION_MAX", REG_DURATION_MAX},
+	{"CURRENT_MIN", REG_CURRENT_MIN},
+	{"CURRENT_MAX", REG_CURRENT_MAX},
+	{"CURRENT_MAX_LIMIT", REG_CURRENT_MAX_LIMIT},
+	{"CURRENT_PROTECTION_THRESHOLD", REG_CURRENT_PROTECTION_THRESHOLD},
+	{"CURRENT_MEASURED", REG_CURRENT_MEASURED},
+	{"VOLTAGE_MEASURED", REG_VOLTAGE_MEASURED},
+	{"NTC_TEMPERATURE_MEASURED", REG_NTC_TEMPERATURE_MEASURED},
+	{"PCB_TEMPERATURE_MEASURED", REG_PCB_TEMPERATURE_MEASURED},
+	{"TEC_TEMPERATURE_VALUE", REG_TEC_TEMPERATURE_VALUE},
+	{"TEC_TEMPERATURE_MAX", REG_TEC_TEMPERATURE_MAX},
+	{"TEC_TEMPERATURE_MIN", REG_TEC_TEMPERATURE_MIN},
+	{"TEC_TEMPERATURE_MAX_LIMIT", REG_TEC_TEMPERATURE_MAX_LIMIT},
+	{"TEC_TEMPERATURE_MIN_LIMIT", REG_TEC_TEMPERATURE_MIN_LIMIT},
+	{"TEC_TEMPERATURE_MEASURED", REG_TEC_TEMPERATURE_MEASURED},
+	{"TEC_CURRENT_MEASURED", REG_TEC_CURRENT_MEASURED},
+	{"TEC_CURRENT_LIMIT", REG_TEC_CURRENT_LIMIT},
+	{"TEC_VOLTAGE", REG_TEC_VOLTAGE},
+	{"STATE_OF_TEC_COMMAND", REG_STATE_OF_TEC_COMMAND},
+	{"TEC_STATE", REG_STATE_OF_TEC_COMMAND},
+	{"TEC_CURRENT_SET_CALIBRATION", REG_TEC_CURRENT_SET_CALIBRATION},
+	{"INTERNAL_LD_NTC_SENSOR", REG_INTERNAL_LD_NTC_SENSOR},
+	{"RS_SETTING", REG_RS_SETTING},
+	{"CURRENT_SET_CALIBRATION", REG_CURRENT_SET_CALIBRATION},
+	{"NTC_COEFFICIENT", REG_NTC_COEFFICIENT},
+	{"NTC_B25_100_COEFFICIENT", REG_NTC_COEFFICIENT},
+	{"TEC_P_COEFFICIENT", REG_TEC_P_COEFFICIENT},
+	{"P_COEFFICIENT", REG_TEC_P_COEFFICIENT},
+	{"TEC_I_COEFFICIENT", REG_TEC_I_COEFFICIENT},
+	{"I_COEFFICIENT", REG_TEC_I_COEFFICIENT},
+	{"TEC_D_COEFFICIENT", REG_TEC_D_COEFFICIENT},
+	{"D_COEFFICIENT", REG_TEC_D_COEFFICIENT},
+};
+
+static bool strcaseeq(const char *a, const char *b)
+{
+	if (a == NULL || b == NULL) {
+		return false;
+	}
+
+	while (*a && *b) {
+		if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+			return false;
+		}
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
+bool maiman_get_register_address(const char *name, laser_address_t *address_out)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(register_table); ++i) {
+		if (strcaseeq(name, register_table[i].name)) {
+			if (address_out != NULL) {
+				*address_out = register_table[i].address;
+			}
+			return true;
+		}
+	}
+	return false;
+}
 
 void maiman_init(maiman_driver_t *drv, uint8_t node_id)
 {
@@ -160,6 +246,17 @@ float maiman_get_pcb_temperature_measured(maiman_driver_t *drv)
 	return -273.15f;
 }
 
+float maiman_get_ntc_temperature_measured(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_NTC_TEMPERATURE_MEASURED,
+			       DIVIDER_NTC_TEMPERATURE, true, &value)) {
+		return value;
+	}
+	return -273.15f;
+}
+
 float maiman_get_tec_temperature_value(maiman_driver_t *drv)
 {
 	float value;
@@ -176,6 +273,26 @@ float maiman_get_current_measured(maiman_driver_t *drv)
 	float value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MEASURED, DIVIDER_CURRENT, false, &value)) {
+		return value;
+	}
+	return -1.0f;
+}
+
+float maiman_get_frequency(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, &value)) {
+		return value;
+	}
+	return -1.0f;
+}
+
+float maiman_get_duration(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_DURATION, DIVIDER_DURATION, false, &value)) {
 		return value;
 	}
 	return -1.0f;
@@ -281,6 +398,17 @@ float maiman_get_tec_current_limit(maiman_driver_t *drv)
 	return -1.0f;
 }
 
+float maiman_get_tec_current_set_calibration(maiman_driver_t *drv)
+{
+	float value;
+
+	if (maiman_read_scaled(drv, REG_TEC_CURRENT_SET_CALIBRATION,
+			       DIVIDER_TEC_CURRENT_SET_CALIBRATION, false, &value)) {
+		return value;
+	}
+	return -1.0f;
+}
+
 float maiman_get_tec_voltage(maiman_driver_t *drv)
 {
 	float value;
@@ -344,11 +472,95 @@ uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv)
 	return 0U;
 }
 
-bool maiman_is_tec_started(maiman_driver_t *drv)
+bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask)
+{
+	uint16_t status = maiman_get_raw_status(drv);
+
+	return (status & bitmask) != 0U;
+}
+
+bool maiman_is_operation_started(maiman_driver_t *drv)
+{
+	return maiman_is_bit_set(drv, OPERATION_STATE_STARTED);
+}
+
+bool maiman_is_current_set_internal(maiman_driver_t *drv)
+{
+	return maiman_is_bit_set(drv, CURRENT_SET_INTERNAL);
+}
+
+bool maiman_is_enable_internal(maiman_driver_t *drv)
+{
+	return maiman_is_bit_set(drv, ENABLE_INTERNAL);
+}
+
+bool maiman_is_external_ntc_denied(maiman_driver_t *drv)
+{
+	return maiman_is_bit_set(drv, EXTERNAL_NTC_INTERLOCK_DENIED);
+}
+
+bool maiman_is_interlock_denied(maiman_driver_t *drv)
+{
+	return maiman_is_bit_set(drv, INTERLOCK_DENIED);
+}
+
+static bool maiman_is_tec_bit_set(maiman_driver_t *drv, uint16_t bitmask)
 {
 	uint16_t status = maiman_get_raw_tec_status(drv);
 
-	return (status & TEC_OPERATION_STATE_STARTED) != 0U;
+	return (status & bitmask) != 0U;
+}
+
+bool maiman_is_tec_started(maiman_driver_t *drv)
+{
+	return maiman_is_tec_bit_set(drv, TEC_OPERATION_STATE_STARTED);
+}
+
+bool maiman_is_tec_set_internal(maiman_driver_t *drv)
+{
+	return maiman_is_tec_bit_set(drv, TEC_SET_INTERNAL);
+}
+
+bool maiman_is_tec_enable_internal(maiman_driver_t *drv)
+{
+	return maiman_is_tec_bit_set(drv, TEC_ENABLE_INTERNAL);
+}
+
+static bool maiman_is_lock_bit_set(maiman_driver_t *drv, uint16_t bitmask)
+{
+	uint16_t status = maiman_get_raw_lock_status(drv);
+
+	return (status & bitmask) != 0U;
+}
+
+bool maiman_is_lockstate_interlock(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_INTERLOCK);
+}
+
+bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_LD_OVERCURRENT);
+}
+
+bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_LD_OVERHEAT);
+}
+
+bool maiman_is_lockstate_external_ntc_interlock(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_EXTERNAL_NTC_INTERLOCK);
+}
+
+bool maiman_is_lockstate_tec_error(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_TEC_ERROR);
+}
+
+bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv)
+{
+	return maiman_is_lock_bit_set(drv, LOCK_STATE_TEC_SELFHEAT);
 }
 
 bool maiman_set_current(maiman_driver_t *drv, float current)
@@ -466,6 +678,18 @@ bool maiman_deny_interlock(maiman_driver_t *drv)
 {
 	return maiman_write_u16(drv, REG_STATE_OF_DEVICE_COMMAND,
 				MODBUS_DENY_INTERLOCK_VALUE);
+}
+
+bool maiman_allow_external_ntc_interlock(maiman_driver_t *drv)
+{
+	return maiman_write_u16(drv, REG_STATE_OF_DEVICE_COMMAND,
+				MODBUS_ALLOW_EXTERNAL_NTC_INTERLOCK_VALUE);
+}
+
+bool maiman_deny_external_ntc_interlock(maiman_driver_t *drv)
+{
+	return maiman_write_u16(drv, REG_STATE_OF_DEVICE_COMMAND,
+				MODBUS_DENY_EXTERNAL_NTC_INTERLOCK_VALUE);
 }
 
 bool maiman_save_parameters(maiman_driver_t *drv)

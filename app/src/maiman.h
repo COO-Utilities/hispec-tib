@@ -75,6 +75,12 @@
 #define REG_TEC_I_COEFFICIENT               0x0092
 #define REG_TEC_D_COEFFICIENT               0x0093
 
+typedef uint16_t laser_address_t;
+
+/* Finds the register, returns true and sets *address_out if found. */
+bool maiman_get_register_address(const char *name, laser_address_t *address_out);
+
+
 /* Divider constants from the SF8025 v5.4 device metadata used by the
  * validation notebooks. Values returned by this layer are engineering units:
  * mA, V, Hz, ms, deg C, A, or raw PID/register units as named.
@@ -84,10 +90,12 @@
 #define DIVIDER_CURRENT                     10.0f
 #define DIVIDER_VOLTAGE                     10.0f
 #define DIVIDER_PCB_TEMPERATURE             10.0f
+#define DIVIDER_NTC_TEMPERATURE             10.0f
 #define DIVIDER_TEC_TEMPERATURE             100.0f
 #define DIVIDER_TEC_CURRENT                 10.0f
 #define DIVIDER_TEC_VOLTAGE                 10.0f
 #define DIVIDER_CURRENT_SET_CALIBRATION     100.0f
+#define DIVIDER_TEC_CURRENT_SET_CALIBRATION 100.0f
 #define DIVIDER_NTC_COEFFICIENT             1.0f
 
 // Device state bitmasks
@@ -95,6 +103,7 @@
 #define OPERATION_STATE_STARTED             0x0002
 #define CURRENT_SET_INTERNAL                0x0004
 #define ENABLE_INTERNAL                     0x0010
+#define EXTERNAL_NTC_INTERLOCK_DENIED       0x0040
 #define INTERLOCK_DENIED                    0x0080
 
 // TEC state bitmasks
@@ -124,6 +133,8 @@
 #define MODBUS_INTERNAL_ENABLE_VALUE            0x0400
 #define MODBUS_ALLOW_INTERLOCK_VALUE            0x1000
 #define MODBUS_DENY_INTERLOCK_VALUE             0x2000
+#define MODBUS_DENY_EXTERNAL_NTC_INTERLOCK_VALUE 0x4000
+#define MODBUS_ALLOW_EXTERNAL_NTC_INTERLOCK_VALUE 0x8000
 
 #define MODBUS_START_TEC_COMMAND_VALUE          0x0008
 #define MODBUS_STOP_TEC_COMMAND_VALUE           0x0010
@@ -163,8 +174,11 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 /* ----- Measurement getters ----- */
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
 float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
+float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
 float maiman_get_tec_temperature_value(maiman_driver_t *drv);
 float maiman_get_current_measured(maiman_driver_t *drv);
+float maiman_get_frequency(maiman_driver_t *drv);
+float maiman_get_duration(maiman_driver_t *drv);
 bool  maiman_get_current(maiman_driver_t *drv, float *value);
 float maiman_get_voltage_measured(maiman_driver_t *drv);
 float maiman_get_current_min(maiman_driver_t *drv);
@@ -175,6 +189,7 @@ float maiman_get_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
 float maiman_get_tec_current_measured(maiman_driver_t *drv);
 float maiman_get_tec_current_limit(maiman_driver_t *drv);
+float maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
 float maiman_get_tec_voltage(maiman_driver_t *drv);
 
 /* ----- Status and control ----- */
@@ -183,7 +198,21 @@ uint16_t maiman_get_serial_number(maiman_driver_t *drv);
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
+bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
+bool maiman_is_operation_started(maiman_driver_t *drv);
+bool maiman_is_current_set_internal(maiman_driver_t *drv);
+bool maiman_is_enable_internal(maiman_driver_t *drv);
+bool maiman_is_external_ntc_denied(maiman_driver_t *drv);
+bool maiman_is_interlock_denied(maiman_driver_t *drv);
 bool maiman_is_tec_started(maiman_driver_t *drv);
+bool maiman_is_tec_set_internal(maiman_driver_t *drv);
+bool maiman_is_tec_enable_internal(maiman_driver_t *drv);
+bool maiman_is_lockstate_interlock(maiman_driver_t *drv);
+bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv);
+bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv);
+bool maiman_is_lockstate_external_ntc_interlock(maiman_driver_t *drv);
+bool maiman_is_lockstate_tec_error(maiman_driver_t *drv);
+bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 
 /* ----- Setpoint and commands ----- */
 bool maiman_set_current(maiman_driver_t *drv, float current);
@@ -205,6 +234,8 @@ bool maiman_set_internal_tec_temperature_control(maiman_driver_t *drv, bool inte
 bool maiman_set_internal_tec_enable_control(maiman_driver_t *drv, bool internal);
 bool maiman_allow_interlock(maiman_driver_t *drv);
 bool maiman_deny_interlock(maiman_driver_t *drv);
+bool maiman_allow_external_ntc_interlock(maiman_driver_t *drv);
+bool maiman_deny_external_ntc_interlock(maiman_driver_t *drv);
 bool maiman_save_parameters(maiman_driver_t *drv);
 bool maiman_reset_parameters(maiman_driver_t *drv);
 
