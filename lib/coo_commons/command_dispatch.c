@@ -1011,6 +1011,16 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 		return;
 	}
 
+	if (pub->retain_flag != 0U) {
+		struct coo_cmd_response *out = &runtime->outbound_scratch;
+
+		*out = coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"retained MQTT command ignored\"}");
+		LOG_WRN("Ignoring retained MQTT command '%s'", cmd->key);
+		runtime_enqueue_response(runtime, out);
+		return;
+	}
+
 	if (pub->prop.response_topic.utf8 != NULL &&
 	    pub->prop.response_topic.size > 0U &&
 	    pub->prop.response_topic.size < sizeof(cmd->response_topic)) {
@@ -1183,7 +1193,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 	for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
 		const char ch = out->payload[i];
 
-		if (ch == '\n' || col >= wrap_column) {
+		if (ch == '\n' || (wrap_column != 0U && col >= wrap_column)) {
 			printk("\n\t");
 			col = 8U;
 			if (ch == '\n') {
@@ -1194,7 +1204,8 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		printk("%c", ch);
 		col++;
 
-		if ((ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
+		if (wrap_column != 0U &&
+		    (ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
 		    i + 1U < len) {
 			printk("\n\t");
 			col = 8U;

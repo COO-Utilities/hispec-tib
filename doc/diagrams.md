@@ -146,7 +146,7 @@ flowchart TD
   Throughput[throughput_monitor_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
-  Target -- serial --> Print[print topic and wrapped payload]
+  Target -- serial --> Print[print topic and payload]
   Target -- MQTT best effort --> MQTTBE{MQTT available and publish OK}
   Target -- MQTT response --> MQTT{MQTT available and publish OK}
   MQTTBE -- no --> Drop[drop]

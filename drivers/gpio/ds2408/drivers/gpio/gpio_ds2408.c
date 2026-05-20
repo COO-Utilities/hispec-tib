@@ -139,6 +139,9 @@ static int ds2408_setup_slave(const struct device *dev)
 		if (ds2408_rom_is_zero(&data->slave_cfg.rom)) {
 			ret = w1_read_rom(cfg->bus, &data->slave_cfg.rom);
 			if (ret != 0) {
+				LOG_ERR("Failed to read DS2408 ROM on %s (%d), raw=%016llx",
+					cfg->bus->name, ret,
+					(unsigned long long)w1_rom_to_uint64(&data->slave_cfg.rom));
 				return ret;
 			}
 		}
@@ -146,6 +149,10 @@ static int ds2408_setup_slave(const struct device *dev)
 		LOG_ERR("ROM ID required for multidrop DS2408 bus");
 		return -EINVAL;
 	}
+
+	LOG_INF("DS2408 ROM on %s: %016llx",
+		cfg->bus->name,
+		(unsigned long long)w1_rom_to_uint64(&data->slave_cfg.rom));
 
 	if ((cfg->family != 0U) && (cfg->family != data->slave_cfg.rom.family)) {
 		LOG_ERR("ROM family 0x%02x does not match DS2408 family 0x%02x",

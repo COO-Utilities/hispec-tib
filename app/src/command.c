@@ -43,7 +43,7 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define SERIAL_WRAP_COLUMN 80U
+#define SERIAL_WRAP_COLUMN UINT16_MAX
 
 static uint16_t mqtt_msg_id = 1;
 static atomic_t serial_network_ignore_active;
@@ -159,7 +159,7 @@ static const struct command_spec command_specs[] = {
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COMMAND_CLASS_DEFAULT, false, "measure_throughput"),
     CMD_SPEC_TIB("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
-                 false, "laser"),
+                 true, "laser"),
     CMD_SPEC_TIB("laser/tune", laser_tune_get, laser_tune_set,
                  COMMAND_CLASS_LASER_TUNE, true, NULL),
     CMD_SPEC_TIB("laser/status", laser_get, NULL,
@@ -169,11 +169,11 @@ static const struct command_spec command_specs[] = {
     CMD_SPEC_TIB("laser/settings", laser_settings_get, laser_settings_set,
                  COMMAND_CLASS_LASER_SETTINGS, true, NULL),
     CMD_SPEC_TIB("laserbank/power", laserbank_power, laserbank_power,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, "laserbank"),
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "laserbank"),
     CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
                  COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
     CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, NULL),
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, NULL),
     CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
              COMMAND_CLASS_DEFAULT, true, NULL),
     CMD_SPEC("atten", atten_setting_get, atten_setting_set,
@@ -554,6 +554,7 @@ static void reboot_action_handler(enum app_scheduled_action_id id, void *user_da
     ARG_UNUSED(id);
     ARG_UNUSED(user_data);
 
+    LOG_WRN("Executing scheduled reboot");
     sys_reboot(SYS_REBOOT_COLD);
 }
 
@@ -608,26 +609,64 @@ struct coo_cmd_runtime *command_runtime_get(void)
 struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
 {
     char payload[MAX_PAYLOAD_LEN] = {0};
+    char request_prefix[MAX_TOPIC_LEN] = {0};
+    char response_prefix[MAX_TOPIC_LEN] = {0};
     size_t off = 0U;
     bool first = true;
 
-    if (coo_json_append(payload, sizeof(payload), &off, "{\"help\":\"") != 0) {
+    if (coo_cmd_format_request_prefix(app_mqtt_device_id(),
+                                      request_prefix,
+                                      sizeof(request_prefix)) != 0 ||
+        coo_cmd_format_response_topic(app_mqtt_device_id(), "",
+                                      response_prefix,
+                                      sizeof(response_prefix)) != 0) {
+        return coo_cmd_error(cmd, "help topic formatting failed");
+    }
+
+    if (coo_json_append(payload, sizeof(payload), &off,
+                        "{\"device\":\"%s\",\"version\":\"%s\","
+                        "\"request_prefix\":\"%s\","
+                        "\"response_prefix\":\"%s\",\"commands\":[",
+                        app_mqtt_device_id(),
+                        APP_VERSION_STRING,
+                        request_prefix,
+                        response_prefix) != 0) {
         return coo_cmd_error(cmd, "help response too large");
     }
 
     for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
-        if (command_specs[i].help_name == NULL) {
+        if (!command_board_allowed(&command_specs[i])) {
             continue;
         }
-        if (coo_json_append(payload, sizeof(payload), &off, "%s%s",
+        if (coo_json_append(payload, sizeof(payload), &off, "%s\"%s\"",
                             first ? "" : ",",
-                            command_specs[i].help_name) != 0) {
+                            command_specs[i].key) != 0) {
             return coo_cmd_error(cmd, "help response too large");
         }
         first = false;
     }
 
-    if (coo_json_append(payload, sizeof(payload), &off, "\"}") != 0) {
+    if (coo_json_append(payload, sizeof(payload), &off,
+                        "],\"serial_guard_query\":[") != 0) {
+        return coo_cmd_error(cmd, "help response too large");
+    }
+
+    first = true;
+    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
+        if (!command_board_allowed(&command_specs[i]) ||
+            command_specs[i].get_handler == NULL ||
+            !command_specs[i].mqtt_query_allowed_during_serial_guard) {
+            continue;
+        }
+        if (coo_json_append(payload, sizeof(payload), &off, "%s\"%s\"",
+                            first ? "" : ",",
+                            command_specs[i].key) != 0) {
+            return coo_cmd_error(cmd, "help response too large");
+        }
+        first = false;
+    }
+
+    if (coo_json_append(payload, sizeof(payload), &off, "]}") != 0) {
         return coo_cmd_error(cmd, "help response too large");
     }
 
@@ -1016,6 +1055,7 @@ struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd)
 {
     int rc;
 
+    LOG_WRN("Reboot command accepted; scheduling reboot");
     rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_REBOOT, K_MSEC(250));
     if (rc < 0) {
         return coo_cmd_error(cmd, "failed to schedule reboot");

@@ -53,6 +53,8 @@ Draft 0.1
     - `response_topic`: where the device should publish the response (this doc assumes it’s under `cmd/<device>/resp/...`)
     - `correlation_data`: opaque bytes that are echoed back exactly in the
       response so the requester can match replies to requests, up to 16 bytes
+    - retained request messages are ignored and return an error response; command
+      topics must not replay actions on reconnect
   - **On responses (device → publisher):**
     - `correlation_data`: copied from the request when it is 16 bytes or less
     - `qos`: response QoS
@@ -106,11 +108,11 @@ Serial response format:
 
 ```text
 cmd/<device>/resp/<key>
-        {"same":"payload MQTT would publish, wrapped at print time"}
+        {"same":"payload MQTT would publish"}
 ```
 
 The first line is the MQTT response topic. The following lines are the response
-payload, tab-indented and wrapped at 80 columns by `print_serial_response()`.
+payload.
 
 Any non-empty serial command refreshes serial override. While active, MQTT
 commands are rejected before dispatch and receive an error response when MQTT is
@@ -201,7 +203,14 @@ while serial guard is active and attenuator DAC-range clamping.
 ### `help`
 - **No payload -> command summary:**
   ```json
-  {"help":"<summary of commands and device info>"}
+  {
+    "device": "<device_id>",
+    "version": "<firmware_version>",
+    "request_prefix": "cmd/<device_id>/req/",
+    "response_prefix": "cmd/<device_id>/resp/",
+    "commands": ["<command key>", "..."],
+    "serial_guard_query": ["<read-only command key allowed during serial guard>", "..."]
+  }
   ```
 
 (memsroute)=
@@ -1168,7 +1177,8 @@ off or no faults).
   - Serial shorthand: `serialguard seconds=60` or `serialguard off`.
   - While active, MQTT requests that may change hardware or runtime state are
     rejected before dispatch and logged. Safe read-only MQTT requests are
-    allowed.
+    allowed. The `help` response reports the read-only command keys currently
+    allowed through the guard in `serial_guard_query`.
   - The guard uses the named scheduled action `serial_guard_expire`.
   - `seconds:0` disables serial override.
 

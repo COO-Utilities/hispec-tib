@@ -15,6 +15,8 @@ artifact, not a replacement for `commands.md`.
   fixed buffer.
 - MQTT `correlation_data` up to 16 bytes is copied into a fixed static buffer
   and echoed exactly in responses.
+- Retained MQTT requests are ignored with an error response to avoid replaying
+  actions when the device reconnects.
 - MQTT and serial share the same schema-based request classification selected
   by the static command behavior table and applied by `command_infer_msg_type()`.
   The internal names `MSG_GET` and `MSG_SET` are dispatch-slot names, not
@@ -75,8 +77,9 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 - Owner: `help_get()` in `app/src/command.c`.
 - Notes: no hardware side effects, no NVS writes, no direct publish.
-- Known mismatch: response is a generated command-name summary, not the fuller
-  device-info payload described by `commands.md`.
+- Response is generated from the static command table and includes the active
+  device ID, firmware version, MQTT topic prefixes, active-board command keys,
+  and read-only MQTT queries allowed during serial guard.
 
 ### `ip`
 

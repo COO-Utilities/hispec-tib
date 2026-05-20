@@ -49,6 +49,8 @@ static int num_subscriptions = 0;
 
 /* Keep failed broker attempts below the application watchdog interval. */
 #define MSECS_NET_POLL_TIMEOUT 3000
+/* Keep connected idle polling short enough for the application watchdog loop. */
+#define MSECS_PROCESS_POLL_TIMEOUT 1000
 
 bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
 				    struct coo_mqtt_broker_config *cfg)
@@ -271,7 +273,10 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 	payload[rc] = '\0';
 
 	LOG_INF("MQTT payload received!");
-	LOG_INF("topic: '%s', payload: %s", evt->param.publish.message.topic.topic.utf8, payload);
+	LOG_INF("topic: '%.*s', payload: %s",
+		(int)evt->param.publish.message.topic.topic.size,
+		evt->param.publish.message.topic.topic.utf8,
+		payload);
 
 	publish_param.message.payload.data = payload;
 	publish_param.message.payload.len = rc;
@@ -423,8 +428,16 @@ int coo_mqtt_subscribe(struct mqtt_client *client)
 int coo_mqtt_process(struct mqtt_client *client)
 {
 	int rc;
+	int keepalive_ms = mqtt_keepalive_time_left(client);
+	int timeout_ms = keepalive_ms;
+	bool waited_for_keepalive;
 
-	rc = poll_mqtt_socket(client, mqtt_keepalive_time_left(client));
+	if (timeout_ms < 0 || timeout_ms > MSECS_PROCESS_POLL_TIMEOUT) {
+		timeout_ms = MSECS_PROCESS_POLL_TIMEOUT;
+	}
+	waited_for_keepalive = (keepalive_ms >= 0 && timeout_ms == keepalive_ms);
+
+	rc = poll_mqtt_socket(client, timeout_ms);
 	if (rc < 0) {
 		return rc;
 	}
@@ -443,9 +456,12 @@ int coo_mqtt_process(struct mqtt_client *client)
 				return -ENOTCONN;
 			}
 		}
-	} else {
-		/* Socket poll timed out, time to call mqtt_live() */
+	} else if (waited_for_keepalive) {
+		/* Socket poll reached the MQTT keepalive deadline. */
 		rc = mqtt_live(client);
+		if (rc == -EAGAIN) {
+			return 0;
+		}
 		if (rc != 0) {
 			LOG_ERR("MQTT Live failed [%d]", rc);
 			return rc;
