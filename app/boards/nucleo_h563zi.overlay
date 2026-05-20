@@ -133,7 +133,9 @@
 };
 
 / {
-	/* 1-Wire bus for DS2408-based relay board control (CN9 D71 / PE9). */
+	/* 1-Wire bus for DS2408 relay control (CN9 D71 / PE9).
+	 * MB1404 requires SB35 OFF and SB67 ON for PE9 GPIO routing.
+	 */
 	w1_pd_power: w1-pd-power {
 		compatible = "zephyr,w1-gpio";
 		status = "okay";

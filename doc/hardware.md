@@ -157,6 +157,8 @@ Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
 
 For board files:
 - Nucleo: CN9 15 D71 IO PE9
+- MB1404 solder bridges for PE9 must select GPIO on Zio/ST morpho:
+  SB35 OFF, SB67 ON.
 
 ## DS18B20 1Wire Temperature Sensor
 - 3.3v digital temp sensor for good measure
