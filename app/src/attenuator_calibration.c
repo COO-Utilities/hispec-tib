@@ -153,8 +153,8 @@ static uint32_t clamp_dwell(uint32_t dwell_ms)
 
 static bool sample_is_saturated(const struct photodiode_average_status *avg)
 {
-	return avg->max_raw >= ATTEN_CAL_SAT_RAW ||
-	       avg->mean_mv >= (float)ATTEN_CAL_HIGH_MV;
+	return avg->result.max_raw >= ATTEN_CAL_SAT_RAW ||
+	       avg->result.mean_mv >= (float)ATTEN_CAL_HIGH_MV;
 }
 
 static void copy_voltage_schedule(double out[ATTENUATOR_CAL_POINT_COUNT])
@@ -531,8 +531,8 @@ static void record_current_point_locked(const struct photodiode_average_status *
 	point->saturated = sample_is_saturated(avg);
 	point->valid = avg->state == PHOTODIODE_AVERAGE_COMPLETE &&
 		       !point->saturated &&
-		       avg->mean_net_mv > 0.0f;
-	point->flux = point->valid ? (double)avg->mean_net_mv * cal.scale : 0.0;
+		       avg->result.mean_net_mv > 0.0f;
+	point->flux = point->valid ? (double)avg->result.mean_net_mv * cal.scale : 0.0;
 }
 
 static void auto_finish_point_locked(void)
@@ -604,7 +604,7 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
 			return;
 		}
-		if ((double)avg.mean_net_mv < ATTEN_CAL_SIGNAL_MIN_MV &&
+		if ((double)avg.result.mean_net_mv < ATTEN_CAL_SIGNAL_MIN_MV &&
 		    cal.other_mv > 0.0) {
 			cal.other_mv -= ATTEN_CAL_OTHER_STEP_MV;
 			if (cal.other_mv < 0.0) {
@@ -649,9 +649,9 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
 			return;
 		}
-		if ((double)avg.mean_net_mv > ATTEN_CAL_HIGH_MV && !sample_is_saturated(&avg) &&
+		if ((double)avg.result.mean_net_mv > ATTEN_CAL_HIGH_MV && !sample_is_saturated(&avg) &&
 		    (cal.other_mv < ATTENUATOR_DAC_MAX_MV || cal.laser_percent > 3.0)) {
-			cal.pending_before_mv = (double)avg.mean_net_mv;
+			cal.pending_before_mv = (double)avg.result.mean_net_mv;
 			cal.adjust_uses_laser = cal.other_mv >= ATTENUATOR_DAC_MAX_MV;
 			cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
 			return;
@@ -711,8 +711,8 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
 			return;
 		}
-		if (avg.mean_net_mv > 0.0f && !sample_is_saturated(&avg)) {
-			cal.scale *= cal.pending_before_mv / (double)avg.mean_net_mv;
+		if (avg.result.mean_net_mv > 0.0f && !sample_is_saturated(&avg)) {
+			cal.scale *= cal.pending_before_mv / (double)avg.result.mean_net_mv;
 		}
 		record_current_point_locked(&avg);
 		auto_finish_point_locked();

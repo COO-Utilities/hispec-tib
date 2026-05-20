@@ -70,8 +70,6 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_NOISE_ALPHA 0.02f
 #define PD_NOISE_WARNING_COOLDOWN_MS 60000U
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
-#define PD_DARK_MAX_DURATION_MS (60U * 60U * 1000U)
-#define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_AVERAGE_MAX_DURATION_MS 2000U
 #define PD_AVERAGE_MAX_SAMPLES (PD_AVERAGE_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
@@ -115,25 +113,16 @@ struct photodiode_runtime_channel {
     int64_t next_noise_warning_ms;
 };
 
-struct photodiode_dark_request {
-    enum photodiode_dark_state state;
-    bool store;
-    uint32_t target_samples;
-    uint32_t samples;
-    uint32_t duration_ms;
-    float sum_mv;
-    float sum_sq_mv2;
-    float min_mv;
-    float max_mv;
-    int last_error;
-    struct photodiode_dark_result result;
+enum photodiode_average_owner {
+    PHOTODIODE_AVERAGE_OWNER_NONE = 0,
+    PHOTODIODE_AVERAGE_OWNER_USER,
+    PHOTODIODE_AVERAGE_OWNER_DARK,
 };
 
 struct photodiode_average_request {
     enum photodiode_average_state state;
-    uint32_t target_samples;
-    uint32_t samples;
-    uint32_t duration_ms;
+    enum photodiode_average_owner owner;
+    bool store_dark;
     float sum_mv;
     float sum_net_mv;
     float sum_sq_mv2;
@@ -141,11 +130,10 @@ struct photodiode_average_request {
     float max_mv;
     int16_t max_raw;
     int last_error;
-    struct photodiode_average_status result;
+    struct photodiode_average_result result;
 };
 
 static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
-static struct photodiode_dark_request pd_dark[PHOTODIODE_CHANNEL_COUNT];
 static struct photodiode_average_request pd_average[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(pd_runtime_lock);
 
@@ -178,16 +166,16 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
     return rc;
 }
 
-const char *photodiode_dark_state_name(enum photodiode_dark_state state)
+const char *photodiode_average_state_name(enum photodiode_average_state state)
 {
     switch (state) {
-    case PHOTODIODE_DARK_IDLE:
-        return "idle";
-    case PHOTODIODE_DARK_MEASURING:
+    case PHOTODIODE_AVERAGE_INACTIVE:
+        return "inactive";
+    case PHOTODIODE_AVERAGE_MEASURING:
         return "measuring";
-    case PHOTODIODE_DARK_COMPLETE:
+    case PHOTODIODE_AVERAGE_COMPLETE:
         return "complete";
-    case PHOTODIODE_DARK_ERROR:
+    case PHOTODIODE_AVERAGE_ERROR:
         return "error";
     default:
         return "unknown";
@@ -232,21 +220,6 @@ double photodiode_photon_flux_from_mv(double net_mv,
     return power_w / photon_j;
 }
 
-static uint32_t pd_dark_duration_to_samples(uint32_t duration_ms)
-{
-    uint32_t requested_ms = duration_ms == 0U ?
-                            PD_DARK_DEFAULT_DURATION_MS : duration_ms;
-
-    if (requested_ms >= PD_DARK_MAX_DURATION_MS) {
-        return PD_DARK_MAX_SAMPLES;
-    }
-
-    requested_ms += PUBLISH_INTERVAL_MS / 2U;
-    requested_ms /= PUBLISH_INTERVAL_MS;
-
-    return requested_ms == 0U ? 1U : requested_ms;
-}
-
 static uint32_t pd_average_duration_to_samples(uint32_t duration_ms)
 {
     uint32_t requested_ms = duration_ms == 0U ? PUBLISH_INTERVAL_MS : duration_ms;
@@ -261,26 +234,6 @@ static uint32_t pd_average_duration_to_samples(uint32_t duration_ms)
     return requested_ms == 0U ? 1U : requested_ms;
 }
 
-static void pd_dark_copy_status_locked(enum photodiode_channel channel,
-                                       struct photodiode_dark_status *out)
-{
-    const struct photodiode_dark_request *dark = &pd_dark[channel];
-
-    if (out == NULL) {
-        return;
-    }
-
-    memset(out, 0, sizeof(*out));
-    out->channel = channel;
-    out->state = dark->state;
-    out->store = dark->store;
-    out->duration_ms = dark->duration_ms;
-    out->samples = dark->samples;
-    out->target_samples = dark->target_samples;
-    out->last_error = dark->last_error;
-    out->result = dark->result;
-}
-
 static void pd_average_copy_status_locked(enum photodiode_channel channel,
                                           struct photodiode_average_status *out)
 {
@@ -291,101 +244,60 @@ static void pd_average_copy_status_locked(enum photodiode_channel channel,
     }
 
     memset(out, 0, sizeof(*out));
-    if (avg->state == PHOTODIODE_AVERAGE_COMPLETE) {
-        *out = avg->result;
-        return;
-    }
-
     out->channel = channel;
     out->state = avg->state;
-    out->duration_ms = avg->duration_ms;
-    out->samples = avg->samples;
-    out->target_samples = avg->target_samples;
+    out->store_dark = avg->store_dark;
     out->last_error = avg->last_error;
-    out->max_raw = avg->max_raw;
+    out->result = avg->result;
 }
 
-static void pd_dark_finish_store_locked(enum photodiode_channel channel,
-                                        struct photodiode_dark_request *dark)
+static void pd_average_start_locked(enum photodiode_channel channel,
+                                    uint32_t sample_count,
+                                    enum photodiode_average_owner owner,
+                                    bool store_dark,
+                                    struct photodiode_average_status *out)
+{
+    struct photodiode_average_request *avg = &pd_average[channel];
+
+    memset(avg, 0, sizeof(*avg));
+    avg->state = PHOTODIODE_AVERAGE_MEASURING;
+    avg->owner = owner;
+    avg->store_dark = store_dark;
+    avg->result.channel = channel;
+    avg->result.duration_ms = sample_count * PUBLISH_INTERVAL_MS;
+    avg->result.target_samples = sample_count;
+    pd_average_copy_status_locked(channel, out);
+}
+
+/* Called from the sampler thread when an average tagged as a dark measurement
+ * completes. It may persist settings and can briefly extend that sampler pass.
+ */
+static void pd_average_finish_dark_locked(enum photodiode_channel channel,
+                                          struct photodiode_average_request *avg)
 {
     struct app_photodiode_settings settings;
 
+    if (avg->owner != PHOTODIODE_AVERAGE_OWNER_DARK) {
+        return;
+    }
+
     app_settings_get_photodiode(&settings);
-    settings.channel[channel].dark_mv = dark->result.mean_mv;
-    if (!settings.channel[channel].lowest_dark_valid ||
-        dark->result.mean_mv < settings.channel[channel].lowest_dark_mv) {
-        settings.channel[channel].lowest_dark_mv = dark->result.mean_mv;
-        settings.channel[channel].lowest_dark_valid = true;
-    }
 
-    dark->result.configured_dark_mv = settings.channel[channel].dark_mv;
-    dark->result.lowest_dark_mv = settings.channel[channel].lowest_dark_mv;
-    dark->result.lowest_dark_valid = settings.channel[channel].lowest_dark_valid;
-
-    /* This settings write can briefly extend one sampler iteration, but it
-     * happens only when a user-requested dark window completes.
-     */
-    app_settings_update_photodiode_channel((uint8_t)channel,
-                                           &settings.channel[channel],
-                                           true);
-}
-
-static void pd_dark_sample_locked(enum photodiode_channel channel, int rc, float mv)
-{
-    struct photodiode_dark_request *dark = &pd_dark[channel];
-    float mean;
-    float variance;
-
-    if (dark->state != PHOTODIODE_DARK_MEASURING ||
-        dark->samples >= dark->target_samples) {
-        return;
-    }
-
-    if (rc != 0) {
-        dark->state = PHOTODIODE_DARK_ERROR;
-        dark->last_error = rc;
-        dark->result.samples = dark->samples;
-        return;
-    }
-
-    if (dark->samples == 0U) {
-        dark->min_mv = mv;
-        dark->max_mv = mv;
-    } else {
-        if (mv < dark->min_mv) {
-            dark->min_mv = mv;
+    if (avg->store_dark) {
+        settings.channel[channel].dark_mv = avg->result.mean_mv;
+        if (!settings.channel[channel].lowest_dark_valid ||
+            avg->result.mean_mv < settings.channel[channel].lowest_dark_mv) {
+            settings.channel[channel].lowest_dark_mv = avg->result.mean_mv;
+            settings.channel[channel].lowest_dark_valid = true;
         }
-        if (mv > dark->max_mv) {
-            dark->max_mv = mv;
-        }
+
+        /* This settings write can briefly extend one sampler iteration, but it
+         * happens only when a user-requested dark window completes.
+         */
+        app_settings_update_photodiode_channel((uint8_t)channel,
+                                               &settings.channel[channel],
+                                               true);
     }
-
-    dark->sum_mv += mv;
-    dark->sum_sq_mv2 += mv * mv;
-    dark->samples++;
-
-    if (dark->samples < dark->target_samples) {
-        return;
-    }
-
-    mean = dark->sum_mv / (float)dark->samples;
-    variance = (dark->sum_sq_mv2 / (float)dark->samples) - (mean * mean);
-    if (variance < 0.0f) {
-        variance = 0.0f;
-    }
-
-    dark->result.samples = dark->samples;
-    dark->result.mean_mv = mean;
-    dark->result.rms_mv = sqrtf(variance);
-    dark->result.min_mv = dark->min_mv;
-    dark->result.max_mv = dark->max_mv;
-    dark->last_error = 0;
-
-    if (dark->store) {
-        pd_dark_finish_store_locked(channel, dark);
-    }
-
-    dark->state = PHOTODIODE_DARK_COMPLETE;
 }
 
 static void pd_average_sample_locked(enum photodiode_channel channel,
@@ -396,7 +308,7 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
     float variance;
 
     if (avg->state != PHOTODIODE_AVERAGE_MEASURING ||
-        avg->samples >= avg->target_samples) {
+        avg->result.samples >= avg->result.target_samples) {
         return;
     }
 
@@ -406,7 +318,7 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
         return;
     }
 
-    if (avg->samples == 0U) {
+    if (avg->result.samples == 0U) {
         avg->min_mv = mv;
         avg->max_mv = mv;
         avg->max_raw = raw;
@@ -425,31 +337,27 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
     avg->sum_mv += mv;
     avg->sum_net_mv += net_mv;
     avg->sum_sq_mv2 += mv * mv;
-    avg->samples++;
+    avg->result.samples++;
 
-    if (avg->samples < avg->target_samples) {
+    if (avg->result.samples < avg->result.target_samples) {
         return;
     }
 
-    mean = avg->sum_mv / (float)avg->samples;
-    variance = (avg->sum_sq_mv2 / (float)avg->samples) - (mean * mean);
+    mean = avg->sum_mv / (float)avg->result.samples;
+    variance = (avg->sum_sq_mv2 / (float)avg->result.samples) - (mean * mean);
     if (variance < 0.0f) {
         variance = 0.0f;
     }
 
     avg->result.channel = channel;
-    avg->result.state = PHOTODIODE_AVERAGE_COMPLETE;
-    avg->result.duration_ms = avg->duration_ms;
-    avg->result.samples = avg->samples;
-    avg->result.target_samples = avg->target_samples;
-    avg->result.last_error = 0;
     avg->result.mean_mv = mean;
-    avg->result.mean_net_mv = avg->sum_net_mv / (float)avg->samples;
+    avg->result.mean_net_mv = avg->sum_net_mv / (float)avg->result.samples;
     avg->result.rms_mv = sqrtf(variance);
     avg->result.min_mv = avg->min_mv;
     avg->result.max_mv = avg->max_mv;
     avg->result.max_raw = avg->max_raw;
     avg->last_error = 0;
+    pd_average_finish_dark_locked(channel, avg);
     avg->state = PHOTODIODE_AVERAGE_COMPLETE;
 }
 
@@ -533,7 +441,6 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
     snapshot.last_error = rc;
     snapshot.updated_ms = now;
     pd_runtime[channel] = snapshot;
-    pd_dark_sample_locked(channel, rc, mv);
     pd_average_sample_locked(channel, rc, raw, mv, snapshot.net_mv);
     k_mutex_unlock(&pd_runtime_lock);
 
@@ -574,6 +481,7 @@ void photodiode_get_status(struct photodiode_status *out)
     for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
         const struct photodiode_runtime_channel *src = &pd_runtime[i];
         struct photodiode_channel_status *dst = &out->channel[i];
+        struct photodiode_average_status average_status;
 
         dst->valid = src->valid;
         dst->last_error = src->last_error;
@@ -587,11 +495,12 @@ void photodiode_get_status(struct photodiode_status *out)
         dst->dark_mv = settings.channel[i].dark_mv;
         dst->lowest_dark_mv = settings.channel[i].lowest_dark_mv;
         dst->lowest_dark_valid = settings.channel[i].lowest_dark_valid;
-        dst->dark_state = pd_dark[i].state;
-        dst->dark_duration_ms = pd_dark[i].duration_ms;
-        dst->dark_samples = pd_dark[i].samples;
-        dst->dark_target_samples = pd_dark[i].target_samples;
-        dst->dark_last_error = pd_dark[i].last_error;
+        pd_average_copy_status_locked((enum photodiode_channel)i, &average_status);
+        dst->average_state = average_status.state;
+        dst->average_duration_ms = average_status.result.duration_ms;
+        dst->average_samples = average_status.result.samples;
+        dst->average_target_samples = average_status.result.target_samples;
+        dst->average_last_error = average_status.last_error;
         dst->sample_count = src->sample_count;
         dst->age_ms = src->updated_ms > 0 ? (uint32_t)(now - src->updated_ms) : UINT32_MAX;
     }
@@ -603,11 +512,10 @@ void photodiode_get_status(struct photodiode_status *out)
 int photodiode_start_dark_measurement(enum photodiode_channel channel,
                                       uint32_t duration_ms,
                                       bool store,
-                                      struct photodiode_dark_status *out)
+                                      struct photodiode_average_status *out)
 {
-    struct app_photodiode_settings settings;
     uint32_t sample_count;
-    struct photodiode_dark_request *dark;
+    uint32_t requested_ms;
 
     if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
         return -EINVAL;
@@ -616,38 +524,17 @@ int photodiode_start_dark_measurement(enum photodiode_channel channel,
         return -ENODEV;
     }
 
-    sample_count = pd_dark_duration_to_samples(duration_ms);
-    app_settings_get_photodiode(&settings);
+    requested_ms = duration_ms == 0U ? PD_DARK_DEFAULT_DURATION_MS : duration_ms;
+    sample_count = pd_average_duration_to_samples(requested_ms);
 
     k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-    dark = &pd_dark[channel];
-    memset(dark, 0, sizeof(*dark));
-    dark->state = PHOTODIODE_DARK_MEASURING;
-    dark->store = store;
-    dark->target_samples = sample_count;
-    dark->duration_ms = sample_count * PUBLISH_INTERVAL_MS;
-    dark->result.channel = channel;
-    dark->result.duration_ms = dark->duration_ms;
-    dark->result.stored = store;
-    dark->result.previous_dark_mv = settings.channel[channel].dark_mv;
-    dark->result.configured_dark_mv = settings.channel[channel].dark_mv;
-    dark->result.lowest_dark_mv = settings.channel[channel].lowest_dark_mv;
-    dark->result.lowest_dark_valid = settings.channel[channel].lowest_dark_valid;
-    pd_dark_copy_status_locked(channel, out);
-    k_mutex_unlock(&pd_runtime_lock);
-
-    return 0;
-}
-
-int photodiode_get_dark_status(enum photodiode_channel channel,
-                               struct photodiode_dark_status *out)
-{
-    if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT || out == NULL) {
-        return -EINVAL;
+    if (pd_average[channel].state == PHOTODIODE_AVERAGE_MEASURING &&
+        pd_average[channel].owner != PHOTODIODE_AVERAGE_OWNER_DARK) {
+        k_mutex_unlock(&pd_runtime_lock);
+        return -EBUSY;
     }
-
-    k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-    pd_dark_copy_status_locked(channel, out);
+    pd_average_start_locked(channel, sample_count, PHOTODIODE_AVERAGE_OWNER_DARK,
+                            store, out);
     k_mutex_unlock(&pd_runtime_lock);
     return 0;
 }
@@ -657,7 +544,6 @@ int photodiode_start_average(enum photodiode_channel channel,
                              struct photodiode_average_status *out)
 {
     uint32_t sample_count;
-    struct photodiode_average_request *avg;
 
     if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
         return -EINVAL;
@@ -669,14 +555,13 @@ int photodiode_start_average(enum photodiode_channel channel,
     sample_count = pd_average_duration_to_samples(duration_ms);
 
     k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-    avg = &pd_average[channel];
-    memset(avg, 0, sizeof(*avg));
-    avg->state = PHOTODIODE_AVERAGE_MEASURING;
-    avg->target_samples = sample_count;
-    avg->duration_ms = sample_count * PUBLISH_INTERVAL_MS;
-    avg->result.channel = channel;
-    avg->result.duration_ms = avg->duration_ms;
-    pd_average_copy_status_locked(channel, out);
+    if (pd_average[channel].state == PHOTODIODE_AVERAGE_MEASURING &&
+        pd_average[channel].owner == PHOTODIODE_AVERAGE_OWNER_DARK) {
+        k_mutex_unlock(&pd_runtime_lock);
+        return -EBUSY;
+    }
+    pd_average_start_locked(channel, sample_count, PHOTODIODE_AVERAGE_OWNER_USER,
+                            false, out);
     k_mutex_unlock(&pd_runtime_lock);
 
     return 0;

@@ -193,14 +193,14 @@ flowchart TD
   Adc -- no --> Sleep[k_sleep retry]
   Adc -- yes --> Sample[read ADS1115 YJ and HK]
   Sample --> Convert[counts to mV and power estimate]
-  Convert --> Dark{dark measurement active}
-  Dark -- yes --> Accumulate[accumulate dark stats]
+  Convert --> Average{short average active}
+  Average -- yes --> Accumulate[accumulate average stats]
   Accumulate --> Complete{target samples reached}
-  Complete -- yes --> Store{store requested}
+  Complete -- yes --> Store{dark store requested}
   Store -- yes --> Persist[update photodiode settings]
-  Store -- no --> Status[update dark status]
+  Store -- no --> Status[update average status]
   Complete -- no --> Status
-  Dark -- no --> Noise[update residual noise]
+  Average -- no --> Noise[update residual noise]
   Status --> SleepPeriod[sleep to 20 ms period]
   Persist --> SleepPeriod
   Noise --> Warn{noise above threshold}

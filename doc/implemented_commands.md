@@ -218,11 +218,11 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 ### `pd`
 
-- Owner: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`; sampling and
-  dark measurement state in `app/src/photodiode.c`.
+- Owner: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`; sampling,
+  short averages, and dark persistence in `app/src/photodiode.c`.
 - Board restriction: TIB only.
-- Side effects: dark measurement starts sampler-owned calibration state;
-  persistence is delegated to photodiode/settings code.
+- Side effects: dark measurement starts the sampler-owned short-average
+  accumulator; persistence is delegated to photodiode/settings code.
 - Query note: dark-status action is classified as a pure query and does not
   update `lastcommand`.
 

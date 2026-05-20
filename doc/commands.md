@@ -976,10 +976,10 @@ off or no faults).
   {
     "state": "measuring",
     "channel": "yj",
-    "stored_on_complete": true,
-    "duration_ms": 60000,
+    "stored_on_complete": false,
+    "duration_ms": 1280,
     "samples": 0,
-    "target_samples": 3000
+    "target_samples": 64
   }
   ```
 - **Payload -> dark measurement state:** measure dark and persist it.
@@ -1009,15 +1009,17 @@ off or no faults).
   ```
 
 - **Notes:**
-  - `measure_dark` starts or restarts the selected channel's dark measurement
-    and returns immediately with `state:"measuring"`.
+  - `measure_dark` starts or restarts the selected channel's short average,
+    marks it as a dark measurement, and returns immediately with
+    `state:"measuring"`.
   - Dark level is updated only after an explicit `measure_dark` with
     `store:true` completes.
   - `duration_ms` is rounded to the nearest supported sample count at the
-    monitor thread cadence. The response reports both actual `duration_ms` and
-    exact `samples`.
-  - `dark_status` returns `state:"measuring"`, `state:"complete"`, or an error
-    response. Complete results include measured mean/RMS/min/max.
+    monitor thread cadence and clamps to the same maximum window used by short
+    photodiode averages. The response reports actual `duration_ms`,
+    accumulated `samples`, and `target_samples`.
+  - `dark_status` reports the current or most recent short average for that
+    channel. Complete dark results include measured mean/RMS/min/max.
   - `measure_dark` with `store:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
   - `lowest_dark_mv` is updated only when a stored dark measurement is lower
@@ -1038,10 +1040,10 @@ off or no faults).
     "dark_mv": 0.0,
     "lowest_dark_mv": 0.0,
     "lowest_dark_valid": false,
-    "dark_measurement": "idle",
-    "dark_measurement_duration_ms": 0,
-    "dark_measurement_samples": 0,
-    "dark_measurement_target_samples": 0,
+    "average": "inactive",
+    "average_duration_ms": 0,
+    "average_samples": 0,
+    "average_target_samples": 0,
     "noise_rms_mV": 3.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10

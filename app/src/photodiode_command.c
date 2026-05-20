@@ -145,14 +145,17 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct coo_cmd_response pd_dark_status_response(const struct coo_cmd_request *cmd,
-					     const struct photodiode_dark_status *status)
+static struct coo_cmd_response pd_average_status_response(const struct coo_cmd_request *cmd,
+					     const struct photodiode_average_status *status)
 {
 	char payload[MAX_PAYLOAD_LEN] = {0};
-	const struct photodiode_dark_result *result = &status->result;
-	const char *state_name = photodiode_dark_state_name(status->state);
+	const struct photodiode_average_result *result = &status->result;
+	const char *state_name = photodiode_average_state_name(status->state);
 
-	if (status->state == PHOTODIODE_DARK_COMPLETE) {
+	if (status->state == PHOTODIODE_AVERAGE_COMPLETE) {
+		struct app_photodiode_settings settings;
+
+		app_settings_get_photodiode(&settings);
 		snprintk(payload, sizeof(payload),
 			 "{\"state\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
 			 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
@@ -162,30 +165,30 @@ static struct coo_cmd_response pd_dark_status_response(const struct coo_cmd_requ
 			 "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s}",
 			 state_name,
 			 photodiode_channel_names[status->channel],
-			 result->stored ? "true" : "false",
-			 status->duration_ms,
-			 status->samples,
-			 status->target_samples,
+			 status->store_dark ? "true" : "false",
+			 result->duration_ms,
+			 result->samples,
+			 result->target_samples,
 			 (double)result->mean_mv,
 			 (double)result->rms_mv,
 			 (double)result->min_mv,
 			 (double)result->max_mv,
-			 (double)result->previous_dark_mv,
-			 (double)result->configured_dark_mv,
-			 (double)result->lowest_dark_mv,
-			 result->lowest_dark_valid ? "true" : "false");
+			 (double)(result->mean_mv - result->mean_net_mv),
+			 (double)settings.channel[status->channel].dark_mv,
+			 (double)settings.channel[status->channel].lowest_dark_mv,
+			 settings.channel[status->channel].lowest_dark_valid ? "true" : "false");
 		return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 	}
 
-	if (status->state == PHOTODIODE_DARK_ERROR) {
+	if (status->state == PHOTODIODE_AVERAGE_ERROR) {
 		snprintk(payload, sizeof(payload),
 			 "{\"error\":\"dark measurement failed\",\"channel\":\"%s\",\"rc\":%d,"
 			 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
 			 photodiode_channel_names[status->channel],
 			 status->last_error,
-			 status->duration_ms,
-			 status->samples,
-			 status->target_samples);
+			 result->duration_ms,
+			 result->samples,
+			 result->target_samples);
 		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
 	}
 
@@ -194,10 +197,10 @@ static struct coo_cmd_response pd_dark_status_response(const struct coo_cmd_requ
 		 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u}",
 		 state_name,
 		 photodiode_channel_names[status->channel],
-		 status->store ? "true" : "false",
-		 status->duration_ms,
-		 status->samples,
-		 status->target_samples);
+		 status->store_dark ? "true" : "false",
+		 result->duration_ms,
+		 result->samples,
+		 result->target_samples);
 	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 
@@ -235,7 +238,7 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 
 	switch (action) {
 	case PD_ACTION_MEASURE_DARK: {
-		struct photodiode_dark_status status;
+		struct photodiode_average_status status;
 
 		if (throughput_monitor_autolevel_active(channel)) {
 			return coo_cmd_error(cmd,
@@ -256,17 +259,17 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 		if (rc != 0) {
 			return coo_cmd_error_rc(cmd, "dark measurement failed", rc);
 		}
-		return pd_dark_status_response(cmd, &status);
+		return pd_average_status_response(cmd, &status);
 	}
 	case PD_ACTION_DARK_STATUS: {
-		struct photodiode_dark_status status;
+		struct photodiode_average_status status;
 
-		rc = photodiode_get_dark_status(channel, &status);
+		rc = photodiode_get_average_status(channel, &status);
 		if (rc != 0) {
 			return coo_cmd_error(cmd, "dark status unavailable");
 		}
 
-		return pd_dark_status_response(cmd, &status);
+		return pd_average_status_response(cmd, &status);
 	}
 	case PD_ACTION_RESET_LOWEST_DARK:
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
@@ -288,19 +291,19 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 				    enum photodiode_channel channel,
 				    const struct app_pd_channel_settings *ch)
 {
-	struct photodiode_dark_status dark = {0};
+	struct photodiode_average_status average = {0};
 	int written;
 
-	(void)photodiode_get_dark_status(channel, &dark);
+	(void)photodiode_get_average_status(channel, &average);
 
 	written = snprintk(payload, payload_len,
 			   "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
 			   "\"lowest_dark_mv\":%.3f,"
 			   "\"lowest_dark_valid\":%s,"
-			   "\"dark_measurement\":\"%s\","
-			   "\"dark_measurement_duration_ms\":%u,"
-			   "\"dark_measurement_samples\":%u,"
-			   "\"dark_measurement_target_samples\":%u,"
+			   "\"average\":\"%s\","
+			   "\"average_duration_ms\":%u,"
+			   "\"average_samples\":%u,"
+			   "\"average_target_samples\":%u,"
 			   "\"noise_rms_mV\":%.3f,"
 			   "\"responsivity_a_per_w\":%.9f,"
 			   "\"transimpedance_v_per_a\":%.6e}",
@@ -308,10 +311,10 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 			   (double)ch->dark_mv,
 			   (double)ch->lowest_dark_mv,
 			   ch->lowest_dark_valid ? "true" : "false",
-			   photodiode_dark_state_name(dark.state),
-			   dark.duration_ms,
-			   dark.samples,
-			   dark.target_samples,
+			   photodiode_average_state_name(average.state),
+			   average.result.duration_ms,
+			   average.result.samples,
+			   average.result.target_samples,
 			   (double)ch->noise_warn_rms_mv,
 			   ch->responsivity_a_per_w,
 			   ch->transimpedance_v_per_a);
