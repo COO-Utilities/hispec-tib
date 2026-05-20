@@ -120,6 +120,7 @@ struct app_settings_snapshot {
 	struct app_route_loss_settings route_loss;
 	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
+	uint64_t last_known_utc_ms;
 	uint32_t mqtt_revision;
 };
 
@@ -224,5 +225,9 @@ void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist);
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */
 void app_settings_increment_boot_count(void);
+/** @brief Return true and copy the last persisted UTC time if one is known. */
+bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms);
+/** @brief Store a known-good UTC time for boot-time clock initialization. */
+void app_settings_note_time_utc_ms(uint64_t utc_ms);
 
 #endif /* HISPEC_APP_SETTINGS_H */

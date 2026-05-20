@@ -1005,6 +1005,7 @@ struct coo_cmd_response time_set(const struct coo_cmd_request *cmd)
     if (sys_clock_settime(SYS_CLOCK_REALTIME, &ts) != 0) {
         return coo_cmd_error(cmd, "clock set failed");
     }
+    app_settings_note_time_utc_ms(utc_ms);
 
     return coo_cmd_ok(cmd);
 }

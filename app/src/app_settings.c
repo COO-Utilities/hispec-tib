@@ -38,6 +38,7 @@ enum app_nvs_id {
 	APP_NVS_ID_IP = 0x0005,
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
+	APP_NVS_ID_LAST_KNOWN_UTC_MS = 0x0008,
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
@@ -190,8 +191,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	str_set(s->ip.ip, sizeof(s->ip.ip), CONFIG_NET_CONFIG_MY_IPV4_ADDR);
 	str_set(s->ip.subnet, sizeof(s->ip.subnet), CONFIG_NET_CONFIG_MY_IPV4_NETMASK);
 	str_set(s->ip.gateway, sizeof(s->ip.gateway), CONFIG_NET_CONFIG_MY_IPV4_GW);
-	str_set(s->ip.dns, sizeof(s->ip.dns), "0.0.0.0");
-	str_set(s->ip.ntp, sizeof(s->ip.ntp), "0.0.0.0");
+	str_set(s->ip.dns, sizeof(s->ip.dns), CONFIG_APP_DEFAULT_DNS_SERVER);
+	str_set(s->ip.ntp, sizeof(s->ip.ntp), CONFIG_APP_DEFAULT_NTP_SERVER);
 	broker_port = strtoul(default_port_str, &end, 10);
 	if (end == NULL || end == default_port_str || *end != '\0' || broker_port > UINT16_MAX) {
 		broker_port = 1883UL;
@@ -738,6 +739,11 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
 		s->boot_count = value;
 	}
+	if (app_nvs_read_exact(APP_NVS_ID_LAST_KNOWN_UTC_MS, &s->last_known_utc_ms,
+			       sizeof(s->last_known_utc_ms), "last known UTC") &&
+	    s->last_known_utc_ms == 0U) {
+		LOG_WRN("Ignoring invalid stored last known UTC");
+	}
 	app_nvs_load_ip(s);
 	app_nvs_load_mqtt(s);
 	app_nvs_load_attenuator(s);
@@ -751,6 +757,7 @@ static void delete_resettable_settings(void)
 {
 	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF);
 	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
+	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
 	(void)app_nvs_delete(APP_NVS_ID_IP);
 	(void)app_nvs_delete(APP_NVS_ID_MQTT);
 	(void)app_nvs_delete(APP_NVS_ID_LASERBANK);
@@ -1206,4 +1213,41 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
+}
+
+bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms)
+{
+	uint64_t value;
+
+	if (utc_ms == NULL) {
+		return false;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	value = g_settings.snapshot.last_known_utc_ms;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (value == 0U) {
+		return false;
+	}
+
+	*utc_ms = value;
+	return true;
+}
+
+void app_settings_note_time_utc_ms(uint64_t utc_ms)
+{
+	if (utc_ms == 0U) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	if (utc_ms == g_settings.snapshot.last_known_utc_ms) {
+		k_mutex_unlock(&g_settings.lock);
+		return;
+	}
+	g_settings.snapshot.last_known_utc_ms = utc_ms;
+	k_mutex_unlock(&g_settings.lock);
+
+	(void)app_nvs_write(APP_NVS_ID_LAST_KNOWN_UTC_MS, &utc_ms, sizeof(utc_ms));
 }

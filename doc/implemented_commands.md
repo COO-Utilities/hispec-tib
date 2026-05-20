@@ -100,8 +100,9 @@ which slow resources it can touch, and known implementation-specific caveats.
 ### `time`
 
 - Owner: `time_get()`, `time_set()` in `app/src/command.c`.
-- Side effects: effect requests update Zephyr's realtime clock.
-- Blocking: no bus I/O, no NVS writes, no direct publish.
+- Side effects: effect requests update Zephyr's realtime clock and persist the
+  last known UTC time for boot-time restore.
+- Blocking: no bus I/O, NVS writes can block, no direct publish.
 - Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `reboot`

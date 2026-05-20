@@ -18,6 +18,7 @@ Current app NVS records include:
 - Board type.
 - Serial guard holdoff.
 - Boot count.
+- Last known UTC time in milliseconds.
 - IP settings as one record.
 - MQTT broker host/port as one record.
 - One attenuator coefficient record per logical channel.
@@ -42,6 +43,9 @@ silently reused on another.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
   `CONFIG_COO_MQTT_BROKER_PORT`; persistence stores host and port directly.
 - Serial guard defaults to 30 s.
+- Last known UTC defaults to unset. Once SNTP or a `time` command sets the
+  realtime clock, the value is persisted and restored on later boots until a
+  fresher time source updates it.
 - Attenuator coefficients default to a linear `b = slope * voltage + offset`
   model that maps the 0-4096 mV DAC span onto `b = 0..8` until
   calibrated/stored.

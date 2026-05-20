@@ -13,6 +13,21 @@ endmenu
 config NET_DHCPV4_OPTION_NTP_SERVER
 	default y if SNTP && NET_DHCPV4
 
+config APP_DEFAULT_DNS_SERVER
+	string "Default manual DNS server IPv4 address"
+	default "0.0.0.0"
+	help
+	  Default app-owned manual DNS server stored in the initial settings
+	  snapshot. Use 0.0.0.0 to leave manual DNS disabled.
+
+config APP_DEFAULT_NTP_SERVER
+	string "Default manual NTP server IPv4 address"
+	default "0.0.0.0"
+	help
+	  Default app-owned manual NTP server stored in the initial settings
+	  snapshot. The current settings schema stores IPv4 strings, not
+	  hostnames. Use 0.0.0.0 to prefer DHCP-provided NTP.
+
 choice SNTP_LOG_LEVEL_CHOICE
 	default SNTP_LOG_LEVEL_DBG if SNTP
 endchoice

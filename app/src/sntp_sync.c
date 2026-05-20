@@ -183,6 +183,7 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 	if (utc_ms_out != NULL) {
 		*utc_ms_out = utc_ms;
 	}
+	app_settings_note_time_utc_ms(utc_ms);
 
 	return 0;
 }

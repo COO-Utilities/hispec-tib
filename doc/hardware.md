@@ -31,9 +31,9 @@ See status.md for software details
 
 
 ## MEMS Switches
-Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
+Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
 - 3.3V i2c, 5V gpio, 25mA max drive
-- Address 0x33 (ADDR high) or 0x22 (ADDR low), using 0x33
+- Address 0x21 (ADDR high) or 0x20 (ADDR low), using 0x21 (addr is tied to +5V (VDD(P))) 0b0100001
 - FFSW lines have 4.7k external resistors. in open drain each switch channel flows 2mA through PCAL
   - FFLS lines do not have a pullup but one may be added at site of unpopulated FFSW drive MOSFET to allow operation in same manner
 - Placing ports in push-pull with pull-ups enabled and then writing all low would pull 2.2mA though PCAL per switch and should work for all switches

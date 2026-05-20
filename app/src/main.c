@@ -16,9 +16,11 @@
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 #include <errno.h>
 #include <string.h>
+#include <time.h>
 
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/network.h>
@@ -37,7 +39,7 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
-#define EXECUTOR_STACK_SIZE 6144
+#define EXECUTOR_STACK_SIZE 8192
 #define EXECUTOR_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
 #define PHOTODIODE_PRIORITY 3
@@ -179,6 +181,28 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
+static void apply_last_known_time(void)
+{
+	struct timespec ts = {0};
+	uint64_t utc_ms;
+	int rc;
+
+	if (!app_settings_get_last_known_utc_ms(&utc_ms)) {
+		return;
+	}
+
+	ts.tv_sec = (time_t)(utc_ms / 1000ULL);
+	ts.tv_nsec = (long)((utc_ms % 1000ULL) * 1000000ULL);
+	rc = sys_clock_settime(SYS_CLOCK_REALTIME, &ts);
+	if (rc != 0) {
+		LOG_WRN("Failed to restore last known UTC time (%d)", rc);
+		return;
+	}
+
+	LOG_INF("Restored last known UTC time from settings: %llu ms",
+		(unsigned long long)utc_ms);
+}
+
 static void network_event_handler(bool connected)
 {
 	LOG_INF("Network event: %s", connected ? "connected" : "disconnected");
@@ -236,6 +260,7 @@ int main(void)
 		}
 	}
 
+	apply_last_known_time();
 	app_settings_increment_boot_count();
 	rc = command_runtime_init();
 	if (rc != 0) {
