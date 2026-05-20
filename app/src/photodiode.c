@@ -72,6 +72,8 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
 #define PD_DARK_MAX_DURATION_MS (60U * 60U * 1000U)
 #define PD_DARK_MAX_SAMPLES (PD_DARK_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
+#define PD_AVERAGE_MAX_DURATION_MS 2000U
+#define PD_AVERAGE_MAX_SAMPLES (PD_AVERAGE_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
 #define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
 #define PLANCK_J_S 6.62607015e-34
@@ -127,8 +129,24 @@ struct photodiode_dark_request {
     struct photodiode_dark_result result;
 };
 
+struct photodiode_average_request {
+    enum photodiode_average_state state;
+    uint32_t target_samples;
+    uint32_t samples;
+    uint32_t duration_ms;
+    float sum_mv;
+    float sum_net_mv;
+    float sum_sq_mv2;
+    float min_mv;
+    float max_mv;
+    int16_t max_raw;
+    int last_error;
+    struct photodiode_average_status result;
+};
+
 static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
 static struct photodiode_dark_request pd_dark[PHOTODIODE_CHANNEL_COUNT];
+static struct photodiode_average_request pd_average[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(pd_runtime_lock);
 
 static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
@@ -229,6 +247,20 @@ static uint32_t pd_dark_duration_to_samples(uint32_t duration_ms)
     return requested_ms == 0U ? 1U : requested_ms;
 }
 
+static uint32_t pd_average_duration_to_samples(uint32_t duration_ms)
+{
+    uint32_t requested_ms = duration_ms == 0U ? PUBLISH_INTERVAL_MS : duration_ms;
+
+    if (requested_ms >= PD_AVERAGE_MAX_DURATION_MS) {
+        return PD_AVERAGE_MAX_SAMPLES;
+    }
+
+    requested_ms += PUBLISH_INTERVAL_MS / 2U;
+    requested_ms /= PUBLISH_INTERVAL_MS;
+
+    return requested_ms == 0U ? 1U : requested_ms;
+}
+
 static void pd_dark_copy_status_locked(enum photodiode_channel channel,
                                        struct photodiode_dark_status *out)
 {
@@ -247,6 +279,30 @@ static void pd_dark_copy_status_locked(enum photodiode_channel channel,
     out->target_samples = dark->target_samples;
     out->last_error = dark->last_error;
     out->result = dark->result;
+}
+
+static void pd_average_copy_status_locked(enum photodiode_channel channel,
+                                          struct photodiode_average_status *out)
+{
+    const struct photodiode_average_request *avg = &pd_average[channel];
+
+    if (out == NULL) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+    if (avg->state == PHOTODIODE_AVERAGE_COMPLETE) {
+        *out = avg->result;
+        return;
+    }
+
+    out->channel = channel;
+    out->state = avg->state;
+    out->duration_ms = avg->duration_ms;
+    out->samples = avg->samples;
+    out->target_samples = avg->target_samples;
+    out->last_error = avg->last_error;
+    out->max_raw = avg->max_raw;
 }
 
 static void pd_dark_finish_store_locked(enum photodiode_channel channel,
@@ -332,6 +388,71 @@ static void pd_dark_sample_locked(enum photodiode_channel channel, int rc, float
     dark->state = PHOTODIODE_DARK_COMPLETE;
 }
 
+static void pd_average_sample_locked(enum photodiode_channel channel,
+                                     int rc, int16_t raw, float mv, float net_mv)
+{
+    struct photodiode_average_request *avg = &pd_average[channel];
+    float mean;
+    float variance;
+
+    if (avg->state != PHOTODIODE_AVERAGE_MEASURING ||
+        avg->samples >= avg->target_samples) {
+        return;
+    }
+
+    if (rc != 0) {
+        avg->state = PHOTODIODE_AVERAGE_ERROR;
+        avg->last_error = rc;
+        return;
+    }
+
+    if (avg->samples == 0U) {
+        avg->min_mv = mv;
+        avg->max_mv = mv;
+        avg->max_raw = raw;
+    } else {
+        if (mv < avg->min_mv) {
+            avg->min_mv = mv;
+        }
+        if (mv > avg->max_mv) {
+            avg->max_mv = mv;
+        }
+        if (raw > avg->max_raw) {
+            avg->max_raw = raw;
+        }
+    }
+
+    avg->sum_mv += mv;
+    avg->sum_net_mv += net_mv;
+    avg->sum_sq_mv2 += mv * mv;
+    avg->samples++;
+
+    if (avg->samples < avg->target_samples) {
+        return;
+    }
+
+    mean = avg->sum_mv / (float)avg->samples;
+    variance = (avg->sum_sq_mv2 / (float)avg->samples) - (mean * mean);
+    if (variance < 0.0f) {
+        variance = 0.0f;
+    }
+
+    avg->result.channel = channel;
+    avg->result.state = PHOTODIODE_AVERAGE_COMPLETE;
+    avg->result.duration_ms = avg->duration_ms;
+    avg->result.samples = avg->samples;
+    avg->result.target_samples = avg->target_samples;
+    avg->result.last_error = 0;
+    avg->result.mean_mv = mean;
+    avg->result.mean_net_mv = avg->sum_net_mv / (float)avg->samples;
+    avg->result.rms_mv = sqrtf(variance);
+    avg->result.min_mv = avg->min_mv;
+    avg->result.max_mv = avg->max_mv;
+    avg->result.max_raw = avg->max_raw;
+    avg->last_error = 0;
+    avg->state = PHOTODIODE_AVERAGE_COMPLETE;
+}
+
 static void pd_window_update(float mv, struct photodiode_runtime_channel *snapshot)
 {
     float old_mv;
@@ -413,6 +534,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
     snapshot.updated_ms = now;
     pd_runtime[channel] = snapshot;
     pd_dark_sample_locked(channel, rc, mv);
+    pd_average_sample_locked(channel, rc, raw, mv, snapshot.net_mv);
     k_mutex_unlock(&pd_runtime_lock);
 
     if (rc == 0 && settings->noise_warn_rms_mv > 0.0f &&
@@ -526,6 +648,49 @@ int photodiode_get_dark_status(enum photodiode_channel channel,
 
     k_mutex_lock(&pd_runtime_lock, K_FOREVER);
     pd_dark_copy_status_locked(channel, out);
+    k_mutex_unlock(&pd_runtime_lock);
+    return 0;
+}
+
+int photodiode_start_average(enum photodiode_channel channel,
+                             uint32_t duration_ms,
+                             struct photodiode_average_status *out)
+{
+    uint32_t sample_count;
+    struct photodiode_average_request *avg;
+
+    if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
+        return -EINVAL;
+    }
+    if (adc_dev == NULL || !device_is_ready(adc_dev)) {
+        return -ENODEV;
+    }
+
+    sample_count = pd_average_duration_to_samples(duration_ms);
+
+    k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+    avg = &pd_average[channel];
+    memset(avg, 0, sizeof(*avg));
+    avg->state = PHOTODIODE_AVERAGE_MEASURING;
+    avg->target_samples = sample_count;
+    avg->duration_ms = sample_count * PUBLISH_INTERVAL_MS;
+    avg->result.channel = channel;
+    avg->result.duration_ms = avg->duration_ms;
+    pd_average_copy_status_locked(channel, out);
+    k_mutex_unlock(&pd_runtime_lock);
+
+    return 0;
+}
+
+int photodiode_get_average_status(enum photodiode_channel channel,
+                                  struct photodiode_average_status *out)
+{
+    if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT || out == NULL) {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+    pd_average_copy_status_locked(channel, out);
     k_mutex_unlock(&pd_runtime_lock);
     return 0;
 }

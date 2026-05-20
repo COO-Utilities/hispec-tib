@@ -52,7 +52,7 @@ int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
 int coo_json_extract_float(const char *json, const char *key, float *value);
 /** Extract one required JSON number into a double. */
 int coo_json_extract_double(const char *json, const char *key, double *value);
-/** Extract a JSON number array into @p values. Supports up to eight doubles. */
+/** Extract a JSON number array into @p values. Supports up to 32 doubles. */
 int coo_json_extract_double_array(const char *json, const char *key,
 				  double *values, size_t max_values,
 				  size_t *parsed_len);

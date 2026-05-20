@@ -27,7 +27,6 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 
 #define USER_NODE DT_PATH(zephyr_user)
 #define MAX_NUM_MEMS_SWITCHES 8U
-#define CAL_ATTENUATOR_INDEX 4U
 
 BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
@@ -167,7 +166,7 @@ static const struct board_profile cal_yj_profile = {
 	.name = "cal_yj",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
-	.attenuator_first = CAL_ATTENUATOR_INDEX,
+	.attenuator_first = HISPEC_ATTENUATOR_LFC_INDEX,
 	.attenuator_count = 1,
 };
 
@@ -176,7 +175,7 @@ static const struct board_profile cal_hk_profile = {
 	.name = "cal_hk",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
-	.attenuator_first = CAL_ATTENUATOR_INDEX,
+	.attenuator_first = HISPEC_ATTENUATOR_LFC_INDEX,
 	.attenuator_count = 1,
 };
 

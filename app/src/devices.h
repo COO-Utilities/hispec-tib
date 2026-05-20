@@ -32,6 +32,7 @@
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6
+#define HISPEC_ATTENUATOR_LFC_INDEX 4U
 
 enum hispec_board_type {
 	HISPEC_BOARD_UNKNOWN = 0,

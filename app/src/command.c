@@ -174,6 +174,8 @@ static const struct command_spec command_specs[] = {
                  COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
     CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
                  COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, false, NULL),
+    CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
+             COMMAND_CLASS_DEFAULT, true, NULL),
     CMD_SPEC("atten", atten_setting_get, atten_setting_set,
              COMMAND_CLASS_DEFAULT, true, "atten"),
     { .key = "pd", .get_handler = pd_get, .set_handler = pd_set,

@@ -139,6 +139,7 @@ for normal serial operation.
 - [`atten/<laser>/value`](#atten-value)
 - [`atten/<laser>/valuedb`](#atten-valuedb)
 - [`atten/<laser>/coeff`](#atten-coeff)
+- [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
 - [`pdsettings/<yj|hk>`](#pdsettings)
 - [`ip`](#ip)
@@ -361,7 +362,20 @@ and the AS for splitting fraction correction.
     "autolevel": true,
     "laser": "<lasername>",
     "fiber": "M",
+    "output": "yj_ao",
+    "max_flux_ph_s": 1.0e12,
     "stopafter_s": 300,
+    "format": "json"
+  }
+  ```
+- **Payload:** start monitoring an externally supplied/calibration input.
+  ```json
+  {
+    "autolevel": false,
+    "laser": "none",
+    "input": "yj_cal",
+    "output": "yj_ao",
+    "fiber": "M",
     "format": "json"
   }
   ```
@@ -381,6 +395,18 @@ estimate.
 and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without changing laser level or attenuation.
+
+`output` is optional for normal laser monitoring. When supplied, firmware
+selects the outbound MEMS route before starting the monitor. The route input is
+inferred from `laser` unless `input` is supplied explicitly. `laser:"none"` is
+for monitoring externally supplied light and requires `input`, `output`, and
+`autolevel:false`; throughput and emitted-flux fields that require a known
+laser are reported as `null` in JSON or NaN in binary.
+
+`max_flux_ph_s` is optional and valid only with `autolevel:true`. It limits the
+estimated emitted photon flux after the calibrated logical attenuator pair, so
+the limit uses the current laser flux estimate multiplied by
+`attenuator_estimate_transmission()`.
 
 Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
 `transimpedance_v_per_a` from `pdsettings/<yj|hk>` with the active laser
@@ -798,7 +824,9 @@ off or no faults).
   ```
 
 - **Notes:**
-  - `<laser>` is one of `1028y`, `1430yj`, `1430hk`, `1510h`, or `2330k`.
+  - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
+    or `2330k`. On calibration boards only, the LFC attenuator is addressed as
+    `atten/lfc/value`, `atten/lfc/valuedb`, and `atten/lfc/coeff`.
   - Each logical attenuator is a pair of physical FVOAs. Total set commands use
     the full modeled range of the first physical attenuator before using the
     second, and override any individual physical set point made through the C
@@ -811,6 +839,106 @@ off or no faults).
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
+
+(atten-calibrate)=
+### `atten/calibrate`
+- **No payload -> compact calibration state:**
+  ```json
+  {
+    "state": "inactive",
+    "mode": "none",
+    "physical": "dac1",
+    "fit": "none",
+    "n": 20,
+    "t_ms": 300,
+    "complete_pct": 0,
+    "point": "1/20",
+    "mv": 4096.0,
+    "other_mv": 4096.0,
+    "error": 0,
+    "dac1": {
+      "valid": true,
+      "points": 12,
+      "slope": 0.001953125,
+      "offset": 0.0,
+      "corr": 0.999,
+      "rms_db": 0.1,
+      "max_abs_db": 0.2,
+      "min_tx": 1.0e-6,
+      "max_tx": 0.9,
+      "voltage_span_mv": 2400.0
+    },
+    "dac2": {"valid": false}
+  }
+  ```
+- **Payload:** start automatic TIB calibration for the logical pair belonging to
+  a laser.
+  ```json
+  {
+    "laser": "1430yj",
+    "output": "yj_ao",
+    "fiber": "M",
+    "dwell_ms": 300,
+    "persistent": true
+  }
+  ```
+- **Payload:** start manual calibration on a calibration board.
+  ```json
+  {
+    "mode": "manual",
+    "attenuator": "lfc",
+    "dwell_ms": 300,
+    "persistent": true
+  }
+  ```
+- **Payload:** advance manual calibration by one voltage point. `other_mv` is
+  optional and sets the held physical attenuator DAC voltage for the next point.
+  ```json
+  {"continue": true, "other_mv": 2800.0}
+  ```
+- **Payload:** stop/cancel any calibration.
+  ```json
+  {"stop": true}
+  ```
+- **Payload:** fit manual feedback after the operator has measured fluxes.
+  Flux units are arbitrary but must be positive and consistent within each
+  physical attenuator sweep.
+  ```json
+  {
+    "mode": "manual",
+    "attenuator": "lfc",
+    "persistent": true,
+    "dac1": {
+      "voltage_mv": [4096.0, 3900.0, 3700.0, 3500.0, 3300.0, 3100.0],
+      "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    },
+    "dac2": {
+      "voltage_mv": [4096.0, 3900.0, 3700.0, 3500.0, 3300.0, 3100.0],
+      "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    }
+  }
+  ```
+
+- **Notes:**
+  - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
+    A canceled calibration returns to `inactive`.
+  - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
+    selects the logical attenuator pair and outbound route input, while `fiber`
+    selects the photodiode route as in `measure_throughput`.
+  - TIB automatic calibration powers the selected photodiode, waits 1 s for the
+    relay/source to settle, sets both physical attenuators to maximum DAC
+    voltage and the laser to full output, then sweeps about 20 DAC points per
+    physical attenuator. Each point has a fixed 50 ms step-settle before the
+    photodiode average begins.
+  - Automatic calibration uses short photodiode averages from the sampler
+    thread. It does not start a new calibration thread; the throughput monitor
+    thread advances the state machine.
+  - The fit converts normalized flux to the attenuator model coordinate and
+    uses zscilib simple linear regression for `b = slope * voltage_mv + offset`.
+    Fit details include point count, correlation, residual RMS/max in dB, fitted
+    transmission span, and voltage span.
+  - Manual calibration returns the voltage schedule on completion or stop so an
+    operator can record fluxes externally and submit the batch later.
 
 (pd)=
 ### `pd`

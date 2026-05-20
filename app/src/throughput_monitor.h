@@ -18,10 +18,13 @@
 
 struct throughput_monitor_request {
 	enum hispec_laser_id laser;
+	enum photodiode_channel channel;
+	bool has_laser;
 	bool autolevel;
 	bool binary;
 	char fiber;
 	uint32_t stopafter_s;
+	double max_flux_ph_s;
 };
 
 struct throughput_monitor_status {
@@ -40,6 +43,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 /** Stop one channel or both channels. Pass PHOTODIODE_CHANNEL_COUNT for all. */
 int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *status);
+
+/** Return true if either photodiode monitor is currently active. */
+bool throughput_monitor_any_active(void);
 
 /** Return true while autolevel owns the selected photodiode stream. */
 bool throughput_monitor_autolevel_active(enum photodiode_channel channel);

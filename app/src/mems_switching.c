@@ -688,6 +688,26 @@ int mems_router_apply_route(const struct mems_router *router,
     return 0;
 }
 
+int mems_router_apply_named_route(const struct mems_router *router,
+                                  const char *input,
+                                  const char *output,
+                                  const char **failed_switch,
+                                  char *failed_state)
+{
+    const struct mems_route *route;
+
+    if (router == NULL || input == NULL || output == NULL) {
+        return -EINVAL;
+    }
+
+    route = mems_router_get_route(router, input, output);
+    if (route == NULL) {
+        return -ENOENT;
+    }
+
+    return mems_router_apply_route(router, route, failed_switch, failed_state);
+}
+
 // List all routes whose switches are ALL in the expected state.
 // Returns the number of active routes found, up to max_keys.
 // Each result is an (input, output) pair.

@@ -32,6 +32,13 @@ enum photodiode_dark_state {
 	PHOTODIODE_DARK_ERROR
 };
 
+enum photodiode_average_state {
+	PHOTODIODE_AVERAGE_INACTIVE = 0,
+	PHOTODIODE_AVERAGE_MEASURING,
+	PHOTODIODE_AVERAGE_COMPLETE,
+	PHOTODIODE_AVERAGE_ERROR
+};
+
 struct photodiode_channel_status {
 	bool valid;
 	int last_error;
@@ -83,6 +90,21 @@ struct photodiode_dark_status {
 	uint32_t target_samples;
 	int last_error;
 	struct photodiode_dark_result result;
+};
+
+struct photodiode_average_status {
+	enum photodiode_channel channel;
+	enum photodiode_average_state state;
+	uint32_t duration_ms;
+	uint32_t samples;
+	uint32_t target_samples;
+	int last_error;
+	float mean_mv;
+	float mean_net_mv;
+	float rms_mv;
+	float min_mv;
+	float max_mv;
+	int16_t max_raw;
 };
 
 /** Channel labels used in command replies and telemetry JSON. */
@@ -140,6 +162,19 @@ int photodiode_start_dark_measurement(enum photodiode_channel channel,
 /** @brief Copy current or last dark-measurement state for one channel. */
 int photodiode_get_dark_status(enum photodiode_channel channel,
 			       struct photodiode_dark_status *out);
+/**
+ * @brief Start a short non-persistent average on the sampling thread.
+ *
+ * The accumulator samples the same ADC snapshots as normal photodiode status
+ * and reports raw and dark-subtracted means. It performs no persistence and
+ * does not block for the requested window.
+ */
+int photodiode_start_average(enum photodiode_channel channel,
+			     uint32_t duration_ms,
+			     struct photodiode_average_status *out);
+/** @brief Copy current or last short-average state for one channel. */
+int photodiode_get_average_status(enum photodiode_channel channel,
+				  struct photodiode_average_status *out);
 /**
  * @brief Clear lowest-dark tracking for one channel.
  *

@@ -16,14 +16,11 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 
 #define DAC_RESOLUTION_BITS 12
 #define DAC_MAX_CODE        ((1 << DAC_RESOLUTION_BITS) - 1)
-#define MAX_VOLTAGE         4096.0
 #define MODEL_ERF_SCALE     4.0
 #define MODEL_MAX_DB        120.0
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-static double attenuator_model_b_to_linear(double b);
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
 {
@@ -154,8 +151,8 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
 
     if (voltage < 0.0) {
         voltage = 0.0;
-    } else if (voltage > MAX_VOLTAGE) {
-        voltage = MAX_VOLTAGE;
+    } else if (voltage > ATTENUATOR_DAC_MAX_MV) {
+        voltage = ATTENUATOR_DAC_MAX_MV;
     }
 
     if (voltage != unclamped_voltage) {
@@ -167,7 +164,7 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
                          context);
     }
 
-    code = (uint32_t)((voltage / MAX_VOLTAGE) * DAC_MAX_CODE);
+    code = (uint32_t)((voltage / ATTENUATOR_DAC_MAX_MV) * DAC_MAX_CODE);
     /* dac_write_value() is the hardware side effect: it can block on I2C and
      * changes the analog attenuation control voltage.
      */
@@ -222,9 +219,27 @@ bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage)
            attenuator_write_voltage(&drv->dac_cfg2, &drv->coeff2, voltage);
 }
 
+bool attenuator_set_physical_voltage(struct attenuator *drv,
+                                     uint8_t physical_index,
+                                     double voltage)
+{
+    if (drv == NULL) {
+        return false;
+    }
+
+    switch (physical_index) {
+    case 0:
+        return attenuator_set_dac1_voltage(drv, voltage);
+    case 1:
+        return attenuator_set_dac2_voltage(drv, voltage);
+    default:
+        return false;
+    }
+}
+
 static double attenuator_physical_max_db(const struct attenuator_model_coeffs *coeffs)
 {
-    return attenuator_model_voltage_to_db(coeffs, MAX_VOLTAGE);
+    return attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DAC_MAX_MV);
 }
 
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
@@ -291,7 +306,7 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
         return false;
     }
 
-    dac_cfg->voltage = (MAX_VOLTAGE / (double)DAC_MAX_CODE) * (double)code;
+    dac_cfg->voltage = (ATTENUATOR_DAC_MAX_MV / (double)DAC_MAX_CODE) * (double)code;
     dac_cfg->attenuation_db =
         attenuator_model_voltage_to_db(coeffs, dac_cfg->voltage);
 
@@ -325,7 +340,7 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
     return true;
 }
 
-static double attenuator_model_b_to_linear(double b)
+double attenuator_model_b_to_linear(double b)
 {
     const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
     double transmission = (double)((erf_scale +
@@ -341,6 +356,26 @@ static double attenuator_model_b_to_linear(double b)
     }
 
     return transmission;
+}
+
+bool attenuator_model_linear_to_b(double linear, double *b)
+{
+    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
+    zsl_real_t erf_arg;
+    zsl_real_t inv;
+
+    if (b == NULL || linear <= 0.0 || linear >= 1.0) {
+        return false;
+    }
+
+    erf_arg = ((zsl_real_t)2.0 * erf_scale * (zsl_real_t)linear) - erf_scale;
+    if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
+        return false;
+    }
+
+    inv = zsl_prob_erf_inv(&erf_arg);
+    *b = MODEL_ERF_SCALE - (double)inv;
+    return true;
 }
 
 static double attenuator_model_dlinear_db(double b)

@@ -204,6 +204,19 @@ int mems_router_apply_route(const struct mems_router *router,
                             const char **failed_switch,
                             char *failed_state);
 
+/**
+ * @brief Look up and apply a named input/output route.
+ *
+ * This can sleep on the router mutex through MEMS switch operations. It keeps
+ * command modules from duplicating route lookup before setting a simple static
+ * route.
+ */
+int mems_router_apply_named_route(const struct mems_router *router,
+                                  const char *input,
+                                  const char *output,
+                                  const char **failed_switch,
+                                  char *failed_state);
+
 /** @brief List static routes whose switches currently match all required states. */
 uint8_t mems_router_active_routes(const struct mems_router *router,
                                   struct mems_route_key *out_keys, uint8_t max_keys);

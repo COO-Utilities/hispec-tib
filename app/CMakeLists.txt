@@ -22,6 +22,7 @@ target_sources(app PRIVATE
         src/app_scheduled_actions.c
         src/app_settings.c
         src/attenuator.c
+        src/attenuator_calibration.c
         src/attenuator_command.c
         src/command.c
         src/devices.c

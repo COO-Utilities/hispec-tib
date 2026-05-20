@@ -20,6 +20,7 @@
 
 #define ATTENUATOR_PHYSICAL_COUNT 2
 #define ATTENUATOR_COEFF_COUNT 2
+#define ATTENUATOR_DAC_MAX_MV 5000.0
 
 struct attenuator_model_coeffs {
     double slope;
@@ -81,6 +82,21 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
                                       double voltage);
 
 /**
+ * @brief Convert the model coordinate b to linear transmission.
+ *
+ * This helper performs no I/O. It is used by fit/residual code that needs the
+ * same physical model as normal attenuator control.
+ */
+double attenuator_model_b_to_linear(double b);
+
+/**
+ * @brief Convert linear transmission to the model coordinate b.
+ *
+ * Returns false when @p linear is outside the invertible open interval.
+ */
+bool attenuator_model_linear_to_b(double linear, double *b);
+
+/**
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.
  *
  * This is the inverse of attenuator_model_voltage_to_db(). Returns false when
@@ -101,6 +117,16 @@ bool attenuator_set_dac1_voltage(struct attenuator *drv, double voltage);
 
 /** Set physical attenuator 2 by raw DAC millivolts. May block on I2C. */
 bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage);
+
+/**
+ * @brief Set one physical attenuator by raw DAC millivolts. May block on I2C.
+ *
+ * @p physical_index is zero for dac1 and one for dac2. This bypasses the
+ * calibration model and is intended for calibration sweeps.
+ */
+bool attenuator_set_physical_voltage(struct attenuator *drv,
+                                     uint8_t physical_index,
+                                     double voltage);
 
 /**
  * @brief Set total logical attenuation in dB.

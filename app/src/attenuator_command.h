@@ -32,4 +32,10 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd);
  */
 struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd);
 
+/** @brief Query compact attenuator-calibration state. */
+struct coo_cmd_response atten_calibration_get(const struct coo_cmd_request *cmd);
+
+/** @brief Start/continue/stop attenuator calibration or fit manual batches. */
+struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd);
+
 #endif /* HISPEC_ATTENUATOR_COMMAND_H */

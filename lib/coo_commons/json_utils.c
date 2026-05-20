@@ -21,7 +21,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define COO_JSON_DOUBLE_ARRAY_MAX 8U
+#define COO_JSON_DOUBLE_ARRAY_MAX 32U
 
 const char *coo_json_skip_ws(const char *text)
 {
@@ -561,6 +561,10 @@ int coo_json_append_float_or_null(char *buf, size_t buf_len, size_t *offset,
 		return coo_json_append(buf, buf_len, offset, "%.4f", value);
 	case 6:
 		return coo_json_append(buf, buf_len, offset, "%.6f", value);
+	case 9:
+		return coo_json_append(buf, buf_len, offset, "%.9g", value);
+	case 12:
+		return coo_json_append(buf, buf_len, offset, "%.12g", value);
 	default:
 		return coo_json_append(buf, buf_len, offset, "%.3f", value);
 	}
