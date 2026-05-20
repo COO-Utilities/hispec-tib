@@ -34,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEVICE_NAMES = ("hsfib-tib", "hsfib-rcal", "hsfib-bcal", "hsfib-as")
 LASER_NAMES = ("1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k")
-ATTENUATOR_NAMES = LASER_NAMES
+ATTENUATOR_NAMES = LASER_NAMES + ("lfc",)
 PD_CHANNELS = ("yj", "hk")
 FIBERS = ("M", "S")
 OVERRIDE_MODES = ("auto", "override_on", "override_off")
@@ -389,6 +389,44 @@ class AttenuatorCoeff:
 
 
 @dataclass(frozen=True)
+class AttenuatorFitMetrics:
+    valid: bool
+    points: int = 0
+    slope: float | None = None
+    offset: float | None = None
+    corr: float | None = None
+    rms_db: float | None = None
+    max_abs_db: float | None = None
+    min_tx: float | None = None
+    max_tx: float | None = None
+    voltage_span_mv: float | None = None
+
+
+@dataclass(frozen=True)
+class AttenuatorCalibrationBatch:
+    voltage_mv: tuple[float, ...]
+    flux: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class AttenuatorCalibrationStatus:
+    state: str
+    mode: str
+    physical: str
+    fit: str
+    n: int
+    t_ms: int
+    complete_pct: int
+    point: str
+    mv: float
+    other_mv: float
+    error: int
+    dac1: AttenuatorFitMetrics
+    dac2: AttenuatorFitMetrics
+    voltage_mv: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
 class PhotodiodeValues:
     yjvalue: float
     yjvalue_err: float
@@ -432,10 +470,10 @@ class PhotodiodeSettings:
     dark_mv: float
     lowest_dark_mv: float
     lowest_dark_valid: bool
-    dark_measurement: str
-    dark_measurement_duration_ms: int
-    dark_measurement_samples: int
-    dark_measurement_target_samples: int
+    average: str
+    average_duration_ms: int
+    average_samples: int
+    average_target_samples: int
     noise_rms_mV: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
@@ -535,6 +573,10 @@ def _require_float(name: str, value: float, min_value: float, max_value: float) 
     if not math.isfinite(value) or value < min_value or value > max_value:
         raise HispecFibError(f"{name} must be in [{min_value}, {max_value}]")
     return value
+
+
+def _float_or_nan(value: Any) -> float:
+    return math.nan if value is None else float(value)
 
 
 def _require_nonnegative_u32(name: str, value: int) -> int:
@@ -721,6 +763,68 @@ def _decode_atten_coeff(data: Mapping[str, Any]) -> AttenuatorCoeff:
     )
 
 
+def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
+    if not bool(data.get("valid", False)):
+        return AttenuatorFitMetrics(valid=False)
+    return AttenuatorFitMetrics(
+        valid=True,
+        points=int(data.get("points", 0)),
+        slope=float(data["slope"]),
+        offset=float(data["offset"]),
+        corr=float(data["corr"]),
+        rms_db=float(data["rms_db"]),
+        max_abs_db=float(data["max_abs_db"]),
+        min_tx=float(data["min_tx"]),
+        max_tx=float(data["max_tx"]),
+        voltage_span_mv=float(data["voltage_span_mv"]),
+    )
+
+
+def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationStatus:
+    return AttenuatorCalibrationStatus(
+        state=str(data["state"]),
+        mode=str(data["mode"]),
+        physical=str(data["physical"]),
+        fit=str(data["fit"]),
+        n=int(data["n"]),
+        t_ms=int(data["t_ms"]),
+        complete_pct=int(data["complete_pct"]),
+        point=str(data["point"]),
+        mv=float(data["mv"]),
+        other_mv=float(data["other_mv"]),
+        error=int(data["error"]),
+        dac1=_decode_atten_fit(data.get("dac1", {"valid": False})),
+        dac2=_decode_atten_fit(data.get("dac2", {"valid": False})),
+        voltage_mv=tuple(float(v) for v in data.get("voltage_mv", ())),
+    )
+
+
+def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any]) -> dict[str, list[float]]:
+    if isinstance(batch, AttenuatorCalibrationBatch):
+        voltage_mv = batch.voltage_mv
+        flux = batch.flux
+    elif isinstance(batch, Mapping):
+        voltage_mv = batch.get("voltage_mv", ())
+        flux = batch.get("flux", ())
+    else:
+        if len(batch) != 2:
+            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (voltage_mv, flux)")
+        voltage_mv = batch[0]
+        flux = batch[1]
+
+    voltage_values = tuple(float(v) for v in voltage_mv)
+    flux_values = tuple(float(v) for v in flux)
+    if len(voltage_values) != len(flux_values):
+        raise HispecFibError(f"{name} voltage_mv and flux lengths differ")
+    if len(voltage_values) < 6 or len(voltage_values) > 20:
+        raise HispecFibError(f"{name} must contain 6 to 20 points")
+    if any(not math.isfinite(v) for v in voltage_values):
+        raise HispecFibError(f"{name} voltage_mv contains non-finite values")
+    if any((not math.isfinite(v)) or v <= 0.0 for v in flux_values):
+        raise HispecFibError(f"{name} flux values must be positive and finite")
+    return {"voltage_mv": list(voltage_values), "flux": list(flux_values)}
+
+
 def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
     return _dataclass_from(DarkStatus, data)
 
@@ -760,27 +864,27 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             laser=str(data.get("laser", "")),
             autolevel=bool(data.get("autolevel", False)),
             time=int(data.get("time", 0)),
-            tp=float(data.get("tp", math.nan)),
-            tp_err=float(data.get("tp_err", math.nan)),
-            tp_rms_err=float(data.get("tp_rms_err", math.nan)),
-            pd_flux_ph_s=float(data.get("pd_flux_ph_s", math.nan)),
-            pd_flux_err_ph_s=float(data.get("pd_flux_err_ph_s", math.nan)),
-            laser_flux_ph_s=float(data.get("laser_flux_ph_s", math.nan)),
-            laser_flux_err_ph_s=float(data.get("laser_flux_err_ph_s", math.nan)),
-            pd_route_tx=float(data.get("pd_route_tx", math.nan)),
-            laser_route_tx=float(data.get("laser_route_tx", math.nan)),
-            atten_tx=float(data.get("atten_tx", math.nan)),
+            tp=_float_or_nan(data.get("tp", math.nan)),
+            tp_err=_float_or_nan(data.get("tp_err", math.nan)),
+            tp_rms_err=_float_or_nan(data.get("tp_rms_err", math.nan)),
+            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", math.nan)),
+            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", math.nan)),
+            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", math.nan)),
+            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", math.nan)),
+            pd_route_tx=_float_or_nan(data.get("pd_route_tx", math.nan)),
+            laser_route_tx=_float_or_nan(data.get("laser_route_tx", math.nan)),
+            atten_tx=_float_or_nan(data.get("atten_tx", math.nan)),
             pd_raw=int(data.get("pd_raw", 0)),
-            pd_mv=float(data.get("pd_mv", math.nan)),
-            pd_net_mv=float(data.get("pd_net_mv", math.nan)),
-            pd_mean_mv_1s=float(data.get("pd_mean_mv_1s", math.nan)),
-            pd_rms_mv_0p5s=float(data.get("pd_rms_mv_0p5s", math.nan)),
-            laser_current_ma=float(data.get("laser_current_ma", math.nan)),
-            atten_db=float(data.get("atten_db", math.nan)),
-            wavelength_nm=float(data.get("wavelength_nm", math.nan)),
-            pd_ontime_s=float(data.get("pd_ontime_s", math.nan)),
-            laser_current_ontime_s=float(data.get("laser_current_ontime_s", math.nan)),
-            flags=tuple(str(flag) for flag in data.get("flags", ())),
+            pd_mv=_float_or_nan(data.get("pd_mv", math.nan)),
+            pd_net_mv=_float_or_nan(data.get("pd_net_mv", math.nan)),
+            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", math.nan)),
+            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", math.nan)),
+            laser_current_ma=_float_or_nan(data.get("laser_current_ma", math.nan)),
+            atten_db=_float_or_nan(data.get("atten_db", math.nan)),
+            wavelength_nm=_float_or_nan(data.get("wavelength_nm", math.nan)),
+            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", math.nan)),
+            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", math.nan)),
+            flags=tuple(str(flag) for flag in (data.get("flags") or ())),
         )
 
     if len(payload) != _THROUGHPUT_BINARY.size:
@@ -1298,6 +1402,72 @@ class HispecFibPcb:
             {"dac1": [float(dac1[0]), float(dac1[1])], "dac2": [float(dac2[0]), float(dac2[1])], "persistent": persistent},
         )
 
+    def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
+        return _decode_atten_cal_status(self._request_json("atten/calibrate"))
+
+    def atten_calibrate_auto(
+        self,
+        laser: str,
+        *,
+        output: str,
+        fiber: Literal["M", "S"] = "M",
+        dwell_ms: int = 300,
+        persistent: bool = False,
+    ) -> AttenuatorCalibrationStatus:
+        _require_choice("laser", laser, LASER_NAMES)
+        fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
+        payload = {
+            "laser": laser,
+            "output": str(output),
+            "fiber": fiber,
+            "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
+            "persistent": bool(persistent),
+        }
+        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
+
+    def atten_calibrate_manual(
+        self,
+        attenuator: str = "lfc",
+        *,
+        dwell_ms: int = 300,
+        persistent: bool = False,
+    ) -> AttenuatorCalibrationStatus:
+        _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
+        payload = {
+            "mode": "manual",
+            "attenuator": attenuator,
+            "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
+            "persistent": bool(persistent),
+        }
+        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
+
+    def atten_calibration_continue(self, *, other_mv: float | None = None) -> AttenuatorCalibrationStatus:
+        payload: dict[str, Any] = {"continue": True}
+        if other_mv is not None:
+            payload["other_mv"] = _require_float("other_mv", other_mv, 0.0, 4096.0)
+        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
+
+    def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:
+        return _decode_atten_cal_status(self._request_json("atten/calibrate", {"stop": True}))
+
+    def atten_calibrate_manual_fit(
+        self,
+        attenuator: str = "lfc",
+        *,
+        dac1: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
+        dac2: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
+        persistent: bool = False,
+    ) -> AttenuatorCalibrationStatus:
+        _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
+        payload = {
+            "mode": "manual",
+            "attenuator": attenuator,
+            "persistent": bool(persistent),
+            "dac1": _atten_cal_batch_payload("dac1", dac1),
+            "dac2": _atten_cal_batch_payload("dac2", dac2),
+        }
+        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
+
     def pd(self) -> PhotodiodeValues:
         return _dataclass_from(PhotodiodeValues, self._request_json("pd"))
 
@@ -1393,28 +1563,60 @@ class HispecFibPcb:
         *,
         fiber: Literal["M", "S"] = "M",
         autolevel: bool = True,
+        input: str | None = None,
+        output: str | None = None,
+        max_flux_ph_s: float | None = None,
         stopafter_s: int = 300,
         format: Literal["json", "binary"] = "json",
         collect: bool = False,
+        channel: Literal["yj", "hk"] | None = None,
         max_samples: int = 20000,
     ) -> CommandOk | ThroughputMonitor:
-        _require_choice("laser", laser, LASER_NAMES)
+        if laser != "none":
+            _require_choice("laser", laser, LASER_NAMES)
         fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
         _require_choice("format", format, ("json", "binary"))
+        if max_flux_ph_s is not None and not autolevel:
+            raise HispecFibError("max_flux_ph_s is valid only with autolevel=True")
+        if laser == "none":
+            if autolevel:
+                raise HispecFibError('laser="none" requires autolevel=False')
+            if input is None or output is None:
+                raise HispecFibError('laser="none" requires input and output routes')
+            if channel is None and collect:
+                if str(input).startswith("yj") or str(output).startswith("yj"):
+                    channel = "yj"
+                elif str(input).startswith("hk") or str(output).startswith("hk"):
+                    channel = "hk"
+                else:
+                    raise HispecFibError('collecting laser="none" throughput requires channel="yj" or "hk"')
+            elif channel is not None:
+                _require_choice("channel", channel, PD_CHANNELS)
+        elif channel is None:
+            channel = _LASER_TO_PD_CHANNEL[laser]
+        else:
+            _require_choice("channel", channel, PD_CHANNELS)
+
+        payload: dict[str, Any] = {
+            "laser": laser,
+            "fiber": fiber,
+            "autolevel": bool(autolevel),
+            "stopafter_s": _require_nonnegative_u32("stopafter_s", stopafter_s),
+            "format": format,
+        }
+        if input is not None:
+            payload["input"] = str(input)
+        if output is not None:
+            payload["output"] = str(output)
+        if max_flux_ph_s is not None:
+            payload["max_flux_ph_s"] = _require_float("max_flux_ph_s", max_flux_ph_s, 1e-300, 1e300)
+
         monitor = None
         if collect:
-            monitor = self.start_throughput_monitor(_LASER_TO_PD_CHANNEL[laser], max_samples=max_samples)
+            assert channel is not None
+            monitor = self.start_throughput_monitor(channel, max_samples=max_samples)
         try:
-            self._request_ok(
-                "measure_throughput",
-                {
-                    "laser": laser,
-                    "fiber": fiber,
-                    "autolevel": bool(autolevel),
-                    "stopafter_s": _require_nonnegative_u32("stopafter_s", stopafter_s),
-                    "format": format,
-                },
-            )
+            self._request_ok("measure_throughput", payload)
         except Exception:
             if monitor is not None:
                 monitor.stop()
