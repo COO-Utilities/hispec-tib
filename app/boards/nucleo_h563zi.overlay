@@ -46,6 +46,41 @@
 	};
 };
 
+/* The HISPEC-FIB PCB uses PF1/PF0 as I2C2 SCL/SDA. On MB1404 this requires
+ * the "HSE not used" solder-bridge configuration documented in hardware.md,
+ * so the application must not inherit Zephyr's default ST-LINK HSE bypass.
+ */
+&clk_hse {
+	status = "disabled";
+	/delete-property/ hse-bypass;
+};
+
+&clk_hsi {
+	status = "okay";
+};
+
+&pll {
+	/* 64 MHz HSI / 16 * 120 / 2 = 240 MHz SYSCLK, matching board default. */
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <4>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&pll2 {
+	/* Keep PLL2_Q at 160 MHz for peripherals inherited from the Nucleo DTS. */
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <3>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
 &gpiob {
 	laser_bank_power_default: laser-bank-power-default {
 		gpio-hog;
