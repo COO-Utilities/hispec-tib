@@ -29,6 +29,11 @@ See status.md for software details
 - Microcontroller reference manual STM32H563ZI.pdf
 - https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
 
+Must edit default solder bridges to use i2c2:
+• HSE not used: PF0/PH0 and PF1/PH1 are used as GPIOs instead of clocks. The configuration must be:
+– SB48 and SB50 ON
+– SB49 OFF
+
 
 ## MEMS Switches
 Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
