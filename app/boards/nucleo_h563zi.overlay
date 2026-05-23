@@ -102,7 +102,7 @@
 	status = "okay";
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 
 	adc1115: adc1115@48 {
 		compatible = "ti,ads1115";
