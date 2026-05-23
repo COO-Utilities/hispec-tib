@@ -39,9 +39,9 @@
 		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
 		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
 
-		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_HIGH>; /* DS2408 P1 */
-		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_HIGH>; /* DS2408 P2 */
-		heater_power_gpios = <&ds2408_pd_power 2 GPIO_ACTIVE_HIGH>; /* DS2408 P3 */
+		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_LOW>; /* DS2408 P1 */
+		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_LOW>; /* DS2408 P2 */
+		heater_power_gpios = <&ds2408_pd_power 2 GPIO_ACTIVE_LOW>; /* DS2408 P3 */
 
 	};
 };
@@ -179,6 +179,10 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			ngpios = <8>;
+			init-gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_LOW>,
+				     <&ds2408_pd_power 1 GPIO_ACTIVE_LOW>,
+				     <&ds2408_pd_power 2 GPIO_ACTIVE_LOW>;
+			output-low;
 		};
 	};
 

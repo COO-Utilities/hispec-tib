@@ -23,7 +23,33 @@ properties:
       topologies. If omitted, the driver auto-reads ROM only when the bus
       has a single slave.
 
+  init-gpios:
+    type: phandle-array
+    description: |
+      Optional DS2408 pins to configure during driver initialization. The
+      GPIO flags use normal Zephyr GPIO polarity flags. The input, output-low,
+      and output-high properties select the initial direction/state in the
+      same logical sense as Zephyr GPIO hogs, but this property is handled by
+      the DS2408 driver so a missing optional relay board does not fail global
+      GPIO hog initialization.
+
+  input:
+    type: boolean
+    description: |
+      Configure init-gpios as inputs/released. Takes precedence over
+      output-low and output-high.
+
+  output-low:
+    type: boolean
+    description: |
+      Configure init-gpios as outputs set to logical low/inactive. Takes
+      precedence over output-high.
+
+  output-high:
+    type: boolean
+    description: |
+      Configure init-gpios as outputs set to logical high/active.
+
 gpio-cells:
   - pin
   - flags
-
