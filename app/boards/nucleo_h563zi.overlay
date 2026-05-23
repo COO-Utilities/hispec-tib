@@ -88,6 +88,38 @@
 		output-low;
 		line-name = "laser-bank-power-default-off";
 	};
+
+	board_type_cal_hk_default: board-type-cal-hk-default {
+		gpio-hog;
+		gpios = <10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-cal-hk-strap";
+	};
+};
+
+&gpioa {
+	board_type_tib_default: board-type-tib-default {
+		gpio-hog;
+		gpios = <3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-tib-strap";
+	};
+};
+
+&gpioe {
+	board_type_cal_yj_default: board-type-cal-yj-default {
+		gpio-hog;
+		gpios = <15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-cal-yj-strap";
+	};
+
+	board_type_as_default: board-type-as-default {
+		gpio-hog;
+		gpios = <6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-as-strap";
+	};
 };
 
 /* PA3 is Nucleo D35 and is used as the TIB board strap, so leave it out of

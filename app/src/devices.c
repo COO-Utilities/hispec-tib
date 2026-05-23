@@ -623,80 +623,47 @@ static void set_current_profile(const struct board_profile *profile, bool checke
 }
 
 
-static int board_straps_configure_inputs(void)
-{
-	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
-		int rc = gpio_pin_configure_dt(board_straps[i].gpio, GPIO_INPUT);
-
-		if (rc != 0) {
-			LOG_ERR("Failed to configure board strap %s (%d)",
-				board_straps[i].name, rc);
-			return rc;
-		}
-	}
-
-	/* Strap pins are high-impedance solder jumpers. Configure them once from
-	 * devicetree and let the weak pullups settle before sampling the bank.
-	 */
-	k_busy_wait(100);
-	return 0;
-}
-
-static int board_strap_read_active(const struct board_strap *strap, bool *active, int *raw_level)
-{
-	int logical;
-	int raw;
-
-	if (strap == NULL || active == NULL || raw_level == NULL || strap->gpio->port == NULL) {
-		return -ENODEV;
-	}
-	raw = gpio_pin_get_raw(strap->gpio->port, strap->gpio->pin);
-	if (raw < 0) {
-		return raw;
-	}
-	logical = gpio_pin_get_dt(strap->gpio);
-	if (logical < 0) {
-		return logical;
-	}
-
-	*active = logical != 0;
-	*raw_level = raw;
-	return 0;
-}
-
 int devices_detect_board_type(void)
 {
 	enum hispec_board_type detected = HISPEC_BOARD_UNKNOWN;
 	uint8_t active_count = 0U;
 	int first_error = 0;
 
-
-	first_error = board_straps_configure_inputs();
-	if (first_error != 0) {
-		set_current_profile(&unknown_profile, true);
-		return first_error;
-	}
+	/* Strap direction and pull-ups are GPIO hogs in the board overlay. */
+	k_busy_wait(100);
 
 	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
-		bool active = false;
-		int raw_level = -1;
-		int rc = board_strap_read_active(&board_straps[i], &active, &raw_level);
+		const struct board_strap *strap = &board_straps[i];
+		int raw_level;
+		int logical;
 
-		if (rc != 0) {
-			LOG_ERR("Failed to read board strap %s (%d)", board_straps[i].name, rc);
+		raw_level = gpio_pin_get_raw(strap->gpio->port, strap->gpio->pin);
+		if (raw_level < 0) {
+			LOG_ERR("Failed to read raw board strap %s (%d)",
+				strap->name, raw_level);
 			if (first_error == 0) {
-				first_error = rc;
+				first_error = raw_level;
+			}
+			continue;
+		}
+
+		logical = gpio_pin_get_dt(strap->gpio);
+		if (logical < 0) {
+			LOG_ERR("Failed to read logical board strap %s (%d)",
+				strap->name, logical);
+			if (first_error == 0) {
+				first_error = logical;
 			}
 			continue;
 		}
 
 		LOG_INF("Board strap %s flags=0x%x raw=%d active=%d",
-			board_straps[i].name,
-			board_straps[i].gpio->dt_flags,
-			raw_level, active ? 1 : 0);
-		if (active) {
+			strap->name,
+			strap->gpio->dt_flags,
+			raw_level, logical != 0 ? 1 : 0);
+		if (logical != 0) {
 			active_count++;
-			detected = board_straps[i].board;
+			detected = strap->board;
 		}
 	}
 
