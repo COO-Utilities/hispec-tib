@@ -622,16 +622,6 @@ static void set_current_profile(const struct board_profile *profile, bool checke
 	k_mutex_unlock(&board_profile_lock);
 }
 
-static bool all_board_straps_mapped(void)
-{
-	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
-		if (board_straps[i].gpio->port == NULL) {
-			return false;
-		}
-	}
-
-	return true;
-}
 
 static int board_straps_configure_inputs(void)
 {
@@ -680,11 +670,6 @@ int devices_detect_board_type(void)
 	uint8_t active_count = 0U;
 	int first_error = 0;
 
-	if (!all_board_straps_mapped()) {
-		LOG_ERR("Board type strap GPIOs are not mapped in devicetree");
-		set_current_profile(&unknown_profile, true);
-		return -ENODEV;
-	}
 
 	first_error = board_straps_configure_inputs();
 	if (first_error != 0) {
@@ -734,9 +719,14 @@ int devices_detect_board_type(void)
 		return -EIO;
 	}
 
-	LOG_ERR("No board type strap is active; refusing board-specific setup");
-	set_current_profile(&unknown_profile, true);
-	return -ENODEV;
+	//TODO remove this bringup patch when finished.
+	// LOG_ERR("No board type strap is active; refusing board-specific setup");
+	// set_current_profile(&unknown_profile, true);
+	// return -ENODEV;
+	LOG_ERR("No board type strap is active; defaulting to TIB");
+	set_current_profile(&tib_profile, true);
+	return 0;
+
 }
 
 bool devices_board_type_checked(void)

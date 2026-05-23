@@ -43,10 +43,20 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define EXECUTOR_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
 #define PHOTODIODE_PRIORITY 3
-#define THROUGHPUT_MONITOR_STACK_SIZE 1800
+#define THROUGHPUT_MONITOR_STACK_SIZE 4096
 #define THROUGHPUT_MONITOR_PRIORITY 7
 
-#define WDT_TIMEOUT_MS 6000
+#if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
+#define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U)
+#else
+#define BOOT_NETWORK_WAIT_MS 6000U
+#endif
+
+/* Boot can spend CONFIG_NET_CONFIG_INIT_TIMEOUT waiting for DHCP before the
+ * main network/MQTT loop starts. Keep the watchdog wider than that bounded
+ * wait so normal no-DHCP bring-up does not reset the board.
+ */
+#define WDT_TIMEOUT_MS MAX(15000U, BOOT_NETWORK_WAIT_MS + 5000U)
 #define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;
@@ -206,9 +216,8 @@ static void apply_last_known_time(void)
 static void network_event_handler(bool connected)
 {
 	LOG_INF("Network event: %s", connected ? "connected" : "disconnected");
-#if defined(CONFIG_SNTP)
-	if (connected) sntp_sync_schedule_now();
-#endif
+	if (connected)
+		sntp_sync_schedule_now();
 }
 
 int main(void)
@@ -227,11 +236,9 @@ int main(void)
 	bool board_devices_ready;
 
 	LOG_INF("HISPEC-FIB PCB  %s\n", APP_VERSION_STRING);
+
 	devices_capture_boot_reset_cause();
 
-	/* Watchdog availability is a boot requirement. The main loop feeds it only
-	 * from the MQTT/network path so a wedged main path can still reset the MCU.
-	 */
 	rc = watchdog_init(&wdt, &wdt_channel);
 	if (rc != 0) {
 		LOG_ERR("Watchdog init failed (%d); refusing to boot", rc);
@@ -300,12 +307,11 @@ int main(void)
 		}
 	}
 
-#if defined(CONFIG_SNTP)
 	sntp_sync_init();
-#endif
 
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);
+	// wdt_feed(wdt, wdt_channel);
 
 	rc = coo_mqtt_init(&client_ctx, app_mqtt_device_id());
 	if (rc != 0) {
@@ -320,24 +326,26 @@ int main(void)
 	}
 	mqtt_cfg_revision = app_settings_get_mqtt_revision();
 	coo_mqtt_set_message_callback(command_handle_mqtt_publish);
+
+	//TODO get rid of this test. Software should verify the prefix + command string portion fits in buffer AND that all
+	// command strings fit in max_command_suffix (and similarly for telemetry/warnings
+	//also why is this in braces??
 	{
 		int written;
 		size_t prefix_len;
 
-		strncpy(mqtt_cmd_subscription, cmd_runtime->request_prefix,
-			sizeof(mqtt_cmd_subscription) - 1U);
+		strncpy(mqtt_cmd_subscription, cmd_runtime->request_prefix, sizeof(mqtt_cmd_subscription) - 1U);
 		mqtt_cmd_subscription[sizeof(mqtt_cmd_subscription) - 1U] = '\0';
 		prefix_len = strlen(mqtt_cmd_subscription);
-		written = snprintk(mqtt_cmd_subscription + prefix_len,
-				   sizeof(mqtt_cmd_subscription) - prefix_len, "#");
-		if (written < 0 ||
-		    written >= (int)(sizeof(mqtt_cmd_subscription) - prefix_len)) {
-			LOG_ERR("MQTT command subscription topic too long");
-			return -ENOSPC;
-		}
-		(void)coo_mqtt_add_subscription(mqtt_cmd_subscription,
-						MQTT_QOS_2_EXACTLY_ONCE);
+		written = snprintk(mqtt_cmd_subscription + prefix_len, sizeof(mqtt_cmd_subscription) - prefix_len, "#");
+		// if (written < 0 ||
+		//     written >= (int)(sizeof(mqtt_cmd_subscription) - prefix_len)) {
+		// 	LOG_ERR("MQTT command subscription topic too long");
+		// 	return -ENOSPC;
+		// }
+		(void)coo_mqtt_add_subscription(mqtt_cmd_subscription, MQTT_QOS_2_EXACTLY_ONCE);
 	}
+	// wdt_feed(wdt, wdt_channel);
 
 	while (1) {
 		/* MQTT stays connected whenever the network is ready. Serial override
@@ -370,9 +378,7 @@ int main(void)
 			}
 		}
 
-		if (wdt) {
-			(void)wdt_feed(wdt, wdt_channel);
-		}
+		wdt_feed(wdt, wdt_channel);
 
 		if (coo_mqtt_is_connected() && !mqtt_can_run) {
 			(void)mqtt_disconnect(&client_ctx, NULL);
@@ -424,7 +430,7 @@ int main(void)
 				mqtt_subscribed = false;
 			}
 		} else {
-			k_sleep(K_MSEC(20));
+			k_sleep(K_MSEC(50));
 		}
 	}
 }

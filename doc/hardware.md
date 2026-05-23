@@ -144,16 +144,15 @@ Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
 - P1 is the power switch for the YJ photodiode
 - P2 is the power switch for the HK photodiode
 - P3 is the power switch for the laser bank aux heater
-- Firmware policy is off after reboot. The local DS2408 driver drives all
-  expander outputs low during driver init when the chip is present, and app
-  setup configures P1-P3 inactive/low when the DS2408 is online.
-- If the off-board relay expander is missing at boot, firmware emits a warning,
-  reports the relay GPIO expander offline in `status`, continues photodiode ADC
-  telemetry, ignores photodiode relay power commands with a warning, and returns
-  an I/O error for laser-bank heater mode commands.
+- The DS2408 driver should set all expander outputs to their overlay-configured defaults during driver init in the same 
+  manner as any system GPIOs when the chip is present. Absent configuration, driver should not configure the chip 
+  (allowing default power-on or current config to persist). Application device startup code will enforce startup logic 
+  state for the relays. 
+- If the off-board relay expander is missing at boot, firmware emits a (non-droppable) warning,
+  reports the relay GPIO expander offline in `status`, and ignores relay power commands with a warning.
 - The DS2408 is intentionally not configured through a generic GPIO hog because
   Zephyr's hog init aborts on a not-ready GPIO controller. The relay board is an
-  allowed missing-at-boot fault, while the PCAL MEMS defaults must still apply.
+  allowed missing-at-boot fault (the mems' PCAL being unavaialble would indicate a much larger, PCB, problem).
 
 For board files:
 - Nucleo: CN9 15 D71 IO PE9

@@ -21,6 +21,7 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Decisions To Make
 
 - Verify DS2408 relay polarity on first PCB bring-up.
+  - Override_on makes LED go out and NC contact closed. So I want to reverse the polarity driver initializes to. Driver needs support for this. via zephyr
 - Decide intended persistence for MEMS switch state, AS split requested/actual
   state and last-command metadata.
 
