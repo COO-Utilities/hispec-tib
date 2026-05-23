@@ -212,12 +212,18 @@
 		compatible = "ti,dac7578";
 		reg = <0x48>;
 		status = "okay";
+		#io-channel-cells = <1>;
+		ti,clear-mode = "disabled";
+		ti,reference = "external";
 	};
 
 	dac7578_b: dac7578@4a {
 		compatible = "ti,dac7578";
 		reg = <0x4a>;
 		status = "okay";
+		#io-channel-cells = <1>;
+		ti,clear-mode = "disabled";
+		ti,reference = "external";
 	};
 
 	pcal6416a: pcal6416a@21 {
