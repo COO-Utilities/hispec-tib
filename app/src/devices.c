@@ -38,62 +38,18 @@ const struct gpio_dt_spec yj_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, yj_power_g
 const struct gpio_dt_spec hk_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, hk_power_gpios);
 
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_tib_gpios)
-static const struct gpio_dt_spec board_type_tib_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_tib_gpios);
-#else
-static const struct gpio_dt_spec board_type_tib_gpio = {0};
-#endif
+static const struct gpio_dt_spec board_type_tib_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_tib_gpios);
+static const struct gpio_dt_spec board_type_cal_yj_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_yj_gpios);
+static const struct gpio_dt_spec board_type_cal_hk_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_hk_gpios);
+static const struct gpio_dt_spec board_type_as_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_as_gpios);
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_yj_gpios)
-static const struct gpio_dt_spec board_type_cal_yj_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_yj_gpios);
-#else
-static const struct gpio_dt_spec board_type_cal_yj_gpio = {0};
-#endif
-
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_hk_gpios)
-static const struct gpio_dt_spec board_type_cal_hk_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_hk_gpios);
-#else
-static const struct gpio_dt_spec board_type_cal_hk_gpio = {0};
-#endif
-
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_as_gpios)
-static const struct gpio_dt_spec board_type_as_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_as_gpios);
-#else
-static const struct gpio_dt_spec board_type_as_gpio = {0};
-#endif
-
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
 #define MODBUS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_modbus_serial)
 static const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(adc1115))
 const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1115));
-#else
-const struct device *adc_dev = NULL;
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(dac7578))
 const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));
-#else
-const struct device *dac_dev = NULL;
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(dac7578_b))
 const struct device *dac_dev_b = DEVICE_DT_GET(DT_NODELABEL(dac7578_b));
-#else
-const struct device *dac_dev_b = NULL;
-#endif
 
-#if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
-#else
-const struct device *gpio_dev = NULL;
-#endif
 
 struct attenuator attenuators[NUM_ATTENUATORS];
 struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
@@ -627,54 +583,28 @@ int devices_detect_board_type(void)
 {
 	enum hispec_board_type detected = HISPEC_BOARD_UNKNOWN;
 	uint8_t active_count = 0U;
-	int first_error = 0;
 
 	/* Strap direction and pull-ups are GPIO hogs in the board overlay. */
 	k_busy_wait(100);
 
 	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
 		const struct board_strap *strap = &board_straps[i];
-		int raw_level;
 		int logical;
 
-		raw_level = gpio_pin_get_raw(strap->gpio->port, strap->gpio->pin);
-		if (raw_level < 0) {
-			LOG_ERR("Failed to read raw board strap %s (%d)",
-				strap->name, raw_level);
-			if (first_error == 0) {
-				first_error = raw_level;
-			}
-			continue;
-		}
-
 		logical = gpio_pin_get_dt(strap->gpio);
-		if (logical < 0) {
-			LOG_ERR("Failed to read logical board strap %s (%d)",
-				strap->name, logical);
-			if (first_error == 0) {
-				first_error = logical;
-			}
-			continue;
-		}
 
-		LOG_INF("Board strap %s flags=0x%x raw=%d active=%d",
+		LOG_INF("Board strap %s flags=0x%x active=%d",
 			strap->name,
 			strap->gpio->dt_flags,
-			raw_level, logical != 0 ? 1 : 0);
+			logical != 0 ? 1 : 0);
 		if (logical != 0) {
 			active_count++;
 			detected = strap->board;
 		}
 	}
 
-	if (first_error != 0) {
-		set_current_profile(&unknown_profile, true);
-		return first_error;
-	}
-
 	if (active_count == 1U) {
 		const struct board_profile *profile = profile_for_type(detected);
-
 		set_current_profile(profile, true);
 		LOG_INF("Detected PCB board type: %s", profile->name);
 		return 0;
