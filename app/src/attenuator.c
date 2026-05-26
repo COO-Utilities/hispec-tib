@@ -5,7 +5,7 @@
 
 #include "attenuator.h"
 #include "command.h"
-#include "drivers/dac/dac7578.h"
+#include "drivers/dac/dac7x78.h"
 
 #include <errno.h>
 #include <math.h>
@@ -300,7 +300,7 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
     uint32_t code = 0U;
     int err;
 
-    err = dac7578_read_value(dac_cfg->dev, dac_cfg->cfg.channel_id, &code);
+    err = dac7x78_read_value(dac_cfg->dev, dac_cfg->cfg.channel_id, &code);
     if (err != 0) {
         LOG_ERR("DAC read failed: %d", err);
         return false;

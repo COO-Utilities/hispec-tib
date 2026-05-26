@@ -1,6 +1,6 @@
 /**
  * @file attenuator.h
- * @brief DAC7578-backed logical attenuator channel helpers.
+ * @brief DAC7x78-backed logical attenuator channel helpers.
  *
  * Each logical attenuator owns two physical DAC-backed FVOAs. Persistence is
  * owned by app_settings; this module only applies model coefficients and
