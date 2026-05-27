@@ -394,10 +394,10 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
             return;
         }
 
-        LOG_WRN("MEMS %s applying late %c pulse after %u missed service ticks",
+        LOG_WRN_RATELIMIT_RATE(10000, "MEMS %s applying late %c pulse after %u missed service ticks",
                 sw->name, sw->target_state, late_service_cycles);
     } else if (late_service_cycles > 0U) {
-        LOG_WRN("MEMS %s service tick was %u cycles late",
+        LOG_WRN_RATELIMIT_RATE(10000, "MEMS %s service tick was %u cycles late",
                 sw->name, late_service_cycles);
     }
 
@@ -425,7 +425,7 @@ static void mems_router_process_ticks(struct mems_router *router, uint32_t elaps
     }
 
     if (elapsed_ticks > 1U) {
-        LOG_WRN("MEMS router missed %u base ticks",
+        LOG_WRN_RATELIMIT_RATE(10000, "MEMS router missed %u base ticks",
                 (unsigned int)(elapsed_ticks - 1U));
     }
 
