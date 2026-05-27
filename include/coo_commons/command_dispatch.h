@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/mqtt.h>
+#include <zephyr/sys/atomic.h>
 
 /**
  * @file command_dispatch.h
@@ -29,6 +30,12 @@
 #define COO_CMD_SESSION_ID_MAX 48
 #define COO_CMD_CORRELATION_MAX 16
 #define COO_CMD_SERIAL_WRAP_COLUMN 80U
+
+#define COO_CMD_HELP_QUERY (1u << 0)
+#define COO_CMD_HELP_EFFECT (1u << 1)
+#define COO_CMD_HELP_SERIAL_GUARD_QUERY (1u << 2)
+#define COO_CMD_HELP_TIB_ONLY (1u << 3)
+#define COO_CMD_HELP_BUILTIN (1u << 4)
 
 #if defined(CONFIG_CONSOLE_INPUT_MAX_LINE_LEN)
 #define COO_CMD_SERIAL_LINE_MAX CONFIG_CONSOLE_INPUT_MAX_LINE_LEN
@@ -121,6 +128,15 @@ typedef bool (*coo_cmd_mqtt_accept_fn)(const struct coo_cmd_request *cmd,
 
 typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
 
+struct coo_cmd_help_entry {
+	const char *key;
+	const char *usage;
+	const char *args;
+	const char *values;
+	const char *notes;
+	uint32_t flags;
+};
+
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
@@ -143,6 +159,13 @@ struct coo_cmd_runtime {
 	coo_cmd_serial_activity_fn serial_activity;
 	coo_cmd_serial_shorthand_fn serial_shorthand;
 	void *user_data;
+	const struct coo_cmd_help_entry *help_entries;
+	size_t help_entry_count;
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	struct k_work_delayable serial_guard_work;
+	atomic_t serial_guard_active;
+	uint32_t serial_guard_seconds;
+#endif
 	bool outbound_full_warning_seen;
 	bool outbound_full_warning_mqtt_seen;
 	bool serial_initialized;
@@ -165,6 +188,8 @@ struct coo_cmd_runtime_config {
 	coo_cmd_mqtt_accept_fn mqtt_accept;
 	coo_cmd_serial_activity_fn serial_activity;
 	coo_cmd_serial_shorthand_fn serial_shorthand;
+	const struct coo_cmd_help_entry *help_entries;
+	size_t help_entry_count;
 	void *user_data;
 };
 
@@ -389,5 +414,14 @@ int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 /** Print a serial response as topic then tab-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 				   uint16_t wrap_column);
+
+/**
+ * Print a serial response with JSON-aware indentation.
+ *
+ * This is presentation only. It does not change MQTT payloads or validate
+ * command responses before publication.
+ */
+void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
+					  uint16_t wrap_column);
 
 #endif /* COO_COMMONS_COMMAND_DISPATCH_H */

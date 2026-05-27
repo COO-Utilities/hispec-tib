@@ -5,8 +5,13 @@
 
 #include <coo_commons/command_dispatch.h>
 
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+#include <coo_commons/json_utils.h>
+#endif
+
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -20,6 +25,11 @@ LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 static void serial_reset_line(struct coo_cmd_runtime *runtime);
 static int runtime_init_serial_console(struct coo_cmd_runtime *runtime);
+static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
+				     const struct coo_cmd_response *out);
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+static void serial_guard_expire_work_handler(struct k_work *work);
+#endif
 
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg)
@@ -60,7 +70,15 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->mqtt_accept = cfg->mqtt_accept;
 	runtime->serial_activity = cfg->serial_activity;
 	runtime->serial_shorthand = cfg->serial_shorthand;
+	runtime->help_entries = cfg->help_entries;
+	runtime->help_entry_count = cfg->help_entry_count;
 	runtime->user_data = cfg->user_data;
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	runtime->serial_guard_seconds = CONFIG_COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS;
+	k_work_init_delayable(&runtime->serial_guard_work,
+			      serial_guard_expire_work_handler);
+	(void)atomic_clear(&runtime->serial_guard_active);
+#endif
 
 	return runtime_init_serial_console(runtime);
 }
@@ -584,6 +602,26 @@ struct coo_cmd_response coo_cmd_serial_active_response(const struct coo_cmd_requ
 			     "{\"error\":\"try later. local serial commands active\"}");
 }
 
+static int append_format(char *buf, size_t buf_len, size_t *off, const char *fmt, ...)
+{
+	va_list args;
+	int written;
+
+	if (buf == NULL || off == NULL || fmt == NULL || *off >= buf_len) {
+		return -EINVAL;
+	}
+
+	va_start(args, fmt);
+	written = vsnprintk(buf + *off, buf_len - *off, fmt, args);
+	va_end(args);
+
+	if (written < 0 || written >= (int)(buf_len - *off)) {
+		return -ENOSPC;
+	}
+	*off += (size_t)written;
+	return 0;
+}
+
 static int append_json_string(char *buf, size_t buf_len, size_t *off,
 			      const char *text)
 {
@@ -720,6 +758,378 @@ int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 				   code, msg, context);
 }
 
+static bool payload_has_text(const char *payload)
+{
+	payload = skip_serial_space(payload);
+	return payload != NULL && payload[0] != '\0';
+}
+
+static const struct coo_cmd_help_entry builtin_help_entries[] = {
+	{
+		.key = "help",
+		.usage = "help",
+		.args = "none",
+		.values = NULL,
+		.notes = "serial prints full command help directly; MQTT returns compact endpoints",
+		.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+			 COO_CMD_HELP_BUILTIN,
+	},
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	{
+		.key = "serialguard",
+		.usage = "serialguard [seconds=<s>|off]",
+		.args = "[seconds=<s>] or [off]",
+		.values = "seconds: 0 disables MQTT holdoff until changed again",
+		.notes = "runtime-only local serial guard; not persisted across reboot",
+		.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT |
+			 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
+	},
+#endif
+};
+
+static bool runtime_key_is_help(const char *key)
+{
+	return key != NULL && strcmp(key, "help") == 0;
+}
+
+static bool runtime_key_is_serial_guard(const char *key)
+{
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	return key != NULL && strcmp(key, "serialguard") == 0;
+#else
+	ARG_UNUSED(key);
+	return false;
+#endif
+}
+
+static void serial_line_end(void)
+{
+	printk("\r\n");
+}
+
+static uint16_t serial_print_prefix(const char *prefix)
+{
+	uint16_t col = 0U;
+
+	for (const char *s = prefix != NULL ? prefix : ""; *s != '\0'; ++s) {
+		printk("%c", *s);
+		col++;
+	}
+
+	return col;
+}
+
+static void serial_print_wrapped_text(const char *prefix,
+				      const char *text,
+				      uint16_t wrap_column)
+{
+	uint16_t col;
+	size_t word_len = 0U;
+
+	if (text == NULL || text[0] == '\0') {
+		return;
+	}
+
+	col = serial_print_prefix(prefix);
+	for (const char *s = text; *s != '\0'; ++s) {
+		const bool at_space = (*s == ' ' || *s == '\t');
+
+		if (!at_space) {
+			word_len++;
+		}
+
+		if (wrap_column != 0U && col >= wrap_column && at_space) {
+			serial_line_end();
+			col = serial_print_prefix("      ");
+			word_len = 0U;
+			continue;
+		}
+		if (wrap_column != 0U && col + word_len >= wrap_column &&
+		    word_len > 0U && at_space) {
+			serial_line_end();
+			col = serial_print_prefix("      ");
+			word_len = 0U;
+			continue;
+		}
+
+		printk("%c", at_space ? ' ' : *s);
+		col++;
+		if (at_space) {
+			word_len = 0U;
+		}
+	}
+	serial_line_end();
+}
+
+static void serial_print_help_entry(const struct coo_cmd_help_entry *entry,
+				    uint16_t wrap_column)
+{
+	if (entry == NULL || entry->key == NULL) {
+		return;
+	}
+
+	printk("  %s", entry->key);
+	if ((entry->flags & COO_CMD_HELP_TIB_ONLY) != 0U) {
+		printk(" [TIB]");
+	}
+	if ((entry->flags & COO_CMD_HELP_QUERY) != 0U &&
+	    (entry->flags & COO_CMD_HELP_EFFECT) != 0U) {
+		printk(" query/effect");
+	} else if ((entry->flags & COO_CMD_HELP_QUERY) != 0U) {
+		printk(" query");
+	} else if ((entry->flags & COO_CMD_HELP_EFFECT) != 0U) {
+		printk(" effect");
+	}
+	serial_line_end();
+
+	serial_print_wrapped_text("    use: ", entry->usage, wrap_column);
+	serial_print_wrapped_text("    args: ", entry->args, wrap_column);
+	serial_print_wrapped_text("    values: ", entry->values, wrap_column);
+	serial_print_wrapped_text("    notes: ", entry->notes, wrap_column);
+}
+
+static void runtime_print_serial_help(const struct coo_cmd_runtime *runtime,
+				      uint16_t wrap_column)
+{
+	if (wrap_column == 0U) {
+		wrap_column = COO_CMD_SERIAL_WRAP_COLUMN;
+	}
+
+	printk("serial help");
+	serial_line_end();
+	printk("  device: %s", runtime != NULL ? runtime->device_id : "");
+	serial_line_end();
+	printk("  request prefix: %s", runtime != NULL ? runtime->request_prefix : "");
+	serial_line_end();
+	printk("  [] marks optional payload fields or serial tokens");
+	serial_line_end();
+
+	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
+		serial_print_help_entry(&builtin_help_entries[i], wrap_column);
+	}
+	if (runtime != NULL) {
+		for (size_t i = 0U; i < runtime->help_entry_count; ++i) {
+			serial_print_help_entry(&runtime->help_entries[i], wrap_column);
+		}
+	}
+}
+
+static int append_help_key_array(char *payload, size_t payload_len, size_t *off,
+				 const struct coo_cmd_help_entry *entries,
+				 size_t entry_count,
+				 bool *first)
+{
+	for (size_t i = 0U; i < entry_count; ++i) {
+		if (entries[i].key == NULL) {
+			continue;
+		}
+		if (append_format(payload, payload_len, off, "%s\"",
+				  *first ? "" : ",") != 0 ||
+		    append_json_string(payload, payload_len, off, entries[i].key) != 0 ||
+		    append_format(payload, payload_len, off, "\"") != 0) {
+			return -ENOSPC;
+		}
+		*first = false;
+	}
+
+	return 0;
+}
+
+static struct coo_cmd_response runtime_help_response(struct coo_cmd_runtime *runtime,
+						     const struct coo_cmd_request *cmd)
+{
+	char payload[COO_CMD_PAYLOAD_MAX];
+	char response_prefix[COO_CMD_TOPIC_MAX];
+	size_t off = 0U;
+	bool first = true;
+
+	if (runtime == NULL ||
+	    coo_cmd_format_response_topic(runtime->device_id, "",
+					  response_prefix,
+					  sizeof(response_prefix)) != 0) {
+		return coo_cmd_error(cmd, "help topic formatting failed");
+	}
+
+	if (append_format(payload, sizeof(payload),
+			  &off,
+			  "{\"device\":\"%s\",\"request_prefix\":\"%s\","
+			  "\"response_prefix\":\"%s\",\"commands\":[",
+			  runtime->device_id,
+			  runtime->request_prefix,
+			  response_prefix) != 0 ||
+	    append_help_key_array(payload, sizeof(payload), &off,
+				  builtin_help_entries,
+				  ARRAY_SIZE(builtin_help_entries),
+				  &first) != 0 ||
+	    append_help_key_array(payload, sizeof(payload), &off,
+				  runtime->help_entries,
+				  runtime->help_entry_count,
+				  &first) != 0 ||
+	    append_format(payload, sizeof(payload), &off, "]}") != 0) {
+		return coo_cmd_error(cmd, "help response too large");
+	}
+
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+}
+
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+static bool runtime_serial_guard_active(const struct coo_cmd_runtime *runtime)
+{
+	return runtime != NULL && atomic_get(&runtime->serial_guard_active) != 0;
+}
+
+static void runtime_clear_serial_guard(struct coo_cmd_runtime *runtime)
+{
+	if (runtime == NULL) {
+		return;
+	}
+
+	(void)atomic_clear(&runtime->serial_guard_active);
+	(void)k_work_cancel_delayable(&runtime->serial_guard_work);
+}
+
+static void runtime_note_serial_guard_activity(struct coo_cmd_runtime *runtime)
+{
+	int rc;
+
+	if (runtime == NULL) {
+		return;
+	}
+	if (runtime->serial_guard_seconds == 0U) {
+		runtime_clear_serial_guard(runtime);
+		return;
+	}
+
+	(void)atomic_set(&runtime->serial_guard_active, 1);
+	rc = k_work_reschedule(&runtime->serial_guard_work,
+			       K_SECONDS(runtime->serial_guard_seconds));
+	if (rc < 0) {
+		(void)atomic_clear(&runtime->serial_guard_active);
+		LOG_ERR("Failed to schedule serial guard expiration (%d)", rc);
+	}
+}
+
+static void serial_guard_expire_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct coo_cmd_runtime *runtime =
+		CONTAINER_OF(dwork, struct coo_cmd_runtime, serial_guard_work);
+
+	(void)atomic_clear(&runtime->serial_guard_active);
+	LOG_INF("Serial guard expired; MQTT command execution is enabled");
+}
+
+static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *runtime,
+						     const struct coo_cmd_request *cmd)
+{
+	if (!runtime_serial_guard_active(runtime)) {
+		return true;
+	}
+
+	if (cmd == NULL || cmd->msg_type != COO_CMD_QUERY) {
+		return false;
+	}
+
+	if (runtime_key_is_help(cmd->key) || runtime_key_is_serial_guard(cmd->key)) {
+		return true;
+	}
+
+	return runtime->mqtt_accept != NULL &&
+	       runtime->mqtt_accept(cmd, runtime->user_data);
+}
+
+static struct coo_cmd_response runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
+							const struct coo_cmd_request *cmd)
+{
+	char payload[COO_CMD_PAYLOAD_MAX];
+	int64_t remaining_ms = 0;
+	k_ticks_t remaining_ticks;
+
+	if (runtime == NULL) {
+		return coo_cmd_error(cmd, "serial guard unavailable");
+	}
+
+	remaining_ticks = k_work_delayable_remaining_get(&runtime->serial_guard_work);
+	remaining_ms = k_ticks_to_ms_floor64(remaining_ticks);
+	snprintk(payload, sizeof(payload),
+		 "{\"serialguard_s\":%u,\"active\":%s,\"remaining_ms\":%lld}",
+		 runtime->serial_guard_seconds,
+		 runtime_serial_guard_active(runtime) ? "true" : "false",
+		 (long long)remaining_ms);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+}
+
+static struct coo_cmd_response runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
+							const struct coo_cmd_request *cmd)
+{
+	uint32_t holdoff_s = 0U;
+	bool persistent = false;
+	int parse_rc_seconds;
+	int parse_rc_value;
+	int parse_rc_persistent;
+
+	if (runtime == NULL || cmd == NULL) {
+		return coo_cmd_error(cmd, "serial guard unavailable");
+	}
+
+	parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
+	parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
+	if (parse_rc_seconds == COO_JSON_EXTRACT_ERR ||
+	    parse_rc_value == COO_JSON_EXTRACT_ERR) {
+		return coo_cmd_error(cmd, "invalid seconds");
+	}
+	if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
+	    parse_rc_value == COO_JSON_EXTRACT_MISSING) {
+		return coo_cmd_error(cmd, "missing seconds");
+	}
+
+	parse_rc_persistent = coo_json_extract_bool(cmd->payload, "persistent", &persistent);
+	if (parse_rc_persistent == COO_JSON_EXTRACT_ERR) {
+		return coo_cmd_error(cmd, "invalid persistent");
+	}
+	if (parse_rc_persistent == COO_JSON_EXTRACT_OK) {
+		return coo_cmd_error(cmd, "serialguard persistence unsupported");
+	}
+
+	runtime->serial_guard_seconds = holdoff_s;
+	if (cmd->source == COO_CMD_SOURCE_SERIAL) {
+		runtime_note_serial_guard_activity(runtime);
+	} else if (holdoff_s == 0U) {
+		runtime_clear_serial_guard(runtime);
+	}
+
+	return coo_cmd_ok(cmd);
+}
+#endif
+
+static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
+					   const struct coo_cmd_request *cmd)
+{
+	struct coo_cmd_response out;
+
+	if (runtime == NULL || cmd == NULL) {
+		return false;
+	}
+
+	if (runtime_key_is_help(cmd->key)) {
+		out = runtime_help_response(runtime, cmd);
+		runtime_enqueue_response(runtime, &out);
+		return true;
+	}
+
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	if (runtime_key_is_serial_guard(cmd->key)) {
+		out = cmd->msg_type == COO_CMD_EFFECT ?
+		      runtime_serial_guard_set(runtime, cmd) :
+		      runtime_serial_guard_get(runtime, cmd);
+		runtime_enqueue_response(runtime, &out);
+		return true;
+	}
+#endif
+
+	return false;
+}
+
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
 			 uint16_t *message_id)
@@ -831,6 +1241,9 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 		return;
 	}
 
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	runtime_note_serial_guard_activity(runtime);
+#endif
 	if (runtime->serial_activity != NULL) {
 		runtime->serial_activity(runtime->user_data);
 	}
@@ -850,6 +1263,15 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 
 	if (key == NULL || *key == '\0') {
 		runtime_enqueue_serial_error(runtime, "missing command key");
+		return;
+	}
+
+	if (runtime_key_is_help(key)) {
+		if (payload_has_text(payload)) {
+			runtime_enqueue_serial_error(runtime, "help takes no arguments");
+		} else {
+			runtime_print_serial_help(runtime, runtime->serial_wrap_column);
+		}
 		return;
 	}
 
@@ -874,6 +1296,10 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 	}
 	cmd->payload_len = strlen(cmd->payload);
 	cmd->msg_type = runtime_classify(runtime, cmd);
+
+	if (runtime_handle_builtin_request(runtime, cmd)) {
+		return;
+	}
 
 	if (k_msgq_put(runtime->inbound_queue, cmd, K_NO_WAIT) != 0) {
 		struct coo_cmd_response *out = &runtime->outbound_scratch;
@@ -1058,8 +1484,8 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 			pub->prop.correlation_data.len, sizeof(cmd->correlation_data));
 	}
 
-	if (runtime->mqtt_accept != NULL &&
-	    !runtime->mqtt_accept(cmd, runtime->user_data)) {
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	if (!runtime_mqtt_allowed_during_serial_guard(runtime, cmd)) {
 		struct coo_cmd_response *out = &runtime->outbound_scratch;
 
 		*out = coo_cmd_serial_active_response(cmd);
@@ -1070,6 +1496,11 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 			"serial_guard_active",
 			"MQTT command rejected while serial command guard is active",
 			cmd->key);
+		return;
+	}
+#endif
+
+	if (runtime_handle_builtin_request(runtime, cmd)) {
 		return;
 	}
 
@@ -1102,7 +1533,7 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 		return;
 	}
 
-	coo_cmd_print_serial_response(warning, wrap_column);
+	coo_cmd_print_serial_response_pretty(warning, wrap_column);
 
 	if (mqtt_available &&
 	    coo_cmd_publish_mqtt(client, warning, runtime->mqtt_msg_id) != 0) {
@@ -1147,7 +1578,7 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 		const bool best_effort = (out->target == COO_CMD_OUT_MQTT_BEST_EFFORT);
 
 		if (out->target == COO_CMD_OUT_SERIAL) {
-			coo_cmd_print_serial_response(out, wrap_column);
+			coo_cmd_print_serial_response_pretty(out, wrap_column);
 			continue;
 		}
 
@@ -1186,15 +1617,19 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		return;
 	}
 
-	printk("%s\n\t", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s\r\n\t", out->topic[0] != '\0' ? out->topic : "serial");
 	col = 8U;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
 
 	for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
 		const char ch = out->payload[i];
 
+		if (ch == '\r') {
+			continue;
+		}
+
 		if (ch == '\n' || (wrap_column != 0U && col >= wrap_column)) {
-			printk("\n\t");
+			printk("\r\n\t");
 			col = 8U;
 			if (ch == '\n') {
 				continue;
@@ -1207,10 +1642,194 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		if (wrap_column != 0U &&
 		    (ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
 		    i + 1U < len) {
-			printk("\n\t");
+			printk("\r\n\t");
 			col = 8U;
 		}
 	}
 
-	printk("\n");
+	printk("\r\n");
+}
+
+static const char *serial_payload_start(const char *payload)
+{
+	while (payload != NULL && isspace((unsigned char)*payload)) {
+		payload++;
+	}
+
+	return payload;
+}
+
+static void serial_response_newline_indent(uint8_t indent, uint16_t *col)
+{
+	printk("\r\n\t");
+	*col = 8U;
+	for (uint8_t i = 0U; i < indent; ++i) {
+		printk("  ");
+		*col += 2U;
+	}
+}
+
+static bool json_stack_push(char *stack, size_t stack_len, uint8_t *depth, char close_ch)
+{
+	if (*depth >= stack_len) {
+		return false;
+	}
+
+	stack[*depth] = close_ch;
+	(*depth)++;
+	return true;
+}
+
+static bool json_stack_pop(char *stack, uint8_t *depth, char close_ch)
+{
+	if (*depth == 0U || stack[*depth - 1U] != close_ch) {
+		return false;
+	}
+
+	(*depth)--;
+	return true;
+}
+
+static bool serial_print_json_payload(const char *payload, size_t len)
+{
+	char stack[16];
+	uint8_t depth = 0U;
+	uint16_t col = 8U;
+	bool in_string = false;
+	bool escaped = false;
+	bool saw_token = false;
+
+	for (size_t i = 0U; i < len && payload[i] != '\0'; ++i) {
+		const char ch = payload[i];
+
+		if (in_string) {
+			printk("%c", ch);
+			col++;
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				in_string = false;
+			} else if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			continue;
+		}
+
+		if (isspace((unsigned char)ch)) {
+			continue;
+		}
+
+		saw_token = true;
+		switch (ch) {
+		case '"':
+			in_string = true;
+			printk("%c", ch);
+			col++;
+			break;
+		case '{':
+			if (!json_stack_push(stack, sizeof(stack), &depth, '}')) {
+				return false;
+			}
+			printk("%c", ch);
+			col++;
+			serial_response_newline_indent(depth, &col);
+			break;
+		case '[':
+			if (!json_stack_push(stack, sizeof(stack), &depth, ']')) {
+				return false;
+			}
+			printk("%c", ch);
+			col++;
+			serial_response_newline_indent(depth, &col);
+			break;
+		case '}':
+		case ']':
+			if (!json_stack_pop(stack, &depth, ch)) {
+				return false;
+			}
+			serial_response_newline_indent(depth, &col);
+			printk("%c", ch);
+			col++;
+			break;
+		case ',':
+			printk("%c", ch);
+			col++;
+			serial_response_newline_indent(depth, &col);
+			break;
+		case ':':
+			printk(": ");
+			col += 2U;
+			break;
+		default:
+			if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			printk("%c", ch);
+			col++;
+			break;
+		}
+	}
+
+	return saw_token && !in_string && !escaped && depth == 0U;
+}
+
+void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
+					  uint16_t wrap_column)
+{
+	const char *payload;
+	size_t len;
+
+	if (out == NULL) {
+		return;
+	}
+
+	payload = out->payload;
+	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
+	printk("%s\r\n\t", out->topic[0] != '\0' ? out->topic : "serial");
+
+	payload = serial_payload_start(payload);
+	if (payload != NULL && (*payload == '{' || *payload == '[')) {
+		if (!serial_print_json_payload(payload, len - (size_t)(payload - out->payload))) {
+			uint16_t col = 13U;
+
+			printk("{\"error\":\"serial JSON render failed\"}\r\n\traw: ");
+			for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
+				const char ch = out->payload[i];
+
+				if (ch == '\r') {
+					continue;
+				}
+				if (ch == '\n' ||
+				    (wrap_column != 0U && col >= wrap_column)) {
+					printk("\r\n\t");
+					col = 8U;
+					if (ch == '\n') {
+						continue;
+					}
+				}
+				printk("%c", ch);
+				col++;
+			}
+			printk("\r\n");
+			return;
+		}
+		printk("\r\n");
+		return;
+	}
+
+	for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
+		const char ch = out->payload[i];
+
+		if (ch == '\r') {
+			continue;
+		}
+		if (ch == '\n') {
+			printk("\r\n\t");
+			continue;
+		}
+		printk("%c", ch);
+	}
+	printk("\r\n");
 }
