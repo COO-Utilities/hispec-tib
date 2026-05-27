@@ -819,7 +819,8 @@ off or no faults).
   {"value":12.5}
   ```
 - **Serial form for `valuedb`:** the serial shorthand wraps the single numeric
-  argument as the same `{"value":...}` payload.
+  argument as the same `{"value":...}` payload. MQTT commands must still send
+  the JSON payload above.
   ```text
   atten/1028y/valuedb 12.5
   ```
@@ -838,7 +839,8 @@ off or no faults).
   ```
 - **Serial form for `coeff`:** send the JSON object after the key. The default
   serial shorthand only builds a `value` payload, so it is not useful for
-  coefficient arrays.
+  coefficient arrays. The MQTT payload is the same JSON object without the
+  serial key prefix.
   ```text
   atten/1028y/coeff {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0],"persistent":true}
   ```
@@ -847,6 +849,9 @@ off or no faults).
   - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
     or `2330k`. On calibration boards only, the LFC attenuator is addressed as
     `atten/lfc/value`, `atten/lfc/valuedb`, and `atten/lfc/coeff`.
+  - Laser aliases accepted by the laser profile table, such as `1028`, also
+    resolve to the matching TIB attenuator channel, but canonical command docs
+    use the full logical laser names.
   - Each logical attenuator is a pair of physical FVOAs. Total set commands use
     the full modeled range of the first physical attenuator before using the
     second, and override any individual physical set point made through the C
