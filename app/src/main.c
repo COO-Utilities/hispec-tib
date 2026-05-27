@@ -325,7 +325,7 @@ int main(void)
 		return rc;
 	}
 	mqtt_cfg_revision = app_settings_get_mqtt_revision();
-	coo_mqtt_set_message_callback(command_handle_mqtt_publish);
+	coo_mqtt_set_message_callback(coo_cmd_runtime_mqtt_callback, cmd_runtime);
 
 	//TODO get rid of this test. Software should verify the prefix + command string portion fits in buffer AND that all
 	// command strings fit in max_command_suffix (and similarly for telemetry/warnings

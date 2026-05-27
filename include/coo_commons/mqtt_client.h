@@ -59,8 +59,10 @@ int coo_mqtt_resolve_broker_config(const struct coo_mqtt_broker_config *cfg,
  * Called when an MQTT message is received on a subscribed topic.
  *
  * @param pub Pointer to MQTT publish parameters containing topic, payload, QoS, etc.
+ * @param user_data Caller-supplied callback context.
  */
-typedef void (*mqtt_message_cb_t)(const struct mqtt_publish_param *pub);
+typedef void (*mqtt_message_cb_t)(const struct mqtt_publish_param *pub,
+				  void *user_data);
 
 /**
  * @brief Initialize the MQTT client
@@ -123,7 +125,7 @@ int coo_mqtt_subscribe(struct mqtt_client *client);
  *
  * @param cb Callback function pointer
  */
-void coo_mqtt_set_message_callback(mqtt_message_cb_t cb);
+void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data);
 
 /**
  * @brief Process MQTT events

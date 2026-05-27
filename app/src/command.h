@@ -4,8 +4,8 @@
  *
  * The common command runtime owns MQTT/serial ingress, topic formatting,
  * warning emission, executor threads, and outbound drain mechanics. This app
- * layer supplies command handlers, request classification, help metadata, and
- * the static queues used by the runtime.
+ * layer supplies command handlers, help metadata, and the static queues used by
+ * the runtime.
  */
 
 #ifndef COMMAND_H
@@ -47,14 +47,6 @@ int command_runtime_init(void);
 
 /** Return the app's configured command runtime for main-loop and warning use. */
 struct coo_cmd_runtime *command_runtime_get(void);
-
-/**
- * @brief MQTT receive callback.
- *
- * The MQTT wrapper lacks callback user data, so this app shim forwards the
- * publish event to the configured command runtime.
- */
-void command_handle_mqtt_publish(const struct mqtt_publish_param *pub);
 
 extern struct k_msgq inbound_queue;
 extern struct k_msgq outbound_queue;

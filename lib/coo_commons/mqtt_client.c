@@ -41,6 +41,7 @@ static uint8_t client_id[50];
 
 /* User callback for messages */
 static mqtt_message_cb_t user_mqtt_cb = NULL;
+static void *user_mqtt_cb_data;
 
 /* Subscriptions */
 #define MAX_SUBSCRIPTIONS 4
@@ -200,9 +201,10 @@ int coo_mqtt_set_broker_config(const struct coo_mqtt_broker_config *cfg)
 	return 0;
 }
 
-void coo_mqtt_set_message_callback(mqtt_message_cb_t cb)
+void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data)
 {
 	user_mqtt_cb = cb;
+	user_mqtt_cb_data = user_data;
 }
 
 int coo_mqtt_add_subscription(const char *topic_str, uint8_t qos)
@@ -282,7 +284,7 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 	publish_param.message.payload.len = rc;
 
 	if (user_mqtt_cb) {
-		user_mqtt_cb(&publish_param);
+		user_mqtt_cb(&publish_param, user_mqtt_cb_data);
 	}
 }
 

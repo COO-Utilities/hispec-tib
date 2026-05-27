@@ -430,6 +430,10 @@ void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime);
 void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 					 const struct mqtt_publish_param *pub);
 
+/** MQTT wrapper callback adapter; @p user_data must be a coo_cmd_runtime. */
+void coo_cmd_runtime_mqtt_callback(const struct mqtt_publish_param *pub,
+				   void *user_data);
+
 /** Parse one console line and queue a normalized serial command request. */
 void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime,
 					char *line);

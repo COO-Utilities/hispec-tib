@@ -1631,6 +1631,12 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 	}
 }
 
+void coo_cmd_runtime_mqtt_callback(const struct mqtt_publish_param *pub,
+				   void *user_data)
+{
+	coo_cmd_runtime_handle_mqtt_publish(user_data, pub);
+}
+
 static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 						struct mqtt_client *client,
 						bool mqtt_available)

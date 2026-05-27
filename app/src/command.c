@@ -689,11 +689,6 @@ static int serial_time_set_shorthand(const char *key, const char *payload,
     return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
 }
 
-void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
-{
-    coo_cmd_runtime_handle_mqtt_publish(&command_runtime, pub);
-}
-
 static void reboot_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
