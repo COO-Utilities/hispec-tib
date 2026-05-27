@@ -44,6 +44,13 @@ config COO_JSON
 	  Enable lightweight JSON helper wrappers used by command handling
 	  (keyed primitive extraction and key splitting).
 
+config COO_SCHEDULED_ACTIONS
+	bool "COO scheduled action helper"
+	default n
+	help
+	  Enable a small fixed-table wrapper around Zephyr delayable work for named
+	  firmware actions. This does not create a user-programmable scheduler.
+
 config COO_MQTT
 	bool "COO MQTT client wrapper"
 	depends on MQTT_LIB
