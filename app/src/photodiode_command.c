@@ -33,6 +33,10 @@ static const struct coo_json_string_choice pd_action_choices[] = {
 	{ "reset_lowest_dark", PD_ACTION_RESET_LOWEST_DARK },
 };
 
+static struct coo_cmd_response
+pd_average_status_response(const struct coo_cmd_request *cmd,
+			   const struct photodiode_average_status *status);
+
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
 	int value;
@@ -102,10 +106,41 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 	struct photodiode_status status;
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	struct app_photodiode_settings settings;
+	char action_text[32] = {0};
+	int action_value;
 	float yj_value;
 	float hk_value;
 	float yj_err;
 	float hk_err;
+	int parse_rc;
+	enum photodiode_channel channel;
+
+	parse_rc = coo_json_extract_string(cmd->payload, "action",
+					   action_text, sizeof(action_text));
+	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		return coo_cmd_error(cmd, "invalid action");
+	}
+	if (parse_rc == COO_JSON_EXTRACT_OK) {
+		struct photodiode_average_status average_status;
+		int rc;
+
+		if (coo_json_match_string_choice(action_text, pd_action_choices,
+						 ARRAY_SIZE(pd_action_choices),
+						 &action_value) != 0 ||
+		    (enum pd_action)action_value != PD_ACTION_DARK_STATUS) {
+			return coo_cmd_error(cmd, "unsupported query action");
+		}
+		rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
+		if (rc != 0) {
+			return coo_cmd_error(cmd, "channel must be yj or hk");
+		}
+		rc = photodiode_get_average_status(channel, &average_status);
+		if (rc != 0) {
+			return coo_cmd_error(cmd, "dark status unavailable");
+		}
+
+		return pd_average_status_response(cmd, &average_status);
+	}
 
 	photodiode_get_status(&status);
 	app_settings_get_photodiode(&settings);

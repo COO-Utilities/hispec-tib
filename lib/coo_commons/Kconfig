@@ -99,6 +99,15 @@ config COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS
 	  Default number of seconds that MQTT effect commands remain blocked after
 	  serial activity. A serialguard command can change this until reboot.
 
+config COO_CMD_REBOOT
+	bool "Command dispatcher reboot command"
+	depends on REBOOT
+	default y
+	help
+	  Let the command dispatcher own a built-in reboot command, including
+	  command rejection after reboot is accepted and an optional application
+	  prepare callback immediately before sys_reboot().
+
 endif # COO_MQTT
 
 endif # COO_COMMONS

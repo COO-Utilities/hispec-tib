@@ -33,7 +33,6 @@ struct coo_cmd_response mqtt_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd);
 struct coo_cmd_response time_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response time_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd);
 
 struct coo_cmd_response status_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd);

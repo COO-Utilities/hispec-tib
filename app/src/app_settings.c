@@ -38,6 +38,7 @@ enum app_nvs_id {
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
 	APP_NVS_ID_LAST_KNOWN_UTC_MS = 0x0008,
+	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
@@ -753,6 +754,7 @@ static void delete_resettable_settings(void)
 	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED);
 	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
 	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
+	(void)app_nvs_delete(APP_NVS_ID_LAST_COMMAND);
 	(void)app_nvs_delete(APP_NVS_ID_IP);
 	(void)app_nvs_delete(APP_NVS_ID_MQTT);
 	(void)app_nvs_delete(APP_NVS_ID_LASERBANK);
@@ -1223,4 +1225,9 @@ void app_settings_note_time_utc_ms(uint64_t utc_ms)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_LAST_KNOWN_UTC_MS, &utc_ms, sizeof(utc_ms));
+}
+
+struct nvs_fs *app_settings_nvs_fs(void)
+{
+	return app_nvs_ready ? &app_nvs : NULL;
 }

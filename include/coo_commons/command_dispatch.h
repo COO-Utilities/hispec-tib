@@ -13,15 +13,18 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/sys/atomic.h>
 
+struct nvs_fs;
+
 /**
  * @file command_dispatch.h
  * @brief Fixed-buffer command request, dispatch, and response helpers.
  *
- * This utility is intentionally small. Applications own their command table,
- * request classification policy, domain handlers, and project-specific serial
- * shorthands. The helper owns reusable fixed-buffer MQTT/serial topic handling,
- * executor plumbing, bounded serial payload normalization, warning publication,
- * and transport-shaped response handling.
+ * This utility is intentionally small. Applications own their command table and
+ * domain handlers. The helper owns reusable fixed-buffer MQTT/serial topic
+ * handling, built-in command execution, bounded serial payload normalization,
+ * optional lastcommand persistence, warning publication, and transport-shaped
+ * response handling. Applications may still provide a custom execute callback
+ * when they need to replace the default executor.
  */
 
 #define COO_CMD_TOPIC_MAX 96
@@ -35,6 +38,7 @@
 #define COO_CMD_HELP_EFFECT (1u << 1)
 #define COO_CMD_HELP_SERIAL_GUARD_QUERY (1u << 2)
 #define COO_CMD_HELP_BUILTIN (1u << 3)
+#define COO_CMD_LASTCOMMAND_NVS_OVERHEAD 16U
 
 #if defined(CONFIG_CONSOLE_INPUT_MAX_LINE_LEN)
 #define COO_CMD_SERIAL_LINE_MAX CONFIG_CONSOLE_INPUT_MAX_LINE_LEN
@@ -133,13 +137,16 @@ typedef enum coo_cmd_msg_type (*coo_cmd_classify_fn)(
 	const struct coo_cmd_spec *spec,
 	void *user_data);
 
-typedef bool (*coo_cmd_mqtt_accept_fn)(const struct coo_cmd_request *cmd,
-				       void *user_data);
-
-typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
-
 typedef bool (*coo_cmd_supported_fn)(const struct coo_cmd_spec *spec,
 				     void *user_data);
+
+typedef void (*coo_cmd_reboot_prepare_fn)(void *user_data);
+
+struct coo_cmd_lastcommand {
+	bool valid;
+	int64_t time_ms;
+	struct coo_cmd_request request;
+};
 
 struct coo_cmd_help_entry {
 	const char *key;
@@ -147,8 +154,15 @@ struct coo_cmd_help_entry {
 	const char *args;
 	const char *values;
 	const char *notes;
-	coo_cmd_supported_fn supported;
 	uint32_t flags;
+};
+
+#define COO_CMD_SERIAL_POSITIONAL_MAX 3U
+
+struct coo_cmd_serial_positional {
+	const char *field[COO_CMD_SERIAL_POSITIONAL_MAX];
+	uint8_t required_count;
+	uint8_t numeric_mask;
 };
 
 struct coo_cmd_spec {
@@ -158,17 +172,20 @@ struct coo_cmd_spec {
 	enum coo_cmd_class_policy class_policy;
 	coo_cmd_classify_fn custom_classify;
 	coo_cmd_serial_shorthand_fn serial_shorthand;
+	struct coo_cmd_serial_positional serial_positional;
 	coo_cmd_supported_fn supported;
+	const struct coo_cmd_help_entry *help;
 	bool mqtt_query_allowed_during_serial_guard;
 };
 
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, execute callback, and MQTT message-id
+ * The application owns the queues, optional execute callback, and MQTT message-id
  * storage. The runtime owns the copied device identity and topic formatting
  * derived from it. The runtime helpers do not allocate memory; they block only
- * in the executor queue wait and MQTT publish path used by the outbound drain.
+ * in the executor queue wait, optional NVS lastcommand persistence, reboot
+ * prepare callback, and MQTT publish path used by the outbound drain.
  */
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
@@ -179,13 +196,18 @@ struct coo_cmd_runtime {
 	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
-	coo_cmd_mqtt_accept_fn mqtt_accept;
-	coo_cmd_serial_activity_fn serial_activity;
 	void *user_data;
 	const struct coo_cmd_spec *command_specs;
 	size_t command_spec_count;
-	const struct coo_cmd_help_entry *help_entries;
-	size_t help_entry_count;
+	struct nvs_fs *lastcommand_nvs;
+	uint16_t lastcommand_nvs_id;
+	struct coo_cmd_lastcommand lastcommand;
+#if defined(CONFIG_COO_CMD_REBOOT)
+	struct k_work_delayable reboot_work;
+	atomic_t reboot_pending;
+	uint32_t reboot_delay_ms;
+	coo_cmd_reboot_prepare_fn reboot_prepare;
+#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	struct k_work_delayable serial_guard_work;
 	atomic_t serial_guard_active;
@@ -209,12 +231,14 @@ struct coo_cmd_runtime_config {
 	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
-	coo_cmd_mqtt_accept_fn mqtt_accept;
-	coo_cmd_serial_activity_fn serial_activity;
 	const struct coo_cmd_spec *command_specs;
 	size_t command_spec_count;
-	const struct coo_cmd_help_entry *help_entries;
-	size_t help_entry_count;
+	struct nvs_fs *lastcommand_nvs;
+	uint16_t lastcommand_nvs_id;
+#if defined(CONFIG_COO_CMD_REBOOT)
+	uint32_t reboot_delay_ms;
+	coo_cmd_reboot_prepare_fn reboot_prepare;
+#endif
 	void *user_data;
 };
 
@@ -237,6 +261,19 @@ coo_cmd_runtime_find_spec(const struct coo_cmd_runtime *runtime,
 /** Return whether a command spec is currently supported by the app/board. */
 bool coo_cmd_runtime_spec_supported(const struct coo_cmd_runtime *runtime,
 				    const struct coo_cmd_spec *spec);
+
+/**
+ * @brief Copy the last effect command recorded by the runtime.
+ *
+ * The record is loaded from NVS during runtime configuration when an NVS
+ * backend and ID are supplied. Dispatch records only commands that resolve to a
+ * supported effect handler or accepted built-in effect.
+ */
+bool coo_cmd_runtime_get_lastcommand(const struct coo_cmd_runtime *runtime,
+				     struct coo_cmd_lastcommand *out);
+
+/** Return a stable text label for a request source enum. */
+const char *coo_cmd_source_name(enum coo_cmd_source source);
 
 /** Return true when @p key starts with @p prefix and is exact or slash-delimited. */
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);

@@ -5,9 +5,7 @@
 
 #include <coo_commons/command_dispatch.h>
 
-#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 #include <coo_commons/json_utils.h>
-#endif
 
 #include <ctype.h>
 #include <errno.h>
@@ -16,20 +14,41 @@
 #include <string.h>
 #include <strings.h>
 #include <zephyr/console/console.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_COO_CMD_REBOOT)
+#include <zephyr/sys/reboot.h>
+#endif
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 #define SERIAL_POLL_CHAR_BUDGET 64
+#define COO_CMD_LASTCOMMAND_MAGIC 0x434c4344U /* "CLCD" */
+#define COO_CMD_LASTCOMMAND_VERSION 1U
+#define COO_CMD_REBOOT_DEFAULT_DELAY_MS 3000U
 
 static void serial_reset_line(struct coo_cmd_runtime *runtime);
 static int runtime_init_serial_console(struct coo_cmd_runtime *runtime);
 static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
 				     const struct coo_cmd_response *out);
+static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime);
+static struct coo_cmd_response runtime_execute_default(struct coo_cmd_runtime *runtime,
+						       const struct coo_cmd_request *cmd);
+#if defined(CONFIG_COO_CMD_REBOOT)
+static void reboot_work_handler(struct k_work *work);
+#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static void serial_guard_expire_work_handler(struct k_work *work);
 #endif
+
+struct coo_cmd_lastcommand_nvs_record {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t size;
+	int64_t time_ms;
+	struct coo_cmd_request request;
+};
 
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg)
@@ -39,7 +58,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	if (runtime == NULL || cfg == NULL || cfg->device_id == NULL ||
 	    cfg->device_id[0] == '\0' || cfg->inbound_queue == NULL ||
 	    cfg->outbound_queue == NULL || cfg->mqtt_msg_id == NULL ||
-	    cfg->execute_handler == NULL ||
 	    strlen(cfg->device_id) >= sizeof(runtime->device_id)) {
 		return -EINVAL;
 	}
@@ -66,19 +84,26 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
 				      cfg->serial_wrap_column :
 				      COO_CMD_SERIAL_WRAP_COLUMN;
-	runtime->mqtt_accept = cfg->mqtt_accept;
-	runtime->serial_activity = cfg->serial_activity;
 	runtime->command_specs = cfg->command_specs;
 	runtime->command_spec_count = cfg->command_spec_count;
-	runtime->help_entries = cfg->help_entries;
-	runtime->help_entry_count = cfg->help_entry_count;
+	runtime->lastcommand_nvs = cfg->lastcommand_nvs;
+	runtime->lastcommand_nvs_id = cfg->lastcommand_nvs_id;
 	runtime->user_data = cfg->user_data;
+#if defined(CONFIG_COO_CMD_REBOOT)
+	runtime->reboot_delay_ms = cfg->reboot_delay_ms != 0U ?
+				   cfg->reboot_delay_ms :
+				   COO_CMD_REBOOT_DEFAULT_DELAY_MS;
+	runtime->reboot_prepare = cfg->reboot_prepare;
+	k_work_init_delayable(&runtime->reboot_work, reboot_work_handler);
+	(void)atomic_clear(&runtime->reboot_pending);
+#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	runtime->serial_guard_seconds = CONFIG_COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS;
 	k_work_init_delayable(&runtime->serial_guard_work,
 			      serial_guard_expire_work_handler);
 	(void)atomic_clear(&runtime->serial_guard_active);
 #endif
+	runtime_load_lastcommand(runtime);
 
 	return runtime_init_serial_console(runtime);
 }
@@ -119,6 +144,110 @@ bool coo_cmd_runtime_spec_supported(const struct coo_cmd_runtime *runtime,
 
 	return spec->supported == NULL || spec->supported(spec, runtime != NULL ?
 							  runtime->user_data : NULL);
+}
+
+const char *coo_cmd_source_name(enum coo_cmd_source source)
+{
+	switch (source) {
+	case COO_CMD_SOURCE_SERIAL:
+		return "serial";
+	case COO_CMD_SOURCE_MQTT:
+		return "mqtt";
+	default:
+		return "unknown";
+	}
+}
+
+static bool fixed_string_terminated(const char *text, size_t text_len)
+{
+	return text != NULL && memchr(text, '\0', text_len) != NULL;
+}
+
+static bool lastcommand_record_valid(const struct coo_cmd_lastcommand_nvs_record *record)
+{
+	const struct coo_cmd_request *request;
+
+	if (record == NULL ||
+	    record->magic != COO_CMD_LASTCOMMAND_MAGIC ||
+	    record->version != COO_CMD_LASTCOMMAND_VERSION ||
+	    record->size != sizeof(*record)) {
+		return false;
+	}
+
+	request = &record->request;
+	return request->payload_len < sizeof(request->payload) &&
+	       request->corr_len <= sizeof(request->correlation_data) &&
+	       fixed_string_terminated(request->key, sizeof(request->key)) &&
+	       fixed_string_terminated(request->session_id, sizeof(request->session_id)) &&
+	       fixed_string_terminated(request->response_topic, sizeof(request->response_topic)) &&
+	       fixed_string_terminated(request->payload, sizeof(request->payload));
+}
+
+static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime)
+{
+	struct coo_cmd_lastcommand_nvs_record record;
+	int rc;
+
+	if (runtime == NULL || runtime->lastcommand_nvs == NULL ||
+	    runtime->lastcommand_nvs_id == 0U) {
+		return;
+	}
+
+	rc = nvs_read(runtime->lastcommand_nvs, runtime->lastcommand_nvs_id,
+		      &record, sizeof(record));
+	if (rc == -ENOENT) {
+		return;
+	}
+	if (rc != (int)sizeof(record) || !lastcommand_record_valid(&record)) {
+		LOG_WRN("Ignoring invalid persisted command lastcommand (%d)", rc);
+		return;
+	}
+
+	runtime->lastcommand.valid = true;
+	runtime->lastcommand.time_ms = record.time_ms;
+	runtime->lastcommand.request = record.request;
+}
+
+static void runtime_record_lastcommand(struct coo_cmd_runtime *runtime,
+				       const struct coo_cmd_request *cmd)
+{
+	struct coo_cmd_lastcommand_nvs_record record = {
+		.magic = COO_CMD_LASTCOMMAND_MAGIC,
+		.version = COO_CMD_LASTCOMMAND_VERSION,
+		.size = sizeof(record),
+	};
+	int rc;
+
+	if (runtime == NULL || cmd == NULL || cmd->msg_type != COO_CMD_EFFECT) {
+		return;
+	}
+
+	record.time_ms = k_uptime_get();
+	record.request = *cmd;
+	runtime->lastcommand.valid = true;
+	runtime->lastcommand.time_ms = record.time_ms;
+	runtime->lastcommand.request = record.request;
+
+	if (runtime->lastcommand_nvs == NULL || runtime->lastcommand_nvs_id == 0U) {
+		return;
+	}
+
+	rc = nvs_write(runtime->lastcommand_nvs, runtime->lastcommand_nvs_id,
+		       &record, sizeof(record));
+	if (rc < 0) {
+		LOG_WRN("NVS lastcommand write failed (%d)", rc);
+	}
+}
+
+bool coo_cmd_runtime_get_lastcommand(const struct coo_cmd_runtime *runtime,
+				     struct coo_cmd_lastcommand *out)
+{
+	if (runtime == NULL || out == NULL || !runtime->lastcommand.valid) {
+		return false;
+	}
+
+	*out = runtime->lastcommand;
+	return true;
 }
 
 static int format_device_topic(const char *device_id, char *buf, size_t buf_len,
@@ -496,6 +625,55 @@ static int serial_payload_from_value(const char *payload, char *out, size_t out_
 	return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
+static int serial_payload_from_positional(const char *payload,
+					  const struct coo_cmd_serial_positional *pos,
+					  char *out,
+					  size_t out_len)
+{
+	const char *cursor = payload;
+	char token[COO_CMD_SERIAL_POSITIONAL_MAX][128] = {{0}};
+	uint8_t count = 0U;
+	size_t off = 0U;
+	int written;
+
+	if (pos == NULL || pos->field[0] == NULL ||
+	    pos->required_count > COO_CMD_SERIAL_POSITIONAL_MAX) {
+		return -EINVAL;
+	}
+
+	while (count < COO_CMD_SERIAL_POSITIONAL_MAX &&
+	       coo_cmd_serial_next_token(&cursor, token[count], sizeof(token[count]))) {
+		count++;
+	}
+	if (coo_cmd_serial_has_extra(cursor) || count < pos->required_count) {
+		return -EINVAL;
+	}
+
+	written = snprintk(out, out_len, "{");
+	if (written < 0 || written >= (int)out_len) {
+		return -ENOSPC;
+	}
+	off = (size_t)written;
+
+	for (uint8_t i = 0U; i < count; ++i) {
+		if (pos->field[i] == NULL || token[i][0] == '\0') {
+			return -EINVAL;
+		}
+		if ((pos->numeric_mask & BIT(i)) != 0U &&
+		    !coo_cmd_serial_token_is_number(token[i])) {
+			return -EINVAL;
+		}
+		if (coo_cmd_serial_append_json_field(out, out_len, &off,
+						     pos->field[i], token[i],
+						     i != 0U) != 0) {
+			return -EINVAL;
+		}
+	}
+
+	written = snprintk(out + off, out_len - off, "}");
+	return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static int serial_payload_from_serial_guard(const char *payload, char *out, size_t out_len)
 {
@@ -566,6 +744,27 @@ int coo_cmd_normalize_serial_payload(const char *key,
 	}
 
 	return serial_payload_from_value(payload, out, out_len);
+}
+
+static int runtime_normalize_serial_payload(const struct coo_cmd_spec *spec,
+					    const char *key,
+					    const char *payload,
+					    void *user_data,
+					    char *out,
+					    size_t out_len)
+{
+	payload = skip_serial_space(payload);
+	if (payload != NULL && payload[0] != '\0' &&
+	    payload[0] != '{' && strchr(payload, '=') == NULL &&
+	    spec != NULL && spec->serial_positional.field[0] != NULL) {
+		return serial_payload_from_positional(payload,
+						      &spec->serial_positional,
+						      out, out_len);
+	}
+
+	return coo_cmd_normalize_serial_payload(key, payload,
+						spec != NULL ? spec->serial_shorthand : NULL,
+						user_data, out, out_len);
 }
 
 struct coo_cmd_response
@@ -857,6 +1056,16 @@ static const struct coo_cmd_help_entry builtin_help_entries[] = {
 			 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
 	},
 #endif
+#if defined(CONFIG_COO_CMD_REBOOT)
+	{
+		.key = "reboot",
+		.usage = "reboot",
+		.args = "none",
+		.values = NULL,
+		.notes = "schedules a non-cancelable reboot after the response window",
+		.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
+	},
+#endif
 };
 
 static bool runtime_key_is_help(const char *key)
@@ -868,6 +1077,16 @@ static bool runtime_key_is_serial_guard(const char *key)
 {
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	return key != NULL && strcmp(key, "serialguard") == 0;
+#else
+	ARG_UNUSED(key);
+	return false;
+#endif
+}
+
+static bool runtime_key_is_reboot(const char *key)
+{
+#if defined(CONFIG_COO_CMD_REBOOT)
+	return key != NULL && strcmp(key, "reboot") == 0;
 #else
 	ARG_UNUSED(key);
 	return false;
@@ -933,26 +1152,18 @@ static void serial_print_wrapped_text(const char *prefix,
 	serial_line_end();
 }
 
-static bool help_entry_supported(const struct coo_cmd_runtime *runtime,
-				 const struct coo_cmd_help_entry *entry)
-{
-	if (entry == NULL || entry->supported == NULL) {
-		return true;
-	}
-
-	return entry->supported(NULL, runtime != NULL ? runtime->user_data : NULL);
-}
-
 static void serial_print_help_entry(const struct coo_cmd_runtime *runtime,
+				    const char *key,
 				    const struct coo_cmd_help_entry *entry,
+				    const struct coo_cmd_spec *spec,
 				    uint16_t wrap_column)
 {
-	if (entry == NULL || entry->key == NULL) {
+	if (entry == NULL || key == NULL) {
 		return;
 	}
 
-	printk("  %s", entry->key);
-	if (!help_entry_supported(runtime, entry)) {
+	printk("  %s", key);
+	if (spec != NULL && !coo_cmd_runtime_spec_supported(runtime, spec)) {
 		printk(" [unsupported]");
 	}
 	if ((entry->flags & COO_CMD_HELP_QUERY) != 0U &&
@@ -988,33 +1199,37 @@ static void runtime_print_serial_help(const struct coo_cmd_runtime *runtime,
 	serial_line_end();
 
 	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
-		serial_print_help_entry(runtime, &builtin_help_entries[i], wrap_column);
+		serial_print_help_entry(runtime, builtin_help_entries[i].key,
+					&builtin_help_entries[i], NULL,
+					wrap_column);
 	}
 	if (runtime != NULL) {
-		for (size_t i = 0U; i < runtime->help_entry_count; ++i) {
-			serial_print_help_entry(runtime, &runtime->help_entries[i], wrap_column);
+		for (size_t i = 0U; i < runtime->command_spec_count; ++i) {
+			const struct coo_cmd_spec *spec = &runtime->command_specs[i];
+
+			if (spec->help != NULL) {
+				serial_print_help_entry(runtime, spec->key,
+							spec->help, spec,
+							wrap_column);
+			}
 		}
 	}
 }
 
-static int append_help_key_array(char *payload, size_t payload_len, size_t *off,
-				 const struct coo_cmd_help_entry *entries,
-				 size_t entry_count,
-				 bool *first)
+static int append_help_key(char *payload, size_t payload_len, size_t *off,
+			   const char *key, bool *first)
 {
-	for (size_t i = 0U; i < entry_count; ++i) {
-		if (entries[i].key == NULL) {
-			continue;
-		}
-		if (append_format(payload, payload_len, off, "%s\"",
-				  *first ? "" : ",") != 0 ||
-		    append_json_string(payload, payload_len, off, entries[i].key) != 0 ||
-		    append_format(payload, payload_len, off, "\"") != 0) {
-			return -ENOSPC;
-		}
-		*first = false;
+	if (key == NULL) {
+		return 0;
 	}
 
+	if (append_format(payload, payload_len, off, "%s\"",
+			  *first ? "" : ",") != 0 ||
+	    append_json_string(payload, payload_len, off, key) != 0 ||
+	    append_format(payload, payload_len, off, "\"") != 0) {
+		return -ENOSPC;
+	}
+	*first = false;
 	return 0;
 }
 
@@ -1039,16 +1254,25 @@ static struct coo_cmd_response runtime_help_response(struct coo_cmd_runtime *run
 			  "\"response_prefix\":\"%s\",\"commands\":[",
 			  runtime->device_id,
 			  runtime->request_prefix,
-			  response_prefix) != 0 ||
-	    append_help_key_array(payload, sizeof(payload), &off,
-				  builtin_help_entries,
-				  ARRAY_SIZE(builtin_help_entries),
-				  &first) != 0 ||
-	    append_help_key_array(payload, sizeof(payload), &off,
-				  runtime->help_entries,
-				  runtime->help_entry_count,
-				  &first) != 0 ||
-	    append_format(payload, sizeof(payload), &off, "]}") != 0) {
+			  response_prefix) != 0) {
+		return coo_cmd_error(cmd, "help response too large");
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
+		if (append_help_key(payload, sizeof(payload), &off,
+				    builtin_help_entries[i].key, &first) != 0) {
+			return coo_cmd_error(cmd, "help response too large");
+		}
+	}
+	for (size_t i = 0U; i < runtime->command_spec_count; ++i) {
+		const struct coo_cmd_spec *spec = &runtime->command_specs[i];
+
+		if (spec->help != NULL &&
+		    append_help_key(payload, sizeof(payload), &off,
+				    spec->key, &first) != 0) {
+			return coo_cmd_error(cmd, "help response too large");
+		}
+	}
+	if (append_format(payload, sizeof(payload), &off, "]}") != 0) {
 		return coo_cmd_error(cmd, "help response too large");
 	}
 
@@ -1117,10 +1341,6 @@ static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *run
 
 	if (runtime_key_is_help(cmd->key) || runtime_key_is_serial_guard(cmd->key)) {
 		return true;
-	}
-
-	if (runtime->mqtt_accept != NULL) {
-		return runtime->mqtt_accept(cmd, runtime->user_data);
 	}
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
@@ -1193,6 +1413,59 @@ static struct coo_cmd_response runtime_serial_guard_set(struct coo_cmd_runtime *
 }
 #endif
 
+#if defined(CONFIG_COO_CMD_REBOOT)
+static void reboot_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct coo_cmd_runtime *runtime =
+		CONTAINER_OF(dwork, struct coo_cmd_runtime, reboot_work);
+
+	if (runtime->reboot_prepare != NULL) {
+		runtime->reboot_prepare(runtime->user_data);
+	}
+
+	LOG_WRN("Executing scheduled reboot");
+	sys_reboot(SYS_REBOOT_COLD);
+}
+
+static bool runtime_reboot_pending(const struct coo_cmd_runtime *runtime)
+{
+	return runtime != NULL && atomic_get(&runtime->reboot_pending) != 0;
+}
+
+static struct coo_cmd_response runtime_reboot_set(struct coo_cmd_runtime *runtime,
+						  const struct coo_cmd_request *cmd)
+{
+	char payload[COO_CMD_PAYLOAD_MAX];
+	int rc;
+
+	if (runtime == NULL || cmd == NULL) {
+		return coo_cmd_error(cmd, "reboot unavailable");
+	}
+	if (!coo_cmd_payload_empty(cmd)) {
+		return coo_cmd_error(cmd, "reboot takes no payload");
+	}
+	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
+		return coo_cmd_error(cmd, "reboot already pending");
+	}
+
+	LOG_WRN("Reboot command accepted; rebooting in %u ms",
+		runtime->reboot_delay_ms);
+	rc = k_work_schedule(&runtime->reboot_work,
+			     K_MSEC(runtime->reboot_delay_ms));
+	if (rc < 0) {
+		(void)atomic_clear(&runtime->reboot_pending);
+		return coo_cmd_error(cmd, "failed to schedule reboot");
+	}
+
+	runtime_record_lastcommand(runtime, cmd);
+	snprintk(payload, sizeof(payload),
+		 "{\"status\":\"ok\",\"reboot_ms\":%u}",
+		 runtime->reboot_delay_ms);
+	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+}
+#endif
+
 static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 					   const struct coo_cmd_request *cmd)
 {
@@ -1201,6 +1474,14 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 	if (runtime == NULL || cmd == NULL) {
 		return false;
 	}
+
+#if defined(CONFIG_COO_CMD_REBOOT)
+	if (runtime_reboot_pending(runtime) && !runtime_key_is_reboot(cmd->key)) {
+		out = coo_cmd_error(cmd, "reboot pending");
+		runtime_enqueue_response(runtime, &out);
+		return true;
+	}
+#endif
 
 	if (runtime_key_is_help(cmd->key)) {
 		out = runtime_help_response(runtime, cmd);
@@ -1213,6 +1494,14 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 		out = cmd->msg_type == COO_CMD_EFFECT ?
 		      runtime_serial_guard_set(runtime, cmd) :
 		      runtime_serial_guard_get(runtime, cmd);
+		runtime_enqueue_response(runtime, &out);
+		return true;
+	}
+#endif
+
+#if defined(CONFIG_COO_CMD_REBOOT)
+	if (runtime_key_is_reboot(cmd->key)) {
+		out = runtime_reboot_set(runtime, cmd);
 		runtime_enqueue_response(runtime, &out);
 		return true;
 	}
@@ -1246,6 +1535,44 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 	return mqtt_publish(client, &param);
 }
 
+static struct coo_cmd_response runtime_execute_default(struct coo_cmd_runtime *runtime,
+						       const struct coo_cmd_request *cmd)
+{
+	const struct coo_cmd_spec *spec;
+	coo_cmd_handler_fn handler;
+
+	if (runtime == NULL || cmd == NULL) {
+		return coo_cmd_invalid_response(cmd);
+	}
+
+#if defined(CONFIG_COO_CMD_REBOOT)
+	if (runtime_reboot_pending(runtime)) {
+		return coo_cmd_error(cmd, "reboot pending");
+	}
+#endif
+
+	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
+	LOG_INF("Dispatching: %s", cmd->key);
+	if (spec == NULL) {
+		return coo_cmd_unknown_response(cmd);
+	}
+	if (!coo_cmd_runtime_spec_supported(runtime, spec)) {
+		return coo_cmd_error(cmd, "command unavailable on this board");
+	}
+
+	handler = cmd->msg_type == COO_CMD_EFFECT ?
+		  spec->effect_handler : spec->query_handler;
+	if (handler == NULL) {
+		return coo_cmd_unsupported_response(cmd);
+	}
+
+	if (cmd->msg_type == COO_CMD_EFFECT) {
+		runtime_record_lastcommand(runtime, cmd);
+	}
+
+	return handler(cmd);
+}
+
 void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 {
 	struct coo_cmd_runtime *runtime = p1;
@@ -1264,7 +1591,9 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	while (1) {
 		/* K_FOREVER sleeps until ingress queues a complete command. */
 		k_msgq_get(runtime->inbound_queue, &cmd, K_FOREVER);
-		out = runtime->execute_handler(&cmd);
+		out = runtime->execute_handler != NULL ?
+		      runtime->execute_handler(&cmd) :
+		      runtime_execute_default(runtime, &cmd);
 		if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
 			LOG_WRN("Outbound queue full; dropping command response");
 		}
@@ -1278,6 +1607,10 @@ static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 
 	if (cmd == NULL) {
 		return COO_CMD_QUERY;
+	}
+
+	if (runtime_key_is_reboot(cmd->key)) {
+		return COO_CMD_EFFECT;
 	}
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
@@ -1362,9 +1695,6 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	runtime_note_serial_guard_activity(runtime);
 #endif
-	if (runtime->serial_activity != NULL) {
-		runtime->serial_activity(runtime->user_data);
-	}
 
 	sep = strpbrk(cursor, " \t");
 	if (sep == NULL) {
@@ -1405,10 +1735,8 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 		return;
 	}
 
-	if (coo_cmd_normalize_serial_payload(cmd->key, payload,
-					     spec != NULL ? spec->serial_shorthand : NULL,
-					     runtime->user_data,
-					     cmd->payload,
+	if (runtime_normalize_serial_payload(spec, cmd->key, payload,
+					     runtime->user_data, cmd->payload,
 					     sizeof(cmd->payload)) != 0) {
 		runtime_enqueue_serial_error(runtime, "invalid serial payload");
 		return;

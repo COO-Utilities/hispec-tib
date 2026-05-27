@@ -20,6 +20,10 @@
 #include "laser_properties.h"
 #include "laserbank_tempcontrol.h"
 
+#define APP_SETTINGS_NVS_ID_LAST_COMMAND 0x0009U
+
+struct nvs_fs;
+
 struct app_ip_settings {
 	bool try_dhcp_first;
 	bool prefer_dhcp_dns;
@@ -224,5 +228,7 @@ void app_settings_increment_boot_count(void);
 bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms);
 /** @brief Store a known-good UTC time for boot-time clock initialization. */
 void app_settings_note_time_utc_ms(uint64_t utc_ms);
+/** @brief Return app NVS storage for command-dispatch owned records, or NULL if unavailable. */
+struct nvs_fs *app_settings_nvs_fs(void);
 
 #endif /* HISPEC_APP_SETTINGS_H */
