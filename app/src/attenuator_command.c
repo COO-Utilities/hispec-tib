@@ -137,7 +137,7 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 		}
 		snprintk(payload, sizeof(payload),
 			 "{\"db\":%.6f,\"linear\":%.12g,"
-			 "\"voltage1\":%.6f,\"voltage2\":%.6f,"
+			 "\"v1_mv\":%.6f,\"v2_mv\":%.6f,"
 			 "\"db1\":%.6f,\"db2\":%.6f}",
 			 status.attenuation_db,
 			 status.linear,

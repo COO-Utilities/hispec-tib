@@ -75,17 +75,17 @@ A pair of DAC7578SPW 8 chan DAC driving OPA2991 2 channel OpAmps
 - Each laser channel uses a pair of physical attenuators:
   - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
   - TIB: 12 DAC channels in use (6 channels x 2 attenuators)
-- I2C addr: 0x48 (channels 1-3) and 0x4A (chan 4-6)  (0x4C floating pin, 0x48 GND, 0x4A VCC)
+- I2C addr: 0x48 and 0x4A  (DS says: 0x4C floating pin, 0x48 GND, 0x4A VCC)
 - LDAC is tied to ground.
 - Channels:
-  - 0x48
-    - 1-2: Y atten 1 & 2
-    - 3-4: J atten 1 & 2
-    - 5-6: YJATC atten 1 & 2
   - 0x4A
-    - 1-2: HK atten 1 & 2
-    - 3-4: H/CAL atten 1 & 2
-    - 5-6: K atten 1 & 2
+    - Y Attens: A=1, C=2
+    - J Attens: E=1, G=2 
+    - YJATC Attens: D=1 & F=2
+  - 0x48
+    - HKATC Attens: A=1, C=2
+    - H/CAL Attens: E=1, G=2
+    - K Attens: D=1, F=2
 
 For board files:
 - Nucleo:

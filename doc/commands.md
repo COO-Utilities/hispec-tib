@@ -820,8 +820,8 @@ off or no faults).
   {
     "db": 12.5,
     "linear": 0.0562,
-    "voltage1": 1234.0,
-    "voltage2": 0.0,
+    "v1_mv": 1234.0,
+    "v2_mv": 0.0,
     "db1": 12.5,
     "db2": 0.0
   }
@@ -874,6 +874,8 @@ off or no faults).
     second, and override any individual physical set point made through the C
     attenuator API.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
+  - `v1_mv` and `v2_mv` are DAC-backed attenuator drive setpoints in
+    millivolts.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define `b = slope * voltage + offset` for the
     attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.

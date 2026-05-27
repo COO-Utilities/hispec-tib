@@ -93,6 +93,23 @@ struct attenuator_dac_pair {
 	uint8_t channel2;
 };
 
+struct attenuator_dac_channels {
+	uint8_t channel1;
+	uint8_t channel2;
+};
+
+/* Logical attenuator to physical DAC wiring from doc/hardware.md.
+ * DAC channels are zero-based here: A=0, C=2, D=3, E=4, F=5, G=6.
+ */
+static const struct attenuator_dac_channels attenuator_dac_channels[NUM_ATTENUATORS] = {
+	[HISPEC_LASER_1028_Y] = { .channel1 = 0U, .channel2 = 2U },
+	[HISPEC_LASER_1270_J] = { .channel1 = 4U, .channel2 = 6U },
+	[HISPEC_LASER_1430_YJ] = { .channel1 = 3U, .channel2 = 5U },
+	[HISPEC_LASER_1430_HK] = { .channel1 = 0U, .channel2 = 2U },
+	[HISPEC_LASER_1510_H] = { .channel1 = 4U, .channel2 = 6U },
+	[HISPEC_LASER_2330_K] = { .channel1 = 3U, .channel2 = 5U },
+};
+
 struct board_profile {
 	enum hispec_board_type board;
 	const char *name;
@@ -801,22 +818,13 @@ static bool setup_modbus_client(void)
 static bool attenuator_dac_pair_for_index(uint8_t attenuator_index,
 					  struct attenuator_dac_pair *out)
 {
-	uint8_t local_index;
-
 	if (out == NULL || attenuator_index >= NUM_ATTENUATORS) {
 		return false;
 	}
 
-	if (attenuator_index < 3U) {
-		local_index = attenuator_index;
-		out->dev = dac_dev;
-	} else {
-		local_index = attenuator_index - 3U;
-		out->dev = dac_dev_b;
-	}
-
-	out->channel1 = local_index * 2U;
-	out->channel2 = out->channel1 + 1U;
+	out->channel1 = attenuator_dac_channels[attenuator_index].channel1;
+	out->channel2 = attenuator_dac_channels[attenuator_index].channel2;
+	out->dev = attenuator_index < HISPEC_LASER_1430_HK ? dac_dev_b : dac_dev;
 
 	return true;
 }
