@@ -818,6 +818,11 @@ off or no faults).
   ```json
   {"value":12.5}
   ```
+- **Serial form for `valuedb`:** the serial shorthand wraps the single numeric
+  argument as the same `{"value":...}` payload.
+  ```text
+  atten/1028y/valuedb 12.5
+  ```
 - **No payload to `coeff` -> model coefficients:**
   ```json
   {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0]}
@@ -830,6 +835,12 @@ off or no faults).
     "dac2": [0.001953125, 0.0],
     "persistent": true
   }
+  ```
+- **Serial form for `coeff`:** send the JSON object after the key. The default
+  serial shorthand only builds a `value` payload, so it is not useful for
+  coefficient arrays.
+  ```text
+  atten/1028y/coeff {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0],"persistent":true}
   ```
 
 - **Notes:**
