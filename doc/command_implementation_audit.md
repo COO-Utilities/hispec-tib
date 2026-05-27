@@ -18,10 +18,11 @@ cmd/<device>/req/#
 
 The suffix after the request prefix is copied into `Command.key`.
 `coo_cmd_runtime_find_spec()` chooses the longest command-spec key that is
-either an exact match or followed by `/`; `dispatch_command()` then applies
-app-owned command side effects such as `lastcommand` recording and reboot
-pending rejection. The `<device>` component is board-profile dependent:
-`hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
+either an exact match or followed by `/`; command dispatch then applies default
+support checks, handler selection, lastcommand recording, and built-in reboot
+pending rejection unless an app override execute callback is configured. The
+`<device>` component is board-profile dependent: `hsfib-tib`, `hsfib-rcal`,
+`hsfib-bcal`, or `hsfib-as`.
 
 Dispatcher built-ins:
 
@@ -29,6 +30,7 @@ Dispatcher built-ins:
 | --- | --- | --- | --- |
 | `help` | yes | no | Serial prints directly; MQTT returns compact endpoints. |
 | `serialguard` | yes | yes | Present when `CONFIG_COO_CMD_SERIAL_GUARD` is enabled. |
+| `reboot` | no | yes | Present when `CONFIG_COO_CMD_REBOOT` is enabled. |
 
 Implemented app dispatch entries. The column names reflect internal C dispatch
 slots; the external API is documented as queries, effect requests, and actions.
@@ -38,7 +40,6 @@ slots; the external API is documented as queries, effect requests, and actions.
 | `ip` | yes | yes |
 | `mqtt` | yes | yes |
 | `time` | yes | yes |
-| `reboot` | no | yes |
 | `memsroute` | yes | yes |
 | `memsroute/route_loss` | yes | yes |
 | `mems` | yes | yes |
@@ -83,6 +84,7 @@ payload-query shapes:
 - `laser` when `level` is absent
 - `laser/tune` when `tune_nm` and `delta_nm` are absent
 - `laser/settings` when the nested `settings` object is absent
+- `pd` when `action` is `dark_status`
 
 The old MQTT `msg_type` payload convention is not used by command ingress.
 
@@ -124,23 +126,27 @@ buffer and echoed exactly in responses.
 - `status` optional `lasers` and `attens` sections can perform Modbus and DAC
   reads. A large optional response can fail with `{"error":"status response too large"}`
   if it exceeds the fixed MQTT payload buffer.
-- `lastcommand` records effect-capable requests. Pure query requests are not recorded.
-- Serial `help` depends on a static app-provided help table. It now reflects the
-  code paths reviewed in this audit and uses generic support predicates to mark
-  unsupported commands, but future command behavior changes must update
-  `command_help_entries[]` or help can become stale.
+- `lastcommand` records supported effect-capable requests and is persisted by
+  command dispatch through a fixed NVS record configured by the app. Pure query
+  requests are not recorded.
+- Serial `help` depends on help metadata attached to the app command spec table.
+  It now reflects the code paths reviewed in this audit and uses generic support
+  predicates to mark unsupported commands, but future command behavior changes
+  must update the spec help metadata or help can become stale.
 - `laserbank/clearfaults` occupies both internal dispatch slots for legacy
   reasons, but ingress classifies no-payload requests as an action.
 
 ## Blocking and Queueing Summary
 
 - Dispatcher built-ins run in command dispatch. Serial `help` prints directly;
-  MQTT `help` and `serialguard` enqueue immediate responses.
+  MQTT `help`, `serialguard`, and `reboot` enqueue immediate responses.
 - App command handlers run in the single command executor thread.
 - App responses are enqueued to `outbound_queue` and published or printed later.
 - Attenuator commands can block on DAC I2C.
 - Laser and Maiman commands can block on Modbus RTU and laser-bank boot sleeps.
 - Persistent settings updates can block on Zephyr NVS writes.
+- Lastcommand persistence can block on Zephyr NVS writes before an effect
+  handler runs.
 - `status` optional laser/attenuator sections can block on Modbus/DAC reads.
 - MEMS and split commands update router state and can enqueue warnings but do
   not publish directly.

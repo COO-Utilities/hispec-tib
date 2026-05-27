@@ -26,8 +26,9 @@ It dispatches one command and tries one non-blocking enqueue to
   delayable work and can block on Modbus temperature polling and heater GPIO
   writes.
 - Persistent settings commands can block on Zephyr NVS writes.
-- `reboot` schedules app-owned delayable work; `serialguard` uses
-  command-dispatch-owned delayable work.
+- `reboot` and `serialguard` use command-dispatch-owned delayable work.
+- Command-dispatch lastcommand persistence can block on Zephyr NVS writes before
+  an effect handler runs.
 
 ## Serial Thread
 

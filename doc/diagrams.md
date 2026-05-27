@@ -122,17 +122,23 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Wait[k_msgq_get inbound_queue K_FOREVER] --> Dispatch[find longest command spec]
+  Wait[k_msgq_get inbound_queue K_FOREVER] --> Override{app execute override}
+  Override -- yes --> AppExec[app execute handler]
+  Override -- no --> Reboot{reboot pending}
+  Reboot -- yes --> Busy[reboot pending response]
+  Reboot -- no --> Dispatch[find longest command spec]
   Dispatch --> Supported{supported on board}
   Supported -- no --> Unavailable[unavailable response]
   Supported -- yes --> Record{effect-capable request}
-  Record -- yes --> Last[update lastcommand]
+  Record -- yes --> Last[update persisted lastcommand]
   Record -- no --> Found{handler exists for selected path}
   Last --> Found
   Found -- no entry --> Unknown[unknown response]
   Found -- no handler --> Unsupported[unsupported response]
   Found -- yes --> Handler[run handler]
   Handler --> Response[struct OutMsg]
+  AppExec --> Out[enqueue outbound_queue]
+  Busy --> Out
   Unknown --> Out[enqueue outbound_queue]
   Unavailable --> Out
   Unsupported --> Out

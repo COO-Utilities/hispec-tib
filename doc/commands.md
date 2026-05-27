@@ -214,7 +214,7 @@ while serial guard is active and attenuator DAC-range clamping.
   - Prints directly from command dispatch instead of using the inbound or
     outbound queues.
   - Takes no arguments. `help <anything>` is rejected.
-  - Enumerates dispatcher built-ins and app-provided static help entries,
+  - Enumerates dispatcher built-ins and app command specs with help metadata,
     including optional fields in `[]`, accepted enum values, unsupported
     commands for the current board profile, and commands allowed as MQTT queries
     while serial guard is active.
@@ -1297,6 +1297,7 @@ off or no faults).
   }
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
+  `lastcommand` is restored from command-dispatch NVS storage when available.
 
 
 (reboot)=
@@ -1305,8 +1306,10 @@ off or no faults).
   ```json
   {"status":"ok","reboot_ms":3000}
   ```
-- **Notes:** `reboot_set()` owns the local reboot delayable work item. Once a
-  reboot is pending, new app commands are rejected before their handlers run.
+- **Notes:** command dispatch owns the reboot delayable work item. Immediately
+  before reboot it calls the app reboot-prepare hook so firmware can put
+  hardware into a safer state. Once a reboot is pending, later commands are
+  rejected before app handlers run.
 
 (split)=
 ### `split`

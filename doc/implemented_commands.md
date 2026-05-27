@@ -24,14 +24,16 @@ comparison artifact, not a replacement for `commands.md`.
 - Empty/no-payload requests are queries except no-payload actions such as `reboot`
   and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
 - Non-empty payload requests are effect/action requests except documented query
-  shapes for `status`, laser query endpoints, and `memsroute/route_loss`.
+  shapes for `status`, laser query endpoints, `memsroute/route_loss`, and
+  `pd` dark-status.
 - The old MQTT `msg_type` payload convention is not used by command ingress.
-- Pure queries are not recorded as `lastcommand`; known effect-capable requests
-  are recorded before handler execution.
+- Pure queries are not recorded as `lastcommand`; supported effect-capable
+  requests are recorded by command dispatch before handler execution and
+  persisted in a fixed NVS record.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
-- Dispatcher built-ins (`help` and, when enabled, `serialguard`) are handled in
-  `command_dispatch.c`. Serial `help` prints directly; MQTT `help` and
-  `serialguard` enqueue one response to `outbound_queue`.
+- Dispatcher built-ins (`help`, and when enabled, `serialguard` and `reboot`)
+  are handled in `command_dispatch.c`. Serial `help` prints directly; MQTT
+  `help`, `serialguard`, and `reboot` enqueue one response to `outbound_queue`.
 - App command handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one
   response to `outbound_queue`.
 - App support predicates reject unsupported command families before their
@@ -83,8 +85,9 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Serial response prints directly from the dispatcher and bypasses the command
   queues so it can exceed the normal MQTT payload budget.
 - MQTT response is intentionally compact: device ID, request prefix, response
-  prefix, and command keys from built-in and app-provided help entries.
-- App-specific help text is a static `command_help_entries[]` table in
+  prefix, and command keys from built-ins and app command specs with help
+  metadata.
+- App-specific help text lives on the static command spec table in
   `app/src/command.c`; help entries can report commands as unsupported for the
   current board profile.
 
@@ -95,7 +98,8 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Side effects: can reconfigure IPv4, update runtime settings, optionally write
   NVS, and schedule SNTP sync after NTP setting changes.
 - Blocking: DHCP waits, DNS/NTP validation, and NVS writes can block.
-- Serial shorthand remains implemented in `app/src/command.c`.
+- Serial shorthand is described in the command spec and normalized by command
+  dispatch.
 
 ### `mqtt`
 
@@ -105,7 +109,8 @@ which slow resources it can touch, and known implementation-specific caveats.
   first connection.
 - Blocking/enqueue: hostname resolution and NVS writes can block; failed first
   connection emits `mqtt_broker_revert`.
-- Serial shorthand remains implemented in `app/src/command.c`.
+- Serial shorthand is described in the command spec and normalized by command
+  dispatch.
 
 ### `time`
 
@@ -113,14 +118,16 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Side effects: effect requests update Zephyr's realtime clock and persist the
   last known UTC time for boot-time restore.
 - Blocking: no bus I/O, NVS writes can block, no direct publish.
-- Serial shorthand remains implemented in `app/src/command.c`.
+- Serial shorthand is described in the command spec and normalized by command
+  dispatch.
 
 ### `reboot`
 
-- Owner: `reboot_set()` in `app/src/command.c`.
-- Side effects: schedules a local non-cancelable `k_work_delayable` item, which
-  calls `sys_reboot(SYS_REBOOT_COLD)` after the response window.
-- While reboot is pending, app commands are rejected before their handlers run.
+- Owner: command-dispatch built-in in `lib/coo_commons/command_dispatch.c`.
+- Side effects: schedules a dispatcher-owned non-cancelable `k_work_delayable`
+  item, calls the app reboot-prepare hook, then calls
+  `sys_reboot(SYS_REBOOT_COLD)` after the response window.
+- While reboot is pending, later commands are rejected before app handlers run.
 
 ### `serialguard`
 
@@ -149,7 +156,7 @@ which slow resources it can touch, and known implementation-specific caveats.
   timing owned by `app/src/mems_switching.c`.
 - Side effects: updates requested switch state applied by `mems_router_thread()`.
 - Enqueue: can emit `mems_rate_quantized` warnings.
-- Serial shorthand remains implemented in `app/src/mems_command.c`.
+- Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `split`
 

@@ -19,8 +19,8 @@ Runtime ownership is:
 
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
 - `command.c`: app command queues, static command spec table, support
-  predicates, custom request classification callbacks, and app/cross-domain
-  command handlers.
+  predicates, custom request classification callbacks, reboot-prepare hook, and
+  app/cross-domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
@@ -52,10 +52,11 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   DHCP/static/fallback profile selection.
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
-- `command_dispatch.c`: fixed-buffer MQTT/serial command request, static
-  longest-prefix spec lookup, default request classification, serial guard
-  policy, topic formatting, response metadata, warning JSON, serial payload
-  normalization, and serial response printing helpers.
+- `command_dispatch.c`: fixed-buffer MQTT/serial command request, built-in
+  help/serialguard/reboot commands, static longest-prefix spec lookup, default
+  request classification/execution, serial guard policy, persisted
+  lastcommand, topic formatting, response metadata, warning JSON, serial
+  payload normalization, and serial response printing helpers.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 
@@ -75,8 +76,8 @@ APIs directly.
 6. `setup_mems_switches_and_routes()` builds the active MEMS router.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
-8. Command runtime configures static command specs, help entries, and serial
-   console input.
+8. Command runtime configures static command specs, persisted lastcommand
+   storage, built-in reboot behavior, and serial console input.
 9. Executor and serial threads are created. Ambient-temperature delayable work
    is started. On the TIB profile, main also starts the photodiode thread,
    throughput monitor thread, and laser-bank heater delayable work.
@@ -113,12 +114,13 @@ verbs. Command dispatch owns the default query/effect rules and uses the app
 command spec table for special cases such as always-query commands,
 suffix-triggered actions, and custom payload classifiers.
 
-Empty or no-payload requests are queries except for no-payload actions such as
-`reboot`, `laserbank/clearfaults`, and laser-bank topic suffixes such as
+Empty or no-payload requests are queries except for dispatcher built-ins such as
+`reboot`, app actions such as `laserbank/clearfaults`, and laser-bank topic suffixes such as
 `laserbank/power/override_on`. Non-empty payloads normally mean an effect
 request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
-`memsroute/route_loss` payloads that contain only `route`.
+`memsroute/route_loss` payloads that contain only `route`, and `pd` dark-status
+payloads.
 
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:
@@ -128,13 +130,25 @@ translated into the same payload shapes as MQTT. The old payload `msg_type`
 convention is not part of current ingress classification.
 
 The command executor runs exactly one request at a time from `inbound_queue`.
-Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
-one response. Pure queries are not recorded as `lastcommand`; known
-effect-capable requests are recorded before handler execution.
+Command dispatch owns default execution unless an app override execute callback
+is configured. Handlers may block on I/O, sleep, enqueue warnings, update
+settings, and return one response. Pure queries are not recorded as
+`lastcommand`; supported effect-capable requests are recorded before handler
+execution in command-dispatch-owned runtime state and NVS storage.
 App support predicates reject unsupported command families before they reach
 laser, photodiode, throughput, or laser-bank command handlers on other board
 profiles. Serial help marks those entries as unsupported instead of encoding
 board names in the common command-dispatch library.
+
+When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
+After the response window, command dispatch calls the app reboot-prepare hook
+and then `sys_reboot(SYS_REBOOT_COLD)`.
+
+Command dispatch can persist one lastcommand record through Zephyr NVS when the
+app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
+fixed header plus the full `struct coo_cmd_request`, requiring
+`sizeof(struct coo_cmd_request) + COO_CMD_LASTCOMMAND_NVS_OVERHEAD` bytes
+(752 bytes with the current 512-byte payload configuration on Nucleo).
 
 ## Network And MQTT Runtime
 
