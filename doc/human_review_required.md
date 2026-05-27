@@ -1,35 +1,31 @@
 # Human Review Required
 
 This is the central owner-review list for current code-vs-doc mismatches,
-source TODOs, and behavior decisions. `commands.md` remains the intended
-command/API source of truth; current C source remains the implementation source
-of truth.
+source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
+## PCB Validation
+- [ ] Verify boot MEMS switch state behavior.
+- [ ] Verify ADC levels with scope
+- [ ] Verify DAC levels with scope pre/post opamp
+- [ ] Sort out MEMS loop and ADC loop timing overruns
+- [ ] Validate MODBUS comms with NMH & a spare driver
+
 ## Command/API Mismatches
-
-### Still Open
-
-- Relay 1Wire not getting a response
-- I2C2 messages aren't getting a response
 
 ### LLM Resolved; Human Review Requested
 
-## Hardware/Profile Decisions
-
 ## Decisions To Make
 
-- Verify DS2408 relay polarity on first PCB bring-up.
-  - Override_on makes LED go out and NC contact closed. So I want to reverse the polarity driver initializes to. Driver needs support for this. via zephyr
-- Decide intended persistence for MEMS switch state, AS split requested/actual
-  state and last-command metadata.
+- Decide intended persistence for MEMS switch state, AS split requested/actual state and last-command metadata.
 
-## Source TODOs Preserved
+## TODOs
 
-
-- `app/src/maiman.h`: compare Maiman behavior against the referenced
-  validation/test scripts.
+- Make serial responses more human-readable.
+- Update all command options with serial specifics
+- Update help command so it is useful
+- `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
 ## Deferred Owner-Specified Capabilities
 
@@ -37,10 +33,8 @@ Do not design or implement these without a detailed owner specification:
 
 - Verify boot MEMS switch state behavior.
 
-## Open items
+## Test items
 
-- Add test coverage around `json_utils.c`, command normalization, and network
-  profile selection.
-- Add test coverage for the attenuator model and inverse once calibration
-  expectations are owner-approved.
+- Add test coverage around `json_utils.c`, command normalization, and network profile selection.
+- Add test coverage for the attenuator model and inverse once calibration expectations are owner-approved.
 - Add automated tests for command parsing and non-hardware domain logic.
