@@ -4,8 +4,8 @@
  *
  * The common command runtime owns MQTT/serial topic handling, executor loops,
  * warning publication, and outbound drain behavior. This file supplies the
- * static command behavior table, serial shorthand callback, scheduled actions,
- * and command handlers that cut across domains.
+ * static command behavior table, serial shorthand callback, help metadata, and
+ * command handlers that cut across domains.
  */
 
 #include "command.h"
@@ -24,7 +24,6 @@
 #include "lasers.h"
 #include "app_identity.h"
 #include "app_settings.h"
-#include "app_scheduled_actions.h"
 #include "attenuator.h"
 #include "attenuator_command.h"
 #include "laser_command.h"
@@ -43,10 +42,12 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define SERIAL_WRAP_COLUMN UINT16_MAX
+#define SERIAL_WRAP_COLUMN COO_CMD_SERIAL_WRAP_COLUMN
+#define COMMAND_REBOOT_DELAY_MS 3000U
 
 static uint16_t mqtt_msg_id = 1;
-static atomic_t serial_network_ignore_active;
+static atomic_t reboot_pending;
+static struct k_work_delayable reboot_work;
 static char last_command_name[MAX_KEY_LEN];
 static char last_command_source[8] = "unknown";
 static int64_t last_command_time_ms;
@@ -94,7 +95,6 @@ enum command_serial_policy {
     COMMAND_SERIAL_MEMS_SWITCH,
     COMMAND_SERIAL_MQTT_BROKER,
     COMMAND_SERIAL_TIME_SET,
-    COMMAND_SERIAL_SERIAL_GUARD,
 };
 
 enum command_board_policy {
@@ -111,23 +111,22 @@ struct command_spec {
     enum command_serial_policy serial_policy;
     enum command_board_policy board_policy;
     bool mqtt_query_allowed_during_serial_guard;
-    const char *help_name;
 };
 
-#define CMD_SPEC_EX(_key, _get, _set, _class, _serial, _guard, _help) \
+#define CMD_SPEC_EX(_key, _get, _set, _class, _serial, _guard) \
     { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
       .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
       .serial_policy = (_serial), .board_policy = COMMAND_BOARD_ANY, \
-      .mqtt_query_allowed_during_serial_guard = (_guard), .help_name = (_help) }
+      .mqtt_query_allowed_during_serial_guard = (_guard) }
 
-#define CMD_SPEC(_key, _get, _set, _class, _guard, _help) \
-    CMD_SPEC_EX(_key, _get, _set, _class, COMMAND_SERIAL_VALUE, _guard, _help)
+#define CMD_SPEC(_key, _get, _set, _class, _guard) \
+    CMD_SPEC_EX(_key, _get, _set, _class, COMMAND_SERIAL_VALUE, _guard)
 
-#define CMD_SPEC_TIB(_key, _get, _set, _class, _guard, _help) \
+#define CMD_SPEC_TIB(_key, _get, _set, _class, _guard) \
     { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
       .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
       .serial_policy = COMMAND_SERIAL_VALUE, .board_policy = COMMAND_BOARD_TIB_ONLY, \
-      .mqtt_query_allowed_during_serial_guard = (_guard), .help_name = (_help) }
+      .mqtt_query_allowed_during_serial_guard = (_guard) }
 
 /*
  * One static row owns the app-level behavior for a command key: dispatch,
@@ -136,61 +135,266 @@ struct command_spec {
  * a parent row without creating a dynamic registry.
  */
 static const struct command_spec command_specs[] = {
-    CMD_SPEC("help", help_get, NULL, COMMAND_CLASS_DEFAULT, true, "help"),
-    CMD_SPEC("ip", ip_get, ip_set, COMMAND_CLASS_DEFAULT, true, "ip"),
+    CMD_SPEC("ip", ip_get, ip_set, COMMAND_CLASS_DEFAULT, true),
     CMD_SPEC_EX("mqtt", mqtt_get, mqtt_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_MQTT_BROKER, true, "mqtt"),
+                COMMAND_SERIAL_MQTT_BROKER, true),
     CMD_SPEC_EX("time", time_get, time_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_TIME_SET, true, "time"),
-    CMD_SPEC("temp", temp_get, NULL, COMMAND_CLASS_DEFAULT, true, "temp"),
-    CMD_SPEC("status", status_get, NULL, COMMAND_CLASS_ALWAYS_QUERY, true, "status"),
-    CMD_SPEC("reboot", NULL, reboot_set, COMMAND_CLASS_ALWAYS_EFFECT, false, "reboot"),
-    CMD_SPEC_EX("serialguard", serial_guard_get, serial_guard_set,
-                COMMAND_CLASS_DEFAULT, COMMAND_SERIAL_SERIAL_GUARD,
-                true, "serialguard"),
+                COMMAND_SERIAL_TIME_SET, true),
+    CMD_SPEC("temp", temp_get, NULL, COMMAND_CLASS_DEFAULT, true),
+    CMD_SPEC("status", status_get, NULL, COMMAND_CLASS_ALWAYS_QUERY, true),
+    CMD_SPEC("reboot", NULL, reboot_set, COMMAND_CLASS_ALWAYS_EFFECT, false),
     CMD_SPEC("memsroute/route_loss", memsroute_get, memsroute_set,
-             COMMAND_CLASS_ROUTE_LOSS, true, NULL),
+             COMMAND_CLASS_ROUTE_LOSS, true),
     CMD_SPEC("memsroute", memsroute_get, memsroute_set,
-             COMMAND_CLASS_DEFAULT, true, "memsroute"),
+             COMMAND_CLASS_DEFAULT, true),
     CMD_SPEC_EX("mems", mems_get, mems_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_MEMS_SWITCH, true, "mems"),
+                COMMAND_SERIAL_MEMS_SWITCH, true),
     CMD_SPEC("split", splitting_get, splitting_set,
-             COMMAND_CLASS_DEFAULT, true, "split"),
+             COMMAND_CLASS_DEFAULT, true),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
-                 COMMAND_CLASS_DEFAULT, false, "measure_throughput"),
+                 COMMAND_CLASS_DEFAULT, false),
     CMD_SPEC_TIB("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
-                 true, "laser"),
+                 true),
     CMD_SPEC_TIB("laser/tune", laser_tune_get, laser_tune_set,
-                 COMMAND_CLASS_LASER_TUNE, true, NULL),
+                 COMMAND_CLASS_LASER_TUNE, true),
     CMD_SPEC_TIB("laser/status", laser_get, NULL,
-                 COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+                 COMMAND_CLASS_ALWAYS_QUERY, true),
     CMD_SPEC_TIB("laser/engstatus", laser_engstatus_get, NULL,
-                 COMMAND_CLASS_ALWAYS_QUERY, true, NULL),
+                 COMMAND_CLASS_ALWAYS_QUERY, true),
     CMD_SPEC_TIB("laser/settings", laser_settings_get, laser_settings_set,
-                 COMMAND_CLASS_LASER_SETTINGS, true, NULL),
+                 COMMAND_CLASS_LASER_SETTINGS, true),
     CMD_SPEC_TIB("laserbank/power", laserbank_power, laserbank_power,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "laserbank"),
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
     CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
-                 COMMAND_CLASS_ALWAYS_EFFECT, false, NULL),
+                 COMMAND_CLASS_ALWAYS_EFFECT, false),
     CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, NULL),
+                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
     CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
-             COMMAND_CLASS_DEFAULT, true, NULL),
+             COMMAND_CLASS_DEFAULT, true),
     CMD_SPEC("atten", atten_setting_get, atten_setting_set,
-             COMMAND_CLASS_DEFAULT, true, "atten"),
+             COMMAND_CLASS_DEFAULT, true),
     { .key = "pd", .get_handler = pd_get, .set_handler = pd_set,
       .class_policy = COMMAND_CLASS_DEFAULT,
       .last_policy = COMMAND_LAST_SKIP_PD_DARK_STATUS,
       .board_policy = COMMAND_BOARD_TIB_ONLY,
-      .mqtt_query_allowed_during_serial_guard = true,
-      .help_name = "pd" },
+      .mqtt_query_allowed_during_serial_guard = true },
     CMD_SPEC_TIB("pdsettings", pd_settings_get, pd_settings_set,
-                 COMMAND_CLASS_DEFAULT, true, "pdsettings"),
+                 COMMAND_CLASS_DEFAULT, true),
 };
 
 #undef CMD_SPEC
 #undef CMD_SPEC_TIB
 #undef CMD_SPEC_EX
+
+static const struct coo_cmd_help_entry command_help_entries[] = {
+    {
+        .key = "ip",
+        .usage = "ip [trydhcpfirst=<bool> preferdhcpdns=<bool> preferdhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persistent=<bool>]",
+        .args = "query with no payload; effect when any listed field is supplied",
+        .values = "bool: true|false|on|off|yes|no",
+        .notes = "reconfigures IPv4 immediately; persistent=true stores app-owned IP settings",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "mqtt",
+        .usage = "mqtt [broker=<host-or-ip:port> persistent=<bool>]",
+        .args = "broker is required for effect; persistent is optional",
+        .values = "broker examples: 192.168.1.5:1883, hispec.caltech.edu:1883",
+        .notes = "runtime broker changes cause the main loop to reconnect",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "time",
+        .usage = "time [linuxtime_ms=<utc-ms>]",
+        .args = "linuxtime_ms required for effect",
+        .values = "unsigned millisecond Unix epoch",
+        .notes = "sets Zephyr realtime clock and records last known UTC",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "temp",
+        .usage = "temp",
+        .args = "none",
+        .values = NULL,
+        .notes = "cached housekeeping temperature status",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "status",
+        .usage = "status [ip=<bool> lasers=<bool> attens=<bool>]",
+        .args = "all fields optional",
+        .values = "bool: true|false|on|off|yes|no",
+        .notes = "query-only firmware and subsystem status",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "reboot",
+        .usage = "reboot",
+        .args = "none",
+        .values = NULL,
+        .notes = "schedules a non-cancelable reboot after a short response window",
+        .flags = COO_CMD_HELP_EFFECT,
+    },
+    {
+        .key = "memsroute",
+        .usage = "memsroute [route=<input>:<output> persistent=<bool>]",
+        .args = "route required for effect; persistent optional",
+        .values = "route names are board profile input/output route keys",
+        .notes = "applies a named static MEMS route",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "memsroute/route_loss",
+        .usage = "memsroute/route_loss route=<route> [<laser>=<transmission> ... persistent=<bool>]",
+        .args = "route required for effect; laser fields optional by query/effect mode",
+        .values = "laser fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,split",
+        .notes = "stores user route-loss estimates used by optical calculations",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "mems/<switchname>",
+        .usage = "mems/<switchname> [state=<A|B> duty_cycle=<0..1> toggle_rate_hz=<Hz> stopafter_s=<s>]",
+        .args = "state required for effect; duty/toggle/stop fields optional",
+        .values = "switchname is one active board MEMS switch name",
+        .notes = "serial shorthand accepts: mems/<switchname> A [duty_cycle] [stopafter_s]",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "split",
+        .usage = "split [channel=<yj|hk> ratio1=<0..1> ratio2=<0..1> ratio3=<0..1> stopafter_s=<s>]",
+        .args = "channel, ratio1, and ratio2 are required for effect; ratio3 and stopafter_s optional",
+        .values = "channel: yj,hk",
+        .notes = "split/yj and split/hk query current splitter state",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "measure_throughput",
+        .usage = "measure_throughput action=<start|stop> channel=<yj|hk> [duration_ms=<ms> output=<name> autolevel=<bool> max_flux_ph_s=<value>]",
+        .args = "action and channel required",
+        .values = "channel: yj,hk",
+        .notes = "TIB-only throughput monitor command",
+        .flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laser",
+        .usage = "laser name=<laser> [level=<percent> autooff_s=<s>]",
+        .args = "name required; level makes it an effect",
+        .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+        .notes = "TIB-only laser output status/set command",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laser/tune",
+        .usage = "laser/tune name=<laser> [tune_nm=<nm>|delta_nm=<nm>]",
+        .args = "name required; tune_nm or delta_nm makes it an effect",
+        .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+        .notes = "TIB-only stored tune request",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laser/status",
+        .usage = "laser/status name=<laser>",
+        .args = "name required",
+        .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+        .notes = "TIB-only compact operational status",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laser/engstatus",
+        .usage = "laser/engstatus name=<laser>",
+        .args = "name required",
+        .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+        .notes = "TIB-only engineering status; may perform slow Modbus reads",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laser/settings",
+        .usage = "laser/settings name=<laser> [settings={...} persistent=<bool>]",
+        .args = "name required; settings object required for effect",
+        .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+        .notes = "TIB-only app-owned laser policy/settings wrapper",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laserbank/power",
+        .usage = "laserbank/power [override=<auto|override_on|override_off>]",
+        .args = "override required for effect; suffix form laserbank/power/<mode> also works",
+        .values = "mode: auto,override_on,override_off",
+        .notes = "TIB-only laser-bank supply override",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laserbank/clearfaults",
+        .usage = "laserbank/clearfaults",
+        .args = "none",
+        .values = NULL,
+        .notes = "TIB-only power-cycles the laser bank to clear latched faults",
+        .flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "laserbank/heater",
+        .usage = "laserbank/heater [override=<auto|override_on|override_off>]",
+        .args = "override required for effect; suffix form laserbank/heater/<mode> also works",
+        .values = "mode: auto,override_on,override_off",
+        .notes = "TIB-only laser-bank heater relay mode",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "atten/<name>/value",
+        .usage = "atten/<name>/value [value=<linear>]",
+        .args = "value required for effect",
+        .values = "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
+        .notes = "sets or queries total logical transmission",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "atten/<name>/valuedb",
+        .usage = "atten/<name>/valuedb [value=<dB>]",
+        .args = "value required for effect",
+        .values = "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
+        .notes = "serial shorthand wraps a single numeric value field",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "atten/<name>/coeff",
+        .usage = "atten/<name>/coeff [dac1=[slope,offset] dac2=[slope,offset] persistent=<bool>]",
+        .args = "dac1 and dac2 arrays required for effect",
+        .values = "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
+        .notes = "send JSON for coeff updates; key=value shorthand cannot express arrays",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "atten/calibrate",
+        .usage = "atten/calibrate action=<auto|manual|continue|fit|stop> [attenuator=<name> fiber=<dac1|dac2> other_mv=<mV> dwell_ms=<ms> persistent=<bool>]",
+        .args = "action required for effect; no payload queries calibration state",
+        .values = "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
+        .notes = "calibration actions are mode-specific and may run across commands",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+    },
+    {
+        .key = "pd",
+        .usage = "pd [channel=<yj|hk> action=<measure_dark|dark_status|reset_lowest_dark> duration_ms=<ms> store=<bool> persistent=<bool>]",
+        .args = "channel and action required for effect; no payload queries live values",
+        .values = "channel: yj,hk; action: measure_dark,dark_status,reset_lowest_dark",
+        .notes = "TIB-only photodiode status and dark-calibration actions",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+    {
+        .key = "pdsettings/<channel>",
+        .usage = "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> persistent=<bool>]",
+        .args = "channel required in key; listed fields optional for effect",
+        .values = "channel: yj,hk",
+        .notes = "TIB-only app-owned photodiode calibration/settings",
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+                 COO_CMD_HELP_TIB_ONLY,
+    },
+};
 
 static struct coo_cmd_runtime command_runtime;
 
@@ -280,6 +484,10 @@ static struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cm
     const struct command_spec *spec = find_command_spec(cmd != NULL ? cmd->key : NULL);
     coo_cmd_handler_fn handler;
     LOG_INF("Dispatching: %s", cmd->key);
+
+    if (atomic_get(&reboot_pending) != 0) {
+        return coo_cmd_error(cmd, "reboot pending");
+    }
 
     if (command_should_record_lastcommand(cmd)) {
         record_lastcommand(cmd);
@@ -388,7 +596,7 @@ static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request
 
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
  * uses. This is deliberately a small translation table, not another dispatcher.
- * Examples: "power on", "serialguard off", "mems/foo A 0.5 30".
+ * Examples: "mqtt host:1883", "mems/foo A 0.5 30".
  */
 static int serial_payload_from_shorthand(const char *key, const char *payload,
                                          char *out, size_t out_len,
@@ -430,25 +638,6 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
         }
         if (t2[0] != '\0' &&
             coo_cmd_serial_append_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
-            return -EINVAL;
-        }
-        written = snprintk(out + off, out_len - off, "}");
-        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
-    }
-
-    if (serial_policy == COMMAND_SERIAL_SERIAL_GUARD) {
-        const char *seconds = (strcasecmp(t0, "off") == 0) ? "0" : t0;
-
-        written = snprintk(out, out_len, "{\"seconds\":");
-        if (written < 0 || written >= (int)out_len) {
-            return -ENOSPC;
-        }
-        off = (size_t)written;
-        if (coo_cmd_serial_append_json_value(out, out_len, &off, seconds) != 0) {
-            return -EINVAL;
-        }
-        if (t1[0] != '\0' &&
-            coo_cmd_serial_append_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
             return -EINVAL;
         }
         written = snprintk(out + off, out_len - off, "}");
@@ -504,55 +693,17 @@ void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
     coo_cmd_runtime_handle_mqtt_publish(&command_runtime, pub);
 }
 
-static void command_serial_note_activity(void *user_data)
-{
-    const uint32_t holdoff_s = app_settings_get_serial_holdoff_s();
-    int rc;
-
-    ARG_UNUSED(user_data);
-
-    if (holdoff_s == 0U) {
-        (void)atomic_clear(&serial_network_ignore_active);
-        (void)app_scheduled_action_cancel(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE);
-        return;
-    }
-
-    (void)atomic_set(&serial_network_ignore_active, 1);
-    rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
-                                       K_SECONDS(holdoff_s));
-    if (rc < 0) {
-        (void)atomic_clear(&serial_network_ignore_active);
-        LOG_ERR("Failed to schedule serial guard expiration (%d)", rc);
-    }
-}
-
-static bool command_network_mqtt_allowed(void)
-{
-    return atomic_get(&serial_network_ignore_active) == 0;
-}
-
 static bool command_mqtt_accept(const struct coo_cmd_request *cmd, void *user_data)
 {
     ARG_UNUSED(user_data);
 
-    return command_network_mqtt_allowed() ||
-           (cmd != NULL && cmd->msg_type == COO_CMD_QUERY &&
-            mqtt_get_allowed_during_serial_guard(cmd->key));
+    return cmd != NULL && cmd->msg_type == COO_CMD_QUERY &&
+           mqtt_get_allowed_during_serial_guard(cmd->key);
 }
 
-static void serial_guard_expire_handler(enum app_scheduled_action_id id, void *user_data)
+static void reboot_work_handler(struct k_work *work)
 {
-    ARG_UNUSED(id);
-    ARG_UNUSED(user_data);
-
-    (void)atomic_clear(&serial_network_ignore_active);
-    LOG_INF("Serial guard expired; MQTT command execution is enabled");
-}
-
-static void reboot_action_handler(enum app_scheduled_action_id id, void *user_data)
-{
-    ARG_UNUSED(id);
-    ARG_UNUSED(user_data);
+    ARG_UNUSED(work);
 
     LOG_WRN("Executing scheduled reboot");
     sys_reboot(SYS_REBOOT_COLD);
@@ -569,29 +720,21 @@ int command_runtime_init(void)
 	    .serial_wrap_column = SERIAL_WRAP_COLUMN,
         .classify = command_infer_msg_type,
         .mqtt_accept = command_mqtt_accept,
-        .serial_activity = command_serial_note_activity,
         .serial_shorthand = serial_payload_from_shorthand,
+        .help_entries = command_help_entries,
+        .help_entry_count = ARRAY_SIZE(command_help_entries),
     };
     int rc;
+
+    k_work_init_delayable(&reboot_work, reboot_work_handler);
+    (void)atomic_clear(&reboot_pending);
 
     rc = coo_cmd_runtime_configure(&command_runtime, &cfg);
     if (rc != 0) {
         return rc;
     }
 
-    rc = app_scheduled_actions_init();
-    if (rc != 0) {
-        return rc;
-    }
-
-    rc = app_scheduled_action_register(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
-                                       serial_guard_expire_handler, NULL);
-    if (rc != 0) {
-        return rc;
-    }
-
-    return app_scheduled_action_register(APP_SCHEDULED_ACTION_REBOOT,
-                                         reboot_action_handler, NULL);
+    return 0;
 }
 
 struct coo_cmd_runtime *command_runtime_get(void)
@@ -605,73 +748,6 @@ struct coo_cmd_runtime *command_runtime_get(void)
 
 /* COMMAND HANDLERS */
 
-
-struct coo_cmd_response help_get(const struct coo_cmd_request *cmd)
-{
-    char payload[MAX_PAYLOAD_LEN] = {0};
-    char request_prefix[MAX_TOPIC_LEN] = {0};
-    char response_prefix[MAX_TOPIC_LEN] = {0};
-    size_t off = 0U;
-    bool first = true;
-
-    if (coo_cmd_format_request_prefix(app_mqtt_device_id(),
-                                      request_prefix,
-                                      sizeof(request_prefix)) != 0 ||
-        coo_cmd_format_response_topic(app_mqtt_device_id(), "",
-                                      response_prefix,
-                                      sizeof(response_prefix)) != 0) {
-        return coo_cmd_error(cmd, "help topic formatting failed");
-    }
-
-    if (coo_json_append(payload, sizeof(payload), &off,
-                        "{\"device\":\"%s\",\"version\":\"%s\","
-                        "\"request_prefix\":\"%s\","
-                        "\"response_prefix\":\"%s\",\"commands\":[",
-                        app_mqtt_device_id(),
-                        APP_VERSION_STRING,
-                        request_prefix,
-                        response_prefix) != 0) {
-        return coo_cmd_error(cmd, "help response too large");
-    }
-
-    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
-        if (!command_board_allowed(&command_specs[i])) {
-            continue;
-        }
-        if (coo_json_append(payload, sizeof(payload), &off, "%s\"%s\"",
-                            first ? "" : ",",
-                            command_specs[i].key) != 0) {
-            return coo_cmd_error(cmd, "help response too large");
-        }
-        first = false;
-    }
-
-    if (coo_json_append(payload, sizeof(payload), &off,
-                        "],\"serial_guard_query\":[") != 0) {
-        return coo_cmd_error(cmd, "help response too large");
-    }
-
-    first = true;
-    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
-        if (!command_board_allowed(&command_specs[i]) ||
-            command_specs[i].get_handler == NULL ||
-            !command_specs[i].mqtt_query_allowed_during_serial_guard) {
-            continue;
-        }
-        if (coo_json_append(payload, sizeof(payload), &off, "%s\"%s\"",
-                            first ? "" : ",",
-                            command_specs[i].key) != 0) {
-            return coo_cmd_error(cmd, "help response too large");
-        }
-        first = false;
-    }
-
-    if (coo_json_append(payload, sizeof(payload), &off, "]}") != 0) {
-        return coo_cmd_error(cmd, "help response too large");
-    }
-
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
-}
 
 static int ip_status_payload(char *payload, size_t payload_len)
 {
@@ -1053,58 +1129,24 @@ struct coo_cmd_response time_set(const struct coo_cmd_request *cmd)
 
 struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd)
 {
+    char payload[MAX_PAYLOAD_LEN];
     int rc;
 
-    LOG_WRN("Reboot command accepted; scheduling reboot");
-    rc = app_scheduled_action_schedule(APP_SCHEDULED_ACTION_REBOOT, K_MSEC(250));
+    if (!atomic_cas(&reboot_pending, 0, 1)) {
+        return coo_cmd_error(cmd, "reboot already pending");
+    }
+
+    LOG_WRN("Reboot command accepted; rebooting in %u ms", COMMAND_REBOOT_DELAY_MS);
+    rc = k_work_schedule(&reboot_work, K_MSEC(COMMAND_REBOOT_DELAY_MS));
     if (rc < 0) {
+        (void)atomic_clear(&reboot_pending);
         return coo_cmd_error(cmd, "failed to schedule reboot");
     }
 
-    return coo_cmd_ok(cmd);
-}
-
-struct coo_cmd_response serial_guard_get(const struct coo_cmd_request *cmd)
-{
-    char payload[MAX_PAYLOAD_LEN];
-    int64_t remaining_ms = 0;
-
-    (void)app_scheduled_action_remaining_ms(APP_SCHEDULED_ACTION_SERIAL_GUARD_EXPIRE,
-                                            &remaining_ms);
     snprintk(payload, sizeof(payload),
-             "{\"serialguard_s\":%u,\"active\":%s,\"remaining_ms\":%lld}",
-             app_settings_get_serial_holdoff_s(),
-             command_network_mqtt_allowed() ? "false" : "true",
-             (long long)remaining_ms);
+             "{\"status\":\"ok\",\"reboot_ms\":%u}",
+             COMMAND_REBOOT_DELAY_MS);
     return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
-}
-
-struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd)
-{
-    uint32_t holdoff_s = 0;
-    bool persist = false;
-    int parse_rc_seconds;
-    int parse_rc_value;
-
-    parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
-    parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
-    if (parse_rc_seconds == COO_JSON_EXTRACT_ERR || parse_rc_value == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "invalid seconds");
-    }
-    if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
-        parse_rc_value == COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "missing seconds");
-    }
-
-    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
-                                       &persist, NULL) != 0) {
-        return coo_cmd_error(cmd, "invalid persistent");
-    }
-    app_settings_set_serial_holdoff_s(holdoff_s, persist);
-    if (cmd->source == COO_CMD_SOURCE_SERIAL) {
-        command_serial_note_activity(NULL);
-    }
-    return coo_cmd_ok(cmd);
 }
 
 

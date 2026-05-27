@@ -26,14 +26,13 @@
 
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
-#define APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S 30U
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
 #define APP_NVS_SCHEMA_VERSION 1U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
 	APP_NVS_ID_BOARD_TYPE = 0x0002,
-	APP_NVS_ID_SERIAL_HOLDOFF = 0x0003,
+	APP_NVS_ID_SERIAL_HOLDOFF_UNUSED = 0x0003,
 	APP_NVS_ID_BOOT_COUNT = 0x0004,
 	APP_NVS_ID_IP = 0x0005,
 	APP_NVS_ID_MQTT = 0x0006,
@@ -230,7 +229,6 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		s->laser.channel[i].tune_delta_nm = 0.0f;
 		s->laser.channel[i].total_emitting_s = 0.0;
 	}
-	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
 	s->boot_count = 0U;
 	s->mqtt_revision = 0U;
 }
@@ -733,9 +731,6 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	uint32_t value;
 
 	app_nvs_load_board_type(s);
-	if (app_nvs_read_exact(APP_NVS_ID_SERIAL_HOLDOFF, &value, sizeof(value), "serial holdoff")) {
-		s->serial_holdoff_s = value;
-	}
 	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
 		s->boot_count = value;
 	}
@@ -755,7 +750,7 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 
 static void delete_resettable_settings(void)
 {
-	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF);
+	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED);
 	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
 	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
 	(void)app_nvs_delete(APP_NVS_ID_IP);
@@ -1168,28 +1163,6 @@ uint32_t app_settings_get_mqtt_revision(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	return value;
-}
-
-uint32_t app_settings_get_serial_holdoff_s(void)
-{
-	uint32_t value;
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	value = g_settings.snapshot.serial_holdoff_s;
-	k_mutex_unlock(&g_settings.lock);
-
-	return value;
-}
-
-void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist)
-{
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	g_settings.snapshot.serial_holdoff_s = seconds;
-	k_mutex_unlock(&g_settings.lock);
-
-	if (persist) {
-		(void)app_nvs_write(APP_NVS_ID_SERIAL_HOLDOFF, &seconds, sizeof(seconds));
-	}
 }
 
 uint32_t app_settings_get_boot_count(void)

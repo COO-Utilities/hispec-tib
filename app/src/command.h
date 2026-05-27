@@ -4,8 +4,8 @@
  *
  * The common command runtime owns MQTT/serial ingress, topic formatting,
  * warning emission, executor threads, and outbound drain mechanics. This app
- * layer supplies command handlers, request classification, and the static
- * queues used by the runtime.
+ * layer supplies command handlers, request classification, help metadata, and
+ * the static queues used by the runtime.
  */
 
 #ifndef COMMAND_H
@@ -27,7 +27,6 @@
 #define MAX_PENDING_COMMANDS 2
 
 /* Handler prototypes for command.c-owned commands (get/set where defined). */
-struct coo_cmd_response help_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response ip_set(const struct coo_cmd_request *cmd);
 struct coo_cmd_response mqtt_get(const struct coo_cmd_request *cmd);
@@ -35,17 +34,14 @@ struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd);
 struct coo_cmd_response time_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response time_set(const struct coo_cmd_request *cmd);
 struct coo_cmd_response reboot_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response serial_guard_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response serial_guard_set(const struct coo_cmd_request *cmd);
 
 struct coo_cmd_response status_get(const struct coo_cmd_request *cmd);
 struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd);
 
 /**
- * @brief Initialize command runtime identity, queues, hooks, and delayed actions.
+ * @brief Initialize command runtime identity, queues, hooks, and reboot work.
  *
- * Registers the callbacks used by serial-override expiration and delayed
- * reboot. Call once before starting command ingress threads.
+ * Call once before starting command ingress threads.
  */
 int command_runtime_init(void);
 

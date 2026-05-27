@@ -3,8 +3,8 @@
  * @brief Direct-NVS app configuration and calibration ownership.
  *
  * App-owned numeric NVS IDs store board identity, boot count, operator
- * network/MQTT configuration, serial guard duration, attenuator coefficients,
- * photodiode calibration/response settings, laser policy, and route loss.
+ * network/MQTT configuration, attenuator coefficients, photodiode
+ * calibration/response settings, laser policy, and route loss.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -118,7 +118,6 @@ struct app_settings_snapshot {
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
 	struct app_route_loss_settings route_loss;
-	uint32_t serial_holdoff_s;
 	uint32_t boot_count;
 	uint64_t last_known_utc_ms;
 	uint32_t mqtt_revision;
@@ -217,10 +216,6 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
 /** @brief Monotonic runtime counter used by main.c to reconnect MQTT. */
 uint32_t app_settings_get_mqtt_revision(void);
-/** @brief Get serial-command guard duration in seconds. */
-uint32_t app_settings_get_serial_holdoff_s(void);
-/** @brief Set serial-command guard duration and optionally persist. */
-void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist);
 /** @brief Get persisted boot count. */
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */

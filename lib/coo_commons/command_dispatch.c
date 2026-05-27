@@ -458,6 +458,34 @@ static int serial_payload_from_value(const char *payload, char *out, size_t out_
 	return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+static int serial_payload_from_serial_guard(const char *payload, char *out, size_t out_len)
+{
+	const char *cursor = payload;
+	const char *seconds;
+	char token[32] = {0};
+	size_t off = 0U;
+	int written;
+
+	if (!coo_cmd_serial_next_token(&cursor, token, sizeof(token)) ||
+	    coo_cmd_serial_has_extra(cursor)) {
+		return -EINVAL;
+	}
+
+	seconds = (strcasecmp(token, "off") == 0) ? "0" : token;
+	written = snprintk(out, out_len, "{\"seconds\":");
+	if (written < 0 || written >= (int)out_len) {
+		return -ENOSPC;
+	}
+	off = (size_t)written;
+	if (coo_cmd_serial_append_json_value(out, out_len, &off, seconds) != 0) {
+		return -EINVAL;
+	}
+	written = snprintk(out + off, out_len - off, "}");
+	return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+#endif
+
 int coo_cmd_normalize_serial_payload(const char *key,
 				     const char *payload,
 				     coo_cmd_serial_shorthand_fn shorthand,
@@ -488,6 +516,12 @@ int coo_cmd_normalize_serial_payload(const char *key,
 	if (strchr(payload, '=') != NULL) {
 		return serial_payload_from_key_values(payload, out, out_len);
 	}
+
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+	if (key != NULL && strcmp(key, "serialguard") == 0) {
+		return serial_payload_from_serial_guard(payload, out, out_len);
+	}
+#endif
 
 	if (shorthand != NULL) {
 		return shorthand(key, payload, out, out_len, user_data);

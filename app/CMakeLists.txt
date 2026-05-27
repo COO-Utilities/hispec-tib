@@ -19,7 +19,6 @@ project(app LANGUAGES C)
 target_sources(app PRIVATE
         src/main.c
         src/app_identity.c
-        src/app_scheduled_actions.c
         src/app_settings.c
         src/attenuator.c
         src/attenuator_calibration.c
