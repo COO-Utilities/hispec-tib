@@ -66,10 +66,10 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
 				      cfg->serial_wrap_column :
 				      COO_CMD_SERIAL_WRAP_COLUMN;
-	runtime->classify = cfg->classify;
 	runtime->mqtt_accept = cfg->mqtt_accept;
 	runtime->serial_activity = cfg->serial_activity;
-	runtime->serial_shorthand = cfg->serial_shorthand;
+	runtime->command_specs = cfg->command_specs;
+	runtime->command_spec_count = cfg->command_spec_count;
 	runtime->help_entries = cfg->help_entries;
 	runtime->help_entry_count = cfg->help_entry_count;
 	runtime->user_data = cfg->user_data;
@@ -81,6 +81,44 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 #endif
 
 	return runtime_init_serial_console(runtime);
+}
+
+const struct coo_cmd_spec *
+coo_cmd_runtime_find_spec(const struct coo_cmd_runtime *runtime,
+			  const char *key)
+{
+	const struct coo_cmd_spec *best = NULL;
+	size_t best_len = 0U;
+
+	if (runtime == NULL || key == NULL || runtime->command_specs == NULL) {
+		return NULL;
+	}
+
+	for (size_t i = 0U; i < runtime->command_spec_count; ++i) {
+		const struct coo_cmd_spec *spec = &runtime->command_specs[i];
+		const size_t len = spec->key != NULL ? strlen(spec->key) : 0U;
+
+		if (len == 0U || !coo_cmd_key_matches_prefix(key, spec->key)) {
+			continue;
+		}
+		if (len > best_len) {
+			best = spec;
+			best_len = len;
+		}
+	}
+
+	return best;
+}
+
+bool coo_cmd_runtime_spec_supported(const struct coo_cmd_runtime *runtime,
+				    const struct coo_cmd_spec *spec)
+{
+	if (spec == NULL) {
+		return false;
+	}
+
+	return spec->supported == NULL || spec->supported(spec, runtime != NULL ?
+							  runtime->user_data : NULL);
 }
 
 static int format_device_topic(const char *device_id, char *buf, size_t buf_len,
@@ -895,7 +933,18 @@ static void serial_print_wrapped_text(const char *prefix,
 	serial_line_end();
 }
 
-static void serial_print_help_entry(const struct coo_cmd_help_entry *entry,
+static bool help_entry_supported(const struct coo_cmd_runtime *runtime,
+				 const struct coo_cmd_help_entry *entry)
+{
+	if (entry == NULL || entry->supported == NULL) {
+		return true;
+	}
+
+	return entry->supported(NULL, runtime != NULL ? runtime->user_data : NULL);
+}
+
+static void serial_print_help_entry(const struct coo_cmd_runtime *runtime,
+				    const struct coo_cmd_help_entry *entry,
 				    uint16_t wrap_column)
 {
 	if (entry == NULL || entry->key == NULL) {
@@ -903,8 +952,8 @@ static void serial_print_help_entry(const struct coo_cmd_help_entry *entry,
 	}
 
 	printk("  %s", entry->key);
-	if ((entry->flags & COO_CMD_HELP_TIB_ONLY) != 0U) {
-		printk(" [TIB]");
+	if (!help_entry_supported(runtime, entry)) {
+		printk(" [unsupported]");
 	}
 	if ((entry->flags & COO_CMD_HELP_QUERY) != 0U &&
 	    (entry->flags & COO_CMD_HELP_EFFECT) != 0U) {
@@ -939,11 +988,11 @@ static void runtime_print_serial_help(const struct coo_cmd_runtime *runtime,
 	serial_line_end();
 
 	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
-		serial_print_help_entry(&builtin_help_entries[i], wrap_column);
+		serial_print_help_entry(runtime, &builtin_help_entries[i], wrap_column);
 	}
 	if (runtime != NULL) {
 		for (size_t i = 0U; i < runtime->help_entry_count; ++i) {
-			serial_print_help_entry(&runtime->help_entries[i], wrap_column);
+			serial_print_help_entry(runtime, &runtime->help_entries[i], wrap_column);
 		}
 	}
 }
@@ -1056,6 +1105,8 @@ static void serial_guard_expire_work_handler(struct k_work *work)
 static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *runtime,
 						     const struct coo_cmd_request *cmd)
 {
+	const struct coo_cmd_spec *spec;
+
 	if (!runtime_serial_guard_active(runtime)) {
 		return true;
 	}
@@ -1068,8 +1119,14 @@ static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *run
 		return true;
 	}
 
-	return runtime->mqtt_accept != NULL &&
-	       runtime->mqtt_accept(cmd, runtime->user_data);
+	if (runtime->mqtt_accept != NULL) {
+		return runtime->mqtt_accept(cmd, runtime->user_data);
+	}
+
+	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
+	return spec != NULL &&
+	       spec->query_handler != NULL &&
+	       spec->mqtt_query_allowed_during_serial_guard;
 }
 
 static struct coo_cmd_response runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
@@ -1217,8 +1274,34 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 					      const struct coo_cmd_request *cmd)
 {
-	if (runtime != NULL && runtime->classify != NULL) {
-		return runtime->classify(cmd, runtime->user_data);
+	const struct coo_cmd_spec *spec;
+
+	if (cmd == NULL) {
+		return COO_CMD_QUERY;
+	}
+
+	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
+	if (spec != NULL) {
+		switch (spec->class_policy) {
+		case COO_CMD_CLASS_ALWAYS_QUERY:
+			return COO_CMD_QUERY;
+		case COO_CMD_CLASS_ALWAYS_EFFECT:
+			return COO_CMD_EFFECT;
+		case COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT:
+			return (!coo_cmd_payload_empty(cmd) ||
+				coo_cmd_key_suffix_after(cmd->key, spec->key)[0] != '\0') ?
+			       COO_CMD_EFFECT : COO_CMD_QUERY;
+		case COO_CMD_CLASS_CUSTOM:
+			if (spec->custom_classify != NULL) {
+				return spec->custom_classify(cmd, spec,
+							    runtime != NULL ?
+							    runtime->user_data : NULL);
+			}
+			break;
+		case COO_CMD_CLASS_DEFAULT:
+		default:
+			break;
+		}
 	}
 
 	return coo_cmd_payload_empty(cmd) ? COO_CMD_QUERY : COO_CMD_EFFECT;
@@ -1259,6 +1342,7 @@ static void runtime_enqueue_serial_error(struct coo_cmd_runtime *runtime, const 
 void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *line)
 {
 	struct coo_cmd_request *cmd;
+	const struct coo_cmd_spec *spec;
 	char *cursor = line;
 	char *key;
 	char *payload = NULL;
@@ -1299,6 +1383,7 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 		runtime_enqueue_serial_error(runtime, "missing command key");
 		return;
 	}
+	spec = coo_cmd_runtime_find_spec(runtime, key);
 
 	if (runtime_key_is_help(key)) {
 		if (payload_has_text(payload)) {
@@ -1321,7 +1406,7 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 	}
 
 	if (coo_cmd_normalize_serial_payload(cmd->key, payload,
-					     runtime->serial_shorthand,
+					     spec != NULL ? spec->serial_shorthand : NULL,
 					     runtime->user_data,
 					     cmd->payload,
 					     sizeof(cmd->payload)) != 0) {

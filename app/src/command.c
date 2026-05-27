@@ -74,58 +74,52 @@ extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
 
-enum command_class_policy {
-    COMMAND_CLASS_DEFAULT = 0,
-    COMMAND_CLASS_ALWAYS_QUERY,
-    COMMAND_CLASS_ALWAYS_EFFECT,
-    COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT,
-    COMMAND_CLASS_ROUTE_LOSS,
-    COMMAND_CLASS_LASER_LEVEL,
-    COMMAND_CLASS_LASER_TUNE,
-    COMMAND_CLASS_LASER_SETTINGS,
-};
-
-enum command_last_policy {
-    COMMAND_LAST_DEFAULT = 0,
-    COMMAND_LAST_SKIP_PD_DARK_STATUS,
-};
-
-enum command_serial_policy {
-    COMMAND_SERIAL_VALUE = 0,
-    COMMAND_SERIAL_MEMS_SWITCH,
-    COMMAND_SERIAL_MQTT_BROKER,
-    COMMAND_SERIAL_TIME_SET,
-};
-
-enum command_board_policy {
-    COMMAND_BOARD_ANY = 0,
-    COMMAND_BOARD_TIB_ONLY,
-};
-
-struct command_spec {
-    const char *key;
-    coo_cmd_handler_fn get_handler;
-    coo_cmd_handler_fn set_handler;
-    enum command_class_policy class_policy;
-    enum command_last_policy last_policy;
-    enum command_serial_policy serial_policy;
-    enum command_board_policy board_policy;
-    bool mqtt_query_allowed_during_serial_guard;
-};
-
-#define CMD_SPEC_EX(_key, _get, _set, _class, _serial, _guard) \
-    { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
-      .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
-      .serial_policy = (_serial), .board_policy = COMMAND_BOARD_ANY, \
-      .mqtt_query_allowed_during_serial_guard = (_guard) }
+static bool command_tib_supported(const struct coo_cmd_spec *spec, void *user_data);
+static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *cmd,
+                                                 const struct coo_cmd_spec *spec,
+                                                 void *user_data);
+static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *cmd,
+                                                  const struct coo_cmd_spec *spec,
+                                                  void *user_data);
+static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *cmd,
+                                                 const struct coo_cmd_spec *spec,
+                                                 void *user_data);
+static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
+                                                     const struct coo_cmd_spec *spec,
+                                                     void *user_data);
+static int serial_mems_switch_shorthand(const char *key, const char *payload,
+                                        char *out, size_t out_len,
+                                        void *user_data);
+static int serial_mqtt_broker_shorthand(const char *key, const char *payload,
+                                        char *out, size_t out_len,
+                                        void *user_data);
+static int serial_time_set_shorthand(const char *key, const char *payload,
+                                     char *out, size_t out_len,
+                                     void *user_data);
 
 #define CMD_SPEC(_key, _get, _set, _class, _guard) \
-    CMD_SPEC_EX(_key, _get, _set, _class, COMMAND_SERIAL_VALUE, _guard)
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = (_class), .mqtt_query_allowed_during_serial_guard = (_guard) }
+
+#define CMD_SPEC_SHORTHAND(_key, _get, _set, _class, _shorthand, _guard) \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = (_class), .serial_shorthand = (_shorthand), \
+      .mqtt_query_allowed_during_serial_guard = (_guard) }
+
+#define CMD_SPEC_CUSTOM(_key, _get, _set, _classify, _guard) \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = COO_CMD_CLASS_CUSTOM, .custom_classify = (_classify), \
+      .mqtt_query_allowed_during_serial_guard = (_guard) }
 
 #define CMD_SPEC_TIB(_key, _get, _set, _class, _guard) \
-    { .key = (_key), .get_handler = (_get), .set_handler = (_set), \
-      .class_policy = (_class), .last_policy = COMMAND_LAST_DEFAULT, \
-      .serial_policy = COMMAND_SERIAL_VALUE, .board_policy = COMMAND_BOARD_TIB_ONLY, \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = (_class), .supported = command_tib_supported, \
+      .mqtt_query_allowed_during_serial_guard = (_guard) }
+
+#define CMD_SPEC_TIB_CUSTOM(_key, _get, _set, _classify, _guard) \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = COO_CMD_CLASS_CUSTOM, .custom_classify = (_classify), \
+      .supported = command_tib_supported, \
       .mqtt_query_allowed_during_serial_guard = (_guard) }
 
 /*
@@ -134,57 +128,58 @@ struct command_spec {
  * Longest exact-or-slash-prefix matching lets explicit subcommands override
  * a parent row without creating a dynamic registry.
  */
-static const struct command_spec command_specs[] = {
-    CMD_SPEC("ip", ip_get, ip_set, COMMAND_CLASS_DEFAULT, true),
-    CMD_SPEC_EX("mqtt", mqtt_get, mqtt_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_MQTT_BROKER, true),
-    CMD_SPEC_EX("time", time_get, time_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_TIME_SET, true),
-    CMD_SPEC("temp", temp_get, NULL, COMMAND_CLASS_DEFAULT, true),
-    CMD_SPEC("status", status_get, NULL, COMMAND_CLASS_ALWAYS_QUERY, true),
-    CMD_SPEC("reboot", NULL, reboot_set, COMMAND_CLASS_ALWAYS_EFFECT, false),
-    CMD_SPEC("memsroute/route_loss", memsroute_get, memsroute_set,
-             COMMAND_CLASS_ROUTE_LOSS, true),
+static const struct coo_cmd_spec command_specs[] = {
+    CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true),
+    CMD_SPEC_SHORTHAND("mqtt", mqtt_get, mqtt_set, COO_CMD_CLASS_DEFAULT,
+                       serial_mqtt_broker_shorthand, true),
+    CMD_SPEC_SHORTHAND("time", time_get, time_set, COO_CMD_CLASS_DEFAULT,
+                       serial_time_set_shorthand, true),
+    CMD_SPEC("temp", temp_get, NULL, COO_CMD_CLASS_DEFAULT, true),
+    CMD_SPEC("status", status_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true),
+    CMD_SPEC("reboot", NULL, reboot_set, COO_CMD_CLASS_ALWAYS_EFFECT, false),
+    CMD_SPEC_CUSTOM("memsroute/route_loss", memsroute_get, memsroute_set,
+                    classify_route_loss, true),
     CMD_SPEC("memsroute", memsroute_get, memsroute_set,
-             COMMAND_CLASS_DEFAULT, true),
-    CMD_SPEC_EX("mems", mems_get, mems_set, COMMAND_CLASS_DEFAULT,
-                COMMAND_SERIAL_MEMS_SWITCH, true),
+             COO_CMD_CLASS_DEFAULT, true),
+    CMD_SPEC_SHORTHAND("mems", mems_get, mems_set, COO_CMD_CLASS_DEFAULT,
+                       serial_mems_switch_shorthand, true),
     CMD_SPEC("split", splitting_get, splitting_set,
-             COMMAND_CLASS_DEFAULT, true),
+             COO_CMD_CLASS_DEFAULT, true),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
-                 COMMAND_CLASS_DEFAULT, false),
-    CMD_SPEC_TIB("laser", laser_get, laser_set, COMMAND_CLASS_LASER_LEVEL,
-                 true),
-    CMD_SPEC_TIB("laser/tune", laser_tune_get, laser_tune_set,
-                 COMMAND_CLASS_LASER_TUNE, true),
+                 COO_CMD_CLASS_DEFAULT, false),
+    CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_level,
+                        true),
+    CMD_SPEC_TIB_CUSTOM("laser/tune", laser_tune_get, laser_tune_set,
+                        classify_laser_tune, true),
     CMD_SPEC_TIB("laser/status", laser_get, NULL,
-                 COMMAND_CLASS_ALWAYS_QUERY, true),
+                 COO_CMD_CLASS_ALWAYS_QUERY, true),
     CMD_SPEC_TIB("laser/engstatus", laser_engstatus_get, NULL,
-                 COMMAND_CLASS_ALWAYS_QUERY, true),
-    CMD_SPEC_TIB("laser/settings", laser_settings_get, laser_settings_set,
-                 COMMAND_CLASS_LASER_SETTINGS, true),
+                 COO_CMD_CLASS_ALWAYS_QUERY, true),
+    CMD_SPEC_TIB_CUSTOM("laser/settings", laser_settings_get, laser_settings_set,
+                        classify_laser_settings, true),
     CMD_SPEC_TIB("laserbank/power", laserbank_power, laserbank_power,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
+                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
     CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
-                 COMMAND_CLASS_ALWAYS_EFFECT, false),
+                 COO_CMD_CLASS_ALWAYS_EFFECT, false),
     CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
-                 COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
+                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true),
     CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
-             COMMAND_CLASS_DEFAULT, true),
+             COO_CMD_CLASS_DEFAULT, true),
     CMD_SPEC("atten", atten_setting_get, atten_setting_set,
-             COMMAND_CLASS_DEFAULT, true),
-    { .key = "pd", .get_handler = pd_get, .set_handler = pd_set,
-      .class_policy = COMMAND_CLASS_DEFAULT,
-      .last_policy = COMMAND_LAST_SKIP_PD_DARK_STATUS,
-      .board_policy = COMMAND_BOARD_TIB_ONLY,
+             COO_CMD_CLASS_DEFAULT, true),
+    { .key = "pd", .query_handler = pd_get, .effect_handler = pd_set,
+      .class_policy = COO_CMD_CLASS_DEFAULT,
+      .supported = command_tib_supported,
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_SPEC_TIB("pdsettings", pd_settings_get, pd_settings_set,
-                 COMMAND_CLASS_DEFAULT, true),
+                 COO_CMD_CLASS_DEFAULT, true),
 };
 
 #undef CMD_SPEC
+#undef CMD_SPEC_SHORTHAND
+#undef CMD_SPEC_CUSTOM
 #undef CMD_SPEC_TIB
-#undef CMD_SPEC_EX
+#undef CMD_SPEC_TIB_CUSTOM
 
 static const struct coo_cmd_help_entry command_help_entries[] = {
     {
@@ -273,7 +268,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "action and channel required",
         .values = "channel: yj,hk",
         .notes = "TIB-only throughput monitor command",
-        .flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_EFFECT,
     },
     {
         .key = "laser",
@@ -281,8 +277,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "name required; level makes it an effect",
         .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
         .notes = "TIB-only laser output status/set command",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laser/tune",
@@ -290,8 +286,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "name required; tune_nm or delta_nm makes it an effect",
         .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
         .notes = "TIB-only stored tune request",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laser/status",
@@ -299,7 +295,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "name required",
         .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
         .notes = "TIB-only compact operational status",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laser/engstatus",
@@ -307,7 +304,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "name required",
         .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
         .notes = "TIB-only engineering status; may perform slow Modbus reads",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laser/settings",
@@ -315,8 +313,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "name required; settings object required for effect",
         .values = "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
         .notes = "TIB-only app-owned laser policy/settings wrapper",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laserbank/power",
@@ -324,8 +322,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "override required for effect; suffix form laserbank/power/<mode> also works",
         .values = "mode: auto,override_on,override_off",
         .notes = "TIB-only laser-bank supply override",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "laserbank/clearfaults",
@@ -333,7 +331,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "none",
         .values = NULL,
         .notes = "TIB-only power-cycles the laser bank to clear latched faults",
-        .flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_EFFECT,
     },
     {
         .key = "laserbank/heater",
@@ -341,8 +340,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "override required for effect; suffix form laserbank/heater/<mode> also works",
         .values = "mode: auto,override_on,override_off",
         .notes = "TIB-only laser-bank heater relay mode",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "atten/<name>/value",
@@ -382,8 +381,8 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "channel and action required for effect; no payload queries live values",
         .values = "channel: yj,hk; action: measure_dark,dark_status,reset_lowest_dark",
         .notes = "TIB-only photodiode status and dark-calibration actions",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
     {
         .key = "pdsettings/<channel>",
@@ -391,36 +390,12 @@ static const struct coo_cmd_help_entry command_help_entries[] = {
         .args = "channel required in key; listed fields optional for effect",
         .values = "channel: yj,hk",
         .notes = "TIB-only app-owned photodiode calibration/settings",
-        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-                 COO_CMD_HELP_TIB_ONLY,
+        .supported = command_tib_supported,
+        .flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
     },
 };
 
 static struct coo_cmd_runtime command_runtime;
-
-static const struct command_spec *find_command_spec(const char *key)
-{
-    const struct command_spec *best = NULL;
-    size_t best_len = 0U;
-
-    if (key == NULL) {
-        return NULL;
-    }
-
-    for (size_t i = 0U; i < ARRAY_SIZE(command_specs); ++i) {
-        const size_t len = strlen(command_specs[i].key);
-
-        if (!coo_cmd_key_matches_prefix(key, command_specs[i].key)) {
-            continue;
-        }
-        if (len > best_len) {
-            best = &command_specs[i];
-            best_len = len;
-        }
-    }
-
-    return best;
-}
 
 static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
 {
@@ -432,38 +407,26 @@ static bool command_pd_dark_status_query(const struct coo_cmd_request *cmd)
            strcasecmp(action, "dark_status") == 0;
 }
 
-static bool command_board_allowed(const struct command_spec *spec)
+static bool command_tib_supported(const struct coo_cmd_spec *spec, void *user_data)
 {
-    if (spec == NULL || spec->board_policy == COMMAND_BOARD_ANY) {
-        return true;
-    }
+    ARG_UNUSED(spec);
+    ARG_UNUSED(user_data);
 
-    if (spec->board_policy == COMMAND_BOARD_TIB_ONLY) {
-        return devices_board_type() == HISPEC_BOARD_TIB;
-    }
-
-    return false;
+    return devices_board_type() == HISPEC_BOARD_TIB;
 }
 
-static bool command_should_record_lastcommand(const struct coo_cmd_request *cmd)
+static bool command_should_record_lastcommand(const struct coo_cmd_request *cmd,
+                                             const struct coo_cmd_spec *spec)
 {
-    const struct command_spec *spec;
-
-    if (cmd == NULL) {
+    if (cmd == NULL || spec == NULL) {
         return false;
     }
 
-    spec = find_command_spec(cmd->key);
-    if (spec == NULL) {
+    if (cmd->msg_type != COO_CMD_EFFECT || spec->effect_handler == NULL) {
         return false;
     }
 
-    if (cmd->msg_type != COO_CMD_EFFECT || spec->set_handler == NULL) {
-        return false;
-    }
-
-    if (spec->last_policy == COMMAND_LAST_SKIP_PD_DARK_STATUS &&
-        command_pd_dark_status_query(cmd)) {
+    if (strcmp(spec->key, "pd") == 0 && command_pd_dark_status_query(cmd)) {
         return false;
     }
 
@@ -481,43 +444,34 @@ static void record_lastcommand(const struct coo_cmd_request *cmd)
 
 
 static struct coo_cmd_response dispatch_command(const struct coo_cmd_request *cmd) {
-    const struct command_spec *spec = find_command_spec(cmd != NULL ? cmd->key : NULL);
+    const struct coo_cmd_spec *spec = coo_cmd_runtime_find_spec(&command_runtime,
+                                                                cmd != NULL ? cmd->key : NULL);
     coo_cmd_handler_fn handler;
-    LOG_INF("Dispatching: %s", cmd->key);
+
+    LOG_INF("Dispatching: %s", cmd != NULL ? cmd->key : "<null>");
 
     if (atomic_get(&reboot_pending) != 0) {
         return coo_cmd_error(cmd, "reboot pending");
     }
 
-    if (command_should_record_lastcommand(cmd)) {
+    if (command_should_record_lastcommand(cmd, spec)) {
         record_lastcommand(cmd);
     }
 
     if (spec == NULL) {
         return coo_cmd_unknown_response(cmd);
     }
-    if (!command_board_allowed(spec)) {
+    if (!coo_cmd_runtime_spec_supported(&command_runtime, spec)) {
         return coo_cmd_error(cmd, "command unavailable on this board");
     }
 
     handler = cmd->msg_type == COO_CMD_EFFECT ?
-              spec->set_handler : spec->get_handler;
+              spec->effect_handler : spec->query_handler;
     if (handler == NULL) {
         return coo_cmd_unsupported_response(cmd);
     }
 
     return handler(cmd);
-}
-
-static bool mqtt_get_allowed_during_serial_guard(const char *key)
-{
-    const struct command_spec *spec = find_command_spec(key);
-
-    if (spec == NULL || spec->get_handler == NULL) {
-        return false;
-    }
-
-    return spec->mqtt_query_allowed_during_serial_guard;
 }
 
 static bool route_loss_payload_has_value(const char *payload)
@@ -544,68 +498,100 @@ static bool route_loss_payload_has_value(const char *payload)
     return strstr(payload, "\"split\"") != NULL;
 }
 
-static enum coo_cmd_msg_type command_infer_msg_type(const struct coo_cmd_request *cmd,
-                                                    void *user_data)
+static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *cmd,
+                                                 const struct coo_cmd_spec *spec,
+                                                 void *user_data)
 {
-    const struct command_spec *spec;
-    bool payload_empty;
-    float fval;
-
+    ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
-    if (cmd == NULL) {
-        return COO_CMD_QUERY;
-    }
+    return route_loss_payload_has_value(cmd != NULL ? cmd->payload : NULL) ?
+           COO_CMD_EFFECT : COO_CMD_QUERY;
+}
 
-    spec = find_command_spec(cmd->key);
-    payload_empty = coo_cmd_payload_empty(cmd);
+static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *cmd,
+                                                  const struct coo_cmd_spec *spec,
+                                                  void *user_data)
+{
+    float fval;
 
-    if (spec == NULL) {
-        return payload_empty ? COO_CMD_QUERY : COO_CMD_EFFECT;
-    }
+    ARG_UNUSED(spec);
+    ARG_UNUSED(user_data);
 
-    switch (spec->class_policy) {
-    case COMMAND_CLASS_ALWAYS_QUERY:
-        return COO_CMD_QUERY;
-    case COMMAND_CLASS_ALWAYS_EFFECT:
-        return COO_CMD_EFFECT;
-    case COMMAND_CLASS_SUFFIX_OR_PAYLOAD_EFFECT:
-        return (!payload_empty || coo_cmd_key_suffix_after(cmd->key, spec->key)[0] != '\0') ?
-               COO_CMD_EFFECT : COO_CMD_QUERY;
-    case COMMAND_CLASS_ROUTE_LOSS:
-        return route_loss_payload_has_value(cmd->payload) ? COO_CMD_EFFECT : COO_CMD_QUERY;
-    case COMMAND_CLASS_LASER_LEVEL:
-        return coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
-               COO_CMD_EFFECT : COO_CMD_QUERY;
-    case COMMAND_CLASS_LASER_TUNE:
-        return coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
-               coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
-               COO_CMD_EFFECT : COO_CMD_QUERY;
-    case COMMAND_CLASS_LASER_SETTINGS: {
-        char settings_json[MAX_PAYLOAD_LEN];
+    return cmd != NULL &&
+           coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
+           COO_CMD_EFFECT : COO_CMD_QUERY;
+}
 
-        return coo_json_extract_object(cmd->payload, "settings",
-                                       settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
-               COO_CMD_EFFECT : COO_CMD_QUERY;
+static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *cmd,
+                                                 const struct coo_cmd_spec *spec,
+                                                 void *user_data)
+{
+    float fval;
+
+    ARG_UNUSED(spec);
+    ARG_UNUSED(user_data);
+
+    return cmd != NULL &&
+           (coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
+            coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING) ?
+           COO_CMD_EFFECT : COO_CMD_QUERY;
+}
+
+static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
+                                                     const struct coo_cmd_spec *spec,
+                                                     void *user_data)
+{
+    char settings_json[MAX_PAYLOAD_LEN];
+
+    ARG_UNUSED(spec);
+    ARG_UNUSED(user_data);
+
+    return cmd != NULL &&
+           coo_json_extract_object(cmd->payload, "settings",
+                                   settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
+           COO_CMD_EFFECT : COO_CMD_QUERY;
+}
+
+static int serial_read_three_tokens(const char *payload,
+                                    char *t0, size_t t0_len,
+                                    char *t1, size_t t1_len,
+                                    char *t2, size_t t2_len)
+{
+    const char *cursor = payload;
+
+    if (!coo_cmd_serial_next_token(&cursor, t0, t0_len)) {
+        return -EINVAL;
     }
-    case COMMAND_CLASS_DEFAULT:
-    default:
-        return payload_empty ? COO_CMD_QUERY : COO_CMD_EFFECT;
+    (void)coo_cmd_serial_next_token(&cursor, t1, t1_len);
+    (void)coo_cmd_serial_next_token(&cursor, t2, t2_len);
+    return coo_cmd_serial_has_extra(cursor) ? -EINVAL : 0;
+}
+
+static int serial_single_value_payload(const char *token, char *out, size_t out_len)
+{
+    size_t off = 0;
+    int written;
+
+    written = snprintk(out, out_len, "{\"value\":");
+    if (written < 0 || written >= (int)out_len) {
+        return -ENOSPC;
     }
+    off = (size_t)written;
+    if (coo_cmd_serial_append_json_value(out, out_len, &off, token) != 0) {
+        return -EINVAL;
+    }
+    written = snprintk(out + off, out_len - off, "}");
+    return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
 /* Convert a few common human serial shorthands into the same JSON payloads MQTT
- * uses. This is deliberately a small translation table, not another dispatcher.
- * Examples: "mqtt host:1883", "mems/foo A 0.5 30".
+ * uses. These are per-command translations, not another dispatcher.
  */
-static int serial_payload_from_shorthand(const char *key, const char *payload,
-                                         char *out, size_t out_len,
-                                         void *user_data)
+static int serial_mems_switch_shorthand(const char *key, const char *payload,
+                                        char *out, size_t out_len,
+                                        void *user_data)
 {
-    const struct command_spec *spec = find_command_spec(key);
-    const enum command_serial_policy serial_policy =
-        spec != NULL ? spec->serial_policy : COMMAND_SERIAL_VALUE;
-    const char *cursor = payload;
     char t0[96] = {0};
     char t1[96] = {0};
     char t2[96] = {0};
@@ -614,69 +600,18 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
 
     ARG_UNUSED(user_data);
 
-    if (!coo_cmd_serial_next_token(&cursor, t0, sizeof(t0))) {
+    if (serial_read_three_tokens(payload, t0, sizeof(t0), t1, sizeof(t1),
+                                 t2, sizeof(t2)) != 0) {
         return -EINVAL;
     }
-    (void)coo_cmd_serial_next_token(&cursor, t1, sizeof(t1));
-    (void)coo_cmd_serial_next_token(&cursor, t2, sizeof(t2));
-    if (coo_cmd_serial_has_extra(cursor)) {
-        return -EINVAL;
+    if (strchr(key, '/') == NULL) {
+        if (t1[0] != '\0' || t2[0] != '\0') {
+            return -EINVAL;
+        }
+        return serial_single_value_payload(t0, out, out_len);
     }
 
-    if (serial_policy == COMMAND_SERIAL_MEMS_SWITCH && strchr(key, '/') != NULL) {
-        written = snprintk(out, out_len, "{\"state\":");
-        if (written < 0 || written >= (int)out_len) {
-            return -ENOSPC;
-        }
-        off = (size_t)written;
-        if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
-            return -EINVAL;
-        }
-        if (t1[0] != '\0' &&
-            coo_cmd_serial_append_json_field(out, out_len, &off, "duty_cycle", t1, true) != 0) {
-            return -EINVAL;
-        }
-        if (t2[0] != '\0' &&
-            coo_cmd_serial_append_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
-            return -EINVAL;
-        }
-        written = snprintk(out + off, out_len - off, "}");
-        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
-    }
-
-    if (serial_policy == COMMAND_SERIAL_MQTT_BROKER) {
-        written = snprintk(out, out_len, "{\"broker\":");
-        if (written < 0 || written >= (int)out_len) {
-            return -ENOSPC;
-        }
-        off = (size_t)written;
-        if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
-            return -EINVAL;
-        }
-        if (t1[0] != '\0' &&
-            coo_cmd_serial_append_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
-            return -EINVAL;
-        }
-        if (t2[0] != '\0') {
-            return -EINVAL;
-        }
-        written = snprintk(out + off, out_len - off, "}");
-        return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
-    }
-
-    if (serial_policy == COMMAND_SERIAL_TIME_SET) {
-        if (!coo_cmd_serial_token_is_number(t0)) {
-            return -EINVAL;
-        }
-        written = snprintk(out, out_len, "{\"linuxtime_ms\":%s}", t0);
-        return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
-    }
-
-    if (t1[0] != '\0' || t2[0] != '\0') {
-        return -EINVAL;
-    }
-
-    written = snprintk(out, out_len, "{\"value\":");
+    written = snprintk(out, out_len, "{\"state\":");
     if (written < 0 || written >= (int)out_len) {
         return -ENOSPC;
     }
@@ -684,21 +619,79 @@ static int serial_payload_from_shorthand(const char *key, const char *payload,
     if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
         return -EINVAL;
     }
+    if (t1[0] != '\0' &&
+        coo_cmd_serial_append_json_field(out, out_len, &off, "duty_cycle", t1, true) != 0) {
+        return -EINVAL;
+    }
+    if (t2[0] != '\0' &&
+        coo_cmd_serial_append_json_field(out, out_len, &off, "stopafter_s", t2, true) != 0) {
+        return -EINVAL;
+    }
     written = snprintk(out + off, out_len - off, "}");
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+
+static int serial_mqtt_broker_shorthand(const char *key, const char *payload,
+                                        char *out, size_t out_len,
+                                        void *user_data)
+{
+    char t0[96] = {0};
+    char t1[96] = {0};
+    char t2[96] = {0};
+    size_t off = 0;
+    int written;
+
+    ARG_UNUSED(key);
+    ARG_UNUSED(user_data);
+
+    if (serial_read_three_tokens(payload, t0, sizeof(t0), t1, sizeof(t1),
+                                 t2, sizeof(t2)) != 0 ||
+        t2[0] != '\0') {
+        return -EINVAL;
+    }
+
+    written = snprintk(out, out_len, "{\"broker\":");
+    if (written < 0 || written >= (int)out_len) {
+        return -ENOSPC;
+    }
+    off = (size_t)written;
+    if (coo_cmd_serial_append_json_value(out, out_len, &off, t0) != 0) {
+        return -EINVAL;
+    }
+    if (t1[0] != '\0' &&
+        coo_cmd_serial_append_json_field(out, out_len, &off, "persistent", t1, true) != 0) {
+        return -EINVAL;
+    }
+    written = snprintk(out + off, out_len - off, "}");
+    return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+
+static int serial_time_set_shorthand(const char *key, const char *payload,
+                                     char *out, size_t out_len,
+                                     void *user_data)
+{
+    char t0[96] = {0};
+    char t1[96] = {0};
+    char t2[96] = {0};
+    int written;
+
+    ARG_UNUSED(key);
+    ARG_UNUSED(user_data);
+
+    if (serial_read_three_tokens(payload, t0, sizeof(t0), t1, sizeof(t1),
+                                 t2, sizeof(t2)) != 0 ||
+        t1[0] != '\0' || t2[0] != '\0' ||
+        !coo_cmd_serial_token_is_number(t0)) {
+        return -EINVAL;
+    }
+
+    written = snprintk(out, out_len, "{\"linuxtime_ms\":%s}", t0);
+    return (written < 0 || written >= (int)out_len) ? -ENOSPC : 0;
 }
 
 void command_handle_mqtt_publish(const struct mqtt_publish_param *pub)
 {
     coo_cmd_runtime_handle_mqtt_publish(&command_runtime, pub);
-}
-
-static bool command_mqtt_accept(const struct coo_cmd_request *cmd, void *user_data)
-{
-    ARG_UNUSED(user_data);
-
-    return cmd != NULL && cmd->msg_type == COO_CMD_QUERY &&
-           mqtt_get_allowed_during_serial_guard(cmd->key);
 }
 
 static void reboot_work_handler(struct k_work *work)
@@ -715,15 +708,14 @@ int command_runtime_init(void)
         .device_id = app_mqtt_device_id(),
 	    .inbound_queue = &inbound_queue,
 	    .outbound_queue = &outbound_queue,
-	    .execute_handler = dispatch_command,
-	    .mqtt_msg_id = &mqtt_msg_id,
-	    .serial_wrap_column = SERIAL_WRAP_COLUMN,
-        .classify = command_infer_msg_type,
-        .mqtt_accept = command_mqtt_accept,
-        .serial_shorthand = serial_payload_from_shorthand,
+		    .execute_handler = dispatch_command,
+		    .mqtt_msg_id = &mqtt_msg_id,
+		    .serial_wrap_column = SERIAL_WRAP_COLUMN,
+        .command_specs = command_specs,
+        .command_spec_count = ARRAY_SIZE(command_specs),
         .help_entries = command_help_entries,
         .help_entry_count = ARRAY_SIZE(command_help_entries),
-    };
+	    };
     int rc;
 
     k_work_init_delayable(&reboot_work, reboot_work_handler);

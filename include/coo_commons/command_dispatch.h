@@ -34,8 +34,7 @@
 #define COO_CMD_HELP_QUERY (1u << 0)
 #define COO_CMD_HELP_EFFECT (1u << 1)
 #define COO_CMD_HELP_SERIAL_GUARD_QUERY (1u << 2)
-#define COO_CMD_HELP_TIB_ONLY (1u << 3)
-#define COO_CMD_HELP_BUILTIN (1u << 4)
+#define COO_CMD_HELP_BUILTIN (1u << 3)
 
 #if defined(CONFIG_CONSOLE_INPUT_MAX_LINE_LEN)
 #define COO_CMD_SERIAL_LINE_MAX CONFIG_CONSOLE_INPUT_MAX_LINE_LEN
@@ -78,6 +77,14 @@ enum coo_cmd_out_target {
 	COO_CMD_OUT_MQTT_BEST_EFFORT = 2,
 };
 
+enum coo_cmd_class_policy {
+	COO_CMD_CLASS_DEFAULT = 0,
+	COO_CMD_CLASS_ALWAYS_QUERY,
+	COO_CMD_CLASS_ALWAYS_EFFECT,
+	COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT,
+	COO_CMD_CLASS_CUSTOM,
+};
+
 struct coo_cmd_request {
 	enum coo_cmd_msg_type msg_type;
 	enum coo_cmd_source source;
@@ -106,6 +113,8 @@ struct coo_cmd_work {
 	struct coo_cmd_request cmd;
 };
 
+struct coo_cmd_spec;
+
 typedef struct coo_cmd_response (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd);
 
 typedef int (*coo_cmd_format_response_topic_fn)(const char *key,
@@ -121,6 +130,7 @@ typedef int (*coo_cmd_serial_shorthand_fn)(const char *key,
 
 typedef enum coo_cmd_msg_type (*coo_cmd_classify_fn)(
 	const struct coo_cmd_request *cmd,
+	const struct coo_cmd_spec *spec,
 	void *user_data);
 
 typedef bool (*coo_cmd_mqtt_accept_fn)(const struct coo_cmd_request *cmd,
@@ -128,13 +138,28 @@ typedef bool (*coo_cmd_mqtt_accept_fn)(const struct coo_cmd_request *cmd,
 
 typedef void (*coo_cmd_serial_activity_fn)(void *user_data);
 
+typedef bool (*coo_cmd_supported_fn)(const struct coo_cmd_spec *spec,
+				     void *user_data);
+
 struct coo_cmd_help_entry {
 	const char *key;
 	const char *usage;
 	const char *args;
 	const char *values;
 	const char *notes;
+	coo_cmd_supported_fn supported;
 	uint32_t flags;
+};
+
+struct coo_cmd_spec {
+	const char *key;
+	coo_cmd_handler_fn query_handler;
+	coo_cmd_handler_fn effect_handler;
+	enum coo_cmd_class_policy class_policy;
+	coo_cmd_classify_fn custom_classify;
+	coo_cmd_serial_shorthand_fn serial_shorthand;
+	coo_cmd_supported_fn supported;
+	bool mqtt_query_allowed_during_serial_guard;
 };
 
 /**
@@ -154,11 +179,11 @@ struct coo_cmd_runtime {
 	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
-	coo_cmd_classify_fn classify;
 	coo_cmd_mqtt_accept_fn mqtt_accept;
 	coo_cmd_serial_activity_fn serial_activity;
-	coo_cmd_serial_shorthand_fn serial_shorthand;
 	void *user_data;
+	const struct coo_cmd_spec *command_specs;
+	size_t command_spec_count;
 	const struct coo_cmd_help_entry *help_entries;
 	size_t help_entry_count;
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
@@ -184,10 +209,10 @@ struct coo_cmd_runtime_config {
 	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
-	coo_cmd_classify_fn classify;
 	coo_cmd_mqtt_accept_fn mqtt_accept;
 	coo_cmd_serial_activity_fn serial_activity;
-	coo_cmd_serial_shorthand_fn serial_shorthand;
+	const struct coo_cmd_spec *command_specs;
+	size_t command_spec_count;
 	const struct coo_cmd_help_entry *help_entries;
 	size_t help_entry_count;
 	void *user_data;
@@ -203,6 +228,15 @@ struct coo_cmd_runtime_config {
  */
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg);
+
+/** Find the longest exact-or-slash-prefix command spec for @p key. */
+const struct coo_cmd_spec *
+coo_cmd_runtime_find_spec(const struct coo_cmd_runtime *runtime,
+			  const char *key);
+
+/** Return whether a command spec is currently supported by the app/board. */
+bool coo_cmd_runtime_spec_supported(const struct coo_cmd_runtime *runtime,
+				    const struct coo_cmd_spec *spec);
 
 /** Return true when @p key starts with @p prefix and is exact or slash-delimited. */
 bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
