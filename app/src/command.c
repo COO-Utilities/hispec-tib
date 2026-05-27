@@ -503,24 +503,24 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
 
 static void command_prepare_reboot(void *user_data)
 {
-    struct throughput_monitor_status monitor_status;
-    int rc;
 
     ARG_UNUSED(user_data);
 
     LOG_WRN("Preparing hardware for reboot");
-    (void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &monitor_status);
-    (void)housekeeping_power_set(HOUSEKEEPING_POWER_YJ_PHOTODIODE, false);
-    (void)housekeeping_power_set(HOUSEKEEPING_POWER_HK_PHOTODIODE, false);
-
     if (devices_board_type() == HISPEC_BOARD_TIB) {
+        struct throughput_monitor_status monitor_status;
+        int rc;
+        (void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &monitor_status);
+        (void)housekeeping_power_set(HOUSEKEEPING_POWER_YJ_PHOTODIODE, false);
+        (void)housekeeping_power_set(HOUSEKEEPING_POWER_HK_PHOTODIODE, false);
+
+
         rc = hispec_laser_stop_all_outputs(true);
         if (rc != 0) {
             LOG_WRN("Laser output shutdown before reboot failed (%d)", rc);
         }
 
-        (void)laserbank_tempcontrol_set_heater_mode(LASERBANK_HEATER_MODE_OVERRIDE_OFF,
-                                                    false);
+        (void)laserbank_tempcontrol_set_heater_mode(LASERBANK_HEATER_MODE_OVERRIDE_OFF, false);
         (void)housekeeping_power_set(HOUSEKEEPING_POWER_BANK_HEATER, false);
     }
 }
