@@ -161,7 +161,7 @@ flowchart TD
 flowchart TD
   SerialLine[serial command received] --> Note[runtime serial activity hook]
   Note --> Active[set serial guard active]
-  Active --> Schedule[schedule serial_guard_expire]
+  Active --> Schedule[schedule dispatcher k_work_delayable]
   MQTTCommand[MQTT command] --> Check{guard active}
   Check -- yes --> Safe{safe query}
   Safe -- no --> Reject[coo_cmd_serial_active_response and warning]
@@ -171,18 +171,17 @@ flowchart TD
   Expire --> Clear[clear serial guard active]
 ```
 
-## 9. Scheduled Actions Architecture
+## 9. Delayable Work Ownership
 
 ```mermaid
 flowchart TD
-  Init[app_scheduled_actions_init] --> Work[k_work_init_delayable per action]
-  Register[command_runtime_init] --> Handlers[register serial guard and reboot handlers]
-  Schedule[handler schedules named action] --> Resched[k_work_reschedule]
-  Resched --> Pending[pending flag set]
-  Pending --> SysQ[Zephyr system workqueue]
-  SysQ --> Callback[scheduled_action_work_handler]
-  Callback --> Domain[registered action handler]
-  Cancel[optional cancel] --> Clear[pending flag cleared]
+  Dispatch[command_dispatch.c] --> Guard[serial guard delayable work]
+  Command[command.c] --> Reboot[reboot delayable work]
+  Commons[coo_commons scheduled_action helper] --> Future[future fixed-table firmware actions]
+  Guard --> SysQ[Zephyr system workqueue]
+  Reboot --> SysQ
+  Future --> SysQ
+  SysQ --> Expire[short owner callback]
 ```
 
 ## 10. Photodiode Sampling and Dark Calibration Flow

@@ -2,10 +2,11 @@
 
 ## Authority
 
-`commands.md` documents intended command/API behavior. The static command
-behavior table in `app/src/command.c` and the current command handlers are the
-implementation source of truth. This page compares the two without silently
-changing either contract.
+`commands.md` documents intended command/API behavior. The dispatcher built-ins
+in `lib/coo_commons/command_dispatch.c`, the static command behavior table in
+`app/src/command.c`, and the current command handlers are the implementation
+source of truth. This page compares the two without silently changing either
+contract.
 
 ## Dispatch Model
 
@@ -21,17 +22,22 @@ either an exact match or followed by `/`. The `<device>` component is
 board-profile dependent: `hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or
 `hsfib-as`.
 
-Implemented dispatch entries. The column names reflect internal C dispatch
+Dispatcher built-ins:
+
+| Entry | Query handler | Effect/action handler | Notes |
+| --- | --- | --- | --- |
+| `help` | yes | no | Serial prints directly; MQTT returns compact endpoints. |
+| `serialguard` | yes | yes | Present when `CONFIG_COO_CMD_SERIAL_GUARD` is enabled. |
+
+Implemented app dispatch entries. The column names reflect internal C dispatch
 slots; the external API is documented as queries, effect requests, and actions.
 
 | Entry | Query handler | Effect/action handler |
 | --- | --- | --- |
-| `help` | yes | no |
 | `ip` | yes | yes |
 | `mqtt` | yes | yes |
 | `time` | yes | yes |
 | `reboot` | no | yes |
-| `serialguard` | yes | yes |
 | `memsroute` | yes | yes |
 | `memsroute/route_loss` | yes | yes |
 | `mems` | yes | yes |
@@ -56,7 +62,8 @@ slots; the external API is documented as queries, effect requests, and actions.
 MQTT and serial are normalized to a shared `Command` and then classified by
 `command_infer_msg_type()`. The internal result still uses `MSG_GET` and
 `MSG_SET`, but those names are dispatch-slot names, not user-visible protocol
-verbs.
+verbs. Serial `help` is the exception: it prints directly from command dispatch
+before entering the inbound queue.
 
 Empty/no-payload requests are queries except:
 
@@ -105,9 +112,7 @@ buffer and echoed exactly in responses.
 
 ## Commands Documented but Not Fully Implemented
 
-- `help` is documented as command summary plus device info. The implementation
-  returns only a static summary string and does not enumerate every suffix
-  endpoint.
+- None known after this audit pass.
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
@@ -119,16 +124,18 @@ buffer and echoed exactly in responses.
   reads. A large optional response can fail with `{"error":"status response too large"}`
   if it exceeds the fixed MQTT payload buffer.
 - `lastcommand` records effect-capable requests. Pure query requests are not recorded.
-- Serial guard is stricter than the prose for some read-like requests:
-  `mqtt_get_allowed_during_serial_guard()` blocks all `laserbank/*` and `laser`
-  queries while serial guard is active.
+- Serial `help` depends on a static app-provided help table. It now reflects the
+  code paths reviewed in this audit, but future command behavior changes must
+  update `command_help_entries[]` or help can become stale.
 - `laserbank/clearfaults` occupies both internal dispatch slots for legacy
   reasons, but ingress classifies no-payload requests as an action.
 
 ## Blocking and Queueing Summary
 
-- All command handlers run in the single command executor thread.
-- Responses are enqueued to `outbound_queue` and published or printed later.
+- Dispatcher built-ins run in command dispatch. Serial `help` prints directly;
+  MQTT `help` and `serialguard` enqueue immediate responses.
+- App command handlers run in the single command executor thread.
+- App responses are enqueued to `outbound_queue` and published or printed later.
 - Attenuator commands can block on DAC I2C.
 - Laser and Maiman commands can block on Modbus RTU and laser-bank boot sleeps.
 - Persistent settings updates can block on Zephyr NVS writes.

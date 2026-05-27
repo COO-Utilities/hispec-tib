@@ -29,8 +29,11 @@ artifact, not a replacement for `commands.md`.
 - Pure queries are not recorded as `lastcommand`; known effect-capable requests
   are recorded before handler execution.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
-- All handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one response to
-  `outbound_queue`.
+- Dispatcher built-ins (`help` and, when enabled, `serialguard`) are handled in
+  `command_dispatch.c`. Serial `help` prints directly; MQTT `help` and
+  `serialguard` enqueue one response to `outbound_queue`.
+- App command handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one
+  response to `outbound_queue`.
 - The static command behavior table rejects TIB-only commands before dispatch on
   non-TIB board profiles.
 - Data-less success returns `{"status":"ok"}`. Data-bearing success returns the
@@ -40,12 +43,12 @@ artifact, not a replacement for `commands.md`.
 
 | Command key | MQTT request topic | Default response topic | Serial form |
 | --- | --- | --- | --- |
-| `help` | `cmd/<device>/req/help` | `cmd/<device>/resp/help` | `help` |
+| `help` | `cmd/<device>/req/help` | `cmd/<device>/resp/help` | `help` (dispatcher built-in) |
 | `ip` | `cmd/<device>/req/ip` | `cmd/<device>/resp/ip` | `ip [payload]` |
 | `mqtt` | `cmd/<device>/req/mqtt` | `cmd/<device>/resp/mqtt` | `mqtt [payload]` |
 | `time` | `cmd/<device>/req/time` | `cmd/<device>/resp/time` | `time [payload]` |
 | `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot` |
-| `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` |
+| `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` (dispatcher built-in) |
 | `memsroute` | `cmd/<device>/req/memsroute` | `cmd/<device>/resp/memsroute` | `memsroute [payload]` |
 | `memsroute/route_loss` | `cmd/<device>/req/memsroute/route_loss` | `cmd/<device>/resp/memsroute/route_loss` | `memsroute/route_loss <payload>` |
 | `mems` | `cmd/<device>/req/mems` | `cmd/<device>/resp/mems` | `mems` |
@@ -75,11 +78,14 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 ### `help`
 
-- Owner: `help_get()` in `app/src/command.c`.
+- Owner: command-dispatch built-in in `lib/coo_commons/command_dispatch.c`.
 - Notes: no hardware side effects, no NVS writes, no direct publish.
-- Response is generated from the static command table and includes the active
-  device ID, firmware version, MQTT topic prefixes, active-board command keys,
-  and read-only MQTT queries allowed during serial guard.
+- Serial response prints directly from the dispatcher and bypasses the command
+  queues so it can exceed the normal MQTT payload budget.
+- MQTT response is intentionally compact: device ID, request prefix, response
+  prefix, and command keys from built-in and app-provided help entries.
+- App-specific help text is a static `command_help_entries[]` table in
+  `app/src/command.c`.
 
 ### `ip`
 
@@ -110,19 +116,21 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 ### `reboot`
 
-- Owner: `reboot_set()` in `app/src/command.c` plus
-  `app_scheduled_actions.c`.
-- Side effects: schedules a named delayed reboot action, which calls
-  `sys_reboot(SYS_REBOOT_COLD)` after the response has had time to enqueue.
+- Owner: `reboot_set()` in `app/src/command.c`.
+- Side effects: schedules a local non-cancelable `k_work_delayable` item, which
+  calls `sys_reboot(SYS_REBOOT_COLD)` after the response window.
+- While reboot is pending, app commands are rejected before their handlers run.
 
 ### `serialguard`
 
-- Owner: `serial_guard_get()`, `serial_guard_set()` in `app/src/command.c`.
-- Side effects: updates runtime holdoff, optional NVS persistence, and serial
-  effect requests refresh the active guard window.
-- Guard behavior: active guard rejects MQTT effect/action requests and also
-  blocks `laserbank/*` and `laser` read-like requests.
-- Serial shorthand remains implemented in `app/src/command.c`.
+- Owner: command-dispatch built-in in `lib/coo_commons/command_dispatch.c`,
+  enabled by `CONFIG_COO_CMD_SERIAL_GUARD`.
+- Side effects: updates runtime-only holdoff; serial activity refreshes the
+  active guard window. No NVS persistence is supported.
+- Guard behavior: active guard rejects MQTT effect/action requests. The app
+  command table marks which MQTT queries may pass through the guard.
+- Serial shorthand is implemented in command dispatch:
+  `serialguard off`, `serialguard 60`, and `serialguard seconds=60`.
 
 ### `memsroute` and `memsroute/route_loss`
 

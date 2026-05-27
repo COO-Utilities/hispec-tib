@@ -27,18 +27,24 @@ is dropped.
 Photodiode sampling is released by a `k_timer`; ADC I/O runs in the photodiode
 thread, not in the timer ISR.
 
-## Named Scheduled Actions
+## Command Dispatcher Delayable Work
 
-`app_scheduled_actions.c` wraps a small fixed table of `k_work_delayable`
-objects:
+When `CONFIG_COO_CMD_SERIAL_GUARD` is enabled, `command_dispatch.c` owns one
+`k_work_delayable` item for serial guard expiration. It clears the runtime-only
+guard flag after the configured holdoff; no serial guard state is persisted.
 
-- `serial_guard_expire`: clears serial override and re-enables MQTT command
-  execution.
-- `reboot`: calls `sys_reboot(SYS_REBOOT_COLD)` after a short delay so the
-  response can be queued first.
+## Reboot Delayable Work
 
-This is not a general scheduler. New delayed actions should be named firmware
-behaviors with fixed enum entries.
+`command.c` owns the non-cancelable reboot work item used by the `reboot`
+command. The command schedules `sys_reboot(SYS_REBOOT_COLD)` after a short
+response window and rejects later app commands while reboot is pending.
+
+## Generic Scheduled Action Helper
+
+`lib/coo_commons/scheduled_action.c` provides an optional fixed-table wrapper
+around Zephyr `k_work_delayable` for future shared firmware actions. It does not
+allocate, create threads, or implement user-programmable scheduling. Callbacks
+run in Zephyr's system workqueue and must stay short.
 
 ## MEMS Router Work
 

@@ -73,8 +73,14 @@ Top-level implementation path:
 1. `coo_cmd_runtime_serial_thread()` reads one console line.
 2. `coo_cmd_runtime_handle_serial_line()` splits the line into `<key>` and optional payload.
 3. `coo_cmd_normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
-4. `coo_cmd_runtime_executor_thread()` dispatches the command through the app command table.
-5. `coo_cmd_runtime_drain_outbound()` prints serial responses with `coo_cmd_print_serial_response()`.
+4. Dispatcher built-ins handle `help` and, when enabled,
+   `serialguard`. Serial `help` prints directly and does not enter the command
+   queues.
+5. `coo_cmd_runtime_executor_thread()` dispatches app-owned commands through the
+   app command table.
+6. `coo_cmd_runtime_drain_outbound()` prints queued serial responses with
+   `coo_cmd_print_serial_response_pretty()`. The simpler
+   `coo_cmd_print_serial_response()` remains available as a fallback renderer.
 
 No-payload serial request form is just the key:
 
@@ -101,7 +107,7 @@ Payload rules:
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
   `state=A stopafter_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
-  `serialguard off` or `mems/yj_cal_laser A 0.5 30`.
+  `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
 
 Serial response format:
@@ -112,14 +118,17 @@ cmd/<device>/resp/<key>
 ```
 
 The first line is the MQTT response topic. The following lines are the response
-payload.
+payload. The pretty renderer emits CRLF line endings, indents JSON-like
+payloads, and wraps long non-JSON payloads at natural break points where
+possible.
 
-Any non-empty serial command refreshes serial override. While active, MQTT
-commands are rejected before dispatch and receive an error response when MQTT is
-available. The override expires after `serialguard_s` seconds without another
-serial command; `serialguard off` or `serialguard seconds=0` disables the
-override. JSON payloads are accepted for MQTT parity, but should not be needed
-for normal serial operation.
+Any non-empty serial command refreshes serial override when
+`CONFIG_COO_CMD_SERIAL_GUARD` is enabled. While active, MQTT effect commands are
+rejected before dispatch and receive an error response when MQTT is available.
+The override expires after `serialguard_s` seconds without another serial
+command; `serialguard off`, `serialguard 0`, or `serialguard seconds=0`
+disables the override. JSON payloads are accepted for MQTT parity, but should
+not be needed for normal serial operation.
 
 ---
 
@@ -201,17 +210,24 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (help)=
 ### `help`
-- **No payload -> command summary:**
+- **Serial no payload -> full interactive command help.**
+  - Prints directly from command dispatch instead of using the inbound or
+    outbound queues.
+  - Takes no arguments. `help <anything>` is rejected.
+  - Enumerates dispatcher built-ins and app-provided static help entries,
+    including optional fields in `[]`, accepted enum values, TIB-only commands,
+    and commands allowed as MQTT queries while serial guard is active.
+- **MQTT no payload -> compact endpoint summary:**
   ```json
   {
     "device": "<device_id>",
-    "version": "<firmware_version>",
     "request_prefix": "cmd/<device_id>/req/",
     "response_prefix": "cmd/<device_id>/resp/",
-    "commands": ["<command key>", "..."],
-    "serial_guard_query": ["<read-only command key allowed during serial guard>", "..."]
+    "commands": ["<command key>", "..."]
   }
   ```
+  MQTT help is intentionally compact so it does not consume the payload budget
+  with the full serial help text.
 
 (memsroute)=
 ### `memsroute`
@@ -1182,20 +1198,21 @@ off or no faults).
 - **Payload:** update serial guard configuration.
   ```json
   {
-    "seconds": 30,
-    "persistent": true
+    "seconds": 30
   }
   ```
-  `value` is accepted as an alias for `seconds`.
+  `value` is accepted as an alias for `seconds`. Supplying `persistent` is
+  rejected; serial guard is runtime-only and is not restored after reboot.
 
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
-  - Serial shorthand: `serialguard seconds=60` or `serialguard off`.
+  - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
+    `serialguard off`.
   - While active, MQTT requests that may change hardware or runtime state are
     rejected before dispatch and logged. Safe read-only MQTT requests are
-    allowed. The `help` response reports the read-only command keys currently
-    allowed through the guard in `serial_guard_query`.
-  - The guard uses the named scheduled action `serial_guard_expire`.
+    allowed according to the app command table.
+  - The guard is owned by the command-dispatch library and uses one
+    dispatcher-owned `k_work_delayable` item.
   - `seconds:0` disables serial override.
 
 (time)=
@@ -1281,7 +1298,12 @@ off or no faults).
 
 (reboot)=
 ### `reboot`
-- **No payload:** schedule a reboot.
+- **No payload:** schedule a non-cancelable reboot after the response window.
+  ```json
+  {"status":"ok","reboot_ms":3000}
+  ```
+- **Notes:** `reboot_set()` owns the local reboot delayable work item. Once a
+  reboot is pending, new app commands are rejected before their handlers run.
 
 (split)=
 ### `split`

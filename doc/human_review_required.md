@@ -16,15 +16,18 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ### LLM Resolved; Human Review Requested
 
+- [ ] Confirm serial response pretty-printing is readable in CoolTerm and CLion.
+- [ ] Confirm serial `help` content is useful enough for bring-up and matches
+  expected operator wording.
+- [ ] Confirm command options in serial help are complete enough for current
+  workflow.
+
 ## Decisions To Make
 
 - Decide intended persistence for MEMS switch state, AS split requested/actual state and last-command metadata.
 
 ## TODOs
 
-- Make serial responses more human-readable.
-- Update all command options with serial specifics
-- Update help command so it is useful
 - `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
 ## Deferred Owner-Specified Capabilities

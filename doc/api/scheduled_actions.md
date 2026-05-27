@@ -1,6 +1,6 @@
-# Scheduled Actions
+# Scheduled Action Helper
 
 ```{eval-rst}
-.. doxygenfile:: app/src/app_scheduled_actions.h
+.. doxygenfile:: include/coo_commons/scheduled_action.h
    :project: hispec_tib
 ```
