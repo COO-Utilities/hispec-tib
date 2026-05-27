@@ -46,8 +46,8 @@ static const struct gpio_dt_spec board_type_as_gpio = GPIO_DT_SPEC_GET(USER_NODE
 #define MODBUS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_modbus_serial)
 static const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
 const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1115));
-const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));
-const struct device *dac_dev_b = DEVICE_DT_GET(DT_NODELABEL(dac7578_b));
+const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7678));
+const struct device *dac_dev_b = DEVICE_DT_GET(DT_NODELABEL(dac7678_b));
 
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
 
@@ -725,6 +725,7 @@ int devices_relay_gpio_last_error(void)
 	return error;
 }
 
+//TODO change coo_cmd_runtime_warning_emit so can emit as required not best effort
 static void emit_relay_gpio_offline_warning_once(int error)
 {
 	char context[24];
@@ -755,36 +756,23 @@ static bool configure_relay_gpio_outputs(void)
 		return false;
 	}
 
-	if (!configure_gpio_output_inactive_or_log(&yj_power_gpio,
-						   "YJ photodiode power")) {
+	if (!configure_gpio_output_inactive_or_log(&yj_power_gpio, "YJ photodiode power") ||
+		!configure_gpio_output_inactive_or_log(&hk_power_gpio, "HK photodiode power") ||
+		!configure_gpio_output_inactive_or_log(&heater_power_gpio, "laser bank heater")) {
 		error = -EIO;
-		goto offline;
-	}
-	if (!configure_gpio_output_inactive_or_log(&hk_power_gpio,
-						   "HK photodiode power")) {
-		error = -EIO;
-		goto offline;
-	}
-	if (!configure_gpio_output_inactive_or_log(&heater_power_gpio,
-						   "laser bank heater")) {
-		error = -EIO;
-		goto offline;
+		LOG_WRN("Relay GPIO expander setup failed");
+		set_relay_gpio_status(false, error);
+		emit_relay_gpio_offline_warning_once(error);
+		return false;
 	}
 
 	set_relay_gpio_status(true, 0);
 	LOG_INF("Relay-box GPIO outputs configured inactive");
 	return true;
-
-offline:
-	LOG_WRN("Relay GPIO expander setup failed");
-	set_relay_gpio_status(false, error);
-	emit_relay_gpio_offline_warning_once(error);
-	return false;
 }
 
 static bool setup_modbus_client(void)
 {
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
 	struct modbus_iface_param modbus_cfg = {
 		.mode = MODBUS_MODE_RTU,
 		.serial = {
@@ -808,10 +796,6 @@ static bool setup_modbus_client(void)
 
 	LOG_ERR("Modbus init failed");
 	return false;
-#else
-	LOG_ERR("Modbus serial device is not configured");
-	return false;
-#endif
 }
 
 static bool attenuator_dac_pair_for_index(uint8_t attenuator_index,
@@ -854,14 +838,12 @@ void setup_attenuators(void)
 		struct attenuator_dac_pair dac_pair;
 
 		if (attenuator_index >= NUM_ATTENUATORS) {
-			LOG_ERR("Profile %s attenuator index %u is out of range",
-				profile->name, attenuator_index);
+			LOG_ERR("Profile %s attenuator index %u is out of range", profile->name, attenuator_index);
 			continue;
 		}
 
 		if (!attenuator_dac_pair_for_index(attenuator_index, &dac_pair)) {
-			LOG_ERR("Profile %s attenuator index %u has no DAC pair",
-				profile->name, attenuator_index);
+			LOG_ERR("Profile %s attenuator index %u has no DAC pair", profile->name, attenuator_index);
 			continue;
 		}
 
@@ -871,14 +853,11 @@ void setup_attenuators(void)
 			continue;
 		}
 
-		attenuators[attenuator_index].coeff1.slope =
-			atten_settings.channel[attenuator_index].physical[0].slope;
-		attenuators[attenuator_index].coeff1.offset =
-			atten_settings.channel[attenuator_index].physical[0].offset;
-		attenuators[attenuator_index].coeff2.slope =
-			atten_settings.channel[attenuator_index].physical[1].slope;
-		attenuators[attenuator_index].coeff2.offset =
-			atten_settings.channel[attenuator_index].physical[1].offset;
+		attenuators[attenuator_index].coeff1.slope = atten_settings.channel[attenuator_index].physical[0].slope;
+		attenuators[attenuator_index].coeff1.offset = atten_settings.channel[attenuator_index].physical[0].offset;
+
+		attenuators[attenuator_index].coeff2.slope = atten_settings.channel[attenuator_index].physical[1].slope;
+		attenuators[attenuator_index].coeff2.offset = atten_settings.channel[attenuator_index].physical[1].offset;
 	}
 }
 

@@ -171,7 +171,7 @@
 	w1_pd_power: w1-pd-power {
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
-		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds2408_pd_power: ds2408-pd-power {
 			compatible = "maxim,ds2408";
@@ -190,7 +190,7 @@
 	w1_temp: w1-temp {
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
-		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds18b20 {
 			compatible = "maxim,ds18b20";
@@ -208,22 +208,22 @@
 	pinctrl-names = "default";
 	clock-frequency = <400000>;
 
-	dac7578: dac7578@48 {
-		compatible = "ti,dac7578";
+	dac7678: dac7678@48 {
+		compatible = "ti,dac7678";
 		reg = <0x48>;
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "external";
+		ti,reference = "internal-static";
 	};
 
-	dac7578_b: dac7578@4a {
-		compatible = "ti,dac7578";
+	dac7678_b: dac7678@4a {
+		compatible = "ti,dac7678";
 		reg = <0x4a>;
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "external";
+		ti,reference = "internal-static";
 	};
 
 	pcal6416a: pcal6416a@21 {
