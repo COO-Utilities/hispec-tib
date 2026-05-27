@@ -124,6 +124,7 @@ int coo_mqtt_subscribe(struct mqtt_client *client);
  * subscribed topic.
  *
  * @param cb Callback function pointer
+ * @param user_data Caller-owned pointer passed to cb, or NULL if unused
  */
 void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data);
 

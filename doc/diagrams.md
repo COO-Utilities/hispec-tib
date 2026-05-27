@@ -86,7 +86,7 @@ flowchart TD
   Pub[MQTT publish callback] --> Prefix{topic under cmd/<device>/req}
   Prefix -- no --> Drop[ignore]
   Prefix -- yes --> Copy[copy key payload properties]
-  Copy --> Classify[command_infer_msg_type by key and payload shape]
+  Copy --> Classify[dispatch classification by spec and payload shape]
   Classify --> Guard{serial guard active}
   Guard -- yes --> QueryAllowed{safe query}
   QueryAllowed -- no --> Reject[publish/enqueue serial guard error]
@@ -109,7 +109,7 @@ flowchart TD
   Payload -- raw JSON --> Copy[copy payload]
   Payload -- key=value --> KV[build JSON object]
   Payload -- shorthand --> Short[translate selected shorthand]
-  Copy --> Classify[command_infer_msg_type by key and payload shape]
+  Copy --> Classify[dispatch classification by spec and payload shape]
   KV --> Classify
   Short --> Classify
   Empty --> Classify
@@ -122,8 +122,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Wait[k_msgq_get inbound_queue K_FOREVER] --> Dispatch[find longest dispatch key]
-  Dispatch --> Record{effect-capable request}
+  Wait[k_msgq_get inbound_queue K_FOREVER] --> Dispatch[find longest command spec]
+  Dispatch --> Supported{supported on board}
+  Supported -- no --> Unavailable[unavailable response]
+  Supported -- yes --> Record{effect-capable request}
   Record -- yes --> Last[update lastcommand]
   Record -- no --> Found{handler exists for selected path}
   Last --> Found
@@ -132,6 +134,7 @@ flowchart TD
   Found -- yes --> Handler[run handler]
   Handler --> Response[struct OutMsg]
   Unknown --> Out[enqueue outbound_queue]
+  Unavailable --> Out
   Unsupported --> Out
   Response --> Out
   Out --> Wait

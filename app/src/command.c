@@ -4,7 +4,7 @@
  *
  * The common command runtime owns MQTT/serial topic handling, executor loops,
  * warning publication, and outbound drain behavior. This file supplies the
- * static command behavior table, serial shorthand callback, help metadata, and
+ * static command spec table, serial shorthand callbacks, help metadata, and
  * command handlers that cut across domains.
  */
 

@@ -215,8 +215,9 @@ while serial guard is active and attenuator DAC-range clamping.
     outbound queues.
   - Takes no arguments. `help <anything>` is rejected.
   - Enumerates dispatcher built-ins and app-provided static help entries,
-    including optional fields in `[]`, accepted enum values, TIB-only commands,
-    and commands allowed as MQTT queries while serial guard is active.
+    including optional fields in `[]`, accepted enum values, unsupported
+    commands for the current board profile, and commands allowed as MQTT queries
+    while serial guard is active.
 - **MQTT no payload -> compact endpoint summary:**
   ```json
   {

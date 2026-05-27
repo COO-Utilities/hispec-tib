@@ -18,8 +18,9 @@ scheduling.
 Runtime ownership is:
 
 - `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
-- `command.c`: app command queues, static command behavior table, serial guard
-  policy, request classification, and app/cross-domain command handlers.
+- `command.c`: app command queues, static command spec table, support
+  predicates, custom request classification callbacks, and app/cross-domain
+  command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write and coefficient application.
@@ -52,8 +53,9 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
 - `command_dispatch.c`: fixed-buffer MQTT/serial command request, static
-  longest-prefix dispatch, topic formatting, response metadata, warning JSON,
-  serial payload normalization, and serial response printing helpers.
+  longest-prefix spec lookup, default request classification, serial guard
+  policy, topic formatting, response metadata, warning JSON, serial payload
+  normalization, and serial response printing helpers.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 
@@ -73,7 +75,8 @@ APIs directly.
 6. `setup_mems_switches_and_routes()` builds the active MEMS router.
 7. `setup_attenuators()` initializes profile-available logical attenuators and
    loads persisted coefficients into runtime attenuator objects.
-8. Command runtime registers named scheduled actions.
+8. Command runtime configures static command specs, help entries, and serial
+   console input.
 9. Executor and serial threads are created. Ambient-temperature delayable work
    is started. On the TIB profile, main also starts the photodiode thread,
    throughput monitor thread, and laser-bank heater delayable work.
@@ -106,8 +109,9 @@ to `hsfib-tib`, `cal_hk` to `hsfib-rcal`, `cal_yj` to `hsfib-bcal`, and `as` to
 the MQTT client ID.
 
 Requests are classified by schema and topic shape, not by user-visible method
-verbs. The app's static command behavior table owns the default query/effect
-policy and names the special payload rules used by `command_infer_msg_type()`.
+verbs. Command dispatch owns the default query/effect rules and uses the app
+command spec table for special cases such as always-query commands,
+suffix-triggered actions, and custom payload classifiers.
 
 Empty or no-payload requests are queries except for no-payload actions such as
 `reboot`, `laserbank/clearfaults`, and laser-bank topic suffixes such as
@@ -127,15 +131,20 @@ The command executor runs exactly one request at a time from `inbound_queue`.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response. Pure queries are not recorded as `lastcommand`; known
 effect-capable requests are recorded before handler execution.
-The static command table rejects TIB-only command families before they reach
+App support predicates reject unsupported command families before they reach
 laser, photodiode, throughput, or laser-bank command handlers on other board
-profiles.
+profiles. Serial help marks those entries as unsupported instead of encoding
+board names in the common command-dispatch library.
 
 ## Network And MQTT Runtime
 
 Network capability presence follows Zephyr Kconfig: DHCP uses
 `CONFIG_NET_DHCPV4`, DNS uses `CONFIG_DNS_RESOLVER`, and SNTP uses
 `CONFIG_SNTP`. App code should not add duplicate capability flags.
+
+The MQTT wrapper accepts one publish callback plus caller-owned user data. This
+app registers the command runtime with `coo_cmd_runtime_mqtt_callback()` so MQTT
+ingress can enter command dispatch without an app-specific forwarding shim.
 
 IPv4 configuration precedence is:
 

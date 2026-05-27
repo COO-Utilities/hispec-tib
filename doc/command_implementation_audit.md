@@ -3,7 +3,7 @@
 ## Authority
 
 `commands.md` documents intended command/API behavior. The dispatcher built-ins
-in `lib/coo_commons/command_dispatch.c`, the static command behavior table in
+in `lib/coo_commons/command_dispatch.c`, the app command spec table in
 `app/src/command.c`, and the current command handlers are the implementation
 source of truth. This page compares the two without silently changing either
 contract.
@@ -17,10 +17,11 @@ cmd/<device>/req/#
 ```
 
 The suffix after the request prefix is copied into `Command.key`.
-`dispatch_command()` chooses the longest command-behavior-table key that is
-either an exact match or followed by `/`. The `<device>` component is
-board-profile dependent: `hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or
-`hsfib-as`.
+`coo_cmd_runtime_find_spec()` chooses the longest command-spec key that is
+either an exact match or followed by `/`; `dispatch_command()` then applies
+app-owned command side effects such as `lastcommand` recording and reboot
+pending rejection. The `<device>` component is board-profile dependent:
+`hsfib-tib`, `hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
 
 Dispatcher built-ins:
 
@@ -60,10 +61,10 @@ slots; the external API is documented as queries, effect requests, and actions.
 ## Request Classification
 
 MQTT and serial are normalized to a shared `Command` and then classified by
-`command_infer_msg_type()`. The internal result still uses `MSG_GET` and
-`MSG_SET`, but those names are dispatch-slot names, not user-visible protocol
-verbs. Serial `help` is the exception: it prints directly from command dispatch
-before entering the inbound queue.
+command dispatch using the app command spec table. The internal result still
+uses `MSG_GET` and `MSG_SET`, but those names are dispatch-slot names, not
+user-visible protocol verbs. Serial `help` is the exception: it prints directly
+from command dispatch before entering the inbound queue.
 
 Empty/no-payload requests are queries except:
 
@@ -125,8 +126,9 @@ buffer and echoed exactly in responses.
   if it exceeds the fixed MQTT payload buffer.
 - `lastcommand` records effect-capable requests. Pure query requests are not recorded.
 - Serial `help` depends on a static app-provided help table. It now reflects the
-  code paths reviewed in this audit, but future command behavior changes must
-  update `command_help_entries[]` or help can become stale.
+  code paths reviewed in this audit and uses generic support predicates to mark
+  unsupported commands, but future command behavior changes must update
+  `command_help_entries[]` or help can become stale.
 - `laserbank/clearfaults` occupies both internal dispatch slots for legacy
   reasons, but ingress classifies no-payload requests as an action.
 

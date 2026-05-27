@@ -1,8 +1,8 @@
 # Implemented Commands
 
-This page is derived from the static command behavior table in
-`app/src/command.c` and the current command handlers. It is a comparison
-artifact, not a replacement for `commands.md`.
+This page is derived from the app command spec table in `app/src/command.c`,
+the common dispatch helpers, and the current command handlers. It is a
+comparison artifact, not a replacement for `commands.md`.
 
 ## Global Rules
 
@@ -18,9 +18,9 @@ artifact, not a replacement for `commands.md`.
 - Retained MQTT requests are ignored with an error response to avoid replaying
   actions when the device reconnects.
 - MQTT and serial share the same schema-based request classification selected
-  by the static command behavior table and applied by `command_infer_msg_type()`.
-  The internal names `MSG_GET` and `MSG_SET` are dispatch-slot names, not
-  user-visible protocol verbs.
+  by the app command spec table and applied by command dispatch. The internal
+  names `MSG_GET` and `MSG_SET` are dispatch-slot names, not user-visible
+  protocol verbs.
 - Empty/no-payload requests are queries except no-payload actions such as `reboot`
   and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
 - Non-empty payload requests are effect/action requests except documented query
@@ -34,8 +34,8 @@ artifact, not a replacement for `commands.md`.
   `serialguard` enqueue one response to `outbound_queue`.
 - App command handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one
   response to `outbound_queue`.
-- The static command behavior table rejects TIB-only commands before dispatch on
-  non-TIB board profiles.
+- App support predicates reject unsupported command families before their
+  hardware/domain handlers run.
 - Data-less success returns `{"status":"ok"}`. Data-bearing success returns the
   data object. Failures include an `error` key.
 
@@ -85,7 +85,8 @@ which slow resources it can touch, and known implementation-specific caveats.
 - MQTT response is intentionally compact: device ID, request prefix, response
   prefix, and command keys from built-in and app-provided help entries.
 - App-specific help text is a static `command_help_entries[]` table in
-  `app/src/command.c`.
+  `app/src/command.c`; help entries can report commands as unsupported for the
+  current board profile.
 
 ### `ip`
 
