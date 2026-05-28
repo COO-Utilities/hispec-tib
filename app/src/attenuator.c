@@ -151,8 +151,8 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
 
     if (voltage < 0.0) {
         voltage = 0.0;
-    } else if (voltage > ATTENUATOR_DAC_MAX_MV) {
-        voltage = ATTENUATOR_DAC_MAX_MV;
+    } else if (voltage > ATTENUATOR_DRIVE_MAX_MV) {
+        voltage = ATTENUATOR_DRIVE_MAX_MV;
     }
 
     if (voltage != unclamped_voltage) {
@@ -160,11 +160,11 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
                  "channel=%u requested=%.3f clamped=%.3f",
                  dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
         coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
-                         "attenuator command exceeded DAC range and was clamped",
+                         "attenuator command exceeded drive range and was clamped",
                          context);
     }
 
-    code = (uint32_t)((voltage / ATTENUATOR_DAC_MAX_MV) * DAC_MAX_CODE);
+    code = (uint32_t)((voltage / ATTENUATOR_DRIVE_MAX_MV) * DAC_MAX_CODE);
     /* dac_write_value() is the hardware side effect: it can block on I2C and
      * changes the analog attenuation control voltage.
      */
@@ -185,6 +185,16 @@ static bool attenuator_set_physical_db(struct attenuator_dac_cfg *dac_cfg,
                                        double attenuation_db)
 {
     double voltage;
+    double max_db;
+
+    if (dac_cfg == NULL || coeffs == NULL || attenuation_db < 0.0) {
+        return false;
+    }
+
+    max_db = attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
+    if (max_db > 0.0 && attenuation_db >= max_db) {
+        return attenuator_write_voltage(dac_cfg, coeffs, ATTENUATOR_DRIVE_MAX_MV);
+    }
 
     if (!attenuator_model_db_to_voltage(coeffs, attenuation_db, &voltage)) {
         return false;
@@ -239,7 +249,7 @@ bool attenuator_set_physical_voltage(struct attenuator *drv,
 
 static double attenuator_physical_max_db(const struct attenuator_model_coeffs *coeffs)
 {
-    return attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DAC_MAX_MV);
+    return attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
 }
 
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
@@ -306,7 +316,7 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
         return false;
     }
 
-    dac_cfg->voltage = (ATTENUATOR_DAC_MAX_MV / (double)DAC_MAX_CODE) * (double)code;
+    dac_cfg->voltage = (ATTENUATOR_DRIVE_MAX_MV / (double)DAC_MAX_CODE) * (double)code;
     dac_cfg->attenuation_db =
         attenuator_model_voltage_to_db(coeffs, dac_cfg->voltage);
 

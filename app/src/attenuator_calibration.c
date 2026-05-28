@@ -95,10 +95,10 @@ struct atten_cal_state_data {
 };
 
 static const double voltage_schedule[ATTENUATOR_CAL_POINT_COUNT] = {
-	4096.0, 3900.0, 3700.0, 3500.0, 3300.0,
-	3100.0, 2900.0, 2700.0, 2500.0, 2300.0,
-	2100.0, 1900.0, 1700.0, 1500.0, 1200.0,
-	900.0, 600.0, 300.0, 100.0, 0.0,
+	5000.0, 4750.0, 4500.0, 4250.0, 4000.0,
+	3750.0, 3500.0, 3250.0, 3000.0, 2750.0,
+	2500.0, 2250.0, 2000.0, 1750.0, 1500.0,
+	1200.0, 900.0, 600.0, 300.0, 0.0,
 };
 
 static struct atten_cal_state_data cal;
@@ -208,7 +208,7 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->current_mv = voltage_schedule[MIN(cal.point_index,
 						  ATTENUATOR_CAL_POINT_COUNT - 1U)];
 	status->other_mv = (cal.state == ATTEN_CAL_STATE_INACTIVE && cal.other_mv == 0.0) ?
-			   ATTENUATOR_DAC_MAX_MV : cal.other_mv;
+			   ATTENUATOR_DRIVE_MAX_MV : cal.other_mv;
 	status->last_error = cal.last_error;
 	status->include_voltage_schedule =
 		cal.mode == ATTEN_CAL_MODE_MANUAL &&
@@ -225,7 +225,7 @@ static void reset_locked(enum atten_cal_state state)
 	cal.state = state;
 	cal.mode = ATTEN_CAL_MODE_NONE;
 	cal.dwell_ms = ATTEN_CAL_DEFAULT_DWELL_MS;
-	cal.other_mv = ATTENUATOR_DAC_MAX_MV;
+	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.laser_percent = 100.0;
 	cal.scale = 1.0;
 }
@@ -352,7 +352,7 @@ static int fit_one_physical(uint8_t attenuator_index,
 	double max_flux = 0.0;
 	double min_tx = 1.0;
 	double max_tx = 0.0;
-	double min_v = ATTENUATOR_DAC_MAX_MV;
+	double min_v = ATTENUATOR_DRIVE_MAX_MV;
 	double max_v = 0.0;
 	double sum_sq_db = 0.0;
 	double max_abs_db = 0.0;
@@ -510,7 +510,7 @@ static int fit_current_locked(bool apply_settings)
 static void start_next_physical_locked(void)
 {
 	cal.point_index = 0U;
-	cal.other_mv = ATTENUATOR_DAC_MAX_MV;
+	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.scale = 1.0;
 	cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
 }
@@ -650,9 +650,9 @@ static void auto_tick_locked(int64_t now_ms)
 			return;
 		}
 		if ((double)avg.result.mean_net_mv > ATTEN_CAL_HIGH_MV && !sample_is_saturated(&avg) &&
-		    (cal.other_mv < ATTENUATOR_DAC_MAX_MV || cal.laser_percent > 3.0)) {
+		    (cal.other_mv < ATTENUATOR_DRIVE_MAX_MV || cal.laser_percent > 3.0)) {
 			cal.pending_before_mv = (double)avg.result.mean_net_mv;
-			cal.adjust_uses_laser = cal.other_mv >= ATTENUATOR_DAC_MAX_MV;
+			cal.adjust_uses_laser = cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV;
 			cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
 			return;
 		}
@@ -674,8 +674,8 @@ static void auto_tick_locked(int64_t now_ms)
 			}
 		} else {
 			cal.other_mv += ATTEN_CAL_OTHER_STEP_MV;
-			if (cal.other_mv > ATTENUATOR_DAC_MAX_MV) {
-				cal.other_mv = ATTENUATOR_DAC_MAX_MV;
+			if (cal.other_mv > ATTENUATOR_DRIVE_MAX_MV) {
+				cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 			}
 			if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
 					       voltage_schedule[cal.point_index],
@@ -791,7 +791,7 @@ int attenuator_calibration_start_auto(
 	}
 
 	if (!set_physical_pair(attenuator_index, 0U,
-			       ATTENUATOR_DAC_MAX_MV, ATTENUATOR_DAC_MAX_MV)) {
+			       ATTENUATOR_DRIVE_MAX_MV, ATTENUATOR_DRIVE_MAX_MV)) {
 		return -EIO;
 	}
 	rc = hispec_laser_set_output_percent_autooff(request->laser, 100.0f, 0U);
@@ -842,7 +842,7 @@ int attenuator_calibration_start_manual(uint8_t attenuator_index,
 	cal.point_index = 0U;
 	cal.dwell_ms = clamp_dwell(dwell_ms);
 	cal.persistent = persistent;
-	cal.other_mv = ATTENUATOR_DAC_MAX_MV;
+	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.last_error = manual_apply_current_locked();
 	if (cal.last_error != 0) {
 		cal.state = ATTEN_CAL_STATE_ERROR;
@@ -868,8 +868,8 @@ int attenuator_calibration_manual_continue(bool has_other_mv,
 	if (has_other_mv) {
 		if (other_mv < 0.0) {
 			other_mv = 0.0;
-		} else if (other_mv > ATTENUATOR_DAC_MAX_MV) {
-			other_mv = ATTENUATOR_DAC_MAX_MV;
+		} else if (other_mv > ATTENUATOR_DRIVE_MAX_MV) {
+			other_mv = ATTENUATOR_DRIVE_MAX_MV;
 		}
 		cal.other_mv = other_mv;
 	}

@@ -45,8 +45,6 @@ enum hispec_board_type {
 
 // extern const struct device *modbus;
 extern const struct device *adc_dev;
-extern const struct device *dac_dev;
-extern const struct device *dac_dev_b;
 extern const struct device *gpio_dev;
 
 extern const struct gpio_dt_spec laser_power_gpio;

@@ -843,14 +843,14 @@ off or no faults).
   ```
 - **No payload to `coeff` -> model coefficients:**
   ```json
-  {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0]}
+  {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0]}
   ```
 - **Payload to `coeff`:** set the linear model coefficients for the two physical
   attenuators that make up the logical attenuator.
   ```json
   {
-    "dac1": [0.001953125, 0.0],
-    "dac2": [0.001953125, 0.0],
+    "dac1": [0.0016, 0.0],
+    "dac2": [0.0016, 0.0],
     "persistent": true
   }
   ```
@@ -859,7 +859,7 @@ off or no faults).
   coefficient arrays. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":[0.001953125,0.0],"dac2":[0.001953125,0.0],"persistent":true}
+  atten/1028y/coeff {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0],"persistent":true}
   ```
 
 - **Notes:**
@@ -897,13 +897,13 @@ off or no faults).
     "t_ms": 300,
     "complete_pct": 0,
     "point": "1/20",
-    "mv": 4096.0,
-    "other_mv": 4096.0,
+    "mv": 5000.0,
+    "other_mv": 5000.0,
     "error": 0,
     "dac1": {
       "valid": true,
       "points": 12,
-      "slope": 0.001953125,
+      "slope": 0.0016,
       "offset": 0.0,
       "corr": 0.999,
       "rms_db": 0.1,
@@ -953,11 +953,11 @@ off or no faults).
     "attenuator": "lfc",
     "persistent": true,
     "dac1": {
-      "voltage_mv": [4096.0, 3900.0, 3700.0, 3500.0, 3300.0, 3100.0],
+      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     },
     "dac2": {
-      "voltage_mv": [4096.0, 3900.0, 3700.0, 3500.0, 3300.0, 3100.0],
+      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     }
   }

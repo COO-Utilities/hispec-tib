@@ -30,6 +30,10 @@ LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 
 BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
+BUILD_ASSERT(NUM_ATTENUATORS == HISPEC_LASER_COUNT,
+	     "Logical attenuator mapping assumes one TIB attenuator per laser");
+BUILD_ASSERT(HISPEC_ATTENUATOR_LFC_INDEX < NUM_ATTENUATORS,
+	     "LFC/CAL attenuator index must fit logical attenuator table");
 
 /* Devices */
 const struct gpio_dt_spec laser_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, laser_power_gpios);
@@ -46,8 +50,6 @@ static const struct gpio_dt_spec board_type_as_gpio = GPIO_DT_SPEC_GET(USER_NODE
 #define MODBUS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_modbus_serial)
 static const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
 const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1115));
-const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7678));
-const struct device *dac_dev_b = DEVICE_DT_GET(DT_NODELABEL(dac7678_b));
 
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
 
@@ -93,22 +95,43 @@ struct attenuator_dac_pair {
 	uint8_t channel2;
 };
 
-struct attenuator_dac_channels {
-	uint8_t channel1;
-	uint8_t channel2;
-};
-
 /* Logical attenuator to physical DAC wiring from doc/hardware.md.
  * DAC channels are zero-based here: A=0, C=2, D=3, E=4, F=5, G=6.
  */
-static const struct attenuator_dac_channels attenuator_dac_channels[NUM_ATTENUATORS] = {
-	[HISPEC_LASER_1028_Y] = { .channel1 = 0U, .channel2 = 2U },
-	[HISPEC_LASER_1270_J] = { .channel1 = 4U, .channel2 = 6U },
-	[HISPEC_LASER_1430_YJ] = { .channel1 = 3U, .channel2 = 5U },
-	[HISPEC_LASER_1430_HK] = { .channel1 = 0U, .channel2 = 2U },
-	[HISPEC_LASER_1510_H] = { .channel1 = 4U, .channel2 = 6U },
-	[HISPEC_LASER_2330_K] = { .channel1 = 3U, .channel2 = 5U },
+static const struct attenuator_dac_pair attenuator_dac_pairs[NUM_ATTENUATORS] = {
+	[HISPEC_LASER_1028_Y] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 0U,
+		.channel2 = 2U,
+	},
+	[HISPEC_LASER_1270_J] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 4U,
+		.channel2 = 6U,
+	},
+	[HISPEC_LASER_1430_YJ] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 3U,
+		.channel2 = 5U,
+	},
+	[HISPEC_LASER_1430_HK] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 0U,
+		.channel2 = 2U,
+	},
+	[HISPEC_LASER_1510_H] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 4U,
+		.channel2 = 6U,
+	},
+	[HISPEC_LASER_2330_K] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 3U,
+		.channel2 = 5U,
+	},
 };
+BUILD_ASSERT(ARRAY_SIZE(attenuator_dac_pairs) == NUM_ATTENUATORS,
+	     "DAC pair table must match logical attenuator count");
 
 struct board_profile {
 	enum hispec_board_type board;
@@ -815,18 +838,12 @@ static bool setup_modbus_client(void)
 	return false;
 }
 
-static bool attenuator_dac_pair_for_index(uint8_t attenuator_index,
-					  struct attenuator_dac_pair *out)
+static const struct attenuator_dac_pair *
+attenuator_dac_pair_for_index(uint8_t attenuator_index)
 {
-	if (out == NULL || attenuator_index >= NUM_ATTENUATORS) {
-		return false;
-	}
+	__ASSERT_NO_MSG(attenuator_index < NUM_ATTENUATORS);
 
-	out->channel1 = attenuator_dac_channels[attenuator_index].channel1;
-	out->channel2 = attenuator_dac_channels[attenuator_index].channel2;
-	out->dev = attenuator_index < HISPEC_LASER_1430_HK ? dac_dev_b : dac_dev;
-
-	return true;
+	return &attenuator_dac_pairs[attenuator_index];
 }
 
 void setup_attenuators(void)
@@ -843,21 +860,12 @@ void setup_attenuators(void)
 
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;
-		struct attenuator_dac_pair dac_pair;
-
-		if (attenuator_index >= NUM_ATTENUATORS) {
-			LOG_ERR("Profile %s attenuator index %u is out of range", profile->name, attenuator_index);
-			continue;
-		}
-
-		if (!attenuator_dac_pair_for_index(attenuator_index, &dac_pair)) {
-			LOG_ERR("Profile %s attenuator index %u has no DAC pair", profile->name, attenuator_index);
-			continue;
-		}
+		const struct attenuator_dac_pair *dac_pair =
+			attenuator_dac_pair_for_index(attenuator_index);
 
 		if (!attenuator_init(&attenuators[attenuator_index],
-				     dac_pair.dev, dac_pair.channel1,
-				     dac_pair.dev, dac_pair.channel2)) {
+				     dac_pair->dev, dac_pair->channel1,
+				     dac_pair->dev, dac_pair->channel2)) {
 			continue;
 		}
 
@@ -972,10 +980,10 @@ bool devices_ready(void)
 	if (profile->attenuator_count > 0U) {
 		for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 			uint8_t attenuator_index = profile->attenuator_first + i;
-			struct attenuator_dac_pair dac_pair;
+			const struct attenuator_dac_pair *dac_pair =
+				attenuator_dac_pair_for_index(attenuator_index);
 
-			if (!attenuator_dac_pair_for_index(attenuator_index, &dac_pair) ||
-			    !device_ready_or_log(dac_pair.dev, "DAC")) {
+			if (!device_ready_or_log(dac_pair->dev, "DAC")) {
 				rc = false;
 			}
 		}

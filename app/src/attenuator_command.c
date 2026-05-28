@@ -346,7 +346,7 @@ struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
 	bool cont = false;
 	bool cont_present = false;
 	bool other_present = false;
-	double other_mv = ATTENUATOR_DAC_MAX_MV;
+	double other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	int rc;
 	int parse_rc;
 	int choice_value;
@@ -369,7 +369,7 @@ struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
 							   &other_mv,
 							   &other_present,
 							   0.0,
-							   ATTENUATOR_DAC_MAX_MV) != 0) {
+							   ATTENUATOR_DRIVE_MAX_MV) != 0) {
 			return coo_cmd_error(cmd, "invalid other_mv");
 		}
 		if (cont) {

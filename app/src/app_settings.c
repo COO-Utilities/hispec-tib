@@ -201,11 +201,10 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-			/* Default maps the full 0-4096 mV DAC span onto b=0..8
-			 * until lab-measured coefficients are stored.
+			/* Default maps the full 0-5000 mV attenuator drive span
+			 * onto b=0..8 until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].physical[physical].slope =
-				8.0f / 4096.0f;
+			s->attenuator.channel[ch].physical[physical].slope = (float)(8.0 / 5000.0f);
 			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
 		}
 	}
