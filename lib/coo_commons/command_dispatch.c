@@ -1576,8 +1576,8 @@ static struct coo_cmd_response runtime_execute_default(struct coo_cmd_runtime *r
 void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 {
 	struct coo_cmd_runtime *runtime = p1;
-	struct coo_cmd_request cmd;
-	struct coo_cmd_response out;
+	struct coo_cmd_request *cmd;
+	struct coo_cmd_response *out;
 
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
@@ -1588,13 +1588,16 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 		return;
 	}
 
+	cmd = &runtime->executor_cmd;
+	out = &runtime->executor_out;
+
 	while (1) {
 		/* K_FOREVER sleeps until ingress queues a complete command. */
-		k_msgq_get(runtime->inbound_queue, &cmd, K_FOREVER);
-		out = runtime->execute_handler != NULL ?
-		      runtime->execute_handler(&cmd) :
-		      runtime_execute_default(runtime, &cmd);
-		if (k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+		k_msgq_get(runtime->inbound_queue, cmd, K_FOREVER);
+		*out = runtime->execute_handler != NULL ?
+		       runtime->execute_handler(cmd) :
+		       runtime_execute_default(runtime, cmd);
+		if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
 			LOG_WRN("Outbound queue full; dropping command response");
 		}
 	}
@@ -2070,7 +2073,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		return;
 	}
 
-	printk("%s\r\n\t", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
 	col = 8U;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
 
@@ -2082,7 +2085,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		}
 
 		if (ch == '\n' || (wrap_column != 0U && col >= wrap_column)) {
-			printk("\r\n\t");
+			printk("\r\n        ");
 			col = 8U;
 			if (ch == '\n') {
 				continue;
@@ -2095,7 +2098,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		if (wrap_column != 0U &&
 		    (ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
 		    i + 1U < len) {
-			printk("\r\n\t");
+			printk("\r\n        ");
 			col = 8U;
 		}
 	}
@@ -2114,8 +2117,11 @@ static const char *serial_payload_start(const char *payload)
 
 static void serial_response_newline_indent(uint8_t indent, uint16_t *col)
 {
-	printk("\r\n\t");
+	printk("\r\n");
 	*col = 8U;
+	for (uint8_t i = 0U; i < 8U; ++i) {
+		printk(" ");
+	}
 	for (uint8_t i = 0U; i < indent; ++i) {
 		printk("  ");
 		*col += 2U;
@@ -2141,6 +2147,104 @@ static bool json_stack_pop(char *stack, uint8_t *depth, char close_ch)
 
 	(*depth)--;
 	return true;
+}
+
+static bool json_scalar_array_end(const char *payload, size_t len,
+				  size_t start, size_t *end)
+{
+	bool in_string = false;
+	bool escaped = false;
+
+	if (payload == NULL || end == NULL || start >= len || payload[start] != '[') {
+		return false;
+	}
+
+	for (size_t i = start + 1U; i < len && payload[i] != '\0'; ++i) {
+		const char ch = payload[i];
+
+		if (in_string) {
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				in_string = false;
+			} else if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			continue;
+		}
+
+		if (isspace((unsigned char)ch)) {
+			continue;
+		}
+
+		switch (ch) {
+		case '"':
+			in_string = true;
+			break;
+		case '[':
+		case '{':
+			return false;
+		case ']':
+			*end = i;
+			return true;
+		default:
+			if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			break;
+		}
+	}
+
+	return false;
+}
+
+static bool serial_print_json_scalar_array(const char *payload, size_t start,
+					   size_t end, uint16_t *col)
+{
+	bool in_string = false;
+	bool escaped = false;
+
+	for (size_t i = start; i <= end; ++i) {
+		const char ch = payload[i];
+
+		if (in_string) {
+			printk("%c", ch);
+			(*col)++;
+			if (escaped) {
+				escaped = false;
+			} else if (ch == '\\') {
+				escaped = true;
+			} else if (ch == '"') {
+				in_string = false;
+			} else if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			continue;
+		}
+
+		if (isspace((unsigned char)ch)) {
+			continue;
+		}
+
+		if (ch == '"') {
+			in_string = true;
+			printk("%c", ch);
+			(*col)++;
+		} else if (ch == ',') {
+			printk(", ");
+			*col += 2U;
+		} else {
+			if ((unsigned char)ch < 0x20U) {
+				return false;
+			}
+			printk("%c", ch);
+			(*col)++;
+		}
+	}
+
+	return !in_string && !escaped;
 }
 
 static bool serial_print_json_payload(const char *payload, size_t len)
@@ -2190,6 +2294,16 @@ static bool serial_print_json_payload(const char *payload, size_t len)
 			serial_response_newline_indent(depth, &col);
 			break;
 		case '[':
+		{
+			size_t array_end;
+
+			if (json_scalar_array_end(payload, len, i, &array_end)) {
+				if (!serial_print_json_scalar_array(payload, i, array_end, &col)) {
+					return false;
+				}
+				i = array_end;
+				break;
+			}
 			if (!json_stack_push(stack, sizeof(stack), &depth, ']')) {
 				return false;
 			}
@@ -2197,6 +2311,7 @@ static bool serial_print_json_payload(const char *payload, size_t len)
 			col++;
 			serial_response_newline_indent(depth, &col);
 			break;
+		}
 		case '}':
 		case ']':
 			if (!json_stack_pop(stack, &depth, ch)) {
@@ -2240,14 +2355,14 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 
 	payload = out->payload;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
-	printk("%s\r\n\t", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
 
 	payload = serial_payload_start(payload);
 	if (payload != NULL && (*payload == '{' || *payload == '[')) {
 		if (!serial_print_json_payload(payload, len - (size_t)(payload - out->payload))) {
 			uint16_t col = 13U;
 
-			printk("{\"error\":\"serial JSON render failed\"}\r\n\traw: ");
+			printk("{\"error\":\"serial JSON render failed\"}\r\n        raw: ");
 			for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
 				const char ch = out->payload[i];
 
@@ -2256,7 +2371,7 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 				}
 				if (ch == '\n' ||
 				    (wrap_column != 0U && col >= wrap_column)) {
-					printk("\r\n\t");
+					printk("\r\n        ");
 					col = 8U;
 					if (ch == '\n') {
 						continue;
@@ -2279,7 +2394,7 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 			continue;
 		}
 		if (ch == '\n') {
-			printk("\r\n\t");
+			printk("\r\n        ");
 			continue;
 		}
 		printk("%c", ch);

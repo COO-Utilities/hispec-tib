@@ -220,6 +220,11 @@ struct coo_cmd_runtime {
 	size_t serial_line_len;
 	char serial_line[COO_CMD_SERIAL_LINE_MAX];
 	struct coo_cmd_request ingress_cmd;
+	/* Executor-owned buffers keep large request/response payload storage off
+	 * the command thread stack.
+	 */
+	struct coo_cmd_request executor_cmd;
+	struct coo_cmd_response executor_out;
 	struct coo_cmd_response outbound_scratch;
 	struct coo_cmd_response warning_scratch;
 };
@@ -486,7 +491,7 @@ int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 				 const char *msg,
 				 const char *context);
 
-/** Print a serial response as topic then tab-indented wrapped payload. */
+/** Print a serial response as topic then space-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 				   uint16_t wrap_column);
 
