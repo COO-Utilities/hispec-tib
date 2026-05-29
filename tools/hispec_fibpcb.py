@@ -691,18 +691,34 @@ def _decode_temp(data: Mapping[str, Any]) -> TempStatus:
     )
 
 
+def _default_mems_duty_cycle(state: str) -> float:
+    if state.startswith("A"):
+        return 1.0
+    if state.startswith("B"):
+        return 0.0
+    return 0.0
+
+
 def _decode_mems(data: Mapping[str, Any]) -> tuple[MemsSwitchState, ...]:
     return tuple(
-        MemsSwitchState(name=name, state=str(value["state"]), duty_cycle=float(value["duty_cycle"]))
+        MemsSwitchState(
+            name=name,
+            state=str(value["state"]),
+            duty_cycle=float(
+                value.get("duty_cycle", _default_mems_duty_cycle(str(value["state"])))
+            ),
+        )
         for name, value in data.items()
     )
 
 
 def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
+    state = str(data["state"])
+
     return MemsSwitchDetail(
         name=name,
-        state=str(data["state"]),
-        duty_cycle=float(data["duty_cycle"]),
+        state=state,
+        duty_cycle=float(data.get("duty_cycle", _default_mems_duty_cycle(state))),
         requested_toggle_rate_hz=float(data.get("requested_toggle_rate_hz", 0.0)),
         toggle_rate_hz=float(data.get("toggle_rate_hz", 0.0)),
         stopafter_s=int(data.get("stopafter_s", 0)),

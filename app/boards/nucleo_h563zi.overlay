@@ -22,22 +22,22 @@
 		board-type-cal-hk-gpios = <&gpiob 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D36 */
 		board-type-as-gpios = <&gpioe 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D38 */
 
-		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
-		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
-		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_HIGH>;
-		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_HIGH>;
-		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_HIGH>;
-		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_HIGH>;
-		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_HIGH>;
-		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_HIGH>;
-		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_HIGH>;
-		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_HIGH>;
-		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_HIGH>;
-		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_HIGH>;
-		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_HIGH>;
-		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_HIGH>;
-		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
-		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
+		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_LOW>;
+		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_LOW>;
+		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_LOW>;
+		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_LOW>;
+		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_LOW>;
+		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_LOW>;
+		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_LOW>;
+		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_LOW>;
+		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_LOW>;
+		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_LOW>;
+		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_LOW>;
+		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_LOW>;
+		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_LOW>;
+		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_LOW>;
+		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_LOW>;
+		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_LOW>;
 
 		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_LOW>; /* DS2408 P1 */
 		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_LOW>; /* DS2408 P2 */
@@ -234,27 +234,28 @@
 		#gpio-cells = <2>;
 		ngpios = <16>;
 
-		/* PCAL64xxA reset/default output mode is push-pull. These hogs
-		 * deliberately omit GPIO_OPEN_DRAIN and only set pull-up + low.
+		/* The external MEMS control line is active-high, but the Nucleo
+		 * PCAL drive stage is active-low at the expander pin. These hogs
+		 * deliberately omit GPIO_OPEN_DRAIN and idle the switch lines low.
 		 */
 		mems_drive_default: mems-drive-default {
 			gpio-hog;
-			gpios = <0 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<1 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<2 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<4 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<5 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<6 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<7 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<8 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<9 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<10 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<11 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<12 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<13 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<14 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>,
-				<15 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+			gpios = <0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<9 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<13 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 			output-low;
 			line-name = "mems-drive-default-low";
 		};

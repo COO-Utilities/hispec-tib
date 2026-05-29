@@ -9,6 +9,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -490,13 +491,106 @@ bool coo_cmd_serial_has_extra(const char *cursor)
 bool coo_cmd_serial_token_is_number(const char *token)
 {
 	char *end = NULL;
+	double value;
 
 	if (token == NULL || token[0] == '\0') {
 		return false;
 	}
 
-	(void)strtod(token, &end);
-	return end != token && end != NULL && *end == '\0';
+	value = strtod(token, &end);
+	return end != token && end != NULL && *end == '\0' && isfinite(value);
+}
+
+static bool serial_token_has_control(const char *token)
+{
+	if (token == NULL) {
+		return true;
+	}
+
+	for (const char *p = token; *p != '\0'; ++p) {
+		if (iscntrl((unsigned char)*p)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool serial_token_is_json_number(const char *token)
+{
+	const char *p = token;
+
+	if (p == NULL || *p == '\0') {
+		return false;
+	}
+
+	if (*p == '-') {
+		p++;
+	}
+
+	if (*p == '0') {
+		p++;
+	} else if (*p >= '1' && *p <= '9') {
+		do {
+			p++;
+		} while (isdigit((unsigned char)*p));
+	} else {
+		return false;
+	}
+
+	if (*p == '.') {
+		p++;
+		if (!isdigit((unsigned char)*p)) {
+			return false;
+		}
+		while (isdigit((unsigned char)*p)) {
+			p++;
+		}
+	}
+
+	if (*p == 'e' || *p == 'E') {
+		p++;
+		if (*p == '+' || *p == '-') {
+			p++;
+		}
+		if (!isdigit((unsigned char)*p)) {
+			return false;
+		}
+		while (isdigit((unsigned char)*p)) {
+			p++;
+		}
+	}
+
+	return *p == '\0';
+}
+
+static int serial_append_json_number(char *out, size_t out_len, size_t *off,
+				     const char *token)
+{
+	char *end = NULL;
+	double value;
+	int written;
+
+	value = strtod(token, &end);
+	if (end == token || end == NULL || *end != '\0' || !isfinite(value)) {
+		return -EINVAL;
+	}
+
+	if (serial_token_is_json_number(token)) {
+		written = snprintk(out + *off, out_len - *off, "%s", token);
+	} else {
+		/* Serial accepts human shorthand such as .5; normalize it before
+		 * handlers parse the generated JSON.
+		 */
+		written = snprintk(out + *off, out_len - *off, "%.17g", value);
+	}
+
+	if (written < 0 || written >= (int)(out_len - *off)) {
+		return -ENOSPC;
+	}
+
+	*off += (size_t)written;
+	return 0;
 }
 
 static const char *serial_token_bool_json(const char *token)
@@ -526,10 +620,15 @@ int coo_cmd_serial_append_json_value(char *out, size_t out_len, size_t *off,
 	if (out == NULL || off == NULL || token == NULL || *off >= out_len) {
 		return -EINVAL;
 	}
+	if (serial_token_has_control(token)) {
+		return -EINVAL;
+	}
 
 	if (bool_json != NULL) {
 		written = snprintk(out + *off, out_len - *off, "%s", bool_json);
-	} else if (coo_cmd_serial_token_is_number(token) || strcasecmp(token, "null") == 0) {
+	} else if (coo_cmd_serial_token_is_number(token)) {
+		return serial_append_json_number(out, out_len, off, token);
+	} else if (strcasecmp(token, "null") == 0) {
 		written = snprintk(out + *off, out_len - *off, "%s", token);
 	} else {
 		if (strchr(token, '"') != NULL || strchr(token, '\\') != NULL) {
@@ -553,6 +652,7 @@ int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
 
 	if (key == NULL || token == NULL || key[0] == '\0' ||
 	    strchr(key, '"') != NULL || strchr(key, '\\') != NULL ||
+	    serial_token_has_control(key) || serial_token_has_control(token) ||
 	    *off >= out_len) {
 		return -EINVAL;
 	}

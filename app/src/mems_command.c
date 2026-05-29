@@ -745,13 +745,72 @@ static void mems_format_state(const struct mems_switch_status *status,
                               char *out,
                               size_t out_len)
 {
-    if (status->state == 'A' || status->state == 'B') {
+    char state = status->state;
+
+    if (status->duty_denominator != 0U) {
+        if (status->duty_numerator == 0U) {
+            state = 'B';
+        } else if (status->duty_numerator >= status->duty_denominator) {
+            state = 'A';
+        }
+    }
+
+    if (state == 'A' || state == 'B') {
         snprintk(out, out_len, status->state_known_this_boot ? "%c" : "%c?",
-                 status->state);
+                 state);
         return;
     }
 
     snprintk(out, out_len, "?");
+}
+
+static bool mems_status_has_nonconstant_duty(const struct mems_switch_status *status)
+{
+    return status->duty_denominator != 0U &&
+           status->duty_numerator > 0U &&
+           status->duty_numerator < status->duty_denominator;
+}
+
+static int mems_append_duty_field(char *buf, size_t buf_len, size_t *offset,
+                                  const struct mems_switch_status *status)
+{
+    int written;
+
+    written = snprintk(buf + *offset, buf_len - *offset,
+                       ",\"duty_cycle\":%.3f",
+                       (double)status->duty_cycle);
+    if (written < 0 || written >= (int)(buf_len - *offset)) {
+        return -ENOSPC;
+    }
+
+    *offset += (size_t)written;
+    return 0;
+}
+
+/* Command responses include timing fields only while the requested MEMS profile
+ * is mixed duty. Static A/B replies stay compact and unambiguous.
+ */
+static int mems_append_timing_fields(char *buf, size_t buf_len, size_t *offset,
+                                     const struct mems_switch_status *status)
+{
+    int written;
+
+    if (mems_append_duty_field(buf, buf_len, offset, status) != 0) {
+        return -ENOSPC;
+    }
+
+    written = snprintk(buf + *offset, buf_len - *offset,
+                       ",\"requested_toggle_rate_hz\":%.3f,"
+                       "\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u",
+                       (double)status->requested_toggle_rate_hz,
+                       (double)status->toggle_rate_hz,
+                       status->stopafter_s);
+    if (written < 0 || written >= (int)(buf_len - *offset)) {
+        return -ENOSPC;
+    }
+
+    *offset += (size_t)written;
+    return 0;
 }
 
 static struct coo_cmd_response mems_response_for_switch(const struct coo_cmd_request *cmd,
@@ -760,19 +819,28 @@ static struct coo_cmd_response mems_response_for_switch(const struct coo_cmd_req
     struct mems_switch_status status = {0};
     char state_buf[4] = {0};
     char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t off = 0U;
+    int written;
 
     mems_switch_get_status(sw, &status);
     mems_format_state(&status, state_buf, sizeof(state_buf));
 
-    snprintk(payload, sizeof(payload),
-             "{\"state\":\"%s\",\"duty_cycle\":%.3f,"
-             "\"requested_toggle_rate_hz\":%.3f,\"toggle_rate_hz\":%.3f,"
-             "\"stopafter_s\":%u}",
-             state_buf,
-             (double)status.duty_cycle,
-             (double)status.requested_toggle_rate_hz,
-             (double)status.toggle_rate_hz,
-             status.stopafter_s);
+    written = snprintk(payload + off, sizeof(payload) - off,
+                       "{\"state\":\"%s\"", state_buf);
+    if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+        return coo_cmd_error(cmd, "mems response too large");
+    }
+    off += (size_t)written;
+
+    if (mems_status_has_nonconstant_duty(&status) &&
+        mems_append_timing_fields(payload, sizeof(payload), &off, &status) != 0) {
+        return coo_cmd_error(cmd, "mems response too large");
+    }
+
+    written = snprintk(payload + off, sizeof(payload) - off, "}");
+    if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+        return coo_cmd_error(cmd, "mems response too large");
+    }
 
     return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
@@ -802,10 +870,22 @@ struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
             mems_switch_get_status(router.switches[i], &status);
             mems_format_state(&status, state_buf, sizeof(state_buf));
             written = snprintk(payload + off, sizeof(payload) - off,
-                               "\"%s\":{\"state\":\"%s\",\"duty_cycle\":%.3f}",
+                               "\"%s\":{\"state\":\"%s\"",
                                router.switches[i]->name,
-                               state_buf,
-                               (double)status.duty_cycle);
+                               state_buf);
+            if (written < 0 || written >= (int)(sizeof(payload) - off)) {
+                return coo_cmd_error(cmd,
+                                      "mems response too large; query mems/<switchname>");
+            }
+            off += (size_t)written;
+
+            if (mems_status_has_nonconstant_duty(&status) &&
+                mems_append_duty_field(payload, sizeof(payload), &off, &status) != 0) {
+                return coo_cmd_error(cmd,
+                                      "mems response too large; query mems/<switchname>");
+            }
+
+            written = snprintk(payload + off, sizeof(payload) - off, "}");
             if (written < 0 || written >= (int)(sizeof(payload) - off)) {
                 return coo_cmd_error(cmd,
                                       "mems response too large; query mems/<switchname>");
@@ -862,21 +942,24 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR ||
         requested_state[0] == '\0' || requested_state[1] != '\0') {
-        return coo_cmd_error(cmd, "Failed to parse switch state");
+        return coo_cmd_error(cmd, "state must be A or B");
     }
 
     if (coo_json_match_string_choice(requested_state, mems_switch_state_choices,
                                      ARRAY_SIZE(mems_switch_state_choices),
                                      &state_value) != 0) {
-        return coo_cmd_error(cmd, "Invalid switch state");
+        return coo_cmd_error(cmd, "state must be A or B");
     }
     requested_state[0] = (char)state_value;
 
     parse_rc = coo_json_extract_float(cmd->payload, "duty_cycle", &duty_cycle);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "Invalid duty_cycle");
+        return coo_cmd_error(cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
     has_duty_cycle = (parse_rc == COO_JSON_EXTRACT_OK);
+    if (has_duty_cycle && (duty_cycle < 0.0f || duty_cycle > 1.0f)) {
+        return coo_cmd_error(cmd, "duty_cycle must be a number from 0.0 to 1.0");
+    }
 
     parse_rc = coo_json_extract_float(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {

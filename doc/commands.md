@@ -356,7 +356,21 @@ and the AS for splitting fraction correction.
   Response:
   ```json
   {
-    "state": "A|B|A?|B?",
+    "state": "A|B|A?|B?"
+  }
+  ```
+  For example, `mems/yj_cal_laser state=B` returns:
+  ```json
+  {"state":"B"}
+  ```
+  and `mems/yj_cal_laser state=A` returns:
+  ```json
+  {"state":"A"}
+  ```
+  Response while configured with a non-constant duty request:
+  ```json
+  {
+    "state": "A|A?",
     "duty_cycle": 0.0,
     "requested_toggle_rate_hz": 0.0,
     "toggle_rate_hz": 0.0,
@@ -365,6 +379,7 @@ and the AS for splitting fraction correction.
   ```
 - **Notes:**
   - `duty_cycle` is only valid with `state:"A"`.
+  - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
   - `toggle_rate_hz` is optional; if omitted the switch uses its current
     requested toggle rate.
   - Requested `toggle_rate_hz` is stored separately from the actual
@@ -373,8 +388,8 @@ and the AS for splitting fraction correction.
   - `stopafter_s` max is 4 hours.
   - `?` suffix means the state has not yet been pulsed this boot; on first boot
     all switches will be reported as `A?`.
-  - `duty_cycle`, `toggle_rate_hz`, and `stopafter_s` are omitted if not
-    toggling.
+  - `duty_cycle`, `requested_toggle_rate_hz`, `toggle_rate_hz`, and
+    `stopafter_s` are omitted for constant A or B profiles.
   - `toggle_rate_hz` is the actual quantized rate. If it differs from requested
     by more than rounding noise, the firmware emits `mems_rate_quantized` on
     `dt/<device>/warning`.

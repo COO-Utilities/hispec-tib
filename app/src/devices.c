@@ -78,15 +78,23 @@ static const char *const cal_switch_names[7] = {
 /* The GPIO expander wiring is the same 2-pin sequence on each populated board.
  * Board profiles below limit how many of these pairs are instantiated.
  */
-static const gpio_pin_t mems_switch_pin_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
-	{6, 7},  	//sw1
-	{8, 9}, 		//sw2
-	{4, 5},		//sw3
-	{10, 11},	//sw4
-	{12, 13},	//sw5
-	{14, 15},	//sw6
-	{2, 3},		//sw7
-	{0, 1},		//sw8
+static const struct gpio_dt_spec mems_switch_gpio_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
+	{GPIO_DT_SPEC_GET(USER_NODE, mems3_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems3_b_gpios)},	/* sw1 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems4_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems4_b_gpios)},	/* sw2 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems2_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems2_b_gpios)},	/* sw3 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems5_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems5_b_gpios)},	/* sw4 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems6_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems6_b_gpios)},	/* sw5 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems7_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems7_b_gpios)},	/* sw6 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems1_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems1_b_gpios)},	/* sw7 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems0_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems0_b_gpios)},	/* sw8 */
 };
 
 
@@ -906,9 +914,8 @@ void setup_mems_switches_and_routes(void)
 		}
 
 		mems_switch_init(&mems_switches[i],
-				 gpio_dev,
-				 mems_switch_pin_pairs[i][0],
-				 mems_switch_pin_pairs[i][1],
+				 &mems_switch_gpio_pairs[i][0],
+				 &mems_switch_gpio_pairs[i][1],
 				 profile->switch_names[i],
 				 switch_type,
 				 MEMS_SWITCH_MAX_TOGGLE_HZ,

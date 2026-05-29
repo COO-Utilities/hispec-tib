@@ -41,15 +41,17 @@ Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
 - Address 0x21 (ADDR high) or 0x20 (ADDR low), using 0x21 (addr is tied to +5V (VDD(P))) 0b0100001
 - FFSW lines have 4.7k external resistors. in open drain each switch channel flows 2mA through PCAL
   - FFLS lines do not have a pullup but one may be added at site of unpopulated FFSW drive MOSFET to allow operation in same manner
-- Placing ports in push-pull with pull-ups enabled and then writing all low would pull 2.2mA though PCAL per switch and should work for all switches
+- Placing ports in push-pull with pull-ups enabled and then idling the external MEMS control lines low should work for all switches.
 - The port with FFLS switches also has FFSW switches so I am going with a common selection for both ports for simplicity.
 - Initial testing will be with push-pull approach and full drive strength
 - Requires 2 pins per FFSW or FFLS
 - The Nucleo devicetree configures all 16 PCAL MEMS outputs with GPIO hogs:
-  push-pull, pull-ups enabled, and output-low at boot. Zephyr's mainline
-  `nxp,pcal6416a` driver resets the PCAL drive strength registers to full drive
-  and leaves both ports push-pull; firmware no longer writes the PCAL port-drive
-  register directly.
+  push-pull, pull-ups enabled, active-low at the PCAL pin, and logical
+  output-low at boot so the external switch-control lines idle low. Firmware
+  pulses the logical line active, which is a high pulse at the switch-control
+  line. Zephyr's mainline `nxp,pcal6416a` driver resets the PCAL drive strength
+  registers to full drive and leaves both ports push-pull; firmware no longer
+  writes the PCAL port-drive register directly.
 
 For board files:
 - Nucleo:

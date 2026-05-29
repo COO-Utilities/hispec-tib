@@ -257,15 +257,16 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
     const bool toggling = (sw->remaining_toggle_cycles > 0U);
 
     if ((!sw->state_known_this_boot || sw->state != sw->target_state)) {
+        const struct gpio_dt_spec *gpio =
+            (sw->target_state == 'A') ? &sw->gpio_a : &sw->gpio_b;
 
-        gpio_pin_t pin = (sw->target_state == 'A') ? sw->pin_a : sw->pin_b;
-
-        /* gpio_pin_set() is raw because the PCAL6416A pins are passed as
-         * gpio_pin_t values, not gpio_dt_spec. The overlay active flags are
-         * therefore not applied here.
+        /* gpio_pin_set_dt(..., 1) emits the board-defined active pulse. The
+         * Nucleo MEMS drive stage is active-low at the PCAL pin, so the
+         * external switch-control line pulses high.
          */
-        if (gpio_pin_set(sw->gpio_dev, pin, 1) != 0) {
-            LOG_ERR("Pulse set failed on %s pin %u", sw->name, (unsigned int)pin);
+        if (gpio_pin_set_dt(gpio, 1) != 0) {
+            LOG_ERR("Pulse set failed on %s pin %u", sw->name,
+                    (unsigned int)gpio->pin);
         }
         else {
             sw->pulse_ticks_remaining = mems_switch_work_ticks(sw);
@@ -324,8 +325,10 @@ static void mems_switch_clear_finished_pulse_elapsed_locked(struct mems_switch *
 
     sw->pulse_ticks_remaining = 0U;
     {
-        const gpio_pin_t pin = (sw->state == 'A') ? sw->pin_a : sw->pin_b;
-        (void)gpio_pin_set(sw->gpio_dev, pin, 0);
+        const struct gpio_dt_spec *gpio =
+            (sw->state == 'A') ? &sw->gpio_a : &sw->gpio_b;
+
+        (void)gpio_pin_set_dt(gpio, 0);
     }
 
     if (elapsed_ticks > previous_ticks) {
@@ -478,21 +481,21 @@ static void mems_router_thread(void *p1, void *p2, void *p3)
 // Switch Methods
 // -----------------------
 
-void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
-                      gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+void mems_switch_init(struct mems_switch *sw,
+                      const struct gpio_dt_spec *gpio_a,
+                      const struct gpio_dt_spec *gpio_b,
+                      const char *name,
                       enum mems_switch_type switch_type,
                       float switching_frequency_hz, char initial_state)
 {
 
-    sw->gpio_dev = gpio_dev;
-    sw->pin_a = pin_a;
-    sw->pin_b = pin_b;
+    sw->gpio_a = *gpio_a;
+    sw->gpio_b = *gpio_b;
     sw->switch_type = switch_type;
     sw->state = toupper(initial_state)=='A'? 'A': 'B';
     sw->target_state = sw->state;
     sw->state_known_this_boot = false;
     sw->owner = NULL;
-    sw->a_state_cycles = 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
     sw->pulse_ticks_remaining = 0U;
@@ -500,17 +503,17 @@ void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
     sw->requested_toggle_rate_hz = switching_frequency_hz;
     sw->switching_period_cycles = quantize_toggle_period_cycles(sw, switching_frequency_hz);
     sw->actual_toggle_rate_hz = attained_toggle_rate_hz(sw, sw->switching_period_cycles);
+    /* Keep status readback consistent before the first router pulse. */
+    sw->a_state_cycles = (sw->state == 'A') ? sw->switching_period_cycles : 0U;
 
     strncpy(sw->name, name, MEMS_SWITCH_NAME_LEN-1);
     sw->name[MEMS_SWITCH_NAME_LEN-1] = '\0';
 
-    /* PCAL stays push-pull because no GPIO_SINGLE_ENDED/OPEN_DRAIN flag is
-     * used. Mirror the devicetree hog: pull-up enabled, output inactive/low.
+    /* gpio_pin_configure_dt() applies the board polarity from the overlay.
+     * For Nucleo MEMS lines, logical inactive is the external idle-low state.
      */
-    (void)gpio_pin_configure(gpio_dev, pin_a,
-                             GPIO_OUTPUT_INACTIVE | GPIO_PULL_UP);
-    (void)gpio_pin_configure(gpio_dev, pin_b,
-                             GPIO_OUTPUT_INACTIVE | GPIO_PULL_UP);
+    (void)gpio_pin_configure_dt(&sw->gpio_a, GPIO_OUTPUT_INACTIVE);
+    (void)gpio_pin_configure_dt(&sw->gpio_b, GPIO_OUTPUT_INACTIVE);
 }
 
 

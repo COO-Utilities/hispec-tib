@@ -191,7 +191,7 @@ int coo_json_extract_float(const char *json, const char *key, float *value)
 	}
 
 	rc = find_json_key_value(json, key,
-				 JSON_TOK_NUMBER,
+				 JSON_TOK_FLOAT_FP,
 				 &parsed,
 				 sizeof(parsed.value),
 				 offsetof(struct json_float_field, value),

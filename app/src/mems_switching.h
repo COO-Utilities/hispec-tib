@@ -47,10 +47,9 @@ enum mems_switch_type {
  * profile. It controls the electrical pulse width used by router work ticks.
  */
 struct mems_switch {
-    const struct device *gpio_dev;
     /* Assigned once by mems_switch_init() from the active board profile. */
-    gpio_pin_t pin_a;
-    gpio_pin_t pin_b;
+    struct gpio_dt_spec gpio_a;
+    struct gpio_dt_spec gpio_b;
     enum mems_switch_type switch_type;
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
@@ -135,11 +134,13 @@ struct mems_router {
  * @brief Initialize a MEMS switch object and configure its two GPIO outputs inactive.
  *
  * The hardware state is not known after boot until the delayable tick sends a
- * pulse. The configured toggle rate is stored as the default requested rate and
- * quantized to the nearest supported MEMS tick period.
+ * logical active pulse. The configured toggle rate is stored as the default
+ * requested rate and quantized to the nearest supported MEMS tick period.
  */
-void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
-                      gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+void mems_switch_init(struct mems_switch *sw,
+                      const struct gpio_dt_spec *gpio_a,
+                      const struct gpio_dt_spec *gpio_b,
+                      const char *name,
                       enum mems_switch_type switch_type,
                       float configured_toggle_rate_hz, char initial_state);
 /**
