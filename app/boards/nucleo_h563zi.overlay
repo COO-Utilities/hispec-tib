@@ -261,15 +261,18 @@
 	};
 };
 
-/* USART2 on CN9 (PD5/PD6, optional RTS PD4) for modbus laser controller */
+/* USART2 on CN9 for the Modbus laser controller.
+ * PD4 is the RS-485 driver-enable line, controlled by Zephyr Modbus as GPIO.
+ */
 &usart2 {
 	status = "okay";
-	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6 &usart2_rts_pd4>;
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6>;
 	pinctrl-names = "default";
 	current-speed = <115200>;
 
 	modbus0: modbus0 {
 		compatible = "zephyr,modbus-serial";
 		status = "okay";
+		de-gpios = <&gpiod 4 GPIO_ACTIVE_HIGH>; /* CN9 D54 / USART_B_RTS */
 	};
 };

@@ -911,8 +911,8 @@ struct coo_cmd_response time_get(const struct coo_cmd_request *cmd)
     utc_ms = ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 
     snprintk(payload, sizeof(payload),
-             "{\"utc\":%llu,\"uptime\":%lld}",
-             (unsigned long long)utc_ms, (long long)k_uptime_get());
+             "{\"utc\":%llu,\"uptime_s\":%lld}",
+             (unsigned long long)utc_ms, (long long)k_uptime_get()/1000);
 
     return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }

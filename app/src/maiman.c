@@ -75,6 +75,19 @@ static const MaimanRegister register_table[] = {
 	{"D_COEFFICIENT", REG_TEC_D_COEFFICIENT},
 };
 
+static int maiman_client_iface = -ENODEV;
+
+int maiman_set_client_iface(int iface)
+{
+	if (iface < 0) {
+		return -EINVAL;
+	}
+
+	maiman_client_iface = iface;
+	LOG_INF("Maiman Modbus client interface set to %d", iface);
+	return 0;
+}
+
 static bool strcaseeq(const char *a, const char *b)
 {
 	if (a == NULL || b == NULL) {
@@ -125,8 +138,14 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 	if (drv == NULL || value == NULL) {
 		return false;
 	}
+	if (maiman_client_iface < 0) {
+		LOG_ERR("Modbus read node=%u reg=0x%04x before client init",
+			drv->node_id, address);
+		return false;
+	}
 
-	err = modbus_read_holding_regs(CLIENT_IFACE, drv->node_id, address, value, 1);
+	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
+				       address, value, 1);
 	if (err < 0) {
 		LOG_ERR("Modbus read node=%u reg=0x%04x failed: %d",
 			drv->node_id, address, err);
@@ -147,8 +166,14 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 	if (drv == NULL) {
 		return false;
 	}
+	if (maiman_client_iface < 0) {
+		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x before client init",
+			drv->node_id, address, value);
+		return false;
+	}
 
-	err = modbus_write_holding_regs(CLIENT_IFACE, drv->node_id, address, &value, 1);
+	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
+					address, &value, 1);
 	if (err < 0) {
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x failed: %d",
 			drv->node_id, address, value, err);

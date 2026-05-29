@@ -27,8 +27,13 @@
 
 #define MODBUS_BAUD 115200
 #define MODBUS_PARITY UART_CFG_PARITY_NONE
-#define MODBUS_STOPBITS UART_CFG_STOP_BITS_2
-#define MODBUS_RX_TIMEOUT_MS 10
+#define MODBUS_STOPBITS UART_CFG_STOP_BITS_1
+/* Zephyr Modbus passes rx_timeout to K_USEC(); keep this value in microseconds.
+ * A measured single-register NH8 round trip is about 3.2 ms from DE assertion
+ * through the last Nucleo RX transition. Zephyr still waits about 1 ms for RTU
+ * frame completion, so 10 ms leaves scheduling margin without masking faults.
+ */
+#define MODBUS_RX_TIMEOUT_US 10000U
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6

@@ -18,9 +18,6 @@
 #include "laser_properties.h"
 #include <zephyr/modbus/modbus.h>
 
-#define CLIENT_IFACE 0
-
-
 /* Maiman MODBUS RTU holding-register addresses.
  *
  * These are the register addresses from maiman_modbus_py/config/modbus_config.yaml,
@@ -79,6 +76,12 @@ typedef uint16_t laser_address_t;
 
 /* Finds the register, returns true and sets *address_out if found. */
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
+
+/*
+ * Selects the Zephyr Modbus client interface used by subsequent blocking
+ * Maiman register transactions. Device setup owns the interface lookup.
+ */
+int maiman_set_client_iface(int iface);
 
 
 /* Divider constants from the SF8025 v5.4 device metadata used by the

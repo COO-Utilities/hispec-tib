@@ -161,7 +161,7 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 		 "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
 		 "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
 		 "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
-		 "\"uptime\":%lld}",
+		 "\"uptime_s\":%lld}",
 		 (double)yj_value,
 		 (double)yj_err,
 		 (double)hk_value,
@@ -176,7 +176,7 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 		 (double)status.channel[PHOTODIODE_CHANNEL_HK].mean_mv_1s,
 		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
 		 (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
-		 status.uptime_ms);
+		 status.uptime_ms/1000);
 	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 

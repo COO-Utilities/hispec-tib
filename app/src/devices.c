@@ -15,6 +15,7 @@
 #include "app_identity.h"
 #include "app_settings.h"
 #include "command.h"
+#include "maiman.h"
 #include "mems_switching.h"
 
 #include <errno.h>
@@ -820,7 +821,7 @@ static bool setup_modbus_client(void)
 			.parity = MODBUS_PARITY,
 			.stop_bits = MODBUS_STOPBITS,
 		},
-		.rx_timeout = MODBUS_RX_TIMEOUT_MS,
+		.rx_timeout = MODBUS_RX_TIMEOUT_US,
 	};
 
 	int client_iface = modbus_iface_get_by_name(modbus_name);
@@ -829,8 +830,9 @@ static bool setup_modbus_client(void)
 		LOG_ERR("Modbus interface %s not found", modbus_name);
 		return false;
 	}
-	if (modbus_init_client(client_iface, modbus_cfg) == 0) {
-		LOG_INF("Modbus client initialized on %s", modbus_name);
+	if (modbus_init_client(client_iface, modbus_cfg) == 0 &&
+	    maiman_set_client_iface(client_iface) == 0) {
+		LOG_INF("Modbus client initialized on %s iface=%d", modbus_name, client_iface);
 		return true;
 	}
 

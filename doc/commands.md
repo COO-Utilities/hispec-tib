@@ -1003,7 +1003,7 @@ off or no faults).
     "hk_mean_mv_1s": 0.0,
     "yj_rms_mv_0p5s": 0.0,
     "hk_rms_mv_0p5s": 0.0,
-    "uptime": 0
+    "uptime_s": 0
   }
   ```
 - **Payload -> dark measurement state:** measure dark without storing.
@@ -1224,7 +1224,7 @@ off or no faults).
   ```json
   {
     "utc": 0,
-    "uptime": 0
+    "uptime_s": 0
   }
   ```
 - **Payload:** set firmware time.
