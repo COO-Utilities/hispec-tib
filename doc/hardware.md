@@ -140,6 +140,7 @@ For board files:
 
 For board files:
 - Nucleo: CN9 13 D72 IO PB2 -
+- MB1404 solder bridges SB61, SB66 must be changed to OFF, ON for PB2 to connect to CN9 pin 13 as GPIO.
 
 ## Off-board power switch for photodiodes and laser bank aux heater
 Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3

@@ -56,8 +56,10 @@ static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
 static struct laser_output_estimate_state laser_output_estimate[HISPEC_LASER_COUNT];
 static int64_t laser_autooff_deadline_ms[HISPEC_LASER_COUNT];
 static int64_t bank_power_started_ms;
+static bool bank_power_requested_enabled;
 static bool laser_runtime_initialized;
-static enum hispec_laser_bank_power_mode bank_power_mode = HISPEC_LASER_BANK_POWER_AUTO;
+static enum hispec_laser_bank_power_mode bank_power_mode =
+	HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
 
 static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1028_Y] = {
@@ -376,17 +378,12 @@ int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv)
 	return 0;
 }
 
-static bool bank_power_read_locked(void)
-{
-	return gpio_pin_get_dt(&laser_power_gpio) > 0;
-}
-
 static int zero_all_driver_currents_locked(bool stop_tecs)
 {
 	int first_rc = 0;
 
 	ensure_laser_runtime_settings_locked();
-	if (!bank_power_read_locked()) {
+	if (!bank_power_requested_enabled) {
 		return 0;
 	}
 
@@ -400,13 +397,13 @@ static int zero_all_driver_currents_locked(bool stop_tecs)
 		if (stop_tecs && !maiman_stop_tec(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
-			commit_current_runtime_locked((enum hispec_laser_id)i, true);
-			output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
-						   laser_output_estimate[i].tec_temperature_c);
-			laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
-			if (stop_tecs) {
-				on_time_runtime_update_locked(laser_tec_runtime,
-							      ARRAY_SIZE(laser_tec_runtime),
+		commit_current_runtime_locked((enum hispec_laser_id)i, true);
+		output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
+					   laser_output_estimate[i].tec_temperature_c);
+		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
+		if (stop_tecs) {
+			on_time_runtime_update_locked(laser_tec_runtime,
+						      ARRAY_SIZE(laser_tec_runtime),
 						      (enum hispec_laser_id)i, false);
 		}
 	}
@@ -419,7 +416,7 @@ bool hispec_laser_bank_power_is_enabled(void)
 	bool enabled;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	enabled = bank_power_read_locked();
+	enabled = bank_power_requested_enabled;
 	k_mutex_unlock(&laser_lock);
 
 	return enabled;
@@ -449,7 +446,7 @@ const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode 
 	}
 }
 
-static int bank_power_set_locked(bool enabled, bool *transitioned)
+static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_write)
 {
 	bool was_enabled;
 	int rc;
@@ -459,8 +456,8 @@ static int bank_power_set_locked(bool enabled, bool *transitioned)
 		*transitioned = false;
 	}
 
-	was_enabled = bank_power_read_locked();
-	if (was_enabled == enabled) {
+	was_enabled = bank_power_requested_enabled;
+	if (was_enabled == enabled && !force_write) {
 		return 0;
 	}
 
@@ -475,15 +472,19 @@ static int bank_power_set_locked(bool enabled, bool *transitioned)
 	if (rc != 0) {
 		return rc;
 	}
+	bank_power_requested_enabled = enabled;
 	bank_power_started_ms = enabled ? k_uptime_get() : 0;
+	LOG_INF("Laser bank power %s; GPIO %s",
+		enabled ? "turned on" : "turned off",
+		enabled ? "released" : "sinking low");
 
 	if (transitioned != NULL) {
-		*transitioned = true;
+		*transitioned = was_enabled != enabled;
 	}
-	if (enabled) {
+	if (enabled && !was_enabled) {
 		/* Let the Maiman modules boot before the caller starts Modbus IO. */
-		k_sleep(K_MSEC(HISPEC_LASER_BANK_BOOT_DELAY_MS));
-	} else {
+		k_msleep(HISPEC_LASER_BANK_BOOT_DELAY_MS);
+	} else if (!enabled && was_enabled) {
 		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 			commit_current_runtime_locked((enum hispec_laser_id)i, true);
 			on_time_runtime_update_locked(laser_tec_runtime,
@@ -503,7 +504,7 @@ int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
 	if (enabled && bank_power_mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) {
 		rc = -EPERM;
 	} else {
-		rc = bank_power_set_locked(enabled, transitioned);
+		rc = bank_power_set_locked(enabled, transitioned, false);
 	}
 	k_mutex_unlock(&laser_lock);
 	if (rc == 0 && !enabled) {
@@ -520,7 +521,7 @@ uint32_t hispec_laser_bank_power_on_duration_s(void)
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	now_ms = k_uptime_get();
-	if (bank_power_read_locked() && bank_power_started_ms > 0) {
+	if (bank_power_requested_enabled && bank_power_started_ms > 0) {
 		int64_t elapsed_s = (now_ms - bank_power_started_ms) / 1000;
 
 		duration_s = elapsed_s > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed_s;
@@ -542,9 +543,9 @@ int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode)
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	bank_power_mode = mode;
 	if (mode == HISPEC_LASER_BANK_POWER_OVERRIDE_ON) {
-		rc = bank_power_set_locked(true, NULL);
+		rc = bank_power_set_locked(true, NULL, true);
 	} else if (mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) {
-		rc = bank_power_set_locked(false, NULL);
+		rc = bank_power_set_locked(false, NULL, true);
 	}
 	k_mutex_unlock(&laser_lock);
 
@@ -556,7 +557,7 @@ static int ensure_bank_powered_locked(void)
 	if (bank_power_mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) {
 		return -EPERM;
 	}
-	return bank_power_set_locked(true, NULL);
+	return bank_power_set_locked(true, NULL, false);
 }
 
 int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
@@ -571,7 +572,7 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 
-	if (!bank_power_read_locked()) {
+	if (!bank_power_requested_enabled) {
 		rc = 0;
 		goto out;
 	}
@@ -593,7 +594,7 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 		goto out;
 	}
 
-	rc = bank_power_set_locked(false, NULL);
+	rc = bank_power_set_locked(false, NULL, false);
 	if (rc != 0) {
 		goto out;
 	}
@@ -602,7 +603,7 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 	 * SF8025 overcurrent latch.
 	 */
 	k_sleep(K_MSEC(delay_ms));
-	rc = bank_power_set_locked(true, NULL);
+	rc = bank_power_set_locked(true, NULL, false);
 	if (rc == 0 && actual_off_ms != NULL) {
 		*actual_off_ms = delay_ms;
 	}
@@ -646,7 +647,7 @@ int hispec_laser_bank_read_temperatures(
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	if (!bank_power_read_locked()) {
+	if (!bank_power_requested_enabled) {
 		rc = 0;
 		goto out_unlock;
 	}
@@ -1059,7 +1060,7 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 
 		out->off_in_s = remaining_ms > 0 ? (remaining_ms + 999) / 1000 : 0;
 	}
-	out->bank_powered = bank_power_read_locked();
+	out->bank_powered = bank_power_requested_enabled;
 	if (!out->bank_powered) {
 		rc = 0;
 		goto out_unlock;
@@ -1137,7 +1138,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	int rc;
 
 	ensure_laser_runtime_settings_locked();
-	if (!bank_power_read_locked()) {
+	if (!bank_power_requested_enabled) {
 		return 0;
 	}
 
@@ -1515,8 +1516,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 			goto out_unlock;
 		}
 
-		was_powered = bank_power_read_locked();
-		rc = bank_power_set_locked(true, NULL);
+		was_powered = bank_power_requested_enabled;
+		rc = bank_power_set_locked(true, NULL, false);
 		if (rc != 0) {
 			goto out_unlock;
 		}
@@ -1538,7 +1539,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 
 restore_power:
 		if (!was_powered) {
-			power_restore_rc = bank_power_set_locked(false, NULL);
+			power_restore_rc = bank_power_set_locked(false, NULL, false);
 			if (rc == 0) {
 				rc = power_restore_rc;
 			}

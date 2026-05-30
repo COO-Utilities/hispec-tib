@@ -61,7 +61,7 @@ static bool parse_laserbank_override_request(const struct coo_cmd_request *cmd,
 struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 {
 	enum hispec_laser_bank_power_mode mode;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[128] = {0};
 	int mode_value;
 	int rc;
 
@@ -77,7 +77,14 @@ struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd)
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
-			return coo_cmd_error_rc(cmd, "laser bank power mode failed", rc);
+			mode = hispec_laser_bank_power_mode_get();
+			snprintk(payload, sizeof(payload),
+				 "{\"error\":\"laser bank power mode failed\","
+				 "\"rc\":%d,\"mode\":\"%s\",\"powered\":%s}",
+				 rc,
+				 hispec_laser_bank_power_mode_name(mode),
+				 hispec_laser_bank_power_is_enabled() ? "true" : "false");
+			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
 		}
 	}
 

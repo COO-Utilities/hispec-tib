@@ -14,7 +14,7 @@
 	};
 
 	zephyr,user {
-		laser_power_gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
+		laser_power_gpios = <&gpiob 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>; /* CN9 D72 */
 
 		/* Board-type strap inputs are solder jumpers to ground. */
 		board-type-tib-gpios = <&gpioa 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D35 */
@@ -84,7 +84,7 @@
 &gpiob {
 	laser_bank_power_default: laser-bank-power-default {
 		gpio-hog;
-		gpios = <2 GPIO_ACTIVE_HIGH>;
+		gpios = <2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 		output-low;
 		line-name = "laser-bank-power-default-off";
 	};

@@ -166,7 +166,11 @@ int hispec_laser_get_driver_profile(enum hispec_laser_id id,
 int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
 
 /**
- * @brief Read the TIB laser-bank supply GPIO.
+ * @brief Return the firmware-requested TIB laser-bank supply state.
+ *
+ * The Nucleo overlay drives the regulator inhibit line with an open-drain
+ * GPIO. A released pin may not read high, so command/control flow uses the
+ * firmware-requested state as its source of truth.
  */
 bool hispec_laser_bank_power_is_enabled(void);
 
@@ -186,9 +190,13 @@ int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
 /**
  * @brief Set the TIB laser-bank supply GPIO.
  *
- * Side effect: drives the board power switch and, when enabling, sleeps for
- * HISPEC_LASER_BANK_BOOT_DELAY_MS so the Maiman controllers can boot before a
- * following Modbus transaction.
+ * Side effect: drives the board power switch. With the Nucleo open-drain test
+ * configuration, enabling releases the GPIO and disabling sinks it low. When
+ * enabling, sleeps for HISPEC_LASER_BANK_BOOT_DELAY_MS so the Maiman
+ * controllers can boot before a following Modbus transaction. When disabling a
+ * powered bank, first writes driver currents to zero and stops TECs as
+ * practical; a Modbus shutdown failure is returned even if the GPIO transition
+ * itself succeeds.
  */
 int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
 
