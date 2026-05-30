@@ -320,15 +320,15 @@ and the AS for splitting fraction correction.
   ```json
   {
     "<switchname>": {
-      "state": "A|B|A?|B?|?",
-      "duty_cycle": 0.0
+      "state": "A|B|A?|B?|?"
     }
   }
   ```
-- **Notes:** The all-switch query is intentionally compact and includes only
-  state and duty cycle so the TIB eight-switch response fits the fixed MQTT
-  payload buffer. Use `mems/<switchname>` for requested/actual toggle rate and
-  stop-after details.
+- **Notes:** The all-switch query is intentionally compact so the TIB
+  eight-switch response fits the fixed MQTT payload buffer. Static switches
+  report only `state`. A switch currently configured with a non-constant duty
+  request also includes `duty_cycle`. Use `mems/<switchname>` for
+  requested/actual toggle rate and stop-after details.
 
 (mems-switchname)=
 ### `mems/<switchname>`
@@ -759,10 +759,11 @@ many Modbus registers.
   `cmd/<device>/req/laserbank/power/override_on`, or
   `cmd/<device>/req/laserbank/power/override_off`.
 
-- **Notes:** `auto` is the default at boot. In `auto`, power to the laser bank is handled by the bank heater and commands
-  interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser emission, writes
-  driver currents to 0 as practical, and powers the bank off; commands that need a live driver return an error while the
-  override is active.
+- **Notes:** `override_off` is the compiled boot default. In `auto`, power to the laser bank is handled by the bank
+  heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
+  emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
+  while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an
+  error response that still includes the current `mode` and firmware-requested `powered` state.
 
 (laserbank-clearfaults)=
 ### `laserbank/clearfaults`
@@ -1402,6 +1403,8 @@ off or no faults).
   - Users cannot set `toggle_rate_hz` for `split`. The firmware uses the
     fastest period allowed by `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the
     requested ratios to integer MEMS ticks.
+  - Split switch timing may take a few MEMS cycles to settle after a new
+    request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
     arrays ordered as `[ratio1, ratio2, ratio3]`.
   - `ratio_ask` is the requested output split. `ratio_actual` is the MEMS duty

@@ -55,6 +55,11 @@ static uint8_t mems_switch_work_ticks(const struct mems_switch *sw)
     return (uint8_t)(mems_switch_pulse_ms(sw) / MEMS_SWITCH_ROUTER_TICK_MS);
 }
 
+static bool time_reached_u32(uint32_t now_ms, uint32_t deadline_ms)
+{
+    return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
 static uint32_t min_toggle_period_cycles(const struct mems_switch *sw)
 {
     const float min_period_ms = 1000.0f / MEMS_SWITCH_MAX_TOGGLE_HZ;
@@ -269,7 +274,8 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
                     (unsigned int)gpio->pin);
         }
         else {
-            sw->pulse_ticks_remaining = mems_switch_work_ticks(sw);
+            sw->pulse_clear_at_ms = k_uptime_get_32() + mems_switch_pulse_ms(sw);
+            sw->pulse_active = true;
             sw->state = sw->target_state;
             sw->state_known_this_boot = true;
         }
@@ -309,21 +315,13 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
 }
 
 static void mems_switch_clear_finished_pulse_elapsed_locked(struct mems_switch *sw,
-                                                            uint32_t elapsed_ticks)
+                                                            uint32_t now_ms)
 {
-    uint8_t previous_ticks;
-
-    if (sw->pulse_ticks_remaining == 0U || elapsed_ticks == 0U) {
+    if (!sw->pulse_active || !time_reached_u32(now_ms, sw->pulse_clear_at_ms)) {
         return;
     }
 
-    previous_ticks = sw->pulse_ticks_remaining;
-    if (elapsed_ticks < previous_ticks) {
-        sw->pulse_ticks_remaining -= elapsed_ticks;
-        return;
-    }
-
-    sw->pulse_ticks_remaining = 0U;
+    sw->pulse_active = false;
     {
         const struct gpio_dt_spec *gpio =
             (sw->state == 'A') ? &sw->gpio_a : &sw->gpio_b;
@@ -331,9 +329,9 @@ static void mems_switch_clear_finished_pulse_elapsed_locked(struct mems_switch *
         (void)gpio_pin_set_dt(gpio, 0);
     }
 
-    if (elapsed_ticks > previous_ticks) {
-        LOG_WRN("MEMS %s pulse cleanup was %u router ticks late",
-                sw->name, (unsigned int)(elapsed_ticks - previous_ticks));
+    if (time_reached_u32(now_ms, sw->pulse_clear_at_ms + MEMS_SWITCH_ROUTER_TICK_MS)) {
+        LOG_WRN("MEMS %s pulse cleanup was %u ms late",
+                sw->name, (unsigned int)(now_ms - sw->pulse_clear_at_ms));
     }
 }
 
@@ -423,6 +421,8 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
 
 static void mems_router_process_ticks(struct mems_router *router, uint32_t elapsed_ticks)
 {
+    uint32_t now_ms;
+
     if (router == NULL || elapsed_ticks == 0U) {
         return;
     }
@@ -434,9 +434,11 @@ static void mems_router_process_ticks(struct mems_router *router, uint32_t elaps
 
     k_mutex_lock(&router->lock, K_FOREVER);
 
+    now_ms = k_uptime_get_32();
+
     for (uint8_t i = 0; i < router->num_switches; ++i) {
         mems_switch_clear_finished_pulse_elapsed_locked(router->switches[i],
-                                                        elapsed_ticks);
+                                                        now_ms);
     }
 
     for (uint8_t i = 0; i < router->num_switches; ++i) {
@@ -498,7 +500,8 @@ void mems_switch_init(struct mems_switch *sw,
     sw->owner = NULL;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
-    sw->pulse_ticks_remaining = 0U;
+    sw->pulse_clear_at_ms = 0U;
+    sw->pulse_active = false;
     sw->service_ticks_remaining = 0U;
     sw->requested_toggle_rate_hz = switching_frequency_hz;
     sw->switching_period_cycles = quantize_toggle_period_cycles(sw, switching_frequency_hz);

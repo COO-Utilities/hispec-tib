@@ -60,7 +60,8 @@ struct mems_switch {
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
-    uint8_t pulse_ticks_remaining;
+    uint32_t pulse_clear_at_ms;
+    bool pulse_active;
     uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
@@ -134,7 +135,9 @@ struct mems_router {
  * @brief Initialize a MEMS switch object and configure its two GPIO outputs inactive.
  *
  * The hardware state is not known after boot until the delayable tick sends a
- * logical active pulse. The configured toggle rate is stored as the default
+ * logical active pulse. Pulse cleanup uses a kernel-uptime deadline from the
+ * successful GPIO set, so a delayed router tick may extend but not shorten the
+ * physical pulse. The configured toggle rate is stored as the default
  * requested rate and quantized to the nearest supported MEMS tick period.
  */
 void mems_switch_init(struct mems_switch *sw,
