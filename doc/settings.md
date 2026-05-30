@@ -2,41 +2,32 @@
 
 ## Ownership
 
-`app_settings.c` owns app-level persistent settings under named top-level
-Zephyr settings subtrees. It initializes defaults, loads stored values, and
-protects the runtime snapshot with a mutex.
+`app_settings.c` owns app-level persistent settings under app-assigned Zephyr
+NVS numeric IDs. It initializes defaults, loads stored values, and protects the
+runtime snapshot with a mutex. The app does not use the string-keyed Zephyr
+settings layer for its own persistence.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
 
-## Stored Keys
+## Stored NVS Records
 
-Current app settings include:
+Current app NVS records include:
 
-- `board/type`
-- `serial/holdoff_s`
-- `boot/count`
-- `ip/trydhcpfirst`
-- `ip/preferdhcpdns`
-- `ip/preferdhcpntp`
-- `ip/ip`
-- `ip/subnet`
-- `ip/gateway`
-- `ip/dns`
-- `ip/ntp`
-- `mqtt/broker`
-- `atten/<channel>/db2volt/<index>`
-- `atten/<channel>/volt2db/<index>`
-- `pd/yj/dark_mv`
-- `pd/yj/lowest_dark_mv`
-- `pd/yj/lowest_dark_valid`
-- `pd/yj/noise_warn_rms_mv`
-- `pd/yj/gain_v_per_uw`
-- `pd/hk/dark_mv`
-- `pd/hk/lowest_dark_mv`
-- `pd/hk/lowest_dark_valid`
-- `pd/hk/noise_warn_rms_mv`
-- `pd/hk/gain_v_per_uw`
+- Schema marker.
+- Board type.
+- Serial guard holdoff.
+- Boot count.
+- Last known UTC time in milliseconds.
+- IP settings as one record.
+- MQTT broker host/port as one record.
+- One attenuator coefficient record per logical channel.
+- One photodiode settings record per photodiode channel.
+- Laser-bank heater policy.
+- One laser policy record per laser channel.
+- One laser total-emitting counter record per laser channel.
+- One route-loss table-entry record per configured route/laser output, up to
+  the fixed route-loss table limit.
 
 ## Board-Type Reset Policy
 
@@ -50,34 +41,43 @@ silently reused on another.
 
 - IP defaults come from Zephyr network config symbols.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
-  `CONFIG_COO_MQTT_BROKER_PORT`; persistence uses one `mqtt/broker`
-  `<host-or-ip>:<port>` value.
+  `CONFIG_COO_MQTT_BROKER_PORT`; persistence stores host and port directly.
 - Serial guard defaults to 30 s.
-- Attenuator coefficients default to all zeros until calibrated/stored.
+- Last known UTC defaults to unset. Once SNTP or a `time` command sets the
+  realtime clock, the value is persisted and restored on later boots until a
+  fresher time source updates it.
+- Attenuator coefficients default to a linear `b = slope * voltage + offset`
+  model that maps the 0-5000 mV attenuator drive span onto `b = 0..8` until
+  calibrated/stored.
 - Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise
   warning values.
+- Route-loss records default to absent. Missing route-loss settings are treated
+  as loss-free transmission, `1.0`.
 
 ## Persistence Side Effects
 
-Settings writes happen synchronously through Zephyr settings APIs and may block
-the caller. Command handlers that set `persistent:true` can therefore block in
-the executor thread.
+NVS writes happen synchronously through Zephyr NVS and may block the caller.
+Command handlers that set `persistent:true` can therefore block in the executor
+thread.
 
 Photodiode stored dark updates happen in the sampler thread when a user-started
 dark measurement completes with `store:true`.
 
-If settings loading fails after a board has already been initialized in the
-field, treat it as a human-intervention fault. At minimum, inspect logs and
-reinitialize settings before trusting persisted calibration or network intent.
-A first boot with no stored settings is normal and should use defaults.
+If NVS loading fails after a board has already been initialized in the field,
+treat it as a human-intervention fault. At minimum, inspect logs and
+reinitialize storage before trusting persisted calibration or network intent. A
+first boot with no app schema marker clears the old storage layout, writes the
+current schema marker, and uses defaults.
 
 ## Intentionally Not Persisted
 
 - Active routes are derived from current MEMS switch state and route tables.
-- Laser-bank power state is not restored after reboot. Reboot must leave lasers
-  off, laser-bank power down, the laser-bank heater off, and photodiode power
-  off until an explicit command or future owner-specified policy changes that.
-- DS2408 relay output state is not restored after reboot.
+- Laser output state is not restored after reboot. Laser-bank heater mode is a
+  persisted policy and defaults to `auto`; in auto mode it may power the bank
+  after boot for temperature monitoring. The heater starts off unless auto mode
+  or an override turns it on.
+- DS2408 relay output state is not restored after reboot; relay outputs default
+  inactive/off when the off-board expander is online during app setup.
 
 ## Not Currently Persisted
 

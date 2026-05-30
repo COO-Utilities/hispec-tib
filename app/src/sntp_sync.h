@@ -2,8 +2,8 @@
  * @file sntp_sync.h
  * @brief SNTP scheduling and clock-status helpers.
  *
- * SNTP state is cached for command responses. Synchronization work runs from a
- * delayable work item and can block while waiting for an SNTP reply.
+ * SNTP state is cached for command responses. Synchronization runs in a
+ * low-priority SNTP thread and can block while waiting for an SNTP reply.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -32,10 +32,10 @@ struct sntp_sync_status {
 	int64_t last_sync_uptime_ms;
 };
 
-/** @brief Initialize SNTP delayable work and schedule first sync when enabled. */
+/** @brief Initialize SNTP status and start first sync when enabled. */
 void sntp_sync_init(void);
 
-/** @brief Reschedule the SNTP work item for immediate execution. */
+/** @brief Wake the SNTP thread for immediate execution. */
 void sntp_sync_schedule_now(void);
 
 /** @brief Copy the most recent SNTP status under the module mutex. */

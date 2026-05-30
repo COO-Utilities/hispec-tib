@@ -2,117 +2,154 @@
 
 ## Authority
 
-`commands.md` documents intended command/API behavior. Current C source in
-`app/src/command.c` is the implementation source of truth. This page compares
-the two without silently changing either contract.
+`commands.md` documents intended command/API behavior. The dispatcher built-ins
+in `lib/coo_commons/command_dispatch.c`, the app command spec table in
+`app/src/command.c`, and the current command handlers are the implementation
+source of truth. This page compares the two without silently changing either
+contract.
 
 ## Dispatch Model
 
 MQTT requests are accepted under:
 
 ```text
-cmd/hsfib-tib/req/#
+cmd/<device>/req/#
 ```
 
 The suffix after the request prefix is copied into `Command.key`.
-`dispatch_command()` chooses the longest dispatch-table key that is either an
-exact match or followed by `/`.
+`coo_cmd_runtime_find_spec()` chooses the longest command-spec key that is
+either an exact match or followed by `/`; command dispatch then applies default
+support checks, handler selection, lastcommand recording, and built-in reboot
+pending rejection unless an app override execute callback is configured. The
+`<device>` component is board-profile dependent: `hsfib-tib`, `hsfib-rcal`,
+`hsfib-bcal`, or `hsfib-as`.
 
-Implemented dispatch entries:
+Dispatcher built-ins:
 
-| Entry | GET handler | SET handler |
+| Entry | Query handler | Effect/action handler | Notes |
+| --- | --- | --- | --- |
+| `help` | yes | no | Serial prints directly; MQTT returns compact endpoints. |
+| `serialguard` | yes | yes | Present when `CONFIG_COO_CMD_SERIAL_GUARD` is enabled. |
+| `reboot` | no | yes | Present when `CONFIG_COO_CMD_REBOOT` is enabled. |
+
+Implemented app dispatch entries. The column names reflect internal C dispatch
+slots; the external API is documented as queries, effect requests, and actions.
+
+| Entry | Query handler | Effect/action handler |
 | --- | --- | --- |
-| `help` | yes | no |
 | `ip` | yes | yes |
 | `mqtt` | yes | yes |
 | `time` | yes | yes |
-| `reboot` | no | yes |
-| `serialguard` | yes | yes |
 | `memsroute` | yes | yes |
+| `memsroute/route_loss` | yes | yes |
 | `mems` | yes | yes |
 | `split` | yes | yes |
-| `laserbank/poweron` | yes, side effect | yes |
-| `laserbank/poweroff` | yes, side effect | yes |
-| `laserbank/clearfaults` | yes, side effect | yes |
-| `laser` | yes, currently key-shape mismatch | yes, currently key-shape mismatch |
+| `measure_throughput` | no | yes |
+| `laserbank/power` | yes | yes |
+| `laserbank/clearfaults` | no | yes |
+| `laserbank/heater` | yes | yes |
+| `laser/engstatus` | yes | no |
+| `laser/status` | yes | no |
+| `laser/settings` | yes | yes |
+| `laser/tune` | yes | yes |
+| `laser` | yes | yes |
 | `atten` | yes | yes |
 | `pdsettings` | yes | yes |
 | `pd` | yes | yes |
 | `temp` | yes | no |
 | `status` | yes | no |
 
-## GET and SET Selection
+## Request Classification
 
-MQTT behavior:
+MQTT and serial are normalized to a shared `Command` and then classified by
+command dispatch using the app command spec table. The internal result still
+uses `MSG_GET` and `MSG_SET`, but those names are dispatch-slot names, not
+user-visible protocol verbs. Serial `help` is the exception: it prints directly
+from command dispatch before entering the inbound queue.
 
-- Empty payload means GET.
-- Non-empty payload means SET unless JSON contains `msg_type:"get"`.
-- A non-empty GET payload therefore requires `msg_type:"get"`.
+Empty/no-payload requests are queries except:
 
-Serial behavior:
+- `reboot`
+- `laserbank/clearfaults`
+- topic-suffix `laserbank/power/<mode>`
+- topic-suffix `laserbank/heater/<mode>`
 
-- `<key>` means GET.
-- `<key> <payload>` means SET.
-- There are no serial `get` or `set` words.
-- Non-JSON shorthand is normalized to JSON before dispatch.
+Non-empty payload requests are effect/action requests except documented
+payload-query shapes:
 
-This creates a mismatch with `commands.md` for commands that document optional
-GET payloads, such as `pd` with `{"unit":"volts"}`. In current firmware that
-payload is a SET unless `msg_type:"get"` is also present.
+- `status`
+- `laser/status`
+- `laser/engstatus`
+- `memsroute/route_loss` when the payload contains only `route`
+- `laser` when `level` is absent
+- `laser/tune` when `tune_nm` and `delta_nm` are absent
+- `laser/settings` when the nested `settings` object is absent
+- `pd` when `action` is `dark_status`
+
+The old MQTT `msg_type` payload convention is not used by command ingress.
+
+## Response Rules
+
+Current command responses follow the global `commands.md` contract:
+
+- Data-less success: `{"status":"ok"}`.
+- Data-bearing success: response data only, no top-level transport `status`.
+- Failure: an `error` key, with optional diagnostics such as `rc`.
+
+A source search of `command.c` has no remaining literal old-style command
+responses of the forms `{"status":"success"}`,
+`{"status":"error","msg":...}`, `{"status":"OK"}`, or partial transport
+`status`.
 
 ## Response Topics
 
 The default MQTT response topic is:
 
 ```text
-cmd/hsfib-tib/resp/<key>
+cmd/<device>/resp/<key>
 ```
 
 MQTT 5 `response_topic` overrides this default if it fits the fixed topic
-buffer. MQTT 5 `correlation_data` is copied into a fixed static buffer sized to
-the configured MQTT packet buffer and echoed exactly in responses.
+buffer. MQTT 5 `correlation_data` up to 16 bytes is copied into a fixed static
+buffer and echoed exactly in responses.
 
-## Commands Documented but Not Implemented
+## Commands Documented but Not Fully Implemented
 
-- `measure_tput`
-- `lasersettings`
-- `laserbank/autowarm`
-- `temp` alarm set behavior
-- Full `status` payload including nested IP/temp/PD/laser/atten/last-command
-  data
-- Full intended `laser` command behavior as described in `commands.md`
+- None known after this audit pass.
 
 ## Commands Implemented but Missing or Stale in `commands.md`
 
-- `pd` dark-measurement actions and `pdsettings` are more detailed in code
-  than many older notes.
-- `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults`
-  have current implementations but no autowarm/driver fault-state integration.
+- None known.
 
-## High-Risk Implementation Mismatches
+## High-Risk Implementation Notes
 
-- `laser` command key parsing appears inconsistent with dispatch. The dispatch
-  entry is `laser`, which accepts `laser/...`, but the handler uses
-  `parse_key_pair()` and then calls `get_laser_channel(laser_name + 5)`. For a
-  request like `laser/1028y/current`, `laser_name` is `laser`, so the lookup is
-  invalid. A key shaped like `laser1028y/current` would make the pointer math
-  plausible, but it does not match the dispatch table.
-- The local `laser_t` enum maps both `LASER_1028_Y` and `LASER_1270_J` to
-  channel value 1. This affects attenuator and laser mapping review.
-- Laser-bank power actions are registered for both GET and SET. Empty MQTT or
-  serial queries to those exact keys therefore perform power actions.
-- `reboot` is SET-only. An empty MQTT payload or bare serial `reboot` is
-  unsupported; a non-empty payload schedules a reboot.
+- `status` optional `lasers` and `attens` sections can perform Modbus and DAC
+  reads. A large optional response can fail with `{"error":"status response too large"}`
+  if it exceeds the fixed MQTT payload buffer.
+- `lastcommand` records supported effect-capable requests and is persisted by
+  command dispatch through a fixed NVS record configured by the app. Pure query
+  requests are not recorded.
+- Serial `help` depends on help metadata attached to the app command spec table.
+  It now reflects the code paths reviewed in this audit and uses generic support
+  predicates to mark unsupported commands, but future command behavior changes
+  must update the spec help metadata or help can become stale.
+- `laserbank/clearfaults` occupies both internal dispatch slots for legacy
+  reasons, but ingress classifies no-payload requests as an action.
 
 ## Blocking and Queueing Summary
 
-- All command handlers run in the single command executor thread.
-- Responses are enqueued to `outbound_queue` and published or printed later.
+- Dispatcher built-ins run in command dispatch. Serial `help` prints directly;
+  MQTT `help`, `serialguard`, and `reboot` enqueue immediate responses.
+- App command handlers run in the single command executor thread.
+- App responses are enqueued to `outbound_queue` and published or printed later.
 - Attenuator commands can block on DAC I2C.
 - Laser and Maiman commands can block on Modbus RTU and laser-bank boot sleeps.
-- Settings updates can block on the Zephyr settings backend.
+- Persistent settings updates can block on Zephyr NVS writes.
+- Lastcommand persistence can block on Zephyr NVS writes before an effect
+  handler runs.
+- `status` optional laser/attenuator sections can block on Modbus/DAC reads.
 - MEMS and split commands update router state and can enqueue warnings but do
   not publish directly.
 - Warning publication is best-effort through `outbound_queue`.
-- Photodiode telemetry is best-effort and can be dropped under MQTT or queue
+- Throughput telemetry is best-effort and can be dropped under MQTT or queue
   backpressure.

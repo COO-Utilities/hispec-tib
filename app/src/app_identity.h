@@ -1,13 +1,12 @@
 /**
  * @file app_identity.h
- * @brief MQTT device identity and fixed command topic prefixes.
+ * @brief MQTT device identity selected from the board profile.
  */
 
 #ifndef HISPEC_APP_IDENTITY_H
 #define HISPEC_APP_IDENTITY_H
 
-#define APP_MQTT_DEVICE_ID "hsfib-tib"
-#define APP_MQTT_CMD_PREFIX "cmd/" APP_MQTT_DEVICE_ID "/req/"
-#define APP_MQTT_RESP_PREFIX "cmd/" APP_MQTT_DEVICE_ID "/resp/"
+/** @brief Return the MQTT device ID selected from the detected board strap. */
+const char *app_mqtt_device_id(void);
 
 #endif /* HISPEC_APP_IDENTITY_H */

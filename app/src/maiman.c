@@ -75,6 +75,19 @@ static const MaimanRegister register_table[] = {
 	{"D_COEFFICIENT", REG_TEC_D_COEFFICIENT},
 };
 
+static int maiman_client_iface = -ENODEV;
+
+int maiman_set_client_iface(int iface)
+{
+	if (iface < 0) {
+		return -EINVAL;
+	}
+
+	maiman_client_iface = iface;
+	LOG_INF("Maiman Modbus client interface set to %d", iface);
+	return 0;
+}
+
 static bool strcaseeq(const char *a, const char *b)
 {
 	if (a == NULL || b == NULL) {
@@ -125,8 +138,14 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 	if (drv == NULL || value == NULL) {
 		return false;
 	}
+	if (maiman_client_iface < 0) {
+		LOG_ERR("Modbus read node=%u reg=0x%04x before client init",
+			drv->node_id, address);
+		return false;
+	}
 
-	err = modbus_read_holding_regs(CLIENT_IFACE, drv->node_id, address, value, 1);
+	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
+				       address, value, 1);
 	if (err < 0) {
 		LOG_ERR("Modbus read node=%u reg=0x%04x failed: %d",
 			drv->node_id, address, err);
@@ -147,8 +166,14 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 	if (drv == NULL) {
 		return false;
 	}
+	if (maiman_client_iface < 0) {
+		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x before client init",
+			drv->node_id, address, value);
+		return false;
+	}
 
-	err = modbus_write_holding_regs(CLIENT_IFACE, drv->node_id, address, &value, 1);
+	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
+					address, &value, 1);
 	if (err < 0) {
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x failed: %d",
 			drv->node_id, address, value, err);
@@ -224,12 +249,17 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 	return maiman_write_u16(drv, address, raw);
 }
 
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value)
+{
+	return maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MEASURED,
+				  DIVIDER_TEC_TEMPERATURE, true, value);
+}
+
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv)
 {
 	float value;
 
-	if (maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MEASURED,
-			       DIVIDER_TEC_TEMPERATURE, true, &value)) {
+	if (maiman_read_tec_temperature_measured(drv, &value)) {
 		return value;
 	}
 	return -273.15f;
@@ -462,14 +492,31 @@ uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv)
 	return 0U;
 }
 
+bool maiman_read_raw_tec_status(maiman_driver_t *drv, uint16_t *status)
+{
+	return maiman_read_u16(drv, REG_STATE_OF_TEC_COMMAND, status);
+}
+
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv)
 {
 	uint16_t raw;
 
-	if (maiman_read_u16(drv, REG_STATE_OF_TEC_COMMAND, &raw)) {
+	if (maiman_read_raw_tec_status(drv, &raw)) {
 		return raw;
 	}
 	return 0U;
+}
+
+bool maiman_read_tec_started(maiman_driver_t *drv, bool *started)
+{
+	uint16_t raw;
+
+	if (started == NULL || !maiman_read_raw_tec_status(drv, &raw)) {
+		return false;
+	}
+
+	*started = (raw & TEC_OPERATION_STATE_STARTED) != 0U;
+	return true;
 }
 
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask)
@@ -571,6 +618,13 @@ bool maiman_set_current(maiman_driver_t *drv, float current)
 bool maiman_set_current_max(maiman_driver_t *drv, float current)
 {
 	return maiman_write_scaled(drv, REG_CURRENT_MAX, DIVIDER_CURRENT, false, current);
+}
+
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent)
+{
+	return maiman_write_scaled(drv, REG_CURRENT_SET_CALIBRATION,
+				   DIVIDER_CURRENT_SET_CALIBRATION, false,
+				   calibration_percent);
 }
 
 bool maiman_set_frequency(maiman_driver_t *drv, float frequency)

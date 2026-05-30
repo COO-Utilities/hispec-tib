@@ -39,9 +39,19 @@ LOG_MODULE_REGISTER(gpio_ds2408, CONFIG_GPIO_LOG_LEVEL);
 #define DS2408_TESTMODE_MAGIC_PREFIX       0x96
 #define DS2408_TESTMODE_MAGIC_SUFFIX       0x3C
 
+enum ds2408_init_mode {
+	DS2408_INIT_MODE_NONE,
+	DS2408_INIT_MODE_INPUT,
+	DS2408_INIT_MODE_OUTPUT_LOW,
+	DS2408_INIT_MODE_OUTPUT_HIGH,
+};
+
 struct ds2408_config {
 	struct gpio_driver_config common;
 	const struct device *bus;
+	uint8_t init_mask;
+	uint8_t init_invert_mask;
+	enum ds2408_init_mode init_mode;
 	uint8_t family;
 	bool overdrive;
 	uint64_t rom_id;
@@ -115,6 +125,48 @@ static int ds2408_apply_outputs_locked(const struct device *dev)
 	return ds2408_write_latch(dev, effective_raw);
 }
 
+static int ds2408_apply_init_defaults_locked(const struct device *dev)
+{
+	const struct ds2408_config *cfg = dev->config;
+	struct ds2408_data *data = dev->data;
+	uint8_t logical_raw;
+
+	if (cfg->init_mode == DS2408_INIT_MODE_NONE || cfg->init_mask == 0U) {
+		return 0;
+	}
+
+	if ((cfg->init_mask & (uint8_t)~cfg->common.port_pin_mask) != 0U) {
+		return -EINVAL;
+	}
+
+	data->common.invert &= (gpio_port_pins_t)~cfg->init_mask;
+	data->common.invert |= cfg->init_invert_mask;
+
+	if (cfg->init_mode == DS2408_INIT_MODE_INPUT) {
+		data->direction_mask &= (uint8_t)~cfg->init_mask;
+		data->output_raw |= cfg->init_mask;
+		return ds2408_apply_outputs_locked(dev);
+	}
+
+	data->direction_mask |= cfg->init_mask;
+	if (cfg->init_mode == DS2408_INIT_MODE_OUTPUT_HIGH) {
+		logical_raw = cfg->init_mask;
+	} else {
+		logical_raw = 0U;
+	}
+
+	/* Convert logical defaults through the same active-low bit convention
+	 * used by Zephyr's GPIO core for later gpio_pin_set() calls.
+	 */
+	logical_raw ^= cfg->init_invert_mask;
+	logical_raw &= cfg->init_mask;
+
+	data->output_raw &= (uint8_t)~cfg->init_mask;
+	data->output_raw |= logical_raw;
+
+	return ds2408_apply_outputs_locked(dev);
+}
+
 static int ds2408_setup_slave(const struct device *dev)
 {
 	const struct ds2408_config *cfg = dev->config;
@@ -139,6 +191,9 @@ static int ds2408_setup_slave(const struct device *dev)
 		if (ds2408_rom_is_zero(&data->slave_cfg.rom)) {
 			ret = w1_read_rom(cfg->bus, &data->slave_cfg.rom);
 			if (ret != 0) {
+				LOG_ERR("Failed to read DS2408 ROM on %s (%d), raw=%016llx",
+					cfg->bus->name, ret,
+					(unsigned long long)w1_rom_to_uint64(&data->slave_cfg.rom));
 				return ret;
 			}
 		}
@@ -146,6 +201,10 @@ static int ds2408_setup_slave(const struct device *dev)
 		LOG_ERR("ROM ID required for multidrop DS2408 bus");
 		return -EINVAL;
 	}
+
+	LOG_INF("DS2408 ROM on %s: %016llx",
+		cfg->bus->name,
+		(unsigned long long)w1_rom_to_uint64(&data->slave_cfg.rom));
 
 	if ((cfg->family != 0U) && (cfg->family != data->slave_cfg.rom.family)) {
 		LOG_ERR("ROM family 0x%02x does not match DS2408 family 0x%02x",
@@ -406,6 +465,9 @@ static int ds2408_init(const struct device *dev)
 	}
 
 	k_mutex_init(&data->lock);
+	/* Leave the DS2408 released unless devicetree explicitly requests init
+	 * defaults. A Channel Access Write always writes the full latch.
+	 */
 	data->direction_mask = 0U;
 	data->output_raw = (uint8_t)cfg->common.port_pin_mask;
 
@@ -419,8 +481,7 @@ static int ds2408_init(const struct device *dev)
 		LOG_WRN("Failed to run DS2408 test-mode clear sequence: %d", ret);
 	}
 
-	/* Release all pins on startup; direction changes happen in pin_configure. */
-	ret = ds2408_apply_outputs_locked(dev);
+	ret = ds2408_apply_init_defaults_locked(dev);
 	if (ret != 0) {
 		return ret;
 	}
@@ -454,6 +515,33 @@ static DEVICE_API(gpio, ds2408_gpio_api) = {
 #define DS2408_ROM_FROM_REG(inst) \
 	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, reg), (DT_INST_REG_ADDR_U64(inst)), (0ULL))
 
+#define DS2408_INIT_PIN_MASK_BY_IDX(idx, inst) \
+	BIT(DT_INST_GPIO_PIN_BY_IDX(inst, init_gpios, idx))
+
+#define DS2408_INIT_INVERT_MASK_BY_IDX(idx, inst) \
+	(((DT_INST_GPIO_FLAGS_BY_IDX(inst, init_gpios, idx) & GPIO_ACTIVE_LOW) != 0U) ? \
+	 BIT(DT_INST_GPIO_PIN_BY_IDX(inst, init_gpios, idx)) : 0U)
+
+#define DS2408_INIT_PIN_MASK(inst) \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, init_gpios), \
+		    (LISTIFY(DT_INST_PROP_LEN(inst, init_gpios), \
+			     DS2408_INIT_PIN_MASK_BY_IDX, (|), inst)), \
+		    (0U))
+
+#define DS2408_INIT_INVERT_MASK(inst) \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, init_gpios), \
+		    (LISTIFY(DT_INST_PROP_LEN(inst, init_gpios), \
+			     DS2408_INIT_INVERT_MASK_BY_IDX, (|), inst)), \
+		    (0U))
+
+#define DS2408_INIT_MODE(inst) \
+	COND_CODE_1(DT_INST_PROP(inst, input), (DS2408_INIT_MODE_INPUT), \
+		    (COND_CODE_1(DT_INST_PROP(inst, output_low), \
+				 (DS2408_INIT_MODE_OUTPUT_LOW), \
+				 (COND_CODE_1(DT_INST_PROP(inst, output_high), \
+					      (DS2408_INIT_MODE_OUTPUT_HIGH), \
+					      (DS2408_INIT_MODE_NONE))))))
+
 #define DS2408_DEFINE(inst) \
 	static struct ds2408_data ds2408_data_##inst; \
 	static const struct ds2408_config ds2408_config_##inst = { \
@@ -461,6 +549,9 @@ static DEVICE_API(gpio, ds2408_gpio_api) = {
 			.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_NGPIOS(DT_INST_PROP(inst, ngpios)), \
 		}, \
 		.bus = DEVICE_DT_GET(DT_INST_BUS(inst)), \
+		.init_mask = DS2408_INIT_PIN_MASK(inst), \
+		.init_invert_mask = DS2408_INIT_INVERT_MASK(inst), \
+		.init_mode = DS2408_INIT_MODE(inst), \
 		.family = DT_INST_PROP_OR(inst, family_code, DS2408_FAMILY_CODE), \
 		.overdrive = DT_INST_PROP_OR(inst, overdrive_speed, false), \
 		.rom_id = DS2408_ROM_FROM_REG(inst), \

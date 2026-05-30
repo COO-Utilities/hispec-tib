@@ -18,30 +18,26 @@ project(app LANGUAGES C)
 
 target_sources(app PRIVATE
         src/main.c
-        src/app_scheduled_actions.c
+        src/app_identity.c
         src/app_settings.c
-        src/app_warning.c
         src/attenuator.c
+        src/attenuator_calibration.c
+        src/attenuator_command.c
         src/command.c
         src/devices.c
+        src/housekeeping.c
+        src/laser_command.c
         src/lasers.c
+        src/laserbank_tempcontrol.c
         src/maiman.c
+        src/mems_command.c
         src/photodiode.c
-        src/tempsense.c
-        src/tempsense.h
+        src/photodiode_command.c
+        src/throughput_command.c
+        src/throughput_monitor.c
         src/mems_switching.c
+)
+
+target_sources_ifdef(CONFIG_SNTP app PRIVATE
         src/sntp_sync.c
-        src/attenuator.h
-        src/app_scheduled_actions.h
-        src/app_settings.h
-        src/app_warning.h
-        src/app_identity.h
-        src/command.h
-        src/devices.h
-        src/lasers.h
-        src/maiman.h
-        src/laser_properties.h
-        src/photodiode.h
-        src/mems_switching.h
-        src/sntp_sync.h
 )

@@ -12,21 +12,29 @@
 #define __DEVICE_C__
 
 #include "devices.h"
+#include "app_identity.h"
 #include "app_settings.h"
+#include "command.h"
+#include "maiman.h"
 #include "mems_switching.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(devices, LOG_LEVEL_INF);
 
 #define USER_NODE DT_PATH(zephyr_user)
 #define MAX_NUM_MEMS_SWITCHES 8U
-#define CAL_ATTENUATOR_INDEX 4U
 
 BUILD_ASSERT(APP_ATTENUATOR_CHANNEL_COUNT == NUM_ATTENUATORS,
 	     "Persistent attenuator settings must match logical attenuator count");
+BUILD_ASSERT(NUM_ATTENUATORS == HISPEC_LASER_COUNT,
+	     "Logical attenuator mapping assumes one TIB attenuator per laser");
+BUILD_ASSERT(HISPEC_ATTENUATOR_LFC_INDEX < NUM_ATTENUATORS,
+	     "LFC/CAL attenuator index must fit logical attenuator table");
 
 /* Devices */
 const struct gpio_dt_spec laser_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, laser_power_gpios);
@@ -35,56 +43,16 @@ const struct gpio_dt_spec yj_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, yj_power_g
 const struct gpio_dt_spec hk_power_gpio = GPIO_DT_SPEC_GET(USER_NODE, hk_power_gpios);
 
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_tib_gpios)
-static const struct gpio_dt_spec board_type_tib_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_tib_gpios);
-#else
-static const struct gpio_dt_spec board_type_tib_gpio = {0};
-#endif
+static const struct gpio_dt_spec board_type_tib_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_tib_gpios);
+static const struct gpio_dt_spec board_type_cal_yj_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_yj_gpios);
+static const struct gpio_dt_spec board_type_cal_hk_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_hk_gpios);
+static const struct gpio_dt_spec board_type_as_gpio = GPIO_DT_SPEC_GET(USER_NODE, board_type_as_gpios);
 
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_yj_gpios)
-static const struct gpio_dt_spec board_type_cal_yj_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_yj_gpios);
-#else
-static const struct gpio_dt_spec board_type_cal_yj_gpio = {0};
-#endif
-
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_cal_hk_gpios)
-static const struct gpio_dt_spec board_type_cal_hk_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_cal_hk_gpios);
-#else
-static const struct gpio_dt_spec board_type_cal_hk_gpio = {0};
-#endif
-
-#if DT_NODE_HAS_PROP(USER_NODE, board_type_as_gpios)
-static const struct gpio_dt_spec board_type_as_gpio =
-	GPIO_DT_SPEC_GET(USER_NODE, board_type_as_gpios);
-#else
-static const struct gpio_dt_spec board_type_as_gpio = {0};
-#endif
-
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
 #define MODBUS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_modbus_serial)
 static const char modbus_name[] = DEVICE_DT_NAME(MODBUS_NODE);
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(adc1115))
 const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1115));
-#else
-const struct device *adc_dev = NULL;
-#endif
 
-#if DT_NODE_EXISTS(DT_NODELABEL(dac7578))
-const struct device *dac_dev = DEVICE_DT_GET(DT_NODELABEL(dac7578));
-#else
-const struct device *dac_dev = NULL;
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(pcal6416a))
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(pcal6416a));
-#else
-const struct device *gpio_dev = NULL;
-#endif
 
 struct attenuator attenuators[NUM_ATTENUATORS];
 struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
@@ -102,7 +70,7 @@ static const char *const as_switch_names[6] = {
 	"hk_as1", "hk_as2", "hk_as3",
 };
 
-/* TODO decide on final CAL route/switch names once the fiber path names are finalized. */
+
 static const char *const cal_switch_names[7] = {
 	"cal1", "cal2", "cal3", "cal4", "cal5", "cal6", "cal7",
 };
@@ -110,15 +78,69 @@ static const char *const cal_switch_names[7] = {
 /* The GPIO expander wiring is the same 2-pin sequence on each populated board.
  * Board profiles below limit how many of these pairs are instantiated.
  */
-static const gpio_pin_t mems_switch_pin_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
-	{0, 1}, {2, 3}, {4, 5}, {6, 7},
-	{8, 9}, {10, 11}, {12, 13}, {14, 15},
+static const struct gpio_dt_spec mems_switch_gpio_pairs[MAX_NUM_MEMS_SWITCHES][2] = {
+	{GPIO_DT_SPEC_GET(USER_NODE, mems3_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems3_b_gpios)},	/* sw1 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems4_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems4_b_gpios)},	/* sw2 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems2_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems2_b_gpios)},	/* sw3 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems5_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems5_b_gpios)},	/* sw4 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems6_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems6_b_gpios)},	/* sw5 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems7_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems7_b_gpios)},	/* sw6 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems1_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems1_b_gpios)},	/* sw7 */
+	{GPIO_DT_SPEC_GET(USER_NODE, mems0_a_gpios),
+	 GPIO_DT_SPEC_GET(USER_NODE, mems0_b_gpios)},	/* sw8 */
 };
 
-/* Per-switch compile-time nominal toggle rates (Hz), quantized in mems_switch_init(). */
-static const float mems_switch_toggle_rate_hz[MAX_NUM_MEMS_SWITCHES] = {
-	5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f,
+
+struct attenuator_dac_pair {
+	const struct device *dev;
+	uint8_t channel1;
+	uint8_t channel2;
 };
+
+/* Logical attenuator to physical DAC wiring from doc/hardware.md.
+ * DAC channels are zero-based here: A=0, C=2, D=3, E=4, F=5, G=6.
+ */
+static const struct attenuator_dac_pair attenuator_dac_pairs[NUM_ATTENUATORS] = {
+	[HISPEC_LASER_1028_Y] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 0U,
+		.channel2 = 2U,
+	},
+	[HISPEC_LASER_1270_J] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 4U,
+		.channel2 = 6U,
+	},
+	[HISPEC_LASER_1430_YJ] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+		.channel1 = 3U,
+		.channel2 = 5U,
+	},
+	[HISPEC_LASER_1430_HK] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 0U,
+		.channel2 = 2U,
+	},
+	[HISPEC_LASER_1510_H] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 4U,
+		.channel2 = 6U,
+	},
+	[HISPEC_LASER_2330_K] = {
+		.dev = DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+		.channel1 = 3U,
+		.channel2 = 5U,
+	},
+};
+BUILD_ASSERT(ARRAY_SIZE(attenuator_dac_pairs) == NUM_ATTENUATORS,
+	     "DAC pair table must match logical attenuator count");
 
 struct board_profile {
 	enum hispec_board_type board;
@@ -149,7 +171,7 @@ static const struct board_profile cal_yj_profile = {
 	.name = "cal_yj",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
-	.attenuator_first = CAL_ATTENUATOR_INDEX,
+	.attenuator_first = HISPEC_ATTENUATOR_LFC_INDEX,
 	.attenuator_count = 1,
 };
 
@@ -158,7 +180,7 @@ static const struct board_profile cal_hk_profile = {
 	.name = "cal_hk",
 	.mems_switch_count = 7,
 	.switch_names = cal_switch_names,
-	.attenuator_first = CAL_ATTENUATOR_INDEX,
+	.attenuator_first = HISPEC_ATTENUATOR_LFC_INDEX,
 	.attenuator_count = 1,
 };
 
@@ -172,6 +194,12 @@ static const struct board_profile as_profile = {
 static K_MUTEX_DEFINE(board_profile_lock);
 static const struct board_profile *active_profile = &unknown_profile;
 static bool board_type_checked;
+static K_MUTEX_DEFINE(relay_gpio_lock);
+static bool relay_gpio_online;
+static int relay_gpio_last_error = -ENODEV;
+static bool relay_gpio_warning_emitted;
+static uint32_t boot_reset_cause;
+static bool boot_reset_cause_valid;
 
 struct board_strap {
 	const struct gpio_dt_spec *gpio;
@@ -185,6 +213,151 @@ static const struct board_strap board_straps[] = {
 	{&board_type_cal_hk_gpio, HISPEC_BOARD_CAL_HK, "cal_hk"},
 	{&board_type_as_gpio, HISPEC_BOARD_AS, "as"},
 };
+
+static const char *reset_cause_name(uint32_t bit)
+{
+	switch (bit) {
+	case RESET_PIN:
+		return "pin";
+	case RESET_SOFTWARE:
+		return "software";
+	case RESET_BROWNOUT:
+		return "brownout";
+	case RESET_POR:
+		return "power_on";
+	case RESET_WATCHDOG:
+		return "watchdog";
+	case RESET_DEBUG:
+		return "debug";
+	case RESET_SECURITY:
+		return "security";
+	case RESET_LOW_POWER_WAKE:
+		return "low_power_wake";
+	case RESET_CPU_LOCKUP:
+		return "cpu_lockup";
+	case RESET_PARITY:
+		return "parity";
+	case RESET_PLL:
+		return "pll";
+	case RESET_CLOCK:
+		return "clock";
+	case RESET_HARDWARE:
+		return "hardware";
+	case RESET_USER:
+		return "user";
+	case RESET_TEMPERATURE:
+		return "temperature";
+	case RESET_BOOTLOADER:
+		return "bootloader";
+	case RESET_FLASH:
+		return "flash";
+	default:
+		return NULL;
+	}
+}
+
+static void format_reset_cause_list(uint32_t cause, char *buf, size_t buf_len)
+{
+	size_t off = 0U;
+	bool first = true;
+
+	if (buf == NULL || buf_len == 0U) {
+		return;
+	}
+
+	buf[0] = '\0';
+	if (cause == 0U) {
+		(void)snprintk(buf, buf_len, "unknown");
+		return;
+	}
+
+	for (uint32_t bit = BIT(0); bit != 0U; bit <<= 1) {
+		const char *name;
+
+		if ((cause & bit) == 0U) {
+			continue;
+		}
+
+		name = reset_cause_name(bit);
+		if (name == NULL) {
+			continue;
+		}
+
+		off += snprintk(&buf[off], buf_len - off, "%s%s",
+				first ? "" : ",", name);
+		if (off >= buf_len) {
+			buf[buf_len - 1U] = '\0';
+			return;
+		}
+		first = false;
+	}
+
+	if (first) {
+		(void)snprintk(buf, buf_len, "unknown");
+	}
+}
+
+void devices_capture_boot_reset_cause(void)
+{
+	uint32_t cause = 0U;
+	char cause_text[128];
+	int rc;
+
+	rc = hwinfo_get_reset_cause(&cause);
+	if (rc != 0) {
+		LOG_WRN("Reset cause unavailable (%d)", rc);
+		return;
+	}
+
+	boot_reset_cause = cause;
+	boot_reset_cause_valid = true;
+	format_reset_cause_list(cause, cause_text, sizeof(cause_text));
+
+	if ((cause & RESET_WATCHDOG) != 0U) {
+		LOG_WRN("Previous boot ended in watchdog reset; reset_cause=%s", cause_text);
+	} else {
+		LOG_INF("Reset cause: %s", cause_text);
+	}
+
+	rc = hwinfo_clear_reset_cause();
+	if (rc != 0) {
+		LOG_WRN("Failed to clear reset cause flags (%d)", rc);
+	}
+}
+
+void devices_queue_boot_reset_telemetry(void)
+{
+	struct coo_cmd_response msg = {0};
+	char cause_text[128];
+	int rc;
+
+	if (!boot_reset_cause_valid || (boot_reset_cause & RESET_WATCHDOG) == 0U) {
+		return;
+	}
+
+	format_reset_cause_list(boot_reset_cause, cause_text, sizeof(cause_text));
+	msg.target = COO_CMD_OUT_MQTT;
+	msg.qos = 0;
+	rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "boot",
+				       msg.topic, sizeof(msg.topic));
+	if (rc != 0) {
+		LOG_WRN("Failed to format boot telemetry topic (%d)", rc);
+		return;
+	}
+
+	msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),
+				   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
+				   "\"watchdog\":true,\"raw_reset_cause\":%u}",
+				   cause_text, boot_reset_cause);
+	if (msg.payload_len >= sizeof(msg.payload)) {
+		LOG_WRN("Boot telemetry payload too large");
+		return;
+	}
+
+	if (k_msgq_put(&outbound_queue, &msg, K_FOREVER) != 0) {
+		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
+	}
+}
 
 #define ROUTE_DEF(input_, output_, steps_) \
 	{ .key = { .input_name = (input_), .output_name = (output_) }, \
@@ -454,86 +627,33 @@ static void set_current_profile(const struct board_profile *profile, bool checke
 	k_mutex_unlock(&board_profile_lock);
 }
 
-static bool all_board_straps_mapped(void)
-{
-	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
-		if (board_straps[i].gpio->port == NULL) {
-			return false;
-		}
-	}
-
-	return true;
-}
-
-static int board_strap_read_active(const struct board_strap *strap, bool *active)
-{
-	int value;
-	int rc;
-
-	if (strap == NULL || active == NULL || strap->gpio->port == NULL) {
-		return -ENODEV;
-	}
-	if (!gpio_is_ready_dt(strap->gpio)) {
-		return -ENODEV;
-	}
-
-	/* gpio_pin_configure_dt() applies the GPIO_ACTIVE_LOW and GPIO_PULL_UP
-	 * flags from the overlay. gpio_pin_get_dt() then returns logical active
-	 * state, so an active-low jumper shorted to ground reads as true.
-	 */
-	rc = gpio_pin_configure_dt(strap->gpio, GPIO_INPUT);
-	if (rc != 0) {
-		return rc;
-	}
-
-	value = gpio_pin_get_dt(strap->gpio);
-	if (value < 0) {
-		return value;
-	}
-
-	*active = (value != 0);
-	return 0;
-}
 
 int devices_detect_board_type(void)
 {
 	enum hispec_board_type detected = HISPEC_BOARD_UNKNOWN;
 	uint8_t active_count = 0U;
-	int first_error = 0;
 
-	if (!all_board_straps_mapped()) {
-		LOG_ERR("Board type strap GPIOs are not mapped in devicetree");
-		set_current_profile(&unknown_profile, true);
-		return -ENODEV;
-	}
+	/* Strap direction and pull-ups are GPIO hogs in the board overlay. */
+	k_busy_wait(100);
 
 	for (uint8_t i = 0; i < ARRAY_SIZE(board_straps); ++i) {
-		bool active = false;
-		int rc = board_strap_read_active(&board_straps[i], &active);
+		const struct board_strap *strap = &board_straps[i];
+		int logical;
 
-		if (rc != 0) {
-			LOG_ERR("Failed to read board strap %s (%d)", board_straps[i].name, rc);
-			if (first_error == 0) {
-				first_error = rc;
-			}
-			continue;
-		}
+		logical = gpio_pin_get_dt(strap->gpio);
 
-		LOG_DBG("Board strap %s active=%d", board_straps[i].name, active ? 1 : 0);
-		if (active) {
+		LOG_INF("Board strap %s flags=0x%x active=%d",
+			strap->name,
+			strap->gpio->dt_flags,
+			logical != 0 ? 1 : 0);
+		if (logical != 0) {
 			active_count++;
-			detected = board_straps[i].board;
+			detected = strap->board;
 		}
-	}
-
-	if (first_error != 0) {
-		set_current_profile(&unknown_profile, true);
-		return first_error;
 	}
 
 	if (active_count == 1U) {
 		const struct board_profile *profile = profile_for_type(detected);
-
 		set_current_profile(profile, true);
 		LOG_INF("Detected PCB board type: %s", profile->name);
 		return 0;
@@ -545,9 +665,14 @@ int devices_detect_board_type(void)
 		return -EIO;
 	}
 
-	LOG_ERR("No board type strap is active; refusing board-specific setup");
-	set_current_profile(&unknown_profile, true);
-	return -ENODEV;
+	//TODO remove this bringup patch when finished.
+	// LOG_ERR("No board type strap is active; refusing board-specific setup");
+	// set_current_profile(&unknown_profile, true);
+	// return -ENODEV;
+	LOG_ERR("No board type strap is active; defaulting to TIB");
+	set_current_profile(&tib_profile, true);
+	return 0;
+
 }
 
 bool devices_board_type_checked(void)
@@ -571,6 +696,17 @@ const char *devices_board_type_name(void)
 	return current_profile()->name;
 }
 
+bool devices_attenuator_channel_available(uint8_t attenuator_index)
+{
+	const struct board_profile *profile = current_profile();
+	uint8_t first = profile->attenuator_first;
+	uint8_t count = profile->attenuator_count;
+
+	return attenuator_index < NUM_ATTENUATORS &&
+	       attenuator_index >= first &&
+	       attenuator_index < first + count;
+}
+
 static bool device_ready_or_log(const struct device *dev, const char *label)
 {
 	if (dev == NULL) {
@@ -591,8 +727,8 @@ static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpi
 {
 	int rc;
 
-	if (gpio == NULL || !gpio_is_ready_dt(gpio)) {
-		LOG_ERR("%s GPIO is not ready", label);
+	if (gpio == NULL) {
+		LOG_ERR("%s GPIO is not mapped in devicetree", label);
 		return false;
 	}
 
@@ -608,9 +744,84 @@ static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpi
 	return true;
 }
 
+static void set_relay_gpio_status(bool online, int error)
+{
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	relay_gpio_online = online;
+	relay_gpio_last_error = online ? 0 : error;
+	k_mutex_unlock(&relay_gpio_lock);
+}
+
+bool devices_relay_gpio_online(void)
+{
+	bool online;
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	online = relay_gpio_online;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	return online;
+}
+
+int devices_relay_gpio_last_error(void)
+{
+	int error;
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	error = relay_gpio_last_error;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	return error;
+}
+
+//TODO change coo_cmd_runtime_warning_emit so can emit as required not best effort
+static void emit_relay_gpio_offline_warning_once(int error)
+{
+	char context[24];
+
+	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
+	if (relay_gpio_warning_emitted) {
+		k_mutex_unlock(&relay_gpio_lock);
+		return;
+	}
+	relay_gpio_warning_emitted = true;
+	k_mutex_unlock(&relay_gpio_lock);
+
+	snprintf(context, sizeof(context), "rc=%d", error);
+	coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
+			 "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+			 context);
+}
+
+static bool configure_relay_gpio_outputs(void)
+{
+	const struct device *relay_port = yj_power_gpio.port;
+	int error = -ENODEV;
+
+	if (relay_port == NULL || !device_is_ready(relay_port)) {
+		LOG_WRN("Relay GPIO expander is offline at boot");
+		set_relay_gpio_status(false, error);
+		emit_relay_gpio_offline_warning_once(error);
+		return false;
+	}
+
+	if (!configure_gpio_output_inactive_or_log(&yj_power_gpio, "YJ photodiode power") ||
+		!configure_gpio_output_inactive_or_log(&hk_power_gpio, "HK photodiode power") ||
+		!configure_gpio_output_inactive_or_log(&heater_power_gpio, "laser bank heater")) {
+		error = -EIO;
+		LOG_WRN("Relay GPIO expander setup failed");
+		set_relay_gpio_status(false, error);
+		emit_relay_gpio_offline_warning_once(error);
+		return false;
+	}
+
+	set_relay_gpio_status(true, 0);
+	LOG_INF("Relay-box GPIO outputs configured inactive");
+	return true;
+}
+
 static bool setup_modbus_client(void)
 {
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_modbus_serial)
 	struct modbus_iface_param modbus_cfg = {
 		.mode = MODBUS_MODE_RTU,
 		.serial = {
@@ -618,7 +829,7 @@ static bool setup_modbus_client(void)
 			.parity = MODBUS_PARITY,
 			.stop_bits = MODBUS_STOPBITS,
 		},
-		.rx_timeout = MODBUS_RX_TIMEOUT_MS,
+		.rx_timeout = MODBUS_RX_TIMEOUT_US,
 	};
 
 	int client_iface = modbus_iface_get_by_name(modbus_name);
@@ -627,17 +838,22 @@ static bool setup_modbus_client(void)
 		LOG_ERR("Modbus interface %s not found", modbus_name);
 		return false;
 	}
-	if (modbus_init_client(client_iface, modbus_cfg) == 0) {
-		LOG_INF("Modbus client initialized on %s", modbus_name);
+	if (modbus_init_client(client_iface, modbus_cfg) == 0 &&
+	    maiman_set_client_iface(client_iface) == 0) {
+		LOG_INF("Modbus client initialized on %s iface=%d", modbus_name, client_iface);
 		return true;
 	}
 
 	LOG_ERR("Modbus init failed");
 	return false;
-#else
-	LOG_ERR("Modbus serial device is not configured");
-	return false;
-#endif
+}
+
+static const struct attenuator_dac_pair *
+attenuator_dac_pair_for_index(uint8_t attenuator_index)
+{
+	__ASSERT_NO_MSG(attenuator_index < NUM_ATTENUATORS);
+
+	return &attenuator_dac_pairs[attenuator_index];
 }
 
 void setup_attenuators(void)
@@ -649,31 +865,25 @@ void setup_attenuators(void)
 		LOG_INF("Board %s has no attenuator channels", profile->name);
 		return;
 	}
-	if (!device_ready_or_log(dac_dev, "DAC")) {
-		return;
-	}
 
 	app_settings_get_attenuator(&atten_settings);
 
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;
+		const struct attenuator_dac_pair *dac_pair =
+			attenuator_dac_pair_for_index(attenuator_index);
 
-		if (attenuator_index >= NUM_ATTENUATORS) {
-			LOG_ERR("Profile %s attenuator index %u is out of range",
-				profile->name, attenuator_index);
+		if (!attenuator_init(&attenuators[attenuator_index],
+				     dac_pair->dev, dac_pair->channel1,
+				     dac_pair->dev, dac_pair->channel2)) {
 			continue;
 		}
 
-		if (!attenuator_init(&attenuators[attenuator_index], attenuator_index)) {
-			continue;
-		}
+		attenuators[attenuator_index].coeff1.slope = atten_settings.channel[attenuator_index].physical[0].slope;
+		attenuators[attenuator_index].coeff1.offset = atten_settings.channel[attenuator_index].physical[0].offset;
 
-		for (uint8_t coeff = 0U; coeff < ATTENUATOR_COEFF_COUNT; ++coeff) {
-			attenuators[attenuator_index].coeff_db_to_volt[coeff] =
-				atten_settings.channel[attenuator_index].db_to_volt[coeff];
-			attenuators[attenuator_index].coeff_volt_to_db[coeff] =
-				atten_settings.channel[attenuator_index].volt_to_db[coeff];
-		}
+		attenuators[attenuator_index].coeff2.slope = atten_settings.channel[attenuator_index].physical[1].slope;
+		attenuators[attenuator_index].coeff2.offset = atten_settings.channel[attenuator_index].physical[1].offset;
 	}
 }
 
@@ -696,12 +906,19 @@ void setup_mems_switches_and_routes(void)
 	}
 
 	for (uint8_t i = 0; i < profile->mems_switch_count; ++i) {
+		enum mems_switch_type switch_type = MEMS_SWITCH_TYPE_FFSW;
+
+		if (profile->board == HISPEC_BOARD_TIB &&
+		    i >= profile->mems_switch_count - 2U) {
+			switch_type = MEMS_SWITCH_TYPE_FFLS;
+		}
+
 		mems_switch_init(&mems_switches[i],
-				 gpio_dev,
-				 mems_switch_pin_pairs[i][0],
-				 mems_switch_pin_pairs[i][1],
+				 &mems_switch_gpio_pairs[i][0],
+				 &mems_switch_gpio_pairs[i][1],
 				 profile->switch_names[i],
-				 mems_switch_toggle_rate_hz[i],
+				 switch_type,
+				 MEMS_SWITCH_MAX_TOGGLE_HZ,
 				 'A');
 		mems_switch_ptrs[i] = &mems_switches[i];
 	}
@@ -762,34 +979,27 @@ bool devices_ready(void)
 							   "laser bank power")) {
 			rc = false;
 		}
-		if (!configure_gpio_output_inactive_or_log(&yj_power_gpio,
-							   "YJ photodiode power")) {
-			rc = false;
-		}
-		if (!configure_gpio_output_inactive_or_log(&hk_power_gpio,
-							   "HK photodiode power")) {
-			rc = false;
-		}
-		if (!configure_gpio_output_inactive_or_log(&heater_power_gpio,
-							   "laser bank heater")) {
-			rc = false;
-		}
+		(void)configure_relay_gpio_outputs();
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB && !setup_modbus_client()) {
 		rc = false;
 	}
 
-	if (profile->attenuator_count > 0U && !device_ready_or_log(dac_dev, "DAC")) {
-		rc = false;
+	if (profile->attenuator_count > 0U) {
+		for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
+			uint8_t attenuator_index = profile->attenuator_first + i;
+			const struct attenuator_dac_pair *dac_pair =
+				attenuator_dac_pair_for_index(attenuator_index);
+
+			if (!device_ready_or_log(dac_pair->dev, "DAC")) {
+				rc = false;
+			}
+		}
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB && !device_ready_or_log(adc_dev, "ADC")) {
 		rc = false;
-	}
-
-	if (profile->board == HISPEC_BOARD_TIB) {
-		LOG_INF("Relay-box GPIO outputs configured");
 	}
 
 	return rc;

@@ -105,6 +105,11 @@ Build discipline:
     - newly introduced non-blocking warnings,
     - tests or static checks run.
 
+Workspace metadata discipline:
+
+- Do not edit files under `.idea/`. Those files are developer IDE state, not
+  firmware source or documentation.
+
 ---
 
 ## 4. Coding Style and Architecture

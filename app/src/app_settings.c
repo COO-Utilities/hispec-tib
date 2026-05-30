@@ -1,10 +1,11 @@
 /**
  * @file app_settings.c
- * @brief Runtime defaults, settings callbacks, and persistent app state writes.
+ * @brief Runtime defaults and direct-NVS persistence for app-owned settings.
  *
- * Settings callbacks run during Zephyr settings load and update the protected
- * runtime snapshot. Public update helpers may call settings_save_one() and can
- * block on the configured settings backend.
+ * Public update helpers copy into the protected runtime snapshot. When
+ * persistence is requested they write one numeric Zephyr NVS ID and may block
+ * on flash I/O. The app owns this fixed NVS ID map; no string setting names
+ * are stored in flash.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -12,44 +13,109 @@
 
 #include "app_settings.h"
 
-#include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/flash.h>
 #include <zephyr/kernel.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/settings/settings.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/util.h>
-
-#include <coo_commons/mqtt_client.h>
 
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
-#define APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S 30U
+#define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
+#define APP_NVS_SCHEMA_VERSION 1U
 
-#define KEY_BOARD_TYPE "board/type"
-#define KEY_SERIAL_HOLDOFF "serial/holdoff_s"
-#define KEY_BOOT_COUNT "boot/count"
-#define KEY_IP_TRY_DHCP "ip/trydhcpfirst"
-#define KEY_IP_PREF_DNS "ip/preferdhcpdns"
-#define KEY_IP_PREF_NTP "ip/preferdhcpntp"
-#define KEY_IP_ADDR "ip/ip"
-#define KEY_IP_SUBNET "ip/subnet"
-#define KEY_IP_GATEWAY "ip/gateway"
-#define KEY_IP_DNS "ip/dns"
-#define KEY_IP_NTP "ip/ntp"
-#define KEY_MQTT_BROKER "mqtt/broker"
-#define KEY_ATTEN_PREFIX "atten"
-#define KEY_PD_YJ_DARK_MV "pd/yj/dark_mv"
-#define KEY_PD_YJ_LOWEST_DARK_MV "pd/yj/lowest_dark_mv"
-#define KEY_PD_YJ_LOWEST_DARK_VALID "pd/yj/lowest_dark_valid"
-#define KEY_PD_YJ_NOISE_WARN_MV "pd/yj/noise_warn_rms_mv"
-#define KEY_PD_YJ_GAIN_V_PER_UW "pd/yj/gain_v_per_uw"
-#define KEY_PD_HK_DARK_MV "pd/hk/dark_mv"
-#define KEY_PD_HK_LOWEST_DARK_MV "pd/hk/lowest_dark_mv"
-#define KEY_PD_HK_LOWEST_DARK_VALID "pd/hk/lowest_dark_valid"
-#define KEY_PD_HK_NOISE_WARN_MV "pd/hk/noise_warn_rms_mv"
-#define KEY_PD_HK_GAIN_V_PER_UW "pd/hk/gain_v_per_uw"
+enum app_nvs_id {
+	APP_NVS_ID_SCHEMA = 0x0001,
+	APP_NVS_ID_BOARD_TYPE = 0x0002,
+	APP_NVS_ID_SERIAL_HOLDOFF_UNUSED = 0x0003,
+	APP_NVS_ID_BOOT_COUNT = 0x0004,
+	APP_NVS_ID_IP = 0x0005,
+	APP_NVS_ID_MQTT = 0x0006,
+	APP_NVS_ID_LASERBANK = 0x0007,
+	APP_NVS_ID_LAST_KNOWN_UTC_MS = 0x0008,
+	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
+	APP_NVS_ID_ATTEN_CH0 = 0x0100,
+	APP_NVS_ID_PD_CH0 = 0x0200,
+	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
+	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
+	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
+};
+
+BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT < 0x8000,
+	     "app NVS IDs must stay below Zephyr settings backend IDs");
+BUILD_ASSERT(APP_NVS_ID_ATTEN_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_PD_CH0,
+	     "attenuator NVS ID block overlaps photodiode block");
+BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY_CH0,
+	     "photodiode NVS ID block overlaps laser policy block");
+BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_TOTAL_CH0,
+	     "laser policy NVS ID block overlaps laser total block");
+BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
+	     "laser total NVS ID block overlaps route-loss block");
+BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= 0x8000,
+	     "route-loss NVS ID block overlaps reserved Zephyr settings IDs");
+
+struct app_nvs_schema_marker {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t reserved;
+};
+
+struct app_nvs_ip_settings {
+	uint8_t try_dhcp_first;
+	uint8_t prefer_dhcp_dns;
+	uint8_t prefer_dhcp_ntp;
+	uint8_t reserved;
+	char ip[NET_IPV4_ADDR_LEN];
+	char subnet[NET_IPV4_ADDR_LEN];
+	char gateway[NET_IPV4_ADDR_LEN];
+	char dns[NET_IPV4_ADDR_LEN];
+	char ntp[NET_IPV4_ADDR_LEN];
+};
+
+struct app_nvs_pd_channel {
+	float dark_mv;
+	float lowest_dark_mv;
+	uint8_t lowest_dark_valid;
+	uint8_t reserved[3];
+	float noise_warn_rms_mv;
+	double responsivity_a_per_w;
+	double transimpedance_v_per_a;
+};
+
+struct app_nvs_laser_policy {
+	float nominal_current_ma;
+	float max_current_ma;
+	float threshold_current_ma;
+	float efficiency_mw_per_ma;
+	float wavelength_nm;
+	float current_set_calibration_pct;
+	float operating_temp_min_c;
+	float operating_temp_max_c;
+	float operating_temp_c;
+	uint16_t tec_pid_p;
+	uint16_t tec_pid_i;
+	uint16_t tec_pid_d;
+	uint8_t disable_tec_at_autooff;
+	uint8_t reserved;
+	float dlambda_dT_nm_per_k;
+	float dlambda_dA_nm_per_ma;
+	uint32_t autooff_s;
+	float tune_delta_nm;
+};
+
+static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
+	&LASER_1028,
+	&LASER_1270,
+	&LASER_1430,
+	&LASER_1430,
+	&LASER_1510,
+	&LASER_2330,
+};
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
@@ -57,6 +123,33 @@ struct app_settings_state {
 };
 
 static struct app_settings_state g_settings;
+static struct nvs_fs app_nvs;
+static bool app_nvs_ready;
+
+static uint16_t attenuator_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_ATTEN_CH0 + channel;
+}
+
+static uint16_t pd_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_PD_CH0 + channel;
+}
+
+static uint16_t laser_policy_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_LASER_POLICY_CH0 + channel;
+}
+
+static uint16_t laser_total_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_LASER_TOTAL_CH0 + channel;
+}
+
+static uint16_t route_loss_nvs_id(uint8_t index)
+{
+	return APP_NVS_ID_ROUTE_LOSS_CH0 + index;
+}
 
 static void str_set(char *dst, size_t dst_size, const char *src)
 {
@@ -71,6 +164,16 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 
 	strncpy(dst, src, dst_size - 1);
 	dst[dst_size - 1] = '\0';
+}
+
+static bool float_in_range(float value, float min_value, float max_value)
+{
+	return value >= min_value && value <= max_value;
+}
+
+static bool double_in_range(double value, double min_value, double max_value)
+{
+	return value >= min_value && value <= max_value;
 }
 
 static void settings_defaults(struct app_settings_snapshot *s)
@@ -88,8 +191,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	str_set(s->ip.ip, sizeof(s->ip.ip), CONFIG_NET_CONFIG_MY_IPV4_ADDR);
 	str_set(s->ip.subnet, sizeof(s->ip.subnet), CONFIG_NET_CONFIG_MY_IPV4_NETMASK);
 	str_set(s->ip.gateway, sizeof(s->ip.gateway), CONFIG_NET_CONFIG_MY_IPV4_GW);
-	str_set(s->ip.dns, sizeof(s->ip.dns), "0.0.0.0");
-	str_set(s->ip.ntp, sizeof(s->ip.ntp), "0.0.0.0");
+	str_set(s->ip.dns, sizeof(s->ip.dns), CONFIG_APP_DEFAULT_DNS_SERVER);
+	str_set(s->ip.ntp, sizeof(s->ip.ntp), CONFIG_APP_DEFAULT_NTP_SERVER);
 	broker_port = strtoul(default_port_str, &end, 10);
 	if (end == NULL || end == default_port_str || *end != '\0' || broker_port > UINT16_MAX) {
 		broker_port = 1883UL;
@@ -97,473 +200,625 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
-		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-			/* Calibration defaults are explicit zero coefficients until
-			 * lab-measured values are stored with atten/<laser>/coeff.
+		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+			/* Default maps the full 0-5000 mV attenuator drive span
+			 * onto b=0..8 until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].db_to_volt[i] = 0.0f;
-			s->attenuator.channel[ch].volt_to_db[i] = 0.0f;
+			s->attenuator.channel[ch].physical[physical].slope = (float)(8.0 / 5000.0f);
+			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
 		}
 	}
 	s->photodiode.channel[0].dark_mv = 0.0f;
 	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
 	s->photodiode.channel[0].lowest_dark_valid = false;
 	s->photodiode.channel[0].noise_warn_rms_mv = 3.0f;
-	s->photodiode.channel[0].gain_v_per_uw = 47500.0f;
+	s->photodiode.channel[0].responsivity_a_per_w = 0.93;
+	s->photodiode.channel[0].transimpedance_v_per_a = 5.0e10;
 	s->photodiode.channel[1].dark_mv = 0.0f;
 	s->photodiode.channel[1].lowest_dark_mv = 0.0f;
 	s->photodiode.channel[1].lowest_dark_valid = false;
 	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
-	s->photodiode.channel[1].gain_v_per_uw = 3.0875f;
-	s->serial_holdoff_s = APP_SETTINGS_SERIAL_HOLDOFF_DEFAULT_S;
+	s->photodiode.channel[1].responsivity_a_per_w = 0.60971;
+	s->photodiode.channel[1].transimpedance_v_per_a = 2.375e9;
+	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
+	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
+		s->laser.channel[i].properties = *default_laser_props[i];
+		s->laser.channel[i].current_set_calibration_pct = 100.0f;
+		s->laser.channel[i].disable_tec_at_autooff = true;
+		s->laser.channel[i].autooff_s = 3U * 3600U;
+		s->laser.channel[i].tune_delta_nm = 0.0f;
+		s->laser.channel[i].total_emitting_s = 0.0;
+	}
 	s->boot_count = 0U;
 	s->mqtt_revision = 0U;
 }
 
-static int read_bool(settings_read_cb read_cb, void *cb_arg, bool *out)
+static int app_nvs_mount(void)
 {
-	uint8_t value = 0;
-	int rc = read_cb(cb_arg, &value, sizeof(value));
-
-	if (rc == sizeof(value)) {
-		*out = (value != 0U);
-		return 0;
-	}
-
-	return -EINVAL;
-}
-
-static int read_u32(settings_read_cb read_cb, void *cb_arg, uint32_t *out)
-{
-	int rc = read_cb(cb_arg, out, sizeof(*out));
-	return (rc == sizeof(*out)) ? 0 : -EINVAL;
-}
-
-static int read_float(settings_read_cb read_cb, void *cb_arg, float *out)
-{
-	int rc = read_cb(cb_arg, out, sizeof(*out));
-	return (rc == sizeof(*out)) ? 0 : -EINVAL;
-}
-
-static int read_str(settings_read_cb read_cb, void *cb_arg, char *out, size_t out_size)
-{
+	struct flash_pages_info page_info;
 	int rc;
 
-	if (out == NULL || out_size == 0U) {
-		return -EINVAL;
+	app_nvs.flash_device = PARTITION_DEVICE(storage_partition);
+	if (!device_is_ready(app_nvs.flash_device)) {
+		LOG_ERR("NVS flash device is not ready");
+		return -ENODEV;
 	}
 
-	memset(out, 0, out_size);
-	rc = read_cb(cb_arg, out, out_size - 1U);
-	if (rc < 0) {
+	app_nvs.offset = PARTITION_OFFSET(storage_partition);
+	rc = flash_get_page_info_by_offs(app_nvs.flash_device, app_nvs.offset, &page_info);
+	if (rc != 0) {
+		LOG_ERR("flash_get_page_info_by_offs failed (%d)", rc);
 		return rc;
 	}
 
-	out[out_size - 1U] = '\0';
+	app_nvs.sector_size = page_info.size;
+	app_nvs.sector_count = PARTITION_SIZE(storage_partition) / page_info.size;
+	rc = nvs_mount(&app_nvs);
+	if (rc != 0) {
+		LOG_ERR("nvs_mount failed (%d)", rc);
+		return rc;
+	}
+
+	app_nvs_ready = true;
 	return 0;
 }
 
-static void read_valid_float_or_warn(settings_read_cb read_cb, void *cb_arg,
-				     const char *name, float *out,
-				     float min_value, float max_value)
+static int app_nvs_write(uint16_t id, const void *data, size_t len)
 {
-	float value;
+	int rc;
 
-	if (read_float(read_cb, cb_arg, &value) != 0 ||
-	    !(value >= min_value && value <= max_value)) {
-		LOG_WRN("Ignoring invalid stored setting %s", name);
+	if (!app_nvs_ready) {
+		return -EIO;
+	}
+
+	rc = nvs_write(&app_nvs, id, data, len);
+	if (rc < 0) {
+		LOG_WRN("NVS write id 0x%04x failed (%d)", id, rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int app_nvs_delete(uint16_t id)
+{
+	int rc;
+
+	if (!app_nvs_ready) {
+		return -EIO;
+	}
+
+	rc = nvs_delete(&app_nvs, id);
+	if (rc != 0 && rc != -ENOENT) {
+		LOG_WRN("NVS delete id 0x%04x failed (%d)", id, rc);
+	}
+
+	return rc == -ENOENT ? 0 : rc;
+}
+
+static bool app_nvs_read_exact(uint16_t id, void *data, size_t len, const char *name)
+{
+	int rc;
+
+	if (!app_nvs_ready || data == NULL) {
+		return false;
+	}
+
+	rc = nvs_read(&app_nvs, id, data, len);
+	if (rc == (int)len) {
+		return true;
+	}
+	if (rc != -ENOENT) {
+		LOG_WRN("Ignoring invalid NVS %s id 0x%04x length (%d)", name, id, rc);
+	}
+
+	return false;
+}
+
+static int app_nvs_write_schema(void)
+{
+	const struct app_nvs_schema_marker marker = {
+		.magic = APP_NVS_SCHEMA_MAGIC,
+		.version = APP_NVS_SCHEMA_VERSION,
+	};
+
+	return app_nvs_write(APP_NVS_ID_SCHEMA, &marker, sizeof(marker));
+}
+
+static int app_nvs_ensure_schema(void)
+{
+	struct app_nvs_schema_marker marker = {0};
+	int rc;
+
+	if (app_nvs_read_exact(APP_NVS_ID_SCHEMA, &marker, sizeof(marker), "schema") &&
+	    marker.magic == APP_NVS_SCHEMA_MAGIC &&
+	    marker.version == APP_NVS_SCHEMA_VERSION) {
+		return 0;
+	}
+
+	LOG_INF("Initializing app NVS schema %u; clearing old storage layout",
+		APP_NVS_SCHEMA_VERSION);
+	rc = nvs_clear(&app_nvs);
+	if (rc != 0) {
+		LOG_ERR("nvs_clear failed (%d)", rc);
+		app_nvs_ready = false;
+		return rc;
+	}
+
+	app_nvs_ready = false;
+	rc = app_nvs_mount();
+	if (rc != 0) {
+		return rc;
+	}
+
+	return app_nvs_write_schema();
+}
+
+static void app_nvs_persist_board_type(const char *board_type)
+{
+	char value[APP_SETTINGS_BOARD_TYPE_MAX_LEN] = {0};
+
+	str_set(value, sizeof(value), board_type);
+	(void)app_nvs_write(APP_NVS_ID_BOARD_TYPE, value, sizeof(value));
+}
+
+static void app_nvs_persist_ip(const struct app_ip_settings *ip)
+{
+	struct app_nvs_ip_settings stored = {0};
+
+	if (ip == NULL) {
 		return;
 	}
 
-	*out = value;
+	stored.try_dhcp_first = ip->try_dhcp_first ? 1U : 0U;
+	stored.prefer_dhcp_dns = ip->prefer_dhcp_dns ? 1U : 0U;
+	stored.prefer_dhcp_ntp = ip->prefer_dhcp_ntp ? 1U : 0U;
+	str_set(stored.ip, sizeof(stored.ip), ip->ip);
+	str_set(stored.subnet, sizeof(stored.subnet), ip->subnet);
+	str_set(stored.gateway, sizeof(stored.gateway), ip->gateway);
+	str_set(stored.dns, sizeof(stored.dns), ip->dns);
+	str_set(stored.ntp, sizeof(stored.ntp), ip->ntp);
+	(void)app_nvs_write(APP_NVS_ID_IP, &stored, sizeof(stored));
 }
 
-static int parse_key_index(const char **cursor, uint8_t max_value, uint8_t *out)
+static void app_nvs_persist_mqtt(const struct app_mqtt_settings *mqtt)
 {
-	char *end = NULL;
-	unsigned long value;
+	struct app_mqtt_settings stored = {0};
 
-	if (cursor == NULL || *cursor == NULL || out == NULL ||
-	    !isdigit((unsigned char)**cursor)) {
-		return -EINVAL;
+	if (mqtt == NULL) {
+		return;
 	}
 
-	errno = 0;
-	value = strtoul(*cursor, &end, 10);
-	if (errno != 0 || end == *cursor || value > max_value) {
-		return -EINVAL;
-	}
-
-	*out = (uint8_t)value;
-	*cursor = end;
-	return 0;
+	str_set(stored.broker_host, sizeof(stored.broker_host), mqtt->broker_host);
+	stored.broker_port = mqtt->broker_port;
+	(void)app_nvs_write(APP_NVS_ID_MQTT, &stored, sizeof(stored));
 }
 
-static bool parse_attenuator_coeff_name(const char *name,
-					uint8_t *channel,
-					bool *db_to_volt,
-					uint8_t *coeff_index)
+static void app_nvs_persist_attenuator_channel(uint8_t channel,
+					       const struct app_attenuator_channel_settings *atten)
 {
-	const char *cursor = name;
-
-	if (name == NULL || channel == NULL || db_to_volt == NULL ||
-	    coeff_index == NULL) {
-		return false;
-	}
-
-	if (parse_key_index(&cursor, APP_ATTENUATOR_CHANNEL_COUNT - 1U, channel) != 0 ||
-	    *cursor != '/') {
-		return false;
-	}
-	cursor++;
-
-	if (strncmp(cursor, "db2volt/", 8U) == 0) {
-		*db_to_volt = true;
-		cursor += 8U;
-	} else if (strncmp(cursor, "volt2db/", 8U) == 0) {
-		*db_to_volt = false;
-		cursor += 8U;
-	} else {
-		return false;
-	}
-
-	return parse_key_index(&cursor, APP_ATTENUATOR_COEFF_COUNT - 1U, coeff_index) == 0 &&
-	       *cursor == '\0';
-}
-
-static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
-{
-	uint8_t atten_channel;
-	uint8_t atten_coeff;
-	bool atten_db_to_volt;
-
-	ARG_UNUSED(len);
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-
-	if (strcmp(name, "type") == 0) {
-		(void)read_str(read_cb, cb_arg,
-			       g_settings.snapshot.board_type,
-			       sizeof(g_settings.snapshot.board_type));
-		goto out;
-	}
-
-	if (strcmp(name, "holdoff_s") == 0) {
-		(void)read_u32(read_cb, cb_arg, &g_settings.snapshot.serial_holdoff_s);
-		goto out;
-	}
-
-	if (strcmp(name, "count") == 0) {
-		(void)read_u32(read_cb, cb_arg, &g_settings.snapshot.boot_count);
-		goto out;
-	}
-
-	if (strcmp(name, "trydhcpfirst") == 0) {
-		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.try_dhcp_first);
-		goto out;
-	}
-
-	if (strcmp(name, "preferdhcpdns") == 0) {
-		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.prefer_dhcp_dns);
-		goto out;
-	}
-
-	if (strcmp(name, "preferdhcpntp") == 0) {
-		(void)read_bool(read_cb, cb_arg, &g_settings.snapshot.ip.prefer_dhcp_ntp);
-		goto out;
-	}
-
-	if (strcmp(name, "ip") == 0) {
-		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.ip, sizeof(g_settings.snapshot.ip.ip));
-		goto out;
-	}
-
-	if (strcmp(name, "subnet") == 0) {
-		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.subnet, sizeof(g_settings.snapshot.ip.subnet));
-		goto out;
-	}
-
-	if (strcmp(name, "gateway") == 0) {
-		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.gateway, sizeof(g_settings.snapshot.ip.gateway));
-		goto out;
-	}
-
-	if (strcmp(name, "dns") == 0) {
-		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.dns, sizeof(g_settings.snapshot.ip.dns));
-		goto out;
-	}
-
-	if (strcmp(name, "ntp") == 0) {
-		(void)read_str(read_cb, cb_arg, g_settings.snapshot.ip.ntp, sizeof(g_settings.snapshot.ip.ntp));
-		goto out;
-	}
-
-	if (strcmp(name, "broker") == 0) {
-		char endpoint[160];
-		struct coo_mqtt_broker_config parsed;
-
-		if (read_str(read_cb, cb_arg, endpoint, sizeof(endpoint)) == 0 &&
-		    coo_mqtt_parse_broker_endpoint(endpoint, &parsed)) {
-			str_set(g_settings.snapshot.mqtt.broker_host,
-				sizeof(g_settings.snapshot.mqtt.broker_host), parsed.host);
-			g_settings.snapshot.mqtt.broker_port = parsed.port;
-		} else {
-			LOG_WRN("Ignoring invalid stored setting mqtt/broker");
-		}
-		goto out;
-	}
-
-	if (parse_attenuator_coeff_name(name, &atten_channel, &atten_db_to_volt,
-					&atten_coeff)) {
-		float *target = atten_db_to_volt ?
-			&g_settings.snapshot.attenuator.channel[atten_channel].db_to_volt[atten_coeff] :
-			&g_settings.snapshot.attenuator.channel[atten_channel].volt_to_db[atten_coeff];
-
-		read_valid_float_or_warn(read_cb, cb_arg, name, target,
-					 -1000000000.0f, 1000000000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "yj/dark_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[0].dark_mv,
-					 -5000.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "yj/lowest_dark_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[0].lowest_dark_mv,
-					 -5000.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "yj/lowest_dark_valid") == 0) {
-		(void)read_bool(read_cb, cb_arg,
-				&g_settings.snapshot.photodiode.channel[0].lowest_dark_valid);
-		goto out;
-	}
-
-	if (strcmp(name, "yj/noise_warn_rms_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[0].noise_warn_rms_mv,
-					 0.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "yj/gain_v_per_uw") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[0].gain_v_per_uw,
-					 0.000001f, 1000000000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "hk/dark_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[1].dark_mv,
-					 -5000.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "hk/lowest_dark_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[1].lowest_dark_mv,
-					 -5000.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "hk/lowest_dark_valid") == 0) {
-		(void)read_bool(read_cb, cb_arg,
-				&g_settings.snapshot.photodiode.channel[1].lowest_dark_valid);
-		goto out;
-	}
-
-	if (strcmp(name, "hk/noise_warn_rms_mv") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[1].noise_warn_rms_mv,
-					 0.0f, 5000.0f);
-		goto out;
-	}
-
-	if (strcmp(name, "hk/gain_v_per_uw") == 0) {
-		read_valid_float_or_warn(read_cb, cb_arg, name,
-					 &g_settings.snapshot.photodiode.channel[1].gain_v_per_uw,
-					 0.000001f, 1000000000.0f);
-		goto out;
-	}
-
-out:
-	k_mutex_unlock(&g_settings.lock);
-	return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(board_settings, "board", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(serial_settings, "serial", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(boot_settings, "boot", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(ip_settings, "ip", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(mqtt_settings, "mqtt", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(atten_settings, "atten", NULL, settings_set_cb, NULL, NULL);
-SETTINGS_STATIC_HANDLER_DEFINE(pd_settings, "pd", NULL, settings_set_cb, NULL, NULL);
-
-static void persist_bool(const char *key, bool value)
-{
-	uint8_t v = value ? 1U : 0U;
-	(void)settings_save_one(key, &v, sizeof(v));
-}
-
-static void persist_u32(const char *key, uint32_t value)
-{
-	(void)settings_save_one(key, &value, sizeof(value));
-}
-
-static void persist_float(const char *key, float value)
-{
-	(void)settings_save_one(key, &value, sizeof(value));
-}
-
-static void persist_str(const char *key, const char *value)
-{
-	const size_t len = strlen(value) + 1U;
-	(void)settings_save_one(key, value, len);
-}
-
-static void attenuator_coeff_key(char *key, size_t key_len,
-				 uint8_t channel, bool db_to_volt,
-				 uint8_t coeff_index)
-{
-	(void)snprintk(key, key_len, "%s/%u/%s/%u",
-		       KEY_ATTEN_PREFIX, channel,
-		       db_to_volt ? "db2volt" : "volt2db",
-		       coeff_index);
-}
-
-static void persist_attenuator_channel(uint8_t channel,
-				       const struct app_attenuator_channel_settings *atten)
-{
-	char key[40];
-
 	if (atten == NULL || channel >= APP_ATTENUATOR_CHANNEL_COUNT) {
 		return;
 	}
 
-	for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-		attenuator_coeff_key(key, sizeof(key), channel, true, i);
-		persist_float(key, atten->db_to_volt[i]);
-
-		attenuator_coeff_key(key, sizeof(key), channel, false, i);
-		persist_float(key, atten->volt_to_db[i]);
-	}
+	(void)app_nvs_write(attenuator_nvs_id(channel), atten, sizeof(*atten));
 }
 
-static void persist_photodiode_channel(uint8_t channel,
+static void app_nvs_persist_pd_channel(uint8_t channel,
 				       const struct app_pd_channel_settings *pd)
 {
-	if (channel == 0U) {
-		persist_float(KEY_PD_YJ_DARK_MV, pd->dark_mv);
-		persist_float(KEY_PD_YJ_LOWEST_DARK_MV, pd->lowest_dark_mv);
-		persist_bool(KEY_PD_YJ_LOWEST_DARK_VALID, pd->lowest_dark_valid);
-		persist_float(KEY_PD_YJ_NOISE_WARN_MV, pd->noise_warn_rms_mv);
-		persist_float(KEY_PD_YJ_GAIN_V_PER_UW, pd->gain_v_per_uw);
+	struct app_nvs_pd_channel stored = {0};
+
+	if (pd == NULL || channel >= APP_PD_CHANNEL_COUNT) {
 		return;
 	}
 
-	if (channel == 1U) {
-		persist_float(KEY_PD_HK_DARK_MV, pd->dark_mv);
-		persist_float(KEY_PD_HK_LOWEST_DARK_MV, pd->lowest_dark_mv);
-		persist_bool(KEY_PD_HK_LOWEST_DARK_VALID, pd->lowest_dark_valid);
-		persist_float(KEY_PD_HK_NOISE_WARN_MV, pd->noise_warn_rms_mv);
-		persist_float(KEY_PD_HK_GAIN_V_PER_UW, pd->gain_v_per_uw);
+	stored.dark_mv = pd->dark_mv;
+	stored.lowest_dark_mv = pd->lowest_dark_mv;
+	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
+	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
+	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
+	stored.transimpedance_v_per_a = pd->transimpedance_v_per_a;
+	(void)app_nvs_write(pd_nvs_id(channel), &stored, sizeof(stored));
+}
+
+static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
+				       const struct app_laser_channel_settings *laser)
+{
+	if (stored == NULL || laser == NULL) {
+		return;
+	}
+
+	memset(stored, 0, sizeof(*stored));
+	stored->nominal_current_ma = laser->properties.nominal_current_ma;
+	stored->max_current_ma = laser->properties.max_current_ma;
+	stored->threshold_current_ma = laser->properties.threshold_current_ma;
+	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
+	stored->wavelength_nm = laser->properties.wavelength_nm;
+	stored->current_set_calibration_pct = laser->current_set_calibration_pct;
+	stored->operating_temp_min_c = laser->properties.operating_temp_range_c.min_c;
+	stored->operating_temp_max_c = laser->properties.operating_temp_range_c.max_c;
+	stored->operating_temp_c = laser->properties.operating_temp_c;
+	stored->tec_pid_p = laser->properties.tec_pid.kp;
+	stored->tec_pid_i = laser->properties.tec_pid.ki;
+	stored->tec_pid_d = laser->properties.tec_pid.kd;
+	stored->disable_tec_at_autooff = laser->disable_tec_at_autooff ? 1U : 0U;
+	stored->dlambda_dT_nm_per_k = laser->properties.dlambda_dT_nm_per_k;
+	stored->dlambda_dA_nm_per_ma = laser->properties.dlambda_dA_nm_per_ma;
+	stored->autooff_s = laser->autooff_s;
+	stored->tune_delta_nm = laser->tune_delta_nm;
+}
+
+static void app_nvs_persist_laser_channel(uint8_t channel,
+					  const struct app_laser_channel_settings *laser)
+{
+	struct app_nvs_laser_policy stored;
+
+	if (laser == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return;
+	}
+
+	laser_policy_from_settings(&stored, laser);
+	(void)app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
+	(void)app_nvs_write(laser_total_nvs_id(channel),
+			    &laser->total_emitting_s,
+			    sizeof(laser->total_emitting_s));
+}
+
+static void app_nvs_persist_laser_total(uint8_t channel, double total_emitting_s)
+{
+	if (channel >= APP_LASER_CHANNEL_COUNT) {
+		return;
+	}
+
+	(void)app_nvs_write(laser_total_nvs_id(channel),
+			    &total_emitting_s,
+			    sizeof(total_emitting_s));
+}
+
+static void app_nvs_persist_laserbank(const struct app_laserbank_settings *laserbank)
+{
+	uint32_t mode;
+
+	if (laserbank == NULL) {
+		return;
+	}
+
+	mode = (uint32_t)laserbank->heater_mode;
+	(void)app_nvs_write(APP_NVS_ID_LASERBANK, &mode, sizeof(mode));
+}
+
+static void app_nvs_persist_route_loss_index(uint8_t index,
+					     const struct app_route_loss_record *record)
+{
+	if (record == NULL || index >= APP_ROUTE_LOSS_RECORD_COUNT) {
+		return;
+	}
+
+	(void)app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
+}
+
+static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
+{
+	if (atten == NULL) {
+		return false;
+	}
+
+	for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+		const struct app_attenuator_physical_settings *p = &atten->physical[physical];
+
+		if (!float_in_range(p->slope, -1000000000.0f, 1000000000.0f) ||
+		    !float_in_range(p->offset, -1000000000.0f, 1000000000.0f)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool pd_channel_valid(const struct app_nvs_pd_channel *pd)
+{
+	return pd != NULL &&
+	       float_in_range(pd->dark_mv, -5000.0f, 5000.0f) &&
+	       float_in_range(pd->lowest_dark_mv, -5000.0f, 5000.0f) &&
+	       float_in_range(pd->noise_warn_rms_mv, 0.0f, 5000.0f) &&
+	       double_in_range(pd->responsivity_a_per_w, 0.000001, 10.0) &&
+	       double_in_range(pd->transimpedance_v_per_a, 1.0, 1.0e12);
+}
+
+static bool laser_policy_valid(const struct app_nvs_laser_policy *laser)
+{
+	return laser != NULL &&
+	       float_in_range(laser->nominal_current_ma, 0.0f, 1000.0f) &&
+	       float_in_range(laser->max_current_ma, 0.0f, 1000.0f) &&
+	       float_in_range(laser->threshold_current_ma, 0.0f, 1000.0f) &&
+	       float_in_range(laser->efficiency_mw_per_ma, 0.0f, 100.0f) &&
+	       float_in_range(laser->wavelength_nm, 1.0f, 10000.0f) &&
+	       float_in_range(laser->current_set_calibration_pct, 95.0f, 105.0f) &&
+	       float_in_range(laser->operating_temp_min_c, 15.0f, 40.0f) &&
+	       float_in_range(laser->operating_temp_max_c, 15.0f, 40.0f) &&
+	       float_in_range(laser->operating_temp_c, 15.0f, 40.0f) &&
+	       float_in_range(laser->dlambda_dT_nm_per_k, -10.0f, 10.0f) &&
+	       float_in_range(laser->dlambda_dA_nm_per_ma, -10.0f, 10.0f);
+}
+
+static bool route_loss_record_valid(struct app_route_loss_record *record)
+{
+	if (record == NULL || !record->configured) {
+		return false;
+	}
+
+	record->route[sizeof(record->route) - 1U] = '\0';
+	record->laser[sizeof(record->laser) - 1U] = '\0';
+	return record->route[0] != '\0' &&
+	       record->laser[0] != '\0' &&
+	       double_in_range(record->transmission, 0.000000001, 1.0);
+}
+
+static void app_nvs_load_board_type(struct app_settings_snapshot *s)
+{
+	char value[APP_SETTINGS_BOARD_TYPE_MAX_LEN] = {0};
+
+	if (app_nvs_read_exact(APP_NVS_ID_BOARD_TYPE, value, sizeof(value), "board_type")) {
+		value[sizeof(value) - 1U] = '\0';
+		str_set(s->board_type, sizeof(s->board_type), value);
 	}
 }
 
-static const char *const resettable_setting_keys[] = {
-	KEY_SERIAL_HOLDOFF,
-	KEY_BOOT_COUNT,
-	KEY_IP_TRY_DHCP,
-	KEY_IP_PREF_DNS,
-	KEY_IP_PREF_NTP,
-	KEY_IP_ADDR,
-	KEY_IP_SUBNET,
-	KEY_IP_GATEWAY,
-	KEY_IP_DNS,
-	KEY_IP_NTP,
-	KEY_MQTT_BROKER,
-	KEY_PD_YJ_DARK_MV,
-	KEY_PD_YJ_LOWEST_DARK_MV,
-	KEY_PD_YJ_LOWEST_DARK_VALID,
-	KEY_PD_YJ_NOISE_WARN_MV,
-	KEY_PD_YJ_GAIN_V_PER_UW,
-	KEY_PD_HK_DARK_MV,
-	KEY_PD_HK_LOWEST_DARK_MV,
-	KEY_PD_HK_LOWEST_DARK_VALID,
-	KEY_PD_HK_NOISE_WARN_MV,
-	KEY_PD_HK_GAIN_V_PER_UW,
-};
-
-static void delete_setting_key(const char *key)
+static void app_nvs_load_ip(struct app_settings_snapshot *s)
 {
-	int rc = settings_delete(key);
+	struct app_nvs_ip_settings stored;
 
-	if (rc != 0 && rc != -ENOENT) {
-		LOG_WRN("settings_delete(%s) failed (%d)", key, rc);
+	if (!app_nvs_read_exact(APP_NVS_ID_IP, &stored, sizeof(stored), "ip")) {
+		return;
 	}
+
+	stored.ip[sizeof(stored.ip) - 1U] = '\0';
+	stored.subnet[sizeof(stored.subnet) - 1U] = '\0';
+	stored.gateway[sizeof(stored.gateway) - 1U] = '\0';
+	stored.dns[sizeof(stored.dns) - 1U] = '\0';
+	stored.ntp[sizeof(stored.ntp) - 1U] = '\0';
+	s->ip.try_dhcp_first = stored.try_dhcp_first != 0U;
+	s->ip.prefer_dhcp_dns = stored.prefer_dhcp_dns != 0U;
+	s->ip.prefer_dhcp_ntp = stored.prefer_dhcp_ntp != 0U;
+	str_set(s->ip.ip, sizeof(s->ip.ip), stored.ip);
+	str_set(s->ip.subnet, sizeof(s->ip.subnet), stored.subnet);
+	str_set(s->ip.gateway, sizeof(s->ip.gateway), stored.gateway);
+	str_set(s->ip.dns, sizeof(s->ip.dns), stored.dns);
+	str_set(s->ip.ntp, sizeof(s->ip.ntp), stored.ntp);
 }
 
-static void delete_attenuator_settings(void)
+static void app_nvs_load_mqtt(struct app_settings_snapshot *s)
 {
-	char key[40];
+	struct app_mqtt_settings stored;
 
+	if (!app_nvs_read_exact(APP_NVS_ID_MQTT, &stored, sizeof(stored), "mqtt")) {
+		return;
+	}
+
+	stored.broker_host[sizeof(stored.broker_host) - 1U] = '\0';
+	if (stored.broker_host[0] == '\0' || stored.broker_port == 0U) {
+		LOG_WRN("Ignoring invalid stored MQTT settings");
+		return;
+	}
+
+	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), stored.broker_host);
+	s->mqtt.broker_port = stored.broker_port;
+}
+
+static void app_nvs_load_attenuator(struct app_settings_snapshot *s)
+{
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
-		for (uint8_t i = 0U; i < APP_ATTENUATOR_COEFF_COUNT; ++i) {
-			attenuator_coeff_key(key, sizeof(key), channel, true, i);
-			delete_setting_key(key);
+		struct app_attenuator_channel_settings stored;
 
-			attenuator_coeff_key(key, sizeof(key), channel, false, i);
-			delete_setting_key(key);
+		if (!app_nvs_read_exact(attenuator_nvs_id(channel), &stored,
+					sizeof(stored), "attenuator")) {
+			continue;
+		}
+		if (!attenuator_channel_valid(&stored)) {
+			LOG_WRN("Ignoring invalid stored attenuator channel %u", channel);
+			continue;
+		}
+
+		s->attenuator.channel[channel] = stored;
+	}
+}
+
+static void app_nvs_load_photodiode(struct app_settings_snapshot *s)
+{
+	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
+		struct app_nvs_pd_channel stored;
+		struct app_pd_channel_settings *pd = &s->photodiode.channel[channel];
+
+		if (!app_nvs_read_exact(pd_nvs_id(channel), &stored,
+					sizeof(stored), "photodiode")) {
+			continue;
+		}
+		if (!pd_channel_valid(&stored)) {
+			LOG_WRN("Ignoring invalid stored photodiode channel %u", channel);
+			continue;
+		}
+
+		pd->dark_mv = stored.dark_mv;
+		pd->lowest_dark_mv = stored.lowest_dark_mv;
+		pd->lowest_dark_valid = stored.lowest_dark_valid != 0U;
+		pd->noise_warn_rms_mv = stored.noise_warn_rms_mv;
+		pd->responsivity_a_per_w = stored.responsivity_a_per_w;
+		pd->transimpedance_v_per_a = stored.transimpedance_v_per_a;
+	}
+}
+
+static void app_nvs_load_laserbank(struct app_settings_snapshot *s)
+{
+	uint32_t value;
+
+	if (!app_nvs_read_exact(APP_NVS_ID_LASERBANK, &value, sizeof(value), "laserbank")) {
+		return;
+	}
+	if (value > LASERBANK_HEATER_MODE_OVERRIDE_OFF) {
+		LOG_WRN("Ignoring invalid stored laser-bank heater mode");
+		return;
+	}
+
+	s->laserbank.heater_mode = (enum laserbank_heater_mode)value;
+}
+
+static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
+				       const struct app_nvs_laser_policy *stored)
+{
+	laser->properties.nominal_current_ma = stored->nominal_current_ma;
+	laser->properties.max_current_ma = stored->max_current_ma;
+	laser->properties.threshold_current_ma = stored->threshold_current_ma;
+	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
+	laser->properties.wavelength_nm = stored->wavelength_nm;
+	laser->current_set_calibration_pct = stored->current_set_calibration_pct;
+	laser->properties.operating_temp_range_c.min_c = stored->operating_temp_min_c;
+	laser->properties.operating_temp_range_c.max_c = stored->operating_temp_max_c;
+	laser->properties.operating_temp_c = stored->operating_temp_c;
+	laser->properties.tec_pid.kp = stored->tec_pid_p;
+	laser->properties.tec_pid.ki = stored->tec_pid_i;
+	laser->properties.tec_pid.kd = stored->tec_pid_d;
+	laser->disable_tec_at_autooff = stored->disable_tec_at_autooff != 0U;
+	laser->properties.dlambda_dT_nm_per_k = stored->dlambda_dT_nm_per_k;
+	laser->properties.dlambda_dA_nm_per_ma = stored->dlambda_dA_nm_per_ma;
+	laser->autooff_s = stored->autooff_s;
+	laser->tune_delta_nm = stored->tune_delta_nm;
+}
+
+static void app_nvs_load_laser(struct app_settings_snapshot *s)
+{
+	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
+		struct app_nvs_laser_policy policy;
+		double total_emitting_s;
+
+		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
+				       sizeof(policy), "laser policy")) {
+			if (laser_policy_valid(&policy)) {
+				app_nvs_apply_laser_policy(&s->laser.channel[channel], &policy);
+			} else {
+				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
+			}
+		}
+
+		if (app_nvs_read_exact(laser_total_nvs_id(channel), &total_emitting_s,
+				       sizeof(total_emitting_s), "laser total") &&
+		    double_in_range(total_emitting_s, 0.0, 1.0e12)) {
+			s->laser.channel[channel].total_emitting_s = total_emitting_s;
 		}
 	}
 }
 
+static void app_nvs_load_route_loss(struct app_settings_snapshot *s)
+{
+	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		struct app_route_loss_record stored;
+
+		if (!app_nvs_read_exact(route_loss_nvs_id(i), &stored,
+					sizeof(stored), "route loss")) {
+			continue;
+		}
+		if (!route_loss_record_valid(&stored)) {
+			LOG_WRN("Ignoring invalid stored route-loss record %u", i);
+			continue;
+		}
+
+		s->route_loss.record[i] = stored;
+	}
+}
+
+static void app_nvs_load_all(struct app_settings_snapshot *s)
+{
+	uint32_t value;
+
+	app_nvs_load_board_type(s);
+	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
+		s->boot_count = value;
+	}
+	if (app_nvs_read_exact(APP_NVS_ID_LAST_KNOWN_UTC_MS, &s->last_known_utc_ms,
+			       sizeof(s->last_known_utc_ms), "last known UTC") &&
+	    s->last_known_utc_ms == 0U) {
+		LOG_WRN("Ignoring invalid stored last known UTC");
+	}
+	app_nvs_load_ip(s);
+	app_nvs_load_mqtt(s);
+	app_nvs_load_attenuator(s);
+	app_nvs_load_photodiode(s);
+	app_nvs_load_laserbank(s);
+	app_nvs_load_laser(s);
+	app_nvs_load_route_loss(s);
+}
+
 static void delete_resettable_settings(void)
 {
-	for (uint8_t i = 0; i < ARRAY_SIZE(resettable_setting_keys); ++i) {
-		/* settings_delete() removes one persisted key from the Zephyr
-		 * settings backend; missing keys are fine during first boot.
-		 */
-		delete_setting_key(resettable_setting_keys[i]);
+	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED);
+	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
+	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
+	(void)app_nvs_delete(APP_NVS_ID_LAST_COMMAND);
+	(void)app_nvs_delete(APP_NVS_ID_IP);
+	(void)app_nvs_delete(APP_NVS_ID_MQTT);
+	(void)app_nvs_delete(APP_NVS_ID_LASERBANK);
+
+	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
+		(void)app_nvs_delete(attenuator_nvs_id(channel));
+	}
+	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
+		(void)app_nvs_delete(pd_nvs_id(channel));
+	}
+	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
+		(void)app_nvs_delete(laser_policy_nvs_id(channel));
+		(void)app_nvs_delete(laser_total_nvs_id(channel));
+	}
+	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		(void)app_nvs_delete(route_loss_nvs_id(i));
+	}
+}
+
+static int route_loss_record_index_locked(const char *route, const char *laser,
+					  bool allocate)
+{
+	int first_free = -1;
+
+	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		struct app_route_loss_record *record =
+			&g_settings.snapshot.route_loss.record[i];
+
+		if (!record->configured) {
+			if (first_free < 0) {
+				first_free = i;
+			}
+			continue;
+		}
+
+		if (strcmp(record->route, route) == 0 &&
+		    strcmp(record->laser, laser) == 0) {
+			return i;
+		}
 	}
 
-	delete_attenuator_settings();
+	return allocate ? first_free : -1;
 }
 
 int app_settings_init(void)
 {
-	static const char *const app_settings_subtrees[] = {
-		"board", "serial", "boot", "ip", "mqtt", "atten", "pd",
-	};
 	int rc;
 
 	k_mutex_init(&g_settings.lock);
 	settings_defaults(&g_settings.snapshot);
 
-	/* settings_subsys_init() attaches the configured Zephyr settings backend
-	 * before any app-owned keys can be loaded or saved.
+	/* Direct NVS keeps Zephyr's flash wear-leveling and recovery behavior
+	 * without storing human-readable setting names alongside small values.
 	 */
-	rc = settings_subsys_init();
+	rc = app_nvs_mount();
 	if (rc != 0) {
-		LOG_ERR("settings_subsys_init failed (%d)", rc);
 		return rc;
 	}
 
-	for (uint8_t i = 0U; i < ARRAY_SIZE(app_settings_subtrees); ++i) {
-		rc = settings_load_subtree(app_settings_subtrees[i]);
-		if (rc != 0) {
-			LOG_WRN("settings_load_subtree('%s') failed (%d)",
-				app_settings_subtrees[i], rc);
-			return rc;
-		}
+	rc = app_nvs_ensure_schema();
+	if (rc != 0) {
+		return rc;
 	}
 
+	app_nvs_load_all(&g_settings.snapshot);
 	return 0;
 }
 
@@ -580,13 +835,9 @@ void app_settings_get_snapshot(struct app_settings_snapshot *out)
 
 int app_settings_note_board_type(const char *board_type, bool *changed)
 {
-	bool changed_local = false;
 	bool persist_needed = false;
 	bool reset_needed = false;
 
-	if (changed != NULL) {
-		*changed = false;
-	}
 	if (board_type == NULL || board_type[0] == '\0' ||
 	    strlen(board_type) >= APP_SETTINGS_BOARD_TYPE_MAX_LEN) {
 		return -EINVAL;
@@ -608,9 +859,8 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		str_set(g_settings.snapshot.board_type,
 			sizeof(g_settings.snapshot.board_type),
 			board_type);
-		changed_local = true;
-		reset_needed = true;
 		persist_needed = true;
+		reset_needed = true;
 	}
 	k_mutex_unlock(&g_settings.lock);
 
@@ -618,10 +868,10 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		delete_resettable_settings();
 	}
 	if (persist_needed) {
-		persist_str(KEY_BOARD_TYPE, board_type);
+		app_nvs_persist_board_type(board_type);
 	}
 	if (changed != NULL) {
-		*changed = changed_local;
+		*changed = reset_needed;
 	}
 
 	return 0;
@@ -649,14 +899,7 @@ void app_settings_update_ip(const struct app_ip_settings *ip, bool persist)
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_bool(KEY_IP_TRY_DHCP, ip->try_dhcp_first);
-		persist_bool(KEY_IP_PREF_DNS, ip->prefer_dhcp_dns);
-		persist_bool(KEY_IP_PREF_NTP, ip->prefer_dhcp_ntp);
-		persist_str(KEY_IP_ADDR, ip->ip);
-		persist_str(KEY_IP_SUBNET, ip->subnet);
-		persist_str(KEY_IP_GATEWAY, ip->gateway);
-		persist_str(KEY_IP_DNS, ip->dns);
-		persist_str(KEY_IP_NTP, ip->ntp);
+		app_nvs_persist_ip(ip);
 	}
 }
 
@@ -683,15 +926,7 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		struct coo_mqtt_broker_config cfg = {
-			.port = mqtt->broker_port,
-		};
-		char endpoint[160];
-
-		str_set(cfg.host, sizeof(cfg.host), mqtt->broker_host);
-		if (coo_mqtt_format_broker_endpoint(&cfg, endpoint, sizeof(endpoint)) == 0) {
-			persist_str(KEY_MQTT_BROKER, endpoint);
-		}
+		app_nvs_persist_mqtt(mqtt);
 	}
 }
 
@@ -719,7 +954,7 @@ void app_settings_update_attenuator_channel(uint8_t channel,
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_attenuator_channel(channel, atten);
+		app_nvs_persist_attenuator_channel(channel, atten);
 	}
 }
 
@@ -745,8 +980,8 @@ void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bo
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_photodiode_channel(0U, &pd->channel[0]);
-		persist_photodiode_channel(1U, &pd->channel[1]);
+		app_nvs_persist_pd_channel(0U, &pd->channel[0]);
+		app_nvs_persist_pd_channel(1U, &pd->channel[1]);
 	}
 }
 
@@ -763,8 +998,161 @@ void app_settings_update_photodiode_channel(uint8_t channel,
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		persist_photodiode_channel(channel, pd);
+		app_nvs_persist_pd_channel(channel, pd);
 	}
+}
+
+void app_settings_get_laserbank(struct app_laserbank_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laserbank;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
+				   bool persist)
+{
+	if (laserbank == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laserbank = *laserbank;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		app_nvs_persist_laserbank(laserbank);
+	}
+}
+
+void app_settings_get_laser(struct app_laser_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laser;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_get_laser_channel(uint8_t channel,
+				   struct app_laser_channel_settings *out)
+{
+	if (out == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.laser.channel[channel];
+	k_mutex_unlock(&g_settings.lock);
+	return 0;
+}
+
+int app_settings_update_laser_channel(uint8_t channel,
+				      const struct app_laser_channel_settings *laser,
+				      bool persist)
+{
+	if (laser == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laser.channel[channel] = *laser;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		app_nvs_persist_laser_channel(channel, laser);
+	}
+
+	return 0;
+}
+
+int app_settings_update_laser_total_emitting(uint8_t channel,
+					     double total_emitting_s,
+					     bool persist)
+{
+	if (channel >= APP_LASER_CHANNEL_COUNT || !(total_emitting_s >= 0.0)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.laser.channel[channel].total_emitting_s = total_emitting_s;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		app_nvs_persist_laser_total(channel, total_emitting_s);
+	}
+
+	return 0;
+}
+
+int app_settings_get_route_loss(const char *route, const char *laser,
+				double *transmission)
+{
+	int index;
+
+	if (transmission == NULL || route == NULL || laser == NULL) {
+		return -EINVAL;
+	}
+	if (route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
+		return -EINVAL;
+	}
+
+	*transmission = 1.0;
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	index = route_loss_record_index_locked(route, laser, false);
+	if (index >= 0) {
+		*transmission = g_settings.snapshot.route_loss.record[index].transmission;
+	}
+	k_mutex_unlock(&g_settings.lock);
+
+	return 0;
+}
+
+int app_settings_set_route_loss(const char *route, const char *laser,
+				double transmission, bool persist)
+{
+	int index;
+	struct app_route_loss_record record;
+
+	if (route == NULL || laser == NULL ||
+	    route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN ||
+	    !(transmission > 0.0 && transmission <= 1.0)) {
+		return -EINVAL;
+	}
+
+	memset(&record, 0, sizeof(record));
+	record.configured = true;
+	str_set(record.route, sizeof(record.route), route);
+	str_set(record.laser, sizeof(record.laser), laser);
+	record.transmission = transmission;
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	index = route_loss_record_index_locked(route, laser, true);
+	if (index >= 0) {
+		g_settings.snapshot.route_loss.record[index] = record;
+	}
+	k_mutex_unlock(&g_settings.lock);
+
+	if (index < 0) {
+		return -ENOSPC;
+	}
+
+	if (persist) {
+		app_nvs_persist_route_loss_index((uint8_t)index, &record);
+	}
+
+	return 0;
 }
 
 uint32_t app_settings_get_mqtt_revision(void)
@@ -776,28 +1164,6 @@ uint32_t app_settings_get_mqtt_revision(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	return value;
-}
-
-uint32_t app_settings_get_serial_holdoff_s(void)
-{
-	uint32_t value;
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	value = g_settings.snapshot.serial_holdoff_s;
-	k_mutex_unlock(&g_settings.lock);
-
-	return value;
-}
-
-void app_settings_set_serial_holdoff_s(uint32_t seconds, bool persist)
-{
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	g_settings.snapshot.serial_holdoff_s = seconds;
-	k_mutex_unlock(&g_settings.lock);
-
-	if (persist) {
-		persist_u32(KEY_SERIAL_HOLDOFF, seconds);
-	}
 }
 
 uint32_t app_settings_get_boot_count(void)
@@ -820,5 +1186,47 @@ void app_settings_increment_boot_count(void)
 	value = g_settings.snapshot.boot_count;
 	k_mutex_unlock(&g_settings.lock);
 
-	persist_u32(KEY_BOOT_COUNT, value);
+	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
+}
+
+bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms)
+{
+	uint64_t value;
+
+	if (utc_ms == NULL) {
+		return false;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	value = g_settings.snapshot.last_known_utc_ms;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (value == 0U) {
+		return false;
+	}
+
+	*utc_ms = value;
+	return true;
+}
+
+void app_settings_note_time_utc_ms(uint64_t utc_ms)
+{
+	if (utc_ms == 0U) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	if (utc_ms == g_settings.snapshot.last_known_utc_ms) {
+		k_mutex_unlock(&g_settings.lock);
+		return;
+	}
+	g_settings.snapshot.last_known_utc_ms = utc_ms;
+	k_mutex_unlock(&g_settings.lock);
+
+	(void)app_nvs_write(APP_NVS_ID_LAST_KNOWN_UTC_MS, &utc_ms, sizeof(utc_ms));
+}
+
+struct nvs_fs *app_settings_nvs_fs(void)
+{
+	return app_nvs_ready ? &app_nvs : NULL;
 }

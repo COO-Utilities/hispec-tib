@@ -35,18 +35,7 @@ Source-of-truth rules:
    commands.md
    implemented_commands.md
    command_implementation_audit.md
-   implementation_gaps.md
    human_review_required.md
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Developer Maintained Docs
-
-   status.md
-   libraries.md
-   networking_plan.md
-   nuisances.md
-   todo.md
 
 .. toctree::
    :maxdepth: 2

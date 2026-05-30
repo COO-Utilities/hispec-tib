@@ -55,8 +55,8 @@ Default command responses use:
 cmd/hsfib-tib/resp/<key>
 ```
 
-MQTT 5 `response_topic` and `correlation_data` are honored when they fit the
-fixed command buffers.
+MQTT 5 `response_topic` is honored when it fits the fixed topic buffer.
+`correlation_data` is echoed when it is 16 bytes or less.
 
 Serial commands share the same normalized command path. A bare serial key is a
 GET; a key with payload is a SET. See:
@@ -68,7 +68,9 @@ GET; a key with payload is a SET. See:
 ## Runtime Shape
 
 - `main.c`: boot order, watchdog feed, network/MQTT loop, outbound publish.
-- `command.c`: MQTT/serial ingress, serial guard, dispatch, response queues.
+- `command.c`: app command queues, serial guard policy, command table, and
+  command handlers, using `lib/coo_commons/command_dispatch.c` for reusable
+  MQTT/serial request and response mechanics.
 - `devices.c`: board strap detection and board-profile setup.
 - `mems_switching.c`: MEMS switch state, routes, and toggler work.
 - `attenuator.c`: DAC-backed logical attenuator control and calibration.
@@ -76,8 +78,8 @@ GET; a key with payload is a SET. See:
 - `photodiode.c`: ADS1115 sampling, dark calibration, noise, telemetry.
 - `tempsense.c`: DS18B20 ambient temperature cache.
 - `sntp_sync.c`: SNTP sync and time status.
-- `app_settings.c`: Zephyr settings-backed app state.
-- `app_warning.c`: best-effort warning publication.
+- `app_settings.c`: app-owned runtime settings and direct Zephyr NVS persistence.
+- `app_identity.c`: selected board-profile MQTT device ID.
 
 Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 

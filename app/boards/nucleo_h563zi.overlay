@@ -14,7 +14,7 @@
 	};
 
 	zephyr,user {
-		laser_power_gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>; /* CN9 D72 */
+		laser_power_gpios = <&gpiob 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>; /* CN9 D72 */
 
 		/* Board-type strap inputs are solder jumpers to ground. */
 		board-type-tib-gpios = <&gpioa 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D35 */
@@ -22,27 +22,103 @@
 		board-type-cal-hk-gpios = <&gpiob 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D36 */
 		board-type-as-gpios = <&gpioe 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D38 */
 
-		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_HIGH>;
-		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_HIGH>;
-		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_HIGH>;
-		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_HIGH>;
-		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_HIGH>;
-		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_HIGH>;
-		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_HIGH>;
-		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_HIGH>;
-		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_HIGH>;
-		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_HIGH>;
-		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_HIGH>;
-		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_HIGH>;
-		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_HIGH>;
-		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_HIGH>;
-		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_HIGH>;
-		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_HIGH>;
+		mems0-a-gpios = <&pcal6416a 0 GPIO_ACTIVE_LOW>;
+		mems0-b-gpios = <&pcal6416a 1 GPIO_ACTIVE_LOW>;
+		mems1-a-gpios = <&pcal6416a 2 GPIO_ACTIVE_LOW>;
+		mems1-b-gpios = <&pcal6416a 3 GPIO_ACTIVE_LOW>;
+		mems2-a-gpios = <&pcal6416a 4 GPIO_ACTIVE_LOW>;
+		mems2-b-gpios = <&pcal6416a 5 GPIO_ACTIVE_LOW>;
+		mems3-a-gpios = <&pcal6416a 6 GPIO_ACTIVE_LOW>;
+		mems3-b-gpios = <&pcal6416a 7 GPIO_ACTIVE_LOW>;
+		mems4-a-gpios = <&pcal6416a 8 GPIO_ACTIVE_LOW>;
+		mems4-b-gpios = <&pcal6416a 9 GPIO_ACTIVE_LOW>;
+		mems5-a-gpios = <&pcal6416a 10 GPIO_ACTIVE_LOW>;
+		mems5-b-gpios = <&pcal6416a 11 GPIO_ACTIVE_LOW>;
+		mems6-a-gpios = <&pcal6416a 12 GPIO_ACTIVE_LOW>;
+		mems6-b-gpios = <&pcal6416a 13 GPIO_ACTIVE_LOW>;
+		mems7-a-gpios = <&pcal6416a 14 GPIO_ACTIVE_LOW>;
+		mems7-b-gpios = <&pcal6416a 15 GPIO_ACTIVE_LOW>;
 
-		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_HIGH>; /* DS2408 P1 */
-		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_HIGH>; /* DS2408 P2 */
-		heater_power_gpios = <&ds2408_pd_power 2 GPIO_ACTIVE_HIGH>; /* DS2408 P3 */
+		yj_power_gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_LOW>; /* DS2408 P1 */
+		hk_power_gpios = <&ds2408_pd_power 1 GPIO_ACTIVE_LOW>; /* DS2408 P2 */
+		heater_power_gpios = <&ds2408_pd_power 2 GPIO_ACTIVE_LOW>; /* DS2408 P3 */
 
+	};
+};
+
+/* The HISPEC-FIB PCB uses PF1/PF0 as I2C2 SCL/SDA. On MB1404 this requires
+ * the "HSE not used" solder-bridge configuration documented in hardware.md,
+ * so the application must not inherit Zephyr's default ST-LINK HSE bypass.
+ */
+&clk_hse {
+	status = "disabled";
+	/delete-property/ hse-bypass;
+};
+
+&clk_hsi {
+	status = "okay";
+};
+
+&pll {
+	/* 64 MHz HSI / 16 * 120 / 2 = 240 MHz SYSCLK, matching board default. */
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <4>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&pll2 {
+	/* Keep PLL2_Q at 160 MHz for peripherals inherited from the Nucleo DTS. */
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <3>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&gpiob {
+	laser_bank_power_default: laser-bank-power-default {
+		gpio-hog;
+		gpios = <2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		output-low;
+		line-name = "laser-bank-power-default-off";
+	};
+
+	board_type_cal_hk_default: board-type-cal-hk-default {
+		gpio-hog;
+		gpios = <10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-cal-hk-strap";
+	};
+};
+
+&gpioa {
+	board_type_tib_default: board-type-tib-default {
+		gpio-hog;
+		gpios = <3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-tib-strap";
+	};
+};
+
+&gpioe {
+	board_type_cal_yj_default: board-type-cal-yj-default {
+		gpio-hog;
+		gpios = <15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-cal-yj-strap";
+	};
+
+	board_type_as_default: board-type-as-default {
+		gpio-hog;
+		gpios = <6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		input;
+		line-name = "board-type-as-strap";
 	};
 };
 
@@ -58,7 +134,7 @@
 	status = "okay";
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 
 	adc1115: adc1115@48 {
 		compatible = "ti,ads1115";
@@ -72,7 +148,7 @@
 			reg = <0>;
 			zephyr,gain = "ADC_GAIN_1_3";
 			zephyr,reference = "ADC_REF_INTERNAL";
-			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>;
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 4)>;
 			zephyr,resolution = <16>;
 			zephyr,input-positive = <0>;
 		};
@@ -81,7 +157,7 @@
 			reg = <2>;
 			zephyr,gain = "ADC_GAIN_1_3";
 			zephyr,reference = "ADC_REF_INTERNAL";
-			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 7813)>;
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 4)>;
 			zephyr,resolution = <16>;
 			zephyr,input-positive = <2>;
 		};
@@ -89,11 +165,13 @@
 };
 
 / {
-	/* 1-Wire bus for DS2408-based relay board control (CN9 D71 / PE9). */
+	/* 1-Wire bus for DS2408 relay control (CN9 D71 / PE9).
+	 * MB1404 requires SB35 OFF and SB67 ON for PE9 GPIO routing.
+	 */
 	w1_pd_power: w1-pd-power {
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
-		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds2408_pd_power: ds2408-pd-power {
 			compatible = "maxim,ds2408";
@@ -101,6 +179,10 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			ngpios = <8>;
+			init-gpios = <&ds2408_pd_power 0 GPIO_ACTIVE_LOW>,
+				     <&ds2408_pd_power 1 GPIO_ACTIVE_LOW>,
+				     <&ds2408_pd_power 2 GPIO_ACTIVE_LOW>;
+			output-low;
 		};
 	};
 
@@ -108,7 +190,7 @@
 	w1_temp: w1-temp {
 		compatible = "zephyr,w1-gpio";
 		status = "okay";
-		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP)>;
+		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds18b20 {
 			compatible = "maxim,ds18b20";
@@ -126,37 +208,72 @@
 	pinctrl-names = "default";
 	clock-frequency = <400000>;
 
-	dac7578: dac7578@48 {
-		compatible = "ti,dac7578";
+	dac7678: dac7678@48 {
+		compatible = "ti,dac7678";
 		reg = <0x48>;
 		status = "okay";
+		#io-channel-cells = <1>;
+		ti,clear-mode = "disabled";
+		ti,reference = "internal-static";
 	};
 
-	dac7578_b: dac7578@4a {
-		compatible = "ti,dac7578";
+	dac7678_b: dac7678@4a {
+		compatible = "ti,dac7678";
 		reg = <0x4a>;
 		status = "okay";
+		#io-channel-cells = <1>;
+		ti,clear-mode = "disabled";
+		ti,reference = "internal-static";
 	};
 
-	pcal6416a: pcal6416a@33 {
+	pcal6416a: pcal6416a@21 {
 		compatible = "nxp,pcal6416a";
-		reg = <0x33>;
+		reg = <0x21>;
 		status = "okay";
 		gpio-controller;
 		#gpio-cells = <2>;
 		ngpios = <16>;
+
+		/* The external MEMS control line is active-high, but the Nucleo
+		 * PCAL drive stage is active-low at the expander pin. These hogs
+		 * deliberately omit GPIO_OPEN_DRAIN and idle the switch lines low.
+		 */
+		mems_drive_default: mems-drive-default {
+			gpio-hog;
+			gpios = <0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<9 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<13 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+				<15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			output-low;
+			line-name = "mems-drive-default-low";
+		};
 	};
 };
 
-/* USART2 on CN9 (PD5/PD6, optional RTS PD4) for modbus laser controller */
+/* USART2 on CN9 for the Modbus laser controller.
+ * PD4 is the RS-485 driver-enable line, controlled by Zephyr Modbus as GPIO.
+ */
 &usart2 {
 	status = "okay";
-	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6 &usart2_rts_pd4>;
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6>;
 	pinctrl-names = "default";
 	current-speed = <115200>;
 
 	modbus0: modbus0 {
 		compatible = "zephyr,modbus-serial";
 		status = "okay";
+		de-gpios = <&gpiod 4 GPIO_ACTIVE_HIGH>; /* CN9 D54 / USART_B_RTS */
 	};
 };

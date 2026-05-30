@@ -18,9 +18,6 @@
 #include "laser_properties.h"
 #include <zephyr/modbus/modbus.h>
 
-#define CLIENT_IFACE 0
-
-
 /* Maiman MODBUS RTU holding-register addresses.
  *
  * These are the register addresses from maiman_modbus_py/config/modbus_config.yaml,
@@ -79,6 +76,12 @@ typedef uint16_t laser_address_t;
 
 /* Finds the register, returns true and sets *address_out if found. */
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
+
+/*
+ * Selects the Zephyr Modbus client interface used by subsequent blocking
+ * Maiman register transactions. Device setup owns the interface lookup.
+ */
+int maiman_set_client_iface(int iface);
 
 
 /* Divider constants from the SF8025 v5.4 device metadata used by the
@@ -172,6 +175,7 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 
 
 /* ----- Measurement getters ----- */
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value);
 float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
 float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
 float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
@@ -197,7 +201,9 @@ uint16_t maiman_get_device_id(maiman_driver_t *drv);
 uint16_t maiman_get_serial_number(maiman_driver_t *drv);
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
 uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
+bool maiman_read_raw_tec_status(maiman_driver_t *drv, uint16_t *status);
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
+bool maiman_read_tec_started(maiman_driver_t *drv, bool *started);
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
 bool maiman_is_operation_started(maiman_driver_t *drv);
 bool maiman_is_current_set_internal(maiman_driver_t *drv);
@@ -217,6 +223,7 @@ bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 /* ----- Setpoint and commands ----- */
 bool maiman_set_current(maiman_driver_t *drv, float current);
 bool maiman_set_current_max(maiman_driver_t *drv, float current);
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent);
 bool maiman_set_frequency(maiman_driver_t *drv, float frequency);
 bool maiman_set_duration(maiman_driver_t *drv, float duration);
 bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c);

@@ -1,65 +1,43 @@
 # Human Review Required
 
-This page is the central list of audit decisions, mismatches, and stale content
-that should be reviewed by a project owner.
+This is the central owner-review list for current code-vs-doc mismatches,
+source TODOs, and behavior decisions.
 
-## Command Spec vs Code
+LLMs Agents: Do NOT change heading names in this file.
 
-- `commands.md` documents `measure_tput`, `lasersettings`, and
-  `laserbank/autowarm`; none are implemented.
-- `commands.md` documents `temp` alarm set behavior; code implements GET only.
-- `commands.md` documents optional GET payloads. Code treats non-empty MQTT
-  payloads as SET unless `msg_type:"get"` is present.
-- `status_get()` ignores optional `ip`, `lasers`, and `attens` request fields
-  and returns a compact payload.
-- `mqtt` docs and source TODOs disagree about whether broker and port should be
-  combined as one field.
-- `laser` command key parsing appears internally inconsistent and likely does
-  not reach real Maiman registers through the documented topic shape.
-- `reboot` is SET-only in code even though the intended interface reads like a
-  no-payload action.
+## PCB Validation
+- [ ] Verify boot MEMS switch state behavior.
+- [ ] Verify ADC levels with scope
+- [ ] Verify DAC levels with scope pre/post opamp
+- [ ] Sort out MEMS loop and ADC loop timing overruns
+- [ ] Validate MODBUS comms with NMH & a spare driver
 
-## Hardware vs Code
+## Command/API Mismatches
 
-- Hardware docs describe two DAC7578 devices and twelve physical TIB FVOA
-  channels. Code initializes six logical attenuator channels through one
-  `dac7578` device handle.
-- Hardware docs distinguish FFSW open-drain and FFLS push-pull MEMS drive.
-  Current code uses raw GPIO expander pins and does not apply per-switch
-  electrical mode.
-- CAL switch names and route names are explicitly provisional in source.
+### LLM Resolved; Human Review Requested
 
-## Behavior That May Not Match Intent
+- [ ] Confirm serial response pretty-printing is readable in CoolTerm and CLion.
+- [ ] Confirm serial `help` content is useful enough for bring-up and matches
+  expected operator wording.
+- [ ] Confirm command options in serial help are complete enough for current
+  workflow.
 
-- `laserbank/poweron`, `laserbank/poweroff`, and `laserbank/clearfaults` are
-  registered as both GET and SET handlers, so bare queries perform actions.
-- Local `laser_t` values map `LASER_1028_Y` and `LASER_1270_J` to the same
-  value.
-- Photodiode dark calibration ownership is split: settings owns persisted
-  values, while the sampler thread completes and optionally stores dark
-  measurements.
+## Decisions To Make
 
+- Decide intended persistence for MEMS switch state, AS split requested/actual state and last-command metadata.
 
-## Stale Docs Removed or Rewritten
+## TODOs
 
-- `status.md` was rewritten from older platform notes into current Zephyr
-  firmware status.
-- `runtime_architecture.md` was rewritten to remove stale split-route wording
-  and reflect current thread/queue/work structure.
-- `libraries.md` was rewritten around current local wrappers and app modules.
-- `nuisances.md` was kept informal and narrowed to current known annoyances.
-- The root `README.md` was rewritten from an older W5500/Pico template into a
-  current Nucleo-oriented overview with links to the audit pages.
+- `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
-## LLM-resolved items requiring human review
+## Deferred Owner-Specified Capabilities
 
-- Stale Pico/C++/Zyre status content was removed from the authoritative status
-  page because current code is a Zephyr C firmware app.
-- Stale splitter wording was replaced with current route names:
-  `yj_calin -> yj_split` and `hk_calin -> hk_split`.
-- Old library notes were consolidated into a current module/wrapper inventory.
-- Old README build and command examples were replaced by the current Nucleo
-  build command and links to implementation-derived command docs.
+Do not design or implement these without a detailed owner specification:
 
-## Codex Judgment Calls
+- Verify boot MEMS switch state behavior.
 
+## Test items
+
+- Add test coverage around `json_utils.c`, command normalization, and network profile selection.
+- Add test coverage for the attenuator model and inverse once calibration expectations are owner-approved.
+- Add automated tests for command parsing and non-hardware domain logic.

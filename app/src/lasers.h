@@ -1,10 +1,10 @@
 /**
  * @file lasers.h
- * @brief Higher-level TIB laser-bank GPIO, relay, and Maiman helper APIs.
+ * @brief Higher-level TIB laser-bank power and Maiman helper APIs.
  *
- * These helpers may sleep, block on Modbus, change laser-bank power/relay
- * state, and write Maiman EEPROM-backed parameters. Most are not yet exposed by
- * the current command dispatch table.
+ * These helpers may sleep, block on Modbus, change laser-bank power, and write
+ * Maiman EEPROM-backed parameters. Most are not yet exposed by the current
+ * command dispatch table.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -18,6 +18,8 @@
 
 #include "laser_properties.h"
 #include "maiman.h"
+
+struct app_laser_channel_settings;
 
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
@@ -33,10 +35,10 @@ enum hispec_laser_id {
 	HISPEC_LASER_UNKNOWN = -1,
 };
 
-enum hispec_laser_aux_output {
-	HISPEC_LASER_AUX_YJ_PHOTODIODE = 0,
-	HISPEC_LASER_AUX_HK_PHOTODIODE,
-	HISPEC_LASER_AUX_BANK_HEATER,
+enum hispec_laser_bank_power_mode {
+	HISPEC_LASER_BANK_POWER_AUTO = 0,
+	HISPEC_LASER_BANK_POWER_OVERRIDE_ON,
+	HISPEC_LASER_BANK_POWER_OVERRIDE_OFF,
 };
 
 struct hispec_laser_driver_profile {
@@ -78,18 +80,27 @@ struct hispec_laser_status {
 	bool lock_tec_selfheat;
 	bool ready_to_operate;
 	float current_set_ma;
+	float level_percent;
 	float current_measured_ma;
 	float current_min_ma;
 	float current_max_ma;
 	float current_max_limit_ma;
 	float current_protection_threshold_ma;
 	float voltage_v;
+	float current_on_time_s;
+	float tec_on_time_s;
+	double total_emitting_s;
+	float tune_delta_nm;
+	uint32_t autooff_s;
+	int64_t off_in_s;
 	float tec_temperature_set_c;
 	float tec_temperature_measured_c;
 	float pcb_temperature_c;
 	float tec_current_measured_a;
 	float tec_current_limit_a;
 	float tec_voltage_v;
+	float current_set_calibration_pct;
+	float ntc_t_coefficient_per_c;
 	tec_pid_t tec_pid;
 	float estimated_power_mw;
 	float estimated_wavelength_nm;
@@ -116,6 +127,23 @@ struct hispec_laser_tune_result {
 	bool current_clamped;
 };
 
+struct hispec_laser_flux_estimate {
+	double current_ma;
+	double tec_temperature_c;
+	double power_mw;
+	double power_err_mw;
+	double wavelength_nm;
+	double flux_ph_s;
+	double flux_err_ph_s;
+};
+
+struct hispec_laser_channel_temperature {
+	enum hispec_laser_id id;
+	bool valid;
+	bool tec_enabled;
+	float tec_temperature_c;
+};
+
 /**
  * @brief Parse a command/API laser name into a laser-bank channel.
  *
@@ -138,40 +166,62 @@ int hispec_laser_get_driver_profile(enum hispec_laser_id id,
 int hispec_laser_make_driver(enum hispec_laser_id id, maiman_driver_t *drv);
 
 /**
- * @brief Read the TIB laser-bank supply GPIO.
+ * @brief Return the firmware-requested TIB laser-bank supply state.
  *
- * Returns false when this board is not the TIB or the GPIO is unavailable.
+ * The Nucleo overlay drives the regulator inhibit line with an open-drain
+ * GPIO. A released pin may not read high, so command/control flow uses the
+ * firmware-requested state as its source of truth.
  */
 bool hispec_laser_bank_power_is_enabled(void);
 
 /**
+ * @brief Return the current laser-bank supply on-duration in seconds.
+ *
+ * The laser-bank power owner latches this runtime-only value when the bank
+ * supply is observed or driven on. It returns 0 when the bank is off.
+ */
+uint32_t hispec_laser_bank_power_on_duration_s(void);
+
+/** @brief Get or set the runtime laser-bank power override mode. */
+enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
+const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
+int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
+
+/**
  * @brief Set the TIB laser-bank supply GPIO.
  *
- * Side effect: drives the board power switch and, when enabling, sleeps for
- * HISPEC_LASER_BANK_BOOT_DELAY_MS so the Maiman controllers can boot before a
- * following Modbus transaction.
+ * Side effect: drives the board power switch. With the Nucleo open-drain test
+ * configuration, enabling releases the GPIO and disabling sinks it low. When
+ * enabling, sleeps for HISPEC_LASER_BANK_BOOT_DELAY_MS so the Maiman
+ * controllers can boot before a following Modbus transaction. When disabling a
+ * powered bank, first writes driver currents to zero and stops TECs as
+ * practical; a Modbus shutdown failure is returned even if the GPIO transition
+ * itself succeeds.
  */
 int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
 
 /**
  * @brief Power-cycle the laser bank to clear latched Maiman overcurrent faults.
  *
- * Side effect: disables and re-enables the whole bank supply. This is not a
- * per-laser reset and should not be used while another channel is intentionally
- * emitting.
+ * If the bank is off or no powered driver reports an overcurrent fault, this
+ * is a no-op and @p actual_off_ms is set to 0. Otherwise this disables and
+ * re-enables the whole bank supply, sleeps for the requested off interval, and
+ * reports the interval through @p actual_off_ms. This is not a per-laser reset
+ * and should not be used while another channel is intentionally emitting.
  */
-int hispec_laser_bank_clear_faults(uint32_t off_ms);
+int hispec_laser_bank_clear_faults(uint32_t off_ms,
+				   uint32_t *actual_off_ms);
 
 /**
- * @brief Set one relay-box output: YJ PD power, HK PD power, or bank heater.
+ * @brief Poll TEC temperatures and TEC-running state for each laser channel.
  *
- * Side effect: writes a logical GPIO value through Zephyr's gpio_pin_set_dt();
- * active-low/high board flags are handled by the GPIO API.
+ * This call blocks on Modbus RTU transactions while holding the laser-bank
+ * mutex so command handlers and the heater control loop do not interleave RS-485
+ * traffic. If the bank is off, channel readings are marked invalid but the
+ * caller still receives one initialized entry per known laser channel.
  */
-int hispec_laser_aux_power_set(enum hispec_laser_aux_output output, bool enabled);
-
-/** @brief Read one relay-box output's logical state. */
-int hispec_laser_aux_power_get(enum hispec_laser_aux_output output, bool *enabled);
+int hispec_laser_bank_read_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT]);
 
 /**
  * @brief Verify that the expected Maiman driver is at a channel's Modbus address.
@@ -185,8 +235,9 @@ int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
  * @brief Program diode-specific limits into the Maiman driver.
  *
  * Writes settings that must be restored if a Maiman module is replaced:
- * current max, TEC current limit, TEC PID, and CW mode. If @p save_to_eeprom is
- * true, the module's EEPROM save command is sent afterward.
+ * current max, current calibration, TEC current limit, TEC PID, and CW
+ * modulation registers. If @p save_to_eeprom is true, the module's EEPROM
+ * save command is sent afterward.
  */
 int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_eeprom);
 
@@ -197,6 +248,12 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 /** @brief Read a best-effort snapshot of one laser channel. */
 int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status *out);
 
+/** @brief Stop one channel's emission and write current 0 when possible. */
+int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec);
+
+/** @brief Stop every channel's emission and write driver current 0 when possible. */
+int hispec_laser_stop_all_outputs(bool stop_tecs);
+
 /**
  * @brief Set raw diode current in mA.
  *
@@ -205,6 +262,11 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
  * emission without exposing a public startup/shutdown primitive.
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma);
+
+/** @brief Set output percent and configure auto-off deadline. */
+int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
+					    float percent,
+					    uint32_t autooff_s);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw);
@@ -215,14 +277,43 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent);
 /** @brief Set the TEC temperature setpoint and start the TEC if needed. */
 int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c);
 
-/** @brief Configure pulse frequency and duration without starting emission. */
-int hispec_laser_set_pulse(enum hispec_laser_id id, float frequency_hz, float duration_ms);
-
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
 int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
 
+/**
+ * @brief Get/update app-owned laser channel settings.
+ *
+ * The laser module validates the complete settings record and decides whether
+ * driver-backed values changed enough to require Maiman reprogramming. Updates
+ * may sleep, power the bank temporarily, stop emission, write Modbus registers,
+ * and persist app-owned settings when requested.
+ */
+int hispec_laser_get_channel_settings(enum hispec_laser_id id,
+				      struct app_laser_channel_settings *out);
+int hispec_laser_update_channel_settings(enum hispec_laser_id id,
+					 const struct app_laser_channel_settings *settings,
+					 bool persist);
+int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
+				   bool persist);
+float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
+
 /** @brief Estimate optical power from current using the fixed diode properties. */
 float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);
+
+/**
+ * @brief Estimate emitted photon flux from the laser module's operating state.
+ *
+ * The laser module owns the current/TEC setpoints used for this estimate. This
+ * reads only module state under a mutex; it does not perform Modbus I/O, change
+ * GPIO state, enqueue, publish, or persist settings.
+ */
+int laser_estimate_flux(enum hispec_laser_id id,
+			float fractional_noise,
+			float constant_noise_mw,
+			struct hispec_laser_flux_estimate *out);
+
+/** @brief Return current-emission on-time tracked by this module since boot. */
+float hispec_laser_current_on_time_s(enum hispec_laser_id id);
 
 /** @brief Estimate wavelength from TEC temperature and current. */
 float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,

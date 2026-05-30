@@ -21,6 +21,9 @@
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
 #include <zephyr/net/net_ip.h>
+#if defined(CONFIG_DNS_RESOLVER)
+#include <zephyr/net/dns_resolve.h>
+#endif
 #if defined(CONFIG_NET_DHCPV4)
 #include <zephyr/net/dhcpv4.h>
 #endif
@@ -39,8 +42,13 @@ static struct net_mgmt_event_callback net_l4_mgmt_cb;
 static struct net_mgmt_event_callback net_ipv4_mgmt_cb;
 static struct k_work_delayable reconnect_work;
 static bool network_initialized;
+#if defined(CONFIG_NET_DHCPV4)
+static atomic_t dhcp_bound_seen;
+#endif
 
-//TODO is this really necessary, I'm inclined to axe it
+/* Tiny local copies keep profile/default setup readable without dynamic
+ * allocation or repeating strncpy termination rules.
+ */
 static void str_set(char *dst, size_t dst_size, const char *src)
 {
 	if (dst == NULL || dst_size == 0U) {
@@ -56,7 +64,6 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 	dst[dst_size - 1U] = '\0';
 }
 
-//TODO is this really necessary, I'm inclined to axe it, use net_addr_pton directly, this looks like defensive coding
 static bool parse_ipv4(const char *text, struct in_addr *out)
 {
 	if (text == NULL || out == NULL || text[0] == '\0') {
@@ -65,6 +72,53 @@ static bool parse_ipv4(const char *text, struct in_addr *out)
 
 	return net_addr_pton(AF_INET, text, out) == 0;
 }
+
+static bool parse_ipv4_nonzero(const char *text, struct in_addr *out)
+{
+	struct in_addr addr = {0};
+
+	if (!parse_ipv4(text, &addr) || net_ipv4_is_addr_unspecified(&addr)) {
+		return false;
+	}
+
+	if (out != NULL) {
+		*out = addr;
+	}
+	return true;
+}
+
+#if defined(CONFIG_DNS_RESOLVER)
+static int configure_manual_dns(const struct network_ipv4_profile *profile)
+{
+	struct dns_resolve_context *ctx;
+	struct in_addr dns = {0};
+	const char *servers[2];
+	int rc;
+
+	if (profile == NULL || profile->dns[0] == '\0') {
+		return 0;
+	}
+	if (!parse_ipv4_nonzero(profile->dns, &dns)) {
+		return -EINVAL;
+	}
+
+	ctx = dns_resolve_get_default();
+	servers[0] = profile->dns;
+	servers[1] = NULL;
+	rc = dns_resolve_reconfigure(ctx, servers, NULL, DNS_SOURCE_MANUAL);
+	if (rc != 0) {
+		LOG_WRN("Manual DNS reconfigure failed (%d)", rc);
+	}
+
+	return rc;
+}
+#else
+static int configure_manual_dns(const struct network_ipv4_profile *profile)
+{
+	ARG_UNUSED(profile);
+	return 0;
+}
+#endif
 
 static bool profile_has_valid_static_ipv4(const struct network_ipv4_profile *profile)
 {
@@ -152,6 +206,10 @@ static int apply_static_profile(struct net_if *iface,
 		net_if_ipv4_set_gw(iface, &gateway);
 	}
 
+	if (configure_manual_dns(profile) != 0) {
+		return -EINVAL;
+	}
+
 	active_source = source;
 	LOG_INF("Using static IPv4 (%s): %s / %s gw %s",
 		network_ipv4_source_str(source),
@@ -163,6 +221,30 @@ static int apply_static_profile(struct net_if *iface,
 }
 
 #if defined(CONFIG_NET_DHCPV4)
+/* Zephyr's generic IPv4 address lookup is address-source agnostic; DHCP success
+ * must check either the DHCP-bound event or addr_type so compiled/manual static
+ * addresses do not end the wait.
+ */
+static bool iface_has_preferred_dhcp_addr(struct net_if *iface)
+{
+	struct in_addr *addr;
+	struct net_if *owner = NULL;
+	struct net_if_addr *if_addr;
+
+	if (iface == NULL) {
+		return false;
+	}
+
+	addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
+	if (addr == NULL) {
+		return false;
+	}
+
+	if_addr = net_if_ipv4_addr_lookup(addr, &owner);
+	return if_addr != NULL && owner == iface &&
+	       if_addr->addr_type == NET_ADDR_DHCP;
+}
+
 static int try_dhcp(struct net_if *iface, uint32_t timeout_ms)
 {
 	uint32_t elapsed = 0U;
@@ -175,10 +257,12 @@ static int try_dhcp(struct net_if *iface, uint32_t timeout_ms)
 	/* DHCP restart is followed by a bounded polling loop so application boot
 	 * can fall back to static service addresses when no DHCP server responds.
 	 */
+	atomic_clear(&dhcp_bound_seen);
 	net_dhcpv4_restart(iface);
 
 	while (elapsed < timeout_ms || timeout_ms == 0U) {
-		if (net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED) != NULL) {
+		if (atomic_get(&dhcp_bound_seen) != 0 ||
+		    iface_has_preferred_dhcp_addr(iface)) {
 			active_source = NETWORK_IPV4_SOURCE_DHCP;
 			LOG_INF("DHCPv4 acquired address");
 			return 0;
@@ -264,7 +348,12 @@ static void net_ipv4_evt_handler(struct net_mgmt_event_callback *cb,
 {
 	ARG_UNUSED(cb);
 
-	if (mgmt_event == NET_EVENT_IPV4_ADDR_ADD) {
+	if (mgmt_event == NET_EVENT_IPV4_DHCP_BOUND) {
+#if defined(CONFIG_NET_DHCPV4)
+		atomic_set(&dhcp_bound_seen, 1);
+#endif
+		active_source = NETWORK_IPV4_SOURCE_DHCP;
+	} else if (mgmt_event == NET_EVENT_IPV4_ADDR_ADD) {
 		struct network_ipv4_info info = {0};
 		active_source = infer_source_from_iface(iface);
 
@@ -296,6 +385,12 @@ static int apply_active_config(struct net_if *iface)
 	if (active_cfg.try_dhcp_first) {
 		rc = try_dhcp(iface, active_cfg.dhcp_timeout_ms);
 		if (rc == 0) {
+#if defined(CONFIG_DNS_RESOLVER)
+			if (!active_cfg.prefer_dhcp_dns &&
+			    configure_manual_dns(&active_cfg.static_profile) != 0) {
+				return -EINVAL;
+			}
+#endif
 			return 0;
 		}
 		LOG_WRN("DHCPv4 timed out (%d), trying static", rc);
@@ -461,6 +556,8 @@ int network_reconfigure(const struct network_config *cfg)
 {
 	int rc;
 	struct net_if *iface;
+	struct network_config prior_cfg;
+	enum network_ipv4_source prior_source;
 
 	if (cfg == NULL) {
 		return -EINVAL;
@@ -472,10 +569,15 @@ int network_reconfigure(const struct network_config *cfg)
 		return -ENETDOWN;
 	}
 
+	prior_cfg = active_cfg;
+	prior_source = active_source;
 	active_cfg = *cfg;
 	rc = apply_active_config(iface);
 	if (rc != 0) {
 		LOG_WRN("No IPv4 configuration could be applied (%d)", rc);
+		active_cfg = prior_cfg;
+		active_source = prior_source;
+		(void)apply_active_config(iface);
 	}
 
 	return rc;
@@ -507,7 +609,9 @@ int network_init(const struct network_config *cfg, network_event_cb_t event_cb)
 		net_mgmt_add_event_callback(&net_l4_mgmt_cb);
 
 		net_mgmt_init_event_callback(&net_ipv4_mgmt_cb, net_ipv4_evt_handler,
-					     NET_EVENT_IPV4_ADDR_ADD | NET_EVENT_IPV4_ADDR_DEL);
+					     NET_EVENT_IPV4_ADDR_ADD |
+					     NET_EVENT_IPV4_ADDR_DEL |
+					     NET_EVENT_IPV4_DHCP_BOUND);
 		net_mgmt_add_event_callback(&net_ipv4_mgmt_cb);
 
 		network_initialized = true;

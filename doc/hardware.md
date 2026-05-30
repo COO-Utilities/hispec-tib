@@ -29,14 +29,29 @@ See status.md for software details
 - Microcontroller reference manual STM32H563ZI.pdf
 - https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
 
+Must edit default solder bridges to use i2c2:
+• HSE not used: PF0/PH0 and PF1/PH1 are used as GPIOs instead of clocks. The configuration must be:
+– SB48 and SB50 ON
+– SB49 OFF
+
 
 ## MEMS Switches
-Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF)
+Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
 - 3.3V i2c, 5V gpio, 25mA max drive
-- Address 0x33 (ADDR high) or 0x22 (ADDR low), using 0x33
-- Configure as open drain for FFSW as they have 5V pullups
-- Configure as push-pull for FFLS
-- Require 2 pins per FFSW or FFLS
+- Address 0x21 (ADDR high) or 0x20 (ADDR low), using 0x21 (addr is tied to +5V (VDD(P))) 0b0100001
+- FFSW lines have 4.7k external resistors. in open drain each switch channel flows 2mA through PCAL
+  - FFLS lines do not have a pullup but one may be added at site of unpopulated FFSW drive MOSFET to allow operation in same manner
+- Placing ports in push-pull with pull-ups enabled and then idling the external MEMS control lines low should work for all switches.
+- The port with FFLS switches also has FFSW switches so I am going with a common selection for both ports for simplicity.
+- Initial testing will be with push-pull approach and full drive strength
+- Requires 2 pins per FFSW or FFLS
+- The Nucleo devicetree configures all 16 PCAL MEMS outputs with GPIO hogs:
+  push-pull, pull-ups enabled, active-low at the PCAL pin, and logical
+  output-low at boot so the external switch-control lines idle low. Firmware
+  pulses the logical line active, which is a high pulse at the switch-control
+  line. Zephyr's mainline `nxp,pcal6416a` driver resets the PCAL drive strength
+  registers to full drive and leaves both ports push-pull; firmware no longer
+  writes the PCAL port-drive register directly.
 
 For board files:
 - Nucleo:
@@ -62,17 +77,17 @@ A pair of DAC7578SPW 8 chan DAC driving OPA2991 2 channel OpAmps
 - Each laser channel uses a pair of physical attenuators:
   - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
   - TIB: 12 DAC channels in use (6 channels x 2 attenuators)
-- I2C addr: 0x48 (channels 1-3) and 0x4A (chan 4-6)  (0x4C floating pin, 0x48 GND, 0x4A VCC)
+- I2C addr: 0x48 and 0x4A  (DS says: 0x4C floating pin, 0x48 GND, 0x4A VCC)
 - LDAC is tied to ground.
 - Channels:
-  - 0x48
-    - 1-2: Y atten 1 & 2
-    - 3-4: J atten 1 & 2
-    - 5-6: YJATC atten 1 & 2
   - 0x4A
-    - 1-2: HK atten 1 & 2
-    - 3-4: H/CAL atten 1 & 2
-    - 5-6: K atten 1 & 2
+    - Y Attens: A=1, C=2
+    - J Attens: E=1, G=2 
+    - YJATC Attens: D=1 & F=2
+  - 0x48
+    - HKATC Attens: A=1, C=2
+    - H/CAL Attens: E=1, G=2
+    - K Attens: D=1, F=2
 
 For board files:
 - Nucleo:
@@ -92,7 +107,8 @@ Uses an ADS1115 16 bit 4 channel muxed ADC
 - PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - Uses 2-channels of LL shifting for i2c 3.3-5V
-- TODO Elec: Consider clamping Ain at MAX Vdd+.3 (say .2V above 5V with a shottkey(?) diode)
+- Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
+- See photodiode_notes.md for additional details
 
 For board files:
 - Nucleo:
@@ -118,18 +134,33 @@ For board files:
 ## Laser Bank Power Enable
 - 3.3V, GPIO to enable of power driver,
 - pull into 1-5v range against a 10k pulldown to ground to enable
+- Firmware policy is off after reboot. The Nucleo devicetree hog drives the
+  on-board laser-bank power enable low before app setup, and app setup repeats
+  the inactive configuration.
 
 For board files:
 - Nucleo: CN9 13 D72 IO PB2 -
+- MB1404 solder bridges SB61, SB66 must be changed to OFF, ON for PB2 to connect to CN9 pin 13 as GPIO.
 
 ## Off-board power switch for photodiodes and laser bank aux heater
 Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
 - P1 is the power switch for the YJ photodiode
 - P2 is the power switch for the HK photodiode
 - P3 is the power switch for the laser bank aux heater
+- The DS2408 driver should set all expander outputs to their overlay-configured defaults during driver init in the same 
+  manner as any system GPIOs when the chip is present. Absent configuration, driver should not configure the chip 
+  (allowing default power-on or current config to persist). Application device startup code will enforce startup logic 
+  state for the relays. 
+- If the off-board relay expander is missing at boot, firmware emits a (non-droppable) warning,
+  reports the relay GPIO expander offline in `status`, and ignores relay power commands with a warning.
+- The DS2408 is intentionally not configured through a generic GPIO hog because
+  Zephyr's hog init aborts on a not-ready GPIO controller. The relay board is an
+  allowed missing-at-boot fault (the mems' PCAL being unavaialble would indicate a much larger, PCB, problem).
 
 For board files:
 - Nucleo: CN9 15 D71 IO PE9
+- MB1404 solder bridges for PE9 must select GPIO on Zio/ST morpho:
+  SB35 OFF, SB67 ON.
 
 ## DS18B20 1Wire Temperature Sensor
 - 3.3v digital temp sensor for good measure

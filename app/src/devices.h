@@ -27,11 +27,17 @@
 
 #define MODBUS_BAUD 115200
 #define MODBUS_PARITY UART_CFG_PARITY_NONE
-#define MODBUS_STOPBITS UART_CFG_STOP_BITS_2
-#define MODBUS_RX_TIMEOUT_MS 10
+#define MODBUS_STOPBITS UART_CFG_STOP_BITS_1
+/* Zephyr Modbus passes rx_timeout to K_USEC(); keep this value in microseconds.
+ * A measured single-register NH8 round trip is about 3.2 ms from DE assertion
+ * through the last Nucleo RX transition. Zephyr still waits about 1 ms for RTU
+ * frame completion, so 10 ms leaves scheduling margin without masking faults.
+ */
+#define MODBUS_RX_TIMEOUT_US 10000U
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6
+#define HISPEC_ATTENUATOR_LFC_INDEX 4U
 
 enum hispec_board_type {
 	HISPEC_BOARD_UNKNOWN = 0,
@@ -44,7 +50,6 @@ enum hispec_board_type {
 
 // extern const struct device *modbus;
 extern const struct device *adc_dev;
-extern const struct device *dac_dev;
 extern const struct device *gpio_dev;
 
 extern const struct gpio_dt_spec laser_power_gpio;
@@ -74,8 +79,38 @@ enum hispec_board_type devices_board_type(void);
 /** @brief Return the short stable board type name used in logs/settings. */
 const char *devices_board_type_name(void);
 
+/**
+ * @brief Return true when a logical attenuator belongs to the active profile.
+ *
+ * This is a profile/board-presence check only. It does not probe DAC readiness
+ * or perform I2C; callers still need to handle transient DAC failures.
+ */
+bool devices_attenuator_channel_available(uint8_t attenuator_index);
+
 /** @brief Check/configure devices required by the detected board profile. */
 bool devices_ready(void);
+
+/** @brief Return true when the off-board DS2408 relay GPIO expander is usable. */
+bool devices_relay_gpio_online(void);
+
+/** @brief Last DS2408 relay GPIO setup error, or 0 when online. */
+int devices_relay_gpio_last_error(void);
+
+/**
+ * @brief Capture and clear hardware reset-cause flags for this boot.
+ *
+ * On STM32 this uses Zephyr hwinfo to read RCC reset flags, including
+ * watchdog reset. Call once early in boot before later code can clear them.
+ */
+void devices_capture_boot_reset_cause(void);
+
+/**
+ * @brief Queue retained watchdog boot telemetry for MQTT retry.
+ *
+ * Uses the captured reset cause and enqueues a non-best-effort MQTT telemetry
+ * message if the prior reset included watchdog expiration.
+ */
+void devices_queue_boot_reset_telemetry(void);
 
 /** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);

@@ -41,14 +41,17 @@ static uint8_t client_id[50];
 
 /* User callback for messages */
 static mqtt_message_cb_t user_mqtt_cb = NULL;
+static void *user_mqtt_cb_data;
 
 /* Subscriptions */
 #define MAX_SUBSCRIPTIONS 4
 static struct mqtt_topic subscriptions[MAX_SUBSCRIPTIONS];
 static int num_subscriptions = 0;
 
-/* Retry configuration */
-#define MSECS_NET_POLL_TIMEOUT 30000
+/* Keep failed broker attempts below the application watchdog interval. */
+#define MSECS_NET_POLL_TIMEOUT 3000
+/* Keep connected idle polling short enough for the application watchdog loop. */
+#define MSECS_PROCESS_POLL_TIMEOUT 1000
 
 bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
 				    struct coo_mqtt_broker_config *cfg)
@@ -102,12 +105,15 @@ int coo_mqtt_format_broker_endpoint(const struct coo_mqtt_broker_config *cfg,
 	return 0;
 }
 
-static int resolve_broker_addr(void)
+static int resolve_broker_addr_for_config(const struct coo_mqtt_broker_config *cfg,
+					  struct sockaddr_storage *addr_out,
+					  char *resolved_ip,
+					  size_t resolved_ip_len)
 {
 	int rc;
 	char port_str[6];
 	char broker_ip[NET_IPV4_ADDR_LEN];
-	struct sockaddr_in *broker4;
+	struct sockaddr_in broker4 = {0};
 	struct zsock_addrinfo *result = NULL;
 	struct in_addr numeric_addr = { 0 };
 #if defined(CONFIG_DNS_RESOLVER)
@@ -120,29 +126,26 @@ static int resolve_broker_addr(void)
 		.ai_socktype = SOCK_STREAM
 	};
 
-	if (active_broker_cfg.host[0] == '\0' || active_broker_cfg.port == 0U) {
+	if (cfg == NULL || cfg->host[0] == '\0' || cfg->port == 0U) {
 		LOG_ERR("Broker config missing");
 		return -EINVAL;
 	}
-	(void)snprintk(port_str, sizeof(port_str), "%u", active_broker_cfg.port);
+	(void)snprintk(port_str, sizeof(port_str), "%u", cfg->port);
 
-	broker4 = (struct sockaddr_in *)&broker;
-	memset(broker4, 0, sizeof(*broker4));
-
-	if (net_addr_pton(AF_INET, active_broker_cfg.host, &numeric_addr) == 0) {
-		broker4->sin_family = AF_INET;
-		broker4->sin_port = htons(active_broker_cfg.port);
-		broker4->sin_addr = numeric_addr;
+	if (net_addr_pton(AF_INET, cfg->host, &numeric_addr) == 0) {
+		broker4.sin_family = AF_INET;
+		broker4.sin_port = htons(cfg->port);
+		broker4.sin_addr = numeric_addr;
 		goto log_addr;
 	}
 
 	if (!dns_supported) {
 		LOG_ERR("Broker '%s' is not numeric IPv4 and DNS_RESOLVER is disabled",
-			active_broker_cfg.host);
+			cfg->host);
 		return -ENOTSUP;
 	}
 
-	rc = zsock_getaddrinfo(active_broker_cfg.host, port_str, &hints, &result);
+	rc = zsock_getaddrinfo(cfg->host, port_str, &hints, &result);
 	if (rc != 0) {
 		LOG_ERR("Failed to resolve broker hostname [%s]", zsock_gai_strerror(rc));
 		return -EIO;
@@ -152,18 +155,37 @@ static int resolve_broker_addr(void)
 		return -ENOENT;
 	}
 
-	broker4->sin_addr.s_addr = ((struct sockaddr_in *)result->ai_addr)->sin_addr.s_addr;
-	broker4->sin_family = AF_INET;
-	broker4->sin_port = ((struct sockaddr_in *)result->ai_addr)->sin_port;
+	broker4.sin_addr.s_addr = ((struct sockaddr_in *)result->ai_addr)->sin_addr.s_addr;
+	broker4.sin_family = AF_INET;
+	broker4.sin_port = ((struct sockaddr_in *)result->ai_addr)->sin_port;
 	zsock_freeaddrinfo(result);
 
 log_addr:
-	if (net_addr_ntop(AF_INET, &broker4->sin_addr, broker_ip, sizeof(broker_ip)) == NULL) {
+	if (net_addr_ntop(AF_INET, &broker4.sin_addr, broker_ip, sizeof(broker_ip)) == NULL) {
 		snprintk(broker_ip, sizeof(broker_ip), "?.?.?.?");
 	}
-	LOG_INF("MQTT broker resolved: %s:%u", broker_ip, active_broker_cfg.port);
+	LOG_INF("MQTT broker resolved: %s:%u", broker_ip, cfg->port);
+	if (resolved_ip != NULL && resolved_ip_len > 0U) {
+		strncpy(resolved_ip, broker_ip, resolved_ip_len - 1U);
+		resolved_ip[resolved_ip_len - 1U] = '\0';
+	}
+	if (addr_out != NULL) {
+		memset(addr_out, 0, sizeof(*addr_out));
+		memcpy(addr_out, &broker4, sizeof(broker4));
+	}
 
 	return 0;
+}
+
+int coo_mqtt_resolve_broker_config(const struct coo_mqtt_broker_config *cfg,
+				   char *resolved_ip, size_t resolved_ip_len)
+{
+	return resolve_broker_addr_for_config(cfg, NULL, resolved_ip, resolved_ip_len);
+}
+
+static int resolve_broker_addr(void)
+{
+	return resolve_broker_addr_for_config(&active_broker_cfg, &broker, NULL, 0U);
 }
 
 int coo_mqtt_set_broker_config(const struct coo_mqtt_broker_config *cfg)
@@ -179,9 +201,10 @@ int coo_mqtt_set_broker_config(const struct coo_mqtt_broker_config *cfg)
 	return 0;
 }
 
-void coo_mqtt_set_message_callback(mqtt_message_cb_t cb)
+void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data)
 {
 	user_mqtt_cb = cb;
+	user_mqtt_cb_data = user_data;
 }
 
 int coo_mqtt_add_subscription(const char *topic_str, uint8_t qos)
@@ -252,13 +275,16 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 	payload[rc] = '\0';
 
 	LOG_INF("MQTT payload received!");
-	LOG_INF("topic: '%s', payload: %s", evt->param.publish.message.topic.topic.utf8, payload);
+	LOG_INF("topic: '%.*s', payload: %s",
+		(int)evt->param.publish.message.topic.topic.size,
+		evt->param.publish.message.topic.topic.utf8,
+		payload);
 
 	publish_param.message.payload.data = payload;
 	publish_param.message.payload.len = rc;
 
 	if (user_mqtt_cb) {
-		user_mqtt_cb(&publish_param);
+		user_mqtt_cb(&publish_param, user_mqtt_cb_data);
 	}
 }
 
@@ -404,8 +430,16 @@ int coo_mqtt_subscribe(struct mqtt_client *client)
 int coo_mqtt_process(struct mqtt_client *client)
 {
 	int rc;
+	int keepalive_ms = mqtt_keepalive_time_left(client);
+	int timeout_ms = keepalive_ms;
+	bool waited_for_keepalive;
 
-	rc = poll_mqtt_socket(client, mqtt_keepalive_time_left(client));
+	if (timeout_ms < 0 || timeout_ms > MSECS_PROCESS_POLL_TIMEOUT) {
+		timeout_ms = MSECS_PROCESS_POLL_TIMEOUT;
+	}
+	waited_for_keepalive = (keepalive_ms >= 0 && timeout_ms == keepalive_ms);
+
+	rc = poll_mqtt_socket(client, timeout_ms);
 	if (rc < 0) {
 		return rc;
 	}
@@ -424,9 +458,12 @@ int coo_mqtt_process(struct mqtt_client *client)
 				return -ENOTCONN;
 			}
 		}
-	} else {
-		/* Socket poll timed out, time to call mqtt_live() */
+	} else if (waited_for_keepalive) {
+		/* Socket poll reached the MQTT keepalive deadline. */
 		rc = mqtt_live(client);
+		if (rc == -EAGAIN) {
+			return 0;
+		}
 		if (rc != 0) {
 			LOG_ERR("MQTT Live failed [%d]", rc);
 			return rc;

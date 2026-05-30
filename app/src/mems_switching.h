@@ -2,9 +2,10 @@
  * @file mems_switching.h
  * @brief MEMS switch pulse scheduling and board-local route tables.
  *
- * The router owns one `k_work_delayable` tick that clears pulse pins, applies
- * requested static/toggling switch states, and quantizes requested toggle rates
- * into fixed MEMS ticks. Public calls can sleep on the router mutex but do not
+ * A kernel timer provides the MEMS cadence and a dedicated MEMS thread performs
+ * GPIO-expander writes. The thread clears pulse pins, applies requested
+ * static/toggling switch states, and quantizes requested toggle rates into
+ * fixed MEMS ticks. Public calls can sleep on the router mutex but do not
  * publish MQTT or persist state.
  */
 
@@ -16,10 +17,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #define MEMS_SOURCEDEST_MAX_LEN 24
 #define MEMS_SWITCH_ELECTRICAL_PULSE_MS 20U  //datasheet says pulse width >=15ms
 #define MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS 50U //datasheet says pulse width of 50ms typical (ch 7&8 on tib)
+#define MEMS_SWITCH_ROUTER_TICK_MS 10U
 #define MEMS_SWITCH_NAME_LEN 24
 #define MEMS_ROUTER_MAX_SWITCHES 8
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4
@@ -27,16 +30,27 @@
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
 #define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0f
 #define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
+#define MEMS_SPLIT_CHANNEL_COUNT 2
+#define MEMS_SPLIT_OUTPUT_COUNT 3
+#define MEMS_SPLIT_ROUTE_SWITCH_COUNT 3
 
 struct mems_router;
 
+enum mems_switch_type {
+    MEMS_SWITCH_TYPE_FFSW,
+    MEMS_SWITCH_TYPE_FFLS,
+};
 
-/** Runtime state for one dual-coil MEMS switch. */
+/** Runtime state for one dual-coil MEMS switch.
+ *
+ * `switch_type` is assigned once by mems_switch_init() from the active board
+ * profile. It controls the electrical pulse width used by router work ticks.
+ */
 struct mems_switch {
-    const struct device *gpio_dev;
-    //todo shouldn't these pins be constant?
-    gpio_pin_t pin_a;
-    gpio_pin_t pin_b;
+    /* Assigned once by mems_switch_init() from the active board profile. */
+    struct gpio_dt_spec gpio_a;
+    struct gpio_dt_spec gpio_b;
+    enum mems_switch_type switch_type;
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
     bool state_known_this_boot;
@@ -46,6 +60,9 @@ struct mems_switch {
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
+    uint32_t pulse_clear_at_ms;
+    bool pulse_active;
+    uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
 };
@@ -57,7 +74,7 @@ struct mems_switch_status {
     /* Exact A-state duty numerator and denominator in MEMS tick counts. */
     uint32_t duty_numerator;
     uint32_t duty_denominator;
-    /* Duration of one MEMS tick, currently the delayable-work period. */
+    /* Duration of one MEMS service tick for this switch type. */
     uint32_t tick_duration_ms;
     float requested_toggle_rate_hz;
     float toggle_rate_hz;
@@ -86,6 +103,24 @@ struct mems_route {
     uint8_t num_steps;
 };
 
+struct mems_split_switch_duty {
+    char name[MEMS_SWITCH_NAME_LEN];
+    char state;
+    float duty_cycle;
+    uint32_t numerator;
+    uint32_t denominator;
+    uint32_t tick_ms;
+};
+
+struct mems_split_state {
+    float requested[MEMS_SPLIT_OUTPUT_COUNT];
+    float actual[MEMS_SPLIT_OUTPUT_COUNT];
+    float output[MEMS_SPLIT_OUTPUT_COUNT];
+    float transmission[MEMS_SPLIT_OUTPUT_COUNT];
+    struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
+    uint32_t stopsin_s;
+};
+
 /** Board-selected router state and immutable route table pointer. */
 struct mems_router {
     struct mems_switch *switches[MEMS_ROUTER_MAX_SWITCHES];
@@ -94,23 +129,27 @@ struct mems_router {
     const struct mems_route *routes;
     uint8_t num_routes;
     struct k_mutex lock;
-    struct k_work_delayable toggler_work;
 };
 
 /**
  * @brief Initialize a MEMS switch object and configure its two GPIO outputs inactive.
  *
  * The hardware state is not known after boot until the delayable tick sends a
- * pulse. The configured toggle rate is stored as the default requested rate and
- * quantized to the nearest supported MEMS tick period.
+ * logical active pulse. Pulse cleanup uses a kernel-uptime deadline from the
+ * successful GPIO set, so a delayed router tick may extend but not shorten the
+ * physical pulse. The configured toggle rate is stored as the default
+ * requested rate and quantized to the nearest supported MEMS tick period.
  */
-void mems_switch_init(struct mems_switch *sw, const struct device *gpio_dev,
-                      gpio_pin_t pin_a, gpio_pin_t pin_b, const char *name,
+void mems_switch_init(struct mems_switch *sw,
+                      const struct gpio_dt_spec *gpio_a,
+                      const struct gpio_dt_spec *gpio_b,
+                      const char *name,
+                      enum mems_switch_type switch_type,
                       float configured_toggle_rate_hz, char initial_state);
 /**
  * @brief Queue a static or toggling MEMS switch state change.
  *
- * The router-owned delayable work applies pulses on its next tick. A positive
+ * The router-owned MEMS thread applies pulses on its next tick. A positive
  * @p requested_toggle_rate_hz updates the stored requested rate and is
  * quantized to the nearest firmware tick period before toggling starts.
  */
@@ -122,8 +161,8 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
  *
  * @p state_ticks is the number of ticks spent in @p state during each
  * @p period_ticks cycle. The function converts that to the internal A-state
- * numerator, updates the switch period, and lets the router-owned delayable
- * work apply pulses on subsequent ticks.
+ * numerator, updates the switch period, and lets the router-owned MEMS thread
+ * apply pulses on subsequent ticks.
  */
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
                                 uint32_t state_ticks, uint32_t period_ticks,
@@ -156,9 +195,77 @@ struct mems_switch *mems_router_find_switch(const struct mems_router *router, co
 const struct mems_route *mems_router_get_route(const struct mems_router *router,
                                                const char *input, const char *output);
 
+/**
+ * @brief Apply every switch step in one static route.
+ *
+ * This queues switch state changes through mems_switch_set_state() and can
+ * sleep on the router mutex. The caller owns route lookup and command response
+ * formatting. On a per-switch failure, @p failed_switch and @p failed_state
+ * identify the route step that failed when non-NULL.
+ */
+int mems_router_apply_route(const struct mems_router *router,
+                            const struct mems_route *route,
+                            const char **failed_switch,
+                            char *failed_state);
+
+/**
+ * @brief Look up and apply a named input/output route.
+ *
+ * This can sleep on the router mutex through MEMS switch operations. It keeps
+ * command modules from duplicating route lookup before setting a simple static
+ * route.
+ */
+int mems_router_apply_named_route(const struct mems_router *router,
+                                  const char *input,
+                                  const char *output,
+                                  const char **failed_switch,
+                                  char *failed_state);
 
 /** @brief List static routes whose switches currently match all required states. */
 uint8_t mems_router_active_routes(const struct mems_router *router,
                                   struct mems_route_key *out_keys, uint8_t max_keys);
+
+/** @brief Return the API name for one AS split channel, or NULL if invalid. */
+const char *mems_split_channel_name(uint8_t channel_index);
+
+/** @brief Map an AS split channel name such as "yj" or "hk" to an index. */
+int mems_split_channel_index(const char *channel, uint8_t *index);
+
+/** @brief Format the app-settings route name used by one AS split channel. */
+int mems_split_route_name(uint8_t channel_index, char *out, size_t out_len);
+
+/** @brief Return the app-settings key for one split output transmission. */
+const char *mems_split_output_loss_key(uint8_t output_index);
+
+/**
+ * @brief Read current AS split route state into @p out.
+ *
+ * The route is selected from the board MEMS route table. This can sleep on the
+ * router mutex while reading switch snapshots and on settings while reading
+ * split transmissions. If @p requested is non-NULL it becomes the stored
+ * requested ratio for future responses; otherwise the last requested ratio is
+ * retained.
+ */
+int mems_split_read_channel_state(const struct mems_router *router,
+                                  uint8_t channel_index,
+                                  const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                  struct mems_split_state *out);
+
+/**
+ * @brief Apply one AS split channel as three output ratios.
+ *
+ * The user-facing command provides ratio1 and ratio2; this domain helper
+ * receives all three normalized output ratios, applies route-loss transmission
+ * correction, and converts the corrected duty targets to exact MEMS ticks. It
+ * can sleep on the router mutex through MEMS switch operations and on settings
+ * while reading split transmissions. It does not publish warnings or parse
+ * command payloads.
+ */
+int mems_split_apply_channel(const struct mems_router *router,
+                             uint8_t channel_index,
+                             const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             uint32_t stopafter_s,
+                             struct mems_split_state *out,
+                             const char **failed_switch);
 
 #endif // MEMS_SWITCHING_H
