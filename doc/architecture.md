@@ -56,7 +56,9 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   help/serialguard/reboot commands, static longest-prefix spec lookup, default
   request classification/execution, serial guard policy, persisted
   lastcommand, topic formatting, response metadata, warning JSON, serial
-  payload normalization, and serial response printing helpers.
+  payload normalization, and serial response printing helpers. Built-ins are
+  executor-owned so app execute hooks extend app commands without replacing
+  help, serialguard, or reboot behavior.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 
@@ -130,11 +132,12 @@ translated into the same payload shapes as MQTT. The old payload `msg_type`
 convention is not part of current ingress classification.
 
 The command executor runs exactly one request at a time from `inbound_queue`.
-Command dispatch owns default execution unless an app override execute callback
-is configured. Handlers may block on I/O, sleep, enqueue warnings, update
-settings, and return one response. Pure queries are not recorded as
-`lastcommand`; supported effect-capable requests are recorded before handler
-execution in command-dispatch-owned runtime state and NVS storage.
+Command dispatch handles library built-ins first, then calls the optional app
+execute hook or the default static spec-table executor for app commands.
+Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
+one response. Pure queries are not recorded as `lastcommand`; supported
+effect-capable requests are recorded before handler execution in
+command-dispatch-owned runtime state and NVS storage.
 App support predicates reject unsupported command families before they reach
 laser, photodiode, throughput, or laser-bank command handlers on other board
 profiles. Serial help marks those entries as unsupported instead of encoding
@@ -147,8 +150,10 @@ and then `sys_reboot(SYS_REBOOT_COLD)`.
 Command dispatch can persist one lastcommand record through Zephyr NVS when the
 app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
 fixed header plus the full `struct coo_cmd_request`, requiring
-`sizeof(struct coo_cmd_request) + COO_CMD_LASTCOMMAND_NVS_OVERHEAD` bytes
-(752 bytes with the current 512-byte payload configuration on Nucleo).
+`sizeof(struct coo_cmd_request) + COO_CMD_LASTCOMMAND_NVS_OVERHEAD` bytes. The
+payload portion is sized by `CONFIG_COO_CMD_PAYLOAD_SIZE`, which is constrained
+to fit within `CONFIG_COO_MQTT_PAYLOAD_SIZE` but can be tuned independently
+because command queues store complete request and response objects.
 
 ## Network And MQTT Runtime
 
@@ -162,6 +167,9 @@ hardware boot-state work before application code starts.
 The MQTT wrapper accepts one publish callback plus caller-owned user data. This
 app registers the command runtime with `coo_cmd_runtime_mqtt_callback()` so MQTT
 ingress can enter command dispatch without an app-specific forwarding shim.
+The MQTT ingress payload buffer is static in the MQTT wrapper, and command
+runtime request/response buffers are owned by the runtime object rather than the
+main or executor thread stacks.
 
 IPv4 configuration precedence is:
 
@@ -200,7 +208,9 @@ router-owned switch state that is applied by the timer-driven MEMS router
 thread.
 Photodiode sampling does not publish directly. Throughput monitoring owns
 photodiode stream publication through `outbound_queue`. Warning publication is
-non-blocking and best-effort.
+non-blocking and best-effort. Runtime warnings use one shared scratch response;
+if that buffer or the outbound queue is busy, the warning is logged locally and
+dropped rather than blocking a timing-sensitive caller.
 
 Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

@@ -24,7 +24,8 @@ struct nvs_fs;
  * handling, built-in command execution, bounded serial payload normalization,
  * optional lastcommand persistence, warning publication, and transport-shaped
  * response handling. Applications may still provide a custom execute callback
- * when they need to replace the default executor.
+ * for app-owned commands; library built-ins run first so an app extension cannot
+ * accidentally remove help, serialguard, or reboot behavior.
  */
 
 #define COO_CMD_TOPIC_MAX 96
@@ -46,8 +47,8 @@ struct nvs_fs;
 #define COO_CMD_SERIAL_LINE_MAX 128
 #endif
 
-#if defined(CONFIG_COO_MQTT_PAYLOAD_SIZE)
-#define COO_CMD_PAYLOAD_MAX CONFIG_COO_MQTT_PAYLOAD_SIZE
+#if defined(CONFIG_COO_CMD_PAYLOAD_SIZE)
+#define COO_CMD_PAYLOAD_MAX CONFIG_COO_CMD_PAYLOAD_SIZE
 #else
 #define COO_CMD_PAYLOAD_MAX 256
 #endif
@@ -183,11 +184,13 @@ struct coo_cmd_spec {
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, optional execute callback, and MQTT message-id
- * storage. The runtime owns the copied device identity and topic formatting
- * derived from it. The runtime helpers do not allocate memory; they block only
- * in the executor queue wait, optional NVS lastcommand persistence, reboot
- * prepare callback, and MQTT publish path used by the outbound drain.
+ * The application owns the queues, optional app-command execute callback, and
+ * MQTT message-id storage. The runtime owns the copied device identity, topic
+ * formatting derived from it, library built-ins, and scratch buffers used to
+ * keep large command payload storage off thread stacks. The runtime helpers do
+ * not allocate memory; they block only in the executor queue wait, optional NVS
+ * lastcommand persistence, reboot prepare callback, and MQTT publish path used
+ * by the outbound drain.
  */
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
@@ -229,6 +232,10 @@ struct coo_cmd_runtime {
 	struct coo_cmd_request executor_cmd;
 	struct coo_cmd_response executor_out;
 	struct coo_cmd_response outbound_scratch;
+	/* Warning builders share one runtime buffer; if it is busy, warnings stay
+	 * local rather than blocking or allocating another full response.
+	 */
+	atomic_t warning_scratch_busy;
 	struct coo_cmd_response warning_scratch;
 };
 

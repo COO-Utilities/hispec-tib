@@ -1166,18 +1166,58 @@ int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
 	return 0;
 }
 
+static bool runtime_warning_scratch_take(struct coo_cmd_runtime *runtime)
+{
+	return runtime != NULL && atomic_cas(&runtime->warning_scratch_busy, 0, 1);
+}
+
+static void runtime_warning_scratch_release(struct coo_cmd_runtime *runtime)
+{
+	if (runtime != NULL) {
+		(void)atomic_clear(&runtime->warning_scratch_busy);
+	}
+}
+
 int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 				 const char *code,
 				 const char *msg,
 				 const char *context)
 {
+	struct coo_cmd_response *out;
+	int rc;
+
 	if (runtime == NULL || runtime->warning_topic[0] == '\0') {
 		return -EINVAL;
 	}
 
-	return coo_cmd_warning_emit(runtime->outbound_queue,
-				   runtime->warning_topic,
-				   code, msg, context);
+	LOG_WRN("%s: %s%s%s",
+		code != NULL ? code : "warning",
+		msg != NULL ? msg : "",
+		context != NULL && context[0] != '\0' ? " context=" : "",
+		context != NULL ? context : "");
+
+	if (!runtime_warning_scratch_take(runtime)) {
+		LOG_WRN("warning scratch busy; warning was only logged locally");
+		return -EAGAIN;
+	}
+
+	out = &runtime->warning_scratch;
+	rc = coo_cmd_build_warning(out, runtime->warning_topic, code, msg, context);
+	if (rc != 0) {
+		LOG_WRN("warning payload too large; MQTT warning dropped");
+		runtime_warning_scratch_release(runtime);
+		return rc;
+	}
+
+	if (runtime->outbound_queue == NULL ||
+	    k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+		LOG_WRN("warning MQTT queue full; warning was only logged locally");
+		runtime_warning_scratch_release(runtime);
+		return -ENOSPC;
+	}
+
+	runtime_warning_scratch_release(runtime);
+	return 0;
 }
 
 static bool payload_has_text(const char *payload)
@@ -2176,6 +2216,9 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 	if (runtime == NULL) {
 		return;
 	}
+	if (!runtime_warning_scratch_take(runtime)) {
+		return;
+	}
 
 	warning = &runtime->warning_scratch;
 	if (runtime == NULL || runtime->warning_topic[0] == '\0' ||
@@ -2183,6 +2226,7 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 				  "outbound_queue_full",
 				  "outbound queue reached capacity",
 				  "command_drain") != 0) {
+		runtime_warning_scratch_release(runtime);
 		return;
 	}
 
@@ -2192,6 +2236,7 @@ static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
 	    coo_cmd_publish_mqtt(client, warning, runtime->mqtt_msg_id) != 0) {
 		LOG_WRN("Failed to publish outbound_queue_full warning");
 	}
+	runtime_warning_scratch_release(runtime);
 }
 
 void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
