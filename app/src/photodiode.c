@@ -40,9 +40,13 @@ static const struct adc_channel_cfg *const pd_adc_cfg[PHOTODIODE_CHANNEL_COUNT] 
 #define PD_YJ_ADC_CHANNEL_NODE DT_CHILD(DT_NODELABEL(adc1115), channel_0)
 #define PD_HK_ADC_CHANNEL_NODE DT_CHILD(DT_NODELABEL(adc1115), channel_2)
 #define ADS1115_DT_RESOLUTION DT_PROP(PD_YJ_ADC_CHANNEL_NODE, zephyr_resolution)
+#define ADS1115_DT_ACQ_TIME DT_PROP(PD_YJ_ADC_CHANNEL_NODE, zephyr_acquisition_time)
+#define ADS1115_I2C_HZ DT_PROP(DT_PARENT(DT_NODELABEL(adc1115)), clock_frequency)
 
 BUILD_ASSERT(DT_PROP(PD_HK_ADC_CHANNEL_NODE, zephyr_resolution) == ADS1115_DT_RESOLUTION,
              "photodiode ADS1115 channels must use the same resolution");
+BUILD_ASSERT(DT_PROP(PD_HK_ADC_CHANNEL_NODE, zephyr_acquisition_time) == ADS1115_DT_ACQ_TIME,
+             "photodiode ADS1115 channels must use the same data rate");
 
 /* Zephyr's ADS1115 driver exposes the muxed device as ADC channel 0 only.
  * The physical ADS input is selected by input_positive from devicetree.
@@ -68,8 +72,13 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_ADC_UV_PER_COUNT_NUM 1875
 #define PD_ADC_UV_PER_COUNT_DEN 10
 #define PD_NOISE_ALPHA 0.02f
-#define PD_ADC_ERROR_RETRY_MS 5000U
 #define PD_HARDWARE_LOG_RATELIMIT_MS 10000U
+#define PD_TIMING_STATS_INTERVAL_MS 10000U
+#define PD_ADS1115_WAKE_US 25U
+/* Rough ADS1115 sample-time floor for timing diagnostics, ignoring scheduler
+ * overhead inside Zephyr's ADC driver path.
+ */
+#define PD_ADC_I2C_WIRE_BITS_PER_SAMPLE 126U
 #define PD_NOISE_WARNING_COOLDOWN_MS 60000U
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
 #define PD_AVERAGE_MAX_DURATION_MS 2000U
@@ -139,9 +148,209 @@ static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
 static struct photodiode_average_request pd_average[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(pd_runtime_lock);
 
+struct photodiode_loop_timing {
+    uint64_t worst_loop_us;
+    uint64_t worst_non_adc_us;
+    uint64_t worst_adc_us[PHOTODIODE_CHANNEL_COUNT];
+    uint64_t worst_adc_over_us[PHOTODIODE_CHANNEL_COUNT];
+    int64_t min_margin_us;
+};
+
+struct photodiode_timing_stats {
+    uint32_t samples;
+    uint32_t missed_intervals;
+    uint32_t overruns;
+    uint32_t settings_busy;
+    uint32_t adc_errors[PHOTODIODE_CHANNEL_COUNT];
+    struct photodiode_loop_timing worst;
+};
+
+static struct photodiode_timing_stats pd_timing_stats;
+static int64_t pd_timing_next_log_ms;
+
+extern bool app_timing_summary_logs_enabled(void);
+
+static uint64_t pd_i2c_wire_us_for_bits(uint32_t bits)
+{
+    return ((uint64_t)bits * 1000000ULL + ADS1115_I2C_HZ - 1ULL) /
+           ADS1115_I2C_HZ;
+}
+
+static uint32_t pd_ads1115_conversion_us(void)
+{
+    switch (ADC_ACQ_TIME_VALUE(ADS1115_DT_ACQ_TIME)) {
+    case 0:
+        return 125000U + PD_ADS1115_WAKE_US;
+    case 1:
+        return 62500U + PD_ADS1115_WAKE_US;
+    case 2:
+        return 31250U + PD_ADS1115_WAKE_US;
+    case 3:
+        return 15625U + PD_ADS1115_WAKE_US;
+    case 4:
+        return 7813U + PD_ADS1115_WAKE_US;
+    case 5:
+        return 4000U + PD_ADS1115_WAKE_US;
+    case 6:
+        return 2105U + PD_ADS1115_WAKE_US;
+    case 7:
+        return 1163U + PD_ADS1115_WAKE_US;
+    default:
+        return 0U;
+    }
+}
+
+static uint64_t pd_ads1115_i2c_wire_us_per_sample(void)
+{
+    return pd_i2c_wire_us_for_bits(PD_ADC_I2C_WIRE_BITS_PER_SAMPLE);
+}
+
+static uint64_t pd_ads1115_adc_floor_us(void)
+{
+    return pd_ads1115_conversion_us() + pd_ads1115_i2c_wire_us_per_sample();
+}
+
+static uint64_t pd_adc_over_us(uint64_t adc_elapsed_us)
+{
+    const uint64_t floor_us = pd_ads1115_adc_floor_us();
+
+    return adc_elapsed_us > floor_us ? adc_elapsed_us - floor_us : 0U;
+}
+
+static void pd_timing_note_missed_intervals(uint32_t elapsed_samples)
+{
+    if (elapsed_samples > 1U) {
+        pd_timing_stats.missed_intervals += elapsed_samples - 1U;
+    }
+}
+
+static void pd_timing_note_adc(enum photodiode_channel channel, int rc)
+{
+    if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
+        return;
+    }
+
+    if (rc != 0) {
+        pd_timing_stats.adc_errors[channel]++;
+    }
+}
+
+static void pd_timing_note_settings(bool refreshed)
+{
+    if (!refreshed) {
+        pd_timing_stats.settings_busy++;
+    }
+}
+
+static void pd_timing_note_loop(struct photodiode_loop_timing *loop,
+                                uint64_t elapsed_us,
+                                uint64_t adc_total_us)
+{
+    if (loop == NULL) {
+        return;
+    }
+
+    loop->worst_loop_us = elapsed_us;
+    loop->min_margin_us = ((int64_t)PUBLISH_INTERVAL_MS * 1000LL) -
+                          (int64_t)elapsed_us;
+    /* Earlier phase probes showed settings refresh, rolling-stat updates, and
+     * shared-state updates are normally sub-100 us. Keep the durable metric as
+     * "not inside ADC calls"; use Zephyr runtime/tracing tools to identify
+     * what preempted or blocked the thread during any large value.
+     */
+    loop->worst_non_adc_us =
+        elapsed_us > adc_total_us ? elapsed_us - adc_total_us : 0U;
+
+    if (loop->min_margin_us < 0) {
+        pd_timing_stats.overruns++;
+    }
+    if (pd_timing_stats.samples == 0U ||
+        loop->worst_loop_us > pd_timing_stats.worst.worst_loop_us) {
+        pd_timing_stats.worst = *loop;
+    }
+    pd_timing_stats.samples++;
+}
+
+static bool pd_timing_has_anomaly(void)
+{
+    return pd_timing_stats.missed_intervals > 0U ||
+           pd_timing_stats.overruns > 0U ||
+           pd_timing_stats.adc_errors[0] > 0U ||
+           pd_timing_stats.adc_errors[1] > 0U;
+}
+
+static void pd_timing_log_snapshot(bool anomaly)
+{
+    if (anomaly) {
+        LOG_WRN("ADC timing: samples=%u missed=%u overruns=%u settings_busy=%u "
+                "worst_loop_us=%llu min_margin_us=%lld worst_non_adc_us=%llu "
+                "adc_floor_us=%llu adc_us=%llu/%llu adc_over_us=%llu/%llu "
+                "errors=%u/%u",
+                (unsigned int)pd_timing_stats.samples,
+                (unsigned int)pd_timing_stats.missed_intervals,
+                (unsigned int)pd_timing_stats.overruns,
+                (unsigned int)pd_timing_stats.settings_busy,
+                (unsigned long long)pd_timing_stats.worst.worst_loop_us,
+                (long long)pd_timing_stats.worst.min_margin_us,
+                (unsigned long long)pd_timing_stats.worst.worst_non_adc_us,
+                (unsigned long long)pd_ads1115_adc_floor_us(),
+                (unsigned long long)pd_timing_stats.worst.worst_adc_us[0],
+                (unsigned long long)pd_timing_stats.worst.worst_adc_us[1],
+                (unsigned long long)pd_timing_stats.worst.worst_adc_over_us[0],
+                (unsigned long long)pd_timing_stats.worst.worst_adc_over_us[1],
+                (unsigned int)pd_timing_stats.adc_errors[0],
+                (unsigned int)pd_timing_stats.adc_errors[1]);
+        return;
+    }
+
+    LOG_INF("ADC timing: samples=%u missed=%u overruns=%u settings_busy=%u "
+            "worst_loop_us=%llu min_margin_us=%lld worst_non_adc_us=%llu "
+            "adc_floor_us=%llu adc_us=%llu/%llu adc_over_us=%llu/%llu "
+            "errors=%u/%u",
+            (unsigned int)pd_timing_stats.samples,
+            (unsigned int)pd_timing_stats.missed_intervals,
+            (unsigned int)pd_timing_stats.overruns,
+            (unsigned int)pd_timing_stats.settings_busy,
+            (unsigned long long)pd_timing_stats.worst.worst_loop_us,
+            (long long)pd_timing_stats.worst.min_margin_us,
+            (unsigned long long)pd_timing_stats.worst.worst_non_adc_us,
+            (unsigned long long)pd_ads1115_adc_floor_us(),
+            (unsigned long long)pd_timing_stats.worst.worst_adc_us[0],
+            (unsigned long long)pd_timing_stats.worst.worst_adc_us[1],
+            (unsigned long long)pd_timing_stats.worst.worst_adc_over_us[0],
+            (unsigned long long)pd_timing_stats.worst.worst_adc_over_us[1],
+            (unsigned int)pd_timing_stats.adc_errors[0],
+            (unsigned int)pd_timing_stats.adc_errors[1]);
+}
+
+static void pd_timing_maybe_log(int64_t now_ms)
+{
+    bool anomaly;
+
+    if (pd_timing_next_log_ms == 0) {
+        pd_timing_next_log_ms = now_ms + PD_TIMING_STATS_INTERVAL_MS;
+        return;
+    }
+    if (now_ms < pd_timing_next_log_ms) {
+        return;
+    }
+
+    anomaly = pd_timing_has_anomaly();
+    if (anomaly || app_timing_summary_logs_enabled()) {
+        pd_timing_log_snapshot(anomaly);
+    }
+
+    memset(&pd_timing_stats, 0, sizeof(pd_timing_stats));
+    pd_timing_next_log_ms = now_ms + PD_TIMING_STATS_INTERVAL_MS;
+}
+
+/* Read one ADS1115 physical mux input through Zephyr's ADC driver. This can
+ * sleep/block in the driver for I2C and conversion time; it does not publish,
+ * enqueue, or update shared photodiode status.
+ */
 static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
 {
-    struct adc_channel_cfg cfg = *pd_adc_cfg[channel];
+    struct adc_channel_cfg cfg;
     struct adc_sequence seq = {
         .channels = BIT(ADS1115_ZEPHYR_CHANNEL_ID),
         .buffer = raw,
@@ -159,12 +368,12 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
         return -ENODEV;
     }
 
+    cfg = *pd_adc_cfg[channel];
     cfg.channel_id = ADS1115_ZEPHYR_CHANNEL_ID;
     rc = adc_channel_setup(adc_dev, &cfg);
     if (rc == 0) {
         rc = adc_read(adc_dev, &seq);
     }
-
     return rc;
 }
 
