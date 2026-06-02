@@ -69,8 +69,8 @@ At the drive level transistors are
     - 2x 10k resistor for status line (pullup and current limiting)
 
 ## TIB & CAL Attenuator Drive
-A pair of DAC7578SPW 8 chan DAC driving OPA2991 2 channel OpAmps
-- 0 - 4095 (Vref, default=Vcc)
+A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
+- 0 - 4095 count (Vref, default=Vcc via internal reference source)
 - Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
 - Use Vcc=3.3 with 1.51x opamp gain to avoid LL shifting
 - OpAmp supplies required current to attenuator.
