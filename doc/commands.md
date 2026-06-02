@@ -1322,10 +1322,21 @@ off or no faults).
   ```json
   {"status":"ok","reboot_ms":3000}
   ```
+- **Payload:** erase persisted app settings except IP settings and boot count
+  immediately before reboot.
+  ```json
+  {"erase_non_ip_settings":true}
+  ```
+- **Serial form:**
+  ```text
+  reboot erase_non_ip_settings
+  ```
 - **Notes:** command dispatch owns the reboot delayable work item. Immediately
   before reboot it calls the app reboot-prepare hook so firmware can put
-  hardware into a safer state. Once a reboot is pending, later commands are
-  rejected before app handlers run.
+  hardware into a safer state and, when requested, erase non-IP persisted
+  settings. The erase preserves IP settings, boot count, and storage schema
+  metadata. Once a reboot is pending, later commands are rejected before app
+  handlers run.
 
 (split)=
 ### `split`

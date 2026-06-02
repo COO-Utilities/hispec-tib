@@ -144,6 +144,14 @@ void app_settings_get_snapshot(struct app_settings_snapshot *out);
  * That treats a physically different solder-strap identity as a first boot.
  */
 int app_settings_note_board_type(const char *board_type, bool *changed);
+/**
+ * @brief Erase persisted app settings except IP settings and boot count.
+ *
+ * This may block on Zephyr NVS flash I/O. It also resets the runtime settings
+ * snapshot to defaults while preserving the current IP snapshot and boot count.
+ * The schema marker is preserved as storage metadata.
+ */
+int app_settings_erase_non_ip_settings(void);
 /** @brief Copy current IP settings. */
 void app_settings_get_ip(struct app_ip_settings *out);
 /** @brief Replace IP settings and optionally persist each IP key. */
@@ -166,6 +174,14 @@ void app_settings_update_attenuator_channel(uint8_t channel,
 					    bool persist);
 /** @brief Copy current photodiode calibration and warning settings. */
 void app_settings_get_photodiode(struct app_photodiode_settings *out);
+/**
+ * @brief Try to copy photodiode settings without sleeping.
+ *
+ * Timing-sensitive samplers use this to refresh cached calibration data without
+ * waiting behind command-thread settings updates. A false return leaves the
+ * caller's prior snapshot authoritative until a later refresh succeeds.
+ */
+bool app_settings_try_get_photodiode(struct app_photodiode_settings *out);
 /** @brief Replace all photodiode settings and optionally persist both channels. */
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist);
 /**

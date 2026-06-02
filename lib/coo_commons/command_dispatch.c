@@ -1159,9 +1159,9 @@ static const struct coo_cmd_help_entry builtin_help_entries[] = {
 #if defined(CONFIG_COO_CMD_REBOOT)
 	{
 		.key = "reboot",
-		.usage = "reboot",
-		.args = "none",
-		.values = NULL,
+		.usage = "reboot [erase_non_ip_settings]",
+		.args = "optional erase_non_ip_settings flag",
+		.values = "erase_non_ip_settings: true deletes persisted non-IP settings before reboot",
 		.notes = "schedules a non-cancelable reboot after the response window",
 		.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
 	},
@@ -1514,6 +1514,43 @@ static struct coo_cmd_response runtime_serial_guard_set(struct coo_cmd_runtime *
 #endif
 
 #if defined(CONFIG_COO_CMD_REBOOT)
+static int runtime_parse_reboot_options(const struct coo_cmd_request *cmd,
+					bool *erase_non_ip_settings)
+{
+	bool changed = false;
+	char value[32] = {0};
+	int rc;
+
+	if (cmd == NULL || erase_non_ip_settings == NULL) {
+		return -EINVAL;
+	}
+
+	*erase_non_ip_settings = false;
+	if (coo_cmd_payload_empty(cmd)) {
+		return 0;
+	}
+
+	rc = coo_json_extract_optional_bool(cmd->payload,
+					    "erase_non_ip_settings",
+					    erase_non_ip_settings,
+					    &changed);
+	if (rc != 0) {
+		return rc;
+	}
+	if (changed) {
+		return 0;
+	}
+
+	rc = coo_json_extract_string(cmd->payload, "value", value, sizeof(value));
+	if (rc == COO_JSON_EXTRACT_OK &&
+	    strcasecmp(value, "erase_non_ip_settings") == 0) {
+		*erase_non_ip_settings = true;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
 static void reboot_work_handler(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -1521,7 +1558,8 @@ static void reboot_work_handler(struct k_work *work)
 		CONTAINER_OF(dwork, struct coo_cmd_runtime, reboot_work);
 
 	if (runtime->reboot_prepare != NULL) {
-		runtime->reboot_prepare(runtime->user_data);
+		runtime->reboot_prepare(runtime->reboot_erase_non_ip_settings,
+					runtime->user_data);
 	}
 
 	LOG_WRN("Executing scheduled reboot");
@@ -1537,31 +1575,42 @@ static struct coo_cmd_response runtime_reboot_set(struct coo_cmd_runtime *runtim
 						  const struct coo_cmd_request *cmd)
 {
 	char payload[COO_CMD_PAYLOAD_MAX];
+	bool erase_non_ip_settings = false;
 	int rc;
 
 	if (runtime == NULL || cmd == NULL) {
 		return coo_cmd_error(cmd, "reboot unavailable");
 	}
-	if (!coo_cmd_payload_empty(cmd)) {
-		return coo_cmd_error(cmd, "reboot takes no payload");
+	if (runtime_parse_reboot_options(cmd, &erase_non_ip_settings) != 0) {
+		return coo_cmd_error(cmd, "invalid reboot options");
 	}
 	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
 		return coo_cmd_error(cmd, "reboot already pending");
 	}
 
-	LOG_WRN("Reboot command accepted; rebooting in %u ms",
-		runtime->reboot_delay_ms);
+	runtime->reboot_erase_non_ip_settings = erase_non_ip_settings;
+	LOG_WRN("Reboot command accepted; rebooting in %u ms%s",
+		runtime->reboot_delay_ms,
+		erase_non_ip_settings ? " after erasing non-IP settings" : "");
 	rc = k_work_schedule(&runtime->reboot_work,
 			     K_MSEC(runtime->reboot_delay_ms));
 	if (rc < 0) {
 		(void)atomic_clear(&runtime->reboot_pending);
+		runtime->reboot_erase_non_ip_settings = false;
 		return coo_cmd_error(cmd, "failed to schedule reboot");
 	}
 
 	runtime_record_lastcommand(runtime, cmd);
-	snprintk(payload, sizeof(payload),
-		 "{\"status\":\"ok\",\"reboot_ms\":%u}",
-		 runtime->reboot_delay_ms);
+	if (erase_non_ip_settings) {
+		snprintk(payload, sizeof(payload),
+			 "{\"status\":\"ok\",\"reboot_ms\":%u,"
+			 "\"erase_non_ip_settings\":true}",
+			 runtime->reboot_delay_ms);
+	} else {
+		snprintk(payload, sizeof(payload),
+			 "{\"status\":\"ok\",\"reboot_ms\":%u}",
+			 runtime->reboot_delay_ms);
+	}
 	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
 }
 #endif

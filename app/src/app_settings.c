@@ -204,7 +204,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			/* Default maps the full 0-5000 mV attenuator drive span
 			 * onto b=0..8 until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].physical[physical].slope = (float)(8.0 / 5000.0f);
+			s->attenuator.channel[ch].physical[physical].slope = 8.0f / 5000.0f;
 			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
 		}
 	}
@@ -748,29 +748,47 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	app_nvs_load_route_loss(s);
 }
 
-static void delete_resettable_settings(void)
+static void delete_setting_record(uint16_t id, int *first_rc)
 {
-	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED);
-	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
-	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
-	(void)app_nvs_delete(APP_NVS_ID_LAST_COMMAND);
-	(void)app_nvs_delete(APP_NVS_ID_IP);
-	(void)app_nvs_delete(APP_NVS_ID_MQTT);
-	(void)app_nvs_delete(APP_NVS_ID_LASERBANK);
+	int rc = app_nvs_delete(id);
+
+	if (rc != 0 && first_rc != NULL && *first_rc == 0) {
+		*first_rc = rc;
+	}
+}
+
+static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
+{
+	int first_rc = 0;
+
+	delete_setting_record(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED, &first_rc);
+	delete_setting_record(APP_NVS_ID_BOARD_TYPE, &first_rc);
+	if (!keep_boot_count) {
+		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
+	}
+	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_MS, &first_rc);
+	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
+	if (!keep_ip) {
+		delete_setting_record(APP_NVS_ID_IP, &first_rc);
+	}
+	delete_setting_record(APP_NVS_ID_MQTT, &first_rc);
+	delete_setting_record(APP_NVS_ID_LASERBANK, &first_rc);
 
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(attenuator_nvs_id(channel));
+		delete_setting_record(attenuator_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(pd_nvs_id(channel));
+		delete_setting_record(pd_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(laser_policy_nvs_id(channel));
-		(void)app_nvs_delete(laser_total_nvs_id(channel));
+		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
+		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
-		(void)app_nvs_delete(route_loss_nvs_id(i));
+		delete_setting_record(route_loss_nvs_id(i), &first_rc);
 	}
+
+	return first_rc;
 }
 
 static int route_loss_record_index_locked(const char *route, const char *laser,
@@ -865,7 +883,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 	k_mutex_unlock(&g_settings.lock);
 
 	if (reset_needed) {
-		delete_resettable_settings();
+		(void)delete_resettable_settings(false, false);
 	}
 	if (persist_needed) {
 		app_nvs_persist_board_type(board_type);
@@ -874,6 +892,34 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		*changed = reset_needed;
 	}
 
+	return 0;
+}
+
+int app_settings_erase_non_ip_settings(void)
+{
+	struct app_ip_settings ip;
+	uint32_t boot_count;
+	int rc;
+
+	if (!app_nvs_ready) {
+		return -EIO;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	ip = g_settings.snapshot.ip;
+	boot_count = g_settings.snapshot.boot_count;
+	settings_defaults(&g_settings.snapshot);
+	g_settings.snapshot.ip = ip;
+	g_settings.snapshot.boot_count = boot_count;
+	k_mutex_unlock(&g_settings.lock);
+
+	rc = delete_resettable_settings(true, true);
+	if (rc != 0) {
+		LOG_WRN("Failed to erase all non-IP settings (%d)", rc);
+		return rc;
+	}
+
+	LOG_WRN("Erased stored non-IP settings; preserved IP settings and boot count");
 	return 0;
 }
 
@@ -967,6 +1013,21 @@ void app_settings_get_photodiode(struct app_photodiode_settings *out)
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	*out = g_settings.snapshot.photodiode;
 	k_mutex_unlock(&g_settings.lock);
+}
+
+bool app_settings_try_get_photodiode(struct app_photodiode_settings *out)
+{
+	if (out == NULL) {
+		return false;
+	}
+
+	if (k_mutex_lock(&g_settings.lock, K_NO_WAIT) != 0) {
+		return false;
+	}
+
+	*out = g_settings.snapshot.photodiode;
+	k_mutex_unlock(&g_settings.lock);
+	return true;
 }
 
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist)

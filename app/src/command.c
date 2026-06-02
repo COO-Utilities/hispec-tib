@@ -86,7 +86,7 @@ static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         char *out, size_t out_len,
                                         void *user_data);
-static void command_prepare_reboot(void *user_data);
+static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
 
 #define CMD_HELP(_usage, _args, _values, _notes, _flags) \
     .help = &(const struct coo_cmd_help_entry){ \
@@ -501,7 +501,7 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
 }
 
-static void command_prepare_reboot(void *user_data)
+static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data)
 {
 
     ARG_UNUSED(user_data);
@@ -522,6 +522,14 @@ static void command_prepare_reboot(void *user_data)
 
         (void)laserbank_tempcontrol_set_heater_mode(LASERBANK_HEATER_MODE_OVERRIDE_OFF, false);
         (void)housekeeping_power_set(HOUSEKEEPING_POWER_BANK_HEATER, false);
+    }
+
+    if (erase_non_ip_settings) {
+        int rc = app_settings_erase_non_ip_settings();
+
+        if (rc != 0) {
+            LOG_ERR("Erase non-IP settings before reboot failed (%d)", rc);
+        }
     }
 }
 

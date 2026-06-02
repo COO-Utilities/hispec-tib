@@ -140,7 +140,8 @@ typedef enum coo_cmd_msg_type (*coo_cmd_classify_fn)(
 typedef bool (*coo_cmd_supported_fn)(const struct coo_cmd_spec *spec,
 				     void *user_data);
 
-typedef void (*coo_cmd_reboot_prepare_fn)(void *user_data);
+typedef void (*coo_cmd_reboot_prepare_fn)(bool erase_non_ip_settings,
+					  void *user_data);
 
 struct coo_cmd_lastcommand {
 	bool valid;
@@ -206,6 +207,7 @@ struct coo_cmd_runtime {
 	struct k_work_delayable reboot_work;
 	atomic_t reboot_pending;
 	uint32_t reboot_delay_ms;
+	bool reboot_erase_non_ip_settings;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
 #endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
