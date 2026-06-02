@@ -201,7 +201,7 @@
 	};
 };
 
-/* I2C_B on CN9 (PF1/PF0): DAC7578 pair + PCAL6416A GPIO expander */
+/* I2C_B on CN9 (PF1/PF0): DAC7678 pair + PCAL6416A GPIO expander */
 &i2c2 {
 	status = "okay";
 	pinctrl-0 = <&i2c2_scl_pf1 &i2c2_sda_pf0>;
