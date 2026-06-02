@@ -444,12 +444,7 @@ void network_config_defaults(struct network_config *cfg)
 	cfg->prefer_dhcp_dns = true;
 	cfg->prefer_dhcp_ntp = true;
 	cfg->enable_fallback_profile = true;
-	cfg->dhcp_timeout_ms =
-#if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
-		((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U);
-#else
-		6000U;
-#endif
+	cfg->dhcp_timeout_ms = (uint32_t)CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS;
 
 #if defined(CONFIG_NET_CONFIG_MY_IPV4_ADDR) && \
 	defined(CONFIG_NET_CONFIG_MY_IPV4_NETMASK) && \

@@ -155,6 +155,9 @@ fixed header plus the full `struct coo_cmd_request`, requiring
 Network capability presence follows Zephyr Kconfig: DHCP uses
 `CONFIG_NET_DHCPV4`, DNS uses `CONFIG_DNS_RESOLVER`, and SNTP uses
 `CONFIG_SNTP`. App code should not add duplicate capability flags.
+Zephyr `NET_CONFIG_AUTO_INIT` is disabled; `network.c` owns the app-level
+DHCP/static/fallback decision from `main()` so network setup does not delay
+hardware boot-state work before application code starts.
 
 The MQTT wrapper accepts one publish callback plus caller-owned user data. This
 app registers the command runtime with `coo_cmd_runtime_mqtt_callback()` so MQTT

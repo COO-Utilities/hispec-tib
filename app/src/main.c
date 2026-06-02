@@ -47,15 +47,15 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define THROUGHPUT_MONITOR_PRIORITY 7
 #define APP_TIMING_SUMMARY_LOGS 0
 
-#if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
-#define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U)
+#if defined(CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS)
+#define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS)
 #else
 #define BOOT_NETWORK_WAIT_MS 6000U
 #endif
 
-/* Boot can spend CONFIG_NET_CONFIG_INIT_TIMEOUT waiting for DHCP before the
- * main network/MQTT loop starts. Keep the watchdog wider than that bounded
- * wait so normal no-DHCP bring-up does not reset the board.
+/* Network setup runs after app hardware setup and may spend this bounded helper
+ * timeout waiting for DHCP before static fallback. Keep the watchdog wider than
+ * that wait so normal no-DHCP bring-up does not reset the board.
  */
 #define WDT_TIMEOUT_MS MAX(15000U, BOOT_NETWORK_WAIT_MS + 5000U)
 #define MQTT_CONNECT_RETRY_MS 5000
