@@ -119,7 +119,8 @@ struct coo_cmd_work {
 
 struct coo_cmd_spec;
 
-typedef struct coo_cmd_response (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd);
+typedef int (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd,
+				  struct coo_cmd_response *out);
 
 typedef int (*coo_cmd_format_response_topic_fn)(const char *key,
 						char *out,
@@ -387,12 +388,12 @@ int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
  *
  * MQTT correlation data is echoed exactly when it fits the request buffer.
  */
-struct coo_cmd_response
-coo_cmd_make_response(const struct coo_cmd_request *cmd,
-		      enum coo_cmd_msg_type msg_type,
-		      const char *payload,
-		      coo_cmd_format_response_topic_fn format_topic,
-		      void *user_data);
+int coo_cmd_make_response(struct coo_cmd_response *out,
+			  const struct coo_cmd_request *cmd,
+			  enum coo_cmd_msg_type msg_type,
+			  const char *payload,
+			  coo_cmd_format_response_topic_fn format_topic,
+			  void *user_data);
 
 /**
  * @brief Build a response using the request's normalized response topic.
@@ -401,37 +402,44 @@ coo_cmd_make_response(const struct coo_cmd_request *cmd,
  * this helper rather than repeating a local response-topic wrapper in each
  * command adapter.
  */
-struct coo_cmd_response
-coo_cmd_reply(const struct coo_cmd_request *cmd,
-		 enum coo_cmd_msg_type msg_type,
-		 const char *payload);
+int coo_cmd_reply(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  enum coo_cmd_msg_type msg_type,
+		  const char *payload);
 
 /** @brief Build the standard data-less success response: {"status":"ok"}. */
-struct coo_cmd_response coo_cmd_ok(const struct coo_cmd_request *cmd);
+int coo_cmd_ok(struct coo_cmd_response *out, const struct coo_cmd_request *cmd);
 
 /** @brief Build a structured error response with one error string. */
-struct coo_cmd_response coo_cmd_error(const struct coo_cmd_request *cmd,
-				      const char *msg);
+int coo_cmd_error(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  const char *msg);
 
 /** @brief Build a structured error response with one error string and rc. */
-struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
-					 const char *msg,
-					 int rc);
+int coo_cmd_error_rc(struct coo_cmd_response *out,
+		     const struct coo_cmd_request *cmd,
+		     const char *msg,
+		     int rc);
 
 /** @brief Build the standard malformed-command error response. */
-struct coo_cmd_response coo_cmd_invalid_response(const struct coo_cmd_request *cmd);
+int coo_cmd_invalid_response(struct coo_cmd_response *out,
+			     const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard unknown-command error response. */
-struct coo_cmd_response coo_cmd_unknown_response(const struct coo_cmd_request *cmd);
+int coo_cmd_unknown_response(struct coo_cmd_response *out,
+			     const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard unsupported-operation error response. */
-struct coo_cmd_response coo_cmd_unsupported_response(const struct coo_cmd_request *cmd);
+int coo_cmd_unsupported_response(struct coo_cmd_response *out,
+				 const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard busy error response. */
-struct coo_cmd_response coo_cmd_busy_response(const struct coo_cmd_request *cmd);
+int coo_cmd_busy_response(struct coo_cmd_response *out,
+			  const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard serial-guard-active error response. */
-struct coo_cmd_response coo_cmd_serial_active_response(const struct coo_cmd_request *cmd);
+int coo_cmd_serial_active_response(struct coo_cmd_response *out,
+				   const struct coo_cmd_request *cmd);
 
 /**
  * @brief Build a best-effort warning publication.

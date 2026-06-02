@@ -293,20 +293,21 @@ static int route_loss_append_tx(char *payload, size_t payload_len, size_t *offse
     return coo_json_append(payload, payload_len, offset, "%.6f", tx);
 }
 
-static struct coo_cmd_response route_loss_query_response(const struct coo_cmd_request *cmd,
-                                               const char *route)
+static int route_loss_query_response(const struct coo_cmd_request *cmd,
+				     const char *route,
+				     struct coo_cmd_response *out)
 {
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t offset = 0U;
 
     if (coo_json_append(payload, sizeof(payload), &offset,
                         "{\"route\":\"%s\",", route) != 0) {
-        return coo_cmd_error(cmd, "route_loss response too large");
+        return coo_cmd_error(out, cmd, "route_loss response too large");
     }
 
     if (route_loss_route_is_split(route)) {
         if (coo_json_append(payload, sizeof(payload), &offset, "\"split\":[") != 0) {
-            return coo_cmd_error(cmd, "route_loss response too large");
+            return coo_cmd_error(out, cmd, "route_loss response too large");
         }
         for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
             const char *loss_key = mems_split_output_loss_key(i);
@@ -315,20 +316,20 @@ static struct coo_cmd_response route_loss_query_response(const struct coo_cmd_re
             (void)app_settings_get_route_loss(route, loss_key, &tx);
             if (i > 0U &&
                 coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
-                return coo_cmd_error(cmd, "route_loss response too large");
+                return coo_cmd_error(out, cmd, "route_loss response too large");
             }
             if (route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
-                return coo_cmd_error(cmd, "route_loss response too large");
+                return coo_cmd_error(out, cmd, "route_loss response too large");
             }
         }
         if (coo_json_append(payload, sizeof(payload), &offset, "]}") != 0) {
-            return coo_cmd_error(cmd, "route_loss response too large");
+            return coo_cmd_error(out, cmd, "route_loss response too large");
         }
-        return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+        return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
     }
 
     if (coo_json_append(payload, sizeof(payload), &offset, "\"lasers\":{") != 0) {
-        return coo_cmd_error(cmd, "route_loss response too large");
+        return coo_cmd_error(out, cmd, "route_loss response too large");
     }
     for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
         double tx = 1.0;
@@ -336,22 +337,23 @@ static struct coo_cmd_response route_loss_query_response(const struct coo_cmd_re
         (void)app_settings_get_route_loss(route, route_loss_laser_names[i], &tx);
         if (i > 0U &&
             coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
-            return coo_cmd_error(cmd, "route_loss response too large");
+            return coo_cmd_error(out, cmd, "route_loss response too large");
         }
         if (coo_json_append(payload, sizeof(payload), &offset, "\"%s\":",
                             route_loss_laser_names[i]) != 0 ||
             route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
-            return coo_cmd_error(cmd, "route_loss response too large");
+            return coo_cmd_error(out, cmd, "route_loss response too large");
         }
     }
     if (coo_json_append(payload, sizeof(payload), &offset, "}}") != 0) {
-        return coo_cmd_error(cmd, "route_loss response too large");
+        return coo_cmd_error(out, cmd, "route_loss response too large");
     }
 
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct coo_cmd_response route_loss_handle(const struct coo_cmd_request *cmd, bool set_request)
+static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request,
+			     struct coo_cmd_response *out)
 {
     char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
     char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
@@ -364,12 +366,12 @@ static struct coo_cmd_response route_loss_handle(const struct coo_cmd_request *c
 
     parse_rc = coo_json_extract_string(cmd->payload, "route", route, sizeof(route));
     if (parse_rc != COO_JSON_EXTRACT_OK) {
-        return coo_cmd_error(cmd, "missing or invalid route");
+        return coo_cmd_error(out, cmd, "missing or invalid route");
     }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "invalid persistent");
+        return coo_cmd_error(out, cmd, "invalid persistent");
     }
 
     split_rc = route_loss_extract_split_tuple(cmd, split_tx);
@@ -378,57 +380,57 @@ static struct coo_cmd_response route_loss_handle(const struct coo_cmd_request *c
     if (!set_request) {
         if (split_rc != -ENOENT || laser_rc != -ENOENT ||
             parse_rc == COO_JSON_EXTRACT_OK) {
-            return coo_cmd_error(cmd, "route_loss query uses route only");
+            return coo_cmd_error(out, cmd, "route_loss query uses route only");
         }
-        return route_loss_query_response(cmd, route);
+        return route_loss_query_response(cmd, route, out);
     }
 
     if (split_rc == 0 && laser_rc == 0) {
-        return coo_cmd_error(cmd, "route_loss uses split or laser value");
+        return coo_cmd_error(out, cmd, "route_loss uses split or laser value");
     }
     if (split_rc == -ERANGE || laser_rc == -ERANGE) {
-        return coo_cmd_error(cmd, "route_loss out of range");
+        return coo_cmd_error(out, cmd, "route_loss out of range");
     }
     if (split_rc != 0 && split_rc != -ENOENT) {
-        return coo_cmd_error(cmd, "invalid split route_loss");
+        return coo_cmd_error(out, cmd, "invalid split route_loss");
     }
     if (laser_rc != 0 && laser_rc != -ENOENT) {
-        return coo_cmd_error(cmd, "invalid route_loss value");
+        return coo_cmd_error(out, cmd, "invalid route_loss value");
     }
 
     if (split_rc == 0) {
         if (!route_loss_route_is_split(route)) {
-            return coo_cmd_error(cmd, "route_loss split route invalid");
+            return coo_cmd_error(out, cmd, "route_loss split route invalid");
         }
         for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
             const char *loss_key = mems_split_output_loss_key(i);
 
             parse_rc = app_settings_set_route_loss(route, loss_key, split_tx[i], persist);
             if (parse_rc == -ENOSPC) {
-                return coo_cmd_error(cmd, "route_loss table full");
+                return coo_cmd_error(out, cmd, "route_loss table full");
             }
             if (parse_rc != 0) {
-                return coo_cmd_error(cmd, "invalid route_loss key");
+                return coo_cmd_error(out, cmd, "invalid route_loss key");
             }
         }
-        return coo_cmd_ok(cmd);
+        return coo_cmd_ok(out, cmd);
     }
 
     if (laser_rc == -ENOENT) {
-        return coo_cmd_error(cmd, "missing route_loss value");
+        return coo_cmd_error(out, cmd, "missing route_loss value");
     }
     parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
     if (parse_rc == -ENOSPC) {
-        return coo_cmd_error(cmd, "route_loss table full");
+        return coo_cmd_error(out, cmd, "route_loss table full");
     }
     if (parse_rc != 0) {
-        return coo_cmd_error(cmd, "invalid route_loss key");
+        return coo_cmd_error(out, cmd, "invalid route_loss key");
     }
 
-    return coo_cmd_ok(cmd);
+    return coo_cmd_ok(out, cmd);
 }
 
-struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd)
+int memsroute_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct mems_route_key active[MEMS_ROUTER_MAX_ROUTES];
     const char *outputs[MEMS_ROUTER_MAX_ROUTES];
@@ -438,11 +440,11 @@ struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd)
     size_t offset = 0U;
 
     if (memsroute_is_route_loss_key(cmd->key)) {
-        return route_loss_handle(cmd, false);
+        return route_loss_handle(cmd, false, out);
     }
 
     if (coo_json_append(buf, sizeof(buf), &offset, "{\"active_routes\":{") != 0) {
-        return coo_cmd_error(cmd, "response too large");
+        return coo_cmd_error(out, cmd, "response too large");
     }
 
     for (uint8_t i = 0U; router.routes != NULL && i < router.num_routes; ++i) {
@@ -455,19 +457,19 @@ struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd)
         outputs[n_outputs++] = output_name;
         if (n_outputs > 1U &&
             coo_json_append(buf, sizeof(buf), &offset, ",") != 0) {
-            return coo_cmd_error(cmd, "response too large");
+            return coo_cmd_error(out, cmd, "response too large");
         }
         if (memsroute_append_sources_for_output(buf, sizeof(buf), &offset,
                                                 active, n_active, output_name) != 0) {
-            return coo_cmd_error(cmd, "response too large");
+            return coo_cmd_error(out, cmd, "response too large");
         }
     }
 
     if (coo_json_append(buf, sizeof(buf), &offset, "}}") != 0) {
-        return coo_cmd_error(cmd, "response too large");
+        return coo_cmd_error(out, cmd, "response too large");
     }
 
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, buf);
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, buf);
 }
 
 static float split_abs_float(float value)
@@ -475,16 +477,17 @@ static float split_abs_float(float value)
     return value < 0.0f ? -value : value;
 }
 
-static struct coo_cmd_response split_channel_response(const struct coo_cmd_request *cmd,
-                                            const struct mems_split_state *state,
-                                            uint8_t channel_index)
+static int split_channel_response(const struct coo_cmd_request *cmd,
+				  const struct mems_split_state *state,
+				  uint8_t channel_index,
+				  struct coo_cmd_response *out)
 {
     const char *channel_name = mems_split_channel_name(channel_index);
     char payload[MAX_PAYLOAD_LEN];
     int written;
 
     if (state == NULL || channel_name == NULL) {
-        return coo_cmd_error(cmd, "split route invalid");
+        return coo_cmd_error(out, cmd, "split route invalid");
     }
 
     written = snprintk(payload, sizeof(payload),
@@ -535,10 +538,10 @@ static struct coo_cmd_response split_channel_response(const struct coo_cmd_reque
              state->stopsin_s);
 
     if (written < 0 || written >= (int)sizeof(payload)) {
-        return coo_cmd_error(cmd, "split response too large");
+        return coo_cmd_error(out, cmd, "split response too large");
     }
 
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 static void split_emit_quantization_warning(uint8_t channel_index,
@@ -603,7 +606,7 @@ static int split_parse_channel(const struct coo_cmd_request *cmd, uint8_t *chann
     return mems_split_channel_index(channel, channel_index);
 }
 
-struct coo_cmd_response splitting_get(const struct coo_cmd_request *cmd)
+int splitting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct mems_split_state state = {0};
     uint8_t channel_index;
@@ -611,18 +614,18 @@ struct coo_cmd_response splitting_get(const struct coo_cmd_request *cmd)
 
     rc = split_parse_channel(cmd, &channel_index);
     if (rc != 0) {
-        return coo_cmd_error(cmd, "channel required: yj or hk");
+        return coo_cmd_error(out, cmd, "channel required: yj or hk");
     }
 
     rc = mems_split_read_channel_state(&router, channel_index, NULL, &state);
     if (rc != 0) {
-        return coo_cmd_error(cmd, "split route invalid");
+        return coo_cmd_error(out, cmd, "split route invalid");
     }
 
-    return split_channel_response(cmd, &state, channel_index);
+    return split_channel_response(cmd, &state, channel_index, out);
 }
 
-struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd)
+int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct mems_split_state state = {0};
     uint8_t channel_index;
@@ -635,52 +638,52 @@ struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd)
 
     rc = split_parse_channel(cmd, &channel_index);
     if (rc != 0) {
-        return coo_cmd_error(cmd, "channel must be yj or hk");
+        return coo_cmd_error(out, cmd, "channel must be yj or hk");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &requested[0]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "missing ratio1");
+        return coo_cmd_error(out, cmd, "missing ratio1");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "invalid ratio1");
+        return coo_cmd_error(out, cmd, "invalid ratio1");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &requested[1]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "missing ratio2");
+        return coo_cmd_error(out, cmd, "missing ratio2");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "invalid ratio2");
+        return coo_cmd_error(out, cmd, "invalid ratio2");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "ratio3 is computed internally");
+        return coo_cmd_error(out, cmd, "ratio3 is computed internally");
     }
 
     if (requested[0] < 0.0f || requested[0] > 1.0f ||
         requested[1] < 0.0f || requested[1] > 1.0f ||
         requested[0] + requested[1] > 1.000001f) {
-        return coo_cmd_error(cmd, "ratios must be 0.0-1.0 and sum <= 1.0");
+        return coo_cmd_error(out, cmd, "ratios must be 0.0-1.0 and sum <= 1.0");
     }
     requested[2] = 1.0f - requested[0] - requested[1];
 
     if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
                                       &stopafter_s, NULL) != 0 ||
         stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-        return coo_cmd_error(cmd, "invalid stopafter_s");
+        return coo_cmd_error(out, cmd, "invalid stopafter_s");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "toggle_rate_hz is automatic");
+        return coo_cmd_error(out, cmd, "toggle_rate_hz is automatic");
     }
 
     rc = mems_split_apply_channel(&router, channel_index, requested, stopafter_s,
                                   &state, &failed_switch);
     if (rc == -ENOENT) {
-        return coo_cmd_error(cmd, "split route references missing switch");
+        return coo_cmd_error(out, cmd, "split route references missing switch");
     }
     if (rc != 0) {
         char payload[MAX_PAYLOAD_LEN];
@@ -688,16 +691,16 @@ struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd)
         if (failed_switch != NULL) {
             snprintk(payload, sizeof(payload),
                      "{\"error\":\"failed setting %s\"}", failed_switch);
-            return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
+            return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
         }
-        return coo_cmd_error(cmd, "split route unavailable");
+        return coo_cmd_error(out, cmd, "split route unavailable");
     }
 
     split_emit_quantization_warning(channel_index, &state);
-    return split_channel_response(cmd, &state, channel_index);
+    return split_channel_response(cmd, &state, channel_index, out);
 }
 
-struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd)
+int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct mems_route_id route_id = {0};
     const struct mems_route *route;
@@ -710,22 +713,22 @@ struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd)
     int rc;
 
     if (memsroute_is_route_loss_key(cmd->key)) {
-        return route_loss_handle(cmd, true);
+        return route_loss_handle(cmd, true, out);
     }
 
     if (json_obj_parse((char *)cmd->payload, cmd->payload_len,
                        d, ARRAY_SIZE(d), &route_id) < 0) {
-        return coo_cmd_error(cmd, "Failed to parse JSON input or output");
+        return coo_cmd_error(out, cmd, "Failed to parse JSON input or output");
     }
 
     route = mems_router_get_route(&router, route_id.input, route_id.output);
     if (route == NULL) {
-        return coo_cmd_error(cmd, "Invalid Route");
+        return coo_cmd_error(out, cmd, "Invalid Route");
     }
 
     rc = mems_router_apply_route(&router, route, &failed_switch, &failed_state);
     if (rc == -ENOENT) {
-        return coo_cmd_error(cmd, "route references missing switch");
+        return coo_cmd_error(out, cmd, "route references missing switch");
     }
     if (rc != 0) {
         char payload[MAX_PAYLOAD_LEN] = {0};
@@ -734,11 +737,11 @@ struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd)
                  "{\"error\":\"Setting switch %s to %c failed\"}",
                  failed_switch == NULL ? "unknown" : failed_switch,
                  failed_state == '\0' ? '?' : failed_state);
-        return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
+        return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
     }
 
     LOG_INF("Set route %s -> %s", route_id.input, route_id.output);
-    return coo_cmd_ok(cmd);
+    return coo_cmd_ok(out, cmd);
 }
 
 static void mems_format_state(const struct mems_switch_status *status,
@@ -813,8 +816,9 @@ static int mems_append_timing_fields(char *buf, size_t buf_len, size_t *offset,
     return 0;
 }
 
-static struct coo_cmd_response mems_response_for_switch(const struct coo_cmd_request *cmd,
-                                              const struct mems_switch *sw)
+static int mems_response_for_switch(const struct coo_cmd_request *cmd,
+				    const struct mems_switch *sw,
+				    struct coo_cmd_response *out)
 {
     struct mems_switch_status status = {0};
     char state_buf[4] = {0};
@@ -828,24 +832,24 @@ static struct coo_cmd_response mems_response_for_switch(const struct coo_cmd_req
     written = snprintk(payload + off, sizeof(payload) - off,
                        "{\"state\":\"%s\"", state_buf);
     if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-        return coo_cmd_error(cmd, "mems response too large");
+        return coo_cmd_error(out, cmd, "mems response too large");
     }
     off += (size_t)written;
 
     if (mems_status_has_nonconstant_duty(&status) &&
         mems_append_timing_fields(payload, sizeof(payload), &off, &status) != 0) {
-        return coo_cmd_error(cmd, "mems response too large");
+        return coo_cmd_error(out, cmd, "mems response too large");
     }
 
     written = snprintk(payload + off, sizeof(payload) - off, "}");
     if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-        return coo_cmd_error(cmd, "mems response too large");
+        return coo_cmd_error(out, cmd, "mems response too large");
     }
 
-    return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
+int mems_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     if (strcmp(cmd->key, "mems") == 0) {
         char payload[MAX_PAYLOAD_LEN] = {0};
@@ -861,7 +865,7 @@ struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
             if (i > 0U) {
                 written = snprintk(payload + off, sizeof(payload) - off, ",");
                 if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-                    return coo_cmd_error(cmd,
+                    return coo_cmd_error(out, cmd,
                                           "mems response too large; query mems/<switchname>");
                 }
                 off += (size_t)written;
@@ -874,20 +878,20 @@ struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
                                router.switches[i]->name,
                                state_buf);
             if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-                return coo_cmd_error(cmd,
+                return coo_cmd_error(out, cmd,
                                       "mems response too large; query mems/<switchname>");
             }
             off += (size_t)written;
 
             if (mems_status_has_nonconstant_duty(&status) &&
                 mems_append_duty_field(payload, sizeof(payload), &off, &status) != 0) {
-                return coo_cmd_error(cmd,
+                return coo_cmd_error(out, cmd,
                                       "mems response too large; query mems/<switchname>");
             }
 
             written = snprintk(payload + off, sizeof(payload) - off, "}");
             if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-                return coo_cmd_error(cmd,
+                return coo_cmd_error(out, cmd,
                                       "mems response too large; query mems/<switchname>");
             }
             off += (size_t)written;
@@ -895,27 +899,27 @@ struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd)
 
         written = snprintk(payload + off, sizeof(payload) - off, "}");
         if (written < 0 || written >= (int)(sizeof(payload) - off)) {
-            return coo_cmd_error(cmd, "mems response too large");
+            return coo_cmd_error(out, cmd, "mems response too large");
         }
-        return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+        return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
     }
 
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     if (coo_cmd_key_suffix_segment_copy(cmd->key, "mems", mems_switch,
                                         sizeof(mems_switch)) != 0) {
-        return coo_cmd_error(cmd, "Failed to parse mems switch name");
+        return coo_cmd_error(out, cmd, "Failed to parse mems switch name");
     }
 
     struct mems_switch *sw = mems_router_find_switch(&router, mems_switch);
 
     if (sw == NULL) {
-        return coo_cmd_error(cmd, "Invalid switch name");
+        return coo_cmd_error(out, cmd, "Invalid switch name");
     }
 
-    return mems_response_for_switch(cmd, sw);
+    return mems_response_for_switch(cmd, sw, out);
 }
 
-struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
+int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
@@ -932,68 +936,68 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
 
     if (coo_cmd_key_suffix_segment_copy(cmd->key, "mems", mems_switch,
                                         sizeof(mems_switch)) != 0) {
-        return coo_cmd_error(cmd, "Failed to parse mems switch name");
+        return coo_cmd_error(out, cmd, "Failed to parse mems switch name");
     }
 
     parse_rc = coo_json_extract_string(cmd->payload, "state",
                                        requested_state, sizeof(requested_state));
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(cmd, "Missing state");
+        return coo_cmd_error(out, cmd, "Missing state");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR ||
         requested_state[0] == '\0' || requested_state[1] != '\0') {
-        return coo_cmd_error(cmd, "state must be A or B");
+        return coo_cmd_error(out, cmd, "state must be A or B");
     }
 
     if (coo_json_match_string_choice(requested_state, mems_switch_state_choices,
                                      ARRAY_SIZE(mems_switch_state_choices),
                                      &state_value) != 0) {
-        return coo_cmd_error(cmd, "state must be A or B");
+        return coo_cmd_error(out, cmd, "state must be A or B");
     }
     requested_state[0] = (char)state_value;
 
     parse_rc = coo_json_extract_float(cmd->payload, "duty_cycle", &duty_cycle);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "duty_cycle must be a number from 0.0 to 1.0");
+        return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
     has_duty_cycle = (parse_rc == COO_JSON_EXTRACT_OK);
     if (has_duty_cycle && (duty_cycle < 0.0f || duty_cycle > 1.0f)) {
-        return coo_cmd_error(cmd, "duty_cycle must be a number from 0.0 to 1.0");
+        return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
 
     parse_rc = coo_json_extract_float(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "Invalid stopafter_s");
+        return coo_cmd_error(out, cmd, "Invalid stopafter_s");
     }
     has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
 
     parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(cmd, "Invalid toggle_rate_hz");
+        return coo_cmd_error(out, cmd, "Invalid toggle_rate_hz");
     }
     has_toggle_rate_hz = (parse_rc == COO_JSON_EXTRACT_OK);
     if (has_toggle_rate_hz && toggle_rate_hz <= 0.0f) {
-        return coo_cmd_error(cmd, "toggle_rate_hz must be > 0");
+        return coo_cmd_error(out, cmd, "toggle_rate_hz must be > 0");
     }
 
     if (has_duty_cycle && requested_state[0] == 'B') {
-        return coo_cmd_error(cmd, "duty_cycle only valid with state A");
+        return coo_cmd_error(out, cmd, "duty_cycle only valid with state A");
     }
     if (has_stopafter_s) {
         if (stopafter_s < 0.0f ||
             stopafter_s > (float)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-            return coo_cmd_error(cmd, "stopafter_s out of range");
+            return coo_cmd_error(out, cmd, "stopafter_s out of range");
         }
         stopafter_s_u32 = (uint32_t)(stopafter_s + 0.5f);
         if (stopafter_s_u32 == 0U && duty_cycle > 0.0f && duty_cycle < 1.0f) {
-            return coo_cmd_error(cmd, "stopafter_s must be > 0 for toggling");
+            return coo_cmd_error(out, cmd, "stopafter_s must be > 0 for toggling");
         }
     }
 
     struct mems_switch *sw = mems_router_find_switch(&router, mems_switch);
 
     if (sw == NULL) {
-        return coo_cmd_error(cmd, "Invalid switch name");
+        return coo_cmd_error(out, cmd, "Invalid switch name");
     }
 
     if (has_duty_cycle) {
@@ -1006,10 +1010,10 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
     }
 
     if (rc == -ERANGE) {
-        return coo_cmd_error(cmd, "MEMS setting out of range");
+        return coo_cmd_error(out, cmd, "MEMS setting out of range");
     }
     if (rc != 0) {
-        return coo_cmd_error(cmd, "Invalid MEMS setting");
+        return coo_cmd_error(out, cmd, "Invalid MEMS setting");
     }
 
     if (has_toggle_rate_hz) {
@@ -1033,5 +1037,5 @@ struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd)
         }
     }
 
-    return mems_response_for_switch(cmd, sw);
+    return mems_response_for_switch(cmd, sw, out);
 }

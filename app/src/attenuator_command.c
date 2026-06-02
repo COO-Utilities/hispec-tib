@@ -95,7 +95,7 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 	return 0;
 }
 
-struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
+int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum attenuator_setting setting;
 	uint8_t attenuator_index;
@@ -104,17 +104,17 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 
 	rc = attenuator_index_from_command(cmd, &setting, &attenuator_index);
 	if (rc == -EINVAL) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse atten/setting\"}");
 	}
 	if (rc == -ENOTSUP) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -132,7 +132,7 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 		struct attenuator_status status = {0};
 
 		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Failed to read attenuator\"}");
 		}
 		snprintk(payload, sizeof(payload),
@@ -148,13 +148,13 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd)
 		break;
 	}
 	default:
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
-	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
+int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum attenuator_setting setting;
 	uint8_t attenuator_index;
@@ -162,17 +162,17 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 
 	rc = attenuator_index_from_command(cmd, &setting, &attenuator_index);
 	if (rc == -EINVAL) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Failed to parse laser/setting\"}");
 	}
 	if (rc == -ENOTSUP) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 	if (rc == -ENOENT) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid attenuator\"}");
 	}
 	if (rc != 0) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					  "{\"error\":\"Attenuator unavailable on this board\"}");
 	}
 
@@ -192,7 +192,7 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac1_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac1_len != ATTENUATOR_COEFF_COUNT) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
@@ -201,13 +201,13 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 							 ATTENUATOR_COEFF_COUNT,
 							 &dac2_len);
 		if (parse_rc != COO_JSON_EXTRACT_OK || dac2_len != ATTENUATOR_COEFF_COUNT) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 						   &persist, NULL) != 0) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Invalid persistent flag\"}");
 		}
 
@@ -222,7 +222,7 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 
 		if (attenuator_apply_coefficients_preserve_db(
 			    &attenuators[attenuator_index], physical) != 0) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Failed to apply coefficients\"}");
 		}
 		app_settings_update_attenuator_channel(attenuator_index,
@@ -236,44 +236,45 @@ struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd)
 
 		if (coo_json_extract_double(cmd->payload, "value", &value) !=
 		    COO_JSON_EXTRACT_OK) {
-			return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Missing setting value\"}");
 		}
 
 		if (setting == ATTENUATOR_SETTING_VALUE) {
 			if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 							  "{\"error\":\"Invalid linear transmission\"}");
 			}
 		} else {
 			if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 							  "{\"error\":\"Invalid dB attenuation\"}");
 			}
 		}
 		break;
 	}
 	default:
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
 	throughput_monitor_note_attenuator_changed(attenuator_index);
 
-	return coo_cmd_ok(cmd);
+	return coo_cmd_ok(out, cmd);
 }
 
-static struct coo_cmd_response atten_calibration_status_reply(
+static int atten_calibration_status_reply(
 	const struct coo_cmd_request *cmd,
 	const struct attenuator_calibration_status *status,
-	enum coo_cmd_msg_type type)
+	enum coo_cmd_msg_type type,
+	struct coo_cmd_response *out)
 {
 	char payload[MAX_PAYLOAD_LEN] = {0};
 
 	if (attenuator_calibration_format_status(payload, sizeof(payload), status) != 0) {
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR,
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 				     "{\"error\":\"Calibration status payload too large\"}");
 	}
-	return coo_cmd_reply(cmd, type, payload);
+	return coo_cmd_reply(out, cmd, type, payload);
 }
 
 static int parse_calibration_batch_object(
@@ -320,15 +321,15 @@ static int parse_calibration_batch_object(
 	return COO_JSON_EXTRACT_OK;
 }
 
-struct coo_cmd_response atten_calibration_get(const struct coo_cmd_request *cmd)
+int atten_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct attenuator_calibration_status status = {0};
 
 	attenuator_calibration_get_status(&status);
-	return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK);
+	return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK, out);
 }
 
-struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
+int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct attenuator_calibration_status status = {0};
 	struct attenuator_calibration_batch batch[2];
@@ -353,16 +354,16 @@ struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
 	uint8_t attenuator_index;
 
 	if (coo_json_extract_optional_bool(cmd->payload, "stop", &stop, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid stop");
+		return coo_cmd_error(out, cmd, "invalid stop");
 	}
 	if (stop) {
 		(void)attenuator_calibration_stop(&status);
-		return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK);
+		return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK, out);
 	}
 
 	if (coo_json_extract_optional_bool(cmd->payload, "continue",
 					   &cont, &cont_present) != 0) {
-		return coo_cmd_error(cmd, "invalid continue");
+		return coo_cmd_error(out, cmd, "invalid continue");
 	}
 	if (cont_present) {
 		if (coo_json_extract_optional_double_range(cmd->payload, "other_mv",
@@ -370,44 +371,46 @@ struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
 							   &other_present,
 							   0.0,
 							   ATTENUATOR_DRIVE_MAX_MV) != 0) {
-			return coo_cmd_error(cmd, "invalid other_mv");
+			return coo_cmd_error(out, cmd, "invalid other_mv");
 		}
 		if (cont) {
 			rc = attenuator_calibration_manual_continue(other_present,
 								   other_mv,
 								   &status);
 			if (rc != 0) {
-				return atten_calibration_status_reply(cmd, &status,
-								     COO_CMD_RESP_ERROR);
+					return atten_calibration_status_reply(cmd, &status,
+									     COO_CMD_RESP_ERROR,
+									     out);
 			}
 		} else {
 			attenuator_calibration_get_status(&status);
 		}
-		return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK);
+		return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK, out);
 	}
 
 	parse_rc = parse_calibration_batch_object(cmd->payload, "dac1", &batch[0]);
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
 		if (parse_calibration_batch_object(cmd->payload, "dac2", &batch[1]) !=
 		    COO_JSON_EXTRACT_OK) {
-			return coo_cmd_error(cmd, "manual fit requires dac1 and dac2 batches");
+			return coo_cmd_error(out, cmd, "manual fit requires dac1 and dac2 batches");
 		}
 		(void)coo_json_extract_string(cmd->payload, "attenuator",
 					      atten_name, sizeof(atten_name));
 		if (attenuator_index_from_name(atten_name, &attenuator_index) != 0) {
-			return coo_cmd_error(cmd, "invalid attenuator");
+			return coo_cmd_error(out, cmd, "invalid attenuator");
 		}
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 						   &persistent, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid persistent");
+			return coo_cmd_error(out, cmd, "invalid persistent");
 		}
 		rc = attenuator_calibration_fit_manual(attenuator_index, batch,
 						       persistent, &status);
-		return atten_calibration_status_reply(
-			cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR);
+			return atten_calibration_status_reply(
+				cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR,
+				out);
 	}
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid manual fit batch");
+		return coo_cmd_error(out, cmd, "invalid manual fit batch");
 	}
 
 	(void)coo_json_extract_string(cmd->payload, "mode", mode, sizeof(mode));
@@ -415,60 +418,60 @@ struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd)
 		(void)coo_json_extract_string(cmd->payload, "attenuator",
 					      atten_name, sizeof(atten_name));
 		if (attenuator_index_from_name(atten_name, &attenuator_index) != 0) {
-			return coo_cmd_error(cmd, "invalid attenuator");
+			return coo_cmd_error(out, cmd, "invalid attenuator");
 		}
 		if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms",
 						  &dwell_ms, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid dwell_ms");
+			return coo_cmd_error(out, cmd, "invalid dwell_ms");
 		}
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 						   &persistent, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid persistent");
+			return coo_cmd_error(out, cmd, "invalid persistent");
 		}
 		rc = attenuator_calibration_start_manual(attenuator_index,
 							 dwell_ms,
 							 persistent,
 							 &status);
 		return atten_calibration_status_reply(
-			cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR);
+			cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "laser",
 					   laser_name, sizeof(laser_name));
 	if (parse_rc != COO_JSON_EXTRACT_OK ||
 	    hispec_laser_id_from_name(laser_name, &request.laser) != 0) {
-		return coo_cmd_error(cmd, "missing or invalid laser");
+		return coo_cmd_error(out, cmd, "missing or invalid laser");
 	}
 	parse_rc = coo_json_extract_string(cmd->payload, "output",
 					   output, sizeof(output));
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
-		return coo_cmd_error(cmd, "missing or invalid output");
+		return coo_cmd_error(out, cmd, "missing or invalid output");
 	}
 	parse_rc = coo_json_extract_string_choice(cmd->payload, "fiber",
 						  attenuator_cal_fiber_choices,
 						  ARRAY_SIZE(attenuator_cal_fiber_choices),
 						  &choice_value);
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "fiber must be M or S");
+		return coo_cmd_error(out, cmd, "fiber must be M or S");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
 		request.fiber = (char)choice_value;
 	}
 	if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms",
 					  &dwell_ms, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid dwell_ms");
+		return coo_cmd_error(out, cmd, "invalid dwell_ms");
 	}
 	if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 					   &persistent, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid persistent");
+		return coo_cmd_error(out, cmd, "invalid persistent");
 	}
 	request.dwell_ms = dwell_ms;
 	request.persistent = persistent;
 
 	rc = attenuator_calibration_start_auto(&request, &status);
 	if (rc != 0 && status.state == NULL) {
-		return coo_cmd_error(cmd, "attenuator calibration start failed");
+		return coo_cmd_error(out, cmd, "attenuator calibration start failed");
 	}
 	return atten_calibration_status_reply(
-		cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR);
+		cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);
 }

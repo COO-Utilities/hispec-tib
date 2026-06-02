@@ -33,9 +33,10 @@ static const struct coo_json_string_choice pd_action_choices[] = {
 	{ "reset_lowest_dark", PD_ACTION_RESET_LOWEST_DARK },
 };
 
-static struct coo_cmd_response
+static int
 pd_average_status_response(const struct coo_cmd_request *cmd,
-			   const struct photodiode_average_status *status);
+			   const struct photodiode_average_status *status,
+			   struct coo_cmd_response *out);
 
 static int pd_parse_channel_name(const char *name, enum photodiode_channel *channel)
 {
@@ -101,7 +102,7 @@ static int pd_parse_channel_from_payload_or_key(const struct coo_cmd_request *cm
 	return 0;
 }
 
-struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
+int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct photodiode_status status;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -118,7 +119,7 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 	parse_rc = coo_json_extract_string(cmd->payload, "action",
 					   action_text, sizeof(action_text));
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid action");
+		return coo_cmd_error(out, cmd, "invalid action");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
 		struct photodiode_average_status average_status;
@@ -128,18 +129,18 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 						 ARRAY_SIZE(pd_action_choices),
 						 &action_value) != 0 ||
 		    (enum pd_action)action_value != PD_ACTION_DARK_STATUS) {
-			return coo_cmd_error(cmd, "unsupported query action");
+			return coo_cmd_error(out, cmd, "unsupported query action");
 		}
 		rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
 		if (rc != 0) {
-			return coo_cmd_error(cmd, "channel must be yj or hk");
+			return coo_cmd_error(out, cmd, "channel must be yj or hk");
 		}
 		rc = photodiode_get_average_status(channel, &average_status);
 		if (rc != 0) {
-			return coo_cmd_error(cmd, "dark status unavailable");
+			return coo_cmd_error(out, cmd, "dark status unavailable");
 		}
 
-		return pd_average_status_response(cmd, &average_status);
+		return pd_average_status_response(cmd, &average_status, out);
 	}
 
 	photodiode_get_status(&status);
@@ -177,11 +178,12 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd)
 		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
 		 (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
 		 status.uptime_ms/1000);
-	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct coo_cmd_response pd_average_status_response(const struct coo_cmd_request *cmd,
-					     const struct photodiode_average_status *status)
+static int pd_average_status_response(const struct coo_cmd_request *cmd,
+				      const struct photodiode_average_status *status,
+				      struct coo_cmd_response *out)
 {
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	const struct photodiode_average_result *result = &status->result;
@@ -212,7 +214,7 @@ static struct coo_cmd_response pd_average_status_response(const struct coo_cmd_r
 			 (double)settings.channel[status->channel].dark_mv,
 			 (double)settings.channel[status->channel].lowest_dark_mv,
 			 settings.channel[status->channel].lowest_dark_valid ? "true" : "false");
-		return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 	}
 
 	if (status->state == PHOTODIODE_AVERAGE_ERROR) {
@@ -224,7 +226,7 @@ static struct coo_cmd_response pd_average_status_response(const struct coo_cmd_r
 			 result->duration_ms,
 			 result->samples,
 			 result->target_samples);
-		return coo_cmd_reply(cmd, COO_CMD_RESP_ERROR, payload);
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
 	}
 
 	snprintk(payload, sizeof(payload),
@@ -236,10 +238,10 @@ static struct coo_cmd_response pd_average_status_response(const struct coo_cmd_r
 		 result->duration_ms,
 		 result->samples,
 		 result->target_samples);
-	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
+int pd_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum pd_action action;
 	char action_text[32] = {0};
@@ -254,21 +256,21 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 	parse_rc = coo_json_extract_string(cmd->payload, "action",
 					   action_text, sizeof(action_text));
 	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-		return coo_cmd_error(cmd, "missing action");
+		return coo_cmd_error(out, cmd, "missing action");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid action");
+		return coo_cmd_error(out, cmd, "invalid action");
 	}
 	if (coo_json_match_string_choice(action_text, pd_action_choices,
 					 ARRAY_SIZE(pd_action_choices),
 					 &action_value) != 0) {
-		return coo_cmd_error(cmd, "unknown action");
+		return coo_cmd_error(out, cmd, "unknown action");
 	}
 	action = (enum pd_action)action_value;
 
 	rc = pd_parse_channel_from_payload_or_key(cmd, &channel);
 	if (rc != 0) {
-		return coo_cmd_error(cmd, "channel must be yj or hk");
+		return coo_cmd_error(out, cmd, "channel must be yj or hk");
 	}
 
 	switch (action) {
@@ -276,49 +278,49 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd)
 		struct photodiode_average_status status;
 
 		if (throughput_monitor_autolevel_active(channel)) {
-			return coo_cmd_error(cmd,
+			return coo_cmd_error(out, cmd,
 					    "dark measurement blocked by autolevel throughput monitor");
 		}
 
 		if (coo_json_extract_optional_u32(cmd->payload, "duration_ms",
 						  &duration_ms, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid duration_ms");
+			return coo_cmd_error(out, cmd, "invalid duration_ms");
 		}
 
 		if (coo_json_extract_optional_bool(cmd->payload, "store",
 						   &store, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid store");
+			return coo_cmd_error(out, cmd, "invalid store");
 		}
 
 		rc = photodiode_start_dark_measurement(channel, duration_ms, store, &status);
 		if (rc != 0) {
-			return coo_cmd_error_rc(cmd, "dark measurement failed", rc);
+			return coo_cmd_error_rc(out, cmd, "dark measurement failed", rc);
 		}
-		return pd_average_status_response(cmd, &status);
+		return pd_average_status_response(cmd, &status, out);
 	}
 	case PD_ACTION_DARK_STATUS: {
 		struct photodiode_average_status status;
 
 		rc = photodiode_get_average_status(channel, &status);
 		if (rc != 0) {
-			return coo_cmd_error(cmd, "dark status unavailable");
+			return coo_cmd_error(out, cmd, "dark status unavailable");
 		}
 
-		return pd_average_status_response(cmd, &status);
+		return pd_average_status_response(cmd, &status, out);
 	}
 	case PD_ACTION_RESET_LOWEST_DARK:
 		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 						   &persist, NULL) != 0) {
-			return coo_cmd_error(cmd, "invalid persistent");
+			return coo_cmd_error(out, cmd, "invalid persistent");
 		}
 
 		rc = photodiode_reset_lowest_dark(channel, persist);
 		if (rc != 0) {
-			return coo_cmd_error(cmd, "reset failed");
+			return coo_cmd_error(out, cmd, "reset failed");
 		}
-		return coo_cmd_ok(cmd);
+		return coo_cmd_ok(out, cmd);
 	default:
-		return coo_cmd_error(cmd, "unknown action");
+		return coo_cmd_error(out, cmd, "unknown action");
 	}
 }
 
@@ -357,7 +359,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
 }
 
-struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd)
+int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct app_photodiode_settings settings;
 	char payload[MAX_PAYLOAD_LEN] = {0};
@@ -366,20 +368,20 @@ struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd)
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {
-		return coo_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(out, cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
 	rc = pd_settings_channel_json(payload, sizeof(payload), channel,
 				      &settings.channel[channel]);
 	if (rc != 0) {
-		return coo_cmd_error(cmd, "pdsettings response too large");
+		return coo_cmd_error(out, cmd, "pdsettings response too large");
 	}
 
-	return coo_cmd_reply(cmd, COO_CMD_RESP_OK, payload);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
+int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct app_photodiode_settings settings;
 	struct app_pd_channel_settings channel_settings;
@@ -390,7 +392,7 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
 	if (rc != 0) {
-		return coo_cmd_error(cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(out, cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
@@ -398,7 +400,7 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 
 	if (coo_json_extract_optional_bool(cmd->payload, "persistent",
 					   &persist, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid persistent");
+		return coo_cmd_error(out, cmd, "invalid persistent");
 	}
 
 	if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
@@ -413,15 +415,15 @@ struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd)
 	    coo_json_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
 						   &channel_settings.transimpedance_v_per_a,
 						   &changed, 1.0, 1.0e12) != 0) {
-		return coo_cmd_error(cmd, "invalid pdsettings value");
+		return coo_cmd_error(out, cmd, "invalid pdsettings value");
 	}
 
 	if (!changed) {
-		return coo_cmd_error(cmd, "no pdsettings fields supplied");
+		return coo_cmd_error(out, cmd, "no pdsettings fields supplied");
 	}
 
 	app_settings_update_photodiode_channel((uint8_t)channel,
 					       &channel_settings,
 					       persist);
-	return coo_cmd_ok(cmd);
+	return coo_cmd_ok(out, cmd);
 }

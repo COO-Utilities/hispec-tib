@@ -19,7 +19,7 @@
  * This command adapter reads cached photodiode state and app-level calibration
  * settings. It does not perform ADC I/O or publish telemetry.
  */
-struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd);
+int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Apply photodiode actions such as dark measurement and reset.
@@ -28,7 +28,7 @@ struct coo_cmd_response pd_get(const struct coo_cmd_request *cmd);
  * dark measurement arms work in the sampler thread and returns immediately; it
  * does not wait for the full measurement duration.
  */
-struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd);
+int pd_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Return app-owned photodiode calibration settings for one channel.
@@ -36,7 +36,7 @@ struct coo_cmd_response pd_set(const struct coo_cmd_request *cmd);
  * Reads app settings and current dark-measurement status. It does not modify
  * hardware or persistent storage.
  */
-struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd);
+int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Update app-owned photodiode calibration settings for one channel.
@@ -44,6 +44,6 @@ struct coo_cmd_response pd_settings_get(const struct coo_cmd_request *cmd);
  * Validates numeric ranges and updates the app settings cache. Persistence is
  * controlled by the command payload's documented `persistent` field.
  */
-struct coo_cmd_response pd_settings_set(const struct coo_cmd_request *cmd);
+int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_PHOTODIODE_COMMAND_H */

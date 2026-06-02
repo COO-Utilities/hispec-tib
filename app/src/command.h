@@ -27,15 +27,15 @@
 #define MAX_PENDING_COMMANDS 2
 
 /* Handler prototypes for command.c-owned commands (get/set where defined). */
-struct coo_cmd_response ip_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response ip_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response mqtt_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response mqtt_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response time_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response time_set(const struct coo_cmd_request *cmd);
+int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
-struct coo_cmd_response status_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response temp_get(const struct coo_cmd_request *cmd);
+int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Initialize command runtime identity, queues, hooks, and reboot work.

@@ -14,21 +14,21 @@
 
 #include "command.h"
 
-struct coo_cmd_response laser_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_tune_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_tune_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_settings_get(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_settings_set(const struct coo_cmd_request *cmd);
-struct coo_cmd_response laser_engstatus_get(const struct coo_cmd_request *cmd);
+int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Query or set laser-bank power auto/override mode. */
-struct coo_cmd_response laserbank_power(const struct coo_cmd_request *cmd);
+int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Clear laser-bank faults with a bounded laser-bank power cycle. */
-struct coo_cmd_response laserbank_clearfaults(const struct coo_cmd_request *cmd);
+int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Query or set laser-bank heater auto/override mode. */
-struct coo_cmd_response laserbank_heater(const struct coo_cmd_request *cmd);
+int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_LASER_COMMAND_H */
