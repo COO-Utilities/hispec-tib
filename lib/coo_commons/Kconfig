@@ -83,6 +83,14 @@ config COO_MQTT_PAYLOAD_SIZE
 	  Maximum size for MQTT message payloads. This defines the
 	  size of RX and TX buffers (2x this value total).
 
+module = COO_MQTT
+module-str = COO MQTT client wrapper
+source "subsys/logging/Kconfig.template.log_config"
+
+choice COO_MQTT_LOG_LEVEL_CHOICE
+	default COO_MQTT_LOG_LEVEL_INF
+endchoice
+
 config COO_CMD_SERIAL_GUARD
 	bool "Command dispatcher serial guard"
 	depends on COO_JSON

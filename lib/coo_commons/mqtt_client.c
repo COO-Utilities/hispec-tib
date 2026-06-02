@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_MODULE_REGISTER(coo_mqtt, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(coo_mqtt, CONFIG_COO_MQTT_LOG_LEVEL);
 
 /* Buffers for MQTT client */
 static uint8_t rx_buffer[CONFIG_COO_MQTT_PAYLOAD_SIZE];
