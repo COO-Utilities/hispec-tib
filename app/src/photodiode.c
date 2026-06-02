@@ -810,8 +810,7 @@ int photodiode_reset_lowest_dark(enum photodiode_channel channel, bool persist)
 
 void photodiode_thread(void *p1, void *p2, void *p3)
 {
-    int64_t next_adc_attempt_ms[PHOTODIODE_CHANNEL_COUNT] = {0};
-    int last_adc_error[PHOTODIODE_CHANNEL_COUNT] = {0};
+    struct app_photodiode_settings settings;
 
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
@@ -824,52 +823,54 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         k_sleep(K_MSEC(500));
     }
 
+    /* Load the first calibration snapshot before the sample timer starts. The
+     * timed loop only uses non-blocking refreshes and reuses this cached copy
+     * if the command thread is updating settings at the same instant.
+     */
+    app_settings_get_photodiode(&settings);
+
     k_timer_start(&pd_sample_timer, K_NO_WAIT, K_MSEC(PUBLISH_INTERVAL_MS));
 
     while (1) {
-        struct app_photodiode_settings settings;
-        int64_t start = k_uptime_get();
+        struct photodiode_loop_timing loop_timing = {0};
+        uint64_t loop_start_cycles;
+        uint64_t adc_total_us = 0U;
         uint32_t elapsed_samples;
+        bool settings_refreshed;
 
         k_sem_take(&pd_sample_sem, K_FOREVER);
+        loop_start_cycles = k_cycle_get_64();
         elapsed_samples = k_timer_status_get(&pd_sample_timer);
-        if (elapsed_samples > 1U) {
-            LOG_WRN_RATELIMIT_RATE(PD_HARDWARE_LOG_RATELIMIT_MS,
-                                   "ADC sample timer missed %u intervals",
-                                   (unsigned int)(elapsed_samples - 1U));
-        }
+        pd_timing_note_missed_intervals(elapsed_samples);
 
-        app_settings_get_photodiode(&settings);
+        settings_refreshed = app_settings_try_get_photodiode(&settings);
+        pd_timing_note_settings(settings_refreshed);
 
         for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
             int16_t raw = 0;
-            int64_t now = k_uptime_get();
+            uint64_t adc_start_cycles;
+            uint64_t adc_elapsed_us;
             int rc;
 
-            if (last_adc_error[i] != 0 && now < next_adc_attempt_ms[i]) {
-                continue;
-            }
-
+            adc_start_cycles = k_cycle_get_64();
             rc = pd_read_raw((enum photodiode_channel)i, &raw);
+            adc_elapsed_us = k_cyc_to_us_floor64(k_cycle_get_64() - adc_start_cycles);
+            adc_total_us += adc_elapsed_us;
+            loop_timing.worst_adc_us[i] = adc_elapsed_us;
+            loop_timing.worst_adc_over_us[i] = pd_adc_over_us(adc_elapsed_us);
+            pd_timing_note_adc((enum photodiode_channel)i, rc);
 
             if (rc != 0) {
                 LOG_ERR_RATELIMIT_RATE(PD_HARDWARE_LOG_RATELIMIT_MS,
                                        "ADC %s read failed (%d)",
                                        photodiode_channel_names[i], rc);
-                next_adc_attempt_ms[i] = now + PD_ADC_ERROR_RETRY_MS;
-                last_adc_error[i] = rc;
-            } else {
-                next_adc_attempt_ms[i] = 0;
-                last_adc_error[i] = 0;
             }
             pd_update_channel((enum photodiode_channel)i, rc, raw, &settings.channel[i]);
         }
 
-        int64_t elapsed = k_uptime_get() - start;  // overflow every 300M years
-        if (elapsed > PUBLISH_INTERVAL_MS) {
-            LOG_WRN_RATELIMIT_RATE(PD_HARDWARE_LOG_RATELIMIT_MS,
-                                   "ADC loop overran interval by %lld ms",
-                                   elapsed - PUBLISH_INTERVAL_MS);
-        }
+        pd_timing_note_loop(&loop_timing,
+                            k_cyc_to_us_floor64(k_cycle_get_64() - loop_start_cycles),
+                            adc_total_us);
+        pd_timing_maybe_log(k_uptime_get());
     }
 }

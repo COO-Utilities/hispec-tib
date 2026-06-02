@@ -15,6 +15,7 @@ LOG_MODULE_REGISTER(mems_switching, LOG_LEVEL_DBG);
 
 #define MEMS_ROUTER_STACK_SIZE 1024
 #define MEMS_ROUTER_PRIORITY 2
+#define MEMS_TIMING_STATS_INTERVAL_MS 10000U
 
 BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,
              "FFSW pulse width must be an integer number of router ticks");
@@ -39,6 +40,23 @@ static const char *split_output_loss_keys[MEMS_SPLIT_OUTPUT_COUNT] = {
 static struct mems_split_state g_split_state[MEMS_SPLIT_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(split_state_lock);
 
+struct mems_timing_stats {
+    uint32_t service_events;
+    uint32_t missed_base_ticks;
+    uint32_t late_service_events;
+    uint32_t late_pulse_events;
+    uint32_t stale_pulse_skips;
+    uint32_t cleanup_late_events;
+    uint32_t worst_missed_base_ticks;
+    uint32_t worst_late_service_cycles;
+    uint32_t worst_cleanup_late_ms;
+};
+
+static struct mems_timing_stats mems_timing_stats;
+static int64_t mems_timing_next_log_ms;
+
+extern bool app_timing_summary_logs_enabled(void);
+
 K_THREAD_DEFINE(mems_router_tid, MEMS_ROUTER_STACK_SIZE,
                 mems_router_thread, NULL, NULL, NULL,
                 MEMS_ROUTER_PRIORITY, 0, 0);
@@ -58,6 +76,116 @@ static uint8_t mems_switch_work_ticks(const struct mems_switch *sw)
 static bool time_reached_u32(uint32_t now_ms, uint32_t deadline_ms)
 {
     return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
+static void mems_timing_note_base_ticks(uint32_t elapsed_ticks)
+{
+    uint32_t missed;
+
+    mems_timing_stats.service_events++;
+    if (elapsed_ticks <= 1U) {
+        return;
+    }
+
+    missed = elapsed_ticks - 1U;
+    mems_timing_stats.missed_base_ticks += missed;
+    if (missed > mems_timing_stats.worst_missed_base_ticks) {
+        mems_timing_stats.worst_missed_base_ticks = missed;
+    }
+}
+
+static void mems_timing_note_late_service(uint32_t late_service_cycles, bool pulse_due)
+{
+    if (late_service_cycles == 0U) {
+        return;
+    }
+
+    if (pulse_due) {
+        mems_timing_stats.late_pulse_events++;
+    } else {
+        mems_timing_stats.late_service_events++;
+    }
+    if (late_service_cycles > mems_timing_stats.worst_late_service_cycles) {
+        mems_timing_stats.worst_late_service_cycles = late_service_cycles;
+    }
+}
+
+static void mems_timing_note_stale_pulse_skip(uint32_t late_service_cycles)
+{
+    mems_timing_stats.stale_pulse_skips++;
+    if (late_service_cycles > mems_timing_stats.worst_late_service_cycles) {
+        mems_timing_stats.worst_late_service_cycles = late_service_cycles;
+    }
+}
+
+static void mems_timing_note_cleanup_late(uint32_t late_ms)
+{
+    mems_timing_stats.cleanup_late_events++;
+    if (late_ms > mems_timing_stats.worst_cleanup_late_ms) {
+        mems_timing_stats.worst_cleanup_late_ms = late_ms;
+    }
+}
+
+static bool mems_timing_has_anomaly(void)
+{
+    return mems_timing_stats.missed_base_ticks > 0U ||
+           mems_timing_stats.late_service_events > 0U ||
+           mems_timing_stats.late_pulse_events > 0U ||
+           mems_timing_stats.stale_pulse_skips > 0U ||
+           mems_timing_stats.cleanup_late_events > 0U;
+}
+
+static void mems_timing_log_snapshot(bool anomaly)
+{
+    if (anomaly) {
+        LOG_WRN("MEMS timing: events=%u missed_base=%u late_service=%u "
+                "late_pulse=%u stale_skips=%u cleanup_late=%u "
+                "worst_base_miss=%u worst_late_cycles=%u worst_cleanup_ms=%u",
+                (unsigned int)mems_timing_stats.service_events,
+                (unsigned int)mems_timing_stats.missed_base_ticks,
+                (unsigned int)mems_timing_stats.late_service_events,
+                (unsigned int)mems_timing_stats.late_pulse_events,
+                (unsigned int)mems_timing_stats.stale_pulse_skips,
+                (unsigned int)mems_timing_stats.cleanup_late_events,
+                (unsigned int)mems_timing_stats.worst_missed_base_ticks,
+                (unsigned int)mems_timing_stats.worst_late_service_cycles,
+                (unsigned int)mems_timing_stats.worst_cleanup_late_ms);
+        return;
+    }
+
+    LOG_INF("MEMS timing: events=%u missed_base=%u late_service=%u "
+            "late_pulse=%u stale_skips=%u cleanup_late=%u "
+            "worst_base_miss=%u worst_late_cycles=%u worst_cleanup_ms=%u",
+            (unsigned int)mems_timing_stats.service_events,
+            (unsigned int)mems_timing_stats.missed_base_ticks,
+            (unsigned int)mems_timing_stats.late_service_events,
+            (unsigned int)mems_timing_stats.late_pulse_events,
+            (unsigned int)mems_timing_stats.stale_pulse_skips,
+            (unsigned int)mems_timing_stats.cleanup_late_events,
+            (unsigned int)mems_timing_stats.worst_missed_base_ticks,
+            (unsigned int)mems_timing_stats.worst_late_service_cycles,
+            (unsigned int)mems_timing_stats.worst_cleanup_late_ms);
+}
+
+static void mems_timing_maybe_log(int64_t now_ms)
+{
+    bool anomaly;
+
+    if (mems_timing_next_log_ms == 0) {
+        mems_timing_next_log_ms = now_ms + MEMS_TIMING_STATS_INTERVAL_MS;
+        return;
+    }
+    if (now_ms < mems_timing_next_log_ms) {
+        return;
+    }
+
+    anomaly = mems_timing_has_anomaly();
+    if (anomaly || app_timing_summary_logs_enabled()) {
+        mems_timing_log_snapshot(anomaly);
+    }
+
+    memset(&mems_timing_stats, 0, sizeof(mems_timing_stats));
+    mems_timing_next_log_ms = now_ms + MEMS_TIMING_STATS_INTERVAL_MS;
 }
 
 static uint32_t min_toggle_period_cycles(const struct mems_switch *sw)
@@ -330,8 +458,7 @@ static void mems_switch_clear_finished_pulse_elapsed_locked(struct mems_switch *
     }
 
     if (time_reached_u32(now_ms, sw->pulse_clear_at_ms + MEMS_SWITCH_ROUTER_TICK_MS)) {
-        LOG_WRN("MEMS %s pulse cleanup was %u ms late",
-                sw->name, (unsigned int)(now_ms - sw->pulse_clear_at_ms));
+        mems_timing_note_cleanup_late(now_ms - sw->pulse_clear_at_ms);
     }
 }
 
@@ -388,18 +515,15 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
         uint32_t hold_cycles = mems_switch_target_hold_cycles(sw);
 
         if (hold_cycles <= late_service_cycles) {
-            LOG_WRN("MEMS %s skipped stale %c pulse after %u missed service ticks",
-                    sw->name, sw->target_state, late_service_cycles);
+            mems_timing_note_stale_pulse_skip(late_service_cycles);
             mems_switch_drop_fully_missed_pulse_locked(sw, late_service_cycles);
             sw->service_ticks_remaining = service_period_ticks;
             return;
         }
 
-        LOG_WRN_RATELIMIT_RATE(10000, "MEMS %s applying late %c pulse after %u missed service ticks",
-                sw->name, sw->target_state, late_service_cycles);
+        mems_timing_note_late_service(late_service_cycles, true);
     } else if (late_service_cycles > 0U) {
-        LOG_WRN_RATELIMIT_RATE(10000, "MEMS %s service tick was %u cycles late",
-                sw->name, late_service_cycles);
+        mems_timing_note_late_service(late_service_cycles, false);
     }
 
     mems_switch_tick_locked(sw);
@@ -427,10 +551,7 @@ static void mems_router_process_ticks(struct mems_router *router, uint32_t elaps
         return;
     }
 
-    if (elapsed_ticks > 1U) {
-        LOG_WRN_RATELIMIT_RATE(10000, "MEMS router missed %u base ticks",
-                (unsigned int)(elapsed_ticks - 1U));
-    }
+    mems_timing_note_base_ticks(elapsed_ticks);
 
     k_mutex_lock(&router->lock, K_FOREVER);
 
@@ -446,6 +567,7 @@ static void mems_router_process_ticks(struct mems_router *router, uint32_t elaps
     }
 
     k_mutex_unlock(&router->lock);
+    mems_timing_maybe_log(k_uptime_get());
 }
 
 static void mems_router_timer_handler(struct k_timer *timer)

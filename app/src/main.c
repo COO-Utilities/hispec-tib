@@ -42,9 +42,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define EXECUTOR_STACK_SIZE 8192
 #define EXECUTOR_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
-#define PHOTODIODE_PRIORITY 3
+#define PHOTODIODE_PRIORITY -2
 #define THROUGHPUT_MONITOR_STACK_SIZE 4096
 #define THROUGHPUT_MONITOR_PRIORITY 7
+#define APP_TIMING_SUMMARY_LOGS 0
 
 #if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
 #define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U)
@@ -70,6 +71,11 @@ static struct k_thread photodiode_thread_data;
 
 static K_THREAD_STACK_DEFINE(throughput_monitor_stack, THROUGHPUT_MONITOR_STACK_SIZE);
 static struct k_thread throughput_monitor_thread_data;
+
+bool app_timing_summary_logs_enabled(void)
+{
+	return APP_TIMING_SUMMARY_LOGS != 0;
+}
 
 static void load_network_config(struct network_config *cfg)
 {
