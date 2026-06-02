@@ -102,8 +102,10 @@ Breadboard considerations:
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 128 SPS, ±6.144 range, 187.5 uV LSB
-- Sample each at 50 Hz muxing between the two
+- Run device at 250 SPS, ±6.144 range, 187.5 uV LSB
+- Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
+  preserves timing margin for the two-channel 20 ms sampler, at the cost of
+  less converter-side averaging than 128 SPS.
 - PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - Uses 2-channels of LL shifting for i2c 3.3-5V

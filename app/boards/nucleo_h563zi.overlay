@@ -134,7 +134,7 @@
 	status = "okay";
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
-	clock-frequency = <100000>;
+	clock-frequency = <400000>;
 
 	adc1115: adc1115@48 {
 		compatible = "ti,ads1115";
@@ -148,7 +148,7 @@
 			reg = <0>;
 			zephyr,gain = "ADC_GAIN_1_3";
 			zephyr,reference = "ADC_REF_INTERNAL";
-			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 4)>;
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 5)>;  // 250 sps 4 is 125
 			zephyr,resolution = <16>;
 			zephyr,input-positive = <0>;
 		};
@@ -157,7 +157,7 @@
 			reg = <2>;
 			zephyr,gain = "ADC_GAIN_1_3";
 			zephyr,reference = "ADC_REF_INTERNAL";
-			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 4)>;
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 5)>;
 			zephyr,resolution = <16>;
 			zephyr,input-positive = <2>;
 		};
