@@ -1790,17 +1790,21 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	cmd = &runtime->executor_cmd;
 	out = &runtime->executor_out;
 
-		while (1) {
-			/* K_FOREVER sleeps until ingress queues a complete command. */
-			k_msgq_get(runtime->inbound_queue, cmd, K_FOREVER);
-			if (runtime->execute_handler != NULL) {
-				(void)runtime->execute_handler(cmd, out);
-			} else {
-				(void)runtime_execute_default(runtime, cmd, out);
-			}
-			if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
-				LOG_WRN("Outbound queue full; dropping command response");
-			}
+	while (1) {
+		/* K_FOREVER sleeps until ingress queues a complete command. */
+		k_msgq_get(runtime->inbound_queue, cmd, K_FOREVER);
+		if (runtime_handle_builtin_request(runtime, cmd, out)) {
+			/* Built-ins stay library-owned even when the app provides a
+			 * custom executor hook.
+			 */
+		} else if (runtime->execute_handler != NULL) {
+			(void)runtime->execute_handler(cmd, out);
+		} else {
+			(void)runtime_execute_default(runtime, cmd, out);
+		}
+		if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+			LOG_WRN("Outbound queue full; dropping command response");
+		}
 	}
 }
 
@@ -1947,11 +1951,6 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 	}
 	cmd->payload_len = strlen(cmd->payload);
 	cmd->msg_type = runtime_classify(runtime, cmd);
-
-	if (runtime_handle_builtin_request(runtime, cmd, &runtime->outbound_scratch)) {
-		runtime_enqueue_response(runtime, &runtime->outbound_scratch);
-		return;
-	}
 
 	if (k_msgq_put(runtime->inbound_queue, cmd, K_NO_WAIT) != 0) {
 		struct coo_cmd_response *out = &runtime->outbound_scratch;
@@ -2151,11 +2150,6 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 		return;
 	}
 #endif
-
-	if (runtime_handle_builtin_request(runtime, cmd, &runtime->outbound_scratch)) {
-		runtime_enqueue_response(runtime, &runtime->outbound_scratch);
-		return;
-	}
 
 	if (k_msgq_put(runtime->inbound_queue, cmd, K_NO_WAIT) != 0) {
 		struct coo_cmd_response *out = &runtime->outbound_scratch;
