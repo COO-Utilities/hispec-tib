@@ -24,6 +24,7 @@ LOG_MODULE_REGISTER(coo_mqtt, CONFIG_COO_MQTT_LOG_LEVEL);
 /* Buffers for MQTT client */
 static uint8_t rx_buffer[CONFIG_COO_MQTT_PAYLOAD_SIZE];
 static uint8_t tx_buffer[CONFIG_COO_MQTT_PAYLOAD_SIZE];
+static uint8_t publish_payload[CONFIG_COO_MQTT_PAYLOAD_SIZE + 1U];
 
 /* MQTT broker details */
 static struct sockaddr_storage broker;
@@ -259,28 +260,27 @@ static inline void on_mqtt_disconnect(void)
 static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_evt *evt)
 {
 	int rc;
-	uint8_t payload[CONFIG_COO_MQTT_PAYLOAD_SIZE + 1] = {0};
 	struct mqtt_publish_param publish_param = evt->param.publish;
 
 	/* mqtt_read_publish_payload() drains Zephyr's MQTT RX buffer into a local
 	 * buffer so the command layer can copy it before this event handler returns.
 	 */
-	rc = mqtt_read_publish_payload(client, payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
+	rc = mqtt_read_publish_payload(client, publish_payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
 	if (rc < 0) {
 		LOG_ERR("Failed to read received MQTT payload [%d]", rc);
 		return;
 	}
 
 	/* Place null terminator at end of payload buffer */
-	payload[rc] = '\0';
+	publish_payload[rc] = '\0';
 
 	LOG_INF("MQTT payload received!");
 	LOG_INF("topic: '%.*s', payload: %s",
 		(int)evt->param.publish.message.topic.topic.size,
 		evt->param.publish.message.topic.topic.utf8,
-		payload);
+		publish_payload);
 
-	publish_param.message.payload.data = payload;
+	publish_param.message.payload.data = publish_payload;
 	publish_param.message.payload.len = rc;
 
 	if (user_mqtt_cb) {
