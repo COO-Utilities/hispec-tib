@@ -159,7 +159,7 @@ class PartialSupport:
 @dataclass(frozen=True)
 class TimeStatus:
     utc: int
-    uptime: int
+    uptime_s: int
 
 
 @dataclass(frozen=True)
@@ -376,8 +376,8 @@ class LaserBankHeater:
 class AttenuatorState:
     db: float
     linear: float
-    voltage1: float
-    voltage2: float
+    v1_mv: float
+    v2_mv: float
     db1: float
     db2: float
 
@@ -442,7 +442,7 @@ class PhotodiodeValues:
     hk_mean_mv_1s: float
     yj_rms_mv_0p5s: float
     hk_rms_mv_0p5s: float
-    uptime: int
+    uptime_s: int
 
 
 @dataclass(frozen=True)
