@@ -44,7 +44,6 @@ struct network_config {
 	bool enable_fallback_profile;
 	uint32_t dhcp_timeout_ms;
 	struct network_ipv4_profile static_profile;
-	struct network_ipv4_profile fallback_profile;
 };
 
 /**
@@ -77,7 +76,10 @@ int network_init(const struct network_config *cfg, network_event_cb_t event_cb);
 int network_reconfigure(const struct network_config *cfg);
 
 /**
- * @brief Wait for network L4 connectivity.
+ * @brief Wait for project IPv4 readiness.
+ *
+ * Readiness means the helper has either a DHCP lease or a policy-selected
+ * static address. It does not wait for MQTT.
  */
 int network_wait_ready(uint32_t timeout_ms);
 

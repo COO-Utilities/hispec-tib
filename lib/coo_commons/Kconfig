@@ -20,28 +20,16 @@ config COO_NETWORK
 
 if COO_NETWORK
 
-config NETWORK_HELPER_FALLBACK_IPV4_ADDR
-	string "Fallback service IPv4 address"
-	default "192.168.88.2"
-	help
-	  Last-resort static address for direct service connectivity.
-
-config NETWORK_HELPER_FALLBACK_IPV4_NETMASK
-	string "Fallback service IPv4 netmask"
-	default "255.255.255.0"
-
-config NETWORK_HELPER_FALLBACK_IPV4_GW
-	string "Fallback service IPv4 gateway"
-	default "0.0.0.0"
-
 config NETWORK_HELPER_DHCP_TIMEOUT_MS
 	int "DHCP wait before static fallback, in milliseconds"
 	default 6000
 	help
 	  Time the COO network helper waits for a DHCPv4 lease before applying
-	  the configured static or fallback IPv4 profile. This is intentionally
-	  separate from Zephyr NET_CONFIG_INIT_TIMEOUT because this helper owns
-	  app-level DHCP/static/fallback selection.
+	  an overridable static IPv4 profile. The static/fallback profile uses
+	  CONFIG_NET_CONFIG_MY_IPV4_* so there is only one configured service
+	  address set. This is intentionally separate from Zephyr
+	  NET_CONFIG_INIT_TIMEOUT because this helper owns app-level
+	  DHCP/static/fallback selection.
 
 endif # COO_NETWORK
 

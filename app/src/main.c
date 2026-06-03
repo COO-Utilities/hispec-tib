@@ -47,17 +47,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define THROUGHPUT_MONITOR_PRIORITY 7
 #define APP_TIMING_SUMMARY_LOGS 0
 
-#if defined(CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS)
-#define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS)
-#else
-#define BOOT_NETWORK_WAIT_MS 6000U
-#endif
-
-/* Network setup runs after app hardware setup and may spend this bounded helper
- * timeout waiting for DHCP before static fallback. Keep the watchdog wider than
- * that wait so normal no-DHCP bring-up does not reset the board.
+/* Network setup returns after starting DHCP/static policy; DHCP fallback is a
+ * later system-work item, not part of the boot watchdog budget.
  */
-#define WDT_TIMEOUT_MS MAX(15000U, BOOT_NETWORK_WAIT_MS + 5000U)
+#define WDT_TIMEOUT_MS 15000U
 #define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;

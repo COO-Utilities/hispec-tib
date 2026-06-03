@@ -162,7 +162,9 @@ Network capability presence follows Zephyr Kconfig: DHCP uses
 `CONFIG_SNTP`. App code should not add duplicate capability flags.
 Zephyr `NET_CONFIG_AUTO_INIT` is disabled; `network.c` owns the app-level
 DHCP/static/fallback decision from `main()` so network setup does not delay
-hardware boot-state work before application code starts.
+hardware boot-state work before application code starts. Zephyr connection
+manager remains enabled for interface bring-up, reconnect attempts, and L4
+connected/disconnected events after `main()` starts.
 
 The MQTT wrapper accepts one publish callback plus caller-owned user data. This
 app registers the command runtime with `coo_cmd_runtime_mqtt_callback()` so MQTT
@@ -174,14 +176,17 @@ main or executor thread stacks.
 IPv4 configuration precedence is:
 
 1. Runtime settings from the `ip` command.
-2. Compile-time static IPv4 defaults.
-3. Fallback service profile for direct laptop recovery.
+2. Compile-time static IPv4 defaults from `CONFIG_NET_CONFIG_MY_IPV4_*`.
+3. The same compile-time static defaults as the last-resort service fallback.
 
-At apply time the helper tries DHCP first when configured, otherwise static,
-then fallback, then DHCP as the last attempt for static-first mode. The `ip`
-command applies network-affecting changes at runtime through
-`network_reconfigure()`; it no longer requires reboot for ordinary IPv4 profile
-changes. Failed runtime reconfigure attempts restore the prior active profile.
+At apply time the helper starts DHCP-first policy when configured, returns
+without blocking boot, and schedules a bounded static fallback only after
+Zephyr reports the interface operationally up. That fallback uses Zephyr's
+`NET_ADDR_OVERRIDABLE` address type so a later DHCP lease can replace the
+service address in the single IPv4 slot. Static-first mode uses
+`NET_ADDR_MANUAL` and stops DHCP. The `ip` command applies network-affecting
+changes at runtime through `network_reconfigure()`; it no longer requires reboot
+for ordinary IPv4 profile changes.
 
 DNS and NTP addresses are profile/settings data. Unsupported DNS/NTP fields are
 reported by command code. Manual DNS is applied to Zephyr's resolver when DNS is

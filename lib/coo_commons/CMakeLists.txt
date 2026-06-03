@@ -2,8 +2,7 @@
 
 zephyr_library()
 
-# Network utilities (requires networking support)
-# Includes both low-level sockets and high-level connection manager
+# Network utilities (requires networking and connection-manager support)
 zephyr_library_sources_ifdef(CONFIG_COO_NETWORK network.c)
 
 # JSON utilities (requires JSON support)

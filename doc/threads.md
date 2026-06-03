@@ -78,7 +78,7 @@ only in the low-priority SNTP thread.
 
 The following delayable work items run in Zephyr system workqueue context:
 
-- Network reconnect work.
+- Network reconnect and DHCP fallback work.
 - Serial guard expiration.
 - Delayed reboot.
 - Laser auto-off expiration. This work is owned by `lasers.c`; it is scheduled

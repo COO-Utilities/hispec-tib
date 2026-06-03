@@ -1176,10 +1176,11 @@ off or no faults).
 - **Notes:**
   - Unsupported features don’t error; supported changes are still applied and
     partial status reports unsupported fields.
-  - IP precedence: runtime settings → compiled static defaults → fallback
-    service profile.
+  - IP precedence: runtime settings → compiled static defaults. The compiled
+    static defaults are also the last-resort service fallback.
   - If `trydhcpfirst` is true and DHCP is compiled in, DHCP is tried before the
-    runtime static profile.
+    runtime static profile. Static fallback remains DHCP-overridable so a later
+    lease can replace it.
   - Partial responses include keys indicating which settings are not supported.
   - network-affecting changes are applied at runtime; ordinary changes do not
     require reboot.

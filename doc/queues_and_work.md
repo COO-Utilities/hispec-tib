@@ -65,13 +65,18 @@ Missed MEMS ticks are logged. High-to-low pulse cleanup is still applied, late
 low-to-high pulses are applied only when their requested high window has not
 fully elapsed, and fully stale high pulses are skipped.
 
-## Network Reconnect Work
+## Network Reconnect and DHCP Fallback Work
 
-`lib/coo_commons/network.c` schedules reconnect work when Zephyr reports L4
-disconnect. The handler calls `conn_mgr_all_if_connect(true)`. Runtime IP
-changes from the `ip` command call `network_reconfigure()` directly from the
-command executor; that command may block while DHCP is tried, but it does not
-require reboot.
+`lib/coo_commons/network.c` schedules reconnect work when Zephyr connection
+manager reports L4 disconnect. It also schedules DHCP fallback work when
+DHCP-first mode is active and Zephyr reports the interface operationally up. If
+no lease arrives before `CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS`, the fallback
+work item applies the configured static profile as a Zephyr-overridable IPv4
+address so DHCP can still replace it later. Runtime IP changes from the `ip`
+command call
+`network_reconfigure()` directly from the command executor; it starts DHCP or
+applies static policy but does not block for the DHCP wait and does not require
+reboot.
 
 ## SNTP Work
 
