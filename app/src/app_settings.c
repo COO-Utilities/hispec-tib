@@ -12,6 +12,7 @@
  */
 
 #include "app_settings.h"
+#include "photodiode.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -208,18 +209,26 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
 		}
 	}
-	s->photodiode.channel[0].dark_mv = 0.0f;
-	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
-	s->photodiode.channel[0].lowest_dark_valid = false;
-	s->photodiode.channel[0].noise_warn_rms_mv = 3.0f;
-	s->photodiode.channel[0].responsivity_a_per_w = 0.93;
-	s->photodiode.channel[0].transimpedance_v_per_a = 5.0e10;
-	s->photodiode.channel[1].dark_mv = 0.0f;
-	s->photodiode.channel[1].lowest_dark_mv = 0.0f;
-	s->photodiode.channel[1].lowest_dark_valid = false;
-	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
-	s->photodiode.channel[1].responsivity_a_per_w = 0.60971;
-	s->photodiode.channel[1].transimpedance_v_per_a = 2.375e9;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
+		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv =
+		PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].responsivity_a_per_w =
+		PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].transimpedance_v_per_a =
+		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
+		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv =
+		PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].responsivity_a_per_w =
+		PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].transimpedance_v_per_a =
+		PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A;
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
