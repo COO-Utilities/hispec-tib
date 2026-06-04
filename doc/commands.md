@@ -752,7 +752,7 @@ many Modbus registers.
   ```
 - **Payload or topic suffix -> laser-bank power state after update:**
   ```json
-  {"override":"auto|override_on|override_off"}
+  {"mode":"auto|override_on|override_off"}
   ```
   Suffix requests use
   `cmd/<device>/req/laserbank/power/auto`,
@@ -783,7 +783,7 @@ off or no faults).
 - **No payload -> laser-bank heater state:**
   ```json
   {
-    "heater_mode": "auto|override_on|override_off",
+    "mode": "auto|override_on|override_off",
     "heater_on": false,
     "bank_power": true,
     "ambient_valid": true,
@@ -795,12 +795,12 @@ off or no faults).
     "all_tecs_enabled": false,
     "all_tecs_enabled_ms": 0,
     "last_error": 0,
-    "last_poll_age_ms": 0
+    "poll_age_s": 0.0
   }
   ```
 - **Payload or topic suffix -> laser-bank heater state after update:**
   ```json
-  {"override":"auto|override_on|override_off"}
+  {"mode":"auto|override_on|override_off"}
   ```
   Suffix requests use
   `cmd/<device>/req/laserbank/heater/auto`,
@@ -810,11 +810,18 @@ off or no faults).
 - **Notes:** `auto` is the default at boot. In `auto`, laser-bank
   temperature-control work powers the bank so the Maiman temperature monitors
   can initialize, polls TEC temperatures at a fixed interval, and drives the
-  laser-bank heater through housekeeping relay-power helpers. Any disabled TEC
-  below 15 C turns the heater on. Any disabled TEC above the ambient-dependent
-  off threshold turns it off. If all TECs remain enabled for at least one
-  control interval, the heater is turned off. `override_on` and `override_off`
-  force the heater state and suspend the
+  laser-bank heater through housekeeping relay-power helpers.
+  `any_disabled_below_15c` means at least one non-stale laser channel has its
+  TEC disabled while measured below 15 C; this turns the heater on.
+  `any_disabled_above_off_threshold` means at least one non-stale disabled TEC
+  is above the off threshold; this turns the heater off. The off threshold is
+  15 C when ambient is valid and above 15 C, otherwise 20 C. If all laser
+  temperatures are stale, auto mode turns the heater off when ambient is invalid
+  or at least 15 C. When valid ambient is below 15 C, auto mode powers the bank
+  so driver temperature monitors can initialize and leaves heater state
+  unchanged until valid laser temperature data is available. If all TECs remain
+  enabled for at least one control interval, the heater is turned off.
+  `override_on` and `override_off` force the heater state and suspend the
   automatic warmup policy. While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
   If the off-board DS2408 relay expander is offline, set requests return an I/O

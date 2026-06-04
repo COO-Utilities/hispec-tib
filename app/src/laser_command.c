@@ -33,11 +33,11 @@ static const struct coo_json_string_choice heater_mode_choices[] = {
 	{ "override_off", LASERBANK_HEATER_MODE_OVERRIDE_OFF },
 };
 
-static bool parse_laserbank_override_request(const struct coo_cmd_request *cmd,
-					     const char *key,
-					     const struct coo_json_string_choice *choices,
-					     size_t choice_count,
-					     int *mode_value)
+static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
+					 const char *key,
+					 const struct coo_json_string_choice *choices,
+					 size_t choice_count,
+					 int *mode_value)
 {
 	const char *suffix;
 
@@ -53,7 +53,7 @@ static bool parse_laserbank_override_request(const struct coo_cmd_request *cmd,
 	if (coo_cmd_payload_empty(cmd)) {
 		return false;
 	}
-	return coo_json_extract_string_choice(cmd->payload, "override",
+	return coo_json_extract_string_choice(cmd->payload, "mode",
 					      choices, choice_count,
 					      mode_value) == COO_JSON_EXTRACT_OK;
 }
@@ -68,11 +68,11 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/power")[0] != '\0')) {
-		if (!parse_laserbank_override_request(cmd, "laserbank/power",
-						      laserbank_power_mode_choices,
-						      ARRAY_SIZE(laserbank_power_mode_choices),
-						      &mode_value)) {
-			return coo_cmd_error(out, cmd, "override must be auto, override_on, or override_off");
+		if (!parse_laserbank_mode_request(cmd, "laserbank/power",
+						  laserbank_power_mode_choices,
+						  ARRAY_SIZE(laserbank_power_mode_choices),
+						  &mode_value)) {
+			return coo_cmd_error(out, cmd, "mode must be auto, override_on, or override_off");
 		}
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
 		rc = hispec_laser_bank_power_mode_set(mode);
@@ -114,17 +114,19 @@ int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
 {
 	struct laserbank_tempcontrol_status status = {0};
+	double poll_age_s;
 
 	laserbank_tempcontrol_get_status(&status);
+	poll_age_s = (double)status.last_poll_age_ms / 1000.0;
 	snprintk(payload, payload_len,
-		 "{\"heater_mode\":\"%s\","
+		 "{\"mode\":\"%s\","
 		 "\"heater_on\":%s,\"bank_power\":%s,"
 		 "\"ambient_valid\":%s,\"ambient_c\":%.2f,"
 		 "\"valid_temps\":%u,\"stale_temps\":%u,"
 		 "\"any_disabled_below_15c\":%s,"
 		 "\"any_disabled_above_off_threshold\":%s,"
 		 "\"all_tecs_enabled\":%s,\"all_tecs_enabled_ms\":%u,"
-		 "\"last_error\":%d,\"last_poll_age_ms\":%u}",
+		 "\"last_error\":%d,\"poll_age_s\":%.3f}",
 		 laserbank_heater_mode_name(status.heater_mode),
 		 status.heater_on ? "true" : "false",
 		 status.bank_powered ? "true" : "false",
@@ -137,7 +139,7 @@ static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_l
 		 status.all_tecs_enabled ? "true" : "false",
 		 status.all_tecs_enabled_ms,
 		 status.last_error,
-		 status.last_poll_age_ms);
+		 poll_age_s);
 }
 
 int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -149,12 +151,12 @@ int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
 	     coo_cmd_key_suffix_after(cmd->key, "laserbank/heater")[0] != '\0')) {
-		if (!parse_laserbank_override_request(cmd, "laserbank/heater",
-						      heater_mode_choices,
-						      ARRAY_SIZE(heater_mode_choices),
-						      &mode_value)) {
+		if (!parse_laserbank_mode_request(cmd, "laserbank/heater",
+						  heater_mode_choices,
+						  ARRAY_SIZE(heater_mode_choices),
+						  &mode_value)) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-					     "{\"error\":\"Use laserbank/heater auto|override_on|override_off\"}");
+					     "{\"error\":\"Use laserbank/heater mode=auto|override_on|override_off\"}");
 		}
 		mode = (enum laserbank_heater_mode)mode_value;
 		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);

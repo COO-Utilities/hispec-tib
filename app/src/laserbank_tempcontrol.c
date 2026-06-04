@@ -287,8 +287,13 @@ static void run_heater_control_cycle(void)
 	all_stale = control.status.stale_temp_count == HISPEC_LASER_COUNT;
 	k_mutex_unlock(&control_lock);
 
-	if (all_stale && ambient.valid && ambient.ambient_c < LASERBANK_WARM_MIN_C) {
-		(void)hispec_laser_bank_power_set(true, NULL);
+	if (all_stale) {
+		if (ambient.valid && ambient.ambient_c < LASERBANK_WARM_MIN_C) {
+			(void)hispec_laser_bank_power_set(true, NULL);
+		} else {
+			apply_heater(false);
+		}
+		return;
 	}
 
 	k_mutex_lock(&control_lock, K_FOREVER);

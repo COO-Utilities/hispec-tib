@@ -357,7 +357,7 @@ class LaserBankClearFaults:
 
 @dataclass(frozen=True)
 class LaserBankHeater:
-    heater_mode: str
+    mode: str
     heater_on: bool
     bank_power: bool
     ambient_valid: bool
@@ -369,7 +369,7 @@ class LaserBankHeater:
     all_tecs_enabled: bool
     all_tecs_enabled_ms: int
     last_error: int
-    last_poll_age_ms: int
+    poll_age_s: float
 
 
 @dataclass(frozen=True)
