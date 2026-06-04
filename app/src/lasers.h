@@ -235,9 +235,9 @@ int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
  * @brief Program diode-specific limits into the Maiman driver.
  *
  * Writes settings that must be restored if a Maiman module is replaced:
- * current max, current calibration, TEC current limit, TEC PID, and CW
- * modulation registers. If @p save_to_eeprom is true, the module's EEPROM
- * save command is sent afterward.
+ * current max, current calibration, TEC setpoint, TEC current limit, TEC PID,
+ * and CW modulation registers. If @p save_to_eeprom is true, the module's
+ * EEPROM save command is sent afterward.
  */
 int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_eeprom);
 

@@ -831,6 +831,9 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a)) {
 		return -EIO;
 	}
+	if (!maiman_set_tec_temperature(drv, props->operating_temp_c)) {
+		return -EIO;
+	}
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
 		return -EIO;
 	}
@@ -941,7 +944,6 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 				     maiman_driver_t *drv)
 {
 	const laserprops_t *props = runtime_props_locked(profile->id);
-	float current_temp;
 	uint16_t lock_status;
 	int rc;
 
@@ -970,11 +972,7 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	}
 
 	if (!maiman_is_tec_started(drv)) {
-		current_temp = maiman_get_tec_temperature_measured(drv);
-		if (!float_is_valid(current_temp) || current_temp < -100.0f) {
-			current_temp = props->operating_temp_c;
-		}
-		if (!maiman_set_tec_temperature(drv, current_temp) ||
+		if (!maiman_set_tec_temperature(drv, props->operating_temp_c) ||
 		    !maiman_start_tec(drv)) {
 			return -EIO;
 		}
@@ -1463,6 +1461,7 @@ static bool laser_driver_settings_differ(const struct app_laser_channel_settings
 {
 	return a->properties.max_current_ma != b->properties.max_current_ma ||
 	       a->current_set_calibration_pct != b->current_set_calibration_pct ||
+	       a->properties.operating_temp_c != b->properties.operating_temp_c ||
 	       a->properties.tec_max_current_a != b->properties.tec_max_current_a ||
 	       a->properties.tec_pid.kp != b->properties.tec_pid.kp ||
 	       a->properties.tec_pid.ki != b->properties.tec_pid.ki ||

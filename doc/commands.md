@@ -716,8 +716,11 @@ many Modbus registers.
   - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
   - Settings are checked when a laser is first talked to at each boot
   - A mismatch between those the driver stores in its eeprom and controllers NVRAM will trigger a warning in the log and the driver values will be programmed.
-  - If the laser bank is off, firmware powers it, applies driver-backed settings, verifies them as practical, and then
-    restores the previous bank power state. If `laserbank/power` is `override_off`, driver-backed settings changes return
+  - If the laser bank is off, firmware powers it, applies driver-backed settings,
+    verifies them as practical, and then restores the previous bank power state.
+    Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
+    `default_operating_temp_c`, `tec_max_current_a`, and `tec_pid`. If
+    `laserbank/power` is `override_off`, driver-backed settings changes return
     an error.
   - it is **encouraged** to send only the settings that requested changed.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
