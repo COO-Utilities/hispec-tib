@@ -194,21 +194,14 @@ static bool float_is_nonzero(double value)
 	return float_is_valid(value) && value != 0.0;
 }
 
+/* Keep wait policy visible at call sites; this helper only maps Zephyr mutex
+ * timeout return codes to the domain -EBUSY response expected by commands.
+ */
 static int laser_lock_with_timeout(k_timeout_t timeout)
 {
 	int rc = k_mutex_lock(&laser_lock, timeout);
 
 	return rc == 0 ? 0 : -EBUSY;
-}
-
-static int laser_lock_command(void)
-{
-	return laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
-}
-
-static int laser_lock_poll(void)
-{
-	return laser_lock_with_timeout(K_NO_WAIT);
 }
 
 static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
@@ -558,7 +551,8 @@ int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode)
 		return -EINVAL;
 	}
 
-	rc = laser_lock_command();
+	/* Power-mode changes may touch GPIO and drivers; report contention as busy. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -591,7 +585,8 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 		*actual_off_ms = 0U;
 	}
 
-	rc = laser_lock_command();
+	/* Fault clear can power-cycle the bank; do not queue forever behind Modbus. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -702,7 +697,8 @@ int hispec_laser_bank_read_temperatures(
 
 	init_temperature_channels(channels);
 
-	rc = laser_lock_command();
+	/* Foreground temp reads report bus contention as busy, not missing data. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -722,7 +718,8 @@ int hispec_laser_bank_poll_temperatures(
 
 	init_temperature_channels(channels);
 
-	rc = laser_lock_poll();
+	/* Background heater polling must skip, not wait, when a command owns the bus. */
+	rc = laser_lock_with_timeout(K_NO_WAIT);
 	if (rc != 0) {
 		return rc;
 	}
@@ -1102,7 +1099,8 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 
 	status_defaults(profile, out);
 
-	rc = laser_lock_command();
+	/* Status is retryable; avoid waiting forever behind driver timeouts. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1282,7 +1280,8 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		return -ERANGE;
 	}
 
-	rc = laser_lock_command();
+	/* Emission changes serialize on Modbus but should return busy if tied up. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1433,7 +1432,8 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 		return -ERANGE;
 	}
 
-	rc = laser_lock_command();
+	/* TEC writes share startup Modbus traffic; surface contention as busy. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1563,7 +1563,8 @@ int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	rc = laser_lock_command();
+	/* Settings snapshots share runtime state; do not block behind long Modbus work. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1595,7 +1596,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		return rc;
 	}
 
-	rc = laser_lock_command();
+	/* Settings updates may reprogram drivers; keep command wait bounded. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1964,7 +1966,8 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (request->apply) {
 		maiman_driver_t drv;
 
-		rc = laser_lock_command();
+		/* Applying a tune point writes TEC/current registers; use bounded wait. */
+		rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
 		if (rc != 0) {
 			return rc;
 		}
