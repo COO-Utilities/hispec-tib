@@ -2,13 +2,19 @@
 
 ## Ownership
 
-`app_settings.c` owns app-level persistent settings under app-assigned Zephyr
-NVS numeric IDs. It initializes defaults, loads stored values, and protects the
-runtime snapshot with a mutex. The app does not use the string-keyed Zephyr
-settings layer for its own persistence.
+This document is the consolidated inventory of firmware values that survive a
+reboot. It is intended to save readers from piecing together persistence
+behavior from command handlers, runtime modules, and NVS IDs.
+
+`app_settings.c` owns the app settings machinery: defaults, direct Zephyr NVS
+records, runtime snapshots, and bulk invalidation when a board or firmware
+schema change requires settings to be rebuilt. Other modules hand values to this
+machinery when they need app-owned intent, calibration, or counters restored.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
+Command dispatch owns the separate last-command NVS record used for boot/status
+visibility.
 
 ## Stored NVS Records
 
@@ -16,11 +22,11 @@ Current app NVS records include:
 
 - Schema marker.
 - Board type.
-- Serial guard holdoff.
 - Boot count.
 - Last known UTC time in milliseconds.
 - IP settings as one record.
 - MQTT broker host/port as one record.
+- Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel.
 - One photodiode settings record per photodiode channel.
 - Laser-bank heater policy.
@@ -42,7 +48,7 @@ silently reused on another.
 - IP defaults come from Zephyr network config symbols.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
   `CONFIG_COO_MQTT_BROKER_PORT`; persistence stores host and port directly.
-- Serial guard defaults to 30 s.
+- Serial guard defaults to 30 s from Kconfig but is runtime-only.
 - Last known UTC defaults to unset. Once SNTP or a `time` command sets the
   realtime clock, the value is persisted and restored on later boots until a
   fresher time source updates it.
@@ -78,10 +84,11 @@ current schema marker, and uses defaults.
   or an override turns it on.
 - DS2408 relay output state is not restored after reboot; relay outputs default
   inactive/off when the off-board expander is online during app setup.
+- Serial guard active state and runtime holdoff changes are not restored after
+  reboot.
 
 ## Not Currently Persisted
 
 - MEMS switch state.
 - AS split requested/actual state.
 - Laser output current, temperature, pulse, or tuning state.
-- Last command metadata.
