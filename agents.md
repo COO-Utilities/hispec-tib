@@ -228,6 +228,11 @@ Add a helper only when it does at least one of these:
 - Encapsulates a Zephyr API call whose flags, blocking behavior, or return contract matter.
 - Separates command parsing from domain action.
 
+Do not hide a simple local policy behind a one-line wrapper when an inline call
+plus a short "why" comment would be clearer. If a helper's main value is naming
+policy rather than reducing real code duplication, its definition and call sites
+must make that policy obvious to a fresh reader.
+
 Helpers should start `static` and file-local.
 
 Export a function only when another module has a real ownership-appropriate need for it.
@@ -436,6 +441,11 @@ Briefly document Zephyr API calls near the line when flags or behavior are easy 
 - devicetree-derived behavior.
 
 Keep comments short and factual.
+
+Inline comments that explain why code is shaped a particular way are encouraged.
+Prefer a local "why" comment over an extra helper when the code itself is simple
+but the policy, hardware constraint, timing constraint, or Zephyr behavior is
+easy to forget or misread.
 
 Do not write comments that merely narrate C syntax.
 
