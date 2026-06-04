@@ -124,7 +124,6 @@ void maiman_init(maiman_driver_t *drv, uint8_t node_id)
 	}
 
 	drv->node_id = node_id;
-	drv->serial_number = 0U;
 }
 
 /**
@@ -464,9 +463,6 @@ uint16_t maiman_get_serial_number(maiman_driver_t *drv)
 	uint16_t raw;
 
 	if (maiman_read_u16(drv, REG_SERIAL_NUMBER, &raw)) {
-		if (drv != NULL) {
-			drv->serial_number = raw;
-		}
 		return raw;
 	}
 	return 0U;

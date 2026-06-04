@@ -151,12 +151,10 @@ int maiman_set_client_iface(int iface);
 
 
 /**
- * Structure representing a Maiman device instance.
+ * Structure representing a Maiman Modbus endpoint.
  */
 typedef struct {
-    uint8_t node_id;
-    uint16_t serial_number;
-    laserprops_t lasercfg;
+	uint8_t node_id;
 } maiman_driver_t;
 
 /**
