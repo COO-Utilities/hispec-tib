@@ -17,6 +17,11 @@ Before acting, classify the request.
 
 When the user is actively deciding what to keep, stop at findings and options. Do not clean up into a larger design unless requested.
 
+Completed implementation work should end in coherent, reviewable commits unless
+the user explicitly asks not to commit. If the next step requires human review
+or an intent decision, pause with the smallest useful diff and ask for review
+instead of continuing into speculative changes.
+
 ---
 
 ## 2. Maintenance-Era Simplification Posture
@@ -272,7 +277,7 @@ Command handlers should:
 
 Commands should do as much safe work as possible. If partial failure occurs, report what succeeded, what failed, and what remains unknown.
 
-Avoid multiple ways to do the same command operation. Do not add compatibility aliases, duplicate payload keys, or parallel schemas unless the user explicitly requests backward compatibility.
+Avoid multiple ways to do the same command operation. Do not add compatibility aliases, duplicate payload keys, parallel schemas, migrations, or backward-compatibility behavior unless the user explicitly requests it for that exact change.
 
 When replacing a command key or response field, prefer one canonical schema and update firmware, `commands.md`, and Python helpers together. If existing behavior and docs disagree, consult the user before choosing the reconciliation.
 
