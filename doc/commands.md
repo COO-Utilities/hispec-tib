@@ -1233,6 +1233,8 @@ off or no faults).
 
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
+  - The `serialguard` command itself is allowed while the guard is active so an
+    operator can extend, shorten, or disable the current expiry.
   - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
     `serialguard off`.
   - While active, MQTT requests that may change hardware or runtime state are

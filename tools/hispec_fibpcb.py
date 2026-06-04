@@ -1200,10 +1200,10 @@ class HispecFibPcb:
     def serialguard(self) -> SerialGuardStatus:
         return _dataclass_from(SerialGuardStatus, self._request_json("serialguard"))
 
-    def set_serialguard(self, seconds: int, *, persistent: bool = False) -> CommandOk:
+    def set_serialguard(self, seconds: int) -> CommandOk:
         return self._request_ok(
             "serialguard",
-            {"seconds": _require_nonnegative_u32("seconds", seconds), "persistent": persistent},
+            {"seconds": _require_nonnegative_u32("seconds", seconds)},
         )
 
     def mems(self) -> tuple[MemsSwitchState, ...]:

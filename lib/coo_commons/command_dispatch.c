@@ -1526,12 +1526,16 @@ static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *run
 		return true;
 	}
 
-	if (cmd == NULL || cmd->msg_type != COO_CMD_QUERY) {
+	if (cmd == NULL) {
 		return false;
 	}
 
 	if (runtime_key_is_help(cmd->key) || runtime_key_is_serial_guard(cmd->key)) {
 		return true;
+	}
+
+	if (cmd->msg_type != COO_CMD_QUERY) {
+		return false;
 	}
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
@@ -1566,6 +1570,7 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 				    struct coo_cmd_response *out)
 {
 	uint32_t holdoff_s = 0U;
+	bool was_active;
 	bool persistent = false;
 	int parse_rc_seconds;
 	int parse_rc_value;
@@ -1594,11 +1599,12 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 		return coo_cmd_error(out, cmd, "serialguard persistence unsupported");
 	}
 
+	was_active = runtime_serial_guard_active(runtime);
 	runtime->serial_guard_seconds = holdoff_s;
-	if (cmd->source == COO_CMD_SOURCE_SERIAL) {
-		runtime_note_serial_guard_activity(runtime);
-	} else if (holdoff_s == 0U) {
+	if (holdoff_s == 0U) {
 		runtime_clear_serial_guard(runtime);
+	} else if (cmd->source == COO_CMD_SOURCE_SERIAL || was_active) {
+		runtime_note_serial_guard_activity(runtime);
 	}
 
 	return coo_cmd_ok(out, cmd);
