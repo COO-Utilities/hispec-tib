@@ -80,6 +80,8 @@ static const char *const route_loss_laser_names[] = {
 static const struct coo_json_string_choice mems_switch_state_choices[] = {
     { "A", 'A' },
     { "B", 'B' },
+    { "a", 'A' },
+    { "b", 'B' },
 };
 
 static bool memsroute_is_route_loss_key(const char *key)
@@ -780,7 +782,7 @@ static int mems_append_duty_field(char *buf, size_t buf_len, size_t *offset,
     int written;
 
     written = snprintk(buf + *offset, buf_len - *offset,
-                       ",\"duty_cycle\":%.3f",
+                       ",\"duty_cycle\":%.6f",
                        (double)status->duty_cycle);
     if (written < 0 || written >= (int)(buf_len - *offset)) {
         return -ENOSPC;
@@ -803,8 +805,8 @@ static int mems_append_timing_fields(char *buf, size_t buf_len, size_t *offset,
     }
 
     written = snprintk(buf + *offset, buf_len - *offset,
-                       ",\"requested_toggle_rate_hz\":%.3f,"
-                       "\"toggle_rate_hz\":%.3f,\"stopafter_s\":%u",
+                       ",\"requested_toggle_rate_hz\":%.6f,"
+                       "\"toggle_rate_hz\":%.6f,\"stopafter_s\":%u",
                        (double)status->requested_toggle_rate_hz,
                        (double)status->toggle_rate_hz,
                        status->stopafter_s);

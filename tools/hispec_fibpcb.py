@@ -38,7 +38,7 @@ ATTENUATOR_NAMES = LASER_NAMES + ("lfc",)
 PD_CHANNELS = ("yj", "hk")
 FIBERS = ("M", "S")
 OVERRIDE_MODES = ("auto", "override_on", "override_off")
-MEMS_STATES = ("A", "B")
+MEMS_STATES = ("A", "B", "a", "b")
 MEMS_MAX_TOGGLE_DURATION_S = 4 * 60 * 60
 
 _LASER_TO_PD_CHANNEL = {
@@ -692,6 +692,7 @@ def _decode_temp(data: Mapping[str, Any]) -> TempStatus:
 
 
 def _default_mems_duty_cycle(state: str) -> float:
+    state = state.upper()
     if state.startswith("A"):
         return 1.0
     if state.startswith("B"):
@@ -1213,7 +1214,7 @@ class HispecFibPcb:
         self,
         name: str,
         *,
-        state: Literal["A", "B"] | None = None,
+        state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
         toggle_rate_hz: float | None = None,
         stopafter_s: float | None = None,

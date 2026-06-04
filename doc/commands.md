@@ -378,6 +378,8 @@ and the AS for splitting fraction correction.
   }
   ```
 - **Notes:**
+  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
+    responses always use uppercase `A`/`B`.
   - `duty_cycle` is only valid with `state:"A"`.
   - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
   - `toggle_rate_hz` is optional; if omitted the switch uses its current
