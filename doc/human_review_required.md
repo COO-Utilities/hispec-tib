@@ -52,6 +52,21 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ### LLM Resolved; Human Review Requested
 
+- [ ] Verify MEMS switch commands now accept lowercase `a`/`b` and normalize
+  replies to uppercase `A`/`B`.
+- [ ] Verify MEMS non-constant duty responses now report `duty_cycle`,
+  `requested_toggle_rate_hz`, and `toggle_rate_hz` with six decimal places.
+- [ ] Verify `laserbank/power` and `laserbank/heater` now use `mode` as the
+  only payload key; the old `override` payload key is intentionally dropped.
+- [ ] Verify `laserbank/heater` now reports `mode` and `poll_age_s`, and that
+  `commands.md` documents the `any_disabled_*` flags.
+- [ ] Verify heater `auto` mode turns the heater off when all laser temperatures
+  are stale and ambient is invalid or at least 15 C.
+- [ ] Verify `pcb.set_serialguard(seconds)` no longer sends `persistent:false`
+  and can update expiry while serial guard is active.
+- [ ] Verify photodiode channel defaults are now named in `photodiode.h` and
+  consumed by `app_settings.c`.
+
 
 ## Decisions To Make
 
@@ -61,13 +76,6 @@ LLMs Agents: Do NOT change heading names in this file.
 ## TODOs
 
 - Add command to enumerate route names, input and output names, laser names
-- accept a and b as aliases of A and B for switch states
-- duty cycle .3412129 with requested_toggle_rate_hz=1000 (bad) quantizes to a reported value of "0.3" not ok, loss of resolution
-
-laserbank/power returns 
-        { "mode": "override_off", "powered": false }
-but accepts only override=, change to mode=
-
 - bank power mode in auto  does not autopower  for a laser_status query, I guess that makes sense, but not for things like serial query
 
 - bank power in auto does not autopower for setting a laser setting:
@@ -76,7 +84,6 @@ but accepts only override=, change to mode=
     - pcb.set_laser_settings('2330k', default_operating_temp_c=25)
       Out[26]: CommandOk(status='ok')
 - yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.
-- photodiode defaults are set in app_settings.c and not in devices or photodiode this is both inconsisten with laser properties and hard to find. it needs to move to the photodiode header THAT is the first place people will look.
 - python gets dark via pdsettings
 - pdsettings includes:
   - average='complete', average_duration_ms=2000, average_samples=100, average_target_samples=100, that are all likly for dark measurement
@@ -86,16 +93,9 @@ but accepts only override=, change to mode=
 
 -todo test dark settings and persistence but  noise_rms_mV works and does persistence over reboots no reason to suspect others don't
 
-- pcb.set_serialguard should be allowable while active and update expiry time (otherwise someone could be waiting a LOOOONG time)
-
 - status needs to gain things we actually want
 
-- change heater last_poll_age_ms to poll_age_s
-  - heater_mode to mode
-  - override to mode (parallelis with laserbank)
-  - heater stayed on at room temp with no laser temps valid after oging from override_on to auto
-  - meaning of any_disabled_below_15c and any_disabled_above_off_threshold not documented
-  - reporting of "all_tecs_enabled": false, "all_tecs_enabled_ms": 0 seems out of place probably axe, maybe keep but refactor packaging so relavance is clear
+- reporting of "all_tecs_enabled": false, "all_tecs_enabled_ms": 0 seems out of place probably axe, maybe keep but refactor packaging so relavance is clear
 
 - laser needs some thought around serial its unsettability and serial ok, maybe going ok on the first boot after a serial change (cause it gets saved?)
 
