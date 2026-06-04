@@ -53,6 +53,10 @@ Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
   registers to full drive and leaves both ports push-pull; firmware no longer
   writes the PCAL port-drive register directly.
 
+- FFLS 1 & 2 ( sw channels 7 & 8) have their status pins connected to D62 and D63 (PF7 & 9) on the PCB with on pcb pullups.  FFLS will pull low to indicate position but codebase does not presently use them.
+  - Do not appear to need any Solder bridges set. 
+  - TODO need to update overlay to include these
+
 For board files:
 - Nucleo:
     - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
