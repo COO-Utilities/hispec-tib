@@ -28,7 +28,10 @@ Current app NVS records include:
 - MQTT broker host/port as one record.
 - Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel.
-- One photodiode settings record per photodiode channel.
+- One photodiode settings record per photodiode channel, including active dark
+  mV, whether that dark was user-set or measured, measured-dark averaging
+  duration when applicable, lowest stored dark mV, noise threshold, responsivity,
+  and transimpedance.
 - Laser-bank heater policy.
 - One laser policy record per laser channel.
 - One laser total-emitting counter record per laser channel.

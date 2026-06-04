@@ -28,7 +28,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 1U
+#define APP_NVS_SCHEMA_VERSION 2U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -81,6 +81,7 @@ struct app_nvs_ip_settings {
 struct app_nvs_pd_channel {
 	float dark_mv;
 	float lowest_dark_mv;
+	uint32_t dark_duration_ms;
 	uint8_t lowest_dark_valid;
 	uint8_t reserved[3];
 	float noise_warn_rms_mv;
@@ -210,6 +211,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_duration_ms =
+		APP_PD_DARK_DURATION_USER;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
 		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
@@ -220,6 +223,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].transimpedance_v_per_a =
 		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
+		APP_PD_DARK_DURATION_USER;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
 		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
@@ -424,6 +429,7 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 
 	stored.dark_mv = pd->dark_mv;
 	stored.lowest_dark_mv = pd->lowest_dark_mv;
+	stored.dark_duration_ms = pd->dark_duration_ms;
 	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
@@ -530,6 +536,9 @@ static bool pd_channel_valid(const struct app_nvs_pd_channel *pd)
 	return pd != NULL &&
 	       float_in_range(pd->dark_mv, -5000.0f, 5000.0f) &&
 	       float_in_range(pd->lowest_dark_mv, -5000.0f, 5000.0f) &&
+	       (pd->dark_duration_ms == APP_PD_DARK_DURATION_USER ||
+		(pd->dark_duration_ms > 0U &&
+		 pd->dark_duration_ms <= APP_PD_DARK_DURATION_MAX_MS)) &&
 	       float_in_range(pd->noise_warn_rms_mv, 0.0f, 5000.0f) &&
 	       double_in_range(pd->responsivity_a_per_w, 0.000001, 10.0) &&
 	       double_in_range(pd->transimpedance_v_per_a, 1.0, 1.0e12);
@@ -650,6 +659,7 @@ static void app_nvs_load_photodiode(struct app_settings_snapshot *s)
 
 		pd->dark_mv = stored.dark_mv;
 		pd->lowest_dark_mv = stored.lowest_dark_mv;
+		pd->dark_duration_ms = stored.dark_duration_ms;
 		pd->lowest_dark_valid = stored.lowest_dark_valid != 0U;
 		pd->noise_warn_rms_mv = stored.noise_warn_rms_mv;
 		pd->responsivity_a_per_w = stored.responsivity_a_per_w;

@@ -1112,8 +1112,9 @@ off or no faults).
     channel. Complete dark results include measured mean/RMS/min/max.
   - `measure_dark` with `store:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
-  - `lowest_dark_mv` is updated only when a stored dark measurement is lower
-    than the previous stored lowest value.
+  - `lowest_stored_dark_mv` is updated only when a stored dark measurement is
+    lower than the previous stored lowest value. It is `null` until a stored
+    dark measurement has completed.
   - Active monitoring tracks a simple residual RMS after smoothing. If it
     exceeds the configured warning threshold, the firmware emits
     `photodiode_noise` on `dt/<device>/warning`.
@@ -1128,12 +1129,8 @@ off or no faults).
   {
     "channel": "yj",
     "dark_mv": 0.0,
-    "lowest_dark_mv": 0.0,
-    "lowest_dark_valid": false,
-    "average": "inactive",
-    "average_duration_ms": 0,
-    "average_samples": 0,
-    "average_target_samples": 0,
+    "dark_duration_ms": "user",
+    "lowest_stored_dark_mv": null,
     "noise_rms_mV": 3.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10
@@ -1160,7 +1157,10 @@ off or no faults).
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
   command keys and separate app NVS records. Dark and lowest-dark values are
-  persisted through app settings.
+  persisted through app settings. Setting `dark_mv` directly marks the active
+  dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
+  `pd measure_dark store=true` records the measured mean as the active dark and
+  reports the actual averaging duration in `dark_duration_ms`.
 
 (ip)=
 ### `ip`

@@ -81,7 +81,7 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_ADC_I2C_WIRE_BITS_PER_SAMPLE 126U
 #define PD_NOISE_WARNING_COOLDOWN_MS 60000U
 #define PD_DARK_DEFAULT_DURATION_MS (64U * PUBLISH_INTERVAL_MS)
-#define PD_AVERAGE_MAX_DURATION_MS 2000U
+#define PD_AVERAGE_MAX_DURATION_MS APP_PD_DARK_DURATION_MAX_MS
 #define PD_AVERAGE_MAX_SAMPLES (PD_AVERAGE_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
 #define PD_MEAN_WINDOW_SAMPLES (1000U / PUBLISH_INTERVAL_MS)
 #define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
@@ -496,6 +496,7 @@ static void pd_average_finish_dark_locked(enum photodiode_channel channel,
 
     if (avg->store_dark) {
         settings.channel[channel].dark_mv = avg->result.mean_mv;
+        settings.channel[channel].dark_duration_ms = avg->result.duration_ms;
         if (!settings.channel[channel].lowest_dark_valid ||
             avg->result.mean_mv < settings.channel[channel].lowest_dark_mv) {
             settings.channel[channel].lowest_dark_mv = avg->result.mean_mv;

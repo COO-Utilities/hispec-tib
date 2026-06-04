@@ -6,6 +6,7 @@
 #include "photodiode_command.h"
 
 #include <errno.h>
+#include <math.h>
 
 #include <zephyr/sys/util.h>
 
@@ -186,34 +187,43 @@ static int pd_average_status_response(const struct coo_cmd_request *cmd,
 				      struct coo_cmd_response *out)
 {
 	char payload[MAX_PAYLOAD_LEN] = {0};
+	size_t off = 0U;
 	const struct photodiode_average_result *result = &status->result;
 	const char *state_name = photodiode_average_state_name(status->state);
 
 	if (status->state == PHOTODIODE_AVERAGE_COMPLETE) {
 		struct app_photodiode_settings settings;
+		const struct app_pd_channel_settings *channel_settings;
 
 		app_settings_get_photodiode(&settings);
-		snprintk(payload, sizeof(payload),
-			 "{\"state\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
-			 "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
-			 "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
-			 "\"min_mv\":%.3f,\"max_mv\":%.3f,"
-			 "\"previous_dark_mv\":%.3f,\"configured_dark_mv\":%.3f,"
-			 "\"lowest_dark_mv\":%.3f,\"lowest_dark_valid\":%s}",
-			 state_name,
-			 photodiode_channel_names[status->channel],
-			 status->store_dark ? "true" : "false",
-			 result->duration_ms,
-			 result->samples,
-			 result->target_samples,
-			 (double)result->mean_mv,
-			 (double)result->rms_mv,
-			 (double)result->min_mv,
-			 (double)result->max_mv,
-			 (double)(result->mean_mv - result->mean_net_mv),
-			 (double)settings.channel[status->channel].dark_mv,
-			 (double)settings.channel[status->channel].lowest_dark_mv,
-			 settings.channel[status->channel].lowest_dark_valid ? "true" : "false");
+		channel_settings = &settings.channel[status->channel];
+		if (coo_json_append(payload, sizeof(payload), &off,
+				    "{\"state\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
+				    "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
+				    "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
+				    "\"min_mv\":%.3f,\"max_mv\":%.3f,"
+				    "\"previous_dark_mv\":%.3f,\"configured_dark_mv\":%.3f,"
+				    "\"lowest_stored_dark_mv\":",
+				    state_name,
+				    photodiode_channel_names[status->channel],
+				    status->store_dark ? "true" : "false",
+				    result->duration_ms,
+				    result->samples,
+				    result->target_samples,
+				    (double)result->mean_mv,
+				    (double)result->rms_mv,
+				    (double)result->min_mv,
+				    (double)result->max_mv,
+				    (double)(result->mean_mv - result->mean_net_mv),
+				    (double)channel_settings->dark_mv) != 0 ||
+		    coo_json_append_float_or_null(payload, sizeof(payload), &off,
+						  channel_settings->lowest_dark_valid ?
+							  channel_settings->lowest_dark_mv :
+							  NAN,
+						  3) != 0 ||
+		    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+			return coo_cmd_error(out, cmd, "dark status response too large");
+		}
 		return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 	}
 
@@ -324,39 +334,44 @@ int pd_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	}
 }
 
+static int pd_append_dark_duration(char *payload, size_t payload_len,
+				   size_t *off,
+				   const struct app_pd_channel_settings *ch)
+{
+	if (ch == NULL || ch->dark_duration_ms == APP_PD_DARK_DURATION_USER) {
+		return coo_json_append(payload, payload_len, off, "\"user\"");
+	}
+	return coo_json_append(payload, payload_len, off, "%u", ch->dark_duration_ms);
+}
+
 static int pd_settings_channel_json(char *payload, size_t payload_len,
 				    enum photodiode_channel channel,
 				    const struct app_pd_channel_settings *ch)
 {
-	struct photodiode_average_status average = {0};
-	int written;
+	size_t off = 0U;
 
-	(void)photodiode_get_average_status(channel, &average);
+	if (coo_json_append(payload, payload_len, &off,
+			    "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
+			    "\"dark_duration_ms\":",
+			    photodiode_channel_names[channel],
+			    (double)ch->dark_mv) != 0 ||
+	    pd_append_dark_duration(payload, payload_len, &off, ch) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+			    ",\"lowest_stored_dark_mv\":") != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  ch->lowest_dark_valid ? ch->lowest_dark_mv : NAN,
+					  3) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+			    ",\"noise_rms_mV\":%.3f,"
+			    "\"responsivity_a_per_w\":%.9f,"
+			    "\"transimpedance_v_per_a\":%.6e}",
+			    (double)ch->noise_warn_rms_mv,
+			    ch->responsivity_a_per_w,
+			    ch->transimpedance_v_per_a) != 0) {
+		return -ENOSPC;
+	}
 
-	written = snprintk(payload, payload_len,
-			   "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
-			   "\"lowest_dark_mv\":%.3f,"
-			   "\"lowest_dark_valid\":%s,"
-			   "\"average\":\"%s\","
-			   "\"average_duration_ms\":%u,"
-			   "\"average_samples\":%u,"
-			   "\"average_target_samples\":%u,"
-			   "\"noise_rms_mV\":%.3f,"
-			   "\"responsivity_a_per_w\":%.9f,"
-			   "\"transimpedance_v_per_a\":%.6e}",
-			   photodiode_channel_names[channel],
-			   (double)ch->dark_mv,
-			   (double)ch->lowest_dark_mv,
-			   ch->lowest_dark_valid ? "true" : "false",
-			   photodiode_average_state_name(average.state),
-			   average.result.duration_ms,
-			   average.result.samples,
-			   average.result.target_samples,
-			   (double)ch->noise_warn_rms_mv,
-			   ch->responsivity_a_per_w,
-			   ch->transimpedance_v_per_a);
-
-	return (written >= 0 && written < (int)payload_len) ? 0 : -ENOSPC;
+	return 0;
 }
 
 int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -388,6 +403,7 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	enum photodiode_channel channel;
 	bool persist = false;
 	bool changed = false;
+	bool dark_changed = false;
 	int rc;
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
@@ -405,7 +421,7 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 
 	if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
 						  &channel_settings.dark_mv,
-						  &changed, -5000.0f, 5000.0f) != 0 ||
+						  &dark_changed, -5000.0f, 5000.0f) != 0 ||
 	    coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
 						  &channel_settings.noise_warn_rms_mv,
 						  &changed, 0.0f, 5000.0f) != 0 ||
@@ -416,6 +432,10 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 						   &channel_settings.transimpedance_v_per_a,
 						   &changed, 1.0, 1.0e12) != 0) {
 		return coo_cmd_error(out, cmd, "invalid pdsettings value");
+	}
+	if (dark_changed) {
+		channel_settings.dark_duration_ms = APP_PD_DARK_DURATION_USER;
+		changed = true;
 	}
 
 	if (!changed) {

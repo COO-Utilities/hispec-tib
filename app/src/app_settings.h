@@ -52,6 +52,8 @@ struct app_mqtt_settings {
 #define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
 #define APP_ROUTE_LOSS_LASER_MAX_LEN 16
 #define APP_LASER_CHANNEL_COUNT 6
+#define APP_PD_DARK_DURATION_USER UINT32_MAX
+#define APP_PD_DARK_DURATION_MAX_MS 2000U
 
 struct app_attenuator_physical_settings {
 	float slope;
@@ -71,6 +73,8 @@ struct app_attenuator_settings {
 /** Photodiode calibration, response, and warning thresholds owned by app settings. */
 struct app_pd_channel_settings {
 	float dark_mv;
+	/* APP_PD_DARK_DURATION_USER means dark_mv was set directly, not measured. */
+	uint32_t dark_duration_ms;
 	float lowest_dark_mv;
 	bool lowest_dark_valid;
 	float noise_warn_rms_mv;

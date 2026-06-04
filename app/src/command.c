@@ -311,7 +311,7 @@ static const struct coo_cmd_spec command_specs[] = {
                   "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> persistent=<bool>]",
                   "channel required in key; listed fields optional for effect",
                   "channel: yj,hk",
-                  "TIB-only app-owned photodiode calibration/settings",
+                  "TIB-only app-owned photodiode calibration/settings; dark_mv marks user-set dark",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
 };
 

@@ -13,7 +13,6 @@ import argparse
 import itertools
 import json
 import logging
-import math
 import queue
 import re
 import struct
@@ -466,20 +465,15 @@ class DarkStatus:
     max_mv: float | None = None
     previous_dark_mv: float | None = None
     configured_dark_mv: float | None = None
-    lowest_dark_mv: float | None = None
-    lowest_dark_valid: bool | None = None
+    lowest_stored_dark_mv: float = np.nan
 
 
 @dataclass(frozen=True)
 class PhotodiodeSettings:
     channel: str
     dark_mv: float
-    lowest_dark_mv: float
-    lowest_dark_valid: bool
-    average: str
-    average_duration_ms: int
-    average_samples: int
-    average_target_samples: int
+    dark_duration_ms: int | Literal["user"]
+    lowest_stored_dark_mv: float
     noise_rms_mV: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
@@ -576,13 +570,13 @@ def _require_choice(name: str, value: str, choices: Sequence[str]) -> str:
 
 def _require_float(name: str, value: float, min_value: float, max_value: float) -> float:
     value = float(value)
-    if not math.isfinite(value) or value < min_value or value > max_value:
+    if not np.isfinite(value) or value < min_value or value > max_value:
         raise HispecFibError(f"{name} must be in [{min_value}, {max_value}]")
     return value
 
 
 def _float_or_nan(value: Any) -> float:
-    return math.nan if value is None else float(value)
+    return np.nan if value is None else float(value)
 
 
 def _require_nonnegative_u32(name: str, value: int) -> int:
@@ -851,15 +845,32 @@ def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapp
         raise HispecFibError(f"{name} voltage_mv and flux lengths differ")
     if len(voltage_values) < 6 or len(voltage_values) > 20:
         raise HispecFibError(f"{name} must contain 6 to 20 points")
-    if any(not math.isfinite(v) for v in voltage_values):
+    if any(not np.isfinite(v) for v in voltage_values):
         raise HispecFibError(f"{name} voltage_mv contains non-finite values")
-    if any((not math.isfinite(v)) or v <= 0.0 for v in flux_values):
+    if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
         raise HispecFibError(f"{name} flux values must be positive and finite")
     return {"voltage_mv": list(voltage_values), "flux": list(flux_values)}
 
 
 def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
-    return _dataclass_from(DarkStatus, data)
+    return _dataclass_from(
+        DarkStatus,
+        data,
+        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
+    )
+
+
+def _decode_pdsettings(data: Mapping[str, Any]) -> PhotodiodeSettings:
+    duration = data.get("dark_duration_ms", "user")
+    return PhotodiodeSettings(
+        channel=str(data["channel"]),
+        dark_mv=float(data["dark_mv"]),
+        dark_duration_ms="user" if duration == "user" else int(duration),
+        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
+        noise_rms_mV=float(data["noise_rms_mV"]),
+        responsivity_a_per_w=float(data["responsivity_a_per_w"]),
+        transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
+    )
 
 
 def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
@@ -897,26 +908,26 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             laser=str(data.get("laser", "")),
             autolevel=bool(data.get("autolevel", False)),
             time=int(data.get("time", 0)),
-            tp=_float_or_nan(data.get("tp", math.nan)),
-            tp_err=_float_or_nan(data.get("tp_err", math.nan)),
-            tp_rms_err=_float_or_nan(data.get("tp_rms_err", math.nan)),
-            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", math.nan)),
-            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", math.nan)),
-            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", math.nan)),
-            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", math.nan)),
-            pd_route_tx=_float_or_nan(data.get("pd_route_tx", math.nan)),
-            laser_route_tx=_float_or_nan(data.get("laser_route_tx", math.nan)),
-            atten_tx=_float_or_nan(data.get("atten_tx", math.nan)),
+            tp=_float_or_nan(data.get("tp", np.nan)),
+            tp_err=_float_or_nan(data.get("tp_err", np.nan)),
+            tp_rms_err=_float_or_nan(data.get("tp_rms_err", np.nan)),
+            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", np.nan)),
+            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", np.nan)),
+            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", np.nan)),
+            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", np.nan)),
+            pd_route_tx=_float_or_nan(data.get("pd_route_tx", np.nan)),
+            laser_route_tx=_float_or_nan(data.get("laser_route_tx", np.nan)),
+            atten_tx=_float_or_nan(data.get("atten_tx", np.nan)),
             pd_raw=int(data.get("pd_raw", 0)),
-            pd_mv=_float_or_nan(data.get("pd_mv", math.nan)),
-            pd_net_mv=_float_or_nan(data.get("pd_net_mv", math.nan)),
-            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", math.nan)),
-            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", math.nan)),
-            laser_current_ma=_float_or_nan(data.get("laser_current_ma", math.nan)),
-            atten_db=_float_or_nan(data.get("atten_db", math.nan)),
-            wavelength_nm=_float_or_nan(data.get("wavelength_nm", math.nan)),
-            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", math.nan)),
-            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", math.nan)),
+            pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
+            pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
+            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", np.nan)),
+            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", np.nan)),
+            laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
+            atten_db=_float_or_nan(data.get("atten_db", np.nan)),
+            wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
+            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", np.nan)),
+            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", np.nan)),
             flags=tuple(str(flag) for flag in (data.get("flags") or ())),
         )
 
@@ -1530,7 +1541,7 @@ class HispecFibPcb:
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
         _require_choice("channel", channel, PD_CHANNELS)
-        return _dataclass_from(PhotodiodeSettings, self._request_json(f"pdsettings/{channel}"))
+        return _decode_pdsettings(self._request_json(f"pdsettings/{channel}"))
 
     def set_pdsettings(
         self,
