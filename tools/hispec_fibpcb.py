@@ -57,7 +57,7 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9f")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9d")
 THROUGHPUT_DTYPE = np.dtype(
     [
         ("channel", "U8"),
@@ -75,15 +75,15 @@ THROUGHPUT_DTYPE = np.dtype(
         ("laser_route_tx", "f8"),
         ("atten_tx", "f8"),
         ("pd_raw", "i2"),
-        ("pd_mv", "f4"),
-        ("pd_net_mv", "f4"),
-        ("pd_mean_mv_1s", "f4"),
-        ("pd_rms_mv_0p5s", "f4"),
-        ("laser_current_ma", "f4"),
-        ("atten_db", "f4"),
-        ("wavelength_nm", "f4"),
-        ("pd_ontime_s", "f4"),
-        ("laser_current_ontime_s", "f4"),
+        ("pd_mv", "f8"),
+        ("pd_net_mv", "f8"),
+        ("pd_mean_mv_1s", "f8"),
+        ("pd_rms_mv_0p5s", "f8"),
+        ("laser_current_ma", "f8"),
+        ("atten_db", "f8"),
+        ("wavelength_nm", "f8"),
+        ("pd_ontime_s", "f8"),
+        ("laser_current_ontime_s", "f8"),
         ("flags", "O"),
     ]
 )
@@ -951,7 +951,7 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     channel = values[0].split(b"\0", 1)[0].decode("ascii", "replace")
     f64 = values[2:12]
     pd_raw = values[12]
-    f32 = values[13:22]
+    extra = values[13:22]
     return ThroughputSample(
         channel=channel,
         laser="",
@@ -968,15 +968,15 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         laser_route_tx=float(f64[8]),
         atten_tx=float(f64[9]),
         pd_raw=int(pd_raw),
-        pd_mv=float(f32[0]),
-        pd_net_mv=float(f32[1]),
-        pd_mean_mv_1s=float(f32[2]),
-        pd_rms_mv_0p5s=float(f32[3]),
-        laser_current_ma=float(f32[4]),
-        atten_db=float(f32[5]),
-        wavelength_nm=float(f32[6]),
-        pd_ontime_s=float(f32[7]),
-        laser_current_ontime_s=float(f32[8]),
+        pd_mv=float(extra[0]),
+        pd_net_mv=float(extra[1]),
+        pd_mean_mv_1s=float(extra[2]),
+        pd_rms_mv_0p5s=float(extra[3]),
+        laser_current_ma=float(extra[4]),
+        atten_db=float(extra[5]),
+        wavelength_nm=float(extra[6]),
+        pd_ontime_s=float(extra[7]),
+        laser_current_ontime_s=float(extra[8]),
         flags=(),
     )
 

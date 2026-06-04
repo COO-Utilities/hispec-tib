@@ -18,19 +18,19 @@
 
 #define PHOTODIODE_CHANNEL_COUNT 2
 
-#define PHOTODIODE_DEFAULT_DARK_MV 0.0f
-#define PHOTODIODE_DEFAULT_LOWEST_DARK_MV 0.0f
-#define PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV 0.0f
-#define PHOTODIODE_DARK_MIN_MV -5000.0f
-#define PHOTODIODE_DARK_MAX_MV 5000.0f
-#define PHOTODIODE_NOISE_RMS_MIN_MV 0.0f
-#define PHOTODIODE_NOISE_RMS_MAX_MV 5000.0f
+#define PHOTODIODE_DEFAULT_DARK_MV 0.0
+#define PHOTODIODE_DEFAULT_LOWEST_DARK_MV 0.0
+#define PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV 0.0
+#define PHOTODIODE_DARK_MIN_MV -5000.0
+#define PHOTODIODE_DARK_MAX_MV 5000.0
+#define PHOTODIODE_NOISE_RMS_MIN_MV 0.0
+#define PHOTODIODE_NOISE_RMS_MAX_MV 5000.0
 #define PHOTODIODE_RESPONSIVITY_MIN_A_PER_W 0.000001
 #define PHOTODIODE_RESPONSIVITY_MAX_A_PER_W 10.0
 #define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0
 #define PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A 1.0e12
-#define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 3.0f
-#define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 1.0f
+#define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 3.0
+#define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 1.0
 #define PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W 0.93
 #define PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W 0.60971
 #define PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A 5.0e10
@@ -54,14 +54,14 @@ struct photodiode_channel_status {
 	bool valid;
 	int last_error;
 	int16_t raw;
-	float mv;
-	float net_mv;
-	float power_uw;
-	float noise_rms_mv;
-	float mean_mv_1s;
-	float rms_mv_0p5s;
-	float dark_mv;
-	float lowest_dark_mv;
+	double mv;
+	double net_mv;
+	double power_uw;
+	double noise_rms_mv;
+	double mean_mv_1s;
+	double rms_mv_0p5s;
+	double dark_mv;
+	double lowest_dark_mv;
 	bool lowest_dark_valid;
 	enum photodiode_average_state average_state;
 	uint32_t average_duration_ms;
@@ -82,11 +82,11 @@ struct photodiode_average_result {
 	uint32_t duration_ms;
 	uint32_t samples;
 	uint32_t target_samples;
-	float mean_mv;
-	float mean_net_mv;
-	float rms_mv;
-	float min_mv;
-	float max_mv;
+	double mean_mv;
+	double mean_net_mv;
+	double rms_mv;
+	double min_mv;
+	double max_mv;
 	int16_t max_raw;
 };
 

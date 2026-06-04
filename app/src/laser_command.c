@@ -293,7 +293,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
-	float level = 0.0f;
+	double level = 0.0;
 	uint32_t autooff_s;
 	int parse_rc;
 	int rc;
@@ -301,8 +301,8 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
-	parse_rc = coo_json_extract_float(cmd->payload, "level", &level);
-	if (parse_rc != COO_JSON_EXTRACT_OK || level < 0.0f || level > 100.0f) {
+	parse_rc = coo_json_extract_double(cmd->payload, "level", &level);
+	if (parse_rc != COO_JSON_EXTRACT_OK || level < 0.0 || level > 100.0) {
 		return coo_cmd_error(out, cmd, "level must be 0..100");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
@@ -343,16 +343,16 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 {
 	enum hispec_laser_id id;
 	char name[16] = {0};
-	float delta_nm = 0.0f;
+	double delta_nm = 0.0;
 	int parse_rc;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
-	parse_rc = coo_json_extract_float(cmd->payload, "tune_nm", &delta_nm);
+	parse_rc = coo_json_extract_double(cmd->payload, "tune_nm", &delta_nm);
 	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-		parse_rc = coo_json_extract_float(cmd->payload, "delta_nm", &delta_nm);
+		parse_rc = coo_json_extract_double(cmd->payload, "delta_nm", &delta_nm);
 	}
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
 		return coo_cmd_error(out, cmd, "missing tune_nm");
@@ -447,9 +447,9 @@ static int laser_parse_settings_update(const char *json,
 	}
 
 #define LASER_PARSE_FLOAT(key, field) do { \
-		if (coo_json_extract_optional_float_range(json, key, &(field), \
-							  changed, -FLT_MAX, \
-							  FLT_MAX) != 0) \
+		if (coo_json_extract_optional_double_range(json, key, &(field), \
+							  changed, -DBL_MAX, \
+							  DBL_MAX) != 0) \
 			return -EINVAL; \
 	} while (0)
 
@@ -478,8 +478,8 @@ static int laser_parse_settings_update(const char *json,
 		if (range_len != 2U) {
 			return -ERANGE;
 		}
-		settings->properties.operating_temp_range_c.min_c = (float)range[0];
-		settings->properties.operating_temp_range_c.max_c = (float)range[1];
+		settings->properties.operating_temp_range_c.min_c = (double)range[0];
+		settings->properties.operating_temp_range_c.max_c = (double)range[1];
 		*changed = true;
 	}
 

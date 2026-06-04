@@ -13,8 +13,8 @@
 #include <coo_commons/pid.h>
 #include <string.h>
 
-void coo_pid_init(struct coo_pid *pid, float kp, float ki, float kd,
-		  float output_min, float output_max)
+void coo_pid_init(struct coo_pid *pid, double kp, double ki, double kd,
+		  double output_min, double output_max)
 {
 	memset(pid, 0, sizeof(*pid));
 
@@ -32,26 +32,26 @@ void coo_pid_init(struct coo_pid *pid, float kp, float ki, float kd,
 
 void coo_pid_reset(struct coo_pid *pid)
 {
-	pid->integral = 0.0f;
-	pid->prev_error = 0.0f;
+	pid->integral = 0.0;
+	pid->prev_error = 0.0;
 }
 
-void coo_pid_set_gains(struct coo_pid *pid, float kp, float ki, float kd)
+void coo_pid_set_gains(struct coo_pid *pid, double kp, double ki, double kd)
 {
 	pid->kp = kp;
 	pid->ki = ki;
 	pid->kd = kd;
 }
 
-float coo_pid_update(struct coo_pid *pid, float setpoint, float measured, float dt)
+double coo_pid_update(struct coo_pid *pid, double setpoint, double measured, double dt)
 {
-	float error, derivative, output;
+	double error, derivative, output;
 
 	/* Calculate error */
 	error = setpoint - measured;
 
 	/* Proportional term */
-	float p_term = pid->kp * error;
+	double p_term = pid->kp * error;
 
 	/* Integral term with anti-windup */
 	pid->integral += error * dt;
@@ -60,11 +60,11 @@ float coo_pid_update(struct coo_pid *pid, float setpoint, float measured, float 
 	} else if (pid->integral < pid->integral_min) {
 		pid->integral = pid->integral_min;
 	}
-	float i_term = pid->ki * pid->integral;
+	double i_term = pid->ki * pid->integral;
 
 	/* Derivative term */
-	derivative = (dt > 0.0f) ? (error - pid->prev_error) / dt : 0.0f;
-	float d_term = pid->kd * derivative;
+	derivative = (dt > 0.0) ? (error - pid->prev_error) / dt : 0.0;
+	double d_term = pid->kd * derivative;
 
 	/* Compute output */
 	output = p_term + i_term + d_term;

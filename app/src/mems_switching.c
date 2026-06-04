@@ -190,11 +190,11 @@ static void mems_timing_maybe_log(int64_t now_ms)
 
 static uint32_t min_toggle_period_cycles(const struct mems_switch *sw)
 {
-    const float min_period_ms = 1000.0f / MEMS_SWITCH_MAX_TOGGLE_HZ;
-    const float cycles = min_period_ms / (float)mems_switch_pulse_ms(sw);
+    const double min_period_ms = 1000.0 / MEMS_SWITCH_MAX_TOGGLE_HZ;
+    const double cycles = min_period_ms / (double)mems_switch_pulse_ms(sw);
     uint32_t min_cycles = (uint32_t)cycles;
 
-    if ((float)min_cycles < cycles) {
+    if ((double)min_cycles < cycles) {
         min_cycles += 1U;
     }
     if (min_cycles < 2U) {
@@ -204,16 +204,16 @@ static uint32_t min_toggle_period_cycles(const struct mems_switch *sw)
 }
 
 static uint32_t quantize_toggle_period_cycles(const struct mems_switch *sw,
-                                              float requested_rate_hz)
+                                              double requested_rate_hz)
 {
     uint32_t period_cycles;
     const uint32_t min_cycles = min_toggle_period_cycles(sw);
 
-    if (requested_rate_hz <= 0.0f) {
+    if (requested_rate_hz <= 0.0) {
         return min_cycles;
     }
 
-    period_cycles = (uint32_t)((1000.0f / (requested_rate_hz * (float)mems_switch_pulse_ms(sw))) + 0.5f);
+    period_cycles = (uint32_t)((1000.0 / (requested_rate_hz * (double)mems_switch_pulse_ms(sw))) + 0.5);
     if (period_cycles < min_cycles) {
         period_cycles = min_cycles;
     }
@@ -223,13 +223,13 @@ static uint32_t quantize_toggle_period_cycles(const struct mems_switch *sw,
     return period_cycles;
 }
 
-static float attained_toggle_rate_hz(const struct mems_switch *sw,
+static double attained_toggle_rate_hz(const struct mems_switch *sw,
                                      uint32_t period_cycles)
 {
     if (period_cycles == 0U) {
-        return 0.0f;
+        return 0.0;
     }
-    return 1000.0f / ((float)period_cycles * (float)mems_switch_pulse_ms(sw));
+    return 1000.0 / ((double)period_cycles * (double)mems_switch_pulse_ms(sw));
 }
 
 static uint32_t seconds_to_cycles(const struct mems_switch *sw, uint32_t seconds)
@@ -274,9 +274,9 @@ static void mems_switch_stop_toggling_locked(struct mems_switch *sw)
 }
 
 static void mems_switch_apply_requested_rate_locked(struct mems_switch *sw,
-                                                    float requested_rate_hz)
+                                                    double requested_rate_hz)
 {
-    if (requested_rate_hz <= 0.0f) {
+    if (requested_rate_hz <= 0.0) {
         return;
     }
 
@@ -337,8 +337,8 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
 }
 
 int mems_switch_set_state(struct mems_switch *sw, char state,
-                          float duty_cycle, uint32_t stop_after_s,
-                          float requested_toggle_rate_hz)
+                          double duty_cycle, uint32_t stop_after_s,
+                          double requested_toggle_rate_hz)
 {
     struct mems_router *router;
     uint32_t previous_period_cycles;
@@ -356,12 +356,12 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
         return -EINVAL;
     }
 
-    if (duty_cycle!=0.0f && state != 'A') {
-        duty_cycle = 1.0f - duty_cycle;
+    if (duty_cycle!=0.0 && state != 'A') {
+        duty_cycle = 1.0 - duty_cycle;
         state='A';
     }
 
-    if (duty_cycle < 0.0f || duty_cycle > 1.0f || stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+    if (duty_cycle < 0.0 || duty_cycle > 1.0 || stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
     }
 
@@ -375,7 +375,7 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
     mems_switch_apply_requested_rate_locked(sw, requested_toggle_rate_hz);
 
     period_cycles = sw->switching_period_cycles;
-    a_cycles = (uint32_t)(duty_cycle * (float)period_cycles + 0.5f);
+    a_cycles = (uint32_t)(duty_cycle * (double)period_cycles + 0.5);
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
                                           stop_after_s);
 
@@ -610,7 +610,7 @@ void mems_switch_init(struct mems_switch *sw,
                       const struct gpio_dt_spec *gpio_b,
                       const char *name,
                       enum mems_switch_type switch_type,
-                      float switching_frequency_hz, char initial_state)
+                      double switching_frequency_hz, char initial_state)
 {
 
     sw->gpio_a = *gpio_a;
@@ -703,7 +703,7 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
 
     out->state = sw->remaining_toggle_cycles>0 ? 'A': sw->state;
     out->state_known_this_boot = sw->state_known_this_boot;
-    out->duty_cycle = (float)sw->a_state_cycles / (float)sw->switching_period_cycles; //actual attained duty cycle
+    out->duty_cycle = (double)sw->a_state_cycles / (double)sw->switching_period_cycles; //actual attained duty cycle
     out->duty_numerator = sw->a_state_cycles;
     out->duty_denominator = sw->switching_period_cycles;
     out->tick_duration_ms = mems_switch_pulse_ms(sw);
@@ -801,7 +801,7 @@ int mems_router_apply_route(const struct mems_router *router,
             return -ENOENT;
         }
 
-        rc = mems_switch_set_state(sw, step->state, 1.0f, 0U, 0.0f);
+        rc = mems_switch_set_state(sw, step->state, 1.0, 0U, 0.0);
         if (rc != 0) {
             if (failed_switch != NULL) {
                 *failed_switch = step->switch_name;
@@ -933,12 +933,12 @@ static const struct mems_route *split_route_for_channel(const struct mems_router
 
 static uint32_t split_period_ticks(void)
 {
-    const float ticks = 1000.0f /
+    const double ticks = 1000.0 /
                         (MEMS_SWITCH_MAX_TOGGLE_HZ *
-                         (float)MEMS_SWITCH_ELECTRICAL_PULSE_MS);
+                         (double)MEMS_SWITCH_ELECTRICAL_PULSE_MS);
     uint32_t period_ticks = (uint32_t)ticks;
 
-    if ((float)period_ticks < ticks) {
+    if ((double)period_ticks < ticks) {
         period_ticks += 1U;
     }
     if (period_ticks < 2U) {
@@ -956,7 +956,7 @@ static uint32_t split_ratio_to_ticks(double ratio, uint32_t period_ticks)
 }
 
 static void split_read_transmissions(const char *route_name,
-                                     float transmission[MEMS_SPLIT_OUTPUT_COUNT])
+                                     double transmission[MEMS_SPLIT_OUTPUT_COUNT])
 {
     if (route_name == NULL || transmission == NULL) {
         return;
@@ -967,13 +967,13 @@ static void split_read_transmissions(const char *route_name,
         double tx = 1.0;
 
         (void)app_settings_get_route_loss(route_name, loss_key, &tx);
-        transmission[i] = (float)tx;
+        transmission[i] = (double)tx;
     }
 }
 
-static void split_output_ratio_from_actual(const float actual[MEMS_SPLIT_OUTPUT_COUNT],
-                                           const float transmission[MEMS_SPLIT_OUTPUT_COUNT],
-                                           float output[MEMS_SPLIT_OUTPUT_COUNT])
+static void split_output_ratio_from_actual(const double actual[MEMS_SPLIT_OUTPUT_COUNT],
+                                           const double transmission[MEMS_SPLIT_OUTPUT_COUNT],
+                                           double output[MEMS_SPLIT_OUTPUT_COUNT])
 {
     double delivered[MEMS_SPLIT_OUTPUT_COUNT];
     double total = 0.0;
@@ -989,12 +989,12 @@ static void split_output_ratio_from_actual(const float actual[MEMS_SPLIT_OUTPUT_
     }
 
     for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
-        output[i] = (float)(delivered[i] / total);
+        output[i] = (double)(delivered[i] / total);
     }
 }
 
-static int split_correct_for_transmission(const float requested[MEMS_SPLIT_OUTPUT_COUNT],
-                                          const float transmission[MEMS_SPLIT_OUTPUT_COUNT],
+static int split_correct_for_transmission(const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                          const double transmission[MEMS_SPLIT_OUTPUT_COUNT],
                                           double corrected[MEMS_SPLIT_OUTPUT_COUNT])
 {
     const double ra = requested[0];
@@ -1044,37 +1044,37 @@ static uint32_t split_selected_numerator(const struct mems_switch_status *status
     return status->duty_denominator - status->duty_numerator;
 }
 
-static void split_clamp_actual(float actual[MEMS_SPLIT_OUTPUT_COUNT])
+static void split_clamp_actual(double actual[MEMS_SPLIT_OUTPUT_COUNT])
 {
-    float used;
+    double used;
 
     for (uint8_t i = 0U; i < MEMS_SPLIT_OUTPUT_COUNT; ++i) {
-        if (actual[i] < 0.0f) {
-            actual[i] = 0.0f;
+        if (actual[i] < 0.0) {
+            actual[i] = 0.0;
         }
-        if (actual[i] > 1.0f) {
-            actual[i] = 1.0f;
+        if (actual[i] > 1.0) {
+            actual[i] = 1.0;
         }
     }
 
     used = actual[0] + actual[1];
-    if (used > 1.0f) {
-        actual[1] = 1.0f - actual[0];
-        used = 1.0f;
+    if (used > 1.0) {
+        actual[1] = 1.0 - actual[0];
+        used = 1.0;
     }
-    actual[2] = 1.0f - used;
+    actual[2] = 1.0 - used;
 }
 
 int mems_split_read_channel_state(const struct mems_router *router,
                                   uint8_t channel_index,
-                                  const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                  const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                                   struct mems_split_state *out)
 {
     const struct mems_route *route;
     struct mems_split_state next = {0};
     char route_name[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
-    float sw1_duty;
-    float sw3_duty;
+    double sw1_duty;
+    double sw3_duty;
 
     if (router == NULL || channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
         return -EINVAL;
@@ -1117,15 +1117,15 @@ int mems_split_read_channel_state(const struct mems_router *router,
         next.switches[i].denominator = status.duty_denominator;
         next.switches[i].tick_ms = status.tick_duration_ms;
         next.switches[i].duty_cycle =
-            status.duty_denominator == 0U ? 0.0f :
-            (float)selected_ticks / (float)status.duty_denominator;
+            status.duty_denominator == 0U ? 0.0 :
+            (double)selected_ticks / (double)status.duty_denominator;
         next.stopsin_s = MAX(next.stopsin_s, status.stopafter_s);
     }
 
     sw1_duty = next.switches[0].duty_cycle;
     sw3_duty = next.switches[2].duty_cycle;
     next.actual[0] = sw1_duty;
-    next.actual[1] = sw3_duty > sw1_duty ? sw3_duty - sw1_duty : 0.0f;
+    next.actual[1] = sw3_duty > sw1_duty ? sw3_duty - sw1_duty : 0.0;
     split_clamp_actual(next.actual);
     split_read_transmissions(route_name, next.transmission);
     split_output_ratio_from_actual(next.actual, next.transmission, next.output);
@@ -1152,7 +1152,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
 
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
-                             const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                              uint32_t stopafter_s,
                              struct mems_split_state *out,
                              const char **failed_switch)
@@ -1162,7 +1162,7 @@ int mems_split_apply_channel(const struct mems_router *router,
     uint32_t output_ticks[MEMS_SPLIT_OUTPUT_COUNT];
     uint32_t switch_ticks[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
     char route_name[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
-    float transmission[MEMS_SPLIT_OUTPUT_COUNT];
+    double transmission[MEMS_SPLIT_OUTPUT_COUNT];
     double corrected[MEMS_SPLIT_OUTPUT_COUNT];
     int rc;
 
@@ -1170,10 +1170,10 @@ int mems_split_apply_channel(const struct mems_router *router,
         channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
         return -EINVAL;
     }
-    if (requested[0] < 0.0f || requested[0] > 1.0f ||
-        requested[1] < 0.0f || requested[1] > 1.0f ||
-        requested[2] < 0.0f || requested[2] > 1.0f ||
-        requested[0] + requested[1] > 1.000001f ||
+    if (requested[0] < 0.0 || requested[0] > 1.0 ||
+        requested[1] < 0.0 || requested[1] > 1.0 ||
+        requested[2] < 0.0 || requested[2] > 1.0 ||
+        requested[0] + requested[1] > 1.000001 ||
         stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
     }

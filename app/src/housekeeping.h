@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 struct housekeeping_temperature_status {
-	float ambient_c;
+	double ambient_c;
 	uint32_t age_ms;
 	int last_error;
 	bool valid;
@@ -42,7 +42,7 @@ int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
  * Housekeeping owns this runtime estimate because it owns slow relay writes.
  * It does not read back or infer pre-boot relay state.
  */
-float housekeeping_power_on_time_s(enum housekeeping_power_output output);
+double housekeeping_power_on_time_s(enum housekeeping_power_output output);
 
 /**
  * Start ambient-temperature cache refresh work.

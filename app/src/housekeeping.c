@@ -43,7 +43,7 @@ static struct power_on_time_runtime power_on_time[HOUSEKEEPING_POWER_OUTPUT_COUN
 static void temperature_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(temperature_work, temperature_work_handler);
 
-static void temperature_update(float ambient_c, int error, bool valid)
+static void temperature_update(double ambient_c, int error, bool valid)
 {
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	temperature_status.ambient_c = ambient_c;
@@ -110,7 +110,7 @@ static int temperature_init_once(void)
 	if (temperature_dev == NULL) {
 		rc = -ENODEV;
 	}
-	temperature_update(0.0f, rc, false);
+	temperature_update(0.0, rc, false);
 	temperature_initialized = true;
 	return rc;
 }
@@ -118,7 +118,7 @@ static int temperature_init_once(void)
 static int temperature_sample_once(void)
 {
 	struct sensor_value temp;
-	float ambient_c;
+	double ambient_c;
 	int rc;
 
 	rc = temperature_init_once();
@@ -244,7 +244,7 @@ out:
 	return rc;
 }
 
-float housekeeping_power_on_time_s(enum housekeeping_power_output output)
+double housekeeping_power_on_time_s(enum housekeeping_power_output output)
 {
 	struct power_on_time_runtime runtime;
 	int64_t ms;
@@ -261,7 +261,7 @@ float housekeeping_power_on_time_s(enum housekeeping_power_output output)
 	if (runtime.active) {
 		ms += k_uptime_get() - runtime.started_ms;
 	}
-	return (float)ms / 1000.0f;
+	return (double)ms / 1000.0;
 }
 
 static void temperature_work_handler(struct k_work *work)

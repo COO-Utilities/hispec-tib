@@ -45,8 +45,8 @@ struct on_time_runtime {
 };
 
 struct laser_output_estimate_state {
-	float current_ma;
-	float tec_temperature_c;
+	double current_ma;
+	double tec_temperature_c;
 	bool valid;
 };
 
@@ -146,7 +146,7 @@ static void ensure_laser_runtime_settings_locked(void)
 	app_settings_get_laser(&stored);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		laser_settings[i] = stored.channel[i];
-		laser_output_estimate[i].current_ma = 0.0f;
+		laser_output_estimate[i].current_ma = 0.0;
 		laser_output_estimate[i].tec_temperature_c =
 			stored.channel[i].properties.operating_temp_c;
 		laser_output_estimate[i].valid = true;
@@ -157,8 +157,8 @@ static void ensure_laser_runtime_settings_locked(void)
 }
 
 static void output_estimate_set_locked(enum hispec_laser_id id,
-				       float current_ma,
-				       float tec_temperature_c)
+				       double current_ma,
+				       double tec_temperature_c)
 {
 	if (id < 0 || id >= HISPEC_LASER_COUNT) {
 		return;
@@ -178,19 +178,19 @@ static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
 	return &laser_settings[id].properties;
 }
 
-static bool float_is_valid(float value)
+static bool float_is_valid(double value)
 {
 	return value == value;
 }
 
-static bool float_is_positive(float value)
+static bool float_is_positive(double value)
 {
-	return float_is_valid(value) && value > 0.0f;
+	return float_is_valid(value) && value > 0.0;
 }
 
-static bool float_is_nonzero(float value)
+static bool float_is_nonzero(double value)
 {
-	return float_is_valid(value) && value != 0.0f;
+	return float_is_valid(value) && value != 0.0;
 }
 
 static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
@@ -218,7 +218,7 @@ static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
 	}
 }
 
-static float on_time_runtime_seconds_locked(const struct on_time_runtime *runtimes,
+static double on_time_runtime_seconds_locked(const struct on_time_runtime *runtimes,
 					    size_t count,
 					    int index)
 {
@@ -235,7 +235,7 @@ static float on_time_runtime_seconds_locked(const struct on_time_runtime *runtim
 		ms += k_uptime_get() - runtime->started_ms;
 	}
 
-	return (float)ms / 1000.0f;
+	return (double)ms / 1000.0;
 }
 
 static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
@@ -257,9 +257,9 @@ static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
 	(void)app_settings_update_laser_total_emitting((uint8_t)id, total, persist);
 }
 
-static float clampf_with_flag(float value, float min_value, float max_value, bool *clamped)
+static double clamp_with_flag(double value, double min_value, double max_value, bool *clamped)
 {
-	float out = value;
+	double out = value;
 
 	if (out < min_value) {
 		out = min_value;
@@ -391,14 +391,14 @@ static int zero_all_driver_currents_locked(bool stop_tecs)
 		maiman_driver_t drv;
 
 		maiman_init(&drv, laser_profiles[i].node_id);
-		if (!maiman_set_current(&drv, 0.0f) || !maiman_stop_device(&drv)) {
+		if (!maiman_set_current(&drv, 0.0) || !maiman_stop_device(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
 		if (stop_tecs && !maiman_stop_tec(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
 		commit_current_runtime_locked((enum hispec_laser_id)i, true);
-		output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
+		output_estimate_set_locked((enum hispec_laser_id)i, 0.0,
 					   laser_output_estimate[i].tec_temperature_c);
 		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
 		if (stop_tecs) {
@@ -613,21 +613,21 @@ out:
 	return rc;
 }
 
-static float level_percent_for_current(const laserprops_t *props, float current_ma)
+static double level_percent_for_current(const laserprops_t *props, double current_ma)
 {
-	float range;
+	double range;
 
 	if (props == NULL || !float_is_valid(current_ma)) {
 		return LASERPROP_NA;
 	}
 	range = props->nominal_current_ma - props->threshold_current_ma;
-	if (range <= 0.0f) {
+	if (range <= 0.0) {
 		return LASERPROP_NA;
 	}
-	if (current_ma <= 0.0f) {
-		return 0.0f;
+	if (current_ma <= 0.0) {
+		return 0.0;
 	}
-	return 100.0f * (current_ma - props->threshold_current_ma) / range;
+	return 100.0 * (current_ma - props->threshold_current_ma) / range;
 }
 
 int hispec_laser_bank_read_temperatures(
@@ -654,7 +654,7 @@ int hispec_laser_bank_read_temperatures(
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		maiman_driver_t drv;
-		float tec_temp = LASERPROP_NA;
+		double tec_temp = LASERPROP_NA;
 		bool tec_started = false;
 		bool temp_ok;
 		bool state_ok;
@@ -739,16 +739,16 @@ int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out)
 static int check_ocp_limit_locked(const struct hispec_laser_driver_profile *profile,
 				  maiman_driver_t *drv)
 {
-	float ocp_ma;
+	double ocp_ma;
 	const laserprops_t *props = runtime_props_locked(profile->id);
 
 	ocp_ma = maiman_get_current_protection_threshold(drv);
-	if (!float_is_valid(ocp_ma) || ocp_ma < 0.0f) {
+	if (!float_is_valid(ocp_ma) || ocp_ma < 0.0) {
 		return -EIO;
 	}
 
 	if (float_is_valid(props->dne_current_ma) && ocp_ma > props->dne_current_ma) {
-		(void)maiman_set_current(drv, 0.0f);
+		(void)maiman_set_current(drv, 0.0);
 		(void)maiman_stop_device(drv);
 		(void)maiman_stop_tec(drv);
 		(void)maiman_allow_interlock(drv);
@@ -841,8 +841,8 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	 * drivers during profile programming so stale pulse-mode register values
 	 * cannot survive a module replacement or manual reconfiguration.
 	 */
-	if (!maiman_set_frequency(drv, 0.0f) ||
-	    !maiman_set_duration(drv, 0.0f)) {
+	if (!maiman_set_frequency(drv, 0.0) ||
+	    !maiman_set_duration(drv, 0.0)) {
 		return -EIO;
 	}
 
@@ -874,7 +874,7 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 
 	/* Put the driver in a non-emitting state before rewriting diode limits. */
 	(void)maiman_allow_interlock(&drv);
-	(void)maiman_set_current(&drv, 0.0f);
+	(void)maiman_set_current(&drv, 0.0);
 	(void)maiman_stop_device(&drv);
 	rc = apply_runtime_profile_locked(profile, &drv);
 	if (rc != 0) {
@@ -1013,7 +1013,7 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->current_on_time_s = LASERPROP_NA;
 	out->tec_on_time_s = LASERPROP_NA;
 	out->total_emitting_s = 0.0;
-	out->tune_delta_nm = 0.0f;
+	out->tune_delta_nm = 0.0;
 	out->autooff_s = 0U;
 	out->off_in_s = 0;
 	out->tec_temperature_set_c = LASERPROP_NA;
@@ -1153,7 +1153,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 		return rc;
 	}
 
-	if (!maiman_set_current(&drv, 0.0f) || !maiman_stop_device(&drv)) {
+	if (!maiman_set_current(&drv, 0.0) || !maiman_stop_device(&drv)) {
 		return -EIO;
 	}
 	if (stop_tec && !maiman_stop_tec(&drv)) {
@@ -1161,7 +1161,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	}
 
 	commit_current_runtime_locked(profile->id, true);
-	output_estimate_set_locked(profile->id, 0.0f,
+	output_estimate_set_locked(profile->id, 0.0,
 				   laser_output_estimate[profile->id].tec_temperature_c);
 	laser_autooff_deadline_ms[profile->id] = LASER_AUTOFF_NO_DEADLINE;
 	if (stop_tec) {
@@ -1203,7 +1203,7 @@ int hispec_laser_stop_all_outputs(bool stop_tecs)
 	return rc;
 }
 
-int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma)
+int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
@@ -1218,13 +1218,13 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma)
 	props = runtime_props_locked(id);
 	k_mutex_unlock(&laser_lock);
 
-	if (!float_is_valid(current_ma) || current_ma < 0.0f ||
+	if (!float_is_valid(current_ma) || current_ma < 0.0 ||
 	    current_ma > props->max_current_ma) {
 		return -ERANGE;
 	}
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
-	if (current_ma == 0.0f) {
+	if (current_ma == 0.0) {
 		rc = stop_output_locked(profile, false);
 		goto out;
 	}
@@ -1249,17 +1249,17 @@ out:
 	return rc;
 }
 
-int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw)
+int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw)
 {
 	const laserprops_t *props = hispec_laser_properties(id);
-	float current_ma;
+	double current_ma;
 
-	if (props == NULL || !float_is_valid(power_mw) || power_mw < 0.0f) {
+	if (props == NULL || !float_is_valid(power_mw) || power_mw < 0.0) {
 		return -EINVAL;
 	}
 
-	if (power_mw == 0.0f) {
-		return hispec_laser_set_current_ma(id, 0.0f);
+	if (power_mw == 0.0) {
+		return hispec_laser_set_current_ma(id, 0.0);
 	}
 	if (!float_is_positive(props->efficiency_mw_per_ma)) {
 		return -EINVAL;
@@ -1273,18 +1273,18 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw)
 	return hispec_laser_set_current_ma(id, current_ma);
 }
 
-int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
+int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent)
 {
 	const laserprops_t *props = hispec_laser_properties(id);
-	float current_range_ma;
-	float current_ma;
+	double current_range_ma;
+	double current_ma;
 
-	if (props == NULL || !float_is_valid(percent) || percent < 0.0f || percent > 100.0f) {
+	if (props == NULL || !float_is_valid(percent) || percent < 0.0 || percent > 100.0) {
 		return -ERANGE;
 	}
 
-	if (percent == 0.0f) {
-		return hispec_laser_set_current_ma(id, 0.0f);
+	if (percent == 0.0) {
+		return hispec_laser_set_current_ma(id, 0.0);
 	}
 
 	current_range_ma = props->nominal_current_ma - props->threshold_current_ma;
@@ -1292,7 +1292,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
 		return -EINVAL;
 	}
 
-	current_ma = props->threshold_current_ma + current_range_ma * (percent / 100.0f);
+	current_ma = props->threshold_current_ma + current_range_ma * (percent / 100.0);
 	if (current_ma > props->max_current_ma) {
 		current_ma = props->max_current_ma;
 	}
@@ -1301,7 +1301,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
 }
 
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
-					    float percent,
+					    double percent,
 					    uint32_t autooff_s)
 {
 	struct app_laser_channel_settings settings;
@@ -1318,13 +1318,13 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	props = &laser_settings[id].properties;
 	k_mutex_unlock(&laser_lock);
 
-	if (percent > 0.0f && settings.tune_delta_nm != 0.0f) {
+	if (percent > 0.0 && settings.tune_delta_nm != 0.0) {
 		struct hispec_laser_tune_request request = {
 			.desired_power_percent = percent,
 			.wavelength_nm = props->wavelength_nm + settings.tune_delta_nm,
 			.use_current = true,
 			.use_temperature = true,
-			.maximum_power_shift_percent = 100.0f,
+			.maximum_power_shift_percent = 100.0,
 			.apply = true,
 		};
 		struct hispec_laser_tune_result result = {0};
@@ -1336,7 +1336,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 
 	if (rc == 0) {
 		k_mutex_lock(&laser_lock, K_FOREVER);
-		if (percent > 0.0f) {
+		if (percent > 0.0) {
 			laser_autooff_deadline_ms[id] =
 				autooff_s == 0U ? LASER_AUTOFF_NO_DEADLINE :
 				k_uptime_get() + (int64_t)autooff_s * 1000LL;
@@ -1350,7 +1350,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	return rc;
 }
 
-int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c)
+int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperature_c)
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
@@ -1428,32 +1428,32 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->tec_max_current_a) ||
 	    !float_is_valid(props->dlambda_dT_nm_per_k) ||
 	    !float_is_valid(props->dlambda_dA_nm_per_ma) ||
-	    props->threshold_current_ma < 0.0f ||
-	    props->threshold_current_ma > 1000.0f ||
+	    props->threshold_current_ma < 0.0 ||
+	    props->threshold_current_ma > 1000.0 ||
 	    props->nominal_current_ma <= props->threshold_current_ma ||
-	    props->nominal_current_ma > 1000.0f ||
+	    props->nominal_current_ma > 1000.0 ||
 	    props->max_current_ma < props->nominal_current_ma ||
-	    props->max_current_ma > 1000.0f ||
-	    props->efficiency_mw_per_ma < 0.0f ||
-	    props->efficiency_mw_per_ma > 100.0f ||
-	    props->wavelength_nm < 1.0f ||
-	    props->wavelength_nm > 10000.0f ||
-	    settings->current_set_calibration_pct < 95.0f ||
-	    settings->current_set_calibration_pct > 105.0f ||
-	    props->tec_max_current_a <= 0.0f ||
+	    props->max_current_ma > 1000.0 ||
+	    props->efficiency_mw_per_ma < 0.0 ||
+	    props->efficiency_mw_per_ma > 100.0 ||
+	    props->wavelength_nm < 1.0 ||
+	    props->wavelength_nm > 10000.0 ||
+	    settings->current_set_calibration_pct < 95.0 ||
+	    settings->current_set_calibration_pct > 105.0 ||
+	    props->tec_max_current_a <= 0.0 ||
 	    props->tec_max_current_a > profile->properties->tec_max_current_a ||
-	    props->dlambda_dT_nm_per_k < -10.0f ||
-	    props->dlambda_dT_nm_per_k > 10.0f ||
-	    props->dlambda_dA_nm_per_ma < -10.0f ||
-	    props->dlambda_dA_nm_per_ma > 10.0f) {
+	    props->dlambda_dT_nm_per_k < -10.0 ||
+	    props->dlambda_dT_nm_per_k > 10.0 ||
+	    props->dlambda_dA_nm_per_ma < -10.0 ||
+	    props->dlambda_dA_nm_per_ma > 10.0) {
 		return -ERANGE;
 	}
 
 	if (!float_is_valid(props->operating_temp_range_c.min_c) ||
 	    !float_is_valid(props->operating_temp_range_c.max_c) ||
 	    !float_is_valid(props->operating_temp_c) ||
-	    props->operating_temp_range_c.min_c < 15.0f ||
-	    props->operating_temp_range_c.max_c > 40.0f ||
+	    props->operating_temp_range_c.min_c < 15.0 ||
+	    props->operating_temp_range_c.max_c > 40.0 ||
 	    props->operating_temp_range_c.min_c > props->operating_temp_range_c.max_c ||
 	    props->operating_temp_c < props->operating_temp_range_c.min_c ||
 	    props->operating_temp_c > props->operating_temp_range_c.max_c) {
@@ -1577,7 +1577,7 @@ out_unlock:
 	return rc;
 }
 
-int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
+int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist)
 {
 	struct app_laser_channel_settings settings;
@@ -1594,9 +1594,9 @@ int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
 	return hispec_laser_update_channel_settings(id, &settings, persist);
 }
 
-float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
+double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
 {
-	float value = LASERPROP_NA;
+	double value = LASERPROP_NA;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	ensure_laser_runtime_settings_locked();
@@ -1636,9 +1636,9 @@ static void laser_autooff_work_handler(struct k_work *work)
 	laser_autooff_reschedule();
 }
 
-float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma)
+double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma)
 {
-	float power_mw;
+	double power_mw;
 
 	if (properties == NULL || !float_is_valid(current_ma) ||
 	    !float_is_positive(properties->efficiency_mw_per_ma)) {
@@ -1647,17 +1647,17 @@ float hispec_laser_estimate_power_mw(const laserprops_t *properties, float curre
 
 	power_mw = (current_ma - properties->threshold_current_ma) *
 		   properties->efficiency_mw_per_ma;
-	return (power_mw > 0.0f) ? power_mw : 0.0f;
+	return (power_mw > 0.0) ? power_mw : 0.0;
 }
 
 int laser_estimate_flux(enum hispec_laser_id id,
-			float fractional_noise,
-			float constant_noise_mw,
+			double fractional_noise,
+			double constant_noise_mw,
 			struct hispec_laser_flux_estimate *out)
 {
 	laserprops_t properties;
-	float current_ma;
-	float tec_temperature_c;
+	double current_ma;
+	double tec_temperature_c;
 	double power_mw;
 	double power_w;
 	double photon_j;
@@ -1683,9 +1683,9 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	    !float_is_valid(tec_temperature_c) ||
 	    !float_is_valid(fractional_noise) ||
 	    !float_is_valid(constant_noise_mw) ||
-	    fractional_noise < 0.0f || constant_noise_mw < 0.0f ||
+	    fractional_noise < 0.0 || constant_noise_mw < 0.0 ||
 	    !float_is_valid(properties.wavelength_nm) ||
-	    properties.wavelength_nm <= 0.0f) {
+	    properties.wavelength_nm <= 0.0) {
 		return -EINVAL;
 	}
 
@@ -1713,9 +1713,9 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	return 0;
 }
 
-float hispec_laser_current_on_time_s(enum hispec_laser_id id)
+double hispec_laser_current_on_time_s(enum hispec_laser_id id)
 {
-	float value;
+	double value;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	value = on_time_runtime_seconds_locked(laser_current_runtime,
@@ -1725,12 +1725,12 @@ float hispec_laser_current_on_time_s(enum hispec_laser_id id)
 	return value;
 }
 
-float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
-					  float tec_temperature_c,
-					  float current_ma)
+double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
+					  double tec_temperature_c,
+					  double current_ma)
 {
-	float delta_i_ma;
-	float delta_t_c;
+	double delta_i_ma;
+	double delta_t_c;
 
 	if (properties == NULL || !float_is_valid(tec_temperature_c) ||
 	    !float_is_valid(current_ma) ||
@@ -1739,7 +1739,7 @@ float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
 		return LASERPROP_NA;
 	}
 
-	if (current_ma == 0.0f) {
+	if (current_ma == 0.0) {
 		return properties->wavelength_nm;
 	}
 
@@ -1756,20 +1756,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
-	float brightness;
-	float current_range_ma;
-	float desired_i_ma;
-	float initial_wavelength_nm;
-	float delta_lambda_nm;
-	float target_temp_c;
-	float delta_from_temp_nm;
-	float delta_remaining_nm;
-	float delta_i_ma;
-	float allowed_delta_i_ma;
-	float target_current_ma;
-	float delta_from_current_nm;
-	float estimated_wavelength_nm;
-	float estimated_power_mw;
+	double brightness;
+	double current_range_ma;
+	double desired_i_ma;
+	double initial_wavelength_nm;
+	double delta_lambda_nm;
+	double target_temp_c;
+	double delta_from_temp_nm;
+	double delta_remaining_nm;
+	double delta_i_ma;
+	double allowed_delta_i_ma;
+	double target_current_ma;
+	double delta_from_current_nm;
+	double estimated_wavelength_nm;
+	double estimated_power_mw;
 	bool temp_clamped = false;
 	bool current_clamped = false;
 	int rc;
@@ -1792,20 +1792,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (!float_is_valid(request->desired_power_percent) ||
 	    !float_is_valid(request->wavelength_nm) ||
 	    !float_is_valid(request->maximum_power_shift_percent) ||
-	    request->desired_power_percent < 0.0f ||
-	    request->desired_power_percent > 100.0f ||
-	    request->maximum_power_shift_percent < 0.0f) {
+	    request->desired_power_percent < 0.0 ||
+	    request->desired_power_percent > 100.0 ||
+	    request->maximum_power_shift_percent < 0.0) {
 		return -ERANGE;
 	}
 
-	if (request->desired_power_percent == 0.0f) {
-		result->target_current_ma = 0.0f;
+	if (request->desired_power_percent == 0.0) {
+		result->target_current_ma = 0.0;
 		result->target_temperature_c = props->operating_temp_c;
-		result->estimated_power_mw = 0.0f;
+		result->estimated_power_mw = 0.0;
 		result->estimated_wavelength_nm = props->wavelength_nm;
 		result->wavelength_error_nm = request->wavelength_nm - props->wavelength_nm;
 		if (request->apply) {
-			return hispec_laser_set_current_ma(id, 0.0f);
+			return hispec_laser_set_current_ma(id, 0.0);
 		}
 		return 0;
 	}
@@ -1820,9 +1820,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	brightness = request->desired_power_percent / 100.0f;
+	brightness = request->desired_power_percent / 100.0;
 	desired_i_ma = props->threshold_current_ma + current_range_ma * brightness;
-	desired_i_ma = clampf_with_flag(desired_i_ma, props->threshold_current_ma,
+	desired_i_ma = clamp_with_flag(desired_i_ma, props->threshold_current_ma,
 					props->max_current_ma, &current_clamped);
 
 	initial_wavelength_nm =
@@ -1833,7 +1833,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (request->use_temperature) {
 		target_temp_c = props->operating_temp_c +
 				delta_lambda_nm / props->dlambda_dT_nm_per_k;
-		target_temp_c = clampf_with_flag(target_temp_c,
+		target_temp_c = clamp_with_flag(target_temp_c,
 						 props->operating_temp_range_c.min_c,
 						 props->operating_temp_range_c.max_c,
 						 &temp_clamped);
@@ -1842,14 +1842,14 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			(target_temp_c - props->operating_temp_c);
 	} else {
 		target_temp_c = props->operating_temp_c;
-		delta_from_temp_nm = 0.0f;
+		delta_from_temp_nm = 0.0;
 	}
 
 	delta_remaining_nm = delta_lambda_nm - delta_from_temp_nm;
 	if (request->use_current) {
 		delta_i_ma = delta_remaining_nm / props->dlambda_dA_nm_per_ma;
 		allowed_delta_i_ma =
-			(request->maximum_power_shift_percent / 100.0f) * current_range_ma;
+			(request->maximum_power_shift_percent / 100.0) * current_range_ma;
 		if (delta_i_ma > allowed_delta_i_ma) {
 			delta_i_ma = allowed_delta_i_ma;
 			current_clamped = true;
@@ -1859,7 +1859,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			current_clamped = true;
 		}
 		target_current_ma = desired_i_ma + delta_i_ma;
-		target_current_ma = clampf_with_flag(target_current_ma,
+		target_current_ma = clamp_with_flag(target_current_ma,
 						    props->threshold_current_ma,
 						    props->max_current_ma,
 						    &current_clamped);

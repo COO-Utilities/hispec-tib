@@ -25,7 +25,7 @@ struct laserbank_tempcontrol_status {
 	bool bank_powered;
 	bool heater_on;
 	bool ambient_valid;
-	float ambient_c;
+	double ambient_c;
 	uint32_t ambient_age_ms;
 	uint8_t valid_temp_count;
 	uint8_t stale_temp_count;

@@ -110,10 +110,10 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	struct app_photodiode_settings settings;
 	char action_text[32] = {0};
 	int action_value;
-	float yj_value;
-	float hk_value;
-	float yj_err;
-	float hk_err;
+	double yj_value;
+	double hk_value;
+	double yj_err;
+	double hk_err;
 	int parse_rc;
 	enum photodiode_channel channel;
 
@@ -149,10 +149,10 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
 	hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
-	yj_err = (float)photodiode_power_uw_from_mv(
+	yj_err = (double)photodiode_power_uw_from_mv(
 		status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
 		&settings.channel[PHOTODIODE_CHANNEL_YJ]);
-	hk_err = (float)photodiode_power_uw_from_mv(
+	hk_err = (double)photodiode_power_uw_from_mv(
 		status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
 		&settings.channel[PHOTODIODE_CHANNEL_HK]);
 
@@ -221,7 +221,7 @@ static int pd_average_status_response(const struct coo_cmd_request *cmd,
 		    coo_json_append_float_or_null(payload, sizeof(payload), &off,
 						  channel_settings->lowest_dark_valid ?
 							  channel_settings->lowest_dark_mv :
-							  NAN,
+							  (double)NAN,
 						  3) != 0 ||
 		    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
 			return coo_cmd_error(out, cmd, "dark status response too large");
@@ -364,7 +364,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"lowest_stored_dark_mv\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  ch->lowest_dark_valid ? ch->lowest_dark_mv : NAN,
+					  ch->lowest_dark_valid ? ch->lowest_dark_mv : (double)NAN,
 					  3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"noise_rms_mV\":%.3f,"
@@ -424,12 +424,12 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 		return coo_cmd_error(out, cmd, "invalid persistent");
 	}
 
-	if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
+	if (coo_json_extract_optional_double_range(cmd->payload, "dark_mv",
 						  &channel_settings.dark_mv,
 						  &dark_changed,
 						  PHOTODIODE_DARK_MIN_MV,
 						  PHOTODIODE_DARK_MAX_MV) != 0 ||
-	    coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
+	    coo_json_extract_optional_double_range(cmd->payload, "noise_rms_mV",
 						  &channel_settings.noise_warn_rms_mv,
 						  &changed,
 						  PHOTODIODE_NOISE_RMS_MIN_MV,

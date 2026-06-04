@@ -179,29 +179,6 @@ int coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
 	return rc;
 }
 
-int coo_json_extract_float(const char *json, const char *key, float *value)
-{
-	struct json_float_field {
-		float value;
-	} parsed = { 0 };
-	int rc;
-
-	if (value == NULL) {
-		return COO_JSON_EXTRACT_ERR;
-	}
-
-	rc = find_json_key_value(json, key,
-				 JSON_TOK_FLOAT_FP,
-				 &parsed,
-				 sizeof(parsed.value),
-				 offsetof(struct json_float_field, value),
-				 Z_ALIGN_SHIFT(struct json_float_field));
-	if (rc == COO_JSON_EXTRACT_OK) {
-		*value = parsed.value;
-	}
-	return rc;
-}
-
 int coo_json_extract_double(const char *json, const char *key, double *value)
 {
 	struct json_double_field {
@@ -269,31 +246,6 @@ int coo_json_extract_double_array(const char *json, const char *key,
 	memcpy(values, parsed.values, parsed.values_len * sizeof(values[0]));
 	*parsed_len = parsed.values_len;
 	return COO_JSON_EXTRACT_OK;
-}
-
-int coo_json_extract_optional_float_range(const char *json, const char *key,
-					  float *value, bool *changed,
-					  float min_value, float max_value)
-{
-	float parsed;
-	int rc;
-
-	if (value == NULL || changed == NULL || !(min_value <= max_value)) {
-		return -EINVAL;
-	}
-
-	rc = coo_json_extract_float(json, key, &parsed);
-	if (rc == COO_JSON_EXTRACT_MISSING) {
-		return 0;
-	}
-	if (rc == COO_JSON_EXTRACT_ERR ||
-	    !(parsed >= min_value && parsed <= max_value)) {
-		return -EINVAL;
-	}
-
-	*value = parsed;
-	*changed = true;
-	return 0;
 }
 
 int coo_json_extract_optional_bool(const char *json, const char *key,

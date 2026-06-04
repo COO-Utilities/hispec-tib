@@ -371,13 +371,13 @@ static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *
                                                   const struct coo_cmd_spec *spec,
                                                   void *user_data)
 {
-    float fval;
+    double fval;
 
     ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           coo_json_extract_float(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
+           coo_json_extract_double(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -385,14 +385,14 @@ static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *c
                                                  const struct coo_cmd_spec *spec,
                                                  void *user_data)
 {
-    float fval;
+    double fval;
 
     ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           (coo_json_extract_float(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
-            coo_json_extract_float(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING) ?
+           (coo_json_extract_double(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
+            coo_json_extract_double(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING) ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -1118,7 +1118,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                         router.num_switches,
                         devices_relay_gpio_last_error()) != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                      ts.valid ? ts.ambient_c : NAN, 3) != 0 ||
+                                      ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
                         ",\"pd_ontime\":%.1f,"
                         "\"laserbank_ontime\":%u",
@@ -1151,7 +1151,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                                 i == 0U ? "" : ",",
                                 hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
                 coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                              rc == 0 ? laser.estimated_power_mw : NAN, 3) != 0 ||
+                                              rc == 0 ? laser.estimated_power_mw : (double)NAN, 3) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off,
                                 ",\"tec_on_time_s\":%.1f,\"offin_s\":%lld}",
                                 rc == 0 ? (double)laser.tec_on_time_s : 0.0,
@@ -1243,7 +1243,7 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"ambient_c\":") != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                      ts.valid ? ts.ambient_c : NAN, 3) != 0) {
+                                      ts.valid ? ts.ambient_c : (double)NAN, 3) != 0) {
         return coo_cmd_error(out, cmd, "temp response too large");
     }
 
@@ -1263,7 +1263,7 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                             hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
             coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                           laser_rc == 0 && channel_temp[i].valid ?
-                                          channel_temp[i].tec_temperature_c : NAN,
+                                          channel_temp[i].tec_temperature_c : (double)NAN,
                                           3) != 0) {
             return coo_cmd_error(out, cmd, "temp response too large");
         }

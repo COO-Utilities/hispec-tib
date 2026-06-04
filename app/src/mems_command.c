@@ -474,9 +474,9 @@ int memsroute_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, buf);
 }
 
-static float split_abs_float(float value)
+static double split_abs_float(double value)
 {
-    return value < 0.0f ? -value : value;
+    return value < 0.0 ? -value : value;
 }
 
 static int split_channel_response(const struct coo_cmd_request *cmd,
@@ -556,9 +556,9 @@ static void split_emit_quantization_warning(uint8_t channel_index,
         return;
     }
 
-    if (split_abs_float(state->output[0] - state->requested[0]) <= 0.0005f &&
-        split_abs_float(state->output[1] - state->requested[1]) <= 0.0005f &&
-        split_abs_float(state->output[2] - state->requested[2]) <= 0.0005f) {
+    if (split_abs_float(state->output[0] - state->requested[0]) <= 0.0005 &&
+        split_abs_float(state->output[1] - state->requested[1]) <= 0.0005 &&
+        split_abs_float(state->output[2] - state->requested[2]) <= 0.0005) {
         return;
     }
 
@@ -631,8 +631,8 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
 {
     struct mems_split_state state = {0};
     uint8_t channel_index;
-    float requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
-    float ratio3_probe = 0.0f;
+    double requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
+    double ratio3_probe = 0.0;
     uint32_t stopafter_s = 0U;
     const char *failed_switch = NULL;
     int parse_rc;
@@ -643,7 +643,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "channel must be yj or hk");
     }
 
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio1", &requested[0]);
+    parse_rc = coo_json_extract_double(cmd->payload, "ratio1", &requested[0]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         return coo_cmd_error(out, cmd, "missing ratio1");
     }
@@ -651,7 +651,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "invalid ratio1");
     }
 
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio2", &requested[1]);
+    parse_rc = coo_json_extract_double(cmd->payload, "ratio2", &requested[1]);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
         return coo_cmd_error(out, cmd, "missing ratio2");
     }
@@ -659,17 +659,17 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "invalid ratio2");
     }
 
-    parse_rc = coo_json_extract_float(cmd->payload, "ratio3", &ratio3_probe);
+    parse_rc = coo_json_extract_double(cmd->payload, "ratio3", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
         return coo_cmd_error(out, cmd, "ratio3 is computed internally");
     }
 
-    if (requested[0] < 0.0f || requested[0] > 1.0f ||
-        requested[1] < 0.0f || requested[1] > 1.0f ||
-        requested[0] + requested[1] > 1.000001f) {
+    if (requested[0] < 0.0 || requested[0] > 1.0 ||
+        requested[1] < 0.0 || requested[1] > 1.0 ||
+        requested[0] + requested[1] > 1.000001) {
         return coo_cmd_error(out, cmd, "ratios must be 0.0-1.0 and sum <= 1.0");
     }
-    requested[2] = 1.0f - requested[0] - requested[1];
+    requested[2] = 1.0 - requested[0] - requested[1];
 
     if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
                                       &stopafter_s, NULL) != 0 ||
@@ -677,7 +677,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "invalid stopafter_s");
     }
 
-    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &ratio3_probe);
+    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &ratio3_probe);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
         return coo_cmd_error(out, cmd, "toggle_rate_hz is automatic");
     }
@@ -925,9 +925,9 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
-    float duty_cycle = 0.0f;
-    float stopafter_s = 0.0f;
-    float toggle_rate_hz = 0.0f;
+    double duty_cycle = 0.0;
+    double stopafter_s = 0.0;
+    double toggle_rate_hz = 0.0;
     uint32_t stopafter_s_u32 = 0U;
     bool has_duty_cycle = false;
     bool has_stopafter_s = false;
@@ -958,27 +958,27 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
     requested_state[0] = (char)state_value;
 
-    parse_rc = coo_json_extract_float(cmd->payload, "duty_cycle", &duty_cycle);
+    parse_rc = coo_json_extract_double(cmd->payload, "duty_cycle", &duty_cycle);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
     has_duty_cycle = (parse_rc == COO_JSON_EXTRACT_OK);
-    if (has_duty_cycle && (duty_cycle < 0.0f || duty_cycle > 1.0f)) {
+    if (has_duty_cycle && (duty_cycle < 0.0 || duty_cycle > 1.0)) {
         return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
 
-    parse_rc = coo_json_extract_float(cmd->payload, "stopafter_s", &stopafter_s);
+    parse_rc = coo_json_extract_double(cmd->payload, "stopafter_s", &stopafter_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return coo_cmd_error(out, cmd, "Invalid stopafter_s");
     }
     has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
 
-    parse_rc = coo_json_extract_float(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
+    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
         return coo_cmd_error(out, cmd, "Invalid toggle_rate_hz");
     }
     has_toggle_rate_hz = (parse_rc == COO_JSON_EXTRACT_OK);
-    if (has_toggle_rate_hz && toggle_rate_hz <= 0.0f) {
+    if (has_toggle_rate_hz && toggle_rate_hz <= 0.0) {
         return coo_cmd_error(out, cmd, "toggle_rate_hz must be > 0");
     }
 
@@ -986,12 +986,12 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "duty_cycle only valid with state A");
     }
     if (has_stopafter_s) {
-        if (stopafter_s < 0.0f ||
-            stopafter_s > (float)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        if (stopafter_s < 0.0 ||
+            stopafter_s > (double)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
             return coo_cmd_error(out, cmd, "stopafter_s out of range");
         }
-        stopafter_s_u32 = (uint32_t)(stopafter_s + 0.5f);
-        if (stopafter_s_u32 == 0U && duty_cycle > 0.0f && duty_cycle < 1.0f) {
+        stopafter_s_u32 = (uint32_t)(stopafter_s + 0.5);
+        if (stopafter_s_u32 == 0U && duty_cycle > 0.0 && duty_cycle < 1.0) {
             return coo_cmd_error(out, cmd, "stopafter_s must be > 0 for toggling");
         }
     }
@@ -1005,10 +1005,10 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
                                    stopafter_s_u32,
-                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0f);
+                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0);
     } else {
-        rc = mems_switch_set_state(sw, requested_state[0], 1.0f, 0U,
-                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0f);
+        rc = mems_switch_set_state(sw, requested_state[0], 1.0, 0U,
+                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0);
     }
 
     if (rc == -ERANGE) {
@@ -1021,14 +1021,14 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (has_toggle_rate_hz) {
         struct mems_switch_status status = {0};
         char context[96];
-        float diff;
+        double diff;
 
         mems_switch_get_status(sw, &status);
         diff = status.toggle_rate_hz - toggle_rate_hz;
-        if (diff < 0.0f) {
+        if (diff < 0.0) {
             diff = -diff;
         }
-        if (diff > 0.001f) {
+        if (diff > 0.001) {
             snprintk(context, sizeof(context),
                      "switch=%s requested=%.3f actual=%.3f",
                      sw->name, (double)toggle_rate_hz,

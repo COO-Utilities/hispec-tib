@@ -187,30 +187,30 @@ static int16_t maiman_to_signed(uint16_t value)
 	return (int16_t)value;
 }
 
-static bool maiman_scaled_to_raw(float value, float divider, bool signed_value, uint16_t *raw)
+static bool maiman_scaled_to_raw(double value, double divider, bool signed_value, uint16_t *raw)
 {
-	float scaled;
+	double scaled;
 	int32_t signed_rounded;
 	uint32_t unsigned_rounded;
 
-	if (raw == NULL || !(divider > 0.0f) || !(value == value)) {
+	if (raw == NULL || !(divider > 0.0) || !(value == value)) {
 		return false;
 	}
 
 	scaled = value * divider;
 	if (signed_value) {
-		if (scaled < -32768.0f || scaled > 32767.0f) {
+		if (scaled < -32768.0 || scaled > 32767.0) {
 			return false;
 		}
-		signed_rounded = (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+		signed_rounded = (int32_t)(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
 		*raw = (uint16_t)((int16_t)signed_rounded);
 		return true;
 	}
 
-	if (scaled < 0.0f || scaled > 65535.0f) {
+	if (scaled < 0.0 || scaled > 65535.0) {
 		return false;
 	}
-	unsigned_rounded = (uint32_t)(scaled + 0.5f);
+	unsigned_rounded = (uint32_t)(scaled + 0.5);
 	if (unsigned_rounded > UINT16_MAX) {
 		return false;
 	}
@@ -218,12 +218,12 @@ static bool maiman_scaled_to_raw(float value, float divider, bool signed_value, 
 	return true;
 }
 
-bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, float divider,
-			bool signed_value, float *value)
+bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, double divider,
+			bool signed_value, double *value)
 {
 	uint16_t raw;
 
-	if (value == NULL || !(divider > 0.0f)) {
+	if (value == NULL || !(divider > 0.0)) {
 		return false;
 	}
 
@@ -231,13 +231,13 @@ bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 		return false;
 	}
 
-	*value = signed_value ? ((float)maiman_to_signed(raw) / divider) :
-				((float)raw / divider);
+	*value = signed_value ? ((double)maiman_to_signed(raw) / divider) :
+				((double)raw / divider);
 	return true;
 }
 
-bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
-			 bool signed_value, float value)
+bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, double divider,
+			 bool signed_value, double value)
 {
 	uint16_t raw;
 
@@ -249,204 +249,204 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
 	return maiman_write_u16(drv, address, raw);
 }
 
-bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value)
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, double *value)
 {
 	return maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MEASURED,
 				  DIVIDER_TEC_TEMPERATURE, true, value);
 }
 
-float maiman_get_tec_temperature_measured(maiman_driver_t *drv)
+double maiman_get_tec_temperature_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_tec_temperature_measured(drv, &value)) {
 		return value;
 	}
-	return -273.15f;
+	return -273.15;
 }
 
-float maiman_get_pcb_temperature_measured(maiman_driver_t *drv)
+double maiman_get_pcb_temperature_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_PCB_TEMPERATURE_MEASURED,
 			       DIVIDER_PCB_TEMPERATURE, true, &value)) {
 		return value;
 	}
-	return -273.15f;
+	return -273.15;
 }
 
-float maiman_get_ntc_temperature_measured(maiman_driver_t *drv)
+double maiman_get_ntc_temperature_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_NTC_TEMPERATURE_MEASURED,
 			       DIVIDER_NTC_TEMPERATURE, true, &value)) {
 		return value;
 	}
-	return -273.15f;
+	return -273.15;
 }
 
-float maiman_get_tec_temperature_value(maiman_driver_t *drv)
+double maiman_get_tec_temperature_value(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_TEC_TEMPERATURE_VALUE,
 			       DIVIDER_TEC_TEMPERATURE, true, &value)) {
 		return value;
 	}
-	return -273.15f;
+	return -273.15;
 }
 
-float maiman_get_current_measured(maiman_driver_t *drv)
+double maiman_get_current_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MEASURED, DIVIDER_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_frequency(maiman_driver_t *drv)
+double maiman_get_frequency(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_duration(maiman_driver_t *drv)
+double maiman_get_duration(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_DURATION, DIVIDER_DURATION, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-bool maiman_get_current(maiman_driver_t *drv, float *value)
+bool maiman_get_current(maiman_driver_t *drv, double *value)
 {
 	return maiman_read_scaled(drv, REG_CURRENT, DIVIDER_CURRENT, false, value);
 }
 
-float maiman_get_voltage_measured(maiman_driver_t *drv)
+double maiman_get_voltage_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_VOLTAGE_MEASURED, DIVIDER_VOLTAGE, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_current_min(maiman_driver_t *drv)
+double maiman_get_current_min(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MIN, DIVIDER_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_current_max(maiman_driver_t *drv)
+double maiman_get_current_max(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MAX, DIVIDER_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_current_max_limit(maiman_driver_t *drv)
+double maiman_get_current_max_limit(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_MAX_LIMIT, DIVIDER_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_current_protection_threshold(maiman_driver_t *drv)
+double maiman_get_current_protection_threshold(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_PROTECTION_THRESHOLD,
 			       DIVIDER_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_current_set_calibration(maiman_driver_t *drv)
+double maiman_get_current_set_calibration(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_CURRENT_SET_CALIBRATION,
 			       DIVIDER_CURRENT_SET_CALIBRATION, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv)
+double maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_NTC_COEFFICIENT,
 			       DIVIDER_NTC_COEFFICIENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_tec_current_measured(maiman_driver_t *drv)
+double maiman_get_tec_current_measured(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_TEC_CURRENT_MEASURED,
 			       DIVIDER_TEC_CURRENT, true, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_tec_current_limit(maiman_driver_t *drv)
+double maiman_get_tec_current_limit(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_TEC_CURRENT_LIMIT,
 			       DIVIDER_TEC_CURRENT, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_tec_current_set_calibration(maiman_driver_t *drv)
+double maiman_get_tec_current_set_calibration(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_TEC_CURRENT_SET_CALIBRATION,
 			       DIVIDER_TEC_CURRENT_SET_CALIBRATION, false, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
-float maiman_get_tec_voltage(maiman_driver_t *drv)
+double maiman_get_tec_voltage(maiman_driver_t *drv)
 {
-	float value;
+	double value;
 
 	if (maiman_read_scaled(drv, REG_TEC_VOLTAGE, DIVIDER_TEC_VOLTAGE, true, &value)) {
 		return value;
 	}
-	return -1.0f;
+	return -1.0;
 }
 
 uint16_t maiman_get_device_id(maiman_driver_t *drv)
@@ -610,40 +610,40 @@ bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv)
 	return maiman_is_lock_bit_set(drv, LOCK_STATE_TEC_SELFHEAT);
 }
 
-bool maiman_set_current(maiman_driver_t *drv, float current)
+bool maiman_set_current(maiman_driver_t *drv, double current)
 {
 	return maiman_write_scaled(drv, REG_CURRENT, DIVIDER_CURRENT, false, current);
 }
 
-bool maiman_set_current_max(maiman_driver_t *drv, float current)
+bool maiman_set_current_max(maiman_driver_t *drv, double current)
 {
 	return maiman_write_scaled(drv, REG_CURRENT_MAX, DIVIDER_CURRENT, false, current);
 }
 
-bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent)
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, double calibration_percent)
 {
 	return maiman_write_scaled(drv, REG_CURRENT_SET_CALIBRATION,
 				   DIVIDER_CURRENT_SET_CALIBRATION, false,
 				   calibration_percent);
 }
 
-bool maiman_set_frequency(maiman_driver_t *drv, float frequency)
+bool maiman_set_frequency(maiman_driver_t *drv, double frequency)
 {
 	return maiman_write_scaled(drv, REG_FREQUENCY, DIVIDER_FREQUENCY, false, frequency);
 }
 
-bool maiman_set_duration(maiman_driver_t *drv, float duration)
+bool maiman_set_duration(maiman_driver_t *drv, double duration)
 {
 	return maiman_write_scaled(drv, REG_DURATION, DIVIDER_DURATION, false, duration);
 }
 
-bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c)
+bool maiman_set_tec_temperature(maiman_driver_t *drv, double temperature_c)
 {
 	return maiman_write_scaled(drv, REG_TEC_TEMPERATURE_VALUE,
 				   DIVIDER_TEC_TEMPERATURE, true, temperature_c);
 }
 
-bool maiman_set_tec_current_limit(maiman_driver_t *drv, float current_a)
+bool maiman_set_tec_current_limit(maiman_driver_t *drv, double current_a)
 {
 	return maiman_write_scaled(drv, REG_TEC_CURRENT_LIMIT,
 				   DIVIDER_TEC_CURRENT, false, current_a);

@@ -72,7 +72,7 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
  */
 #define PD_ADC_UV_PER_COUNT_NUM 1875
 #define PD_ADC_UV_PER_COUNT_DEN 10
-#define PD_NOISE_ALPHA 0.02f
+#define PD_NOISE_ALPHA 0.02
 #define PD_HARDWARE_LOG_RATELIMIT_MS 10000U
 #define PD_TIMING_STATS_INTERVAL_MS 10000U
 #define PD_ADS1115_WAKE_US 25U
@@ -116,23 +116,22 @@ struct photodiode_runtime_channel {
     bool valid;
     int last_error;
     int16_t raw;
-    float mv;
-    float net_mv;
-    float power_uw;
-    float smooth_mv;
-    float noise_var_mv2;
-    float noise_rms_mv;
-    float mean_window_mv[PD_MEAN_WINDOW_SAMPLES];
-    float mean_sum_mv;
+    double mv;
+    double net_mv;
+    double power_uw;
+    double smooth_mv;
+    double noise_var_mv2;
+    double noise_rms_mv;
+    double mean_window_mv[PD_MEAN_WINDOW_SAMPLES];
+    double mean_sum_mv;
     uint8_t mean_index;
     uint8_t mean_count;
-    float rms_window_mv[PD_RMS_WINDOW_SAMPLES];
-    float rms_sum_mv;
-    float rms_sum_sq_mv2;
+    double rms_window_mv[PD_RMS_WINDOW_SAMPLES];
+    double rms_sum_mv;
     uint8_t rms_index;
     uint8_t rms_count;
-    float mean_mv_1s;
-    float rms_mv_0p5s;
+    double mean_mv_1s;
+    double rms_mv_0p5s;
     uint32_t sample_count;
     int64_t updated_ms;
     int64_t next_noise_warning_ms;
@@ -148,11 +147,12 @@ struct photodiode_average_request {
     enum photodiode_average_state state;
     enum photodiode_average_owner owner;
     bool store_dark;
-    float sum_mv;
-    float sum_net_mv;
-    float sum_sq_mv2;
-    float min_mv;
-    float max_mv;
+    double sum_mv;
+    double sum_net_mv;
+    double rms_mean_mv;
+    double rms_m2_mv2;
+    double min_mv;
+    double max_mv;
     int16_t max_raw;
     int last_error;
     struct photodiode_average_result result;
@@ -597,11 +597,14 @@ static void pd_average_finish_dark_locked(enum photodiode_channel channel,
 }
 
 static void pd_average_sample_locked(enum photodiode_channel channel,
-                                     int rc, int16_t raw, float mv, float net_mv)
+                                     int rc, int16_t raw, double mv, double net_mv)
 {
     struct photodiode_average_request *avg = &pd_average[channel];
-    float mean;
-    float variance;
+    uint32_t count;
+    double delta;
+    double delta2;
+    double mean;
+    double variance;
 
     if (avg->state != PHOTODIODE_AVERAGE_MEASURING ||
         avg->result.samples >= avg->result.target_samples) {
@@ -632,23 +635,27 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
 
     avg->sum_mv += mv;
     avg->sum_net_mv += net_mv;
-    avg->sum_sq_mv2 += mv * mv;
     avg->result.samples++;
+    count = avg->result.samples;
+    delta = mv - avg->rms_mean_mv;
+    avg->rms_mean_mv += delta / (double)count;
+    delta2 = mv - avg->rms_mean_mv;
+    avg->rms_m2_mv2 += delta * delta2;
 
     if (avg->result.samples < avg->result.target_samples) {
         return;
     }
 
-    mean = avg->sum_mv / (float)avg->result.samples;
-    variance = (avg->sum_sq_mv2 / (float)avg->result.samples) - (mean * mean);
-    if (variance < 0.0f) {
-        variance = 0.0f;
+    mean = avg->sum_mv / (double)avg->result.samples;
+    variance = avg->rms_m2_mv2 / (double)avg->result.samples;
+    if (variance < 0.0) {
+        variance = 0.0;
     }
 
     avg->result.channel = channel;
     avg->result.mean_mv = mean;
-    avg->result.mean_net_mv = avg->sum_net_mv / (float)avg->result.samples;
-    avg->result.rms_mv = sqrtf(variance);
+    avg->result.mean_net_mv = avg->sum_net_mv / (double)avg->result.samples;
+    avg->result.rms_mv = sqrt(variance);
     avg->result.min_mv = avg->min_mv;
     avg->result.max_mv = avg->max_mv;
     avg->result.max_raw = avg->max_raw;
@@ -657,11 +664,28 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
     avg->state = PHOTODIODE_AVERAGE_COMPLETE;
 }
 
-static void pd_window_update(float mv, struct photodiode_runtime_channel *snapshot)
+static double pd_window_rms_mv(const struct photodiode_runtime_channel *snapshot)
 {
-    float old_mv;
-    float mean;
-    float variance;
+    double mean;
+    double m2 = 0.0;
+
+    if (snapshot == NULL || snapshot->rms_count == 0U) {
+        return 0.0;
+    }
+
+    mean = snapshot->rms_sum_mv / (double)snapshot->rms_count;
+    for (uint8_t i = 0U; i < snapshot->rms_count; ++i) {
+        double delta = snapshot->rms_window_mv[i] - mean;
+
+        m2 += delta * delta;
+    }
+
+    return sqrt(m2 / (double)snapshot->rms_count);
+}
+
+static void pd_window_update(double mv, struct photodiode_runtime_channel *snapshot)
+{
+    double old_mv;
 
     if (snapshot->mean_count < PD_MEAN_WINDOW_SAMPLES) {
         snapshot->mean_count++;
@@ -671,62 +695,55 @@ static void pd_window_update(float mv, struct photodiode_runtime_channel *snapsh
     snapshot->mean_window_mv[snapshot->mean_index] = mv;
     snapshot->mean_sum_mv += mv;
     snapshot->mean_index = (snapshot->mean_index + 1U) % PD_MEAN_WINDOW_SAMPLES;
-    snapshot->mean_mv_1s = snapshot->mean_sum_mv / (float)snapshot->mean_count;
+    snapshot->mean_mv_1s = snapshot->mean_sum_mv / (double)snapshot->mean_count;
 
     if (snapshot->rms_count < PD_RMS_WINDOW_SAMPLES) {
         snapshot->rms_count++;
     } else {
         old_mv = snapshot->rms_window_mv[snapshot->rms_index];
         snapshot->rms_sum_mv -= old_mv;
-        snapshot->rms_sum_sq_mv2 -= old_mv * old_mv;
     }
     snapshot->rms_window_mv[snapshot->rms_index] = mv;
     snapshot->rms_sum_mv += mv;
-    snapshot->rms_sum_sq_mv2 += mv * mv;
     snapshot->rms_index = (snapshot->rms_index + 1U) % PD_RMS_WINDOW_SAMPLES;
 
-    mean = snapshot->rms_sum_mv / (float)snapshot->rms_count;
-    variance = (snapshot->rms_sum_sq_mv2 / (float)snapshot->rms_count) - (mean * mean);
-    if (variance < 0.0f) {
-        variance = 0.0f;
-    }
-    snapshot->rms_mv_0p5s = sqrtf(variance);
+    snapshot->rms_mv_0p5s = pd_window_rms_mv(snapshot);
 }
 
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
                               const struct app_pd_channel_settings *settings)
 {
     struct photodiode_runtime_channel snapshot;
-    float mv = 0.0f;
-    float residual = 0.0f;
-    float noise_rms = 0.0f;
+    double mv = 0.0;
+    double residual = 0.0;
+    double noise_rms = 0.0;
     int64_t now = k_uptime_get();
 
     k_mutex_lock(&pd_runtime_lock, K_FOREVER);
     snapshot = pd_runtime[channel];
 
     if (rc == 0) {
-        mv = ((float)raw * (float)PD_ADC_UV_PER_COUNT_NUM) /
-           ((float)PD_ADC_UV_PER_COUNT_DEN * 1000.0f);
+        mv = ((double)raw * (double)PD_ADC_UV_PER_COUNT_NUM) /
+           ((double)PD_ADC_UV_PER_COUNT_DEN * 1000.0);
         if (snapshot.sample_count == 0U) {
             snapshot.smooth_mv = mv;
-            snapshot.noise_var_mv2 = 0.0f;
+            snapshot.noise_var_mv2 = 0.0;
         } else {
             residual = mv - snapshot.smooth_mv;
             snapshot.smooth_mv += PD_NOISE_ALPHA * residual;
             snapshot.noise_var_mv2 += PD_NOISE_ALPHA *
                                        ((residual * residual) - snapshot.noise_var_mv2);
-            if (snapshot.noise_var_mv2 < 0.0f) {
-                snapshot.noise_var_mv2 = 0.0f;
+            if (snapshot.noise_var_mv2 < 0.0) {
+                snapshot.noise_var_mv2 = 0.0;
             }
         }
-        noise_rms = sqrtf(snapshot.noise_var_mv2);
+        noise_rms = sqrt(snapshot.noise_var_mv2);
 
         snapshot.valid = true;
         snapshot.raw = raw;
         snapshot.mv = mv;
         snapshot.net_mv = mv - settings->dark_mv;
-        snapshot.power_uw = (float)photodiode_power_uw_from_mv(snapshot.net_mv, settings);
+        snapshot.power_uw = (double)photodiode_power_uw_from_mv(snapshot.net_mv, settings);
         snapshot.noise_rms_mv = noise_rms;
         pd_window_update(mv, &snapshot);
         snapshot.sample_count++;
@@ -740,7 +757,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
     pd_average_sample_locked(channel, rc, raw, mv, snapshot.net_mv);
     k_mutex_unlock(&pd_runtime_lock);
 
-    if (rc == 0 && settings->noise_warn_rms_mv > 0.0f &&
+    if (rc == 0 && settings->noise_warn_rms_mv > 0.0 &&
         noise_rms > settings->noise_warn_rms_mv &&
         now >= snapshot.next_noise_warning_ms) {
         char context[128];

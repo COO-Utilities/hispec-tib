@@ -38,7 +38,7 @@ BUILD_ASSERT((int)HOUSEKEEPING_POWER_YJ_PHOTODIODE == (int)PHOTODIODE_CHANNEL_YJ
 BUILD_ASSERT((int)HOUSEKEEPING_POWER_HK_PHOTODIODE == (int)PHOTODIODE_CHANNEL_HK,
 	     "HK photodiode relay index must match photodiode channel");
 BUILD_ASSERT(IS_ENABLED(CONFIG_LITTLE_ENDIAN),
-	     "throughput binary telemetry uses little-endian float layout");
+	     "throughput binary telemetry uses little-endian double layout");
 
 struct laser_pd_channel {
 	enum hispec_laser_id laser;
@@ -54,7 +54,7 @@ struct throughput_state {
 	enum photodiode_channel channel;
 	uint8_t attenuator_index;
 	char fiber;
-	float level_percent;
+	double level_percent;
 	int64_t started_ms;
 	uint32_t stopafter_s;
 	double max_flux_ph_s;
@@ -153,12 +153,6 @@ static void put_i16(uint8_t *payload, size_t payload_len, size_t *offset, int16_
 	put_bytes(payload, payload_len, offset, encoded, sizeof(encoded));
 }
 
-static void put_f32(uint8_t *payload, size_t payload_len, size_t *offset, float value)
-{
-	/* STM32 binary telemetry is specified as little-endian IEEE-754. */
-	put_bytes(payload, payload_len, offset, &value, sizeof(value));
-}
-
 static void put_f64(uint8_t *payload, size_t payload_len, size_t *offset, double value)
 {
 	/* STM32 binary telemetry is specified as little-endian IEEE-754. */
@@ -176,7 +170,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	double emitted_flux = 0.0;
 	double max_tx = 1.0;
 	double next_tx;
-	float next_percent;
+	double next_percent;
 	int rc;
 
 	if (pd->raw > INT16_MAX - 1024 || mean_net_mv <= 0.0) {
@@ -198,7 +192,7 @@ static int autolevel_adjust(struct throughput_state *state,
 
 	if (low || state->low_count >= TP_INSTANT_BAD_SAMPLES) {
 		if (state->max_flux_ph_s > 0.0 &&
-		    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) == 0 &&
+		    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0 &&
 		    laser_flux.flux_ph_s > 0.0) {
 			emitted_flux = laser_flux.flux_ph_s * atten->linear;
 			max_tx = state->max_flux_ph_s / laser_flux.flux_ph_s;
@@ -219,13 +213,13 @@ static int autolevel_adjust(struct throughput_state *state,
 				return 0;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->level_percent < 100.0f) {
-			next_percent = state->level_percent * 3.0f;
-			if (next_percent > 100.0f) {
-				next_percent = 100.0f;
+		} else if (state->level_percent < 100.0) {
+			next_percent = state->level_percent * 3.0;
+			if (next_percent > 100.0) {
+				next_percent = 100.0;
 			}
 			if (state->max_flux_ph_s > 0.0 && emitted_flux > 0.0) {
-				float capped = (float)((double)state->level_percent *
+				double capped = (double)((double)state->level_percent *
 						       state->max_flux_ph_s / emitted_flux);
 
 				if (capped < next_percent) {
@@ -253,10 +247,10 @@ static int autolevel_adjust(struct throughput_state *state,
 				next_tx = TP_MIN_ATTEN_TX;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->level_percent > 0.0f) {
-			next_percent = state->level_percent / 3.0f;
-			if (next_percent < 0.0f) {
-				next_percent = 0.0f;
+		} else if (state->level_percent > 0.0) {
+			next_percent = state->level_percent / 3.0;
+			if (next_percent < 0.0) {
+				next_percent = 0.0;
 			}
 			rc = hispec_laser_set_output_percent_autooff(state->laser,
 								     next_percent, 0U);
@@ -312,7 +306,7 @@ static void publish_sample(const struct throughput_state *state,
 	if (state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &atten) &&
-	    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) == 0) {
+	    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0) {
 		route_name_for_laser(laser_route, sizeof(laser_route), laser_name, state->fiber);
 		(void)app_settings_get_route_loss(pd_route, laser_name, &pd_route_tx);
 		(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx);
@@ -363,20 +357,20 @@ static void publish_sample(const struct throughput_state *state,
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, laser_route_tx);
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, atten.linear);
 		put_i16((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->raw);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mv);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_flux.current_ma);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)atten.attenuation_db);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_flux.wavelength_nm);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)pd_ontime_s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_current_ontime_s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mv);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_flux.current_ma);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			atten.attenuation_db);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_flux.wavelength_nm);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			pd_ontime_s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_current_ontime_s);
 		msg.payload_len = off;
 		(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
 		return;
@@ -544,7 +538,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.started_ms = k_uptime_get();
 
 	if (request->has_laser && request->autolevel) {
-		next.level_percent = 100.0f;
+		next.level_percent = 100.0;
 		(void)attenuator_set_db(&attenuators[attenuator_index], 120.0);
 		rc = hispec_laser_set_output_percent_autooff(request->laser,
 							     next.level_percent, 0U);

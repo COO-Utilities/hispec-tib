@@ -88,18 +88,18 @@ int maiman_set_client_iface(int iface);
  * validation notebooks. Values returned by this layer are engineering units:
  * mA, V, Hz, ms, deg C, A, or raw PID/register units as named.
  */
-#define DIVIDER_FREQUENCY                   10.0f
-#define DIVIDER_DURATION                    10.0f
-#define DIVIDER_CURRENT                     10.0f
-#define DIVIDER_VOLTAGE                     10.0f
-#define DIVIDER_PCB_TEMPERATURE             10.0f
-#define DIVIDER_NTC_TEMPERATURE             10.0f
-#define DIVIDER_TEC_TEMPERATURE             100.0f
-#define DIVIDER_TEC_CURRENT                 10.0f
-#define DIVIDER_TEC_VOLTAGE                 10.0f
-#define DIVIDER_CURRENT_SET_CALIBRATION     100.0f
-#define DIVIDER_TEC_CURRENT_SET_CALIBRATION 100.0f
-#define DIVIDER_NTC_COEFFICIENT             1.0f
+#define DIVIDER_FREQUENCY                   10.0
+#define DIVIDER_DURATION                    10.0
+#define DIVIDER_CURRENT                     10.0
+#define DIVIDER_VOLTAGE                     10.0
+#define DIVIDER_PCB_TEMPERATURE             10.0
+#define DIVIDER_NTC_TEMPERATURE             10.0
+#define DIVIDER_TEC_TEMPERATURE             100.0
+#define DIVIDER_TEC_CURRENT                 10.0
+#define DIVIDER_TEC_VOLTAGE                 10.0
+#define DIVIDER_CURRENT_SET_CALIBRATION     100.0
+#define DIVIDER_TEC_CURRENT_SET_CALIBRATION 100.0
+#define DIVIDER_NTC_COEFFICIENT             1.0
 
 // Device state bitmasks
 #define DEVICE_STATE_POWERED                0x0001
@@ -168,33 +168,33 @@ void maiman_init(maiman_driver_t *drv, uint8_t node_id);
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
 /** Read/write scaled engineering units. Calls block on Modbus RTU I/O. */
-bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, float divider,
-                        bool signed_value, float *value);
-bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, float divider,
-                         bool signed_value, float value);
+bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, double divider,
+                        bool signed_value, double *value);
+bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, double divider,
+                         bool signed_value, double value);
 
 
 /* ----- Measurement getters ----- */
-bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, float *value);
-float maiman_get_tec_temperature_measured(maiman_driver_t *drv);
-float maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
-float maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
-float maiman_get_tec_temperature_value(maiman_driver_t *drv);
-float maiman_get_current_measured(maiman_driver_t *drv);
-float maiman_get_frequency(maiman_driver_t *drv);
-float maiman_get_duration(maiman_driver_t *drv);
-bool  maiman_get_current(maiman_driver_t *drv, float *value);
-float maiman_get_voltage_measured(maiman_driver_t *drv);
-float maiman_get_current_min(maiman_driver_t *drv);
-float maiman_get_current_max(maiman_driver_t *drv);
-float maiman_get_current_max_limit(maiman_driver_t *drv);
-float maiman_get_current_protection_threshold(maiman_driver_t *drv);
-float maiman_get_current_set_calibration(maiman_driver_t *drv);
-float maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
-float maiman_get_tec_current_measured(maiman_driver_t *drv);
-float maiman_get_tec_current_limit(maiman_driver_t *drv);
-float maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
-float maiman_get_tec_voltage(maiman_driver_t *drv);
+bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, double *value);
+double maiman_get_tec_temperature_measured(maiman_driver_t *drv);
+double maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
+double maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
+double maiman_get_tec_temperature_value(maiman_driver_t *drv);
+double maiman_get_current_measured(maiman_driver_t *drv);
+double maiman_get_frequency(maiman_driver_t *drv);
+double maiman_get_duration(maiman_driver_t *drv);
+bool  maiman_get_current(maiman_driver_t *drv, double *value);
+double maiman_get_voltage_measured(maiman_driver_t *drv);
+double maiman_get_current_min(maiman_driver_t *drv);
+double maiman_get_current_max(maiman_driver_t *drv);
+double maiman_get_current_max_limit(maiman_driver_t *drv);
+double maiman_get_current_protection_threshold(maiman_driver_t *drv);
+double maiman_get_current_set_calibration(maiman_driver_t *drv);
+double maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
+double maiman_get_tec_current_measured(maiman_driver_t *drv);
+double maiman_get_tec_current_limit(maiman_driver_t *drv);
+double maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
+double maiman_get_tec_voltage(maiman_driver_t *drv);
 
 /* ----- Status and control ----- */
 uint16_t maiman_get_device_id(maiman_driver_t *drv);
@@ -221,13 +221,13 @@ bool maiman_is_lockstate_tec_error(maiman_driver_t *drv);
 bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 
 /* ----- Setpoint and commands ----- */
-bool maiman_set_current(maiman_driver_t *drv, float current);
-bool maiman_set_current_max(maiman_driver_t *drv, float current);
-bool maiman_set_current_set_calibration(maiman_driver_t *drv, float calibration_percent);
-bool maiman_set_frequency(maiman_driver_t *drv, float frequency);
-bool maiman_set_duration(maiman_driver_t *drv, float duration);
-bool maiman_set_tec_temperature(maiman_driver_t *drv, float temperature_c);
-bool maiman_set_tec_current_limit(maiman_driver_t *drv, float current_a);
+bool maiman_set_current(maiman_driver_t *drv, double current);
+bool maiman_set_current_max(maiman_driver_t *drv, double current);
+bool maiman_set_current_set_calibration(maiman_driver_t *drv, double calibration_percent);
+bool maiman_set_frequency(maiman_driver_t *drv, double frequency);
+bool maiman_set_duration(maiman_driver_t *drv, double duration);
+bool maiman_set_tec_temperature(maiman_driver_t *drv, double temperature_c);
+bool maiman_set_tec_current_limit(maiman_driver_t *drv, double current_a);
 bool maiman_get_tec_pid(maiman_driver_t *drv, tec_pid_t *pid);
 bool maiman_set_tec_pid(maiman_driver_t *drv, tec_pid_t pid);
 bool maiman_start_device(maiman_driver_t *drv);

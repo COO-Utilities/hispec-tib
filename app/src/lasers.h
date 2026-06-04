@@ -79,50 +79,50 @@ struct hispec_laser_status {
 	bool lock_tec_error;
 	bool lock_tec_selfheat;
 	bool ready_to_operate;
-	float current_set_ma;
-	float level_percent;
-	float current_measured_ma;
-	float current_min_ma;
-	float current_max_ma;
-	float current_max_limit_ma;
-	float current_protection_threshold_ma;
-	float voltage_v;
-	float current_on_time_s;
-	float tec_on_time_s;
+	double current_set_ma;
+	double level_percent;
+	double current_measured_ma;
+	double current_min_ma;
+	double current_max_ma;
+	double current_max_limit_ma;
+	double current_protection_threshold_ma;
+	double voltage_v;
+	double current_on_time_s;
+	double tec_on_time_s;
 	double total_emitting_s;
-	float tune_delta_nm;
+	double tune_delta_nm;
 	uint32_t autooff_s;
 	int64_t off_in_s;
-	float tec_temperature_set_c;
-	float tec_temperature_measured_c;
-	float pcb_temperature_c;
-	float tec_current_measured_a;
-	float tec_current_limit_a;
-	float tec_voltage_v;
-	float current_set_calibration_pct;
-	float ntc_t_coefficient_per_c;
+	double tec_temperature_set_c;
+	double tec_temperature_measured_c;
+	double pcb_temperature_c;
+	double tec_current_measured_a;
+	double tec_current_limit_a;
+	double tec_voltage_v;
+	double current_set_calibration_pct;
+	double ntc_t_coefficient_per_c;
 	tec_pid_t tec_pid;
-	float estimated_power_mw;
-	float estimated_wavelength_nm;
+	double estimated_power_mw;
+	double estimated_wavelength_nm;
 };
 
 struct hispec_laser_tune_request {
-	float desired_power_percent;
-	float wavelength_nm;
+	double desired_power_percent;
+	double wavelength_nm;
 	bool use_current;
 	bool use_temperature;
-	float maximum_power_shift_percent;
+	double maximum_power_shift_percent;
 	bool apply;
 };
 
 struct hispec_laser_tune_result {
-	float target_current_ma;
-	float target_temperature_c;
-	float estimated_power_mw;
-	float estimated_wavelength_nm;
-	float requested_wavelength_nm;
-	float wavelength_error_nm;
-	float power_error_mw;
+	double target_current_ma;
+	double target_temperature_c;
+	double estimated_power_mw;
+	double estimated_wavelength_nm;
+	double requested_wavelength_nm;
+	double wavelength_error_nm;
+	double power_error_mw;
 	bool temperature_clamped;
 	bool current_clamped;
 };
@@ -141,7 +141,7 @@ struct hispec_laser_channel_temperature {
 	enum hispec_laser_id id;
 	bool valid;
 	bool tec_enabled;
-	float tec_temperature_c;
+	double tec_temperature_c;
 };
 
 /**
@@ -261,18 +261,18 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
  * writes the current setpoint, and starts emission. A zero current stops
  * emission without exposing a public startup/shutdown primitive.
  */
-int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma);
+int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma);
 
 /** @brief Set output percent and configure auto-off deadline. */
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
-					    float percent,
+					    double percent,
 					    uint32_t autooff_s);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
-int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw);
+int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw);
 
 /** @brief Set output as 0-100 percent of nominal current above threshold. */
-int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent);
+int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent);
 
 /**
  * @brief Set the TEC temperature setpoint after preparing the driver.
@@ -282,7 +282,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent);
  * TEC-start setpoint; the requested temperature is written only after startup
  * preparation succeeds.
  */
-int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c);
+int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperature_c);
 
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
 int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
@@ -303,12 +303,12 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);
-int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
+int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist);
-float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
+double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
-float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma);
+double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma);
 
 /**
  * @brief Estimate emitted photon flux from the laser module's operating state.
@@ -318,17 +318,17 @@ float hispec_laser_estimate_power_mw(const laserprops_t *properties, float curre
  * GPIO state, enqueue, publish, or persist settings.
  */
 int laser_estimate_flux(enum hispec_laser_id id,
-			float fractional_noise,
-			float constant_noise_mw,
+			double fractional_noise,
+			double constant_noise_mw,
 			struct hispec_laser_flux_estimate *out);
 
 /** @brief Return current-emission on-time tracked by this module since boot. */
-float hispec_laser_current_on_time_s(enum hispec_laser_id id);
+double hispec_laser_current_on_time_s(enum hispec_laser_id id);
 
 /** @brief Estimate wavelength from TEC temperature and current. */
-float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
-					  float tec_temperature_c,
-					  float current_ma);
+double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
+					  double tec_temperature_c,
+					  double current_ma);
 
 /**
  * @brief Compute and optionally apply a wavelength-tuning point.

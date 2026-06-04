@@ -56,8 +56,8 @@ struct app_mqtt_settings {
 #define APP_PD_DARK_DURATION_MAX_MS 2000U
 
 struct app_attenuator_physical_settings {
-	float slope;
-	float offset;
+	double slope;
+	double offset;
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */
@@ -72,14 +72,14 @@ struct app_attenuator_settings {
 
 /** Photodiode calibration, response, and warning thresholds owned by app settings. */
 struct app_pd_channel_settings {
-	float dark_mv;
+	double dark_mv;
 	/* APP_PD_DARK_DURATION_USER means dark_mv was set directly, not measured. */
 	uint32_t dark_duration_ms;
 	/* Last dark-measurement RMS, kept even if dark_mv is later set directly. */
-	float dark_noise_rms_mv;
-	float lowest_dark_mv;
+	double dark_noise_rms_mv;
+	double lowest_dark_mv;
 	bool lowest_dark_valid;
-	float noise_warn_rms_mv;
+	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
 };
@@ -95,10 +95,10 @@ struct app_laserbank_settings {
 /** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
 struct app_laser_channel_settings {
 	laserprops_t properties;
-	float current_set_calibration_pct;
+	double current_set_calibration_pct;
 	bool disable_tec_at_autooff;
 	uint32_t autooff_s;
-	float tune_delta_nm;
+	double tune_delta_nm;
 	double total_emitting_s;
 };
 

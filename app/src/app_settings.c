@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 3U
+#define APP_NVS_SCHEMA_VERSION 4U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -85,36 +85,36 @@ struct app_nvs_ip_settings {
 };
 
 struct app_nvs_pd_channel {
-	float dark_mv;
-	float lowest_dark_mv;
+	double dark_mv;
+	double lowest_dark_mv;
 	uint32_t dark_duration_ms;
-	float dark_noise_rms_mv;
+	double dark_noise_rms_mv;
 	uint8_t lowest_dark_valid;
 	uint8_t reserved[3];
-	float noise_warn_rms_mv;
+	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
 };
 
 struct app_nvs_laser_policy {
-	float nominal_current_ma;
-	float max_current_ma;
-	float threshold_current_ma;
-	float efficiency_mw_per_ma;
-	float wavelength_nm;
-	float current_set_calibration_pct;
-	float operating_temp_min_c;
-	float operating_temp_max_c;
-	float operating_temp_c;
+	double nominal_current_ma;
+	double max_current_ma;
+	double threshold_current_ma;
+	double efficiency_mw_per_ma;
+	double wavelength_nm;
+	double current_set_calibration_pct;
+	double operating_temp_min_c;
+	double operating_temp_max_c;
+	double operating_temp_c;
 	uint16_t tec_pid_p;
 	uint16_t tec_pid_i;
 	uint16_t tec_pid_d;
 	uint8_t disable_tec_at_autooff;
 	uint8_t reserved;
-	float dlambda_dT_nm_per_k;
-	float dlambda_dA_nm_per_ma;
+	double dlambda_dT_nm_per_k;
+	double dlambda_dA_nm_per_ma;
 	uint32_t autooff_s;
-	float tune_delta_nm;
+	double tune_delta_nm;
 };
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
@@ -208,8 +208,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			/* Default maps the full 0-5000 mV attenuator drive span
 			 * onto b=0..8 until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].physical[physical].slope = 8.0f / 5000.0f;
-			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
+			s->attenuator.channel[ch].physical[physical].slope = 8.0 / 5000.0;
+			s->attenuator.channel[ch].physical[physical].offset = 0.0;
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
@@ -243,10 +243,10 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
-		s->laser.channel[i].current_set_calibration_pct = 100.0f;
+		s->laser.channel[i].current_set_calibration_pct = 100.0;
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
-		s->laser.channel[i].tune_delta_nm = 0.0f;
+		s->laser.channel[i].tune_delta_nm = 0.0;
 		s->laser.channel[i].total_emitting_s = 0.0;
 	}
 	s->boot_count = 0U;

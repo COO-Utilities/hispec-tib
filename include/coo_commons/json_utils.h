@@ -49,25 +49,12 @@ int coo_json_match_string_choice(const char *text,
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
-int coo_json_extract_float(const char *json, const char *key, float *value);
 /** Extract one required JSON number into a double. */
 int coo_json_extract_double(const char *json, const char *key, double *value);
 /** Extract a JSON number array into @p values. Supports up to 32 doubles. */
 int coo_json_extract_double_array(const char *json, const char *key,
 				  double *values, size_t max_values,
 				  size_t *parsed_len);
-/**
- * @brief Parse an optional float field and reject values outside a range.
- *
- * Missing fields are not errors and leave @p value unchanged. On success with
- * a present field, @p value is updated and @p changed is set true.
- *
- * @retval 0 Field was missing or parsed within range.
- * @retval -EINVAL Bad arguments, malformed JSON field, or out-of-range value.
- */
-int coo_json_extract_optional_float_range(const char *json, const char *key,
-					  float *value, bool *changed,
-					  float min_value, float max_value);
 /**
  * @brief Parse an optional bool field.
  *

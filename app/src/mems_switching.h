@@ -28,7 +28,7 @@
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4
 #define MEMS_ROUTER_MAX_ROUTE_PATH 5 // cal has 5 deep
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
-#define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0f
+#define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0
 #define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
 #define MEMS_SPLIT_CHANNEL_COUNT 2
 #define MEMS_SPLIT_OUTPUT_COUNT 3
@@ -54,8 +54,8 @@ struct mems_switch {
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
     bool state_known_this_boot;
-    float requested_toggle_rate_hz;
-    float actual_toggle_rate_hz;
+    double requested_toggle_rate_hz;
+    double actual_toggle_rate_hz;
     uint32_t switching_period_cycles; // Quantized switching period in MEMS tick cycles
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
@@ -70,14 +70,14 @@ struct mems_switch {
 struct mems_switch_status {
     char state;
     bool state_known_this_boot;
-    float duty_cycle;
+    double duty_cycle;
     /* Exact A-state duty numerator and denominator in MEMS tick counts. */
     uint32_t duty_numerator;
     uint32_t duty_denominator;
     /* Duration of one MEMS service tick for this switch type. */
     uint32_t tick_duration_ms;
-    float requested_toggle_rate_hz;
-    float toggle_rate_hz;
+    double requested_toggle_rate_hz;
+    double toggle_rate_hz;
     uint16_t stopafter_s;
 };
 
@@ -106,17 +106,17 @@ struct mems_route {
 struct mems_split_switch_duty {
     char name[MEMS_SWITCH_NAME_LEN];
     char state;
-    float duty_cycle;
+    double duty_cycle;
     uint32_t numerator;
     uint32_t denominator;
     uint32_t tick_ms;
 };
 
 struct mems_split_state {
-    float requested[MEMS_SPLIT_OUTPUT_COUNT];
-    float actual[MEMS_SPLIT_OUTPUT_COUNT];
-    float output[MEMS_SPLIT_OUTPUT_COUNT];
-    float transmission[MEMS_SPLIT_OUTPUT_COUNT];
+    double requested[MEMS_SPLIT_OUTPUT_COUNT];
+    double actual[MEMS_SPLIT_OUTPUT_COUNT];
+    double output[MEMS_SPLIT_OUTPUT_COUNT];
+    double transmission[MEMS_SPLIT_OUTPUT_COUNT];
     struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
     uint32_t stopsin_s;
 };
@@ -145,7 +145,7 @@ void mems_switch_init(struct mems_switch *sw,
                       const struct gpio_dt_spec *gpio_b,
                       const char *name,
                       enum mems_switch_type switch_type,
-                      float configured_toggle_rate_hz, char initial_state);
+                      double configured_toggle_rate_hz, char initial_state);
 /**
  * @brief Queue a static or toggling MEMS switch state change.
  *
@@ -154,8 +154,8 @@ void mems_switch_init(struct mems_switch *sw,
  * quantized to the nearest firmware tick period before toggling starts.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
-                          float duty_cycle, uint32_t stop_after_s,
-                          float requested_toggle_rate_hz);
+                          double duty_cycle, uint32_t stop_after_s,
+                          double requested_toggle_rate_hz);
 /**
  * @brief Queue a MEMS state change using exact duty-cycle tick counts.
  *
@@ -248,7 +248,7 @@ const char *mems_split_output_loss_key(uint8_t output_index);
  */
 int mems_split_read_channel_state(const struct mems_router *router,
                                   uint8_t channel_index,
-                                  const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                  const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                                   struct mems_split_state *out);
 
 /**
@@ -263,7 +263,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
  */
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
-                             const float requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                              uint32_t stopafter_s,
                              struct mems_split_state *out,
                              const char **failed_switch);

@@ -23,13 +23,13 @@
 
 LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
-#define LASERBANK_WARM_MIN_C 15.0f
-#define LASERBANK_COLD_OFF_C 20.0f
+#define LASERBANK_WARM_MIN_C 15.0
+#define LASERBANK_COLD_OFF_C 20.0
 
 struct laserbank_cached_channel {
 	bool valid;
 	bool tec_enabled;
-	float tec_temperature_c;
+	double tec_temperature_c;
 	int64_t last_valid_ms;
 };
 
@@ -125,7 +125,7 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 	bool all_enabled = true;
 	uint8_t valid_count = 0U;
 	uint8_t stale_count = 0U;
-	float off_threshold = LASERBANK_COLD_OFF_C;
+	double off_threshold = LASERBANK_COLD_OFF_C;
 
 	control.status.any_disabled_below_15c = false;
 	control.status.any_disabled_above_off_threshold = false;

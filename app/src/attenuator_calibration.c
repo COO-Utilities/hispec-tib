@@ -154,7 +154,7 @@ static uint32_t clamp_dwell(uint32_t dwell_ms)
 static bool sample_is_saturated(const struct photodiode_average_status *avg)
 {
 	return avg->result.max_raw >= ATTEN_CAL_SAT_RAW ||
-	       avg->result.mean_mv >= (float)ATTEN_CAL_HIGH_MV;
+	       avg->result.mean_mv >= (double)ATTEN_CAL_HIGH_MV;
 }
 
 static void copy_voltage_schedule(double out[ATTENUATOR_CAL_POINT_COUNT])
@@ -469,10 +469,10 @@ static int apply_fit_to_settings(uint8_t attenuator_index,
 		return -EIO;
 	}
 
-	stored.physical[0].slope = (float)fit[0].slope;
-	stored.physical[0].offset = (float)fit[0].offset;
-	stored.physical[1].slope = (float)fit[1].slope;
-	stored.physical[1].offset = (float)fit[1].offset;
+	stored.physical[0].slope = (double)fit[0].slope;
+	stored.physical[0].offset = (double)fit[0].offset;
+	stored.physical[1].slope = (double)fit[1].slope;
+	stored.physical[1].offset = (double)fit[1].offset;
 	app_settings_update_attenuator_channel(attenuator_index, &stored, persistent);
 	return 0;
 }
@@ -531,7 +531,7 @@ static void record_current_point_locked(const struct photodiode_average_status *
 	point->saturated = sample_is_saturated(avg);
 	point->valid = avg->state == PHOTODIODE_AVERAGE_COMPLETE &&
 		       !point->saturated &&
-		       avg->result.mean_net_mv > 0.0f;
+		       avg->result.mean_net_mv > 0.0;
 	point->flux = point->valid ? (double)avg->result.mean_net_mv * cal.scale : 0.0;
 }
 
@@ -666,7 +666,7 @@ static void auto_tick_locked(int64_t now_ms)
 				cal.laser_percent = 1.0;
 			}
 			rc = hispec_laser_set_output_percent_autooff(cal.laser,
-								     (float)cal.laser_percent,
+								     (double)cal.laser_percent,
 								     0U);
 			if (rc != 0) {
 				auto_error_locked(rc);
@@ -711,7 +711,7 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
 			return;
 		}
-		if (avg.result.mean_net_mv > 0.0f && !sample_is_saturated(&avg)) {
+		if (avg.result.mean_net_mv > 0.0 && !sample_is_saturated(&avg)) {
 			cal.scale *= cal.pending_before_mv / (double)avg.result.mean_net_mv;
 		}
 		record_current_point_locked(&avg);
@@ -794,7 +794,7 @@ int attenuator_calibration_start_auto(
 			       ATTENUATOR_DRIVE_MAX_MV, ATTENUATOR_DRIVE_MAX_MV)) {
 		return -EIO;
 	}
-	rc = hispec_laser_set_output_percent_autooff(request->laser, 100.0f, 0U);
+	rc = hispec_laser_set_output_percent_autooff(request->laser, 100.0, 0U);
 	if (rc != 0) {
 		return rc;
 	}

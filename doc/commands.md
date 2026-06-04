@@ -537,15 +537,15 @@ float64 pd_route_tx
 float64 laser_route_tx
 float64 atten_tx
 int16 pd_raw
-float32 pd_mv
-float32 pd_net_mv
-float32 pd_mean_mv_1s
-float32 pd_rms_mv_0p5s
-float32 laser_current_ma
-float32 atten_db
-float32 wavelength_nm
-float32 pd_ontime_s
-float32 laser_current_ontime_s
+float64 pd_mv
+float64 pd_net_mv
+float64 pd_mean_mv_1s
+float64 pd_rms_mv_0p5s
+float64 laser_current_ma
+float64 atten_db
+float64 wavelength_nm
+float64 pd_ontime_s
+float64 laser_current_ontime_s
 ```
 
 **Notes:**
@@ -1467,7 +1467,7 @@ off or no faults).
     `ratio_out` is the estimated optical output split after applying
     `split_transmission`.
   - Each switch report gives the selected route state, the selected-state
-    duty-cycle float, and the exact integer timing as
+    duty-cycle number, and the exact integer timing as
     `numerator / denominator` ticks with `tick_ms` milliseconds per tick.
   - If the attained ratio differs from the requested ratio because MEMS timing
     is quantized, the firmware emits `split_ratio_quantized` on
