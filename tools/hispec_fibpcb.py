@@ -39,6 +39,14 @@ FIBERS = ("M", "S")
 OVERRIDE_MODES = ("auto", "override_on", "override_off")
 MEMS_STATES = ("A", "B", "a", "b")
 MEMS_MAX_TOGGLE_DURATION_S = 4 * 60 * 60
+PD_DARK_MIN_MV = -5000.0
+PD_DARK_MAX_MV = 5000.0
+PD_NOISE_RMS_MIN_MV = 0.0
+PD_NOISE_RMS_MAX_MV = 5000.0
+PD_RESPONSIVITY_MIN_A_PER_W = 0.000001
+PD_RESPONSIVITY_MAX_A_PER_W = 10.0
+PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
+PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 
 _LASER_TO_PD_CHANNEL = {
     "1028y": "yj",
@@ -461,6 +469,7 @@ class DarkStatus:
     stored: bool | None = None
     mean_dark_mv: float | None = None
     rms_mv: float | None = None
+    dark_noise_rms_mv: float = np.nan
     min_mv: float | None = None
     max_mv: float | None = None
     previous_dark_mv: float | None = None
@@ -473,6 +482,7 @@ class PhotodiodeSettings:
     channel: str
     dark_mv: float
     dark_duration_ms: int | Literal["user"]
+    dark_noise_rms_mv: float
     lowest_stored_dark_mv: float
     noise_rms_mV: float
     responsivity_a_per_w: float
@@ -857,6 +867,7 @@ def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
         DarkStatus,
         data,
         lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
+        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
     )
 
 
@@ -866,6 +877,7 @@ def _decode_pdsettings(data: Mapping[str, Any]) -> PhotodiodeSettings:
         channel=str(data["channel"]),
         dark_mv=float(data["dark_mv"]),
         dark_duration_ms="user" if duration == "user" else int(duration),
+        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
         lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
         noise_rms_mV=float(data["noise_rms_mV"]),
         responsivity_a_per_w=float(data["responsivity_a_per_w"]),
@@ -1564,16 +1576,24 @@ class HispecFibPcb:
         if payload is None or set(payload) == {"persistent"}:
             raise HispecFibError("at least one photodiode setting must be supplied")
         if dark_mv is not None:
-            payload["dark_mv"] = _require_float("dark_mv", dark_mv, -5000.0, 5000.0)
+            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
         if noise_rms_mV is not None:
-            payload["noise_rms_mV"] = _require_float("noise_rms_mV", noise_rms_mV, 0.0, 5000.0)
+            payload["noise_rms_mV"] = _require_float(
+                "noise_rms_mV", noise_rms_mV, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
+            )
         if responsivity_a_per_w is not None:
             payload["responsivity_a_per_w"] = _require_float(
-                "responsivity_a_per_w", responsivity_a_per_w, 0.000001, 10.0
+                "responsivity_a_per_w",
+                responsivity_a_per_w,
+                PD_RESPONSIVITY_MIN_A_PER_W,
+                PD_RESPONSIVITY_MAX_A_PER_W,
             )
         if transimpedance_v_per_a is not None:
             payload["transimpedance_v_per_a"] = _require_float(
-                "transimpedance_v_per_a", transimpedance_v_per_a, 1.0, 1.0e12
+                "transimpedance_v_per_a",
+                transimpedance_v_per_a,
+                PD_TRANSIMPEDANCE_MIN_V_PER_A,
+                PD_TRANSIMPEDANCE_MAX_V_PER_A,
             )
         return self._request_ok(f"pdsettings/{channel}", payload)
 

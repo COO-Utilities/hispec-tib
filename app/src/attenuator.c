@@ -143,6 +143,35 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
     return true;
 }
 
+static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *coeffs)
+{
+    double max_db;
+
+    if (coeffs == NULL || !isfinite(coeffs->slope) ||
+        !isfinite(coeffs->offset) || coeffs->slope <= 0.0) {
+        return false;
+    }
+
+    max_db = attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
+    return isfinite(max_db) && max_db > ATTENUATOR_DB_EPSILON;
+}
+
+bool attenuator_model_coefficients_valid(
+    const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT])
+{
+    if (physical == NULL) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+        if (!attenuator_model_coeff_valid(&physical[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static double attenuator_code_to_voltage(uint32_t code)
 {
     return (ATTENUATOR_DRIVE_MAX_MV / (double)DAC_MAX_CODE) * (double)code;
@@ -480,7 +509,7 @@ int attenuator_apply_coefficients_preserve_db(
     struct attenuator_model_coeffs old_coeff2;
     struct attenuator_status status = {0};
 
-    if (drv == NULL || physical == NULL) {
+    if (drv == NULL || !attenuator_model_coefficients_valid(physical)) {
         return -EINVAL;
     }
 

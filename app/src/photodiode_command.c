@@ -201,6 +201,7 @@ static int pd_average_status_response(const struct coo_cmd_request *cmd,
 				    "{\"state\":\"%s\",\"channel\":\"%s\",\"stored\":%s,"
 				    "\"duration_ms\":%u,\"samples\":%u,\"target_samples\":%u,"
 				    "\"mean_dark_mv\":%.3f,\"rms_mv\":%.3f,"
+				    "\"dark_noise_rms_mv\":%.3f,"
 				    "\"min_mv\":%.3f,\"max_mv\":%.3f,"
 				    "\"previous_dark_mv\":%.3f,\"configured_dark_mv\":%.3f,"
 				    "\"lowest_stored_dark_mv\":",
@@ -212,6 +213,7 @@ static int pd_average_status_response(const struct coo_cmd_request *cmd,
 				    result->target_samples,
 				    (double)result->mean_mv,
 				    (double)result->rms_mv,
+				    (double)channel_settings->dark_noise_rms_mv,
 				    (double)result->min_mv,
 				    (double)result->max_mv,
 				    (double)(result->mean_mv - result->mean_net_mv),
@@ -357,6 +359,9 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 			    (double)ch->dark_mv) != 0 ||
 	    pd_append_dark_duration(payload, payload_len, &off, ch) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
+			    ",\"dark_noise_rms_mv\":%.3f",
+			    (double)ch->dark_noise_rms_mv) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
 			    ",\"lowest_stored_dark_mv\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  ch->lowest_dark_valid ? ch->lowest_dark_mv : NAN,
@@ -421,16 +426,24 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 
 	if (coo_json_extract_optional_float_range(cmd->payload, "dark_mv",
 						  &channel_settings.dark_mv,
-						  &dark_changed, -5000.0f, 5000.0f) != 0 ||
+						  &dark_changed,
+						  PHOTODIODE_DARK_MIN_MV,
+						  PHOTODIODE_DARK_MAX_MV) != 0 ||
 	    coo_json_extract_optional_float_range(cmd->payload, "noise_rms_mV",
 						  &channel_settings.noise_warn_rms_mv,
-						  &changed, 0.0f, 5000.0f) != 0 ||
+						  &changed,
+						  PHOTODIODE_NOISE_RMS_MIN_MV,
+						  PHOTODIODE_NOISE_RMS_MAX_MV) != 0 ||
 	    coo_json_extract_optional_double_range(cmd->payload, "responsivity_a_per_w",
 						   &channel_settings.responsivity_a_per_w,
-						   &changed, 0.000001, 10.0) != 0 ||
+						   &changed,
+						   PHOTODIODE_RESPONSIVITY_MIN_A_PER_W,
+						   PHOTODIODE_RESPONSIVITY_MAX_A_PER_W) != 0 ||
 	    coo_json_extract_optional_double_range(cmd->payload, "transimpedance_v_per_a",
 						   &channel_settings.transimpedance_v_per_a,
-						   &changed, 1.0, 1.0e12) != 0) {
+						   &changed,
+						   PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A,
+						   PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A) != 0) {
 		return coo_cmd_error(out, cmd, "invalid pdsettings value");
 	}
 	if (dark_changed) {

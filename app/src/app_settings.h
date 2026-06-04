@@ -75,6 +75,8 @@ struct app_pd_channel_settings {
 	float dark_mv;
 	/* APP_PD_DARK_DURATION_USER means dark_mv was set directly, not measured. */
 	uint32_t dark_duration_ms;
+	/* Last dark-measurement RMS, kept even if dark_mv is later set directly. */
+	float dark_noise_rms_mv;
 	float lowest_dark_mv;
 	bool lowest_dark_valid;
 	float noise_warn_rms_mv;

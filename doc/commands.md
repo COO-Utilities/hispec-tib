@@ -471,9 +471,11 @@ the limit uses the current laser flux estimate multiplied by
 
 Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
 `transimpedance_v_per_a` from `pdsettings/<yj|hk>` with the active laser
-wavelength estimate. It does not interpolate wavelength curves at runtime. The
-photodiode sampler owns ADC reads and dark tracking. The throughput monitor
-owns streaming output, autolevel decisions, and throughput math.
+wavelength estimate. It applies the nearest nominal-laser photodiode
+multiplicative correction coefficient; the current firmware table uses `1.0`
+for every nominal laser wavelength. The photodiode sampler owns ADC reads and
+dark tracking. The throughput monitor owns streaming output, autolevel
+decisions, and throughput math.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
@@ -732,6 +734,10 @@ many Modbus registers.
 
 - **Notes:**
   - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
+  - `default_operating_temp_c` is the TEC setpoint applied during driver
+    preparation and TEC start. Direct TEC setpoint changes are applied only after
+    startup preparation succeeds, so a bad default can make the TEC fail to start
+    and make the laser appear to fault immediately.
   - Settings are checked when a laser is first talked to at each boot
   - A mismatch between those the driver stores in its eeprom and controllers NVRAM will trigger a warning in the log and the driver values will be programmed.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
@@ -1110,6 +1116,8 @@ off or no faults).
     accumulated `samples`, and `target_samples`.
   - `dark_status` reports the current or most recent short average for that
     channel. Complete dark results include measured mean/RMS/min/max.
+  - `dark_noise_rms_mv` records the most recent dark-measurement RMS. Setting
+    `dark_mv` directly does not change this value.
   - `measure_dark` with `store:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
   - `lowest_stored_dark_mv` is updated only when a stored dark measurement is
@@ -1130,6 +1138,7 @@ off or no faults).
     "channel": "yj",
     "dark_mv": 0.0,
     "dark_duration_ms": "user",
+    "dark_noise_rms_mv": 0.0,
     "lowest_stored_dark_mv": null,
     "noise_rms_mV": 3.0,
     "responsivity_a_per_w": 0.93,
@@ -1161,6 +1170,8 @@ off or no faults).
   dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
   `pd measure_dark store=true` records the measured mean as the active dark and
   reports the actual averaging duration in `dark_duration_ms`.
+  `dark_noise_rms_mv` is the most recent dark-measurement RMS and is not changed
+  by manually setting `dark_mv`.
 
 (ip)=
 ### `ip`

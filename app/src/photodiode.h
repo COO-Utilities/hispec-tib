@@ -20,6 +20,15 @@
 
 #define PHOTODIODE_DEFAULT_DARK_MV 0.0f
 #define PHOTODIODE_DEFAULT_LOWEST_DARK_MV 0.0f
+#define PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV 0.0f
+#define PHOTODIODE_DARK_MIN_MV -5000.0f
+#define PHOTODIODE_DARK_MAX_MV 5000.0f
+#define PHOTODIODE_NOISE_RMS_MIN_MV 0.0f
+#define PHOTODIODE_NOISE_RMS_MAX_MV 5000.0f
+#define PHOTODIODE_RESPONSIVITY_MIN_A_PER_W 0.000001
+#define PHOTODIODE_RESPONSIVITY_MAX_A_PER_W 10.0
+#define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0
+#define PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A 1.0e12
 #define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 3.0f
 #define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 1.0f
 #define PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W 0.93
@@ -111,15 +120,32 @@ double photodiode_power_uw_from_mv(double net_mv,
 				   const struct app_pd_channel_settings *settings);
 
 /**
+ * @brief Convert dark-subtracted ADC millivolts to wavelength-corrected power.
+ *
+ * Uses the nearest nominal laser wavelength's photodiode correction coefficient
+ * plus app-owned response settings. The current coefficient table is fixed in
+ * firmware, performs no I/O, and uses unity coefficients until lab values are
+ * installed.
+ */
+double photodiode_power_uw_from_mv_at_wavelength(
+	double net_mv,
+	double wavelength_nm,
+	const struct app_pd_channel_settings *settings);
+
+/**
  * @brief Convert dark-subtracted ADC millivolts to photon flux.
  *
- * Uses app-owned response settings plus the caller-provided wavelength. This
- * helper performs no I/O and returns zero for non-positive signal or invalid
- * wavelength/response settings.
+ * Uses app-owned response settings plus the caller-provided wavelength and
+ * nearest nominal-laser photodiode correction. This helper performs no I/O and
+ * returns zero for non-positive signal or invalid wavelength/response settings.
  */
 double photodiode_photon_flux_from_mv(double net_mv,
 				      double wavelength_nm,
 				      const struct app_pd_channel_settings *settings);
+
+/** @brief Validate app-owned photodiode response/dark settings. Performs no I/O. */
+bool photodiode_settings_valid(const struct app_pd_channel_settings *settings);
+
 /**
  * @brief Start or restart a dark measurement on the sampling thread.
  *

@@ -30,8 +30,8 @@ Current app NVS records include:
 - One attenuator coefficient record per logical channel.
 - One photodiode settings record per photodiode channel, including active dark
   mV, whether that dark was user-set or measured, measured-dark averaging
-  duration when applicable, lowest stored dark mV, noise threshold, responsivity,
-  and transimpedance.
+  duration when applicable, last measured dark RMS, lowest stored dark mV, noise
+  threshold, responsivity, and transimpedance.
 - Laser-bank heater policy.
 - One laser policy record per laser channel.
 - One laser total-emitting counter record per laser channel.
@@ -58,8 +58,8 @@ silently reused on another.
 - Attenuator coefficients default to a linear `b = slope * voltage + offset`
   model that maps the 0-5000 mV attenuator drive span onto `b = 0..8` until
   calibrated/stored.
-- Photodiode dark defaults to 0 mV. YJ and HK have different default gain/noise
-  warning values.
+- Photodiode dark and dark-noise RMS default to 0 mV. YJ and HK have different
+  default gain/noise warning values.
 - Route-loss records default to absent. Missing route-loss settings are treated
   as loss-free transmission, `1.0`.
 
@@ -69,8 +69,9 @@ NVS writes happen synchronously through Zephyr NVS and may block the caller.
 Command handlers that set `persistent:true` can therefore block in the executor
 thread.
 
-Photodiode stored dark updates happen in the sampler thread when a user-started
-dark measurement completes with `store:true`.
+Photodiode dark-noise RMS updates happen in the sampler thread when any dark
+measurement completes. Active dark, lowest-dark, and persisted dark updates
+happen only when a user-started dark measurement completes with `store:true`.
 
 If NVS loading fails after a board has already been initialized in the field,
 treat it as a human-intervention fault. At minimum, inspect logs and

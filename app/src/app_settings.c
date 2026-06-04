@@ -12,6 +12,8 @@
  */
 
 #include "app_settings.h"
+#include "attenuator.h"
+#include "lasers.h"
 #include "photodiode.h"
 
 #include <errno.h>
@@ -28,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 2U
+#define APP_NVS_SCHEMA_VERSION 3U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -59,6 +61,10 @@ BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_
 	     "laser total NVS ID block overlaps route-loss block");
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= 0x8000,
 	     "route-loss NVS ID block overlaps reserved Zephyr settings IDs");
+BUILD_ASSERT(APP_ATTENUATOR_PHYSICAL_COUNT == ATTENUATOR_PHYSICAL_COUNT,
+	     "app settings and attenuator physical coefficient counts must match");
+BUILD_ASSERT(APP_LASER_CHANNEL_COUNT == HISPEC_LASER_COUNT,
+	     "app settings and laser channel counts must match");
 
 struct app_nvs_schema_marker {
 	uint32_t magic;
@@ -82,6 +88,7 @@ struct app_nvs_pd_channel {
 	float dark_mv;
 	float lowest_dark_mv;
 	uint32_t dark_duration_ms;
+	float dark_noise_rms_mv;
 	uint8_t lowest_dark_valid;
 	uint8_t reserved[3];
 	float noise_warn_rms_mv;
@@ -168,11 +175,6 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 	dst[dst_size - 1] = '\0';
 }
 
-static bool float_in_range(float value, float min_value, float max_value)
-{
-	return value >= min_value && value <= max_value;
-}
-
 static bool double_in_range(double value, double min_value, double max_value)
 {
 	return value >= min_value && value <= max_value;
@@ -213,6 +215,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_duration_ms =
 		APP_PD_DARK_DURATION_USER;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_noise_rms_mv =
+		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
 		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
@@ -225,6 +229,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
 		APP_PD_DARK_DURATION_USER;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_noise_rms_mv =
+		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
 		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
@@ -430,6 +436,7 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 	stored.dark_mv = pd->dark_mv;
 	stored.lowest_dark_mv = pd->lowest_dark_mv;
 	stored.dark_duration_ms = pd->dark_duration_ms;
+	stored.dark_noise_rms_mv = pd->dark_noise_rms_mv;
 	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
@@ -515,49 +522,37 @@ static void app_nvs_persist_route_loss_index(uint8_t index,
 
 static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
 {
+	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
+
 	if (atten == NULL) {
 		return false;
 	}
 
-	for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-		const struct app_attenuator_physical_settings *p = &atten->physical[physical];
+	for (uint8_t i = 0U; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		const struct app_attenuator_physical_settings *p = &atten->physical[i];
 
-		if (!float_in_range(p->slope, -1000000000.0f, 1000000000.0f) ||
-		    !float_in_range(p->offset, -1000000000.0f, 1000000000.0f)) {
-			return false;
-		}
+		physical[i].slope = p->slope;
+		physical[i].offset = p->offset;
 	}
 
-	return true;
+	return attenuator_model_coefficients_valid(physical);
 }
 
-static bool pd_channel_valid(const struct app_nvs_pd_channel *pd)
+static void pd_settings_from_nvs(struct app_pd_channel_settings *pd,
+				 const struct app_nvs_pd_channel *stored)
 {
-	return pd != NULL &&
-	       float_in_range(pd->dark_mv, -5000.0f, 5000.0f) &&
-	       float_in_range(pd->lowest_dark_mv, -5000.0f, 5000.0f) &&
-	       (pd->dark_duration_ms == APP_PD_DARK_DURATION_USER ||
-		(pd->dark_duration_ms > 0U &&
-		 pd->dark_duration_ms <= APP_PD_DARK_DURATION_MAX_MS)) &&
-	       float_in_range(pd->noise_warn_rms_mv, 0.0f, 5000.0f) &&
-	       double_in_range(pd->responsivity_a_per_w, 0.000001, 10.0) &&
-	       double_in_range(pd->transimpedance_v_per_a, 1.0, 1.0e12);
-}
+	if (pd == NULL || stored == NULL) {
+		return;
+	}
 
-static bool laser_policy_valid(const struct app_nvs_laser_policy *laser)
-{
-	return laser != NULL &&
-	       float_in_range(laser->nominal_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->max_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->threshold_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->efficiency_mw_per_ma, 0.0f, 100.0f) &&
-	       float_in_range(laser->wavelength_nm, 1.0f, 10000.0f) &&
-	       float_in_range(laser->current_set_calibration_pct, 95.0f, 105.0f) &&
-	       float_in_range(laser->operating_temp_min_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->operating_temp_max_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->operating_temp_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->dlambda_dT_nm_per_k, -10.0f, 10.0f) &&
-	       float_in_range(laser->dlambda_dA_nm_per_ma, -10.0f, 10.0f);
+	pd->dark_mv = stored->dark_mv;
+	pd->lowest_dark_mv = stored->lowest_dark_mv;
+	pd->dark_duration_ms = stored->dark_duration_ms;
+	pd->dark_noise_rms_mv = stored->dark_noise_rms_mv;
+	pd->lowest_dark_valid = stored->lowest_dark_valid != 0U;
+	pd->noise_warn_rms_mv = stored->noise_warn_rms_mv;
+	pd->responsivity_a_per_w = stored->responsivity_a_per_w;
+	pd->transimpedance_v_per_a = stored->transimpedance_v_per_a;
 }
 
 static bool route_loss_record_valid(struct app_route_loss_record *record)
@@ -647,23 +642,19 @@ static void app_nvs_load_photodiode(struct app_settings_snapshot *s)
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		struct app_nvs_pd_channel stored;
 		struct app_pd_channel_settings *pd = &s->photodiode.channel[channel];
+		struct app_pd_channel_settings candidate;
 
 		if (!app_nvs_read_exact(pd_nvs_id(channel), &stored,
 					sizeof(stored), "photodiode")) {
 			continue;
 		}
-		if (!pd_channel_valid(&stored)) {
+		candidate = *pd;
+		pd_settings_from_nvs(&candidate, &stored);
+		if (!photodiode_settings_valid(&candidate)) {
 			LOG_WRN("Ignoring invalid stored photodiode channel %u", channel);
 			continue;
 		}
-
-		pd->dark_mv = stored.dark_mv;
-		pd->lowest_dark_mv = stored.lowest_dark_mv;
-		pd->dark_duration_ms = stored.dark_duration_ms;
-		pd->lowest_dark_valid = stored.lowest_dark_valid != 0U;
-		pd->noise_warn_rms_mv = stored.noise_warn_rms_mv;
-		pd->responsivity_a_per_w = stored.responsivity_a_per_w;
-		pd->transimpedance_v_per_a = stored.transimpedance_v_per_a;
+		*pd = candidate;
 	}
 }
 
@@ -708,12 +699,16 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 {
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		struct app_nvs_laser_policy policy;
+		struct app_laser_channel_settings laser;
 		double total_emitting_s;
 
 		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
 				       sizeof(policy), "laser policy")) {
-			if (laser_policy_valid(&policy)) {
-				app_nvs_apply_laser_policy(&s->laser.channel[channel], &policy);
+			laser = s->laser.channel[channel];
+			app_nvs_apply_laser_policy(&laser, &policy);
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel,
+								   &laser) == 0) {
+				s->laser.channel[channel] = laser;
 			} else {
 				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
 			}

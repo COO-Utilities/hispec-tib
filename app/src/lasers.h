@@ -274,7 +274,14 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw);
 /** @brief Set output as 0-100 percent of nominal current above threshold. */
 int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent);
 
-/** @brief Set the TEC temperature setpoint and start the TEC if needed. */
+/**
+ * @brief Set the TEC temperature setpoint after preparing the driver.
+ *
+ * Preparation applies `default_operating_temp_c` and starts the TEC at that
+ * default if it is stopped. This API is not a way to choose a different initial
+ * TEC-start setpoint; the requested temperature is written only after startup
+ * preparation succeeds.
+ */
 int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c);
 
 /** @brief Configure TEC PID coefficients on the Maiman driver. */
@@ -290,6 +297,9 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
  */
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out);
+/** @brief Validate one complete app-owned laser channel settings record. */
+int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
+					   const struct app_laser_channel_settings *settings);
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);

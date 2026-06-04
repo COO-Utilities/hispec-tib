@@ -9,6 +9,7 @@
 #include <zephyr/devicetree.h>         // DT_NODELABEL, DT_CHILD
 #include <zephyr/drivers/adc.h>        // ADC API
 #include <zephyr/logging/log.h>        // LOG_ERR, LOG_WRN, etc.
+#include <zephyr/sys/util.h>
 #include <stdint.h>                    // int16_t, int64_t, etc.
 #include <string.h>
 #include <math.h>
@@ -87,6 +88,19 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_RMS_WINDOW_SAMPLES (500U / PUBLISH_INTERVAL_MS)
 #define PLANCK_J_S 6.62607015e-34
 #define LIGHT_M_PER_S 299792458.0
+
+struct photodiode_wavelength_coefficient {
+    double wavelength_nm;
+    double coefficient;
+};
+
+static const struct photodiode_wavelength_coefficient wavelength_coefficients[] = {
+    { 1028.01, 1.0 },
+    { 1270.0, 1.0 },
+    { 1430.0, 1.0 },
+    { 1510.0, 1.0 },
+    { 2329.81, 1.0 },
+};
 
 static void photodiode_sample_timer_handler(struct k_timer *timer)
 {
@@ -411,6 +425,43 @@ double photodiode_power_uw_from_mv(double net_mv,
     return power_w * 1.0e6;
 }
 
+static double photodiode_nearest_wavelength_coefficient(double wavelength_nm)
+{
+    double best_delta;
+    double best_coeff;
+
+    if (wavelength_nm <= 0.0 || !isfinite(wavelength_nm)) {
+        return 0.0;
+    }
+
+    best_delta = fabs(wavelength_nm - wavelength_coefficients[0].wavelength_nm);
+    best_coeff = wavelength_coefficients[0].coefficient;
+    for (size_t i = 1U; i < ARRAY_SIZE(wavelength_coefficients); ++i) {
+        double delta = fabs(wavelength_nm - wavelength_coefficients[i].wavelength_nm);
+
+        if (delta < best_delta) {
+            best_delta = delta;
+            best_coeff = wavelength_coefficients[i].coefficient;
+        }
+    }
+
+    return best_coeff;
+}
+
+double photodiode_power_uw_from_mv_at_wavelength(
+    double net_mv,
+    double wavelength_nm,
+    const struct app_pd_channel_settings *settings)
+{
+    double coefficient = photodiode_nearest_wavelength_coefficient(wavelength_nm);
+
+    if (coefficient <= 0.0) {
+        return 0.0;
+    }
+
+    return photodiode_power_uw_from_mv(net_mv, settings) * coefficient;
+}
+
 double photodiode_photon_flux_from_mv(double net_mv,
                                       double wavelength_nm,
                                       const struct app_pd_channel_settings *settings)
@@ -422,13 +473,43 @@ double photodiode_photon_flux_from_mv(double net_mv,
         return 0.0;
     }
 
-    power_w = photodiode_power_uw_from_mv(net_mv, settings) * 1.0e-6;
+    power_w = photodiode_power_uw_from_mv_at_wavelength(
+        net_mv, wavelength_nm, settings) * 1.0e-6;
     if (power_w <= 0.0) {
         return 0.0;
     }
 
     photon_j = PLANCK_J_S * LIGHT_M_PER_S / (wavelength_nm * 1.0e-9);
     return power_w / photon_j;
+}
+
+bool photodiode_settings_valid(const struct app_pd_channel_settings *settings)
+{
+    if (settings == NULL) {
+        return false;
+    }
+
+    return isfinite((double)settings->dark_mv) &&
+           settings->dark_mv >= PHOTODIODE_DARK_MIN_MV &&
+           settings->dark_mv <= PHOTODIODE_DARK_MAX_MV &&
+           isfinite((double)settings->lowest_dark_mv) &&
+           settings->lowest_dark_mv >= PHOTODIODE_DARK_MIN_MV &&
+           settings->lowest_dark_mv <= PHOTODIODE_DARK_MAX_MV &&
+           (settings->dark_duration_ms == APP_PD_DARK_DURATION_USER ||
+            (settings->dark_duration_ms > 0U &&
+             settings->dark_duration_ms <= APP_PD_DARK_DURATION_MAX_MS)) &&
+           isfinite((double)settings->dark_noise_rms_mv) &&
+           settings->dark_noise_rms_mv >= PHOTODIODE_NOISE_RMS_MIN_MV &&
+           settings->dark_noise_rms_mv <= PHOTODIODE_NOISE_RMS_MAX_MV &&
+           isfinite((double)settings->noise_warn_rms_mv) &&
+           settings->noise_warn_rms_mv >= PHOTODIODE_NOISE_RMS_MIN_MV &&
+           settings->noise_warn_rms_mv <= PHOTODIODE_NOISE_RMS_MAX_MV &&
+           isfinite(settings->responsivity_a_per_w) &&
+           settings->responsivity_a_per_w >= PHOTODIODE_RESPONSIVITY_MIN_A_PER_W &&
+           settings->responsivity_a_per_w <= PHOTODIODE_RESPONSIVITY_MAX_A_PER_W &&
+           isfinite(settings->transimpedance_v_per_a) &&
+           settings->transimpedance_v_per_a >= PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A &&
+           settings->transimpedance_v_per_a <= PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A;
 }
 
 static uint32_t pd_average_duration_to_samples(uint32_t duration_ms)
@@ -494,6 +575,8 @@ static void pd_average_finish_dark_locked(enum photodiode_channel channel,
 
     app_settings_get_photodiode(&settings);
 
+    settings.channel[channel].dark_noise_rms_mv = avg->result.rms_mv;
+
     if (avg->store_dark) {
         settings.channel[channel].dark_mv = avg->result.mean_mv;
         settings.channel[channel].dark_duration_ms = avg->result.duration_ms;
@@ -503,13 +586,14 @@ static void pd_average_finish_dark_locked(enum photodiode_channel channel,
             settings.channel[channel].lowest_dark_valid = true;
         }
 
-        /* This settings write can briefly extend one sampler iteration, but it
-         * happens only when a user-requested dark window completes.
-         */
-        app_settings_update_photodiode_channel((uint8_t)channel,
-                                               &settings.channel[channel],
-                                               true);
     }
+
+    /* This settings write can briefly extend one sampler iteration. Flash I/O is
+     * only requested when the completed dark measurement is stored.
+     */
+    app_settings_update_photodiode_channel((uint8_t)channel,
+                                           &settings.channel[channel],
+                                           avg->store_dark);
 }
 
 static void pd_average_sample_locked(enum photodiode_channel channel,

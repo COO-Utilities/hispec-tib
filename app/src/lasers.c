@@ -958,6 +958,10 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 		return rc;
 	}
 
+	/* Driver preparation always writes the app-owned default operating
+	 * temperature before any TEC start. A bad default can make TEC startup fail
+	 * here and surface as an immediate laser fault.
+	 */
 	rc = apply_runtime_profile_locked(profile, drv);
 	if (rc != 0) {
 		return rc;
@@ -972,6 +976,9 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	}
 
 	if (!maiman_is_tec_started(drv)) {
+		/* Keep TEC startup tied to default_operating_temp_c. A later direct
+		 * setpoint command may change the setpoint only after this succeeds.
+		 */
 		if (!maiman_set_tec_temperature(drv, props->operating_temp_c) ||
 		    !maiman_start_tec(drv)) {
 			return -EIO;
@@ -1454,6 +1461,20 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	}
 
 	return 0;
+}
+
+int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
+					   const struct app_laser_channel_settings *settings)
+{
+	const struct hispec_laser_driver_profile *profile;
+	int rc;
+
+	rc = profile_for_id(id, &profile);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return validate_laser_settings(profile, settings);
 }
 
 static bool laser_driver_settings_differ(const struct app_laser_channel_settings *a,
