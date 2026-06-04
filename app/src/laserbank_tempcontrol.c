@@ -260,12 +260,20 @@ static void run_heater_control_cycle(void)
 		}
 	}
 
-	rc = hispec_laser_bank_read_temperatures(poll);
+	rc = hispec_laser_bank_poll_temperatures(poll);
 	now_ms = k_uptime_get();
 
 	k_mutex_lock(&control_lock, K_FOREVER);
-	control.last_poll_ms = now_ms;
 	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
+	if (rc == -EBUSY) {
+		(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+					     &control.status.heater_on);
+		summarize_temperature_state(&ambient, now_ms);
+		k_mutex_unlock(&control_lock);
+		return;
+	}
+
+	control.last_poll_ms = now_ms;
 	if (rc == 0) {
 		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 			if (!poll[i].valid) {

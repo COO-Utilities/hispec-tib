@@ -216,11 +216,22 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms,
  * @brief Poll TEC temperatures and TEC-running state for each laser channel.
  *
  * This call blocks on Modbus RTU transactions while holding the laser-bank
- * mutex so command handlers and the heater control loop do not interleave RS-485
- * traffic. If the bank is off, channel readings are marked invalid but the
- * caller still receives one initialized entry per known laser channel.
+ * mutex so command handlers do not interleave RS-485 traffic. It returns
+ * -EBUSY if another laser operation keeps the shared bus occupied past the
+ * command wait budget. If the bank is off, channel readings are marked invalid
+ * but the caller still receives one initialized entry per known laser channel.
  */
 int hispec_laser_bank_read_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT]);
+
+/**
+ * @brief Opportunistically poll TEC temperatures for background heater control.
+ *
+ * This variant never waits for the laser-bank mutex. It returns -EBUSY when a
+ * command or auto-off operation owns the shared Modbus bus, letting background
+ * control skip one cycle instead of delaying foreground access.
+ */
+int hispec_laser_bank_poll_temperatures(
 	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT]);
 
 /**

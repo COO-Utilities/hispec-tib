@@ -618,7 +618,9 @@ float64 laser_current_ontime_s
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
   `tec_on_s`, `emit_on_s`, and `emit_total_s` are firmware-owned counters. `emit_total_s` is persisted when emission
   stops cleanly. `autooff_s` is optional and non-persistent; if supplied, it overrides the default configured through
-  `laser/settings` for this start.
+  `laser/settings` for this start. If another laser-bank operation occupies the
+  shared Maiman Modbus bus past the command wait budget, laser commands return
+  `{"error":"busy"}`.
 
 (laser-tune)=
 ### `laser/tune`
@@ -792,7 +794,9 @@ many Modbus registers.
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
   while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an
-  error response that still includes the current `mode` and firmware-requested `powered` state.
+  error response that still includes the current `mode` and firmware-requested `powered` state. If another laser-bank
+  operation occupies the shared Maiman Modbus bus past the command wait budget,
+  mode changes return `{"error":"busy"}`.
 
 (laserbank-clearfaults)=
 ### `laserbank/clearfaults`
@@ -805,6 +809,8 @@ This command performs an off-on cycle iff the bank is powered and at least one o
 fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
 The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
 off or no faults).
+If another laser-bank operation occupies the shared Maiman Modbus bus past the
+command wait budget, this command returns `{"error":"busy"}`.
 
 
 (laserbank-heater)=
@@ -1309,7 +1315,8 @@ off or no faults).
 
 - **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
   can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
-  temperatures.
+  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
+  returns `{"error":"busy"}` instead of an ambient-only partial response.
 
 (status)=
 ### `status`

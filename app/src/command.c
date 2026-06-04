@@ -1230,6 +1230,9 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     housekeeping_get_temperature_status(&ts);
     if (devices_board_type() == HISPEC_BOARD_TIB) {
         laser_rc = hispec_laser_bank_read_temperatures(channel_temp);
+        if (laser_rc == -EBUSY) {
+            return coo_cmd_busy_response(out, cmd);
+        }
         if (laser_rc == 0) {
             for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
                 if (channel_temp[i].valid) {

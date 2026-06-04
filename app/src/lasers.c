@@ -31,10 +31,11 @@ LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
 #define LIGHT_M_PER_S 299792458.0
 
 #define LASER_AUTOFF_NO_DEADLINE 0LL
+#define LASER_COMMAND_LOCK_TIMEOUT_MS 250U
 
 /* One mutex protects the shared RS-485 bus sequencing and bank-power GPIO.
- * k_mutex_lock() sleeps the calling thread instead of busy-waiting while another
- * command is talking to the Maiman modules.
+ * Command-facing operations wait only briefly so background polling or another
+ * long Modbus operation can surface as "busy" instead of a generic failure.
  */
 static K_MUTEX_DEFINE(laser_lock);
 
@@ -191,6 +192,23 @@ static bool float_is_positive(double value)
 static bool float_is_nonzero(double value)
 {
 	return float_is_valid(value) && value != 0.0;
+}
+
+static int laser_lock_with_timeout(k_timeout_t timeout)
+{
+	int rc = k_mutex_lock(&laser_lock, timeout);
+
+	return rc == 0 ? 0 : -EBUSY;
+}
+
+static int laser_lock_command(void)
+{
+	return laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+}
+
+static int laser_lock_poll(void)
+{
+	return laser_lock_with_timeout(K_NO_WAIT);
 }
 
 static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
@@ -540,7 +558,10 @@ int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode)
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	bank_power_mode = mode;
 	if (mode == HISPEC_LASER_BANK_POWER_OVERRIDE_ON) {
 		rc = bank_power_set_locked(true, NULL, true);
@@ -570,7 +591,10 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 		*actual_off_ms = 0U;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 
 	if (!bank_power_requested_enabled) {
 		rc = 0;
@@ -630,26 +654,22 @@ static double level_percent_for_current(const laserprops_t *props, double curren
 	return 100.0 * (current_ma - props->threshold_current_ma) / range;
 }
 
-int hispec_laser_bank_read_temperatures(
+static void init_temperature_channels(
 	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
 {
-	int rc;
-
-	if (channels == NULL) {
-		return -EINVAL;
-	}
-
 	memset(channels, 0,
 	       sizeof(struct hispec_laser_channel_temperature) * HISPEC_LASER_COUNT);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		channels[i].id = laser_profiles[i].id;
 		channels[i].tec_temperature_c = LASERPROP_NA;
 	}
+}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+static int read_temperatures_locked(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
+{
 	if (!bank_power_requested_enabled) {
-		rc = 0;
-		goto out_unlock;
+		return 0;
 	}
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
@@ -668,9 +688,45 @@ int hispec_laser_bank_read_temperatures(
 		channels[i].tec_enabled = state_ok && tec_started;
 	}
 
-	rc = 0;
+	return 0;
+}
 
-out_unlock:
+int hispec_laser_bank_read_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
+{
+	int rc;
+
+	if (channels == NULL) {
+		return -EINVAL;
+	}
+
+	init_temperature_channels(channels);
+
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
+	rc = read_temperatures_locked(channels);
+	k_mutex_unlock(&laser_lock);
+	return rc;
+}
+
+int hispec_laser_bank_poll_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
+{
+	int rc;
+
+	if (channels == NULL) {
+		return -EINVAL;
+	}
+
+	init_temperature_channels(channels);
+
+	rc = laser_lock_poll();
+	if (rc != 0) {
+		return rc;
+	}
+	rc = read_temperatures_locked(channels);
 	k_mutex_unlock(&laser_lock);
 	return rc;
 }
@@ -1046,7 +1102,10 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 
 	status_defaults(profile, out);
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	out->properties = runtime_props_locked(id);
 	out->current_on_time_s =
 		on_time_runtime_seconds_locked(laser_current_runtime,
@@ -1223,7 +1282,10 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		return -ERANGE;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	if (current_ma == 0.0) {
 		rc = stop_output_locked(profile, false);
 		goto out;
@@ -1371,7 +1433,10 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 		return -ERANGE;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	rc = prepare_to_operate_locked(profile, &drv);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
 		rc = -EIO;
@@ -1492,11 +1557,16 @@ static bool laser_driver_settings_differ(const struct app_laser_channel_settings
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out)
 {
+	int rc;
+
 	if (out == NULL || id < 0 || id >= HISPEC_LASER_COUNT) {
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	ensure_laser_runtime_settings_locked();
 	*out = laser_settings[id];
 	k_mutex_unlock(&laser_lock);
@@ -1525,7 +1595,10 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		return rc;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	rc = laser_lock_command();
+	if (rc != 0) {
+		return rc;
+	}
 	ensure_laser_runtime_settings_locked();
 	previous = laser_settings[id];
 	apply_driver = laser_driver_settings_differ(&previous, settings);
@@ -1891,7 +1964,10 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (request->apply) {
 		maiman_driver_t drv;
 
-		k_mutex_lock(&laser_lock, K_FOREVER);
+		rc = laser_lock_command();
+		if (rc != 0) {
+			return rc;
+		}
 		rc = prepare_to_operate_locked(profile, &drv);
 		if (rc == 0 &&
 		    (!maiman_set_tec_temperature(&drv, target_temp_c) ||
