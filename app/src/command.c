@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <math.h>
 #include <strings.h>
+#include <string.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 #include <app_version.h>
@@ -83,6 +84,8 @@ static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_reques
 static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
                                          const struct coo_cmd_spec *spec,
                                          void *user_data);
+static int catalog_get(const struct coo_cmd_request *cmd,
+                       struct coo_cmd_response *out);
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         char *out, size_t out_len,
                                         void *user_data);
@@ -160,6 +163,12 @@ static const struct coo_cmd_spec command_specs[] = {
              "all fields optional",
              "bool: true|false|on|off|yes|no",
              "query-only firmware and subsystem status",
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    CMD_SPEC("catalog", catalog_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
+             "catalog",
+             "none",
+             NULL,
+             "query-only static laser names and selected board route names",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_CUSTOM("memsroute/route_loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
@@ -948,6 +957,127 @@ int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     app_settings_note_time_utc_ms(utc_ms);
 
     return coo_cmd_ok(out, cmd);
+}
+
+static bool catalog_name_seen(const char *const names[], uint8_t count,
+                              const char *name)
+{
+    for (uint8_t i = 0U; i < count; ++i) {
+        if (names[i] != NULL && name != NULL && strcmp(names[i], name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int catalog_append_static_string(char *payload, size_t payload_len,
+                                        size_t *off, const char *value)
+{
+    /* Catalog names are compile-time route/laser identifiers, not user text. */
+    return coo_json_append(payload, payload_len, off, "\"%s\"",
+                           value != NULL ? value : "");
+}
+
+static int catalog_append_lasers(char *payload, size_t payload_len, size_t *off)
+{
+    if (coo_json_append(payload, payload_len, off, "\"lasers\":[") != 0) {
+        return -ENOSPC;
+    }
+
+    if (devices_board_type() == HISPEC_BOARD_TIB) {
+        for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+            if (i > 0U &&
+                coo_json_append(payload, payload_len, off, ",") != 0) {
+                return -ENOSPC;
+            }
+            if (catalog_append_static_string(
+                    payload, payload_len, off,
+                    hispec_laser_name((enum hispec_laser_id)i)) != 0) {
+                return -ENOSPC;
+            }
+        }
+    }
+
+    return coo_json_append(payload, payload_len, off, "]");
+}
+
+static int catalog_append_route_name_array(char *payload, size_t payload_len,
+                                           size_t *off, const char *field,
+                                           bool inputs)
+{
+    const char *names[MEMS_ROUTER_MAX_ROUTES] = {0};
+    uint8_t count = 0U;
+
+    for (uint8_t i = 0U; router.routes != NULL && i < router.num_routes; ++i) {
+        const char *name = inputs ? router.routes[i].key.input_name :
+                                    router.routes[i].key.output_name;
+
+        if (!catalog_name_seen(names, count, name)) {
+            names[count++] = name;
+        }
+    }
+
+    if (coo_json_append(payload, payload_len, off, "\"%s\":[", field) != 0) {
+        return -ENOSPC;
+    }
+    for (uint8_t i = 0U; i < count; ++i) {
+        if (i > 0U &&
+            coo_json_append(payload, payload_len, off, ",") != 0) {
+            return -ENOSPC;
+        }
+        if (catalog_append_static_string(payload, payload_len, off, names[i]) != 0) {
+            return -ENOSPC;
+        }
+    }
+    return coo_json_append(payload, payload_len, off, "]");
+}
+
+static int catalog_append_routes(char *payload, size_t payload_len, size_t *off)
+{
+    if (coo_json_append(payload, payload_len, off, "\"routes\":[") != 0) {
+        return -ENOSPC;
+    }
+    for (uint8_t i = 0U; router.routes != NULL && i < router.num_routes; ++i) {
+        if (i > 0U &&
+            coo_json_append(payload, payload_len, off, ",") != 0) {
+            return -ENOSPC;
+        }
+        if (coo_json_append(payload, payload_len, off, "[") != 0 ||
+            catalog_append_static_string(payload, payload_len, off,
+                                         router.routes[i].key.input_name) != 0 ||
+            coo_json_append(payload, payload_len, off, ",") != 0 ||
+            catalog_append_static_string(payload, payload_len, off,
+                                         router.routes[i].key.output_name) != 0 ||
+            coo_json_append(payload, payload_len, off, "]") != 0) {
+            return -ENOSPC;
+        }
+    }
+    return coo_json_append(payload, payload_len, off, "]");
+}
+
+static int catalog_get(const struct coo_cmd_request *cmd,
+                       struct coo_cmd_response *out)
+{
+    char payload[MAX_PAYLOAD_LEN] = {0};
+    size_t off = 0U;
+
+    if (coo_json_append(payload, sizeof(payload), &off,
+                        "{\"board_type\":\"%s\",",
+                        devices_board_type_name()) != 0 ||
+        catalog_append_lasers(payload, sizeof(payload), &off) != 0 ||
+        coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
+        catalog_append_route_name_array(payload, sizeof(payload), &off,
+                                        "route_inputs", true) != 0 ||
+        coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
+        catalog_append_route_name_array(payload, sizeof(payload), &off,
+                                        "route_outputs", false) != 0 ||
+        coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
+        catalog_append_routes(payload, sizeof(payload), &off) != 0 ||
+        coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+        return coo_cmd_error(out, cmd, "catalog response too large");
+    }
+
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)

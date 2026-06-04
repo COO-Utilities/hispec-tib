@@ -111,6 +111,33 @@ int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
+static const char *laserbank_tempcontrol_auto_state(
+	const struct laserbank_tempcontrol_status *status)
+{
+	if (status == NULL) {
+		return "unknown";
+	}
+	if (status->heater_mode == LASERBANK_HEATER_MODE_OVERRIDE_ON) {
+		return "override_on";
+	}
+	if (status->heater_mode == LASERBANK_HEATER_MODE_OVERRIDE_OFF) {
+		return "override_off";
+	}
+	if (status->stale_temp_count == HISPEC_LASER_COUNT) {
+		return "waiting_for_temps";
+	}
+	if (status->any_disabled_below_15c) {
+		return "warming_disabled_tec";
+	}
+	if (status->any_disabled_above_off_threshold) {
+		return "disabled_tec_warm";
+	}
+	if (status->all_tecs_enabled) {
+		return "tecs_running";
+	}
+	return "holding";
+}
+
 static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
 {
 	struct laserbank_tempcontrol_status status = {0};
@@ -120,24 +147,19 @@ static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_l
 	poll_age_s = (double)status.last_poll_age_ms / 1000.0;
 	snprintk(payload, payload_len,
 		 "{\"mode\":\"%s\","
+		 "\"auto_state\":\"%s\","
 		 "\"heater_on\":%s,\"bank_power\":%s,"
 		 "\"ambient_valid\":%s,\"ambient_c\":%.2f,"
 		 "\"valid_temps\":%u,\"stale_temps\":%u,"
-		 "\"any_disabled_below_15c\":%s,"
-		 "\"any_disabled_above_off_threshold\":%s,"
-		 "\"all_tecs_enabled\":%s,\"all_tecs_enabled_ms\":%u,"
 		 "\"last_error\":%d,\"poll_age_s\":%.3f}",
 		 laserbank_heater_mode_name(status.heater_mode),
+		 laserbank_tempcontrol_auto_state(&status),
 		 status.heater_on ? "true" : "false",
 		 status.bank_powered ? "true" : "false",
 		 status.ambient_valid ? "true" : "false",
 		 (double)status.ambient_c,
 		 status.valid_temp_count,
 		 status.stale_temp_count,
-		 status.any_disabled_below_15c ? "true" : "false",
-		 status.any_disabled_above_off_threshold ? "true" : "false",
-		 status.all_tecs_enabled ? "true" : "false",
-		 status.all_tecs_enabled_ms,
 		 status.last_error,
 		 poll_age_s);
 }

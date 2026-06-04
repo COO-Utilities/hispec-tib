@@ -134,6 +134,7 @@ not be needed for normal serial operation.
 
 ## Command Endpoints
 - [`help`](#help)
+- [`catalog`](#catalog)
 - [`memsroute`](#memsroute)
 - [`memsroute/route_loss`](#route-loss)
 - [`mems`](#mems)
@@ -229,6 +230,23 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
   MQTT help is intentionally compact so it does not consume the payload budget
   with the full serial help text.
+
+(catalog)=
+### `catalog`
+- **No payload -> static name catalog for the selected board profile:**
+  ```json
+  {
+    "board_type": "tib",
+    "lasers": ["1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k"],
+    "route_inputs": ["yj_1430", "yj_cal"],
+    "route_outputs": ["yj_ao", "yj_fei"],
+    "routes": [["yj_1430", "yj_ao"], ["yj_cal", "yj_fei"]]
+  }
+  ```
+- **Notes:** `route_inputs`, `route_outputs`, and `routes` come from the
+  board-selected MEMS route table. `routes` is the authoritative list of valid
+  input/output pairs for `memsroute` and route-bearing commands. `lasers` is
+  populated on TIB and empty on non-TIB board profiles.
 
 (memsroute)=
 ### `memsroute`
@@ -789,16 +807,13 @@ off or no faults).
   ```json
   {
     "mode": "auto|override_on|override_off",
+    "auto_state": "waiting_for_temps|warming_disabled_tec|disabled_tec_warm|tecs_running|holding|override_on|override_off",
     "heater_on": false,
     "bank_power": true,
     "ambient_valid": true,
     "ambient_c": 0.0,
     "valid_temps": 6,
     "stale_temps": 0,
-    "any_disabled_below_15c": false,
-    "any_disabled_above_off_threshold": false,
-    "all_tecs_enabled": false,
-    "all_tecs_enabled_ms": 0,
     "last_error": 0,
     "poll_age_s": 0.0
   }
@@ -816,16 +831,19 @@ off or no faults).
   temperature-control work powers the bank so the Maiman temperature monitors
   can initialize, polls TEC temperatures at a fixed interval, and drives the
   laser-bank heater through housekeeping relay-power helpers.
-  `any_disabled_below_15c` means at least one non-stale laser channel has its
-  TEC disabled while measured below 15 C; this turns the heater on.
-  `any_disabled_above_off_threshold` means at least one non-stale disabled TEC
-  is above the off threshold; this turns the heater off. The off threshold is
-  15 C when ambient is valid and above 15 C, otherwise 20 C. If all laser
-  temperatures are stale, auto mode turns the heater off when ambient is invalid
-  or at least 15 C. When valid ambient is below 15 C, auto mode powers the bank
-  so driver temperature monitors can initialize and leaves heater state
-  unchanged until valid laser temperature data is available. If all TECs remain
-  enabled for at least one control interval, the heater is turned off.
+  `auto_state` summarizes the internal policy state without exposing the
+  control-loop booleans: `waiting_for_temps` means the cached driver
+  temperatures are stale; `warming_disabled_tec` means at least one valid driver
+  reports a disabled TEC below the heater-on threshold; `disabled_tec_warm`
+  means at least one disabled TEC is warm enough for heater turnoff;
+  `tecs_running` means all valid TECs are enabled; `holding` means no heater
+  state change was requested in the latest loop. The off threshold is 15 C when
+  ambient is valid and above 15 C, otherwise 20 C. If all laser temperatures are
+  stale, auto mode turns the heater off when ambient is invalid or at least 15 C.
+  When valid ambient is below 15 C, auto mode powers the bank so driver
+  temperature monitors can initialize and leaves heater state unchanged until
+  valid laser temperature data is available. If all TECs remain enabled for at
+  least one control interval, the heater is turned off.
   `override_on` and `override_off` force the heater state and suspend the
   automatic warmup policy. While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.

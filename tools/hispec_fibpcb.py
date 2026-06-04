@@ -112,6 +112,15 @@ class HelpSummary:
 
 
 @dataclass(frozen=True)
+class Catalog:
+    board_type: str
+    lasers: tuple[str, ...]
+    route_inputs: tuple[str, ...]
+    route_outputs: tuple[str, ...]
+    routes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class MqttConfig:
     broker: str
     dns_supported: bool
@@ -358,16 +367,13 @@ class LaserBankClearFaults:
 @dataclass(frozen=True)
 class LaserBankHeater:
     mode: str
+    auto_state: str
     heater_on: bool
     bank_power: bool
     ambient_valid: bool
     ambient_c: float
     valid_temps: int
     stale_temps: int
-    any_disabled_below_15c: bool
-    any_disabled_above_off_threshold: bool
-    all_tecs_enabled: bool
-    all_tecs_enabled_ms: int
     last_error: int
     poll_age_s: float
 
@@ -639,6 +645,16 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
 
 def _decode_help(data: Mapping[str, Any]) -> HelpSummary:
     return HelpSummary(help=str(data.get("help", "")))
+
+
+def _decode_catalog(data: Mapping[str, Any]) -> Catalog:
+    return Catalog(
+        board_type=str(data["board_type"]),
+        lasers=tuple(str(name) for name in data.get("lasers", ())),
+        route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
+        route_outputs=tuple(str(name) for name in data.get("route_outputs", ())),
+        routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
+    )
 
 
 def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
@@ -1139,6 +1155,9 @@ class HispecFibPcb:
 
     def help(self) -> HelpSummary:
         return _decode_help(self._request_json("help"))
+
+    def catalog(self) -> Catalog:
+        return _decode_catalog(self._request_json("catalog"))
 
     def status(self, *, ip: bool = False, lasers: bool = False, attens: bool = False) -> Status:
         payload = _optional_payload(ip=ip or None, lasers=lasers or None, attens=attens or None)
