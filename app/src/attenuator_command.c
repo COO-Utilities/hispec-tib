@@ -300,7 +300,7 @@ static int parse_calibration_batch_object(
 		return COO_JSON_EXTRACT_ERR;
 	}
 
-	rc = coo_json_extract_double_array(object_json, "voltage_mv",
+	rc = coo_json_extract_double_array(object_json, "v_mV",
 					   batch->voltage_mv,
 					   ATTENUATOR_CAL_POINT_COUNT,
 					   &voltage_len);

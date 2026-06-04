@@ -63,7 +63,7 @@ THROUGHPUT_DTYPE = np.dtype(
         ("channel", "U8"),
         ("laser", "U16"),
         ("autolevel", "?"),
-        ("time", "u8"),
+        ("t_ms", "u8"),
         ("tp", "f8"),
         ("tp_err", "f8"),
         ("tp_rms_err", "f8"),
@@ -120,7 +120,7 @@ class HelpSummary:
 
 @dataclass(frozen=True)
 class Catalog:
-    board_type: str
+    board: str
     lasers: tuple[str, ...]
     route_inputs: tuple[str, ...]
     route_outputs: tuple[str, ...]
@@ -150,13 +150,13 @@ class IpActiveConfig:
 
 @dataclass(frozen=True)
 class NtpConfig:
-    source: str
+    src: str
     server: str
 
 
 @dataclass(frozen=True)
 class IpConfig:
-    source: str
+    src: str
     trydhcpfirst: bool
     preferdhcpdns: bool
     preferdhcpntp: bool
@@ -188,15 +188,15 @@ class SerialGuardStatus:
 @dataclass(frozen=True)
 class LastCommand:
     name: str
-    source: str
-    time: int
+    src: str
+    t_ms: int
 
 
 @dataclass(frozen=True)
 class StatusLaserSummary:
     power_mw: float | None = None
-    tec_on_time_s: float = 0.0
-    offin_s: int = 0
+    tec_on_s: float = 0.0
+    off_in_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -206,16 +206,16 @@ class StatusAttenSummary:
 
 @dataclass(frozen=True)
 class Status:
-    fwversion: str
-    bootcount: int
-    board_type: str
-    board_valid: bool
+    fw: str
+    boots: int
+    board: str
+    board_ok: bool
     mems_switches: int
-    relay_gpio_error: int
-    temp_c: float | None
-    pd_ontime: float
-    laserbank_ontime: int
-    lastcommand: LastCommand
+    relay_err: int
+    amb_c: float | None
+    pd_on_s: float
+    laserbank_on_s: int
+    lastcmd: LastCommand
     ip: IpConfig | None = None
     lasers: tuple[NamedValue, ...] = ()
     attens: tuple[NamedValue, ...] = ()
@@ -265,7 +265,7 @@ class LaserStatus:
     emit_on_s: float
     emit_total_s: float
     temp_c: float | None
-    current_ma: float | None
+    i_mA: float | None
     level: float | None
     power_mw: float | None
     nominal_nm: float
@@ -274,7 +274,7 @@ class LaserStatus:
     tec_ma: float | None
     diode_v: float | None
     tec_v: float | None
-    offin_s: int
+    off_in_s: int
     oc_fault: bool
 
 
@@ -417,7 +417,7 @@ class AttenuatorFitMetrics:
 
 @dataclass(frozen=True)
 class AttenuatorCalibrationBatch:
-    voltage_mv: tuple[float, ...]
+    v_mV: tuple[float, ...]
     flux: tuple[float, ...]
 
 
@@ -436,7 +436,7 @@ class AttenuatorCalibrationStatus:
     error: int
     dac1: AttenuatorFitMetrics
     dac2: AttenuatorFitMetrics
-    voltage_mv: tuple[float, ...] = ()
+    v_mV: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -524,7 +524,7 @@ class ThroughputSample:
     channel: str
     laser: str
     autolevel: bool
-    time: int
+    t_ms: int
     tp: float
     tp_err: float
     tp_rms_err: float
@@ -653,7 +653,7 @@ def _decode_help(data: Mapping[str, Any]) -> HelpSummary:
 
 def _decode_catalog(data: Mapping[str, Any]) -> Catalog:
     return Catalog(
-        board_type=str(data["board_type"]),
+        board=str(data["board"]),
         lasers=tuple(str(name) for name in data.get("lasers", ())),
         route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
         route_outputs=tuple(str(name) for name in data.get("route_outputs", ())),
@@ -663,7 +663,7 @@ def _decode_catalog(data: Mapping[str, Any]) -> Catalog:
 
 def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
     return IpConfig(
-        source=str(data["source"]),
+        src=str(data["src"]),
         trydhcpfirst=bool(data["trydhcpfirst"]),
         preferdhcpdns=bool(data["preferdhcpdns"]),
         preferdhcpntp=bool(data["preferdhcpntp"]),
@@ -678,8 +678,8 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         data.get("lasers", {}),
         lambda _name, value: StatusLaserSummary(
             power_mw=value.get("power_mw"),
-            tec_on_time_s=float(value.get("tec_on_time_s", 0.0)),
-            offin_s=int(value.get("offin_s", 0)),
+            tec_on_s=float(value.get("tec_on_s", 0.0)),
+            off_in_s=int(value.get("off_in_s", 0)),
         ),
     )
     attens = _named_values(
@@ -687,16 +687,16 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         lambda _name, value: StatusAttenSummary(level_percent=value.get("level_%")),
     )
     return Status(
-        fwversion=str(data["fwversion"]),
-        bootcount=int(data["bootcount"]),
-        board_type=str(data["board_type"]),
-        board_valid=bool(data["board_valid"]),
+        fw=str(data["fw"]),
+        boots=int(data["boots"]),
+        board=str(data["board"]),
+        board_ok=bool(data["board_ok"]),
         mems_switches=int(data["mems_switches"]),
-        relay_gpio_error=int(data["relay_gpio_error"]),
-        temp_c=data.get("temp_c"),
-        pd_ontime=float(data["pd_ontime"]),
-        laserbank_ontime=int(data["laserbank_ontime"]),
-        lastcommand=_dataclass_from(LastCommand, data["lastcommand"]),
+        relay_err=int(data["relay_err"]),
+        amb_c=data.get("amb_c"),
+        pd_on_s=float(data["pd_on_s"]),
+        laserbank_on_s=int(data["laserbank_on_s"]),
+        lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
         ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
         lasers=lasers,
         attens=attens,
@@ -832,34 +832,34 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
         error=int(data["error"]),
         dac1=_decode_atten_fit(data.get("dac1", {"valid": False})),
         dac2=_decode_atten_fit(data.get("dac2", {"valid": False})),
-        voltage_mv=tuple(float(v) for v in data.get("voltage_mv", ())),
+        v_mV=tuple(float(v) for v in data.get("v_mV", ())),
     )
 
 
 def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any]) -> dict[str, list[float]]:
     if isinstance(batch, AttenuatorCalibrationBatch):
-        voltage_mv = batch.voltage_mv
+        voltage_mv = batch.v_mV
         flux = batch.flux
     elif isinstance(batch, Mapping):
-        voltage_mv = batch.get("voltage_mv", ())
+        voltage_mv = batch.get("v_mV", ())
         flux = batch.get("flux", ())
     else:
         if len(batch) != 2:
-            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (voltage_mv, flux)")
+            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (v_mV, flux)")
         voltage_mv = batch[0]
         flux = batch[1]
 
     voltage_values = tuple(float(v) for v in voltage_mv)
     flux_values = tuple(float(v) for v in flux)
     if len(voltage_values) != len(flux_values):
-        raise HispecFibError(f"{name} voltage_mv and flux lengths differ")
+        raise HispecFibError(f"{name} v_mV and flux lengths differ")
     if len(voltage_values) < 6 or len(voltage_values) > 20:
         raise HispecFibError(f"{name} must contain 6 to 20 points")
     if any(not np.isfinite(v) for v in voltage_values):
-        raise HispecFibError(f"{name} voltage_mv contains non-finite values")
+        raise HispecFibError(f"{name} v_mV contains non-finite values")
     if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
         raise HispecFibError(f"{name} flux values must be positive and finite")
-    return {"voltage_mv": list(voltage_values), "flux": list(flux_values)}
+    return {"v_mV": list(voltage_values), "flux": list(flux_values)}
 
 
 def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
@@ -919,7 +919,7 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             channel=str(data.get("channel", "")),
             laser=str(data.get("laser", "")),
             autolevel=bool(data.get("autolevel", False)),
-            time=int(data.get("time", 0)),
+            t_ms=int(data.get("t_ms", 0)),
             tp=_float_or_nan(data.get("tp", np.nan)),
             tp_err=_float_or_nan(data.get("tp_err", np.nan)),
             tp_rms_err=_float_or_nan(data.get("tp_rms_err", np.nan)),
@@ -956,7 +956,7 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         channel=channel,
         laser="",
         autolevel=False,
-        time=int(values[1]),
+        t_ms=int(values[1]),
         tp=float(f64[0]),
         tp_err=float(f64[1]),
         tp_rms_err=float(f64[2]),
@@ -1050,7 +1050,7 @@ class ThroughputMonitor:
     def plot_live(
         self,
         *,
-        x: str = "time",
+        x: str = "t_ms",
         y: str = "tp",
         interval_s: float = 0.5,
         max_points: int | None = None,
@@ -1229,10 +1229,10 @@ class HispecFibPcb:
     def time(self) -> TimeStatus:
         return _dataclass_from(TimeStatus, self._request_json("time"))
 
-    def set_time(self, linuxtime_ms: int | None = None) -> CommandOk:
-        if linuxtime_ms is None:
-            linuxtime_ms = int(time.time() * 1000)
-        return self._request_ok("time", {"linuxtime_ms": int(linuxtime_ms)})
+    def set_time(self, unix_ms: int | None = None) -> CommandOk:
+        if unix_ms is None:
+            unix_ms = int(time.time() * 1000)
+        return self._request_ok("time", {"unix_ms": int(unix_ms)})
 
     def temp(self) -> TempStatus:
         return _decode_temp(self._request_json("temp"))

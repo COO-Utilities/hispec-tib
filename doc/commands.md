@@ -236,7 +236,7 @@ while serial guard is active and attenuator DAC-range clamping.
 - **No payload -> static name catalog for the selected board profile:**
   ```json
   {
-    "board_type": "tib",
+    "board": "tib",
     "lasers": ["1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k"],
     "route_inputs": ["yj_1430", "yj_cal"],
     "route_outputs": ["yj_ao", "yj_fei"],
@@ -487,7 +487,7 @@ decisions, and throughput math.
   "channel": "yj_m",
   "laser": "1430yj",
   "autolevel": true,
-  "time": 0,
+  "t_ms": 0,
   "tp": 0.0,
   "tp_err": 0.0,
   "tp_rms_err": 0.0,
@@ -513,7 +513,7 @@ decisions, and throughput math.
 ```
 
 `channel` combines the photodiode channel and fiber class with an underscore,
-for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `time` is Unix time in
+for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
 milliseconds from the firmware clock. `pd_ontime_s` is the tracked on-time of
 the photodiode power relay for that channel since boot; it does not infer
 pre-boot relay state.
@@ -525,7 +525,7 @@ first field is a zero-padded 8-byte ASCII channel/fiber label such as `yj_m`.
 
 ```text
 char[8] channel
-uint64 time_ms
+uint64 t_ms
 float64 tp
 float64 tp_err
 float64 tp_rms_err
@@ -590,7 +590,7 @@ float64 laser_current_ontime_s
     "emit_on_s": 0,
     "emit_total_s": 0,
     "temp_c": 0.0,
-    "current_ma": 0.0,
+    "i_mA": 0.0,
     "level": 0.0,
     "power_mw": 0.0,
     "nominal_nm": 0.0,
@@ -599,7 +599,7 @@ float64 laser_current_ontime_s
     "tec_ma": 0.0,
     "diode_v": 0.0,
     "tec_v": 0.0,
-    "offin_s": 0,
+    "off_in_s": 0,
     "oc_fault": false
   }
   ```
@@ -1011,11 +1011,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     "attenuator": "lfc",
     "persistent": true,
     "dac1": {
-      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     },
     "dac2": {
-      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     }
   }
@@ -1036,7 +1036,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     thread. It does not start a new calibration thread; the throughput monitor
     thread advances the state machine.
   - The fit converts normalized flux to the attenuator model coordinate and
-    uses zscilib simple linear regression for `b = slope * voltage_mv + offset`.
+    uses zscilib simple linear regression for `b = slope * v_mV + offset`.
     Fit details include point count, correlation, residual RMS/max in dB, fitted
     transmission span, and voltage span.
   - Manual calibration returns the voltage schedule on completion or stop so an
@@ -1184,7 +1184,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **No payload -> IP configuration:**
   ```json
   {
-    "source": "<source>",
+    "src": "<source>",
     "trydhcpfirst": true,
     "preferdhcpdns": true,
     "preferdhcpntp": true,
@@ -1200,7 +1200,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "ip": "<ip>"
     },
     "ntp": {
-      "source": "<source>",
+      "src": "<source>",
       "server": "<ip>"
     }
   }
@@ -1295,7 +1295,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
 - **Payload:** set firmware time.
   ```json
-  {"linuxtime_ms":0}
+  {"unix_ms":0}
   ```
 
 - **Notes:** set time may be overwritten later by NTP if configured and responding.
@@ -1334,21 +1334,21 @@ command wait budget, this command returns `{"error":"busy"}`.
   Response:
   ```json
   {
-    "fwversion": "<githash>",
-    "bootcount": 0,
-    "board_type": "tib|cal_yj|cal_hk|as|unknown",
-    "board_valid": true,
+    "fw": "<githash>",
+    "boots": 0,
+    "board": "tib|cal_yj|cal_hk|as|unknown",
+    "board_ok": true,
     "mems_switches": 8,
-    "relay_gpio_error": 0,
+    "relay_err": 0,
     "ip": "<response of ip command query>",
-    "temp_c": 0.0,
-    "pd_ontime": 0,
-    "laserbank_ontime": 0,
+    "amb_c": 0.0,
+    "pd_on_s": 0,
+    "laserbank_on_s": 0,
     "lasers": {
       "<lasername>": {
         "power_mw": 0.0,
-        "tec_on_time_s": 0,
-        "offin_s": 0
+        "tec_on_s": 0,
+        "off_in_s": 0
       }
     },
     "attens": {
@@ -1356,15 +1356,15 @@ command wait budget, this command returns `{"error":"busy"}`.
         "level_%": 0.0
       }
     },
-    "lastcommand": {
+    "lastcmd": {
       "name": "<cmdname>",
-      "source": "mqtt",
-      "time": 0
+      "src": "mqtt",
+      "t_ms": 0
     }
   }
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
-  `lastcommand` is restored from command-dispatch NVS storage when available.
+  `lastcmd` is restored from command-dispatch NVS storage when available.
 
 
 (reboot)=

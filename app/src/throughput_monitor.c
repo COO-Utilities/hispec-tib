@@ -378,7 +378,7 @@ static void publish_sample(const struct throughput_state *state,
 
 	if (coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			"{\"channel\":\"%s\",\"laser\":\"%s\","
-			"\"autolevel\":%s,\"time\":%llu,\"tp\":",
+			"\"autolevel\":%s,\"t_ms\":%llu,\"tp\":",
 			channel_fiber, laser_name, state->autolevel ? "true" : "false",
 			(unsigned long long)time_ms) != 0 ||
 	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, tp, 6) != 0 ||

@@ -241,7 +241,7 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->tec_temperature_measured_c, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
-			    ",\"current_ma\":") != 0 ||
+			    ",\"i_mA\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->current_set_ma, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
@@ -271,7 +271,7 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->tec_voltage_v, 3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
-			    ",\"offin_s\":%lld,\"oc_fault\":%s}",
+			    ",\"off_in_s\":%lld,\"oc_fault\":%s}",
 			    (long long)status->off_in_s,
 			    status->lock_ld_overcurrent ? "true" : "false") != 0) {
 		return -ENOSPC;

@@ -147,11 +147,11 @@ static const struct coo_cmd_spec command_specs[] = {
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
     { .key = "time", .query_handler = time_get, .effect_handler = time_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
-      .serial_positional = { .field = { "linuxtime_ms" }, .required_count = 1U,
+      .serial_positional = { .field = { "unix_ms" }, .required_count = 1U,
                              .numeric_mask = BIT(0) },
       .mqtt_query_allowed_during_serial_guard = true,
-      CMD_HELP("time [linuxtime_ms=<utc-ms>]",
-               "linuxtime_ms required for effect",
+      CMD_HELP("time [unix_ms=<utc-ms>]",
+               "unix_ms required for effect",
                "unsigned millisecond Unix epoch",
                "sets Zephyr realtime clock and records last known UTC",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
@@ -604,11 +604,11 @@ static int ip_status_payload(char *payload, size_t payload_len)
 #endif
 
     written = snprintk(payload, payload_len,
-                       "{\"source\":\"%s\",\"trydhcpfirst\":%s,"
+                       "{\"src\":\"%s\",\"trydhcpfirst\":%s,"
                        "\"preferdhcpdns\":%s,\"preferdhcpntp\":%s,"
                        "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"},"
                        "\"active\":{\"ready\":%s,\"ip\":\"%s\"},"
-                       "\"ntp\":{\"source\":\"%s\",\"server\":\"%s\"}}",
+                       "\"ntp\":{\"src\":\"%s\",\"server\":\"%s\"}}",
                        network_ipv4_source_str(net.source),
                        ip_cfg.try_dhcp_first ? "true" : "false",
                        ip_cfg.prefer_dhcp_dns ? "true" : "false",
@@ -940,12 +940,12 @@ int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     struct timespec ts = {0};
     int parse_rc;
 
-    parse_rc = coo_json_extract_u64(cmd->payload, "linuxtime_ms", &utc_ms);
+    parse_rc = coo_json_extract_u64(cmd->payload, "unix_ms", &utc_ms);
     if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(out, cmd, "missing linuxtime_ms");
+        return coo_cmd_error(out, cmd, "missing unix_ms");
     }
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "invalid linuxtime_ms");
+        return coo_cmd_error(out, cmd, "invalid unix_ms");
     }
 
     ts.tv_sec = utc_ms / 1000ULL;
@@ -1062,7 +1062,7 @@ static int catalog_get(const struct coo_cmd_request *cmd,
     size_t off = 0U;
 
     if (coo_json_append(payload, sizeof(payload), &off,
-                        "{\"board_type\":\"%s\",",
+                        "{\"board\":\"%s\",",
                         devices_board_type_name()) != 0 ||
         catalog_append_lasers(payload, sizeof(payload), &off) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
@@ -1107,10 +1107,10 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     housekeeping_get_temperature_status(&ts);
     has_lastcommand = coo_cmd_runtime_get_lastcommand(&command_runtime, &lastcommand);
     if (coo_json_append(payload, sizeof(payload), &off,
-                        "{\"fwversion\":\"%s\",\"bootcount\":%u,"
-                        "\"board_type\":\"%s\",\"board_valid\":%s,"
-                        "\"mems_switches\":%u,\"relay_gpio_error\":%d,"
-                        "\"temp_c\":",
+                        "{\"fw\":\"%s\",\"boots\":%u,"
+                        "\"board\":\"%s\",\"board_ok\":%s,"
+                        "\"mems_switches\":%u,\"relay_err\":%d,"
+                        "\"amb_c\":",
                         APP_VERSION_STRING,
                         app_settings_get_boot_count(),
                         devices_board_type_name(),
@@ -1120,8 +1120,8 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"pd_ontime\":%.1f,"
-                        "\"laserbank_ontime\":%u",
+                        ",\"pd_on_s\":%.1f,"
+                        "\"laserbank_on_s\":%u",
                         (double)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
                                     housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE)),
                         hispec_laser_bank_power_on_duration_s()) != 0) {
@@ -1153,7 +1153,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                 coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                               rc == 0 ? laser.estimated_power_mw : (double)NAN, 3) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off,
-                                ",\"tec_on_time_s\":%.1f,\"offin_s\":%lld}",
+                                ",\"tec_on_s\":%.1f,\"off_in_s\":%lld}",
                                 rc == 0 ? (double)laser.tec_on_time_s : 0.0,
                                 rc == 0 ? (long long)laser.off_in_s : 0LL) != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
@@ -1200,8 +1200,8 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     if (has_lastcommand &&
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"lastcommand\":{\"name\":\"%s\",\"source\":\"%s\","
-                        "\"time\":%lld}}",
+                        ",\"lastcmd\":{\"name\":\"%s\",\"src\":\"%s\","
+                        "\"t_ms\":%lld}}",
                         lastcommand.request.key,
                         coo_cmd_source_name(lastcommand.request.source),
                         (long long)lastcommand.time_ms) != 0) {
@@ -1209,8 +1209,8 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
     if (!has_lastcommand &&
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"lastcommand\":{\"name\":\"\",\"source\":\"unknown\","
-                        "\"time\":0}}") != 0) {
+                        ",\"lastcmd\":{\"name\":\"\",\"src\":\"unknown\","
+                        "\"t_ms\":0}}") != 0) {
         return coo_cmd_error(out, cmd, "status response too large");
     }
 

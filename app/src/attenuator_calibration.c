@@ -1015,7 +1015,7 @@ int attenuator_calibration_format_status(
 	}
 
 	if (status->include_voltage_schedule) {
-		if (coo_json_append(payload, payload_len, &off, ",\"voltage_mv\":[") != 0) {
+		if (coo_json_append(payload, payload_len, &off, ",\"v_mV\":[") != 0) {
 			return -ENOSPC;
 		}
 		for (uint8_t i = 0U; i < ATTENUATOR_CAL_POINT_COUNT; ++i) {
