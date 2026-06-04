@@ -58,14 +58,26 @@ LLMs Agents: Do NOT change heading names in this file.
   `requested_toggle_rate_hz`, and `toggle_rate_hz` with six decimal places.
 - [ ] Verify `laserbank/power` and `laserbank/heater` now use `mode` as the
   only payload key; the old `override` payload key is intentionally dropped.
-- [ ] Verify `laserbank/heater` now reports `mode` and `poll_age_s`, and that
-  `commands.md` documents the `any_disabled_*` flags.
+- [ ] Verify `laserbank/heater` now reports compact algorithm-facing status
+  without the old wordy `all_tecs_enabled` / `any_disabled_below_15c` fields.
 - [ ] Verify heater `auto` mode turns the heater off when all laser temperatures
   are stale and ambient is invalid or at least 15 C.
 - [ ] Verify `pcb.set_serialguard(seconds)` no longer sends `persistent:false`
   and can update expiry while serial guard is active.
 - [ ] Verify photodiode channel defaults are now named in `photodiode.h` and
   consumed by `app_settings.c`.
+- [ ] Verify `catalog` / MQTT help enumeration covers route, input, output, and
+  laser names well enough for operator discovery.
+- [ ] Verify `laser/settings` temporarily powers the bank for driver-backed
+  updates and documents that `default_operating_temp_c` is the TEC start
+  setpoint.
+- [ ] Verify `pdsettings` reports `dark_duration_ms`, `dark_noise_rms_mv`, and
+  `lowest_stored_dark_mv` without exposing `lowest_dark_valid`.
+- [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
+  correction coefficient table; all coefficients are intentionally `1.0` until
+  lab values are installed.
+- [ ] Verify app-settings NVS load validation now delegates semantic checks to
+  attenuator, photodiode, and laser-owned helpers.
 
 
 ## Decisions To Make
@@ -75,31 +87,23 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## TODOs
 
-- Add command to enumerate route names, input and output names, laser names
-- bank power mode in auto  does not autopower  for a laser_status query, I guess that makes sense, but not for things like serial query
-
-- bank power in auto does not autopower for setting a laser setting:
-  - If the laser bank is off, firmware powers it, applies driver-backed settings, verifies them as practical, and then restores the previous bank power state. If laserbank/power is override_off, driver-backed settings changes return an error.
-  - and yet:
-    - pcb.set_laser_settings('2330k', default_operating_temp_c=25)
-      Out[26]: CommandOk(status='ok')
 - yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.
-- python gets dark via pdsettings
-- pdsettings includes:
-  - average='complete', average_duration_ms=2000, average_samples=100, average_target_samples=100, that are all likly for dark measurement
-  - replace with only dark_duration_ms=# or dark_duration_ms='user' (for if it was set by the user) do not record user dark values into lowest seen
-  - drop lowest_dark_valid as after the very first recording it will always be valid
-- after measuring dark with no persistence "lowest_dark_valid" still says false and docs do not describe what it is after measuring with store=true lowest_dark_valid=true, rename to lowest_stored_dark_mv, drop lowest_dark_valid, and replace with nan if it isn't valid, add a cell for the analytical noise on the dark per the noise chain and number of samples, and adc sample rate 
+- TODO: test dark settings and persistence, especially `dark_duration_ms`,
+  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
 
--todo test dark settings and persistence but  noise_rms_mV works and does persistence over reboots no reason to suspect others don't
+- Status needs to gain things we actually want.
 
-- status needs to gain things we actually want
+- Laser needs some thought around serial its unsettability and serial ok, maybe going ok on the first boot after a serial change (cause it gets saved?)
 
-- reporting of "all_tecs_enabled": false, "all_tecs_enabled_ms": 0 seems out of place probably axe, maybe keep but refactor packaging so relavance is clear
-
-- laser needs some thought around serial its unsettability and serial ok, maybe going ok on the first boot after a serial change (cause it gets saved?)
-
-- im seeing signs that laser commands can fail if the periodic laser temp polling is happening
+- Investigate Maiman Modbus interaction between foreground laser commands and
+  periodic temperature polling.
+  - Observation: a connected laser driver can be queried reliably on its Modbus
+    channel with the other five drivers physically disconnected unless the query
+    occurs around periodic temperature-polling errors from disconnected drivers.
+  - This suggests a real higher-level interaction even if the low-level Modbus
+    calls are mutex-serialized. Check polling lock hold time, timeout budget,
+    offline-channel backoff, and whether temperature polling is too greedy around
+    absent/faulting drivers.
   - [01:04:10.613,000] <inf> coo_mqtt: topic: 'cmd/hsfib-tib/req/laser/engstatus', payload: {"name":"2330k"}
     [01:04:10.613,000] <inf> coo_command_dispatch: Dispatching: laser/engstatus
     [01:04:10.623,000] <wrn> modbus: Client wait-for-RX timeout
