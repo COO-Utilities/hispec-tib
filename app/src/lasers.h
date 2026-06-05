@@ -20,6 +20,7 @@
 #include "maiman.h"
 
 struct app_laser_channel_settings;
+struct k_work_q;
 
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
@@ -186,6 +187,14 @@ uint32_t hispec_laser_bank_power_on_duration_s(void);
 enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
 const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
 int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
+
+/**
+ * @brief Bind laser auto-off delayable work to an app-owned blocking workqueue.
+ *
+ * Auto-off may stop Maiman output over Modbus, so it must not run on Zephyr's
+ * system workqueue where Modbus client RX completion also runs.
+ */
+void hispec_laser_autooff_start(struct k_work_q *work_q);
 
 /**
  * @brief Set the TIB laser-bank supply GPIO.

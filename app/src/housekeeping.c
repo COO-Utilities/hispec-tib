@@ -42,6 +42,7 @@ static struct power_on_time_runtime power_on_time[HOUSEKEEPING_POWER_OUTPUT_COUN
 
 static void temperature_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(temperature_work, temperature_work_handler);
+static struct k_work_q *temperature_work_q;
 
 static void temperature_update(double ambient_c, int error, bool valid)
 {
@@ -269,10 +270,17 @@ static void temperature_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	(void)temperature_sample_once();
-	(void)k_work_reschedule(&temperature_work, K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
+	(void)k_work_reschedule_for_queue(temperature_work_q, &temperature_work,
+					  K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
 }
 
-void housekeeping_start(void)
+void housekeeping_start(struct k_work_q *work_q)
 {
-	(void)k_work_reschedule(&temperature_work, K_NO_WAIT);
+	__ASSERT_NO_MSG(work_q != NULL);
+	if (work_q == NULL) {
+		return;
+	}
+
+	temperature_work_q = work_q;
+	(void)k_work_reschedule_for_queue(temperature_work_q, &temperature_work, K_NO_WAIT);
 }

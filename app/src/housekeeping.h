@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct k_work_q;
+
 struct housekeeping_temperature_status {
 	double ambient_c;
 	uint32_t age_ms;
@@ -47,9 +49,9 @@ double housekeeping_power_on_time_s(enum housekeeping_power_output output);
 /**
  * Start ambient-temperature cache refresh work.
  *
- * The delayable work runs in Zephyr system workqueue context and may block
- * briefly on DS18B20 sensor I/O. Relay power helpers remain direct calls.
+ * The delayable work is submitted to @p work_q and may block briefly on
+ * DS18B20 sensor I/O. Relay power helpers remain direct calls.
  */
-void housekeeping_start(void);
+void housekeeping_start(struct k_work_q *work_q);
 
 #endif /* HISPEC_HOUSEKEEPING_H */

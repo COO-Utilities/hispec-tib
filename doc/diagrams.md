@@ -327,7 +327,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Work[ambient temperature delayable work] --> Find[find DS18B20]
+  Work[app-blocking ambient delayable work] --> Find[find DS18B20]
   Find --> Ready{device ready}
   Ready -- no --> InitErr[cache unavailable status]
   InitErr --> Wait[next ambient sample]
@@ -421,7 +421,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Work[laser-bank temp-control delayable work] --> Cycle[run laserbank temp-control pass]
+  Work[app-blocking laser-bank temp-control work] --> Cycle[run laserbank temp-control pass]
   Cycle --> Settings[read laserbank settings]
   Settings --> Ambient[read cached ambient temperature]
   Ambient --> Power[read bank power state]
@@ -476,7 +476,7 @@ flowchart TD
   Clear --> Ok
   ScheduleTimeout --> Ok
 
-  TimeoutActor[laser auto-off delayable work] --> Service[service expired auto-off deadlines]
+  TimeoutActor[app-blocking laser auto-off work] --> Service[service expired auto-off deadlines]
   Service --> Expired{deadline expired}
   Expired -- no --> Wait[reschedule nearest deadline]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]

@@ -48,6 +48,12 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
  * and lasers, so keep MEMS and photodiode sampling ahead of it.
  */
 #define THROUGHPUT_MONITOR_PRIORITY 3
+#define APP_BLOCKING_WORKQ_STACK_SIZE 3072
+/* Zephyr Modbus parses client RX frames on the system workqueue. App-owned
+ * background work that can block on Modbus, 1-Wire, or slow GPIO must run below
+ * command execution on a separate queue so it cannot starve Modbus RX parsing.
+ */
+#define APP_BLOCKING_WORKQ_PRIORITY 7
 #define APP_TIMING_SUMMARY_LOGS 0
 
 /* Network setup returns after starting DHCP/static policy; DHCP fallback is a
@@ -67,6 +73,12 @@ static struct k_thread photodiode_thread_data;
 
 static K_THREAD_STACK_DEFINE(throughput_monitor_stack, THROUGHPUT_MONITOR_STACK_SIZE);
 static struct k_thread throughput_monitor_thread_data;
+
+static K_THREAD_STACK_DEFINE(app_blocking_workq_stack, APP_BLOCKING_WORKQ_STACK_SIZE);
+static struct k_work_q app_blocking_workq;
+static const struct k_work_queue_config app_blocking_workq_config = {
+	.name = "app_blocking",
+};
 
 bool app_timing_summary_logs_enabled(void)
 {
@@ -283,12 +295,13 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
-	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
-			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
-			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(&exec_thread_data, "command_exec");
-
-	housekeeping_start();
+	k_work_queue_start(&app_blocking_workq,
+			   app_blocking_workq_stack,
+			   K_THREAD_STACK_SIZEOF(app_blocking_workq_stack),
+			   APP_BLOCKING_WORKQ_PRIORITY,
+			   &app_blocking_workq_config);
+	hispec_laser_autooff_start(&app_blocking_workq);
+	housekeeping_start(&app_blocking_workq);
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
 		if (board_devices_ready) {
 			k_thread_create(&photodiode_thread_data,
@@ -303,11 +316,16 @@ int main(void)
 					throughput_monitor_thread, NULL, NULL, NULL,
 					THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
 			k_thread_name_set(&throughput_monitor_thread_data, "throughput");
-			laserbank_tempcontrol_start();
+			laserbank_tempcontrol_start(&app_blocking_workq);
 		} else {
 			LOG_WRN("TIB background workers disabled because board devices are not ready");
 		}
 	}
+
+	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
+			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
+			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&exec_thread_data, "command_exec");
 
 	sntp_sync_init();
 

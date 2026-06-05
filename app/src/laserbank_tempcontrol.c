@@ -45,6 +45,7 @@ struct laserbank_tempcontrol_runtime {
 
 static struct laserbank_tempcontrol_runtime control;
 static K_MUTEX_DEFINE(control_lock);
+static struct k_work_q *tempcontrol_work_q;
 
 static void tempcontrol_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(tempcontrol_work, tempcontrol_work_handler);
@@ -68,6 +69,15 @@ static bool heater_mode_is_valid(enum laserbank_heater_mode mode)
 	return mode == LASERBANK_HEATER_MODE_AUTO ||
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_ON ||
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_OFF;
+}
+
+static int tempcontrol_reschedule(k_timeout_t delay)
+{
+	if (tempcontrol_work_q == NULL) {
+		return -EAGAIN;
+	}
+
+	return k_work_reschedule_for_queue(tempcontrol_work_q, &tempcontrol_work, delay);
 }
 
 static bool channel_is_stale(const struct laserbank_cached_channel *channel,
@@ -115,7 +125,7 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 	app_settings_get_laserbank(&settings);
 	settings.heater_mode = mode;
 	app_settings_update_laserbank(&settings, persist);
-	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
+	(void)tempcontrol_reschedule(K_NO_WAIT);
 	return 0;
 }
 
@@ -324,11 +334,16 @@ static void tempcontrol_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	run_heater_control_cycle();
-	(void)k_work_reschedule(&tempcontrol_work,
-				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
+	(void)tempcontrol_reschedule(K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
 }
 
-void laserbank_tempcontrol_start(void)
+void laserbank_tempcontrol_start(struct k_work_q *work_q)
 {
-	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
+	__ASSERT_NO_MSG(work_q != NULL);
+	if (work_q == NULL) {
+		return;
+	}
+
+	tempcontrol_work_q = work_q;
+	(void)tempcontrol_reschedule(K_NO_WAIT);
 }

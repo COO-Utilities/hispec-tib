@@ -23,8 +23,7 @@ It dispatches one command and tries one non-blocking enqueue to
 - Attenuator commands can block on DAC I2C.
 - Laser/Maiman commands can block on Modbus and laser-bank boot/off sleeps.
 - TIB laser-bank heater auto mode runs from laser-bank temperature-control
-  delayable work and can block on Modbus temperature polling and heater GPIO
-  writes.
+  delayable work on the app blocking workqueue, not from the command executor.
 - Persistent settings commands can block on Zephyr NVS writes.
 - `reboot` and `serialguard` use command-dispatch-owned delayable work.
 - Command-dispatch lastcommand persistence can block on Zephyr NVS writes before
@@ -90,18 +89,28 @@ The following delayable work items run in Zephyr system workqueue context:
 - Network reconnect and DHCP fallback work.
 - Serial guard expiration.
 - Delayed reboot.
+
+Zephyr Modbus client RX completion also runs on the system workqueue. App work
+that can block on Modbus, 1-Wire, or slow GPIO is kept off this queue so a
+received Modbus frame can be parsed before the client response timeout expires.
+
+Physical MEMS, photodiode sampling, throughput monitoring, app blocking work,
+and SNTP do not run on the system workqueue. The system workqueue is configured
+as a preemptible thread below app timing work but ahead of command execution and
+app blocking work.
+
+## App Blocking Workqueue
+
+`main.c` starts `app_blocking`, an app-owned workqueue for slow background
+firmware work that can sleep or block on hardware I/O:
+
 - Laser auto-off expiration. This work is owned by `lasers.c`; it is scheduled
-  only when a laser command arms a timeout and may block briefly on Modbus while
+  only when a laser command arms a timeout and may block on Modbus while
   stopping an expired output.
 - Ambient temperature sampling. This work is owned by `housekeeping.c` and may
   block briefly on DS18B20 sensor I/O while refreshing the `temp` cache.
 - Laser-bank heater policy. This work is owned by `laserbank_tempcontrol.c` and
   may block on Maiman Modbus polling and slow relay GPIO I/O.
-
-Physical MEMS, photodiode sampling, throughput monitoring, and SNTP do not run
-on the system workqueue. The system workqueue is configured as a preemptible
-thread below app timing work because several current work items can block on
-network, Modbus, 1-Wire, GPIO, or settings I/O.
 
 ## Thread Priorities
 
@@ -115,6 +124,7 @@ Current configured priorities:
 - Zephyr system workqueue: 5.
 - Command executor: 6.
 - Serial thread: 6.
+- App blocking workqueue: 7.
 - Zephyr logging thread: 13.
 - SNTP thread: 14.
 
@@ -123,5 +133,7 @@ Negative priorities are cooperative and remain above these app threads; Zephyr
 network cooperative threads therefore must stay bounded and are not used for
 app hardware timing loops. The configured app order keeps ADS completion, MEMS,
 photodiode, and active throughput work ahead of main, system work, and command
-handlers. Command ingress over serial and MQTT is treated as equivalent at the
-command-executor layer. SNTP is intentionally lower than deferred logging.
+handlers. The system workqueue stays ahead of command and app blocking work
+because Zephyr Modbus client RX completion runs there. Command ingress over
+serial and MQTT is treated as equivalent at the command-executor layer. SNTP is
+intentionally lower than deferred logging.

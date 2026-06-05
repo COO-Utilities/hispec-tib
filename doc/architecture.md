@@ -219,7 +219,10 @@ dropped rather than blocking a timing-sensitive caller.
 
 Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a
-fault-clear power-cycle interval.
+fault-clear power-cycle interval. Background laser-bank temperature control,
+laser auto-off, and ambient-temperature refresh run on the app blocking
+workqueue rather than Zephyr's system workqueue because Zephyr Modbus client RX
+completion uses the system workqueue.
 
 ## Implemented vs Intended
 

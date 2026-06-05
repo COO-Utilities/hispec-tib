@@ -56,6 +56,7 @@ static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
 static struct laser_output_estimate_state laser_output_estimate[HISPEC_LASER_COUNT];
 static int64_t laser_autooff_deadline_ms[HISPEC_LASER_COUNT];
+static struct k_work_q *laser_autooff_work_q;
 static int64_t bank_power_started_ms;
 static bool bank_power_requested_enabled;
 static bool laser_runtime_initialized;
@@ -860,15 +861,29 @@ static void laser_autooff_reschedule(void)
 {
 	const k_timeout_t timeout = laser_autooff_wait_timeout();
 
-	/* This delayable work runs on Zephyr's system workqueue. Auto-off is slow
-	 * best-effort cleanup, not a timing path, and the only blocking work here is
-	 * the Modbus stop sequence for an expired output.
+	/* Auto-off can run Modbus stop commands, so it uses the app blocking
+	 * workqueue instead of Zephyr's Modbus-RX system workqueue.
 	 */
+	if (laser_autooff_work_q == NULL) {
+		return;
+	}
 	if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
 		(void)k_work_cancel_delayable(&laser_autooff_work);
 	} else {
-		(void)k_work_reschedule(&laser_autooff_work, timeout);
+		(void)k_work_reschedule_for_queue(laser_autooff_work_q,
+						  &laser_autooff_work, timeout);
 	}
+}
+
+void hispec_laser_autooff_start(struct k_work_q *work_q)
+{
+	__ASSERT_NO_MSG(work_q != NULL);
+	if (work_q == NULL) {
+		return;
+	}
+
+	laser_autooff_work_q = work_q;
+	laser_autooff_reschedule();
 }
 
 static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile *profile,

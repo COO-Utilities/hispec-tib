@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct k_work_q;
+
 #define LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS 10000U
 #define LASERBANK_TEMPCONTROL_TEMP_STALE_MS (2U * LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS)
 #define LASERBANK_TEMPCONTROL_OVERRIDE_WARNING_MS (20U * 60U * 1000U)
@@ -40,11 +42,11 @@ struct laserbank_tempcontrol_status {
 /**
  * Start the TIB heater-policy delayable work.
  *
- * The work runs in Zephyr system workqueue context and may block on Modbus and
- * relay GPIO I/O. Heater-mode commands reschedule the same work for immediate
- * policy application.
+ * The work is submitted to @p work_q and may block on Modbus and relay GPIO
+ * I/O. Heater-mode commands reschedule the same work for immediate policy
+ * application.
  */
-void laserbank_tempcontrol_start(void);
+void laserbank_tempcontrol_start(struct k_work_q *work_q);
 
 /** Copy the latest temperature-control loop state. */
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);
