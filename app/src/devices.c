@@ -60,9 +60,8 @@ struct mems_router router;
 
 
 static const char *const tib_switch_names[8] = {
-	"hk_forward_retro", "hk_cal_laser",
-	"hk_ao_fei", "yj_forward_retro",
-	"yj_cal_laser", "yj_ao_fei",
+	"yj_forward_retro", "yj_cal_laser", "yj_ao_fei",
+	"hk_forward_retro", "hk_cal_laser", "hk_ao_fei",
 	"yj_mm_sm", "hk_mm_sm",
 };
 

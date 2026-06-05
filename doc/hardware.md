@@ -73,33 +73,44 @@ At the drive level transistors are
     - 2x 10k resistor for status line (pullup and current limiting)
 
 ### Switch assignments
+PCAL assignments:
+  - sw1 A B: P0 6, 7 / gpio 6, 7 
+  - sw2 A B: P1 0, 1 / gpio 8, 9 
+  - sw3 A B: P0 4, 5 / gpio 4, 5 
+  - sw4 A B: P1 2, 3 / gpio 10, 11 
+  - sw5 A B: P1 4, 5 / gpio 12, 13 
+  - sw6 A B: P1 6, 7 / gpio 14, 15 
+  - sw7 A B: P0 2, 3 / gpio 2, 3 
+  - sw8 A B: P0 0, 1 / gpio 0, 1 
+
 - TIB:
-    - sw1: FFSW, SW1_TIBR1 HKATC laser retro or forward
-    - sw2: FFSW, SW1_TIBR2 HK CAL/Laser selector
-    - sw3: FFSW, SW1_TIBR3 HK FEI/AO selector
-    - sw4: FFSW, SW1_TIBB1 YJATC laser retro or forward
-    - sw5: FFSW, SW1_TIBB2 YJ CAL/Laser selector
-    - sw6: FFSW, SW1_TIBB3 YJ FEI/AO selector
-    - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
-    - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
+  - sw1: FFSW, SW1_TIBB1 YJATC laser retro or forward
+  - sw2: FFSW, SW1_TIBB2 YJ CAL/Laser selector
+  - sw3: FFSW, SW1_TIBB3 YJ FEI/AO selector
+  - sw4: FFSW, SW1_TIBR1 HKATC laser retro or forward
+  - sw5: FFSW, SW1_TIBR2 HK CAL/Laser selector
+  - sw6: FFSW, SW1_TIBR3 HK FEI/AO selector
+  - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
+  - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
 - AS
   - sw1: FFSW, SW1_ASR1 HK Splitter in
-    - sw2: FFSW, SW1_ASR2 HK Splitter out 1 (Cal/Split1)
-    - sw3: FFSW, SW1_ASR3 HK Splitter out 2 (Split2/Split3)
-    - sw4: FFSW, SW1_ASB1 YJ Splitter in
-    - sw5: FFSW, SW1_ASB2 YJ Splitter out 1 (Cal/Split1)
-    - sw6: FFSW, SW1_ASB3 YJ Splitter out 2 (Split2/Split3) 
-    - sw7: NC
-    - sw8: NC
+  - sw2: FFSW, SW1_ASR2 HK Splitter out 1 (Cal/Split1)
+  - sw3: FFSW, SW1_ASR3 HK Splitter out 2 (Split2/Split3)
+  - sw4: FFSW, SW1_ASB1 YJ Splitter in
+  - sw5: FFSW, SW1_ASB2 YJ Splitter out 1 (Cal/Split1)
+  - sw6: FFSW, SW1_ASB3 YJ Splitter out 2 (Split2/Split3) 
+  - sw7: NC
+  - sw8: NC
+  
 - CAL 
   - sw1: FFSW, SW1_CAL1 LFC/Etalon Selector
-    - sw2: FFSW, SW1_CAL2 Lamp/BB Selector
-    - sw3: FFSW, SW1_CAL3 BB IS/Cal Selector
-    - sw4: FFSW, SW1_CAL4 Lamp+BB vs LFC+Eta Selector
-    - sw5: FFSW, SW1_CAL5 Cal/Dark Selector
-    - sw6: FFSW, SW1_CAL6 IS BB/Dark Selector
-    - sw7: FFSW, SW1_CAL7 MSR/TIB Selector
-    - sw8: NC
+  - sw2: FFSW, SW1_CAL2 Lamp/BB Selector
+  - sw3: FFSW, SW1_CAL3 BB IS/Cal Selector
+  - sw4: FFSW, SW1_CAL4 Lamp+BB vs LFC+Eta Selector
+  - sw5: FFSW, SW1_CAL5 Cal/Dark Selector
+  - sw6: FFSW, SW1_CAL6 IS BB/Dark Selector
+  - sw7: FFSW, SW1_CAL7 MSR/TIB Selector
+  - sw8: NC
 
 ## TIB & CAL Attenuator Drive
 A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
