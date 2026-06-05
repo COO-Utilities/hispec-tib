@@ -42,9 +42,12 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define EXECUTOR_STACK_SIZE 8192
 #define EXECUTOR_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
-#define PHOTODIODE_PRIORITY -2
+#define PHOTODIODE_PRIORITY 2
 #define THROUGHPUT_MONITOR_STACK_SIZE 4096
-#define THROUGHPUT_MONITOR_PRIORITY 7
+/* Throughput/autolevel should run promptly when active, but it can write DACs
+ * and lasers, so keep MEMS and photodiode sampling ahead of it.
+ */
+#define THROUGHPUT_MONITOR_PRIORITY 3
 #define APP_TIMING_SUMMARY_LOGS 0
 
 /* Network setup returns after starting DHCP/static policy; DHCP fallback is a

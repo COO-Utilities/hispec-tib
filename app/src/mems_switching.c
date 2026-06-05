@@ -14,7 +14,7 @@
 LOG_MODULE_REGISTER(mems_switching, LOG_LEVEL_DBG);
 
 #define MEMS_ROUTER_STACK_SIZE 1024
-#define MEMS_ROUTER_PRIORITY 2
+#define MEMS_ROUTER_PRIORITY 1
 #define MEMS_TIMING_STATS_INTERVAL_MS 10000U
 
 BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,
@@ -126,7 +126,13 @@ static void mems_timing_note_cleanup_late(uint32_t late_ms)
     }
 }
 
-static bool mems_timing_has_anomaly(void)
+static bool mems_timing_has_warning(void)
+{
+    return mems_timing_stats.late_pulse_events > 0U ||
+           mems_timing_stats.stale_pulse_skips > 0U;
+}
+
+static bool mems_timing_has_variation(void)
 {
     return mems_timing_stats.missed_base_ticks > 0U ||
            mems_timing_stats.late_service_events > 0U ||
@@ -135,27 +141,22 @@ static bool mems_timing_has_anomaly(void)
            mems_timing_stats.cleanup_late_events > 0U;
 }
 
-static void mems_timing_log_snapshot(bool anomaly)
+static void mems_timing_log_snapshot(bool warning)
 {
-    if (anomaly) {
-        LOG_WRN("MEMS timing: events=%u missed_base=%u late_service=%u "
-                "late_pulse=%u stale_skips=%u cleanup_late=%u "
-                "worst_base_miss=%u worst_late_cycles=%u worst_cleanup_ms=%u",
+    if (warning) {
+        LOG_WRN("MEMS toggle timing: events=%u late_rise=%u skipped_rise=%u "
+                "worst_late_cycles=%u base_miss=%u",
                 (unsigned int)mems_timing_stats.service_events,
-                (unsigned int)mems_timing_stats.missed_base_ticks,
-                (unsigned int)mems_timing_stats.late_service_events,
                 (unsigned int)mems_timing_stats.late_pulse_events,
                 (unsigned int)mems_timing_stats.stale_pulse_skips,
-                (unsigned int)mems_timing_stats.cleanup_late_events,
-                (unsigned int)mems_timing_stats.worst_missed_base_ticks,
                 (unsigned int)mems_timing_stats.worst_late_service_cycles,
-                (unsigned int)mems_timing_stats.worst_cleanup_late_ms);
+                (unsigned int)mems_timing_stats.missed_base_ticks);
         return;
     }
 
-    LOG_INF("MEMS timing: events=%u missed_base=%u late_service=%u "
-            "late_pulse=%u stale_skips=%u cleanup_late=%u "
-            "worst_base_miss=%u worst_late_cycles=%u worst_cleanup_ms=%u",
+    LOG_INF("MEMS timing: events=%u base_miss=%u svc_late=%u "
+            "late_rise=%u skipped_rise=%u late_fall=%u "
+            "worst_base=%u worst_late=%u worst_fall_ms=%u",
             (unsigned int)mems_timing_stats.service_events,
             (unsigned int)mems_timing_stats.missed_base_ticks,
             (unsigned int)mems_timing_stats.late_service_events,
@@ -169,7 +170,7 @@ static void mems_timing_log_snapshot(bool anomaly)
 
 static void mems_timing_maybe_log(int64_t now_ms)
 {
-    bool anomaly;
+    bool warning;
 
     if (mems_timing_next_log_ms == 0) {
         mems_timing_next_log_ms = now_ms + MEMS_TIMING_STATS_INTERVAL_MS;
@@ -179,9 +180,9 @@ static void mems_timing_maybe_log(int64_t now_ms)
         return;
     }
 
-    anomaly = mems_timing_has_anomaly();
-    if (anomaly || app_timing_summary_logs_enabled()) {
-        mems_timing_log_snapshot(anomaly);
+    warning = mems_timing_has_warning();
+    if (warning || mems_timing_has_variation() || app_timing_summary_logs_enabled()) {
+        mems_timing_log_snapshot(warning);
     }
 
     memset(&mems_timing_stats, 0, sizeof(mems_timing_stats));
@@ -495,6 +496,7 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
                                                uint32_t elapsed_ticks)
 {
     const uint8_t service_period_ticks = mems_switch_work_ticks(sw);
+    const bool toggling = (sw->remaining_toggle_cycles > 0U);
     uint32_t late_service_cycles;
     bool pulse_due;
 
@@ -511,7 +513,7 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
         (elapsed_ticks - sw->service_ticks_remaining) / service_period_ticks;
     pulse_due = !sw->state_known_this_boot || sw->state != sw->target_state;
 
-    if (late_service_cycles > 0U && pulse_due) {
+    if (late_service_cycles > 0U && pulse_due && toggling) {
         uint32_t hold_cycles = mems_switch_target_hold_cycles(sw);
 
         if (hold_cycles <= late_service_cycles) {
