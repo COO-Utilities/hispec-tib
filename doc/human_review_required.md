@@ -55,22 +55,14 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ### LLM Resolved; Human Review Requested
 
-- [ ] Verify MEMS switch commands now accept lowercase `a`/`b` and normalize
-  replies to uppercase `A`/`B`.
 - [ ] Verify MEMS non-constant duty responses now report `duty_cycle`,
   `requested_toggle_rate_hz`, and `toggle_rate_hz` with six decimal places.
-- [ ] Verify `laserbank/power` and `laserbank/heater` now use `mode` as the
-  only payload key; the old `override` payload key is intentionally dropped.
 - [ ] Verify `laserbank/heater` now reports compact algorithm-facing status
   without the old wordy `all_tecs_enabled` / `any_disabled_below_15c` fields.
 - [ ] Verify heater `auto` mode turns the heater off when all laser temperatures
   are stale and ambient is invalid or at least 15 C.
 - [ ] Verify `pcb.set_serialguard(seconds)` no longer sends `persistent:false`
   and can update expiry while serial guard is active.
-- [ ] Verify photodiode channel defaults are now named in `photodiode.h` and
-  consumed by `app_settings.c`.
-- [ ] Verify `catalog` / MQTT help enumeration covers route, input, output, and
-  laser names well enough for operator discovery.
 - [ ] Verify `laser/settings` temporarily powers the bank for driver-backed
   updates and documents that `default_operating_temp_c` is the TEC start
   setpoint.
@@ -79,8 +71,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.
-- [ ] Verify app-settings NVS load validation now delegates semantic checks to
-  attenuator, photodiode, and laser-owned helpers.
 
 
 ## Decisions To Make
@@ -91,80 +81,61 @@ LLMs Agents: Do NOT change heading names in this file.
 ## TODOs
 
 - yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.
-- TODO: test dark settings and persistence, especially `dark_duration_ms`,
-  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
-
+- TODO: test dark settings and persistence, especially `dark_duration_ms`,  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
 - Status needs to gain things we actually want.
-
 - Laser needs some thought around serial its unsettability and serial ok, maybe going ok on the first boot after a serial change (cause it gets saved?)
+- Laserbank query's now work for all lasers, sometimes.
+  - temps now has the idle tec temps in it, so they are sucessfully being polled
+  - but I sill see regular timeouts on specific registers:
+   [00:16:01.941,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.941,000] <err> maiman: Modbus read node=5 reg=0x0075 failed: -116
+    [00:16:01.951,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.951,000] <err> maiman: Modbus read node=5 reg=0x007a failed: -116
+    [00:16:01.961,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.961,000] <err> maiman: Modbus read node=6 reg=0x0075 failed: -116
+    [00:16:01.971,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.971,000] <err> maiman: Modbus read node=6 reg=0x007a failed: -116
+    [00:16:01.981,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.981,000] <err> maiman: Modbus read node=4 reg=0x0075 failed: -116
+    [00:16:01.991,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:01.991,000] <err> maiman: Modbus read node=4 reg=0x007a failed: -116
+    [00:16:02.001,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.001,000] <err> maiman: Modbus read node=3 reg=0x0075 failed: -116
+    [00:16:02.011,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.011,000] <err> maiman: Modbus read node=3 reg=0x007a failed: -116
+    [00:16:02.021,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.021,000] <err> maiman: Modbus read node=1 reg=0x0075 failed: -116
+    [00:16:02.031,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.031,000] <err> maiman: Modbus read node=1 reg=0x007a failed: -116
+    [00:16:02.042,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.042,000] <err> maiman: Modbus read node=2 reg=0x0075 failed: -116
+    [00:16:02.052,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:02.052,000] <err> maiman: Modbus read node=2 reg=0x007a failed: -116
+    [00:16:12.500,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.500,000] <err> maiman: Modbus read node=5 reg=0x0075 failed: -116
+    [00:16:12.510,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.510,000] <err> maiman: Modbus read node=5 reg=0x007a failed: -116
+    [00:16:12.520,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.520,000] <err> maiman: Modbus read node=6 reg=0x0075 failed: -116
+    [00:16:12.530,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.530,000] <err> maiman: Modbus read node=6 reg=0x007a failed: -116
+    [00:16:12.540,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.540,000] <err> maiman: Modbus read node=4 reg=0x0075 failed: -116
+    [00:16:12.550,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.550,000] <err> maiman: Modbus read node=4 reg=0x007a failed: -116
+    [00:16:12.560,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.560,000] <err> maiman: Modbus read node=3 reg=0x0075 failed: -116
+    [00:16:12.571,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.571,000] <err> maiman: Modbus read node=3 reg=0x007a failed: -116
+    [00:16:12.581,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.581,000] <err> maiman: Modbus read node=1 reg=0x0075 failed: -116
+    [00:16:12.591,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.591,000] <err> maiman: Modbus read node=1 reg=0x007a failed: -116
+    [00:16:12.601,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.601,000] <err> maiman: Modbus read node=2 reg=0x0075 failed: -116
+    [00:16:12.611,000] <wrn> modbus: Client wait-for-RX timeout
+    [00:16:12.611,000] <err> maiman: Modbus read node=2 reg=0x007a failed: -116
 
-- Investigate Maiman Modbus interaction between foreground laser commands and
-  periodic temperature polling.
-  - Observation: a connected laser driver can be queried reliably on its Modbus
-    channel with the other five drivers physically disconnected unless the query
-    occurs around periodic temperature-polling errors from disconnected drivers.
-  - This suggests a real higher-level interaction even if the low-level Modbus
-    calls are mutex-serialized. Check polling lock hold time, timeout budget,
-    offline-channel backoff, and whether temperature polling is too greedy around
-    absent/faulting drivers.
-  - [01:04:10.613,000] <inf> coo_mqtt: topic: 'cmd/hsfib-tib/req/laser/engstatus', payload: {"name":"2330k"}
-    [01:04:10.613,000] <inf> coo_command_dispatch: Dispatching: laser/engstatus
-    [01:04:10.623,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.623,000] <err> maiman: Modbus read node=2 reg=0x0001 failed: -116
-    [01:04:10.633,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.633,000] <err> maiman: Modbus read node=2 reg=0x0003 failed: -116
-    [01:04:10.643,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.643,000] <err> maiman: Modbus read node=2 reg=0x0004 failed: -116
-    [01:04:10.653,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.653,000] <err> maiman: Modbus read node=2 reg=0x007a failed: -116
-    [01:04:10.663,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.663,000] <err> maiman: Modbus read node=2 reg=0x0005 failed: -116
-    [01:04:10.673,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.673,000] <err> maiman: Modbus read node=2 reg=0x0008 failed: -116
-    [01:04:10.683,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.683,000] <err> maiman: Modbus read node=2 reg=0x0040 failed: -116
-    [01:04:10.693,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.693,000] <err> maiman: Modbus read node=2 reg=0x0024 failed: -116
-    [01:04:10.704,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.704,000] <err> maiman: Modbus read node=2 reg=0x0025 failed: -116
-    [01:04:10.714,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.714,000] <err> maiman: Modbus read node=2 reg=0x0029 failed: -116
-    [01:04:10.724,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.724,000] <err> maiman: Modbus read node=2 reg=0x002a failed: -116
-    [01:04:10.734,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.734,000] <err> maiman: Modbus read node=2 reg=0x0088 failed: -116
-    [01:04:10.744,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.744,000] <err> maiman: Modbus read node=2 reg=0x0041 failed: -116
-    [01:04:10.754,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.754,000] <err> maiman: Modbus read node=2 reg=0x0070 failed: -116
-    [01:04:10.764,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.764,000] <err> maiman: Modbus read node=2 reg=0x0075 failed: -116
-    [01:04:10.774,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.774,000] <err> maiman: Modbus read node=2 reg=0x0043 failed: -116
-    [01:04:10.784,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.784,000] <err> maiman: Modbus read node=2 reg=0x0076 failed: -116
-    [01:04:10.794,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.794,000] <err> maiman: Modbus read node=2 reg=0x0077 failed: -116
-    [01:04:10.805,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.805,000] <err> maiman: Modbus read node=2 reg=0x0078 failed: -116
-    [01:04:10.815,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.815,000] <err> maiman: Modbus read node=2 reg=0x008a failed: -116
-    [01:04:10.825,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:10.825,000] <err> maiman: Modbus read node=2 reg=0x0091 failed: -116
-    [01:04:16.420,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.420,000] <err> maiman: Modbus read node=5 reg=0x0075 failed: -116
-    [01:04:16.430,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.430,000] <err> maiman: Modbus read node=5 reg=0x007a failed: -116
-    [01:04:16.440,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.440,000] <err> maiman: Modbus read node=6 reg=0x0075 failed: -116
-    [01:04:16.450,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.450,000] <err> maiman: Modbus read node=6 reg=0x007a failed: -116
-    [01:04:16.460,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.460,000] <err> maiman: Modbus read node=4 reg=0x0075 failed: -116
-    [01:04:16.470,000] <wrn> modbus: Client wait-for-RX timeout
-    [01:04:16.470,000] <err> maiman: Modbus read node=4 reg=0x007a failed: -116
-    [01:04:16.481,000] <wrn> modbus: Client wait-for-RX timeout
-  - here channel 2 is online, the rest have no devices
 
 - `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
