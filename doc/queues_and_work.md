@@ -61,9 +61,12 @@ in the MEMS thread. Every MEMS thread tick:
 The tick uses raw GPIO pin APIs because board profiles store expander pin
 numbers rather than `gpio_dt_spec` objects.
 
-Missed MEMS ticks are logged. High-to-low pulse cleanup is still applied, late
-low-to-high pulses are applied only when their requested high window has not
-fully elapsed, and fully stale high pulses are skipped.
+MEMS timing variation is aggregated. Warnings are reserved for active toggles
+where the rising pulse is late or skipped; base tick variation, static-switch
+delay, and high-to-low cleanup lateness are informational. High-to-low pulse
+cleanup is still applied, late low-to-high pulses are applied only when their
+requested high window has not fully elapsed, and fully stale high pulses are
+skipped.
 
 ## Network Reconnect and DHCP Fallback Work
 

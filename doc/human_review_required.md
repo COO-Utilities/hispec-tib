@@ -11,6 +11,9 @@ LLMs Agents: Do NOT change heading names in this file.
 - [x] sort out FVOA ripple, is ok?
   - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns
+  - Scheduler and MEMS timing-log changes in `44084f1` eliminated this warning
+    pattern in follow-up lab testing; keep open for continued monitoring of
+    real active-toggle `late_rise`/`skipped_rise` warnings or ADC overruns.
   - debug build see `timinglog`
   - non-debug build:
     - [00:00:35.747,000] <inf> sntp_sync: SNTP sync complete (manual: 132.163.96.4)

@@ -9,9 +9,9 @@ and calls `coo_mqtt_process()`. It can block in MQTT connect/process and sleeps
 watchdog interval so a dead broker does not starve the main loop long enough to
 reset the device.
 
-`CONFIG_MAIN_THREAD_PRIORITY` is set below MEMS and photodiode timing work but
-above command execution so outbound command responses and watchdog feeding are
-not delayed by command handlers.
+`CONFIG_MAIN_THREAD_PRIORITY` is set below app timing work but above system
+workqueue and command execution so outbound command responses and watchdog
+feeding are not delayed by command handlers.
 
 ## Command Executor Thread
 
@@ -55,6 +55,11 @@ one current sample. Missed ADC sampling periods are not replayed.
 photodiode snapshots, route-loss settings, attenuator state, and laser
 estimates, then enqueues best-effort telemetry to `outbound_queue`.
 
+The throughput monitor runs promptly when active because autolevel decisions
+should react on the same general timescale as photodiode sampling. It remains
+below MEMS and photodiode sampling because it can write attenuator DACs and
+notify laser state.
+
 ## MEMS Router Thread
 
 `mems_router_thread()` is released by a periodic `k_timer` at
@@ -63,9 +68,11 @@ only gives a semaphore. The MEMS thread owns GPIO-expander writes, pulse cleanup
 duty-cycle counter advancement, and stop-after countdowns.
 
 MEMS toggling is not catch-up work. A missed high-to-low cleanup is still
-performed because leaving a pulse pin asserted is the worse behavior. A missed
-low-to-high pulse is emitted late only when the requested high window still has
-enough remaining service time; a fully stale high pulse is skipped and logged.
+performed because leaving a pulse pin asserted is the worse behavior. During
+active toggling, a missed low-to-high pulse is emitted late only when the
+requested high window still has enough remaining service time; a fully stale
+high pulse is skipped and logged as a warning. Static-switch timing variation
+is informational because it is not a repeated rising-pulse timing risk.
 
 ## SNTP Thread
 
@@ -89,22 +96,30 @@ The following delayable work items run in Zephyr system workqueue context:
 - Laser-bank heater policy. This work is owned by `laserbank_tempcontrol.c` and
   may block on Maiman Modbus polling and slow relay GPIO I/O.
 
-Physical MEMS and photodiode timing loops and SNTP do not run on the system
-workqueue.
+Physical MEMS, photodiode sampling, throughput monitoring, and SNTP do not run
+on the system workqueue. The system workqueue is configured as a preemptible
+thread below app timing work because several current work items can block on
+network, Modbus, 1-Wire, GPIO, or settings I/O.
 
 ## Thread Priorities
 
 Current configured priorities:
 
-- MEMS router thread: 2.
-- Photodiode thread: 3.
+- ADS1X1X acquisition thread: 0.
+- MEMS router thread: 1.
+- Photodiode thread: 2.
+- Throughput monitor thread: 3.
 - Main MQTT/outbound/watchdog thread: 4.
+- Zephyr system workqueue: 5.
 - Command executor: 6.
 - Serial thread: 6.
-- Throughput monitor thread: 7.
-- SNTP thread: 10.
+- Zephyr logging thread: 13.
+- SNTP thread: 14.
 
-Lower numeric values are higher priority in Zephyr preemptive priorities. The
-priority order keeps physical MEMS and ADC cadence ahead of network, command,
-and telemetry work; command ingress over serial and MQTT is treated as
-equivalent at the command-executor layer.
+Lower numeric values are higher priority within Zephyr preemptive priorities.
+Negative priorities are cooperative and remain above these app threads; Zephyr
+network cooperative threads therefore must stay bounded and are not used for
+app hardware timing loops. The configured app order keeps ADS completion, MEMS,
+photodiode, and active throughput work ahead of main, system work, and command
+handlers. Command ingress over serial and MQTT is treated as equivalent at the
+command-executor layer. SNTP is intentionally lower than deferred logging.
