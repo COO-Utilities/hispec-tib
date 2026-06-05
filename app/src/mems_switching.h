@@ -64,7 +64,6 @@ struct mems_switch {
     /* Start time of the last A or B actuation pulse. */
     uint32_t last_pulse_at_ms;
     bool pulse_active;
-    bool last_pulse_at_ms_valid;
     uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
