@@ -30,7 +30,7 @@ Current warning codes seen in code:
 - `serial_guard_active`
 - `attenuator_clamped`
 - `photodiode_noise`
-- `mems_rate_quantized`
+- `mems_timing_quantized`
 - `split_ratio_quantized`
 - `outbound_queue_full`
 - `laserbank_heater_override`

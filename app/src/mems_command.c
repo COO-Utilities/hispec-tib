@@ -498,14 +498,12 @@ static int split_channel_response(const struct coo_cmd_request *cmd,
              "\"ratio_actual\":[%.4f,%.4f,%.4f],"
              "\"ratio_out\":[%.4f,%.4f,%.4f],"
              "\"split_transmission\":[%.6f,%.6f,%.6f],"
+             "\"cycle_ms\":%u,"
              "\"switches\":["
-             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
-             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u},"
-             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
-             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u},"
-             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,"
-             "\"numerator\":%u,\"denominator\":%u,\"tick_ms\":%u}],"
-             "\"stopsin_s\":%u}",
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u},"
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u},"
+             "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u}],"
+             "\"stop_in_s\":%u}",
              channel_name,
              (double)state->requested[0],
              (double)state->requested[1],
@@ -519,25 +517,23 @@ static int split_channel_response(const struct coo_cmd_request *cmd,
              (double)state->transmission[0],
              (double)state->transmission[1],
              (double)state->transmission[2],
+             state->cycle_ms,
              state->switches[0].name,
              state->switches[0].state,
              (double)state->switches[0].duty_cycle,
-             state->switches[0].numerator,
-             state->switches[0].denominator,
-             state->switches[0].tick_ms,
+             state->switches[0].a_ms,
+             state->switches[0].b_ms,
              state->switches[1].name,
              state->switches[1].state,
              (double)state->switches[1].duty_cycle,
-             state->switches[1].numerator,
-             state->switches[1].denominator,
-             state->switches[1].tick_ms,
+             state->switches[1].a_ms,
+             state->switches[1].b_ms,
              state->switches[2].name,
              state->switches[2].state,
              (double)state->switches[2].duty_cycle,
-             state->switches[2].numerator,
-             state->switches[2].denominator,
-             state->switches[2].tick_ms,
-             state->stopsin_s);
+             state->switches[2].a_ms,
+             state->switches[2].b_ms,
+             state->stop_in_s);
 
     if (written < 0 || written >= (int)sizeof(payload)) {
         return coo_cmd_error(out, cmd, "split response too large");
@@ -633,8 +629,10 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     uint8_t channel_index;
     double requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double ratio3_probe = 0.0;
+    uint32_t cycle_ms = 0U;
     uint32_t stopafter_s = 0U;
     const char *failed_switch = NULL;
+    bool has_cycle_ms = false;
     int parse_rc;
     int rc;
 
@@ -677,12 +675,18 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "invalid stopafter_s");
     }
 
-    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &ratio3_probe);
-    if (parse_rc != COO_JSON_EXTRACT_MISSING) {
-        return coo_cmd_error(out, cmd, "toggle_rate_hz is automatic");
+    if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
+                                      &cycle_ms, &has_cycle_ms) != 0 ||
+        (has_cycle_ms && cycle_ms == 0U)) {
+        return coo_cmd_error(out, cmd, "invalid cycle_ms");
     }
 
-    rc = mems_split_apply_channel(&router, channel_index, requested, stopafter_s,
+    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &ratio3_probe);
+    if (parse_rc != COO_JSON_EXTRACT_MISSING) {
+        return coo_cmd_error(out, cmd, "cycle_ms replaces toggle_rate_hz");
+    }
+
+    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, stopafter_s,
                                   &state, &failed_switch);
     if (rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "split route references missing switch");
@@ -699,6 +703,18 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
 
     split_emit_quantization_warning(channel_index, &state);
+    if (has_cycle_ms && state.cycle_ms != cycle_ms) {
+        const char *channel_name = mems_split_channel_name(channel_index);
+        char context[96];
+
+        snprintk(context, sizeof(context),
+                 "channel=%s requested_cycle_ms=%u actual_cycle_ms=%u",
+                 channel_name == NULL ? "?" : channel_name,
+                 cycle_ms, state.cycle_ms);
+        coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
+                         "requested MEMS cycle was quantized or stretched",
+                         context);
+    }
     return split_channel_response(cmd, &state, channel_index, out);
 }
 
@@ -752,10 +768,10 @@ static void mems_format_state(const struct mems_switch_status *status,
 {
     char state = status->state;
 
-    if (status->duty_denominator != 0U) {
-        if (status->duty_numerator == 0U) {
+    if (status->cycle_ms != 0U) {
+        if (status->a_ms == 0U) {
             state = 'B';
-        } else if (status->duty_numerator >= status->duty_denominator) {
+        } else if (status->b_ms == 0U) {
             state = 'A';
         }
     }
@@ -771,9 +787,7 @@ static void mems_format_state(const struct mems_switch_status *status,
 
 static bool mems_status_has_nonconstant_duty(const struct mems_switch_status *status)
 {
-    return status->duty_denominator != 0U &&
-           status->duty_numerator > 0U &&
-           status->duty_numerator < status->duty_denominator;
+    return status->cycle_ms != 0U && status->a_ms > 0U && status->b_ms > 0U;
 }
 
 static int mems_append_duty_field(char *buf, size_t buf_len, size_t *offset,
@@ -805,11 +819,11 @@ static int mems_append_timing_fields(char *buf, size_t buf_len, size_t *offset,
     }
 
     written = snprintk(buf + *offset, buf_len - *offset,
-                       ",\"requested_toggle_rate_hz\":%.6f,"
-                       "\"toggle_rate_hz\":%.6f,\"stopafter_s\":%u",
-                       (double)status->requested_toggle_rate_hz,
-                       (double)status->toggle_rate_hz,
-                       status->stopafter_s);
+                       ",\"cycle_ms\":%u,\"a_ms\":%u,\"b_ms\":%u,\"stop_in_s\":%u",
+                       status->cycle_ms,
+                       status->a_ms,
+                       status->b_ms,
+                       status->stop_in_s);
     if (written < 0 || written >= (int)(buf_len - *offset)) {
         return -ENOSPC;
     }
@@ -927,11 +941,12 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     double duty_cycle = 0.0;
     double stopafter_s = 0.0;
-    double toggle_rate_hz = 0.0;
+    double removed_rate = 0.0;
+    uint32_t cycle_ms = 0U;
     uint32_t stopafter_s_u32 = 0U;
     bool has_duty_cycle = false;
     bool has_stopafter_s = false;
-    bool has_toggle_rate_hz = false;
+    bool has_cycle_ms = false;
     int state_value;
     int parse_rc;
     int rc;
@@ -973,17 +988,22 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
     has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
 
-    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &toggle_rate_hz);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "Invalid toggle_rate_hz");
+    if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
+                                      &cycle_ms, &has_cycle_ms) != 0 ||
+        (has_cycle_ms && cycle_ms == 0U)) {
+        return coo_cmd_error(out, cmd, "invalid cycle_ms");
     }
-    has_toggle_rate_hz = (parse_rc == COO_JSON_EXTRACT_OK);
-    if (has_toggle_rate_hz && toggle_rate_hz <= 0.0) {
-        return coo_cmd_error(out, cmd, "toggle_rate_hz must be > 0");
+
+    parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &removed_rate);
+    if (parse_rc != COO_JSON_EXTRACT_MISSING) {
+        return coo_cmd_error(out, cmd, "cycle_ms replaces toggle_rate_hz");
     }
 
     if (has_duty_cycle && requested_state[0] == 'B') {
         return coo_cmd_error(out, cmd, "duty_cycle only valid with state A");
+    }
+    if (has_cycle_ms && (!has_duty_cycle || duty_cycle <= 0.0 || duty_cycle >= 1.0)) {
+        return coo_cmd_error(out, cmd, "cycle_ms only valid for toggling");
     }
     if (has_stopafter_s) {
         if (stopafter_s < 0.0 ||
@@ -1005,10 +1025,10 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
                                    stopafter_s_u32,
-                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0);
+                                   has_cycle_ms ? (double)cycle_ms : 0.0);
     } else {
         rc = mems_switch_set_state(sw, requested_state[0], 1.0, 0U,
-                                   has_toggle_rate_hz ? toggle_rate_hz : 0.0);
+                                   0.0);
     }
 
     if (rc == -ERANGE) {
@@ -1018,23 +1038,17 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "Invalid MEMS setting");
     }
 
-    if (has_toggle_rate_hz) {
+    if (has_cycle_ms) {
         struct mems_switch_status status = {0};
         char context[96];
-        double diff;
 
         mems_switch_get_status(sw, &status);
-        diff = status.toggle_rate_hz - toggle_rate_hz;
-        if (diff < 0.0) {
-            diff = -diff;
-        }
-        if (diff > 0.001) {
+        if (status.cycle_ms != cycle_ms) {
             snprintk(context, sizeof(context),
-                     "switch=%s requested=%.3f actual=%.3f",
-                     sw->name, (double)toggle_rate_hz,
-                     (double)status.toggle_rate_hz);
-            coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_rate_quantized",
-                             "requested MEMS toggle rate was quantized",
+                     "switch=%s requested_cycle_ms=%u actual_cycle_ms=%u",
+                     sw->name, cycle_ms, status.cycle_ms);
+            coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
+                             "requested MEMS cycle was quantized or stretched",
                              context);
         }
     }

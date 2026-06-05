@@ -4,7 +4,7 @@
  *
  * A kernel timer provides the MEMS cadence and a dedicated MEMS thread performs
  * GPIO-expander writes. The thread clears pulse pins, applies requested
- * static/toggling switch states, and quantizes requested toggle rates into
+ * static/toggling switch states, and quantizes requested dwell timing into
  * fixed MEMS ticks. Public calls can sleep on the router mutex but do not
  * publish MQTT or persist state.
  */
@@ -54,8 +54,6 @@ struct mems_switch {
     char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
     char target_state; // desired state applied by toggler on next tick
     bool state_known_this_boot;
-    double requested_toggle_rate_hz;
-    double actual_toggle_rate_hz;
     uint32_t switching_period_cycles; // Quantized switching period in MEMS tick cycles
     uint32_t a_state_cycles;
     uint32_t cycles_until_toggle;
@@ -73,14 +71,10 @@ struct mems_switch_status {
     char state;
     bool state_known_this_boot;
     double duty_cycle;
-    /* Exact A-state duty numerator and denominator in MEMS tick counts. */
-    uint32_t duty_numerator;
-    uint32_t duty_denominator;
-    /* Duration of one MEMS service tick for this switch type. */
-    uint32_t tick_duration_ms;
-    double requested_toggle_rate_hz;
-    double toggle_rate_hz;
-    uint16_t stopafter_s;
+    uint32_t cycle_ms;
+    uint32_t a_ms;
+    uint32_t b_ms;
+    uint32_t stop_in_s;
 };
 
 /** One required switch state within a named route. */
@@ -109,9 +103,8 @@ struct mems_split_switch_duty {
     char name[MEMS_SWITCH_NAME_LEN];
     char state;
     double duty_cycle;
-    uint32_t numerator;
-    uint32_t denominator;
-    uint32_t tick_ms;
+    uint32_t a_ms;
+    uint32_t b_ms;
 };
 
 struct mems_split_state {
@@ -120,7 +113,8 @@ struct mems_split_state {
     double output[MEMS_SPLIT_OUTPUT_COUNT];
     double transmission[MEMS_SPLIT_OUTPUT_COUNT];
     struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
-    uint32_t stopsin_s;
+    uint32_t cycle_ms;
+    uint32_t stop_in_s;
 };
 
 /** Board-selected router state and immutable route table pointer. */
@@ -139,31 +133,31 @@ struct mems_router {
  * The hardware state is not known after boot until the delayable tick sends a
  * logical active pulse. Pulse cleanup uses a kernel-uptime deadline from the
  * successful GPIO set, so a delayed router tick may extend but not shorten the
- * physical pulse. The configured toggle rate is stored as the default
- * requested rate and quantized to the nearest supported MEMS tick period.
+ * physical pulse.
  */
 void mems_switch_init(struct mems_switch *sw,
                       const struct gpio_dt_spec *gpio_a,
                       const struct gpio_dt_spec *gpio_b,
                       const char *name,
                       enum mems_switch_type switch_type,
-                      double configured_toggle_rate_hz, char initial_state);
+                      char initial_state);
 /**
  * @brief Queue a static or toggling MEMS switch state change.
  *
  * The router-owned MEMS thread applies pulses on its next tick. A positive
- * @p requested_toggle_rate_hz updates the stored requested rate and is
- * quantized to the nearest firmware tick period before toggling starts.
+ * @p requested_cycle_ms is quantized to MEMS service ticks and then stretched
+ * if needed so both A and B dwell legs satisfy the datasheet pulse-spacing
+ * limit. A zero value selects the fastest safe cycle for the requested duty.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t stop_after_s,
-                          double requested_toggle_rate_hz);
+                          double requested_cycle_ms);
 /**
  * @brief Queue a MEMS state change using exact duty-cycle tick counts.
  *
  * @p state_ticks is the number of ticks spent in @p state during each
  * @p period_ticks cycle. The function converts that to the internal A-state
- * numerator, updates the switch period, and lets the router-owned MEMS thread
+ * dwell count, updates the switch period, and lets the router-owned MEMS thread
  * apply pulses on subsequent ticks.
  */
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
@@ -173,9 +167,9 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
  * @brief Read a MEMS switch state snapshot.
  *
  * The snapshot is taken under the router mutex when the switch belongs to a
- * router. `duty_cycle` and `duty_numerator` describe the internal A-state
- * duty; callers that care about a route's B-state duty must invert the
- * numerator against `duty_denominator`.
+ * router. `duty_cycle` is the A-state fraction for normal switch commands;
+ * split responses convert this same A/B timing into the selected route-state
+ * fraction.
  */
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out);
 
@@ -266,6 +260,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
                              const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             uint32_t cycle_ms,
                              uint32_t stopafter_s,
                              struct mems_split_state *out,
                              const char **failed_switch);

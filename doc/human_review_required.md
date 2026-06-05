@@ -55,8 +55,8 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ### LLM Resolved; Human Review Requested
 
-- [ ] Verify MEMS non-constant duty responses now report `duty_cycle`,
-  `requested_toggle_rate_hz`, and `toggle_rate_hz` with six decimal places.
+- [ ] Verify MEMS and split non-constant duty responses now report actual
+  `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` timing fields.
 - [ ] Verify `laserbank/heater` now reports compact algorithm-facing status
   without the old wordy `all_tecs_enabled` / `any_disabled_below_15c` fields.
 - [ ] Verify heater `auto` mode turns the heater off when all laser temperatures

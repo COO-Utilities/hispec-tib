@@ -240,9 +240,10 @@ class MemsSwitchDetail:
     name: str
     state: str
     duty_cycle: float
-    requested_toggle_rate_hz: float = 0.0
-    toggle_rate_hz: float = 0.0
-    stopafter_s: int = 0
+    cycle_ms: int = 0
+    a_ms: int = 0
+    b_ms: int = 0
+    stop_in_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -494,9 +495,8 @@ class SplitSwitchState:
     name: str
     state: str
     duty_cycle: float
-    numerator: int
-    denominator: int
-    tick_ms: int
+    a_ms: int
+    b_ms: int
 
 
 @dataclass(frozen=True)
@@ -506,8 +506,9 @@ class SplitState:
     ratio_actual: tuple[float, float, float]
     ratio_out: tuple[float, float, float]
     split_transmission: tuple[float, float, float]
+    cycle_ms: int
     switches: tuple[SplitSwitchState, SplitSwitchState, SplitSwitchState]
-    stopsin_s: int
+    stop_in_s: int
 
 
 @dataclass(frozen=True)
@@ -740,9 +741,10 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
         name=name,
         state=state,
         duty_cycle=float(data.get("duty_cycle", _default_mems_duty_cycle(state))),
-        requested_toggle_rate_hz=float(data.get("requested_toggle_rate_hz", 0.0)),
-        toggle_rate_hz=float(data.get("toggle_rate_hz", 0.0)),
-        stopafter_s=int(data.get("stopafter_s", 0)),
+        cycle_ms=int(data.get("cycle_ms", 0)),
+        a_ms=int(data.get("a_ms", 0)),
+        b_ms=int(data.get("b_ms", 0)),
+        stop_in_s=int(data.get("stop_in_s", 0)),
     )
 
 
@@ -892,8 +894,9 @@ def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
         ratio_actual=_as_tuple3(data["ratio_actual"], "ratio_actual"),
         ratio_out=_as_tuple3(data["ratio_out"], "ratio_out"),
         split_transmission=_as_tuple3(data["split_transmission"], "split_transmission"),
+        cycle_ms=int(data["cycle_ms"]),
         switches=tuple(_dataclass_from(SplitSwitchState, item) for item in data["switches"]),  # type: ignore[arg-type]
-        stopsin_s=int(data["stopsin_s"]),
+        stop_in_s=int(data["stop_in_s"]),
     )
 
 
@@ -1258,21 +1261,21 @@ class HispecFibPcb:
         *,
         state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
-        toggle_rate_hz: float | None = None,
+        cycle_ms: int | None = None,
         stopafter_s: float | None = None,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
-        if state is None and duty_cycle is None and toggle_rate_hz is None and stopafter_s is None:
+        if state is None and duty_cycle is None and cycle_ms is None and stopafter_s is None:
             return _decode_mems_detail(name, self._request_json(key))
         if state is None:
             raise HispecFibError("state is required when setting a MEMS switch")
         payload: dict[str, Any] = {"state": _require_choice("state", state, MEMS_STATES)}
         if duty_cycle is not None:
             payload["duty_cycle"] = _require_float("duty_cycle", duty_cycle, 0.0, 1.0)
-        if toggle_rate_hz is not None:
-            payload["toggle_rate_hz"] = _require_float("toggle_rate_hz", toggle_rate_hz, 0.0, 1.0e9)
-            if payload["toggle_rate_hz"] == 0.0:
-                raise HispecFibError("toggle_rate_hz must be > 0")
+        if cycle_ms is not None:
+            payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
+            if payload["cycle_ms"] == 0:
+                raise HispecFibError("cycle_ms must be > 0")
         if stopafter_s is not None:
             payload["stopafter_s"] = _require_float(
                 "stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
@@ -1607,6 +1610,7 @@ class HispecFibPcb:
         ratio1: float,
         ratio2: float,
         *,
+        cycle_ms: int | None = None,
         stopafter_s: int = 0,
     ) -> SplitState:
         _require_choice("channel", channel, PD_CHANNELS)
@@ -1622,6 +1626,10 @@ class HispecFibPcb:
                 _require_float("stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
             ),
         }
+        if cycle_ms is not None:
+            payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
+            if payload["cycle_ms"] == 0:
+                raise HispecFibError("cycle_ms must be > 0")
         return _decode_split_state(self._request_json("split", payload))
 
     def measure_throughput(

@@ -95,8 +95,8 @@ Requests with payload use the key followed by a payload. There are no `get` or
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
-split channel=yj ratio1=0.33 ratio2=0.33 stopafter_s=300
+mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 stopafter_s=30
+split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 stopafter_s=300
 laserbank/power/override_on
 ```
 
@@ -346,7 +346,7 @@ and the AS for splitting fraction correction.
   eight-switch response fits the fixed MQTT payload buffer. Static switches
   report only `state`. A switch currently configured with a non-constant duty
   request also includes `duty_cycle`. Use `mems/<switchname>` for
-  requested/actual toggle rate and stop-after details.
+  actual dwell timing and stop-in details.
 
 (mems-switchname)=
 ### `mems/<switchname>`
@@ -366,7 +366,7 @@ and the AS for splitting fraction correction.
   {
     "state": "A",
     "duty_cycle": 0.5,
-    "toggle_rate_hz": 5,
+    "cycle_ms": 400,
     "stopafter_s": 30
   }
   ```
@@ -389,10 +389,11 @@ and the AS for splitting fraction correction.
   ```json
   {
     "state": "A|A?",
-    "duty_cycle": 0.0,
-    "requested_toggle_rate_hz": 0.0,
-    "toggle_rate_hz": 0.0,
-    "stopafter_s": 0
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "a_ms": 200,
+    "b_ms": 200,
+    "stop_in_s": 30
   }
   ```
 - **Notes:**
@@ -400,25 +401,25 @@ and the AS for splitting fraction correction.
     responses always use uppercase `A`/`B`.
   - `duty_cycle` is only valid with `state:"A"`.
   - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
-  - `toggle_rate_hz` is optional; if omitted the switch uses its current
-    requested toggle rate.
-  - Requested `toggle_rate_hz` is stored separately from the actual
-    firmware-quantized rate.
+  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
+    uses the fastest safe A-B-A cycle for the requested duty cycle.
+  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - `stopafter_s` max is 4 hours.
+  - Request `stopafter_s` max is 4 hours. Response `stop_in_s` is remaining
+    toggle time.
   - `?` suffix means the state has not yet been pulsed this boot; on first boot
     all switches will be reported as `A?`.
-  - `duty_cycle`, `requested_toggle_rate_hz`, `toggle_rate_hz`, and
-    `stopafter_s` are omitted for constant A or B profiles.
-  - `toggle_rate_hz` is the actual quantized full-cycle rate, not the
-    datasheet pulse rate. The firmware keeps all A/B actuation pulses at least
-    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, so a 5 Hz request at 50% duty is
-    reported as a 2.5 Hz full-cycle rate.
+  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
+    constant A or B profiles.
+  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
+    and B states. The firmware keeps all A/B actuation pulses at least
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, stretching or quantizing
+    `cycle_ms` if required.
   - Static state changes can be delayed until the same pulse-spacing rule is
     satisfied; status reports the last pulsed state until the delayed pulse
     occurs.
-  - If the actual rate differs from requested by more than rounding noise, the
-    firmware emits `mems_rate_quantized` on `dt/<device>/warning`.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
 
 
 (measure-throughput)=
@@ -1406,8 +1407,9 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```json
   {
     "channel": "yj",
-    "ratio1": 0.0,
-    "ratio2": 0.0,
+    "ratio1": 0.25,
+    "ratio2": 0.25,
+    "cycle_ms": 800,
     "stopafter_s": 0
   }
   ```
@@ -1418,37 +1420,35 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```json
   {
     "channel": "yj",
-    "ratio_ask": [0.33, 0.33, 0.34],
-    "ratio_actual": [0.33, 0.33, 0.34],
-    "ratio_out": [0.33, 0.33, 0.34],
+    "ratio_ask": [0.25, 0.25, 0.50],
+    "ratio_actual": [0.25, 0.25, 0.50],
+    "ratio_out": [0.25, 0.25, 0.50],
     "split_transmission": [1.0, 1.0, 1.0],
+    "cycle_ms": 800,
     "switches": [
       {
         "name": "yj_as1",
         "state": "A",
-        "duty_cycle": 0.33,
-        "numerator": 33,
-        "denominator": 100,
-        "tick_ms": 2
+        "duty_cycle": 0.25,
+        "a_ms": 200,
+        "b_ms": 600
       },
       {
         "name": "yj_as2",
         "state": "B",
         "duty_cycle": 1.0,
-        "numerator": 100,
-        "denominator": 100,
-        "tick_ms": 2
+        "a_ms": 0,
+        "b_ms": 800
       },
       {
         "name": "yj_as3",
         "state": "A",
-        "duty_cycle": 0.66,
-        "numerator": 66,
-        "denominator": 100,
-        "tick_ms": 2
+        "duty_cycle": 0.50,
+        "a_ms": 400,
+        "b_ms": 400
       }
     ],
-    "stopsin_s": 0
+    "stop_in_s": 0
   }
   ```
 
@@ -1466,12 +1466,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     remaining fraction.
   - `ratio1` maps to the direct branch selected by SW1. The remaining light is
     sent through the downstream branch. SW2 is held on the splitter branch.
-    SW3's selected-state numerator is `ratio1 + ratio2`, so its output-2
+    SW3's selected-state dwell is `ratio1 + ratio2`, so its output-2
     interval starts after SW1's output-1 deadtime.
-  - Users cannot set `toggle_rate_hz` for `split`. The firmware uses the
-    fastest period that keeps every non-static MEMS actuation pulse within
-    `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the requested ratios to integer
-    MEMS ticks.
+  - `cycle_ms` is optional. If omitted, the firmware uses the fastest period
+    that keeps every non-static MEMS actuation pulse within
+    `MEMS_SWITCH_MAX_TOGGLE_HZ`. `toggle_rate_hz` is rejected.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
@@ -1481,8 +1480,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     `ratio_out` is the estimated optical output split after applying
     `split_transmission`.
   - Each switch report gives the selected route state, the selected-state
-    duty-cycle number, and the exact integer timing as
-    `numerator / denominator` ticks with `tick_ms` milliseconds per tick.
+    duty-cycle fraction, and the raw A/B dwell timing as `a_ms` and `b_ms`.
+    For a `state:"B"` split switch, `duty_cycle` is `b_ms / cycle_ms`.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
   - If the attained ratio differs from the requested ratio because MEMS timing
     is quantized, the firmware emits `split_ratio_quantized` on
     `dt/<device>/warning`.

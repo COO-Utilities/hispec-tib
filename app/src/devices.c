@@ -926,7 +926,6 @@ void setup_mems_switches_and_routes(void)
 				 &mems_switch_gpio_pairs[i][1],
 				 profile->switch_names[i],
 				 switch_type,
-				 MEMS_SWITCH_MAX_TOGGLE_HZ,
 				 'A');
 		mems_switch_ptrs[i] = &mems_switches[i];
 	}

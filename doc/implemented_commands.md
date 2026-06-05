@@ -158,7 +158,7 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Owner: `mems_get()`, `mems_set()` in `app/src/mems_command.c`, with switch
   timing owned by `app/src/mems_switching.c`.
 - Side effects: updates requested switch state applied by `mems_router_thread()`.
-- Enqueue: can emit `mems_rate_quantized` warnings.
+- Enqueue: can emit `mems_timing_quantized` warnings.
 - Serial shorthand remains implemented in `app/src/command.c`.
 
 ### `split`
