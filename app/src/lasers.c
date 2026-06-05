@@ -660,6 +660,27 @@ static void init_temperature_channels(
 	}
 }
 
+static bool read_temperature_channel_locked(uint8_t index,
+					    struct hispec_laser_channel_temperature *channel)
+{
+	maiman_driver_t drv;
+	double tec_temp = LASERPROP_NA;
+	bool tec_started = false;
+	bool temp_ok;
+	bool state_ok = false;
+
+	maiman_init(&drv, laser_profiles[index].node_id);
+	temp_ok = maiman_read_tec_temperature_measured(&drv, &tec_temp);
+	if (temp_ok) {
+		state_ok = maiman_read_tec_started(&drv, &tec_started);
+	}
+
+	channel->valid = temp_ok && state_ok;
+	channel->tec_temperature_c = tec_temp;
+	channel->tec_enabled = state_ok && tec_started;
+	return channel->valid;
+}
+
 static int read_temperatures_locked(
 	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
 {
@@ -668,19 +689,7 @@ static int read_temperatures_locked(
 	}
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		maiman_driver_t drv;
-		double tec_temp = LASERPROP_NA;
-		bool tec_started = false;
-		bool temp_ok;
-		bool state_ok;
-
-		maiman_init(&drv, laser_profiles[i].node_id);
-		temp_ok = maiman_read_tec_temperature_measured(&drv, &tec_temp);
-		state_ok = maiman_read_tec_started(&drv, &tec_started);
-
-		channels[i].valid = temp_ok && state_ok;
-		channels[i].tec_temperature_c = tec_temp;
-		channels[i].tec_enabled = state_ok && tec_started;
+		(void)read_temperature_channel_locked(i, &channels[i]);
 	}
 
 	return 0;
@@ -718,14 +727,24 @@ int hispec_laser_bank_poll_temperatures(
 
 	init_temperature_channels(channels);
 
-	/* Background heater polling must skip, not wait, when a command owns the bus. */
-	rc = laser_lock_with_timeout(K_NO_WAIT);
-	if (rc != 0) {
-		return rc;
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		/* Background heater polling is opportunistic. Release the bus between
+		 * drivers so a command can cut in instead of waiting behind a full
+		 * six-node temperature sweep.
+		 */
+		rc = laser_lock_with_timeout(K_NO_WAIT);
+		if (rc != 0) {
+			return rc;
+		}
+		if (!bank_power_requested_enabled) {
+			k_mutex_unlock(&laser_lock);
+			return 0;
+		}
+		(void)read_temperature_channel_locked(i, &channels[i]);
+		k_mutex_unlock(&laser_lock);
 	}
-	rc = read_temperatures_locked(channels);
-	k_mutex_unlock(&laser_lock);
-	return rc;
+
+	return 0;
 }
 
 static int verify_driver_locked(const struct hispec_laser_driver_profile *profile,

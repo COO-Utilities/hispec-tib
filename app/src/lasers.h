@@ -227,9 +227,10 @@ int hispec_laser_bank_read_temperatures(
 /**
  * @brief Opportunistically poll TEC temperatures for background heater control.
  *
- * This variant never waits for the laser-bank mutex. It returns -EBUSY when a
- * command or auto-off operation owns the shared Modbus bus, letting background
- * control skip one cycle instead of delaying foreground access.
+ * This variant never waits for the laser-bank mutex and releases the mutex
+ * between driver nodes. It returns -EBUSY when a command or auto-off operation
+ * owns the shared Modbus bus, letting foreground access cut in instead of
+ * waiting behind a full background sweep.
  */
 int hispec_laser_bank_poll_temperatures(
 	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT]);
