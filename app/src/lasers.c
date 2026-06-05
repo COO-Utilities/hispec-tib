@@ -660,7 +660,7 @@ static void init_temperature_channels(
 	}
 }
 
-static bool read_temperature_channel_locked(uint8_t index,
+static void read_temperature_channel_locked(uint8_t index,
 					    struct hispec_laser_channel_temperature *channel)
 {
 	maiman_driver_t drv;
@@ -678,21 +678,6 @@ static bool read_temperature_channel_locked(uint8_t index,
 	channel->valid = temp_ok && state_ok;
 	channel->tec_temperature_c = tec_temp;
 	channel->tec_enabled = state_ok && tec_started;
-	return channel->valid;
-}
-
-static int read_temperatures_locked(
-	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
-{
-	if (!bank_power_requested_enabled) {
-		return 0;
-	}
-
-	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		(void)read_temperature_channel_locked(i, &channels[i]);
-	}
-
-	return 0;
 }
 
 int hispec_laser_bank_read_temperatures(
@@ -711,9 +696,13 @@ int hispec_laser_bank_read_temperatures(
 	if (rc != 0) {
 		return rc;
 	}
-	rc = read_temperatures_locked(channels);
+	if (bank_power_requested_enabled) {
+		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+			read_temperature_channel_locked(i, &channels[i]);
+		}
+	}
 	k_mutex_unlock(&laser_lock);
-	return rc;
+	return 0;
 }
 
 int hispec_laser_bank_poll_temperatures(
@@ -740,7 +729,7 @@ int hispec_laser_bank_poll_temperatures(
 			k_mutex_unlock(&laser_lock);
 			return 0;
 		}
-		(void)read_temperature_channel_locked(i, &channels[i]);
+		read_temperature_channel_locked(i, &channels[i]);
 		k_mutex_unlock(&laser_lock);
 	}
 
@@ -1149,11 +1138,19 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 
 	maiman_init(&drv, profile->node_id);
 	out->device_id = maiman_get_device_id(&drv);
+	/* If identity reads time out, stop here instead of hammering every
+	 * engineering-status register while the module or bus is recovering.
+	 */
+	if (out->device_id == 0U) {
+		rc = -EIO;
+		goto out_unlock;
+	}
 	out->serial_number = maiman_get_serial_number(&drv);
 	out->serial_matches = (profile->expected_serial == 0U ||
 			       out->serial_number == profile->expected_serial);
-	if (out->device_id == 0U || out->serial_number == 0U) {
-		read_ok = false;
+	if (out->serial_number == 0U) {
+		rc = -EIO;
+		goto out_unlock;
 	}
 
 	out->device_state = maiman_get_raw_status(&drv);

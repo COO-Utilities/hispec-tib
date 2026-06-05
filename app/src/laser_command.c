@@ -293,13 +293,13 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	}
 
 	rc = hispec_laser_get_status(id, &status);
-	if (rc != 0 && !status.bank_powered) {
+	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser status failed", rc);
 	}
 	if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
 		return coo_cmd_error(out, cmd, "laser response too large");
 	}
-	return rc == 0  ? coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload) : laser_cmd_error_rc(out, cmd, "laser status failed", rc);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -594,6 +594,9 @@ int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_respon
 	}
 
 	rc = hispec_laser_get_status(id, &s);
+	if (rc != 0) {
+		return laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
+	}
 	if (coo_json_append(payload, sizeof(payload), &off,
 			    "{\"name\":\"%s\",\"read_rc\":%d,\"powered\":%s,"
 			    "\"dev_id\":%u,\"serial\":%u,\"serial_ok\":%s,"
@@ -661,5 +664,5 @@ int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_respon
 	    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
 		return coo_cmd_error(out, cmd, "laser engineering status response too large");
 	}
-	return rc == 0  ? coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload) : laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
