@@ -28,7 +28,7 @@
 #define MEMS_ROUTER_MAX_ROUTES   18  // TIB=16, CAL=12, AS=4
 #define MEMS_ROUTER_MAX_ROUTE_PATH 5 // cal has 5 deep
 #define MEMS_ROUTER_MAX_ACTIVE_ROUTES 6
-#define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0
+#define MEMS_SWITCH_MAX_TOGGLE_HZ 5.0 /* Datasheet max actuation pulses per second. */
 #define MEMS_SWITCH_MAX_TOGGLE_DURATION_S (4U * 60U * 60U)
 #define MEMS_SPLIT_CHANNEL_COUNT 2
 #define MEMS_SPLIT_OUTPUT_COUNT 3
@@ -61,7 +61,10 @@ struct mems_switch {
     uint32_t cycles_until_toggle;
     uint32_t remaining_toggle_cycles; // zero means not toggling
     uint32_t pulse_clear_at_ms;
+    /* Start time of the last A or B actuation pulse. */
+    uint32_t last_pulse_at_ms;
     bool pulse_active;
+    bool last_pulse_at_ms_valid;
     uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];

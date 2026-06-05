@@ -366,7 +366,7 @@ and the AS for splitting fraction correction.
   {
     "state": "A",
     "duty_cycle": 0.5,
-    "toggle_rate_hz": 17,
+    "toggle_rate_hz": 5,
     "stopafter_s": 30
   }
   ```
@@ -410,9 +410,15 @@ and the AS for splitting fraction correction.
     all switches will be reported as `A?`.
   - `duty_cycle`, `requested_toggle_rate_hz`, `toggle_rate_hz`, and
     `stopafter_s` are omitted for constant A or B profiles.
-  - `toggle_rate_hz` is the actual quantized rate. If it differs from requested
-    by more than rounding noise, the firmware emits `mems_rate_quantized` on
-    `dt/<device>/warning`.
+  - `toggle_rate_hz` is the actual quantized full-cycle rate, not the
+    datasheet pulse rate. The firmware keeps all A/B actuation pulses at least
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, so a 5 Hz request at 50% duty is
+    reported as a 2.5 Hz full-cycle rate.
+  - Static state changes can be delayed until the same pulse-spacing rule is
+    satisfied; status reports the last pulsed state until the delayed pulse
+    occurs.
+  - If the actual rate differs from requested by more than rounding noise, the
+    firmware emits `mems_rate_quantized` on `dt/<device>/warning`.
 
 
 (measure-throughput)=
@@ -1463,8 +1469,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     SW3's selected-state numerator is `ratio1 + ratio2`, so its output-2
     interval starts after SW1's output-1 deadtime.
   - Users cannot set `toggle_rate_hz` for `split`. The firmware uses the
-    fastest period allowed by `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the
-    requested ratios to integer MEMS ticks.
+    fastest period that keeps every non-static MEMS actuation pulse within
+    `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the requested ratios to integer
+    MEMS ticks.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are

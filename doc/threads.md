@@ -71,8 +71,10 @@ MEMS toggling is not catch-up work. A missed high-to-low cleanup is still
 performed because leaving a pulse pin asserted is the worse behavior. During
 active toggling, a missed low-to-high pulse is emitted late only when the
 requested high window still has enough remaining service time; a fully stale
-high pulse is skipped and logged as a warning. Static-switch timing variation
-is informational because it is not a repeated rising-pulse timing risk.
+high pulse is skipped and logged as a warning. Static state changes obey the
+same minimum pulse spacing as toggling, so a command received immediately after
+the previous opposite pulse may be delayed until the switch can be pulsed
+safely.
 
 ## SNTP Thread
 

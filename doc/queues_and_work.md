@@ -66,7 +66,8 @@ where the rising pulse is late or skipped; base tick variation, static-switch
 delay, and high-to-low cleanup lateness are informational. High-to-low pulse
 cleanup is still applied, late low-to-high pulses are applied only when their
 requested high window has not fully elapsed, and fully stale high pulses are
-skipped.
+skipped. Static state changes may remain pending across multiple MEMS ticks
+when needed to satisfy the datasheet minimum interval between actuation pulses.
 
 ## Network Reconnect and DHCP Fallback Work
 
