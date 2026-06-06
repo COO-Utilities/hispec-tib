@@ -203,7 +203,16 @@ static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 
 static void apply_heater(bool enable)
 {
+	bool already_set;
 	int rc;
+
+	k_mutex_lock(&control_lock, K_FOREVER);
+	already_set = control.status.heater_on == enable;
+	k_mutex_unlock(&control_lock);
+	/* DS2408 writes are slow 1-Wire transactions; only write on policy changes. */
+	if (already_set) {
+		return;
+	}
 
 	rc = housekeeping_power_set(HOUSEKEEPING_POWER_BANK_HEATER, enable);
 	if (rc != 0) {
