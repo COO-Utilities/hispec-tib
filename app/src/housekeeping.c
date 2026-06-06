@@ -21,11 +21,13 @@
 
 #include "command.h"
 #include "devices.h"
+#include "photodiode.h"
 
 LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 
 #define HOUSEKEEPING_TEMP_INTERVAL_MS 1000U
 #define HOUSEKEEPING_POWER_OUTPUT_COUNT (HOUSEKEEPING_POWER_BANK_HEATER + 1)
+#define HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE 0LL
 
 struct power_on_time_runtime {
 	bool active;
@@ -39,10 +41,14 @@ static int64_t last_sample_ms;
 static const struct device *temperature_dev;
 static bool temperature_initialized;
 static struct power_on_time_runtime power_on_time[HOUSEKEEPING_POWER_OUTPUT_COUNT];
+static int64_t pd_autooff_deadline_ms[PHOTODIODE_CHANNEL_COUNT];
+static bool pd_autooff_inhibited[PHOTODIODE_CHANNEL_COUNT];
 
 static void temperature_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(temperature_work, temperature_work_handler);
-static struct k_work_q *temperature_work_q;
+static void pd_autooff_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(pd_autooff_work, pd_autooff_work_handler);
+static struct k_work_q *housekeeping_work_q;
 
 static void temperature_update(double ambient_c, int error, bool valid)
 {
@@ -168,6 +174,38 @@ static bool power_output_is_photodiode(enum housekeeping_power_output output)
 	       output == HOUSEKEEPING_POWER_HK_PHOTODIODE;
 }
 
+static bool power_output_to_pd_index(enum housekeeping_power_output output,
+				     uint8_t *index)
+{
+	if (!power_output_is_photodiode(output) || index == NULL) {
+		return false;
+	}
+
+	*index = (uint8_t)output;
+	return true;
+}
+
+static int power_get_locked(enum housekeeping_power_output output, bool *enabled)
+{
+	const struct gpio_dt_spec *gpio = power_gpio(output);
+	int val;
+
+	if (gpio == NULL || enabled == NULL) {
+		return -EINVAL;
+	}
+	if (!devices_relay_gpio_online()) {
+		return -EIO;
+	}
+
+	val = gpio_pin_get_dt(gpio);
+	if (val < 0) {
+		return val;
+	}
+
+	*enabled = val > 0;
+	return 0;
+}
+
 static void power_on_time_update_locked(enum housekeeping_power_output output,
 					bool active)
 {
@@ -191,7 +229,7 @@ static void power_on_time_update_locked(enum housekeeping_power_output output,
 	}
 }
 
-int housekeeping_power_set(enum housekeeping_power_output output, bool enabled)
+static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 {
 	const struct gpio_dt_spec *gpio = power_gpio(output);
 	int rc;
@@ -209,38 +247,30 @@ int housekeeping_power_set(enum housekeeping_power_output output, bool enabled)
 		return -EIO;
 	}
 
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	/* Logical GPIO value; devicetree flags own DS2408 relay polarity. */
 	rc = gpio_pin_set_dt(gpio, enabled ? 1 : 0);
 	if (rc == 0) {
 		power_on_time_update_locked(output, enabled);
 	}
+	return rc;
+}
+
+int housekeeping_power_set(enum housekeeping_power_output output, bool enabled)
+{
+	int rc;
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	rc = power_set_locked(output, enabled);
 	k_mutex_unlock(&housekeeping_state_lock);
 	return rc;
 }
 
 int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
 {
-	const struct gpio_dt_spec *gpio = power_gpio(output);
-	int rc = 0;
-	int val;
-
-	if (gpio == NULL || enabled == NULL) {
-		return -EINVAL;
-	}
-	if (!devices_relay_gpio_online()) {
-		return -EIO;
-	}
+	int rc;
 
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
-	val = gpio_pin_get_dt(gpio);
-	if (val < 0) {
-		rc = val;
-		goto out;
-	}
-	*enabled = val > 0;
-
-out:
+	rc = power_get_locked(output, enabled);
 	k_mutex_unlock(&housekeeping_state_lock);
 	return rc;
 }
@@ -265,13 +295,170 @@ double housekeeping_power_on_time_s(enum housekeeping_power_output output)
 	return (double)ms / 1000.0;
 }
 
+static int64_t pd_next_autooff_deadline_locked(void)
+{
+	int64_t next = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		const int64_t deadline = pd_autooff_deadline_ms[i];
+
+		if (deadline == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE ||
+		    pd_autooff_inhibited[i]) {
+			continue;
+		}
+		if (next == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE || deadline < next) {
+			next = deadline;
+		}
+	}
+
+	return next;
+}
+
+static void pd_autooff_reschedule_locked(void)
+{
+	int64_t next_deadline;
+	int64_t delay_ms;
+
+	if (housekeeping_work_q == NULL) {
+		return;
+	}
+
+	next_deadline = pd_next_autooff_deadline_locked();
+	if (next_deadline == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE) {
+		(void)k_work_cancel_delayable(&pd_autooff_work);
+		return;
+	}
+
+	delay_ms = next_deadline - k_uptime_get();
+	if (delay_ms < 0) {
+		delay_ms = 0;
+	}
+	(void)k_work_reschedule_for_queue(housekeeping_work_q, &pd_autooff_work,
+					  K_MSEC(delay_ms));
+}
+
+int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
+					uint32_t autooff_s,
+					bool *was_off)
+{
+	uint8_t index;
+	bool enabled = false;
+	int64_t now;
+	int rc;
+
+	if (!power_output_to_pd_index(output, &index)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	rc = power_get_locked(output, &enabled);
+	if (rc == 0 && !enabled) {
+		rc = power_set_locked(output, true);
+	}
+	if (rc == 0) {
+		now = k_uptime_get();
+		pd_autooff_deadline_ms[index] =
+			autooff_s == 0U ? HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE :
+			now + (int64_t)autooff_s * 1000LL;
+		pd_autooff_reschedule_locked();
+	}
+	k_mutex_unlock(&housekeeping_state_lock);
+
+	if (was_off != NULL) {
+		*was_off = rc == 0 && !enabled;
+	}
+	return rc;
+}
+
+void housekeeping_photodiode_autooff_cancel(enum housekeeping_power_output output)
+{
+	uint8_t index;
+
+	if (!power_output_to_pd_index(output, &index)) {
+		return;
+	}
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	pd_autooff_deadline_ms[index] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+	pd_autooff_reschedule_locked();
+	k_mutex_unlock(&housekeeping_state_lock);
+}
+
+void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,
+					     bool inhibited)
+{
+	uint8_t index;
+
+	if (!power_output_to_pd_index(output, &index)) {
+		return;
+	}
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	pd_autooff_inhibited[index] = inhibited;
+	pd_autooff_reschedule_locked();
+	k_mutex_unlock(&housekeeping_state_lock);
+}
+
+int64_t housekeeping_photodiode_autooff_remaining_s(enum housekeeping_power_output output)
+{
+	uint8_t index;
+	int64_t deadline;
+	int64_t remaining_ms;
+
+	if (!power_output_to_pd_index(output, &index)) {
+		return -1;
+	}
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	deadline = pd_autooff_inhibited[index] ?
+		   HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE :
+		   pd_autooff_deadline_ms[index];
+	k_mutex_unlock(&housekeeping_state_lock);
+
+	if (deadline == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE) {
+		return -1;
+	}
+
+	remaining_ms = deadline - k_uptime_get();
+	if (remaining_ms <= 0) {
+		return 0;
+	}
+	return (remaining_ms + 999LL) / 1000LL;
+}
+
 static void temperature_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
 	(void)temperature_sample_once();
-	(void)k_work_reschedule_for_queue(temperature_work_q, &temperature_work,
+	(void)k_work_reschedule_for_queue(housekeeping_work_q, &temperature_work,
 					  K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
+}
+
+static void pd_autooff_work_handler(struct k_work *work)
+{
+	int64_t now = k_uptime_get();
+
+	ARG_UNUSED(work);
+
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		int rc;
+
+		if (pd_autooff_deadline_ms[i] == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE ||
+		    pd_autooff_inhibited[i] ||
+		    now < pd_autooff_deadline_ms[i]) {
+			continue;
+		}
+
+		pd_autooff_deadline_ms[i] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+		rc = power_set_locked((enum housekeeping_power_output)i, false);
+		if (rc != 0) {
+			LOG_WRN("Failed to auto-off photodiode relay %u (%d)", i, rc);
+		}
+	}
+	pd_autooff_reschedule_locked();
+	k_mutex_unlock(&housekeeping_state_lock);
 }
 
 void housekeeping_start(struct k_work_q *work_q)
@@ -281,6 +468,6 @@ void housekeeping_start(struct k_work_q *work_q)
 		return;
 	}
 
-	temperature_work_q = work_q;
-	(void)k_work_reschedule_for_queue(temperature_work_q, &temperature_work, K_NO_WAIT);
+	housekeeping_work_q = work_q;
+	(void)k_work_reschedule_for_queue(housekeeping_work_q, &temperature_work, K_NO_WAIT);
 }

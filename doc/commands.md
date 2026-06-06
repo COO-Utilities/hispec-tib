@@ -1070,6 +1070,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "hk_mean_mv_1s": 0.0,
     "yj_rms_mv_0p5s": 0.0,
     "hk_rms_mv_0p5s": 0.0,
+    "yj_pd_is_off": true,
     "uptime_s": 0
   }
   ```
@@ -1143,6 +1144,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     `photodiode_noise` on `dt/<device>/warning`.
   - Power estimates subtract stored dark mV and use `responsivity_a_per_w` and
     `transimpedance_v_per_a`.
+  - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
+    `true` only when the corresponding relay is off; ADC sampling and returned
+    values continue regardless.
 
 (pdsettings)=
 ### `pdsettings`

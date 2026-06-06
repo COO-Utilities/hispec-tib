@@ -47,6 +47,27 @@ int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
 double housekeeping_power_on_time_s(enum housekeeping_power_output output);
 
 /**
+ * Auto-enable one photodiode relay and arm its auto-off deadline.
+ *
+ * This may sleep on the housekeeping mutex and slow relay GPIO I/O. The
+ * deadline is ignored while that channel is inhibited by a longer-running
+ * owner such as throughput monitoring.
+ */
+int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
+					uint32_t autooff_s,
+					bool *was_off);
+
+/** Cancel one photodiode relay's auto-off deadline. */
+void housekeeping_photodiode_autooff_cancel(enum housekeeping_power_output output);
+
+/** Prevent or allow one photodiode auto-off deadline from firing. */
+void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,
+					     bool inhibited);
+
+/** Return seconds until auto-off can fire, or -1 when no active countdown exists. */
+int64_t housekeeping_photodiode_autooff_remaining_s(enum housekeeping_power_output output);
+
+/**
  * Start ambient-temperature cache refresh work.
  *
  * The delayable work is submitted to @p work_q and may block briefly on

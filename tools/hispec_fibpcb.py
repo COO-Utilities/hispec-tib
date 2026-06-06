@@ -457,6 +457,8 @@ class PhotodiodeValues:
     yj_rms_mv_0p5s: float
     hk_rms_mv_0p5s: float
     uptime_s: int
+    yj_pd_is_off: bool = False
+    hk_pd_is_off: bool = False
 
 
 @dataclass(frozen=True)

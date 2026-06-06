@@ -8,9 +8,11 @@
 #include <errno.h>
 #include <math.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
+#include "housekeeping.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 
@@ -52,6 +54,35 @@ static const char *pd_power_mode_name(enum app_pd_power_mode mode)
 	default:
 		return "unknown";
 	}
+}
+
+static enum housekeeping_power_output pd_power_output(enum photodiode_channel channel)
+{
+	return (enum housekeeping_power_output)channel;
+}
+
+static bool pd_channel_power_is_off(enum photodiode_channel channel)
+{
+	bool powered = false;
+
+	return housekeeping_power_get(pd_power_output(channel), &powered) == 0 && !powered;
+}
+
+static int pd_apply_power_mode(enum photodiode_channel channel,
+			       enum app_pd_power_mode mode)
+{
+	const enum housekeeping_power_output output = pd_power_output(channel);
+
+	if (mode == APP_PD_POWER_OVERRIDE_ON) {
+		housekeeping_photodiode_autooff_cancel(output);
+		return housekeeping_power_set(output, true);
+	}
+	if (mode == APP_PD_POWER_OVERRIDE_OFF) {
+		housekeeping_photodiode_autooff_cancel(output);
+		return housekeeping_power_set(output, false);
+	}
+
+	return 0;
 }
 
 static int
@@ -136,6 +167,10 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	double hk_err;
 	int parse_rc;
 	enum photodiode_channel channel;
+	bool wait_for_power = false;
+	bool yj_pd_is_off;
+	bool hk_pd_is_off;
+	size_t off = 0U;
 
 	parse_rc = coo_json_extract_string(cmd->payload, "action",
 					   action_text, sizeof(action_text));
@@ -164,8 +199,26 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return pd_average_status_response(cmd, &average_status, out);
 	}
 
-	photodiode_get_status(&status);
 	app_settings_get_photodiode(&settings);
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		bool was_off = false;
+
+		if (settings.channel[i].power != APP_PD_POWER_AUTO) {
+			continue;
+		}
+		if (housekeeping_photodiode_auto_enable(pd_power_output((enum photodiode_channel)i),
+							settings.channel[i].autooff_s,
+							&was_off) == 0 && was_off) {
+			wait_for_power = true;
+		}
+	}
+	if (wait_for_power) {
+		k_sleep(K_MSEC(500));
+	}
+
+	photodiode_get_status(&status);
+	yj_pd_is_off = pd_channel_power_is_off(PHOTODIODE_CHANNEL_YJ);
+	hk_pd_is_off = pd_channel_power_is_off(PHOTODIODE_CHANNEL_HK);
 
 	yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
 	hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
@@ -176,29 +229,38 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
 		&settings.channel[PHOTODIODE_CHANNEL_HK]);
 
-	snprintk(payload, sizeof(payload),
-		 "{\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
-		 "\"hkvalue\":%.6f,\"hkvalue_err\":%.6f,"
-		 "\"yj_raw\":%d,\"hk_raw\":%d,\"yj_mv\":%.3f,\"hk_mv\":%.3f,"
-		 "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
-		 "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
-		 "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
-		 "\"uptime_s\":%lld}",
-		 (double)yj_value,
-		 (double)yj_err,
-		 (double)hk_value,
-		 (double)hk_err,
-		 status.channel[PHOTODIODE_CHANNEL_YJ].raw,
-		 status.channel[PHOTODIODE_CHANNEL_HK].raw,
-		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].mv,
-		 (double)status.channel[PHOTODIODE_CHANNEL_HK].mv,
-		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
-		 (double)status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
-		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].mean_mv_1s,
-		 (double)status.channel[PHOTODIODE_CHANNEL_HK].mean_mv_1s,
-		 (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
-		 (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
-		 status.uptime_ms/1000);
+	if (coo_json_append(payload, sizeof(payload), &off,
+			    "{\"yjvalue\":%.6f,\"yjvalue_err\":%.6f,"
+			    "\"hkvalue\":%.6f,\"hkvalue_err\":%.6f,"
+			    "\"yj_raw\":%d,\"hk_raw\":%d,\"yj_mv\":%.3f,\"hk_mv\":%.3f,"
+			    "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
+			    "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
+			    "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
+			    "\"uptime_s\":%lld",
+			    (double)yj_value,
+			    (double)yj_err,
+			    (double)hk_value,
+			    (double)hk_err,
+			    status.channel[PHOTODIODE_CHANNEL_YJ].raw,
+			    status.channel[PHOTODIODE_CHANNEL_HK].raw,
+			    (double)status.channel[PHOTODIODE_CHANNEL_YJ].mv,
+			    (double)status.channel[PHOTODIODE_CHANNEL_HK].mv,
+			    (double)status.channel[PHOTODIODE_CHANNEL_YJ].noise_rms_mv,
+			    (double)status.channel[PHOTODIODE_CHANNEL_HK].noise_rms_mv,
+			    (double)status.channel[PHOTODIODE_CHANNEL_YJ].mean_mv_1s,
+			    (double)status.channel[PHOTODIODE_CHANNEL_HK].mean_mv_1s,
+			    (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
+			    (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
+			    status.uptime_ms/1000) != 0 ||
+	    (yj_pd_is_off &&
+	     coo_json_append(payload, sizeof(payload), &off,
+			     ",\"yj_pd_is_off\":true") != 0) ||
+	    (hk_pd_is_off &&
+	     coo_json_append(payload, sizeof(payload), &off,
+			     ",\"hk_pd_is_off\":true") != 0) ||
+	    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+		return coo_cmd_error(out, cmd, "pd response too large");
+	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
@@ -371,6 +433,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 				    const struct app_pd_channel_settings *ch)
 {
 	size_t off = 0U;
+	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"channel\":\"%s\",\"dark_mv\":%.3f,"
@@ -386,16 +449,29 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  ch->lowest_dark_valid ? ch->lowest_dark_mv : (double)NAN,
 					  3) != 0 ||
-	    coo_json_append(payload, payload_len, &off,
-			    ",\"noise_rms_mV\":%.3f,"
-			    "\"responsivity_a_per_w\":%.9f,"
-			    "\"transimpedance_v_per_a\":%.6e,"
-			    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":null}",
-			    (double)ch->noise_warn_rms_mv,
-			    ch->responsivity_a_per_w,
-			    ch->transimpedance_v_per_a,
-			    pd_power_mode_name(ch->power),
-			    ch->autooff_s) != 0) {
+		    coo_json_append(payload, payload_len, &off,
+				    ",\"noise_rms_mV\":%.3f,"
+				    "\"responsivity_a_per_w\":%.9f,"
+				    "\"transimpedance_v_per_a\":%.6e,"
+				    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":",
+				    (double)ch->noise_warn_rms_mv,
+				    ch->responsivity_a_per_w,
+				    ch->transimpedance_v_per_a,
+				    pd_power_mode_name(ch->power),
+				    ch->autooff_s) != 0) {
+		return -ENOSPC;
+	}
+
+	if (off_in_s >= 0 &&
+	    coo_json_append(payload, payload_len, &off, "%lld",
+			    (long long)off_in_s) != 0) {
+		return -ENOSPC;
+	}
+	if (off_in_s < 0 &&
+	    coo_json_append(payload, payload_len, &off, "null") != 0) {
+		return -ENOSPC;
+	}
+	if (coo_json_append(payload, payload_len, &off, "}") != 0) {
 		return -ENOSPC;
 	}
 
@@ -496,6 +572,12 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 		return coo_cmd_error(out, cmd, "no pdsettings fields supplied");
 	}
 
+	if (channel_settings.power != settings.channel[channel].power) {
+		rc = pd_apply_power_mode(channel, channel_settings.power);
+		if (rc != 0) {
+			return coo_cmd_error_rc(out, cmd, "photodiode power mode failed", rc);
+		}
+	}
 	app_settings_update_photodiode_channel((uint8_t)channel,
 					       &channel_settings,
 					       persist);
