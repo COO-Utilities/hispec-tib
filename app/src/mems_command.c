@@ -712,7 +712,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                  channel_name == NULL ? "?" : channel_name,
                  cycle_ms, state.cycle_ms);
         coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                         "requested MEMS cycle was quantized or stretched",
+                         "requested MEMS cycle was quantized",
                          context);
     }
     return split_channel_response(cmd, &state, channel_index, out);
@@ -1048,7 +1048,7 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                      "switch=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                      sw->name, cycle_ms, status.cycle_ms);
             coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                             "requested MEMS cycle was quantized or stretched",
+                             "requested MEMS cycle was quantized",
                              context);
         }
     }

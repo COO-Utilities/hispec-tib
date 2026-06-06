@@ -402,7 +402,9 @@ and the AS for splitting fraction correction.
   - `duty_cycle` is only valid with `state:"A"`.
   - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
   - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
-    uses the fastest safe A-B-A cycle for the requested duty cycle.
+    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
+    the firmware may quantize duty inside the requested cycle but does not
+    stretch the requested cycle beyond MEMS tick granularity.
   - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
   - Request `off_in_s` max is 4 hours. Response `stop_in_s` is remaining
@@ -413,7 +415,7 @@ and the AS for splitting fraction correction.
     constant A or B profiles.
   - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
     and B states. The firmware keeps all A/B actuation pulses at least
-    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, stretching or quantizing
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
     `cycle_ms` if required.
   - Static state changes can be delayed until the same pulse-spacing rule is
     satisfied; status reports the last pulsed state until the delayed pulse
@@ -1470,7 +1472,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     interval starts after SW1's output-1 deadtime.
   - `cycle_ms` is optional. If omitted, the firmware uses the fastest period
     that keeps every non-static MEMS actuation pulse within
-    `MEMS_SWITCH_MAX_TOGGLE_HZ`. `toggle_rate_hz` is rejected.
+    `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
+    cycle except for MEMS tick quantization and quantizes the split ratios
+    inside that fixed cycle. `toggle_rate_hz` is rejected.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are

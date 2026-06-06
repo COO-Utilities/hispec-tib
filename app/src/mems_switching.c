@@ -224,6 +224,46 @@ static uint32_t quantize_cycle_period_cycles(const struct mems_switch *sw,
     return period_cycles;
 }
 
+static int quantize_mixed_duty_ticks(double duty_cycle,
+                                     uint32_t min_cycles,
+                                     bool fixed_period,
+                                     uint32_t *period_cycles,
+                                     uint32_t *a_cycles)
+{
+    uint32_t ticks;
+    double required_period_cycles;
+
+    if (period_cycles == NULL || a_cycles == NULL ||
+        duty_cycle <= 0.0 || duty_cycle >= 1.0) {
+        return -EINVAL;
+    }
+
+    if (!fixed_period) {
+        required_period_cycles = (double)*period_cycles;
+        required_period_cycles =
+            MAX(required_period_cycles, (double)min_cycles / duty_cycle);
+        required_period_cycles =
+            MAX(required_period_cycles, (double)min_cycles / (1.0 - duty_cycle));
+        if (required_period_cycles > (double)UINT32_MAX) {
+            return -ERANGE;
+        }
+
+        *period_cycles = (uint32_t)required_period_cycles;
+        if ((double)*period_cycles < required_period_cycles) {
+            (*period_cycles)++;
+        }
+    }
+
+    if (*period_cycles < 2U * min_cycles) {
+        return -ERANGE;
+    }
+
+    ticks = (uint32_t)(duty_cycle * (double)*period_cycles + 0.5);
+    ticks = CLAMP(ticks, min_cycles, *period_cycles - min_cycles);
+    *a_cycles = ticks;
+    return 0;
+}
+
 static uint32_t cycles_to_ms(const struct mems_switch *sw, uint32_t cycles)
 {
     uint64_t ms = (uint64_t)cycles * (uint64_t)mems_switch_pulse_ms(sw);
@@ -364,31 +404,20 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
     if (duty_cycle > 0.0 && duty_cycle < 1.0) {
         const uint32_t min_cycles =
             mems_switch_min_actuation_cycles(mems_switch_pulse_ms(sw));
-        double required_period_cycles = (double)period_cycles;
-
-        /* The datasheet rate limit is between any two actuation pulses. For
-         * mixed duty, both A and B dwell legs must be long enough before the
-         * opposite coil can be pulsed.
-         */
-        required_period_cycles =
-            MAX(required_period_cycles, (double)min_cycles / duty_cycle);
-        required_period_cycles =
-            MAX(required_period_cycles, (double)min_cycles / (1.0 - duty_cycle));
-        if (required_period_cycles > (double)UINT32_MAX) {
+        rc = quantize_mixed_duty_ticks(duty_cycle, min_cycles,
+                                       requested_cycle_ms > 0.0,
+                                       &period_cycles, &a_cycles);
+        if (rc != 0) {
             if (locked) {
                 k_mutex_unlock(&router->lock);
             }
-            return -ERANGE;
+            return rc;
         }
-
-        period_cycles = (uint32_t)required_period_cycles;
-        if ((double)period_cycles < required_period_cycles) {
-            period_cycles++;
-        }
+    } else {
+        a_cycles = (uint32_t)(duty_cycle * (double)period_cycles + 0.5);
     }
 
     sw->switching_period_cycles = period_cycles;
-    a_cycles = (uint32_t)(duty_cycle * (double)period_cycles + 0.5);
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
                                           off_in_s);
 
@@ -1001,6 +1030,69 @@ static uint32_t split_ratio_to_ticks(double ratio, uint32_t period_ticks)
     return MIN(ticks, period_ticks);
 }
 
+static int split_quantize_boundary_ticks(double ratio,
+                                         uint32_t period_ticks,
+                                         uint32_t min_ticks,
+                                         uint32_t *boundary_ticks)
+{
+    uint32_t ticks;
+
+    if (boundary_ticks == NULL || period_ticks == 0U) {
+        return -EINVAL;
+    }
+
+    if (ratio <= 0.0) {
+        *boundary_ticks = 0U;
+        return 0;
+    }
+    if (ratio >= 1.0) {
+        *boundary_ticks = period_ticks;
+        return 0;
+    }
+    if (period_ticks < 2U * min_ticks) {
+        return -ERANGE;
+    }
+
+    ticks = split_ratio_to_ticks(ratio, period_ticks);
+    ticks = CLAMP(ticks, min_ticks, period_ticks - min_ticks);
+    *boundary_ticks = ticks;
+    return 0;
+}
+
+static int split_quantize_output_ticks(uint32_t period_ticks,
+                                       uint32_t min_ticks,
+                                       const double corrected[MEMS_SPLIT_OUTPUT_COUNT],
+                                       uint32_t output_ticks[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    uint32_t boundary1_ticks;
+    uint32_t boundary3_ticks;
+    int rc;
+
+    if (corrected == NULL || output_ticks == NULL) {
+        return -EINVAL;
+    }
+
+    rc = split_quantize_boundary_ticks(corrected[0], period_ticks, min_ticks,
+                                       &boundary1_ticks);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = split_quantize_boundary_ticks(corrected[0] + corrected[1],
+                                       period_ticks, min_ticks,
+                                       &boundary3_ticks);
+    if (rc != 0) {
+        return rc;
+    }
+    if (boundary3_ticks < boundary1_ticks) {
+        boundary3_ticks = boundary1_ticks;
+    }
+
+    output_ticks[0] = boundary1_ticks;
+    output_ticks[1] = boundary3_ticks - boundary1_ticks;
+    output_ticks[2] = period_ticks - boundary3_ticks;
+    return 0;
+}
+
 static void split_read_transmissions(const char *route_name,
                                      double transmission[MEMS_SPLIT_OUTPUT_COUNT])
 {
@@ -1211,7 +1303,6 @@ int mems_split_apply_channel(const struct mems_router *router,
     char route_name[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
     double transmission[MEMS_SPLIT_OUTPUT_COUNT];
     double corrected[MEMS_SPLIT_OUTPUT_COUNT];
-    double required_period_ticks;
     uint32_t min_split_ticks;
     int rc;
 
@@ -1239,38 +1330,44 @@ int mems_split_apply_channel(const struct mems_router *router,
         return rc;
     }
 
-    period_ticks = split_cycle_ms_to_ticks(cycle_ms);
-    required_period_ticks = (double)period_ticks;
     min_split_ticks = mems_switch_min_actuation_cycles(MEMS_SWITCH_ELECTRICAL_PULSE_MS);
-    if (corrected[0] > 0.0 && corrected[0] < 1.0) {
-        required_period_ticks =
-            MAX(required_period_ticks, (double)min_split_ticks / corrected[0]);
-        required_period_ticks =
-            MAX(required_period_ticks, (double)min_split_ticks / (1.0 - corrected[0]));
-    }
-    if (corrected[0] + corrected[1] > 0.0 &&
-        corrected[0] + corrected[1] < 1.0) {
-        const double switch3_ratio = corrected[0] + corrected[1];
+    period_ticks = split_cycle_ms_to_ticks(cycle_ms);
+    if (cycle_ms == 0U) {
+        double required_period_ticks = (double)period_ticks;
 
-        required_period_ticks =
-            MAX(required_period_ticks, (double)min_split_ticks / switch3_ratio);
-        required_period_ticks =
-            MAX(required_period_ticks, (double)min_split_ticks / (1.0 - switch3_ratio));
-    }
-    if (required_period_ticks > (double)UINT32_MAX) {
-        return -ERANGE;
-    }
-    period_ticks = (uint32_t)required_period_ticks;
-    if ((double)period_ticks < required_period_ticks) {
-        period_ticks++;
+        /* With no external cycle constraint, choose the fastest period that can
+         * realize the transmission-corrected split without violating the MEMS
+         * actuation spacing on SW1 or SW3.
+         */
+        if (corrected[0] > 0.0 && corrected[0] < 1.0) {
+            required_period_ticks =
+                MAX(required_period_ticks, (double)min_split_ticks / corrected[0]);
+            required_period_ticks =
+                MAX(required_period_ticks, (double)min_split_ticks / (1.0 - corrected[0]));
+        }
+        if (corrected[0] + corrected[1] > 0.0 &&
+            corrected[0] + corrected[1] < 1.0) {
+            const double switch3_ratio = corrected[0] + corrected[1];
+
+            required_period_ticks =
+                MAX(required_period_ticks, (double)min_split_ticks / switch3_ratio);
+            required_period_ticks =
+                MAX(required_period_ticks, (double)min_split_ticks / (1.0 - switch3_ratio));
+        }
+        if (required_period_ticks > (double)UINT32_MAX) {
+            return -ERANGE;
+        }
+        period_ticks = (uint32_t)required_period_ticks;
+        if ((double)period_ticks < required_period_ticks) {
+            period_ticks++;
+        }
     }
 
-    output_ticks[0] = split_ratio_to_ticks(corrected[0], period_ticks);
-    output_ticks[1] = split_ratio_to_ticks(corrected[1], period_ticks);
-    if (output_ticks[0] + output_ticks[1] > period_ticks) {
-        output_ticks[1] = period_ticks - output_ticks[0];
+    rc = split_quantize_output_ticks(period_ticks, min_split_ticks, corrected,
+                                     output_ticks);
+    if (rc != 0) {
+        return rc;
     }
-    output_ticks[2] = period_ticks - output_ticks[0] - output_ticks[1];
 
     switch_ticks[0] = output_ticks[0];
     switch_ticks[1] = period_ticks;

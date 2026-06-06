@@ -145,9 +145,10 @@ void mems_switch_init(struct mems_switch *sw,
  * @brief Queue a static or toggling MEMS switch state change.
  *
  * The router-owned MEMS thread applies pulses on its next tick. A positive
- * @p requested_cycle_ms is quantized to MEMS service ticks and then stretched
- * if needed so both A and B dwell legs satisfy the datasheet pulse-spacing
- * limit. A zero value selects the fastest safe cycle for the requested duty.
+ * @p requested_cycle_ms is quantized to MEMS service ticks but not stretched;
+ * the duty cycle is quantized inside that fixed cycle so A/B actuation pulses
+ * satisfy the datasheet spacing limit. A zero value selects the fastest safe
+ * cycle for the requested duty.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t off_in_s,
@@ -252,10 +253,11 @@ int mems_split_read_channel_state(const struct mems_router *router,
  *
  * The user-facing command provides ratio1 and ratio2; this domain helper
  * receives all three normalized output ratios, applies route-loss transmission
- * correction, and converts the corrected duty targets to exact MEMS ticks. It
- * can sleep on the router mutex through MEMS switch operations and on settings
- * while reading split transmissions. It does not publish warnings or parse
- * command payloads.
+ * correction, and converts the corrected duty targets to exact MEMS ticks. An
+ * explicit cycle is not stretched; output dwell ticks are solved within the
+ * fixed PCB switch-boundary order. It can sleep on the router mutex through
+ * MEMS switch operations and on settings while reading split transmissions. It
+ * does not publish warnings or parse command payloads.
  */
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
