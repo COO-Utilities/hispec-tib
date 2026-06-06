@@ -54,6 +54,13 @@ struct app_mqtt_settings {
 #define APP_LASER_CHANNEL_COUNT 6
 #define APP_PD_DARK_DURATION_USER UINT32_MAX
 #define APP_PD_DARK_DURATION_MAX_MS 2000U
+#define APP_PD_DEFAULT_AUTOOFF_S 300U
+
+enum app_pd_power_mode {
+	APP_PD_POWER_AUTO = 0,
+	APP_PD_POWER_OVERRIDE_ON,
+	APP_PD_POWER_OVERRIDE_OFF,
+};
 
 struct app_attenuator_physical_settings {
 	double slope;
@@ -82,6 +89,8 @@ struct app_pd_channel_settings {
 	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
+	enum app_pd_power_mode power;
+	uint32_t autooff_s;
 };
 
 struct app_photodiode_settings {

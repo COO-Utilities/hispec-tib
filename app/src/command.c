@@ -308,10 +308,10 @@ static const struct coo_cmd_spec command_specs[] = {
       .supported = command_tib_supported,
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pdsettings/<channel>", command_tib_supported,
-                  "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> persistent=<bool>]",
+                  "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persistent=<bool>]",
                   "channel required in key; listed fields optional for effect",
                   "channel: yj,hk",
-                  "TIB-only app-owned photodiode calibration/settings; dark_noise_rms_mv reports last measured dark RMS",
+                  "TIB-only app-owned photodiode calibration/settings and relay power intent",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
 };
 

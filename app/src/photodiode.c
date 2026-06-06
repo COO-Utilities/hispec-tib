@@ -509,7 +509,9 @@ bool photodiode_settings_valid(const struct app_pd_channel_settings *settings)
            settings->responsivity_a_per_w <= PHOTODIODE_RESPONSIVITY_MAX_A_PER_W &&
            isfinite(settings->transimpedance_v_per_a) &&
            settings->transimpedance_v_per_a >= PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A &&
-           settings->transimpedance_v_per_a <= PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A;
+           settings->transimpedance_v_per_a <= PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A &&
+           settings->power >= APP_PD_POWER_AUTO &&
+           settings->power <= APP_PD_POWER_OVERRIDE_OFF;
 }
 
 static uint32_t pd_average_duration_to_samples(uint32_t duration_ms)

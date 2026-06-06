@@ -488,6 +488,9 @@ class PhotodiodeSettings:
     noise_rms_mV: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
+    power: str
+    autooff_s: int
+    off_in_s: int | None
 
 
 @dataclass(frozen=True)
@@ -884,6 +887,9 @@ def _decode_pdsettings(data: Mapping[str, Any]) -> PhotodiodeSettings:
         noise_rms_mV=float(data["noise_rms_mV"]),
         responsivity_a_per_w=float(data["responsivity_a_per_w"]),
         transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
+        power=str(data["power"]),
+        autooff_s=int(data["autooff_s"]),
+        off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
     )
 
 
@@ -1566,6 +1572,8 @@ class HispecFibPcb:
         noise_rms_mV: float | None = None,
         responsivity_a_per_w: float | None = None,
         transimpedance_v_per_a: float | None = None,
+        power: Literal["auto", "override_on", "override_off"] | None = None,
+        autooff_s: int | None = None,
         persistent: bool = False,
     ) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
@@ -1574,6 +1582,8 @@ class HispecFibPcb:
             noise_rms_mV=noise_rms_mV,
             responsivity_a_per_w=responsivity_a_per_w,
             transimpedance_v_per_a=transimpedance_v_per_a,
+            power=power,
+            autooff_s=autooff_s,
             persistent=persistent,
         )
         if payload is None or set(payload) == {"persistent"}:
@@ -1598,6 +1608,10 @@ class HispecFibPcb:
                 PD_TRANSIMPEDANCE_MIN_V_PER_A,
                 PD_TRANSIMPEDANCE_MAX_V_PER_A,
             )
+        if power is not None:
+            payload["power"] = _require_choice("power", power, ("auto", "override_on", "override_off"))
+        if autooff_s is not None:
+            payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
         return self._request_ok(f"pdsettings/{channel}", payload)
 
     def split_status(self, channel: Literal["yj", "hk"]) -> SplitState:

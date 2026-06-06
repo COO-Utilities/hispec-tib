@@ -34,6 +34,26 @@ static const struct coo_json_string_choice pd_action_choices[] = {
 	{ "reset_lowest_dark", PD_ACTION_RESET_LOWEST_DARK },
 };
 
+static const struct coo_json_string_choice pd_power_choices[] = {
+	{ "auto", APP_PD_POWER_AUTO },
+	{ "override_on", APP_PD_POWER_OVERRIDE_ON },
+	{ "override_off", APP_PD_POWER_OVERRIDE_OFF },
+};
+
+static const char *pd_power_mode_name(enum app_pd_power_mode mode)
+{
+	switch (mode) {
+	case APP_PD_POWER_AUTO:
+		return "auto";
+	case APP_PD_POWER_OVERRIDE_ON:
+		return "override_on";
+	case APP_PD_POWER_OVERRIDE_OFF:
+		return "override_off";
+	default:
+		return "unknown";
+	}
+}
+
 static int
 pd_average_status_response(const struct coo_cmd_request *cmd,
 			   const struct photodiode_average_status *status,
@@ -369,10 +389,13 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"noise_rms_mV\":%.3f,"
 			    "\"responsivity_a_per_w\":%.9f,"
-			    "\"transimpedance_v_per_a\":%.6e}",
+			    "\"transimpedance_v_per_a\":%.6e,"
+			    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":null}",
 			    (double)ch->noise_warn_rms_mv,
 			    ch->responsivity_a_per_w,
-			    ch->transimpedance_v_per_a) != 0) {
+			    ch->transimpedance_v_per_a,
+			    pd_power_mode_name(ch->power),
+			    ch->autooff_s) != 0) {
 		return -ENOSPC;
 	}
 
@@ -409,6 +432,8 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	bool persist = false;
 	bool changed = false;
 	bool dark_changed = false;
+	int power_value;
+	int parse_rc;
 	int rc;
 
 	rc = pd_parse_channel_from_key(cmd, &channel);
@@ -445,6 +470,22 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 						   PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A,
 						   PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A) != 0) {
 		return coo_cmd_error(out, cmd, "invalid pdsettings value");
+	}
+	parse_rc = coo_json_extract_string_choice(cmd->payload, "power",
+						  pd_power_choices,
+						  ARRAY_SIZE(pd_power_choices),
+						  &power_value);
+	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		return coo_cmd_error(out, cmd, "invalid power");
+	}
+	if (parse_rc == COO_JSON_EXTRACT_OK) {
+		channel_settings.power = (enum app_pd_power_mode)power_value;
+		changed = true;
+	}
+	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s",
+					  &channel_settings.autooff_s,
+					  &changed) != 0) {
+		return coo_cmd_error(out, cmd, "invalid autooff_s");
 	}
 	if (dark_changed) {
 		channel_settings.dark_duration_ms = APP_PD_DARK_DURATION_USER;

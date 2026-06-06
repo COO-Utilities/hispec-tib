@@ -1157,7 +1157,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     "lowest_stored_dark_mv": null,
     "noise_rms_mV": 3.0,
     "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 5.0e10
+    "transimpedance_v_per_a": 5.0e10,
+    "power": "auto",
+    "autooff_s": 300,
+    "off_in_s": null
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -1167,6 +1170,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     "dark_mv": 0.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10,
+    "power": "auto",
+    "autooff_s": 300,
     "persistent": true
   }
   ```
@@ -1176,12 +1181,18 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `noise_rms_mV`
   - `responsivity_a_per_w`
   - `transimpedance_v_per_a`
+  - `power`
+  - `autooff_s`
   - `persistent`
 
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
   command keys and separate app NVS records. Dark and lowest-dark values are
-  persisted through app settings. Setting `dark_mv` directly marks the active
+  persisted through app settings. `power` is the relay intent for this channel:
+  `auto`, `override_on`, or `override_off`. `autooff_s` is the channel's
+  automatic power-off delay used when firmware auto-enables the relay; `off_in_s`
+  is `null` unless a channel auto-off countdown is armed. Setting `dark_mv`
+  directly marks the active
   dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
   `pd measure_dark store=true` records the measured mean as the active dark and
   reports the actual averaging duration in `dark_duration_ms`.

@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 4U
+#define APP_NVS_SCHEMA_VERSION 5U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -90,10 +90,12 @@ struct app_nvs_pd_channel {
 	uint32_t dark_duration_ms;
 	double dark_noise_rms_mv;
 	uint8_t lowest_dark_valid;
-	uint8_t reserved[3];
+	uint8_t power;
+	uint8_t reserved[2];
 	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
+	uint32_t autooff_s;
 };
 
 struct app_nvs_laser_policy {
@@ -226,6 +228,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].transimpedance_v_per_a =
 		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].power = APP_PD_POWER_AUTO;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
 		APP_PD_DARK_DURATION_USER;
@@ -240,6 +244,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].transimpedance_v_per_a =
 		PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].power = APP_PD_POWER_AUTO;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
@@ -441,6 +447,8 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
 	stored.transimpedance_v_per_a = pd->transimpedance_v_per_a;
+	stored.power = (uint8_t)pd->power;
+	stored.autooff_s = pd->autooff_s;
 	(void)app_nvs_write(pd_nvs_id(channel), &stored, sizeof(stored));
 }
 
@@ -553,6 +561,8 @@ static void pd_settings_from_nvs(struct app_pd_channel_settings *pd,
 	pd->noise_warn_rms_mv = stored->noise_warn_rms_mv;
 	pd->responsivity_a_per_w = stored->responsivity_a_per_w;
 	pd->transimpedance_v_per_a = stored->transimpedance_v_per_a;
+	pd->power = (enum app_pd_power_mode)stored->power;
+	pd->autooff_s = stored->autooff_s;
 }
 
 static bool route_loss_record_valid(struct app_route_loss_record *record)
