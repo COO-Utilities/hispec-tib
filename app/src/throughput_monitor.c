@@ -56,7 +56,7 @@ struct throughput_state {
 	char fiber;
 	double level_percent;
 	int64_t started_ms;
-	uint32_t stopafter_s;
+	uint32_t off_in_s;
 	double max_flux_ph_s;
 	uint8_t high_count;
 	uint8_t low_count;
@@ -451,8 +451,8 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (local[i].stopafter_s > 0U &&
-			    now - local[i].started_ms >= (int64_t)local[i].stopafter_s * 1000) {
+			if (local[i].off_in_s > 0U &&
+			    now - local[i].started_ms >= (int64_t)local[i].off_in_s * 1000) {
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
@@ -533,7 +533,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.channel = channel;
 	next.attenuator_index = attenuator_index;
 	next.fiber = request->fiber;
-	next.stopafter_s = request->stopafter_s;
+	next.off_in_s = request->off_in_s;
 	next.max_flux_ph_s = request->max_flux_ph_s;
 	next.started_ms = k_uptime_get();
 

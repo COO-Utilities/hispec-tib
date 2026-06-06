@@ -115,7 +115,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	struct throughput_monitor_request request = {0};
 	struct throughput_monitor_status status = {0};
-	uint32_t stopafter_s = 0U;
+	uint32_t off_in_s = 0U;
 	bool autolevel = true;
 	bool max_flux_present = false;
 	int choice_value;
@@ -173,9 +173,9 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		return coo_cmd_error(out, cmd, "invalid autolevel");
 	}
 
-	if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
-					  &stopafter_s, NULL) != 0) {
-		return coo_cmd_error(out, cmd, "invalid stopafter_s");
+	if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
+					  &off_in_s, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid off_in_s");
 	}
 
 	if (coo_json_extract_optional_double_range(cmd->payload, "max_flux_ph_s",
@@ -196,7 +196,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 			 choice_value == THROUGHPUT_FORMAT_BINARY;
 
 	request.autolevel = autolevel;
-	request.stopafter_s = stopafter_s;
+	request.off_in_s = off_in_s;
 
 	parse_rc = coo_json_extract_string(cmd->payload, "input", input, sizeof(input));
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {

@@ -150,7 +150,7 @@ void mems_switch_init(struct mems_switch *sw,
  * limit. A zero value selects the fastest safe cycle for the requested duty.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
-                          double duty_cycle, uint32_t stop_after_s,
+                          double duty_cycle, uint32_t off_in_s,
                           double requested_cycle_ms);
 /**
  * @brief Queue a MEMS state change using exact duty-cycle tick counts.
@@ -162,7 +162,7 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
  */
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
                                 uint32_t state_ticks, uint32_t period_ticks,
-                                uint32_t stop_after_s);
+                                uint32_t off_in_s);
 /**
  * @brief Read a MEMS switch state snapshot.
  *
@@ -261,7 +261,7 @@ int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
                              const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                              uint32_t cycle_ms,
-                             uint32_t stopafter_s,
+                             uint32_t off_in_s,
                              struct mems_split_state *out,
                              const char **failed_switch);
 

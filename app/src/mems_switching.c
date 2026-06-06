@@ -284,7 +284,7 @@ static void mems_switch_apply_exact_period_locked(struct mems_switch *sw,
 static int mems_switch_apply_profile_locked(struct mems_switch *sw,
                                             uint32_t a_cycles,
                                             uint32_t previous_period_cycles,
-                                            uint32_t stop_after_s)
+                                            uint32_t off_in_s)
 {
     uint32_t requested_duration_s;
     bool same_profile;
@@ -306,7 +306,7 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
     /* Mixed duty cycles are applied by the router-owned MEMS tick thread.
      * A zero duration means "run until the firmware safety maximum".
      */
-    requested_duration_s = stop_after_s;
+    requested_duration_s = off_in_s;
     if (requested_duration_s == 0U) {
         requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
     }
@@ -325,7 +325,7 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
 }
 
 int mems_switch_set_state(struct mems_switch *sw, char state,
-                          double duty_cycle, uint32_t stop_after_s,
+                          double duty_cycle, uint32_t off_in_s,
                           double requested_cycle_ms)
 {
     struct mems_router *router;
@@ -349,7 +349,7 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
         state='A';
     }
 
-    if (duty_cycle < 0.0 || duty_cycle > 1.0 || stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+    if (duty_cycle < 0.0 || duty_cycle > 1.0 || off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
     }
 
@@ -390,7 +390,7 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
     sw->switching_period_cycles = period_cycles;
     a_cycles = (uint32_t)(duty_cycle * (double)period_cycles + 0.5);
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
-                                          stop_after_s);
+                                          off_in_s);
 
     if (locked) {
         k_mutex_unlock(&router->lock);
@@ -673,7 +673,7 @@ void mems_switch_init(struct mems_switch *sw,
 
 int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
                                 uint32_t state_ticks, uint32_t period_ticks,
-                                uint32_t stop_after_s)
+                                uint32_t off_in_s)
 {
     struct mems_router *router;
     uint32_t previous_period_cycles;
@@ -691,7 +691,7 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
     }
     if (period_ticks == 0U ||
         state_ticks > period_ticks ||
-        stop_after_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
     }
 
@@ -721,7 +721,7 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
     previous_period_cycles = 0U;
     mems_switch_apply_exact_period_locked(sw, period_ticks);
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
-                                          stop_after_s);
+                                          off_in_s);
 
     if (locked) {
         k_mutex_unlock(&router->lock);
@@ -1200,7 +1200,7 @@ int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,
                              const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                              uint32_t cycle_ms,
-                             uint32_t stopafter_s,
+                             uint32_t off_in_s,
                              struct mems_split_state *out,
                              const char **failed_switch)
 {
@@ -1223,7 +1223,7 @@ int mems_split_apply_channel(const struct mems_router *router,
         requested[1] < 0.0 || requested[1] > 1.0 ||
         requested[2] < 0.0 || requested[2] > 1.0 ||
         requested[0] + requested[1] > 1.000001 ||
-        stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
     }
 
@@ -1290,7 +1290,7 @@ int mems_split_apply_channel(const struct mems_router *router,
 
         rc = mems_switch_set_state_ticks(sw, step->state, switch_ticks[i],
                                          period_ticks,
-                                         i == 1U ? 0U : stopafter_s);
+                                         i == 1U ? 0U : off_in_s);
         if (rc != 0) {
             if (failed_switch != NULL) {
                 *failed_switch = step->switch_name;

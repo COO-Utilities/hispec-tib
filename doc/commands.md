@@ -95,8 +95,8 @@ Requests with payload use the key followed by a payload. There are no `get` or
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 stopafter_s=30
-split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 stopafter_s=300
+mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
+split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 off_in_s=300
 laserbank/power/override_on
 ```
 
@@ -105,7 +105,7 @@ Payload rules:
 - A payload beginning with `{` is copied unchanged into `Command.payload`; it is
   not parsed and rebuilt by the serial layer.
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
-  `state=A stopafter_s=30`.
+  `state=A off_in_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
   `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
@@ -367,7 +367,7 @@ and the AS for splitting fraction correction.
     "state": "A",
     "duty_cycle": 0.5,
     "cycle_ms": 400,
-    "stopafter_s": 30
+    "off_in_s": 30
   }
   ```
 
@@ -405,7 +405,7 @@ and the AS for splitting fraction correction.
     uses the fastest safe A-B-A cycle for the requested duty cycle.
   - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - Request `stopafter_s` max is 4 hours. Response `stop_in_s` is remaining
+  - Request `off_in_s` max is 4 hours. Response `stop_in_s` is remaining
     toggle time.
   - `?` suffix means the state has not yet been pulsed this boot; on first boot
     all switches will be reported as `A?`.
@@ -432,7 +432,7 @@ and the AS for splitting fraction correction.
     "fiber": "M",
     "output": "yj_ao",
     "max_flux_ph_s": 1.0e12,
-    "stopafter_s": 300,
+    "off_in_s": 300,
     "format": "json"
   }
   ```
@@ -1410,7 +1410,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "ratio1": 0.25,
     "ratio2": 0.25,
     "cycle_ms": 800,
-    "stopafter_s": 0
+    "off_in_s": 0
   }
   ```
 - **No payload to `split/yj` or `split/hk` -> get splitter state.**

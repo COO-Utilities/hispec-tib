@@ -1262,10 +1262,10 @@ class HispecFibPcb:
         state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
         cycle_ms: int | None = None,
-        stopafter_s: float | None = None,
+        off_in_s: float | None = None,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
-        if state is None and duty_cycle is None and cycle_ms is None and stopafter_s is None:
+        if state is None and duty_cycle is None and cycle_ms is None and off_in_s is None:
             return _decode_mems_detail(name, self._request_json(key))
         if state is None:
             raise HispecFibError("state is required when setting a MEMS switch")
@@ -1276,9 +1276,9 @@ class HispecFibPcb:
             payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
             if payload["cycle_ms"] == 0:
                 raise HispecFibError("cycle_ms must be > 0")
-        if stopafter_s is not None:
-            payload["stopafter_s"] = _require_float(
-                "stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
+        if off_in_s is not None:
+            payload["off_in_s"] = _require_float(
+                "off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
             )
         return _decode_mems_detail(name, self._request_json(key, payload))
 
@@ -1611,7 +1611,7 @@ class HispecFibPcb:
         ratio2: float,
         *,
         cycle_ms: int | None = None,
-        stopafter_s: int = 0,
+        off_in_s: int = 0,
     ) -> SplitState:
         _require_choice("channel", channel, PD_CHANNELS)
         ratio1 = _require_float("ratio1", ratio1, 0.0, 1.0)
@@ -1622,8 +1622,8 @@ class HispecFibPcb:
             "channel": channel,
             "ratio1": ratio1,
             "ratio2": ratio2,
-            "stopafter_s": int(
-                _require_float("stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
+            "off_in_s": int(
+                _require_float("off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
             ),
         }
         if cycle_ms is not None:
@@ -1641,7 +1641,7 @@ class HispecFibPcb:
         input: str | None = None,
         output: str | None = None,
         max_flux_ph_s: float | None = None,
-        stopafter_s: int = 300,
+        off_in_s: int = 300,
         format: Literal["json", "binary"] = "json",
         collect: bool = False,
         channel: Literal["yj", "hk"] | None = None,
@@ -1676,7 +1676,7 @@ class HispecFibPcb:
             "laser": laser,
             "fiber": fiber,
             "autolevel": bool(autolevel),
-            "stopafter_s": _require_nonnegative_u32("stopafter_s", stopafter_s),
+            "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
             "format": format,
         }
         if input is not None:

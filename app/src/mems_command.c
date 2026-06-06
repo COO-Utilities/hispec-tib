@@ -630,7 +630,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     double requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double ratio3_probe = 0.0;
     uint32_t cycle_ms = 0U;
-    uint32_t stopafter_s = 0U;
+    uint32_t off_in_s = 0U;
     const char *failed_switch = NULL;
     bool has_cycle_ms = false;
     int parse_rc;
@@ -669,10 +669,10 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
     requested[2] = 1.0 - requested[0] - requested[1];
 
-    if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
-                                      &stopafter_s, NULL) != 0 ||
-        stopafter_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-        return coo_cmd_error(out, cmd, "invalid stopafter_s");
+    if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
+                                      &off_in_s, NULL) != 0 ||
+        off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return coo_cmd_error(out, cmd, "invalid off_in_s");
     }
 
     if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
@@ -686,7 +686,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "cycle_ms replaces toggle_rate_hz");
     }
 
-    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, stopafter_s,
+    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, off_in_s,
                                   &state, &failed_switch);
     if (rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "split route references missing switch");
@@ -940,12 +940,12 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     double duty_cycle = 0.0;
-    double stopafter_s = 0.0;
+    double off_in_s = 0.0;
     double removed_rate = 0.0;
     uint32_t cycle_ms = 0U;
-    uint32_t stopafter_s_u32 = 0U;
+    uint32_t off_in_s_u32 = 0U;
     bool has_duty_cycle = false;
-    bool has_stopafter_s = false;
+    bool has_off_in_s = false;
     bool has_cycle_ms = false;
     int state_value;
     int parse_rc;
@@ -982,11 +982,11 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
 
-    parse_rc = coo_json_extract_double(cmd->payload, "stopafter_s", &stopafter_s);
+    parse_rc = coo_json_extract_double(cmd->payload, "off_in_s", &off_in_s);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "Invalid stopafter_s");
+        return coo_cmd_error(out, cmd, "Invalid off_in_s");
     }
-    has_stopafter_s = (parse_rc == COO_JSON_EXTRACT_OK);
+    has_off_in_s = (parse_rc == COO_JSON_EXTRACT_OK);
 
     if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
                                       &cycle_ms, &has_cycle_ms) != 0 ||
@@ -1005,14 +1005,14 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (has_cycle_ms && (!has_duty_cycle || duty_cycle <= 0.0 || duty_cycle >= 1.0)) {
         return coo_cmd_error(out, cmd, "cycle_ms only valid for toggling");
     }
-    if (has_stopafter_s) {
-        if (stopafter_s < 0.0 ||
-            stopafter_s > (double)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-            return coo_cmd_error(out, cmd, "stopafter_s out of range");
+    if (has_off_in_s) {
+        if (off_in_s < 0.0 ||
+            off_in_s > (double)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+            return coo_cmd_error(out, cmd, "off_in_s out of range");
         }
-        stopafter_s_u32 = (uint32_t)(stopafter_s + 0.5);
-        if (stopafter_s_u32 == 0U && duty_cycle > 0.0 && duty_cycle < 1.0) {
-            return coo_cmd_error(out, cmd, "stopafter_s must be > 0 for toggling");
+        off_in_s_u32 = (uint32_t)(off_in_s + 0.5);
+        if (off_in_s_u32 == 0U && duty_cycle > 0.0 && duty_cycle < 1.0) {
+            return coo_cmd_error(out, cmd, "off_in_s must be > 0 for toggling");
         }
     }
 
@@ -1024,7 +1024,7 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
-                                   stopafter_s_u32,
+                                   off_in_s_u32,
                                    has_cycle_ms ? (double)cycle_ms : 0.0);
     } else {
         rc = mems_switch_set_state(sw, requested_state[0], 1.0, 0U,

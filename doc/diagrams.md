@@ -223,7 +223,7 @@ flowchart TD
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
   Stop -- yes --> StopReq[clear selected monitor or both monitors]
-  Stop -- no --> Validate[validate laser, fiber, format, autolevel, stopafter_s]
+  Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
   Map --> PdPower[enable selected photodiode relay]
   PdPower --> AutoStart{autolevel enabled}
@@ -236,7 +236,7 @@ flowchart TD
   Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
   Snapshot --> Active{channel active}
   Active -- no --> Sleep[k_sleep 100 ms]
-  Active -- yes --> Timeout{stopafter expired}
+  Active -- yes --> Timeout{off_in expired}
   Timeout -- yes --> Clear[clear monitor]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
