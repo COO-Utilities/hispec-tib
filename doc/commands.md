@@ -577,8 +577,11 @@ float64 laser_current_ontime_s
   first, then lowering laser output level percent.
 - At start with `autolevel:true`, attenuation is set to maximum before laser
   power is raised.
-- Starting a monitor powers the required photodiode and laser-bank outputs as
-  needed. Shutting down the required photodiode power stops that monitor.
+- Starting a monitor powers the required photodiode unless
+  `pdsettings/<channel>.power` is `override_off`; in that mode the command
+  fails with `photodiode power override_off`. While a monitor is running,
+  photodiode auto-off is inhibited and `pdsettings/<channel>.off_in_s` reports
+  `null`. Shutting down the required photodiode power stops that monitor.
 - Changing the monitored laser output or its logical attenuator disables
   autolevel for the affected monitor; run the command again to re-enable it.
 - Dark measurement must not be started while an autolevel throughput monitor is

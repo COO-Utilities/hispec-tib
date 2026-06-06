@@ -74,6 +74,11 @@ static const struct laser_pd_channel laser_pd_channels[] = {
 static struct throughput_state monitors[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(monitors_lock);
 
+static enum housekeeping_power_output pd_power_output(enum photodiode_channel channel)
+{
+	return (enum housekeeping_power_output)channel;
+}
+
 static int photodiode_channel_for_laser(enum hispec_laser_id laser,
 					enum photodiode_channel *channel)
 {
@@ -123,6 +128,9 @@ static uint64_t realtime_ms(void)
 
 static void stop_locked(enum photodiode_channel channel)
 {
+	if (monitors[channel].active) {
+		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
+	}
 	memset(&monitors[channel], 0, sizeof(monitors[channel]));
 }
 
@@ -299,7 +307,7 @@ static void publish_sample(const struct throughput_state *state,
 	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
-	pd_ontime_s = housekeeping_power_on_time_s((enum housekeeping_power_output)state->channel);
+	pd_ontime_s = housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
 				  (double)hispec_laser_current_on_time_s(state->laser) : 0.0;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
@@ -459,8 +467,8 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (housekeeping_power_get((enum housekeeping_power_output)i,
-						       &pd_power) == 0 && !pd_power) {
+			if (housekeeping_power_get(pd_power_output((enum photodiode_channel)i),
+						   &pd_power) == 0 && !pd_power) {
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
@@ -492,8 +500,11 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status)
 {
 	enum photodiode_channel channel;
+	enum housekeeping_power_output pd_power;
 	uint8_t attenuator_index;
+	struct app_photodiode_settings pd_settings;
 	struct throughput_state next = {0};
+	bool was_active;
 	int rc;
 
 	if (request == NULL) {
@@ -520,10 +531,26 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		attenuator_index = 0U;
 	}
 
-	rc = housekeeping_power_set((enum housekeeping_power_output)channel, true);
+	app_settings_get_photodiode(&pd_settings);
+	if (pd_settings.channel[channel].power == APP_PD_POWER_OVERRIDE_OFF) {
+		return -EACCES;
+	}
+
+	pd_power = pd_power_output(channel);
+	rc = housekeeping_power_set(pd_power, true);
 	if (rc != 0) {
 		return rc;
 	}
+
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	was_active = monitors[channel].active;
+	k_mutex_unlock(&monitors_lock);
+
+	/*
+	 * Throughput owns this stream until stopped. Auto mode may still arm a
+	 * deadline via pd queries, but it must not turn off a running monitor.
+	 */
+	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 
 	next.active = true;
 	next.autolevel = request->autolevel;
@@ -543,6 +570,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		rc = hispec_laser_set_output_percent_autooff(request->laser,
 							     next.level_percent, 0U);
 		if (rc != 0) {
+			if (!was_active) {
+				housekeeping_photodiode_autooff_inhibit(pd_power, false);
+			}
 			return rc;
 		}
 	}
