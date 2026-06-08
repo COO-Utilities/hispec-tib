@@ -456,7 +456,8 @@ class PhotodiodeValues:
     hk_mean_mv_1s: float
     yj_rms_mv_0p5s: float
     hk_rms_mv_0p5s: float
-    uptime_s: int
+    yj_ontime_s: float
+    hk_ontime_s: float
     yj_pd_is_off: bool = False
     hk_pd_is_off: bool = False
 

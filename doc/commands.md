@@ -1080,8 +1080,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     "hk_mean_mv_1s": 0.0,
     "yj_rms_mv_0p5s": 0.0,
     "hk_rms_mv_0p5s": 0.0,
-    "yj_pd_is_off": true,
-    "uptime_s": 0
+    "yj_ontime_s": 0.0,
+    "hk_ontime_s": 0.0,
+    "yj_pd_is_off": true
   }
   ```
 - **Payload -> dark measurement state:** measure dark without storing.
@@ -1157,6 +1158,8 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
     `true` only when the corresponding relay is off; ADC sampling and returned
     values continue regardless.
+  - `yj_ontime_s` and `hk_ontime_s` are the tracked relay on-times since boot,
+    using the same source as throughput `pd_ontime_s`.
 
 (pdsettings)=
 ### `pdsettings`

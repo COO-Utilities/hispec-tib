@@ -165,6 +165,8 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	double hk_value;
 	double yj_err;
 	double hk_err;
+	double yj_ontime_s;
+	double hk_ontime_s;
 	int parse_rc;
 	enum photodiode_channel channel;
 	bool wait_for_power = false;
@@ -219,6 +221,8 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	photodiode_get_status(&status);
 	yj_pd_is_off = pd_channel_power_is_off(PHOTODIODE_CHANNEL_YJ);
 	hk_pd_is_off = pd_channel_power_is_off(PHOTODIODE_CHANNEL_HK);
+	yj_ontime_s = housekeeping_power_on_time_s(pd_power_output(PHOTODIODE_CHANNEL_YJ));
+	hk_ontime_s = housekeeping_power_on_time_s(pd_power_output(PHOTODIODE_CHANNEL_HK));
 
 	yj_value = status.channel[PHOTODIODE_CHANNEL_YJ].power_uw;
 	hk_value = status.channel[PHOTODIODE_CHANNEL_HK].power_uw;
@@ -236,7 +240,7 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 			    "\"yj_noise_rms_mv\":%.3f,\"hk_noise_rms_mv\":%.3f,"
 			    "\"yj_mean_mv_1s\":%.3f,\"hk_mean_mv_1s\":%.3f,"
 			    "\"yj_rms_mv_0p5s\":%.3f,\"hk_rms_mv_0p5s\":%.3f,"
-			    "\"uptime_s\":%lld",
+			    "\"yj_ontime_s\":%.3f,\"hk_ontime_s\":%.3f",
 			    (double)yj_value,
 			    (double)yj_err,
 			    (double)hk_value,
@@ -251,7 +255,8 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 			    (double)status.channel[PHOTODIODE_CHANNEL_HK].mean_mv_1s,
 			    (double)status.channel[PHOTODIODE_CHANNEL_YJ].rms_mv_0p5s,
 			    (double)status.channel[PHOTODIODE_CHANNEL_HK].rms_mv_0p5s,
-			    status.uptime_ms/1000) != 0 ||
+			    yj_ontime_s,
+			    hk_ontime_s) != 0 ||
 	    (yj_pd_is_off &&
 	     coo_json_append(payload, sizeof(payload), &off,
 			     ",\"yj_pd_is_off\":true") != 0) ||

@@ -74,7 +74,6 @@ struct photodiode_channel_status {
 
 struct photodiode_status {
 	struct photodiode_channel_status channel[PHOTODIODE_CHANNEL_COUNT];
-	int64_t uptime_ms;
 };
 
 struct photodiode_average_result {

@@ -820,8 +820,6 @@ void photodiode_get_status(struct photodiode_status *out)
         dst->age_ms = src->updated_ms > 0 ? (uint32_t)(now - src->updated_ms) : UINT32_MAX;
     }
     k_mutex_unlock(&pd_runtime_lock);
-
-    out->uptime_ms = now;
 }
 
 int photodiode_start_dark_measurement(enum photodiode_channel channel,
