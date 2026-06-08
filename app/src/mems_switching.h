@@ -62,6 +62,7 @@ struct mems_switch {
     /* Start time of the last A or B actuation pulse. */
     uint32_t last_pulse_at_ms;
     bool pulse_active;
+    bool force_pulse_pending;
     uint8_t service_ticks_remaining;
     struct mems_router *owner;
     char name[MEMS_SWITCH_NAME_LEN];
@@ -81,11 +82,6 @@ struct mems_switch_status {
 struct mems_route_step {
     const char *switch_name; // Points to .name in mems_switch
     char state;              // 'A' or 'B'
-};
-
-struct mems_route_id {
-    char input[MEMS_SOURCEDEST_MAX_LEN];
-    char output[MEMS_SOURCEDEST_MAX_LEN];
 };
 
 struct mems_route_key {
@@ -148,11 +144,12 @@ void mems_switch_init(struct mems_switch *sw,
  * @p requested_cycle_ms is quantized to MEMS service ticks but not stretched;
  * the duty cycle is quantized inside that fixed cycle so A/B actuation pulses
  * satisfy the datasheet spacing limit. A zero value selects the fastest safe
- * cycle for the requested duty.
+ * cycle for the requested duty. @p force queues one same-state actuation pulse
+ * for static profiles; repeated force requests coalesce until the pulse fires.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t off_in_s,
-                          double requested_cycle_ms);
+                          double requested_cycle_ms, bool force);
 /**
  * @brief Queue a MEMS state change using exact duty-cycle tick counts.
  *
@@ -198,10 +195,12 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
  * This queues switch state changes through mems_switch_set_state() and can
  * sleep on the router mutex. The caller owns route lookup and command response
  * formatting. On a per-switch failure, @p failed_switch and @p failed_state
- * identify the route step that failed when non-NULL.
+ * identify the route step that failed when non-NULL. @p force queues one
+ * same-state actuation pulse for each route step.
  */
 int mems_router_apply_route(const struct mems_router *router,
                             const struct mems_route *route,
+                            bool force,
                             const char **failed_switch,
                             char *failed_state);
 
@@ -210,11 +209,12 @@ int mems_router_apply_route(const struct mems_router *router,
  *
  * This can sleep on the router mutex through MEMS switch operations. It keeps
  * command modules from duplicating route lookup before setting a simple static
- * route.
+ * route. @p force is passed through to every route step.
  */
 int mems_router_apply_named_route(const struct mems_router *router,
                                   const char *input,
                                   const char *output,
+                                  bool force,
                                   const char **failed_switch,
                                   char *failed_state);
 

@@ -262,14 +262,17 @@ while serial guard is active and attenuator DAC-range clamping.
   ```json
   {
     "input": "<source>",
-    "output": "<dest>"
+    "output": "<dest>",
+    "force": false
   }
   ```
 - **Notes:** The no-payload response lists every destination present in the active
   board route table. Each value is an array of currently connected sources
   because one destination may receive multiple sources through combining optics.
   A destination with no currently active source reports `["no source"]`. Active
-  routes are read from current switch state and are not persisted.
+  routes are read from current switch state and are not persisted. `force:true`
+  queues one static actuation pulse for every switch step in the route, including
+  steps that already report the requested state.
 
 (route-loss)=
 ### `memsroute/route_loss`
@@ -355,7 +358,7 @@ and the AS for splitting fraction correction.
 
   Static payload:
   ```json
-  {"state":"A"}
+  {"state":"A","force":false}
   ```
   or:
   ```json
@@ -399,6 +402,9 @@ and the AS for splitting fraction correction.
 - **Notes:**
   - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
     responses always use uppercase `A`/`B`.
+  - `force:true` is valid only for static A/B requests. It queues one actuation
+    pulse even when the switch already reports that state. Repeated force
+    requests before the pulse fires coalesce to one pending pulse.
   - `duty_cycle` is only valid with `state:"A"`.
   - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
   - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
@@ -419,7 +425,8 @@ and the AS for splitting fraction correction.
     `cycle_ms` if required.
   - Static state changes can be delayed until the same pulse-spacing rule is
     satisfied; status reports the last pulsed state until the delayed pulse
-    occurs.
+    occurs. A delayed same-state `force:true` pulse is not separately reported
+    in status.
   - If the actual cycle differs from requested, the firmware emits
     `mems_timing_quantized` on `dt/<device>/warning`.
 

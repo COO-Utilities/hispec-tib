@@ -103,7 +103,7 @@ static int throughput_apply_route_if_requested(const char *input,
 		return -EINVAL;
 	}
 
-	return mems_router_apply_named_route(&router, input, output,
+	return mems_router_apply_named_route(&router, input, output, false,
 					     &failed_switch, &failed_state);
 }
 

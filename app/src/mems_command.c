@@ -12,7 +12,6 @@
 #include <string.h>
 #include <strings.h>
 
-#include <zephyr/data/json.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
@@ -720,31 +719,34 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
 
 int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-    struct mems_route_id route_id = {0};
+    char input[MEMS_SOURCEDEST_MAX_LEN] = {0};
+    char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
     const struct mems_route *route;
     const char *failed_switch = NULL;
     char failed_state = '\0';
-    struct json_obj_descr d[] = {
-        JSON_OBJ_DESCR_PRIM(struct mems_route_id, input, JSON_TOK_STRING),
-        JSON_OBJ_DESCR_PRIM(struct mems_route_id, output, JSON_TOK_STRING),
-    };
+    bool force = false;
     int rc;
 
     if (memsroute_is_route_loss_key(cmd->key)) {
         return route_loss_handle(cmd, true, out);
     }
 
-    if (json_obj_parse((char *)cmd->payload, cmd->payload_len,
-                       d, ARRAY_SIZE(d), &route_id) < 0) {
-        return coo_cmd_error(out, cmd, "Failed to parse JSON input or output");
+    if (coo_json_extract_string(cmd->payload, "input", input, sizeof(input)) !=
+        COO_JSON_EXTRACT_OK ||
+        coo_json_extract_string(cmd->payload, "output", output, sizeof(output)) !=
+        COO_JSON_EXTRACT_OK) {
+        return coo_cmd_error(out, cmd, "missing or invalid input or output");
+    }
+    if (coo_json_extract_optional_bool(cmd->payload, "force", &force, NULL) != 0) {
+        return coo_cmd_error(out, cmd, "invalid force");
     }
 
-    route = mems_router_get_route(&router, route_id.input, route_id.output);
+    route = mems_router_get_route(&router, input, output);
     if (route == NULL) {
         return coo_cmd_error(out, cmd, "Invalid Route");
     }
 
-    rc = mems_router_apply_route(&router, route, &failed_switch, &failed_state);
+    rc = mems_router_apply_route(&router, route, force, &failed_switch, &failed_state);
     if (rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "route references missing switch");
     }
@@ -758,7 +760,7 @@ int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
     }
 
-    LOG_INF("Set route %s -> %s", route_id.input, route_id.output);
+    LOG_INF("Set route %s -> %s", input, output);
     return coo_cmd_ok(out, cmd);
 }
 
@@ -947,6 +949,7 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     bool has_duty_cycle = false;
     bool has_off_in_s = false;
     bool has_cycle_ms = false;
+    bool force = false;
     int state_value;
     int parse_rc;
     int rc;
@@ -993,6 +996,9 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         (has_cycle_ms && cycle_ms == 0U)) {
         return coo_cmd_error(out, cmd, "invalid cycle_ms");
     }
+    if (coo_json_extract_optional_bool(cmd->payload, "force", &force, NULL) != 0) {
+        return coo_cmd_error(out, cmd, "invalid force");
+    }
 
     parse_rc = coo_json_extract_double(cmd->payload, "toggle_rate_hz", &removed_rate);
     if (parse_rc != COO_JSON_EXTRACT_MISSING) {
@@ -1004,6 +1010,9 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
     if (has_cycle_ms && (!has_duty_cycle || duty_cycle <= 0.0 || duty_cycle >= 1.0)) {
         return coo_cmd_error(out, cmd, "cycle_ms only valid for toggling");
+    }
+    if (force && has_duty_cycle && duty_cycle > 0.0 && duty_cycle < 1.0) {
+        return coo_cmd_error(out, cmd, "force only valid for static state");
     }
     if (has_off_in_s) {
         if (off_in_s < 0.0 ||
@@ -1025,10 +1034,11 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
                                    off_in_s_u32,
-                                   has_cycle_ms ? (double)cycle_ms : 0.0);
+                                   has_cycle_ms ? (double)cycle_ms : 0.0,
+                                   force);
     } else {
         rc = mems_switch_set_state(sw, requested_state[0], 1.0, 0U,
-                                   0.0);
+                                   0.0, force);
     }
 
     if (rc == -ERANGE) {

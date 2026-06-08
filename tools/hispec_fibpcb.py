@@ -1271,13 +1271,16 @@ class HispecFibPcb:
         duty_cycle: float | None = None,
         cycle_ms: int | None = None,
         off_in_s: float | None = None,
+        force: bool = False,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
-        if state is None and duty_cycle is None and cycle_ms is None and off_in_s is None:
+        if state is None and duty_cycle is None and cycle_ms is None and off_in_s is None and not force:
             return _decode_mems_detail(name, self._request_json(key))
         if state is None:
             raise HispecFibError("state is required when setting a MEMS switch")
         payload: dict[str, Any] = {"state": _require_choice("state", state, MEMS_STATES)}
+        if force:
+            payload["force"] = True
         if duty_cycle is not None:
             payload["duty_cycle"] = _require_float("duty_cycle", duty_cycle, 0.0, 1.0)
         if cycle_ms is not None:
@@ -1293,8 +1296,11 @@ class HispecFibPcb:
     def memsroute(self) -> MemsRoutes:
         return _decode_mems_routes(self._request_json("memsroute"))
 
-    def set_memsroute(self, input: str, output: str) -> CommandOk:
-        return self._request_ok("memsroute", {"input": input, "output": output})
+    def set_memsroute(self, input: str, output: str, *, force: bool = False) -> CommandOk:
+        payload: dict[str, Any] = {"input": input, "output": output}
+        if force:
+            payload["force"] = True
+        return self._request_ok("memsroute", payload)
 
     def route_loss(self, route: str) -> RouteLoss:
         return _decode_route_loss(self._request_json("memsroute/route_loss", {"route": route}))

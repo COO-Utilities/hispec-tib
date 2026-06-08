@@ -304,7 +304,7 @@ static int pd_route_for_auto(enum hispec_laser_id laser, char fiber,
 
 static int apply_route_pair(const char *input, const char *output)
 {
-	return mems_router_apply_named_route(&router, input, output, NULL, NULL);
+	return mems_router_apply_named_route(&router, input, output, false, NULL, NULL);
 }
 
 static bool set_physical_pair(uint8_t attenuator_index,

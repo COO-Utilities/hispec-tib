@@ -299,12 +299,16 @@ static struct mems_switch *mems_router_find_switch_locked(const struct mems_rout
 
 
 
-static void mems_switch_set_static_locked(struct mems_switch *sw, char state)
+static void mems_switch_set_static_locked(struct mems_switch *sw, char state,
+                                          bool force)
 {
     sw->target_state = state;
     sw->a_state_cycles = (state == 'A') ? sw->switching_period_cycles : 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
+    if (force) {
+        sw->force_pulse_pending = true;
+    }
 }
 
 static void mems_switch_stop_toggling_locked(struct mems_switch *sw)
@@ -313,6 +317,7 @@ static void mems_switch_stop_toggling_locked(struct mems_switch *sw)
     sw->a_state_cycles = (sw->state == 'A') ? sw->switching_period_cycles : 0U;
     sw->cycles_until_toggle = 0U;
     sw->remaining_toggle_cycles = 0U;
+    sw->force_pulse_pending = false;
 }
 
 static void mems_switch_apply_exact_period_locked(struct mems_switch *sw,
@@ -324,7 +329,8 @@ static void mems_switch_apply_exact_period_locked(struct mems_switch *sw,
 static int mems_switch_apply_profile_locked(struct mems_switch *sw,
                                             uint32_t a_cycles,
                                             uint32_t previous_period_cycles,
-                                            uint32_t off_in_s)
+                                            uint32_t off_in_s,
+                                            bool force)
 {
     uint32_t requested_duration_s;
     bool same_profile;
@@ -334,12 +340,12 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
     }
 
     if (a_cycles == 0U) {
-        mems_switch_set_static_locked(sw, 'B');
+        mems_switch_set_static_locked(sw, 'B', force);
         return 0;
     }
 
     if (a_cycles >= sw->switching_period_cycles) {
-        mems_switch_set_static_locked(sw, 'A');
+        mems_switch_set_static_locked(sw, 'A', force);
         return 0;
     }
 
@@ -350,6 +356,7 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
     if (requested_duration_s == 0U) {
         requested_duration_s = MEMS_SWITCH_MAX_TOGGLE_DURATION_S;
     }
+    sw->force_pulse_pending = false;
     same_profile = (sw->remaining_toggle_cycles > 0U) &&
                    (sw->a_state_cycles == a_cycles) &&
                    (previous_period_cycles == sw->switching_period_cycles);
@@ -366,7 +373,7 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
 
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t off_in_s,
-                          double requested_cycle_ms)
+                          double requested_cycle_ms, bool force)
 {
     struct mems_router *router;
     uint32_t previous_period_cycles;
@@ -391,6 +398,9 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
 
     if (duty_cycle < 0.0 || duty_cycle > 1.0 || off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
         return -ERANGE;
+    }
+    if (force && duty_cycle > 0.0 && duty_cycle < 1.0) {
+        return -EINVAL;
     }
 
     router = sw->owner;
@@ -419,7 +429,7 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
 
     sw->switching_period_cycles = period_cycles;
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
-                                          off_in_s);
+                                          off_in_s, force);
 
     if (locked) {
         k_mutex_unlock(&router->lock);
@@ -430,9 +440,12 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
 static void mems_switch_tick_locked(struct mems_switch *sw)
 {
     const bool toggling = (sw->remaining_toggle_cycles > 0U);
+    const bool pulse_due = !sw->state_known_this_boot ||
+                           sw->state != sw->target_state ||
+                           sw->force_pulse_pending;
     bool emitted_pulse = false;
 
-    if ((!sw->state_known_this_boot || sw->state != sw->target_state)) {
+    if (pulse_due) {
         const struct gpio_dt_spec *gpio =
             (sw->target_state == 'A') ? &sw->gpio_a : &sw->gpio_b;
         uint32_t now_ms = k_uptime_get_32();
@@ -459,6 +472,7 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
             sw->pulse_active = true;
             sw->state = sw->target_state;
             sw->state_known_this_boot = true;
+            sw->force_pulse_pending = false;
             emitted_pulse = true;
         }
     }
@@ -568,7 +582,9 @@ static void mems_switch_service_elapsed_locked(struct mems_switch *sw,
 
     late_service_cycles =
         (elapsed_ticks - sw->service_ticks_remaining) / service_period_ticks;
-    pulse_due = !sw->state_known_this_boot || sw->state != sw->target_state;
+    pulse_due = !sw->state_known_this_boot ||
+                sw->state != sw->target_state ||
+                sw->force_pulse_pending;
 
     if (late_service_cycles > 0U && pulse_due && toggling) {
         uint32_t hold_cycles = mems_switch_target_hold_cycles(sw);
@@ -684,6 +700,7 @@ void mems_switch_init(struct mems_switch *sw,
     sw->pulse_clear_at_ms = 0U;
     sw->last_pulse_at_ms = 0U;
     sw->pulse_active = false;
+    sw->force_pulse_pending = false;
     sw->service_ticks_remaining = 0U;
     sw->switching_period_cycles = quantize_cycle_period_cycles(sw, 0.0);
     /* Keep status readback consistent before the first router pulse. */
@@ -750,7 +767,7 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
     previous_period_cycles = 0U;
     mems_switch_apply_exact_period_locked(sw, period_ticks);
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
-                                          off_in_s);
+                                          off_in_s, false);
 
     if (locked) {
         k_mutex_unlock(&router->lock);
@@ -847,6 +864,7 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
 
 int mems_router_apply_route(const struct mems_router *router,
                             const struct mems_route *route,
+                            bool force,
                             const char **failed_switch,
                             char *failed_state)
 {
@@ -869,7 +887,7 @@ int mems_router_apply_route(const struct mems_router *router,
             return -ENOENT;
         }
 
-        rc = mems_switch_set_state(sw, step->state, 1.0, 0U, 0.0);
+        rc = mems_switch_set_state(sw, step->state, 1.0, 0U, 0.0, force);
         if (rc != 0) {
             if (failed_switch != NULL) {
                 *failed_switch = step->switch_name;
@@ -887,6 +905,7 @@ int mems_router_apply_route(const struct mems_router *router,
 int mems_router_apply_named_route(const struct mems_router *router,
                                   const char *input,
                                   const char *output,
+                                  bool force,
                                   const char **failed_switch,
                                   char *failed_state)
 {
@@ -901,7 +920,7 @@ int mems_router_apply_named_route(const struct mems_router *router,
         return -ENOENT;
     }
 
-    return mems_router_apply_route(router, route, failed_switch, failed_state);
+    return mems_router_apply_route(router, route, force, failed_switch, failed_state);
 }
 
 // List all routes whose switches are ALL in the expected state.
