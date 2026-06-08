@@ -21,9 +21,29 @@ BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0
              "FFSW pulse width must be an integer number of router ticks");
 BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_FFLS_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,
              "FFLS pulse width must be an integer number of router ticks");
+BUILD_ASSERT(APP_MEMS_SWITCH_COUNT == MEMS_ROUTER_MAX_SWITCHES,
+             "app MEMS settings must cover every router switch slot");
+BUILD_ASSERT(APP_MEMS_SPLIT_CHANNEL_COUNT == MEMS_SPLIT_CHANNEL_COUNT,
+             "app MEMS settings must cover every split channel");
+BUILD_ASSERT(APP_MEMS_SPLIT_OUTPUT_COUNT == MEMS_SPLIT_OUTPUT_COUNT,
+             "app MEMS settings must cover every split output");
 
 static void mems_router_timer_handler(struct k_timer *timer);
 static void mems_router_thread(void *p1, void *p2, void *p3);
+static const struct mems_route *split_route_for_channel(const struct mems_router *router,
+                                                        uint8_t channel_index);
+static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
+                                          double duty_cycle, uint32_t off_in_s,
+                                          double requested_cycle_ms, bool force,
+                                          bool persist);
+static int mems_split_apply_channel_internal(const struct mems_router *router,
+                                             uint8_t channel_index,
+                                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                             uint32_t cycle_ms,
+                                             uint32_t off_in_s,
+                                             struct mems_split_state *out,
+                                             const char **failed_switch,
+                                             bool persist);
 
 static K_SEM_DEFINE(mems_router_start_sem, 0, 1);
 static K_SEM_DEFINE(mems_router_tick_sem, 0, 1);
@@ -297,6 +317,148 @@ static struct mems_switch *mems_router_find_switch_locked(const struct mems_rout
     return NULL;
 }
 
+static int mems_switch_index_locked(const struct mems_router *router,
+                                    const struct mems_switch *sw)
+{
+    if (router == NULL || sw == NULL) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = 0U; i < router->num_switches; ++i) {
+        if (router->switches[i] == sw) {
+            return i;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static int mems_switch_index_by_name(const struct mems_router *router,
+                                     const char *name)
+{
+    if (router == NULL || name == NULL) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = 0U; i < router->num_switches; ++i) {
+        if (strncmp(router->switches[i]->name, name, MEMS_SWITCH_NAME_LEN) == 0) {
+            return i;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static void mems_clear_split_requests_for_switch(struct app_mems_settings *settings,
+                                                 const struct mems_router *router,
+                                                 const char *switch_name)
+{
+    if (settings == NULL || router == NULL || switch_name == NULL) {
+        return;
+    }
+
+    for (uint8_t ch = 0U; ch < MEMS_SPLIT_CHANNEL_COUNT; ++ch) {
+        const struct mems_route *route = split_route_for_channel(router, ch);
+
+        for (uint8_t i = 0U; route != NULL && i < route->num_steps; ++i) {
+            if (strcmp(route->steps[i].switch_name, switch_name) == 0) {
+                settings->split[ch].configured = 0U;
+                break;
+            }
+        }
+    }
+}
+
+static void mems_clear_toggle_requests_for_route(struct app_mems_settings *settings,
+                                                 const struct mems_router *router,
+                                                 const struct mems_route *route)
+{
+    if (settings == NULL || router == NULL || route == NULL) {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < route->num_steps; ++i) {
+        int index = mems_switch_index_by_name(router, route->steps[i].switch_name);
+
+        if (index >= 0 && index < APP_MEMS_SWITCH_COUNT) {
+            settings->switch_state[index].toggle_configured = 0U;
+        }
+    }
+}
+
+static void mems_persist_static_intent(const struct mems_router *router,
+                                       uint8_t switch_index,
+                                       char state)
+{
+    struct app_mems_settings settings;
+
+    if (router == NULL || switch_index >= APP_MEMS_SWITCH_COUNT ||
+        switch_index >= router->num_switches) {
+        return;
+    }
+
+    app_settings_get_mems(&settings);
+    settings.switch_state[switch_index].static_configured = 1U;
+    settings.switch_state[switch_index].static_state = state;
+    settings.switch_state[switch_index].toggle_configured = 0U;
+    mems_clear_split_requests_for_switch(&settings, router,
+                                         router->switches[switch_index]->name);
+    app_settings_update_mems(&settings, true);
+}
+
+static void mems_persist_toggle_request(const struct mems_router *router,
+                                        uint8_t switch_index,
+                                        char state,
+                                        double duty_cycle,
+                                        uint32_t cycle_ms,
+                                        uint32_t duration_s)
+{
+    struct app_mems_settings settings;
+    struct app_mems_switch_settings *sw_settings;
+
+    if (router == NULL || switch_index >= APP_MEMS_SWITCH_COUNT ||
+        switch_index >= router->num_switches) {
+        return;
+    }
+
+    app_settings_get_mems(&settings);
+    sw_settings = &settings.switch_state[switch_index];
+    sw_settings->toggle_configured = 1U;
+    sw_settings->toggle_state = state;
+    sw_settings->toggle_duty_cycle = duty_cycle;
+    sw_settings->toggle_cycle_ms = cycle_ms;
+    sw_settings->toggle_duration_s = duration_s;
+    mems_clear_split_requests_for_switch(&settings, router,
+                                         router->switches[switch_index]->name);
+    app_settings_update_mems(&settings, true);
+}
+
+static void mems_persist_split_request(const struct mems_router *router,
+                                       uint8_t channel_index,
+                                       const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                       uint32_t cycle_ms,
+                                       uint32_t duration_s)
+{
+    struct app_mems_settings settings;
+    struct app_mems_split_settings *split;
+    const struct mems_route *route;
+
+    if (router == NULL || requested == NULL ||
+        channel_index >= APP_MEMS_SPLIT_CHANNEL_COUNT) {
+        return;
+    }
+
+    route = split_route_for_channel(router, channel_index);
+    app_settings_get_mems(&settings);
+    split = &settings.split[channel_index];
+    split->configured = 1U;
+    memcpy(split->requested, requested, sizeof(split->requested));
+    split->cycle_ms = cycle_ms;
+    split->duration_s = duration_s;
+    mems_clear_toggle_requests_for_route(&settings, router, route);
+    app_settings_update_mems(&settings, true);
+}
+
 
 
 static void mems_switch_set_static_locked(struct mems_switch *sw, char state,
@@ -371,16 +533,20 @@ static int mems_switch_apply_profile_locked(struct mems_switch *sw,
     return 0;
 }
 
-int mems_switch_set_state(struct mems_switch *sw, char state,
-                          double duty_cycle, uint32_t off_in_s,
-                          double requested_cycle_ms, bool force)
+static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
+                                          double duty_cycle, uint32_t off_in_s,
+                                          double requested_cycle_ms, bool force,
+                                          bool persist)
 {
     struct mems_router *router;
     uint32_t previous_period_cycles;
     uint32_t period_cycles;
     uint32_t a_cycles;
+    uint32_t requested_cycle_ms_u32 = 0U;
+    int switch_index = -1;
     int rc;
     bool locked = false;
+    bool mixed_profile;
 
     if (sw == NULL) {
         return -EINVAL;
@@ -401,6 +567,9 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
     }
     if (force && duty_cycle > 0.0 && duty_cycle < 1.0) {
         return -EINVAL;
+    }
+    if (requested_cycle_ms > 0.0) {
+        requested_cycle_ms_u32 = (uint32_t)(requested_cycle_ms + 0.5);
     }
 
     router = sw->owner;
@@ -430,11 +599,33 @@ int mems_switch_set_state(struct mems_switch *sw, char state,
     sw->switching_period_cycles = period_cycles;
     rc = mems_switch_apply_profile_locked(sw, a_cycles, previous_period_cycles,
                                           off_in_s, force);
+    mixed_profile = (a_cycles > 0U && a_cycles < period_cycles);
+    if (locked && rc == 0) {
+        switch_index = mems_switch_index_locked(router, sw);
+    }
 
     if (locked) {
         k_mutex_unlock(&router->lock);
     }
+    if (persist && rc == 0 && switch_index >= 0) {
+        if (mixed_profile) {
+            mems_persist_toggle_request(router, (uint8_t)switch_index,
+                                        'A', duty_cycle,
+                                        requested_cycle_ms_u32, off_in_s);
+        } else {
+            mems_persist_static_intent(router, (uint8_t)switch_index,
+                                       a_cycles == 0U ? 'B' : 'A');
+        }
+    }
     return rc;
+}
+
+int mems_switch_set_state(struct mems_switch *sw, char state,
+                          double duty_cycle, uint32_t off_in_s,
+                          double requested_cycle_ms, bool force)
+{
+    return mems_switch_set_state_internal(sw, state, duty_cycle, off_in_s,
+                                          requested_cycle_ms, force, true);
 }
 
 static void mems_switch_tick_locked(struct mems_switch *sw)
@@ -788,7 +979,6 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
     }
 
     out->state = sw->remaining_toggle_cycles>0 ? 'A': sw->state;
-    out->state_known_this_boot = sw->state_known_this_boot;
     out->duty_cycle = (double)sw->a_state_cycles / (double)sw->switching_period_cycles; //actual attained duty cycle
     out->cycle_ms = cycles_to_ms(sw, sw->switching_period_cycles);
     out->a_ms = cycles_to_ms(sw, sw->a_state_cycles);
@@ -801,6 +991,46 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
 
     if (sw->owner != NULL) {
         k_mutex_unlock(&sw->owner->lock);
+    }
+}
+
+static void mems_router_apply_persisted_toggle_requests(struct mems_router *router)
+{
+    struct app_mems_settings settings;
+
+    if (!IS_ENABLED(CONFIG_RESUME_TOGGLE_STATE_AT_BOOT) || router == NULL) {
+        return;
+    }
+
+    app_settings_get_mems(&settings);
+
+    for (uint8_t i = 0U; i < router->num_switches && i < APP_MEMS_SWITCH_COUNT; ++i) {
+        const struct app_mems_switch_settings *sw_settings = &settings.switch_state[i];
+
+        if (sw_settings->toggle_configured == 0U) {
+            continue;
+        }
+
+        (void)mems_switch_set_state_internal(router->switches[i],
+                                             sw_settings->toggle_state,
+                                             sw_settings->toggle_duty_cycle,
+                                             sw_settings->toggle_duration_s,
+                                             (double)sw_settings->toggle_cycle_ms,
+                                             false,
+                                             false);
+    }
+
+    for (uint8_t ch = 0U; ch < MEMS_SPLIT_CHANNEL_COUNT; ++ch) {
+        const struct app_mems_split_settings *split = &settings.split[ch];
+
+        if (split->configured == 0U) {
+            continue;
+        }
+
+        (void)mems_split_apply_channel_internal(router, ch, split->requested,
+                                                split->cycle_ms,
+                                                split->duration_s,
+                                                NULL, NULL, false);
     }
 }
 
@@ -822,6 +1052,7 @@ void mems_router_init(struct mems_router *router, struct mems_switch **switches,
     router->num_routes = num_routes;
 
     if (router->num_switches > 0U) {
+        mems_router_apply_persisted_toggle_requests(router);
         active_router = router;
         k_timer_start(&mems_router_timer,
                       K_MSEC(MEMS_SWITCH_ROUTER_TICK_MS),
@@ -1307,13 +1538,14 @@ int mems_split_read_channel_state(const struct mems_router *router,
     return 0;
 }
 
-int mems_split_apply_channel(const struct mems_router *router,
-                             uint8_t channel_index,
-                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
-                             uint32_t cycle_ms,
-                             uint32_t off_in_s,
-                             struct mems_split_state *out,
-                             const char **failed_switch)
+static int mems_split_apply_channel_internal(const struct mems_router *router,
+                                             uint8_t channel_index,
+                                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                                             uint32_t cycle_ms,
+                                             uint32_t off_in_s,
+                                             struct mems_split_state *out,
+                                             const char **failed_switch,
+                                             bool persist)
 {
     const struct mems_route *route;
     uint32_t period_ticks;
@@ -1415,5 +1647,24 @@ int mems_split_apply_channel(const struct mems_router *router,
         }
     }
 
-    return mems_split_read_channel_state(router, channel_index, requested, out);
+    rc = mems_split_read_channel_state(router, channel_index, requested, out);
+    if (rc == 0 && persist) {
+        mems_persist_split_request(router, channel_index, requested,
+                                   cycle_ms, off_in_s);
+    }
+
+    return rc;
+}
+
+int mems_split_apply_channel(const struct mems_router *router,
+                             uint8_t channel_index,
+                             const double requested[MEMS_SPLIT_OUTPUT_COUNT],
+                             uint32_t cycle_ms,
+                             uint32_t off_in_s,
+                             struct mems_split_state *out,
+                             const char **failed_switch)
+{
+    return mems_split_apply_channel_internal(router, channel_index, requested,
+                                             cycle_ms, off_in_s, out,
+                                             failed_switch, true);
 }

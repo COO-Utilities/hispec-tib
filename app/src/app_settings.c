@@ -47,6 +47,7 @@ enum app_nvs_id {
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
+	APP_NVS_ID_MEMS = 0x0500,
 };
 
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT < 0x8000,
@@ -59,8 +60,10 @@ BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID
 	     "laser policy NVS ID block overlaps laser total block");
 BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
 	     "laser total NVS ID block overlaps route-loss block");
-BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= 0x8000,
-	     "route-loss NVS ID block overlaps reserved Zephyr settings IDs");
+BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
+	     "route-loss NVS ID block overlaps MEMS settings");
+BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
+	     "MEMS NVS ID overlaps reserved Zephyr settings IDs");
 BUILD_ASSERT(APP_ATTENUATOR_PHYSICAL_COUNT == ATTENUATOR_PHYSICAL_COUNT,
 	     "app settings and attenuator physical coefficient counts must match");
 BUILD_ASSERT(APP_LASER_CHANNEL_COUNT == HISPEC_LASER_COUNT,
@@ -528,6 +531,15 @@ static void app_nvs_persist_route_loss_index(uint8_t index,
 	(void)app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
 }
 
+static void app_nvs_persist_mems(const struct app_mems_settings *mems)
+{
+	if (mems == NULL) {
+		return;
+	}
+
+	(void)app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems));
+}
+
 static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
 {
 	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
@@ -576,6 +588,59 @@ static bool route_loss_record_valid(struct app_route_loss_record *record)
 	return record->route[0] != '\0' &&
 	       record->laser[0] != '\0' &&
 	       double_in_range(record->transmission, 0.000000001, 1.0);
+}
+
+static bool mems_state_valid(char state)
+{
+	return state == 'A' || state == 'B';
+}
+
+static bool mems_settings_valid(const struct app_mems_settings *mems)
+{
+	if (mems == NULL) {
+		return false;
+	}
+
+	for (uint8_t i = 0U; i < APP_MEMS_SWITCH_COUNT; ++i) {
+		const struct app_mems_switch_settings *sw = &mems->switch_state[i];
+
+		if (sw->static_configured > 1U || sw->toggle_configured > 1U) {
+			return false;
+		}
+		if (sw->static_configured != 0U && !mems_state_valid(sw->static_state)) {
+			return false;
+		}
+		if (sw->toggle_configured != 0U &&
+		    (!mems_state_valid(sw->toggle_state) ||
+		     !(sw->toggle_duty_cycle > 0.0 &&
+		       sw->toggle_duty_cycle < 1.0))) {
+			return false;
+		}
+	}
+
+	for (uint8_t ch = 0U; ch < APP_MEMS_SPLIT_CHANNEL_COUNT; ++ch) {
+		const struct app_mems_split_settings *split = &mems->split[ch];
+		double sum;
+
+		if (split->configured > 1U) {
+			return false;
+		}
+		if (split->configured == 0U) {
+			continue;
+		}
+
+		sum = split->requested[0] + split->requested[1] + split->requested[2];
+		for (uint8_t i = 0U; i < APP_MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+			if (!double_in_range(split->requested[i], 0.0, 1.0)) {
+				return false;
+			}
+		}
+		if (!double_in_range(sum, 0.999999, 1.000001)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static void app_nvs_load_board_type(struct app_settings_snapshot *s)
@@ -750,6 +815,21 @@ static void app_nvs_load_route_loss(struct app_settings_snapshot *s)
 	}
 }
 
+static void app_nvs_load_mems(struct app_settings_snapshot *s)
+{
+	struct app_mems_settings stored;
+
+	if (!app_nvs_read_exact(APP_NVS_ID_MEMS, &stored, sizeof(stored), "MEMS")) {
+		return;
+	}
+	if (!mems_settings_valid(&stored)) {
+		LOG_WRN("Ignoring invalid stored MEMS settings");
+		return;
+	}
+
+	s->mems = stored;
+}
+
 static void app_nvs_load_all(struct app_settings_snapshot *s)
 {
 	uint32_t value;
@@ -770,6 +850,7 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	app_nvs_load_laserbank(s);
 	app_nvs_load_laser(s);
 	app_nvs_load_route_loss(s);
+	app_nvs_load_mems(s);
 }
 
 static void delete_setting_record(uint16_t id, int *first_rc)
@@ -811,6 +892,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
 		delete_setting_record(route_loss_nvs_id(i), &first_rc);
 	}
+	delete_setting_record(APP_NVS_ID_MEMS, &first_rc);
 
 	return first_rc;
 }
@@ -1238,6 +1320,32 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 	}
 
 	return 0;
+}
+
+void app_settings_get_mems(struct app_mems_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.mems;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
+{
+	if (mems == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.mems = *mems;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		app_nvs_persist_mems(mems);
+	}
 }
 
 uint32_t app_settings_get_mqtt_revision(void)

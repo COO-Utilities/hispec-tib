@@ -5,8 +5,8 @@
  * A kernel timer provides the MEMS cadence and a dedicated MEMS thread performs
  * GPIO-expander writes. The thread clears pulse pins, applies requested
  * static/toggling switch states, and quantizes requested dwell timing into
- * fixed MEMS ticks. Public calls can sleep on the router mutex but do not
- * publish MQTT or persist state.
+ * fixed MEMS ticks. Public calls can sleep on the router mutex and may persist
+ * user intent, but they do not publish MQTT.
  */
 
 #ifndef MEMS_SWITCHING_H
@@ -51,8 +51,11 @@ struct mems_switch {
     struct gpio_dt_spec gpio_a;
     struct gpio_dt_spec gpio_b;
     enum mems_switch_type switch_type;
-    char state; // 'A', 'B' may report with a ? if ~state_known_this_boot
+    char state; // Last state pulsed or boot intent awaiting first pulse.
     char target_state; // desired state applied by toggler on next tick
+    /* Known to firmware this boot. Physical position is not verified across
+     * reboot, replacement, or external actuation.
+     */
     bool state_known_this_boot;
     uint32_t switching_period_cycles; // Quantized switching period in MEMS tick cycles
     uint32_t a_state_cycles;
@@ -70,7 +73,6 @@ struct mems_switch {
 
 struct mems_switch_status {
     char state;
-    bool state_known_this_boot;
     double duty_cycle;
     uint32_t cycle_ms;
     uint32_t a_ms;
@@ -146,6 +148,7 @@ void mems_switch_init(struct mems_switch *sw,
  * satisfy the datasheet spacing limit. A zero value selects the fastest safe
  * cycle for the requested duty. @p force queues one same-state actuation pulse
  * for static profiles; repeated force requests coalesce until the pulse fires.
+ * Successful public calls persist the user request as MEMS boot intent.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t off_in_s,
@@ -196,7 +199,8 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
  * sleep on the router mutex. The caller owns route lookup and command response
  * formatting. On a per-switch failure, @p failed_switch and @p failed_state
  * identify the route step that failed when non-NULL. @p force queues one
- * same-state actuation pulse for each route step.
+ * same-state actuation pulse for each route step. Successful switch steps
+ * persist as per-switch static intent.
  */
 int mems_router_apply_route(const struct mems_router *router,
                             const struct mems_route *route,
@@ -257,7 +261,8 @@ int mems_split_read_channel_state(const struct mems_router *router,
  * explicit cycle is not stretched; output dwell ticks are solved within the
  * fixed PCB switch-boundary order. It can sleep on the router mutex through
  * MEMS switch operations and on settings while reading split transmissions. It
- * does not publish warnings or parse command payloads.
+ * persists the split restart request, but does not publish warnings or parse
+ * command payloads.
  */
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,

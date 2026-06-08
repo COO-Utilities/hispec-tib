@@ -270,9 +270,10 @@ while serial guard is active and attenuator DAC-range clamping.
   board route table. Each value is an array of currently connected sources
   because one destination may receive multiple sources through combining optics.
   A destination with no currently active source reports `["no source"]`. Active
-  routes are read from current switch state and are not persisted. `force:true`
-  queues one static actuation pulse for every switch step in the route, including
-  steps that already report the requested state.
+  routes are read from current switch state and are not persisted as named
+  route objects. Applying a route persists the resulting per-switch static
+  intent. `force:true` queues one static actuation pulse for every switch step
+  in the route, including steps that already report the requested state.
 
 (route-loss)=
 ### `memsroute/route_loss`
@@ -341,7 +342,7 @@ and the AS for splitting fraction correction.
   ```json
   {
     "<switchname>": {
-      "state": "A|B|A?|B?|?"
+      "state": "A|B|?"
     }
   }
   ```
@@ -377,7 +378,7 @@ and the AS for splitting fraction correction.
   Response:
   ```json
   {
-    "state": "A|B|A?|B?"
+    "state": "A|B|?"
   }
   ```
   For example, `mems/yj_cal_laser state=B` returns:
@@ -391,7 +392,7 @@ and the AS for splitting fraction correction.
   Response while configured with a non-constant duty request:
   ```json
   {
-    "state": "A|A?",
+    "state": "A|B|?",
     "duty_cycle": 0.5,
     "cycle_ms": 400,
     "a_ms": 200,
@@ -415,8 +416,15 @@ and the AS for splitting fraction correction.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
   - Request `off_in_s` max is 4 hours. Response `stop_in_s` is remaining
     toggle time.
-  - `?` suffix means the state has not yet been pulsed this boot; on first boot
-    all switches will be reported as `A?`.
+  - Static switch requests persist as user intent. With
+    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
+    from that intent and resends the pulse shortly after startup. This reasserts
+    software intent; firmware still does not physically verify switch position
+    across reboot, switch replacement, or external actuation.
+  - Mixed-duty toggle requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
+    using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
   - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
     constant A or B profiles.
   - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
@@ -1491,6 +1499,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     route with `mems_router_get_route()`, then walks the route steps with
     `mems_router_find_switch()` as `memsroute_set()` does.
   - YJ and HK are set independently with `channel:"yj"` or `channel:"hk"`.
+  - Split requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored split
+    request using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
   - The user sets only `ratio1` and `ratio2`, both as floats from `0.0` to
     `1.0`. They must sum to `<= 1.0`; `ratio3` is computed internally as the
     remaining fraction.

@@ -899,6 +899,7 @@ void setup_mems_switches_and_routes(void)
 {
 	const struct board_profile *profile = current_profile();
 	struct mems_switch *mems_switch_ptrs[MEMS_ROUTER_MAX_SWITCHES] = {0};
+	struct app_mems_settings mems_settings = {0};
 	const struct mems_route *routes = NULL;
 	uint8_t route_count = 0U;
 
@@ -913,12 +914,20 @@ void setup_mems_switches_and_routes(void)
 		return;
 	}
 
+	app_settings_get_mems(&mems_settings);
+
 	for (uint8_t i = 0; i < profile->mems_switch_count; ++i) {
 		enum mems_switch_type switch_type = MEMS_SWITCH_TYPE_FFSW;
+		char initial_state = 'A';
 
 		if (profile->board == HISPEC_BOARD_TIB &&
 		    i >= profile->mems_switch_count - 2U) {
 			switch_type = MEMS_SWITCH_TYPE_FFLS;
+		}
+		if (IS_ENABLED(CONFIG_SET_SWITCH_STATE_AT_BOOT) &&
+		    i < APP_MEMS_SWITCH_COUNT &&
+		    mems_settings.switch_state[i].static_configured != 0U) {
+			initial_state = mems_settings.switch_state[i].static_state;
 		}
 
 		mems_switch_init(&mems_switches[i],
@@ -926,7 +935,7 @@ void setup_mems_switches_and_routes(void)
 				 &mems_switch_gpio_pairs[i][1],
 				 profile->switch_names[i],
 				 switch_type,
-				 'A');
+				 initial_state);
 		mems_switch_ptrs[i] = &mems_switches[i];
 	}
 

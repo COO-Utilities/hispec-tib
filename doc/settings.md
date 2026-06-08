@@ -37,6 +37,8 @@ Current app NVS records include:
 - One laser total-emitting counter record per laser channel.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
+- One MEMS intent record containing per-switch static state intent, per-switch
+  direct-toggle restart metadata, and per-channel split restart metadata.
 
 ## Board-Type Reset Policy
 
@@ -62,6 +64,8 @@ silently reused on another.
   default gain/noise warning values.
 - Route-loss records default to absent. Missing route-loss settings are treated
   as loss-free transmission, `1.0`.
+- MEMS switch intent defaults to absent. A switch with no stored intent defaults
+  to A at boot. Toggle and split restart metadata defaults to dormant/absent.
 
 ## Persistence Side Effects
 
@@ -73,6 +77,13 @@ Photodiode dark-noise RMS updates happen in the sampler thread when any dark
 measurement completes. Active dark, lowest-dark, and persisted dark updates
 happen only when a user-started dark measurement completes with `store:true`.
 
+MEMS static state requests and route applications update the persisted
+per-switch intent once per command. Toggle and split commands persist the
+commanded request metadata once per command. Runtime toggle/split progress is
+not written back to NVS, so reboot resume, when enabled by
+`CONFIG_RESUME_TOGGLE_STATE_AT_BOOT`, restarts the original commanded duration
+rather than preserving elapsed or remaining time.
+
 If NVS loading fails after a board has already been initialized in the field,
 treat it as a human-intervention fault. At minimum, inspect logs and
 reinitialize storage before trusting persisted calibration or network intent. A
@@ -82,6 +93,8 @@ current schema marker, and uses defaults.
 ## Intentionally Not Persisted
 
 - Active routes are derived from current MEMS switch state and route tables.
+  Applying a route persists the affected switch states as static switch intent,
+  not as a named active-route object.
 - Laser output state is not restored after reboot. Laser-bank heater mode is a
   persisted policy and defaults to `auto`; in auto mode it may power the bank
   after boot for temperature monitoring. The heater starts off unless auto mode
@@ -93,6 +106,4 @@ current schema marker, and uses defaults.
 
 ## Not Currently Persisted
 
-- MEMS switch state.
-- AS split requested/actual state.
 - Laser output current, temperature, pulse, or tuning state.

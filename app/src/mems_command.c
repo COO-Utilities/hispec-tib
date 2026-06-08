@@ -779,8 +779,7 @@ static void mems_format_state(const struct mems_switch_status *status,
     }
 
     if (state == 'A' || state == 'B') {
-        snprintk(out, out_len, status->state_known_this_boot ? "%c" : "%c?",
-                 state);
+        snprintk(out, out_len, "%c", state);
         return;
     }
 
