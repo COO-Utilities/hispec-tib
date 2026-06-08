@@ -165,6 +165,13 @@ Workspace metadata discipline:
 
 - Do not edit files under `.idea/`. Those files are developer IDE state, not firmware source or documentation.
 
+Search discipline:
+
+- For broad source/documentation searches, exclude build directories by default.
+- Search generated build outputs only when the build artifact itself is relevant,
+  and then target the specific build directory, generated file, symbol, or DTS
+  node being investigated.
+
 ---
 
 ## 6. Coding Style and Architecture
