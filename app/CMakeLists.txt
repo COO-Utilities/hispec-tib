@@ -16,6 +16,23 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(app LANGUAGES C)
 
+set(HISPEC_BUILD_VERSION_HEADER
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/hispec_build_version.h)
+
+add_custom_target(hispec_build_version
+        COMMAND ${CMAKE_COMMAND}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DOUTPUT_FILE=${HISPEC_BUILD_VERSION_HEADER}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/git_build_version.cmake
+        BYPRODUCTS ${HISPEC_BUILD_VERSION_HEADER}
+        COMMENT "Generating HISPEC git build version")
+
+target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+
+add_dependencies(app hispec_build_version)
+
 target_sources(app PRIVATE
         src/main.c
         src/app_identity.c

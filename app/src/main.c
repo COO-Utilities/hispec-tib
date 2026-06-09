@@ -10,7 +10,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <app_version.h>
+#include <hispec_build_version.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/device.h>
@@ -249,7 +249,7 @@ int main(void)
 	int64_t next_mqtt_connect_ms = 0;
 	bool board_devices_ready;
 
-	LOG_INF("HISPEC-FIB PCB  %s\n", APP_VERSION_STRING);
+	LOG_INF("HISPEC-FIB PCB  %s\n", HISPEC_BUILD_VERSION);
 
 	devices_capture_boot_reset_cause();
 

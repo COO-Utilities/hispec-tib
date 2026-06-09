@@ -15,7 +15,7 @@
 #include <string.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
-#include <app_version.h>
+#include <hispec_build_version.h>
 #include <time.h>
 #include <zephyr/net/net_ip.h>
 
@@ -1111,7 +1111,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                         "\"board\":\"%s\",\"board_ok\":%s,"
                         "\"mems_switches\":%u,\"relay_err\":%d,"
                         "\"amb_c\":",
-                        APP_VERSION_STRING,
+                        HISPEC_BUILD_VERSION,
                         app_settings_get_boot_count(),
                         devices_board_type_name(),
                         devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",

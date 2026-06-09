@@ -1379,7 +1379,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   Response:
   ```json
   {
-    "fw": "<githash>",
+    "fw": "<tag-or-short-git-hash>",
     "boots": 0,
     "board": "tib|cal_yj|cal_hk|as|unknown",
     "board_ok": true,
