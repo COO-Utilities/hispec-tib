@@ -20,6 +20,8 @@ manifest:
           - cmsis_6      # required by the ARM port for Cortex-M [TODO is this the true rational? I thoguht this was for flash/debug? -JIB"]
           - hal_stm32    # required by the st32 nucleo board
           - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
+          - mcuboot      # required by MCUboot image management and OTA update support
+          - zcbor        # required by Zephyr MCUmgr CBOR command encoding
     - name: zscilib
       remote: zephyrproject-rtos
       revision: master

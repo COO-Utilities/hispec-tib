@@ -17,6 +17,10 @@
 #include <zephyr/console/console.h>
 #include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_COO_CMD_OTA)
+#include <zephyr/dfu/mcuboot.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_udp.h>
+#endif
 #if defined(CONFIG_COO_CMD_REBOOT)
 #include <zephyr/sys/reboot.h>
 #endif
@@ -39,6 +43,9 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 				   struct coo_cmd_response *out);
 #if defined(CONFIG_COO_CMD_REBOOT)
 static void reboot_work_handler(struct k_work *work);
+#endif
+#if defined(CONFIG_COO_CMD_OTA)
+static void ota_close_work_handler(struct k_work *work);
 #endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static void serial_guard_expire_work_handler(struct k_work *work);
@@ -98,6 +105,12 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->reboot_prepare = cfg->reboot_prepare;
 	k_work_init_delayable(&runtime->reboot_work, reboot_work_handler);
 	(void)atomic_clear(&runtime->reboot_pending);
+#endif
+#if defined(CONFIG_COO_CMD_OTA)
+	runtime->ota_window_seconds = CONFIG_COO_CMD_OTA_DEFAULT_SECONDS;
+	k_mutex_init(&runtime->ota_lock);
+	k_work_init_delayable(&runtime->ota_close_work, ota_close_work_handler);
+	(void)atomic_clear(&runtime->ota_enabled);
 #endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	runtime->serial_guard_seconds = CONFIG_COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS;
@@ -1257,6 +1270,17 @@ static const struct coo_cmd_help_entry builtin_help_entries[] = {
 		.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
 	},
 #endif
+#if defined(CONFIG_COO_CMD_OTA)
+	{
+		.key = "ota",
+		.usage = "ota [enable=<bool> duration_s=<s>|confirm=true]",
+		.args = "query with no payload; enable opens/closes SMP/UDP; confirm accepts current image",
+		.values = "duration_s: 1..CONFIG_COO_CMD_OTA_MAX_SECONDS",
+		.notes = "runtime-only OTA maintenance window using Zephyr MCUmgr image management",
+		.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT |
+			 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
+	},
+#endif
 };
 
 static bool runtime_key_is_help(const char *key)
@@ -1278,6 +1302,16 @@ static bool runtime_key_is_reboot(const char *key)
 {
 #if defined(CONFIG_COO_CMD_REBOOT)
 	return key != NULL && strcmp(key, "reboot") == 0;
+#else
+	ARG_UNUSED(key);
+	return false;
+#endif
+}
+
+static bool runtime_key_is_ota(const char *key)
+{
+#if defined(CONFIG_COO_CMD_OTA)
+	return key != NULL && strcmp(key, "ota") == 0;
 #else
 	ARG_UNUSED(key);
 	return false;
@@ -1534,6 +1568,10 @@ static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *run
 		return true;
 	}
 
+	if (runtime_key_is_ota(cmd->key) && cmd->msg_type == COO_CMD_QUERY) {
+		return true;
+	}
+
 	if (cmd->msg_type != COO_CMD_QUERY) {
 		return false;
 	}
@@ -1608,6 +1646,209 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 	}
 
 	return coo_cmd_ok(out, cmd);
+}
+#endif
+
+#if defined(CONFIG_COO_CMD_OTA)
+static bool runtime_ota_enabled(const struct coo_cmd_runtime *runtime)
+{
+	return runtime != NULL && atomic_get(&runtime->ota_enabled) != 0;
+}
+
+static void runtime_ota_mark_closed(struct coo_cmd_runtime *runtime)
+{
+	if (runtime == NULL) {
+		return;
+	}
+
+	(void)atomic_clear(&runtime->ota_enabled);
+	(void)k_work_cancel_delayable(&runtime->ota_close_work);
+}
+
+static int runtime_ota_close_locked(struct coo_cmd_runtime *runtime)
+{
+	int rc;
+
+	if (runtime == NULL) {
+		return -EINVAL;
+	}
+	if (!runtime_ota_enabled(runtime)) {
+		return 0;
+	}
+
+	rc = smp_udp_close();
+	if (rc != 0) {
+		return rc;
+	}
+
+	runtime_ota_mark_closed(runtime);
+	LOG_INF("OTA MCUmgr SMP/UDP window closed");
+	return 0;
+}
+
+static int runtime_ota_close(struct coo_cmd_runtime *runtime)
+{
+	int rc;
+
+	if (runtime == NULL) {
+		return -EINVAL;
+	}
+
+	/* Zephyr documents smp_udp_open/close as not thread-safe. */
+	k_mutex_lock(&runtime->ota_lock, K_FOREVER);
+	rc = runtime_ota_close_locked(runtime);
+	k_mutex_unlock(&runtime->ota_lock);
+	return rc;
+}
+
+static void ota_close_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct coo_cmd_runtime *runtime =
+		CONTAINER_OF(dwork, struct coo_cmd_runtime, ota_close_work);
+	int rc;
+
+	rc = runtime_ota_close(runtime);
+	if (rc != 0) {
+		LOG_WRN("Failed to close OTA MCUmgr SMP/UDP window (%d)", rc);
+	}
+}
+
+static int runtime_ota_get(struct coo_cmd_runtime *runtime,
+			   const struct coo_cmd_request *cmd,
+			   struct coo_cmd_response *out)
+{
+	int64_t remaining_ms = 0;
+	k_ticks_t remaining_ticks;
+	bool enabled;
+
+	if (runtime == NULL || out == NULL) {
+		return coo_cmd_error(out, cmd, "ota unavailable");
+	}
+
+	k_mutex_lock(&runtime->ota_lock, K_FOREVER);
+	enabled = runtime_ota_enabled(runtime);
+	if (enabled) {
+		remaining_ticks = k_work_delayable_remaining_get(&runtime->ota_close_work);
+		remaining_ms = k_ticks_to_ms_floor64(remaining_ticks);
+	}
+
+	snprintk(out->payload, sizeof(out->payload),
+		 "{\"enabled\":%s,\"port\":%u,\"remaining_ms\":%lld,"
+		 "\"image_confirmed\":%s}",
+		 enabled ? "true" : "false",
+		 (unsigned int)CONFIG_MCUMGR_TRANSPORT_UDP_PORT,
+		 (long long)remaining_ms,
+		 boot_is_img_confirmed() ? "true" : "false");
+	k_mutex_unlock(&runtime->ota_lock);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
+}
+
+static int runtime_ota_open(struct coo_cmd_runtime *runtime, uint32_t duration_s)
+{
+	int rc;
+
+	if (runtime == NULL) {
+		return -EINVAL;
+	}
+	if (duration_s == 0U || duration_s > CONFIG_COO_CMD_OTA_MAX_SECONDS) {
+		return -EINVAL;
+	}
+
+	/* Zephyr documents smp_udp_open/close as not thread-safe. */
+	k_mutex_lock(&runtime->ota_lock, K_FOREVER);
+	if (!runtime_ota_enabled(runtime)) {
+		rc = smp_udp_open();
+		if (rc != 0) {
+			goto out;
+		}
+		(void)atomic_set(&runtime->ota_enabled, 1);
+	}
+
+	runtime->ota_window_seconds = duration_s;
+	rc = k_work_reschedule(&runtime->ota_close_work, K_SECONDS(duration_s));
+	if (rc < 0) {
+		(void)runtime_ota_close_locked(runtime);
+		goto out;
+	}
+
+	LOG_WRN("OTA MCUmgr SMP/UDP window open for %u s on UDP port %u",
+		duration_s, (unsigned int)CONFIG_MCUMGR_TRANSPORT_UDP_PORT);
+
+out:
+	k_mutex_unlock(&runtime->ota_lock);
+	return rc;
+}
+
+static int runtime_ota_set(struct coo_cmd_runtime *runtime,
+			   const struct coo_cmd_request *cmd,
+			   struct coo_cmd_response *out)
+{
+	bool enable = false;
+	bool enable_changed = false;
+	bool confirm = false;
+	bool confirm_changed = false;
+	uint32_t duration_s = CONFIG_COO_CMD_OTA_DEFAULT_SECONDS;
+	bool duration_changed = false;
+	int rc;
+
+	if (runtime == NULL || cmd == NULL) {
+		return coo_cmd_error(out, cmd, "ota unavailable");
+	}
+
+	if (coo_json_extract_optional_bool(cmd->payload, "enable",
+					   &enable, &enable_changed) != 0) {
+		return coo_cmd_error(out, cmd, "invalid enable");
+	}
+	if (coo_json_extract_optional_bool(cmd->payload, "confirm",
+					   &confirm, &confirm_changed) != 0) {
+		return coo_cmd_error(out, cmd, "invalid confirm");
+	}
+	if (coo_json_extract_optional_u32(cmd->payload, "duration_s",
+					  &duration_s, &duration_changed) != 0) {
+		return coo_cmd_error(out, cmd, "invalid duration_s");
+	}
+
+	if (confirm_changed) {
+		if (!confirm || enable_changed || duration_changed) {
+			return coo_cmd_error(out, cmd, "invalid ota options");
+		}
+		rc = boot_write_img_confirmed();
+		if (rc != 0) {
+			return coo_cmd_error(out, cmd, "image confirm failed");
+		}
+		runtime_record_lastcommand(runtime, cmd);
+		return coo_cmd_ok(out, cmd);
+	}
+
+	if (!enable_changed) {
+		return coo_cmd_error(out, cmd, "missing ota action");
+	}
+	if (!enable && duration_changed) {
+		return coo_cmd_error(out, cmd, "invalid ota options");
+	}
+
+	if (enable) {
+		rc = runtime_ota_open(runtime, duration_s);
+		if (rc != 0) {
+			return coo_cmd_error(out, cmd, "ota open failed");
+		}
+		snprintk(out->payload, sizeof(out->payload),
+			 "{\"status\":\"ok\",\"enabled\":true,\"port\":%u,"
+			 "\"duration_s\":%u}",
+			 (unsigned int)CONFIG_MCUMGR_TRANSPORT_UDP_PORT,
+			 duration_s);
+	} else {
+		rc = runtime_ota_close(runtime);
+		if (rc != 0) {
+			return coo_cmd_error(out, cmd, "ota close failed");
+		}
+		snprintk(out->payload, sizeof(out->payload),
+			 "{\"status\":\"ok\",\"enabled\":false}");
+	}
+
+	runtime_record_lastcommand(runtime, cmd);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
 #endif
 
@@ -1744,6 +1985,17 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 	}
 #endif
 
+#if defined(CONFIG_COO_CMD_OTA)
+	if (runtime_key_is_ota(cmd->key)) {
+		if (cmd->msg_type == COO_CMD_EFFECT) {
+			(void)runtime_ota_set(runtime, cmd, out);
+		} else {
+			(void)runtime_ota_get(runtime, cmd, out);
+		}
+		return true;
+	}
+#endif
+
 #if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_key_is_reboot(cmd->key)) {
 		(void)runtime_reboot_set(runtime, cmd, out);
@@ -1865,6 +2117,10 @@ static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 
 	if (runtime_key_is_reboot(cmd->key)) {
 		return COO_CMD_EFFECT;
+	}
+
+	if (runtime_key_is_ota(cmd->key)) {
+		return coo_cmd_payload_empty(cmd) ? COO_CMD_QUERY : COO_CMD_EFFECT;
 	}
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);

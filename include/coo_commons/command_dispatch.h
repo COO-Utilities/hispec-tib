@@ -214,6 +214,12 @@ struct coo_cmd_runtime {
 	bool reboot_erase_non_ip_settings;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
 #endif
+#if defined(CONFIG_COO_CMD_OTA)
+	struct k_work_delayable ota_close_work;
+	struct k_mutex ota_lock;
+	atomic_t ota_enabled;
+	uint32_t ota_window_seconds;
+#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	struct k_work_delayable serial_guard_work;
 	atomic_t serial_guard_active;

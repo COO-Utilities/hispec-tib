@@ -157,6 +157,7 @@ not be needed for normal serial operation.
 - [`ip`](#ip)
 - [`mqtt`](#mqtt)
 - [`serialguard`](#serialguard)
+- [`ota`](#ota)
 - [`time`](#time)
 - [`temp`](#temp)
 - [`status`](#status)
@@ -1410,6 +1411,45 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
   `lastcmd` is restored from command-dispatch NVS storage when available.
+
+(ota)=
+### `ota`
+- **No payload -> OTA maintenance-window status:**
+  ```json
+  {
+    "enabled": true,
+    "port": 1337,
+    "remaining_ms": 600000,
+    "image_confirmed": true
+  }
+  ```
+- **Payload:** open or close the Zephyr MCUmgr SMP/UDP update window.
+  ```json
+  {
+    "enable": true,
+    "duration_s": 600
+  }
+  ```
+- **Payload:** confirm the currently running MCUboot image after update
+  validation.
+  ```json
+  {"confirm":true}
+  ```
+- **Serial forms:**
+  ```text
+  ota
+  ota enable=true duration_s=600
+  ota enable=false
+  ota confirm=true
+  ```
+- **Notes:** `ota` is a command-dispatch built-in when
+  `CONFIG_COO_CMD_OTA=y`. The command opens Zephyr MCUmgr SMP/UDP only for a
+  bounded runtime window; it is not persisted across reboot. The firmware
+  intentionally does not enable MCUmgr DTLS, shell, filesystem, settings, or OS
+  reset groups. Firmware authenticity is provided by MCUboot image signing, not
+  TLS. The operator tool should upload and mark the image pending through
+  MCUmgr, then use the normal [`reboot`](#reboot) command so app-specific
+  reboot preparation still runs.
 
 
 (reboot)=

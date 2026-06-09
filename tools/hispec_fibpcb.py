@@ -186,6 +186,14 @@ class SerialGuardStatus:
 
 
 @dataclass(frozen=True)
+class OtaStatus:
+    enabled: bool
+    port: int
+    remaining_ms: int
+    image_confirmed: bool
+
+
+@dataclass(frozen=True)
 class LastCommand:
     name: str
     src: str
@@ -1260,6 +1268,18 @@ class HispecFibPcb:
             "serialguard",
             {"seconds": _require_nonnegative_u32("seconds", seconds)},
         )
+
+    def ota_status(self) -> OtaStatus:
+        return _dataclass_from(OtaStatus, self._request_json("ota"))
+
+    def set_ota_window(self, enable: bool, *, duration_s: int | None = None) -> CommandOk:
+        payload: dict[str, Any] = {"enable": bool(enable)}
+        if duration_s is not None:
+            payload["duration_s"] = _require_nonnegative_u32("duration_s", duration_s)
+        return self._request_ok("ota", payload)
+
+    def ota_confirm(self) -> CommandOk:
+        return self._request_ok("ota", {"confirm": True})
 
     def mems(self) -> tuple[MemsSwitchState, ...]:
         return _decode_mems(self._request_json("mems"))

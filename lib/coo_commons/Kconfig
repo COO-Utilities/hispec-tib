@@ -123,6 +123,35 @@ config COO_CMD_REBOOT
 	  command rejection after reboot is accepted and an optional application
 	  prepare callback immediately before sys_reboot().
 
+config COO_CMD_OTA
+	bool "Command dispatcher OTA update command"
+	depends on BOOTLOADER_MCUBOOT
+	depends on MCUMGR
+	depends on MCUMGR_GRP_IMG
+	depends on MCUMGR_TRANSPORT_UDP
+	default n
+	help
+	  Let the command dispatcher own a built-in ota command that opens and
+	  closes Zephyr MCUmgr SMP/UDP for a bounded maintenance window and can
+	  confirm a tested MCUboot image. This does not enable DTLS, shell, file
+	  system, settings, or OS reset management groups.
+
+config COO_CMD_OTA_DEFAULT_SECONDS
+	int "Default OTA update window duration"
+	depends on COO_CMD_OTA
+	default 600
+	help
+	  Default number of seconds that the ota command leaves MCUmgr SMP/UDP
+	  open when no duration_s payload field is supplied.
+
+config COO_CMD_OTA_MAX_SECONDS
+	int "Maximum OTA update window duration"
+	depends on COO_CMD_OTA
+	default 1800
+	help
+	  Maximum accepted duration_s for the ota command. The window is runtime
+	  only and is not restored after reboot.
+
 endif # COO_MQTT
 
 endif # COO_COMMONS
