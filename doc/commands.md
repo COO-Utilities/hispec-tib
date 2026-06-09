@@ -1446,10 +1446,12 @@ command wait budget, this command returns `{"error":"busy"}`.
   `CONFIG_COO_CMD_OTA=y`. The command opens Zephyr MCUmgr SMP/UDP only for a
   bounded runtime window; it is not persisted across reboot. The firmware
   intentionally does not enable MCUmgr DTLS, shell, filesystem, settings, or OS
-  reset groups. Firmware authenticity is provided by MCUboot image signing, not
-  TLS. The operator tool should upload and mark the image pending through
-  MCUmgr, then use the normal [`reboot`](#reboot) command so app-specific
-  reboot preparation still runs.
+  reset groups. MCUboot images are unsigned by observatory policy to avoid
+  field key-management failure modes. MCUboot still carries image hash metadata
+  for integrity/format checks, but firmware authenticity is not provided by TLS,
+  DTLS, or image signing. The operator tool should upload and mark the image
+  pending through MCUmgr, then use the normal [`reboot`](#reboot) command so
+  app-specific reboot preparation still runs.
 
 
 (reboot)=

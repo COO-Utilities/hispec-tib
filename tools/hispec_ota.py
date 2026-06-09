@@ -94,7 +94,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--board-host", help="Board IPv4 address; defaults to status ip.active.ip")
     parser.add_argument("--smp-port", type=int, default=1337)
     parser.add_argument("--duration-s", type=int, default=600)
-    parser.add_argument("--image", required=True, type=Path, help="Signed MCUboot image binary")
+    parser.add_argument("--image", required=True, type=Path,
+                        help="MCUboot update image binary; unsigned by observatory policy")
     parser.add_argument("--image-hash", help="Image hash to pass to `mcumgr image test`")
     parser.add_argument("--expected-fw", help="Firmware fw string required before confirmation")
     parser.add_argument("--mcumgr", default="mcumgr", help="MCUmgr-compatible CLI executable")
