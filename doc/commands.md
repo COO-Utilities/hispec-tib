@@ -62,6 +62,10 @@ Draft 0.1
   for interactive bring-up and debugging.
 - Board-specific commands are rejected before their domain handler runs when
   the selected board strap does not provide that hardware.
+- Command keys are exact-match by default. Only endpoint families documented
+  with topic suffixes, such as `atten/<laser>/value`, `split/yj`, or
+  `laserbank/power/<mode>`, opt into prefix matching. Unknown top-level payload
+  keys are rejected before the domain handler runs.
 
 ## Serial Command Form
 
@@ -95,8 +99,8 @@ Requests with payload use the key followed by a payload. There are no `get` or
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 toggle_rate_hz=17 stopafter_s=30
-split channel=yj ratio1=0.33 ratio2=0.33 stopafter_s=300
+mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
+split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 off_in_s=300
 laserbank/power/override_on
 ```
 
@@ -105,7 +109,7 @@ Payload rules:
 - A payload beginning with `{` is copied unchanged into `Command.payload`; it is
   not parsed and rebuilt by the serial layer.
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
-  `state=A stopafter_s=30`.
+  `state=A off_in_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
   `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
@@ -134,6 +138,7 @@ not be needed for normal serial operation.
 
 ## Command Endpoints
 - [`help`](#help)
+- [`catalog`](#catalog)
 - [`memsroute`](#memsroute)
 - [`memsroute/route_loss`](#route-loss)
 - [`mems`](#mems)
@@ -230,6 +235,23 @@ while serial guard is active and attenuator DAC-range clamping.
   MQTT help is intentionally compact so it does not consume the payload budget
   with the full serial help text.
 
+(catalog)=
+### `catalog`
+- **No payload -> static name catalog for the selected board profile:**
+  ```json
+  {
+    "board": "tib",
+    "lasers": ["1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k"],
+    "route_inputs": ["yj_1430", "yj_cal"],
+    "route_outputs": ["yj_ao", "yj_fei"],
+    "routes": [["yj_1430", "yj_ao"], ["yj_cal", "yj_fei"]]
+  }
+  ```
+- **Notes:** `route_inputs`, `route_outputs`, and `routes` come from the
+  board-selected MEMS route table. `routes` is the authoritative list of valid
+  input/output pairs for `memsroute` and route-bearing commands. `lasers` is
+  populated on TIB and empty on non-TIB board profiles.
+
 (memsroute)=
 ### `memsroute`
 - **No payload -> active routes:**
@@ -244,14 +266,18 @@ while serial guard is active and attenuator DAC-range clamping.
   ```json
   {
     "input": "<source>",
-    "output": "<dest>"
+    "output": "<dest>",
+    "force": false
   }
   ```
 - **Notes:** The no-payload response lists every destination present in the active
   board route table. Each value is an array of currently connected sources
   because one destination may receive multiple sources through combining optics.
   A destination with no currently active source reports `["no source"]`. Active
-  routes are read from current switch state and are not persisted.
+  routes are read from current switch state and are not persisted as named
+  route objects. Applying a route persists the resulting per-switch static
+  intent. `force:true` queues one static actuation pulse for every switch step
+  in the route, including steps that already report the requested state.
 
 (route-loss)=
 ### `memsroute/route_loss`
@@ -320,7 +346,7 @@ and the AS for splitting fraction correction.
   ```json
   {
     "<switchname>": {
-      "state": "A|B|A?|B?|?"
+      "state": "A|B|?"
     }
   }
   ```
@@ -328,7 +354,7 @@ and the AS for splitting fraction correction.
   eight-switch response fits the fixed MQTT payload buffer. Static switches
   report only `state`. A switch currently configured with a non-constant duty
   request also includes `duty_cycle`. Use `mems/<switchname>` for
-  requested/actual toggle rate and stop-after details.
+  actual dwell timing and stop-in details.
 
 (mems-switchname)=
 ### `mems/<switchname>`
@@ -337,7 +363,7 @@ and the AS for splitting fraction correction.
 
   Static payload:
   ```json
-  {"state":"A"}
+  {"state":"A","force":false}
   ```
   or:
   ```json
@@ -348,15 +374,15 @@ and the AS for splitting fraction correction.
   {
     "state": "A",
     "duty_cycle": 0.5,
-    "toggle_rate_hz": 17,
-    "stopafter_s": 30
+    "cycle_ms": 400,
+    "off_in_s": 30
   }
   ```
 
   Response:
   ```json
   {
-    "state": "A|B|A?|B?"
+    "state": "A|B|?"
   }
   ```
   For example, `mems/yj_cal_laser state=B` returns:
@@ -370,29 +396,51 @@ and the AS for splitting fraction correction.
   Response while configured with a non-constant duty request:
   ```json
   {
-    "state": "A|A?",
-    "duty_cycle": 0.0,
-    "requested_toggle_rate_hz": 0.0,
-    "toggle_rate_hz": 0.0,
-    "stopafter_s": 0
+    "state": "A|B|?",
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "a_ms": 200,
+    "b_ms": 200,
+    "stop_in_s": 30
   }
   ```
 - **Notes:**
+  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
+    responses always use uppercase `A`/`B`.
+  - `force:true` is valid only for static A/B requests. It queues one actuation
+    pulse even when the switch already reports that state. Repeated force
+    requests before the pulse fires coalesce to one pending pulse.
   - `duty_cycle` is only valid with `state:"A"`.
   - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
-  - `toggle_rate_hz` is optional; if omitted the switch uses its current
-    requested toggle rate.
-  - Requested `toggle_rate_hz` is stored separately from the actual
-    firmware-quantized rate.
+  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
+    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
+    the firmware may quantize duty inside the requested cycle but does not
+    stretch the requested cycle beyond MEMS tick granularity.
+  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - `stopafter_s` max is 4 hours.
-  - `?` suffix means the state has not yet been pulsed this boot; on first boot
-    all switches will be reported as `A?`.
-  - `duty_cycle`, `requested_toggle_rate_hz`, `toggle_rate_hz`, and
-    `stopafter_s` are omitted for constant A or B profiles.
-  - `toggle_rate_hz` is the actual quantized rate. If it differs from requested
-    by more than rounding noise, the firmware emits `mems_rate_quantized` on
-    `dt/<device>/warning`.
+  - Request `off_in_s` max is 4 hours. Response `stop_in_s` is remaining
+    toggle time.
+  - Static switch requests persist as user intent. With
+    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
+    from that intent and resends the pulse shortly after startup. This reasserts
+    software intent; firmware still does not physically verify switch position
+    across reboot, switch replacement, or external actuation.
+  - Mixed-duty toggle requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
+    using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
+  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
+    constant A or B profiles.
+  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
+    and B states. The firmware keeps all A/B actuation pulses at least
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
+    `cycle_ms` if required.
+  - Static state changes can be delayed until the same pulse-spacing rule is
+    satisfied; status reports the last pulsed state until the delayed pulse
+    occurs. A delayed same-state `force:true` pulse is not separately reported
+    in status.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
 
 
 (measure-throughput)=
@@ -405,7 +453,7 @@ and the AS for splitting fraction correction.
     "fiber": "M",
     "output": "yj_ao",
     "max_flux_ph_s": 1.0e12,
-    "stopafter_s": 300,
+    "off_in_s": 300,
     "format": "json"
   }
   ```
@@ -451,9 +499,11 @@ the limit uses the current laser flux estimate multiplied by
 
 Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
 `transimpedance_v_per_a` from `pdsettings/<yj|hk>` with the active laser
-wavelength estimate. It does not interpolate wavelength curves at runtime. The
-photodiode sampler owns ADC reads and dark tracking. The throughput monitor
-owns streaming output, autolevel decisions, and throughput math.
+wavelength estimate. It applies the nearest nominal-laser photodiode
+multiplicative correction coefficient; the current firmware table uses `1.0`
+for every nominal laser wavelength. The photodiode sampler owns ADC reads and
+dark tracking. The throughput monitor owns streaming output, autolevel
+decisions, and throughput math.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
@@ -465,7 +515,7 @@ owns streaming output, autolevel decisions, and throughput math.
   "channel": "yj_m",
   "laser": "1430yj",
   "autolevel": true,
-  "time": 0,
+  "t_ms": 0,
   "tp": 0.0,
   "tp_err": 0.0,
   "tp_rms_err": 0.0,
@@ -491,7 +541,7 @@ owns streaming output, autolevel decisions, and throughput math.
 ```
 
 `channel` combines the photodiode channel and fiber class with an underscore,
-for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `time` is Unix time in
+for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
 milliseconds from the firmware clock. `pd_ontime_s` is the tracked on-time of
 the photodiode power relay for that channel since boot; it does not infer
 pre-boot relay state.
@@ -503,7 +553,7 @@ first field is a zero-padded 8-byte ASCII channel/fiber label such as `yj_m`.
 
 ```text
 char[8] channel
-uint64 time_ms
+uint64 t_ms
 float64 tp
 float64 tp_err
 float64 tp_rms_err
@@ -515,15 +565,15 @@ float64 pd_route_tx
 float64 laser_route_tx
 float64 atten_tx
 int16 pd_raw
-float32 pd_mv
-float32 pd_net_mv
-float32 pd_mean_mv_1s
-float32 pd_rms_mv_0p5s
-float32 laser_current_ma
-float32 atten_db
-float32 wavelength_nm
-float32 pd_ontime_s
-float32 laser_current_ontime_s
+float64 pd_mv
+float64 pd_net_mv
+float64 pd_mean_mv_1s
+float64 pd_rms_mv_0p5s
+float64 laser_current_ma
+float64 atten_db
+float64 wavelength_nm
+float64 pd_ontime_s
+float64 laser_current_ontime_s
 ```
 
 **Notes:**
@@ -546,8 +596,11 @@ float32 laser_current_ontime_s
   first, then lowering laser output level percent.
 - At start with `autolevel:true`, attenuation is set to maximum before laser
   power is raised.
-- Starting a monitor powers the required photodiode and laser-bank outputs as
-  needed. Shutting down the required photodiode power stops that monitor.
+- Starting a monitor powers the required photodiode unless
+  `pdsettings/<channel>.power` is `override_off`; in that mode the command
+  fails with `photodiode power override_off`. While a monitor is running,
+  photodiode auto-off is inhibited and `pdsettings/<channel>.off_in_s` reports
+  `null`. Shutting down the required photodiode power stops that monitor.
 - Changing the monitored laser output or its logical attenuator disables
   autolevel for the affected monitor; run the command again to re-enable it.
 - Dark measurement must not be started while an autolevel throughput monitor is
@@ -564,11 +617,13 @@ float32 laser_current_ontime_s
   {
     "name": "<lasername>",
     "powered": true,
-    "tec_on_s": 0,
-    "emit_on_s": 0,
-    "emit_total_s": 0,
+    "ready": true,
+    "blocked_reason": null,
+    "tec_on_s": null,
+    "emit_on_s": null,
+    "emit_total_s": null,
     "temp_c": 0.0,
-    "current_ma": 0.0,
+    "i_mA": 0.0,
     "level": 0.0,
     "power_mw": 0.0,
     "nominal_nm": 0.0,
@@ -577,7 +632,7 @@ float32 laser_current_ontime_s
     "tec_ma": 0.0,
     "diode_v": 0.0,
     "tec_v": 0.0,
-    "offin_s": 0,
+    "off_in_s": null,
     "oc_fault": false
   }
   ```
@@ -594,9 +649,16 @@ float32 laser_current_ontime_s
   the laser bank as needed, prepares the TEC, sets the laser current, and restarts the auto-off timer. Setting level
   0 stops emission and writes driver current to 0. Laser output current is never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
-  `tec_on_s`, `emit_on_s`, and `emit_total_s` are firmware-owned counters. `emit_total_s` is persisted when emission
-  stops cleanly. `autooff_s` is optional and non-persistent; if supplied, it overrides the default configured through
-  `laser/settings` for this start.
+  `ready` reports whether the driver is prepared to operate without a blocking
+  SF8025 lock condition. `blocked_reason` is `null` when emission is active,
+  otherwise it reports a concise cause such as `bank_off`, `not_emitting`,
+  `tec_not_started`, `ld_overcurrent`, or `interlock`. Active time fields are
+  integer seconds while active and `null` when inactive. The persisted lifetime
+  total remains available through `laser/settings`. `autooff_s` is optional and
+  non-persistent; if supplied, it overrides the default configured through
+  `laser/settings` for this start. If another laser-bank operation occupies the
+  shared Maiman Modbus bus past the command wait budget, laser commands return
+  `{"error":"busy"}`.
 
 (laser-tune)=
 ### `laser/tune`
@@ -643,8 +705,8 @@ optional laser section of `status`.
 
 Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
 Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
-serial/device-id verification, and interlock flags. This command may be slower than `laser/status` because it reads
-many Modbus registers.
+serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock flags. This command may be slower than
+`laser/status` because it reads many Modbus registers.
 
 
 (laser-settings)=
@@ -712,10 +774,17 @@ many Modbus registers.
 
 - **Notes:**
   - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
+  - `default_operating_temp_c` is the TEC setpoint applied during driver
+    preparation and TEC start. Direct TEC setpoint changes are applied only after
+    startup preparation succeeds, so a bad default can make the TEC fail to start
+    and make the laser appear to fault immediately.
   - Settings are checked when a laser is first talked to at each boot
   - A mismatch between those the driver stores in its eeprom and controllers NVRAM will trigger a warning in the log and the driver values will be programmed.
-  - If the laser bank is off, firmware powers it, applies driver-backed settings, verifies them as practical, and then
-    restores the previous bank power state. If `laserbank/power` is `override_off`, driver-backed settings changes return
+  - If the laser bank is off, firmware powers it, applies driver-backed settings,
+    verifies them as practical, and then restores the previous bank power state.
+    Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
+    `default_operating_temp_c`, `tec_max_current_a`, and `tec_pid`. If
+    `laserbank/power` is `override_off`, driver-backed settings changes return
     an error.
   - it is **encouraged** to send only the settings that requested changed.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
@@ -752,7 +821,7 @@ many Modbus registers.
   ```
 - **Payload or topic suffix -> laser-bank power state after update:**
   ```json
-  {"override":"auto|override_on|override_off"}
+  {"mode":"auto|override_on|override_off"}
   ```
   Suffix requests use
   `cmd/<device>/req/laserbank/power/auto`,
@@ -763,7 +832,9 @@ many Modbus registers.
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
   while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an
-  error response that still includes the current `mode` and firmware-requested `powered` state.
+  error response that still includes the current `mode` and firmware-requested `powered` state. If another laser-bank
+  operation occupies the shared Maiman Modbus bus past the command wait budget,
+  mode changes return `{"error":"busy"}`.
 
 (laserbank-clearfaults)=
 ### `laserbank/clearfaults`
@@ -776,6 +847,8 @@ This command performs an off-on cycle iff the bank is powered and at least one o
 fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
 The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
 off or no faults).
+If another laser-bank operation occupies the shared Maiman Modbus bus past the
+command wait budget, this command returns `{"error":"busy"}`.
 
 
 (laserbank-heater)=
@@ -783,24 +856,20 @@ off or no faults).
 - **No payload -> laser-bank heater state:**
   ```json
   {
-    "heater_mode": "auto|override_on|override_off",
+    "mode": "auto|override_on|override_off",
+    "auto_state": "waiting_for_temps|warming_disabled_tec|disabled_tec_warm|tecs_running|holding|override_on|override_off",
     "heater_on": false,
     "bank_power": true,
-    "ambient_valid": true,
-    "ambient_c": 0.0,
-    "valid_temps": 6,
-    "stale_temps": 0,
-    "any_disabled_below_15c": false,
-    "any_disabled_above_off_threshold": false,
-    "all_tecs_enabled": false,
-    "all_tecs_enabled_ms": 0,
+    "ambient_c": null,
+    "idle_tec_temps": 0,
+    "idle_tec_avg_c": null,
     "last_error": 0,
-    "last_poll_age_ms": 0
+    "poll_age_s": 0
   }
   ```
 - **Payload or topic suffix -> laser-bank heater state after update:**
   ```json
-  {"override":"auto|override_on|override_off"}
+  {"mode":"auto|override_on|override_off"}
   ```
   Suffix requests use
   `cmd/<device>/req/laserbank/heater/auto`,
@@ -810,11 +879,26 @@ off or no faults).
 - **Notes:** `auto` is the default at boot. In `auto`, laser-bank
   temperature-control work powers the bank so the Maiman temperature monitors
   can initialize, polls TEC temperatures at a fixed interval, and drives the
-  laser-bank heater through housekeeping relay-power helpers. Any disabled TEC
-  below 15 C turns the heater on. Any disabled TEC above the ambient-dependent
-  off threshold turns it off. If all TECs remain enabled for at least one
-  control interval, the heater is turned off. `override_on` and `override_off`
-  force the heater state and suspend the
+  laser-bank heater through housekeeping relay-power helpers.
+  `auto_state` summarizes the internal policy state without exposing the
+  control-loop booleans: `waiting_for_temps` means no fresh driver
+  temperatures are available; `warming_disabled_tec` means at least one idle TEC
+  probe is below the heater-on threshold; `disabled_tec_warm` means at least one
+  idle TEC probe is warm enough for heater turnoff; `tecs_running` means all
+  driver TECs are enabled; `holding` means no heater state change was requested
+  in the latest loop. `idle_tec_temps` counts fresh driver temperature readings
+  whose TEC is not started, and `idle_tec_avg_c` averages only those readings;
+  actively controlled TEC temperatures remain laser telemetry and are not used
+  for this aggregate. `ambient_c` and `idle_tec_avg_c` are `null` when
+  unavailable. `poll_age_s` is an integer age in seconds or `null` before the
+  first poll. The off threshold is 15 C when ambient is valid and above 15 C,
+  otherwise 20 C. If all laser temperatures are stale, auto mode turns the
+  heater off when ambient is invalid or at least 15 C. When valid ambient is
+  below 15 C, auto mode powers the bank so driver
+  temperature monitors can initialize and leaves heater state unchanged until
+  valid laser temperature data is available. If all TECs remain enabled for at
+  least one control interval, the heater is turned off.
+  `override_on` and `override_off` force the heater state and suspend the
   automatic warmup policy. While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
   If the off-board DS2408 relay expander is offline, set requests return an I/O
@@ -969,11 +1053,11 @@ off or no faults).
     "attenuator": "lfc",
     "persistent": true,
     "dac1": {
-      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     },
     "dac2": {
-      "voltage_mv": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     }
   }
@@ -994,7 +1078,7 @@ off or no faults).
     thread. It does not start a new calibration thread; the throughput monitor
     thread advances the state machine.
   - The fit converts normalized flux to the attenuator model coordinate and
-    uses zscilib simple linear regression for `b = slope * voltage_mv + offset`.
+    uses zscilib simple linear regression for `b = slope * v_mV + offset`.
     Fit details include point count, correlation, residual RMS/max in dB, fitted
     transmission span, and voltage span.
   - Manual calibration returns the voltage schedule on completion or stop so an
@@ -1019,7 +1103,9 @@ off or no faults).
     "hk_mean_mv_1s": 0.0,
     "yj_rms_mv_0p5s": 0.0,
     "hk_rms_mv_0p5s": 0.0,
-    "uptime_s": 0
+    "yj_ontime_s": 0.0,
+    "hk_ontime_s": 0.0,
+    "yj_pd_is_off": true
   }
   ```
 - **Payload -> dark measurement state:** measure dark without storing.
@@ -1080,15 +1166,23 @@ off or no faults).
     accumulated `samples`, and `target_samples`.
   - `dark_status` reports the current or most recent short average for that
     channel. Complete dark results include measured mean/RMS/min/max.
+  - `dark_noise_rms_mv` records the most recent dark-measurement RMS. Setting
+    `dark_mv` directly does not change this value.
   - `measure_dark` with `store:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
-  - `lowest_dark_mv` is updated only when a stored dark measurement is lower
-    than the previous stored lowest value.
+  - `lowest_stored_dark_mv` is updated only when a stored dark measurement is
+    lower than the previous stored lowest value. It is `null` until a stored
+    dark measurement has completed.
   - Active monitoring tracks a simple residual RMS after smoothing. If it
     exceeds the configured warning threshold, the firmware emits
     `photodiode_noise` on `dt/<device>/warning`.
   - Power estimates subtract stored dark mV and use `responsivity_a_per_w` and
     `transimpedance_v_per_a`.
+  - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
+    `true` only when the corresponding relay is off; ADC sampling and returned
+    values continue regardless.
+  - `yj_ontime_s` and `hk_ontime_s` are the tracked relay on-times since boot,
+    using the same source as throughput `pd_ontime_s`.
 
 (pdsettings)=
 ### `pdsettings`
@@ -1098,15 +1192,15 @@ off or no faults).
   {
     "channel": "yj",
     "dark_mv": 0.0,
-    "lowest_dark_mv": 0.0,
-    "lowest_dark_valid": false,
-    "average": "inactive",
-    "average_duration_ms": 0,
-    "average_samples": 0,
-    "average_target_samples": 0,
+    "dark_duration_ms": "user",
+    "dark_noise_rms_mv": 0.0,
+    "lowest_stored_dark_mv": null,
     "noise_rms_mV": 3.0,
     "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 5.0e10
+    "transimpedance_v_per_a": 5.0e10,
+    "power": "auto",
+    "autooff_s": 300,
+    "off_in_s": null
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -1116,6 +1210,8 @@ off or no faults).
     "dark_mv": 0.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10,
+    "power": "auto",
+    "autooff_s": 300,
     "persistent": true
   }
   ```
@@ -1125,19 +1221,30 @@ off or no faults).
   - `noise_rms_mV`
   - `responsivity_a_per_w`
   - `transimpedance_v_per_a`
+  - `power`
+  - `autooff_s`
   - `persistent`
 
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
   command keys and separate app NVS records. Dark and lowest-dark values are
-  persisted through app settings.
+  persisted through app settings. `power` is the relay intent for this channel:
+  `auto`, `override_on`, or `override_off`. `autooff_s` is the channel's
+  automatic power-off delay used when firmware auto-enables the relay; `off_in_s`
+  is `null` unless a channel auto-off countdown is armed. Setting `dark_mv`
+  directly marks the active
+  dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
+  `pd measure_dark store=true` records the measured mean as the active dark and
+  reports the actual averaging duration in `dark_duration_ms`.
+  `dark_noise_rms_mv` is the most recent dark-measurement RMS and is not changed
+  by manually setting `dark_mv`.
 
 (ip)=
 ### `ip`
 - **No payload -> IP configuration:**
   ```json
   {
-    "source": "<source>",
+    "src": "<source>",
     "trydhcpfirst": true,
     "preferdhcpdns": true,
     "preferdhcpntp": true,
@@ -1153,7 +1260,7 @@ off or no faults).
       "ip": "<ip>"
     },
     "ntp": {
-      "source": "<source>",
+      "src": "<source>",
       "server": "<ip>"
     }
   }
@@ -1176,10 +1283,11 @@ off or no faults).
 - **Notes:**
   - Unsupported features don’t error; supported changes are still applied and
     partial status reports unsupported fields.
-  - IP precedence: runtime settings → compiled static defaults → fallback
-    service profile.
+  - IP precedence: runtime settings → compiled static defaults. The compiled
+    static defaults are also the last-resort service fallback.
   - If `trydhcpfirst` is true and DHCP is compiled in, DHCP is tried before the
-    runtime static profile.
+    runtime static profile. Static fallback remains DHCP-overridable so a later
+    lease can replace it.
   - Partial responses include keys indicating which settings are not supported.
   - network-affecting changes are applied at runtime; ordinary changes do not
     require reboot.
@@ -1225,6 +1333,8 @@ off or no faults).
 
 - **Notes:**
   - Any non-empty serial command activates or refreshes the guard.
+  - The `serialguard` command itself is allowed while the guard is active so an
+    operator can extend, shorten, or disable the current expiry.
   - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
     `serialguard off`.
   - While active, MQTT requests that may change hardware or runtime state are
@@ -1245,7 +1355,7 @@ off or no faults).
   ```
 - **Payload:** set firmware time.
   ```json
-  {"linuxtime_ms":0}
+  {"unix_ms":0}
   ```
 
 - **Notes:** set time may be overwritten later by NTP if configured and responding.
@@ -1265,7 +1375,8 @@ off or no faults).
 
 - **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
   can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
-  temperatures.
+  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
+  returns `{"error":"busy"}` instead of an ambient-only partial response.
 
 (status)=
 ### `status`
@@ -1283,21 +1394,21 @@ off or no faults).
   Response:
   ```json
   {
-    "fwversion": "<githash>",
-    "bootcount": 0,
-    "board_type": "tib|cal_yj|cal_hk|as|unknown",
-    "board_valid": true,
+    "fw": "<tag-or-short-git-hash>",
+    "boots": 0,
+    "board": "tib|cal_yj|cal_hk|as|unknown",
+    "board_ok": true,
     "mems_switches": 8,
-    "relay_gpio_error": 0,
+    "relay_err": 0,
     "ip": "<response of ip command query>",
-    "temp_c": 0.0,
-    "pd_ontime": 0,
-    "laserbank_ontime": 0,
+    "amb_c": 0.0,
+    "pd_on_s": 0,
+    "laserbank_on_s": 0,
     "lasers": {
       "<lasername>": {
         "power_mw": 0.0,
-        "tec_on_time_s": 0,
-        "offin_s": 0
+        "tec_on_s": 0,
+        "off_in_s": 0
       }
     },
     "attens": {
@@ -1305,15 +1416,15 @@ off or no faults).
         "level_%": 0.0
       }
     },
-    "lastcommand": {
+    "lastcmd": {
       "name": "<cmdname>",
-      "source": "mqtt",
-      "time": 0
+      "src": "mqtt",
+      "t_ms": 0
     }
   }
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
-  `lastcommand` is restored from command-dispatch NVS storage when available.
+  `lastcmd` is restored from command-dispatch NVS storage when available.
 
 
 (reboot)=
@@ -1322,10 +1433,21 @@ off or no faults).
   ```json
   {"status":"ok","reboot_ms":3000}
   ```
+- **Payload:** erase persisted app settings except IP settings and boot count
+  immediately before reboot.
+  ```json
+  {"erase_non_ip_settings":true}
+  ```
+- **Serial form:**
+  ```text
+  reboot erase_non_ip_settings
+  ```
 - **Notes:** command dispatch owns the reboot delayable work item. Immediately
   before reboot it calls the app reboot-prepare hook so firmware can put
-  hardware into a safer state. Once a reboot is pending, later commands are
-  rejected before app handlers run.
+  hardware into a safer state and, when requested, erase non-IP persisted
+  settings. The erase preserves IP settings, boot count, and storage schema
+  metadata. Once a reboot is pending, later commands are rejected before app
+  handlers run.
 
 (split)=
 ### `split`
@@ -1338,9 +1460,10 @@ off or no faults).
   ```json
   {
     "channel": "yj",
-    "ratio1": 0.0,
-    "ratio2": 0.0,
-    "stopafter_s": 0
+    "ratio1": 0.25,
+    "ratio2": 0.25,
+    "cycle_ms": 800,
+    "off_in_s": 0
   }
   ```
 - **No payload to `split/yj` or `split/hk` -> get splitter state.**
@@ -1350,37 +1473,35 @@ off or no faults).
   ```json
   {
     "channel": "yj",
-    "ratio_ask": [0.33, 0.33, 0.34],
-    "ratio_actual": [0.33, 0.33, 0.34],
-    "ratio_out": [0.33, 0.33, 0.34],
+    "ratio_ask": [0.25, 0.25, 0.50],
+    "ratio_actual": [0.25, 0.25, 0.50],
+    "ratio_out": [0.25, 0.25, 0.50],
     "split_transmission": [1.0, 1.0, 1.0],
+    "cycle_ms": 800,
     "switches": [
       {
         "name": "yj_as1",
         "state": "A",
-        "duty_cycle": 0.33,
-        "numerator": 33,
-        "denominator": 100,
-        "tick_ms": 2
+        "duty_cycle": 0.25,
+        "a_ms": 200,
+        "b_ms": 600
       },
       {
         "name": "yj_as2",
         "state": "B",
         "duty_cycle": 1.0,
-        "numerator": 100,
-        "denominator": 100,
-        "tick_ms": 2
+        "a_ms": 0,
+        "b_ms": 800
       },
       {
         "name": "yj_as3",
         "state": "A",
-        "duty_cycle": 0.66,
-        "numerator": 66,
-        "denominator": 100,
-        "tick_ms": 2
+        "duty_cycle": 0.50,
+        "a_ms": 400,
+        "b_ms": 400
       }
     ],
-    "stopsin_s": 0
+    "stop_in_s": 0
   }
   ```
 
@@ -1393,16 +1514,22 @@ off or no faults).
     route with `mems_router_get_route()`, then walks the route steps with
     `mems_router_find_switch()` as `memsroute_set()` does.
   - YJ and HK are set independently with `channel:"yj"` or `channel:"hk"`.
+  - Split requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored split
+    request using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
   - The user sets only `ratio1` and `ratio2`, both as floats from `0.0` to
     `1.0`. They must sum to `<= 1.0`; `ratio3` is computed internally as the
     remaining fraction.
   - `ratio1` maps to the direct branch selected by SW1. The remaining light is
     sent through the downstream branch. SW2 is held on the splitter branch.
-    SW3's selected-state numerator is `ratio1 + ratio2`, so its output-2
+    SW3's selected-state dwell is `ratio1 + ratio2`, so its output-2
     interval starts after SW1's output-1 deadtime.
-  - Users cannot set `toggle_rate_hz` for `split`. The firmware uses the
-    fastest period allowed by `MEMS_SWITCH_MAX_TOGGLE_HZ`, then quantizes the
-    requested ratios to integer MEMS ticks.
+  - `cycle_ms` is optional. If omitted, the firmware uses the fastest period
+    that keeps every non-static MEMS actuation pulse within
+    `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
+    cycle except for MEMS tick quantization and quantizes the split ratios
+    inside that fixed cycle. `toggle_rate_hz` is rejected.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
@@ -1412,8 +1539,10 @@ off or no faults).
     `ratio_out` is the estimated optical output split after applying
     `split_transmission`.
   - Each switch report gives the selected route state, the selected-state
-    duty-cycle float, and the exact integer timing as
-    `numerator / denominator` ticks with `tick_ms` milliseconds per tick.
+    duty-cycle fraction, and the raw A/B dwell timing as `a_ms` and `b_ms`.
+    For a `state:"B"` split switch, `duty_cycle` is `b_ms / cycle_ms`.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
   - If the attained ratio differs from the requested ratio because MEMS timing
     is quantized, the firmware emits `split_ratio_quantized` on
     `dt/<device>/warning`.

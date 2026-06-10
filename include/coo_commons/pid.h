@@ -22,24 +22,24 @@
  */
 struct coo_pid {
 	/** Proportional gain */
-	float kp;
+	double kp;
 	/** Integral gain */
-	float ki;
+	double ki;
 	/** Derivative gain */
-	float kd;
+	double kd;
 
 	/** Integral accumulator */
-	float integral;
+	double integral;
 	/** Previous error for derivative calculation */
-	float prev_error;
+	double prev_error;
 
 	/** Output limits */
-	float output_min;
-	float output_max;
+	double output_min;
+	double output_max;
 
 	/** Anti-windup: limit integral accumulation */
-	float integral_min;
-	float integral_max;
+	double integral_min;
+	double integral_max;
 };
 
 /**
@@ -52,8 +52,8 @@ struct coo_pid {
  * @param output_min Minimum output value
  * @param output_max Maximum output value
  */
-void coo_pid_init(struct coo_pid *pid, float kp, float ki, float kd,
-		  float output_min, float output_max);
+void coo_pid_init(struct coo_pid *pid, double kp, double ki, double kd,
+		  double output_min, double output_max);
 
 /**
  * @brief Reset PID controller state (clear integral and error history)
@@ -70,7 +70,7 @@ void coo_pid_reset(struct coo_pid *pid);
  * @param ki Integral gain
  * @param kd Derivative gain
  */
-void coo_pid_set_gains(struct coo_pid *pid, float kp, float ki, float kd);
+void coo_pid_set_gains(struct coo_pid *pid, double kp, double ki, double kd);
 
 /**
  * @brief Compute PID output
@@ -81,6 +81,6 @@ void coo_pid_set_gains(struct coo_pid *pid, float kp, float ki, float kd);
  * @param dt Time delta since last update (seconds)
  * @return Computed control output (clamped to output limits)
  */
-float coo_pid_update(struct coo_pid *pid, float setpoint, float measured, float dt);
+double coo_pid_update(struct coo_pid *pid, double setpoint, double measured, double dt);
 
 #endif /* APP_LIB_PID_H_ */

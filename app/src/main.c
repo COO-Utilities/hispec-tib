@@ -10,7 +10,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <app_version.h>
+#include <hispec_build_version.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/device.h>
@@ -42,21 +42,24 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define EXECUTOR_STACK_SIZE 8192
 #define EXECUTOR_PRIORITY 6
 #define PHOTODIODE_STACK_SIZE 2048 //1400
-#define PHOTODIODE_PRIORITY 3
+#define PHOTODIODE_PRIORITY 2
 #define THROUGHPUT_MONITOR_STACK_SIZE 4096
-#define THROUGHPUT_MONITOR_PRIORITY 7
-
-#if defined(CONFIG_NET_CONFIG_INIT_TIMEOUT)
-#define BOOT_NETWORK_WAIT_MS ((uint32_t)CONFIG_NET_CONFIG_INIT_TIMEOUT * 1000U)
-#else
-#define BOOT_NETWORK_WAIT_MS 6000U
-#endif
-
-/* Boot can spend CONFIG_NET_CONFIG_INIT_TIMEOUT waiting for DHCP before the
- * main network/MQTT loop starts. Keep the watchdog wider than that bounded
- * wait so normal no-DHCP bring-up does not reset the board.
+/* Throughput/autolevel should run promptly when active, but it can write DACs
+ * and lasers, so keep MEMS and photodiode sampling ahead of it.
  */
-#define WDT_TIMEOUT_MS MAX(15000U, BOOT_NETWORK_WAIT_MS + 5000U)
+#define THROUGHPUT_MONITOR_PRIORITY 3
+#define APP_BLOCKING_WORKQ_STACK_SIZE 3072
+/* Zephyr Modbus parses client RX frames on the system workqueue. App-owned
+ * background work that can block on Modbus, 1-Wire, or slow GPIO must run below
+ * command execution on a separate queue so it cannot starve Modbus RX parsing.
+ */
+#define APP_BLOCKING_WORKQ_PRIORITY 7
+#define APP_TIMING_SUMMARY_LOGS 0
+
+/* Network setup returns after starting DHCP/static policy; DHCP fallback is a
+ * later system-work item, not part of the boot watchdog budget.
+ */
+#define WDT_TIMEOUT_MS 15000U
 #define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;
@@ -70,6 +73,17 @@ static struct k_thread photodiode_thread_data;
 
 static K_THREAD_STACK_DEFINE(throughput_monitor_stack, THROUGHPUT_MONITOR_STACK_SIZE);
 static struct k_thread throughput_monitor_thread_data;
+
+static K_THREAD_STACK_DEFINE(app_blocking_workq_stack, APP_BLOCKING_WORKQ_STACK_SIZE);
+static struct k_work_q app_blocking_workq;
+static const struct k_work_queue_config app_blocking_workq_config = {
+	.name = "app_blocking",
+};
+
+bool app_timing_summary_logs_enabled(void)
+{
+	return APP_TIMING_SUMMARY_LOGS != 0;
+}
 
 static void load_network_config(struct network_config *cfg)
 {
@@ -235,7 +249,7 @@ int main(void)
 	int64_t next_mqtt_connect_ms = 0;
 	bool board_devices_ready;
 
-	LOG_INF("HISPEC-FIB PCB  %s\n", APP_VERSION_STRING);
+	LOG_INF("HISPEC-FIB PCB  %s\n", HISPEC_BUILD_VERSION);
 
 	devices_capture_boot_reset_cause();
 
@@ -281,12 +295,13 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
-	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
-			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
-			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(&exec_thread_data, "command_exec");
-
-	housekeeping_start();
+	k_work_queue_start(&app_blocking_workq,
+			   app_blocking_workq_stack,
+			   K_THREAD_STACK_SIZEOF(app_blocking_workq_stack),
+			   APP_BLOCKING_WORKQ_PRIORITY,
+			   &app_blocking_workq_config);
+	hispec_laser_autooff_start(&app_blocking_workq);
+	housekeeping_start(&app_blocking_workq);
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
 		if (board_devices_ready) {
 			k_thread_create(&photodiode_thread_data,
@@ -301,11 +316,16 @@ int main(void)
 					throughput_monitor_thread, NULL, NULL, NULL,
 					THROUGHPUT_MONITOR_PRIORITY, 0, K_NO_WAIT);
 			k_thread_name_set(&throughput_monitor_thread_data, "throughput");
-			laserbank_tempcontrol_start();
+			laserbank_tempcontrol_start(&app_blocking_workq);
 		} else {
 			LOG_WRN("TIB background workers disabled because board devices are not ready");
 		}
 	}
+
+	k_thread_create(&exec_thread_data, exec_stack, K_THREAD_STACK_SIZEOF(exec_stack),
+			coo_cmd_runtime_executor_thread, cmd_runtime, NULL, NULL,
+			EXECUTOR_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&exec_thread_data, "command_exec");
 
 	sntp_sync_init();
 

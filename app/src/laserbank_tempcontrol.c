@@ -10,6 +10,7 @@
 #include "laserbank_tempcontrol.h"
 
 #include <errno.h>
+#include <math.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -23,13 +24,13 @@
 
 LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
-#define LASERBANK_WARM_MIN_C 15.0f
-#define LASERBANK_COLD_OFF_C 20.0f
+#define LASERBANK_WARM_MIN_C 15.0
+#define LASERBANK_COLD_OFF_C 20.0
 
 struct laserbank_cached_channel {
 	bool valid;
 	bool tec_enabled;
-	float tec_temperature_c;
+	double tec_temperature_c;
 	int64_t last_valid_ms;
 };
 
@@ -45,6 +46,7 @@ struct laserbank_tempcontrol_runtime {
 
 static struct laserbank_tempcontrol_runtime control;
 static K_MUTEX_DEFINE(control_lock);
+static struct k_work_q *tempcontrol_work_q;
 
 static void tempcontrol_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(tempcontrol_work, tempcontrol_work_handler);
@@ -70,6 +72,15 @@ static bool heater_mode_is_valid(enum laserbank_heater_mode mode)
 	       mode == LASERBANK_HEATER_MODE_OVERRIDE_OFF;
 }
 
+static int tempcontrol_reschedule(k_timeout_t delay)
+{
+	if (tempcontrol_work_q == NULL) {
+		return -EAGAIN;
+	}
+
+	return k_work_reschedule_for_queue(tempcontrol_work_q, &tempcontrol_work, delay);
+}
+
 static bool channel_is_stale(const struct laserbank_cached_channel *channel,
 			     int64_t now_ms)
 {
@@ -89,6 +100,11 @@ static void copy_status_locked(struct laserbank_tempcontrol_status *out)
 		out->last_poll_age_ms = (uint32_t)(k_uptime_get() - control.last_poll_ms);
 	} else {
 		out->last_poll_age_ms = UINT32_MAX;
+	}
+	if (!out->available) {
+		out->ambient_c = NAN;
+		out->idle_tec_temp_avg_c = NAN;
+		out->waiting_for_temps = true;
 	}
 }
 
@@ -115,7 +131,7 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 	app_settings_get_laserbank(&settings);
 	settings.heater_mode = mode;
 	app_settings_update_laserbank(&settings, persist);
-	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
+	(void)tempcontrol_reschedule(K_NO_WAIT);
 	return 0;
 }
 
@@ -123,9 +139,10 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 					int64_t now_ms)
 {
 	bool all_enabled = true;
-	uint8_t valid_count = 0U;
-	uint8_t stale_count = 0U;
-	float off_threshold = LASERBANK_COLD_OFF_C;
+	bool have_fresh_temp = false;
+	uint8_t idle_count = 0U;
+	double idle_sum_c = 0.0;
+	double off_threshold = LASERBANK_COLD_OFF_C;
 
 	control.status.any_disabled_below_15c = false;
 	control.status.any_disabled_above_off_threshold = false;
@@ -138,14 +155,15 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 		struct laserbank_cached_channel *channel = &control.channel[i];
 
 		if (channel_is_stale(channel, now_ms)) {
-			stale_count++;
 			all_enabled = false;
 			continue;
 		}
 
-		valid_count++;
+		have_fresh_temp = true;
 		if (!channel->tec_enabled) {
 			all_enabled = false;
+			idle_count++;
+			idle_sum_c += channel->tec_temperature_c;
 			if (channel->tec_temperature_c < LASERBANK_WARM_MIN_C) {
 				control.status.any_disabled_below_15c = true;
 			}
@@ -155,7 +173,7 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 		}
 	}
 
-	if (all_enabled && valid_count == HISPEC_LASER_COUNT) {
+	if (all_enabled) {
 		if (control.all_tecs_enabled_since_ms <= 0) {
 			control.all_tecs_enabled_since_ms = now_ms;
 		}
@@ -168,8 +186,10 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 		control.status.all_tecs_enabled_ms = 0U;
 	}
 
-	control.status.valid_temp_count = valid_count;
-	control.status.stale_temp_count = stale_count;
+	control.status.waiting_for_temps = !have_fresh_temp;
+	control.status.idle_tec_temp_count = idle_count;
+	control.status.idle_tec_temp_avg_c =
+		idle_count > 0U ? idle_sum_c / (double)idle_count : (double)NAN;
 }
 
 static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
@@ -193,7 +213,16 @@ static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 
 static void apply_heater(bool enable)
 {
+	bool already_set;
 	int rc;
+
+	k_mutex_lock(&control_lock, K_FOREVER);
+	already_set = control.status.heater_on == enable;
+	k_mutex_unlock(&control_lock);
+	/* DS2408 writes are slow 1-Wire transactions; only write on policy changes. */
+	if (already_set) {
+		return;
+	}
 
 	rc = housekeeping_power_set(HOUSEKEEPING_POWER_BANK_HEATER, enable);
 	if (rc != 0) {
@@ -227,9 +256,7 @@ static void run_heater_control_cycle(void)
 	control.status.available = true;
 	control.status.heater_mode = settings.heater_mode;
 	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
-	control.status.ambient_valid = ambient.valid;
-	control.status.ambient_c = ambient.ambient_c;
-	control.status.ambient_age_ms = ambient.age_ms;
+	control.status.ambient_c = ambient.valid ? ambient.ambient_c : (double)NAN;
 	control.status.last_error = 0;
 	entered_auto = settings.heater_mode == LASERBANK_HEATER_MODE_AUTO &&
 		       (!control.have_previous_mode ||
@@ -260,12 +287,20 @@ static void run_heater_control_cycle(void)
 		}
 	}
 
-	rc = hispec_laser_bank_read_temperatures(poll);
+	rc = hispec_laser_bank_poll_temperatures(poll);
 	now_ms = k_uptime_get();
 
 	k_mutex_lock(&control_lock, K_FOREVER);
-	control.last_poll_ms = now_ms;
 	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
+	if (rc == -EBUSY) {
+		(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+					     &control.status.heater_on);
+		summarize_temperature_state(&ambient, now_ms);
+		k_mutex_unlock(&control_lock);
+		return;
+	}
+
+	control.last_poll_ms = now_ms;
 	if (rc == 0) {
 		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 			if (!poll[i].valid) {
@@ -284,11 +319,16 @@ static void run_heater_control_cycle(void)
 				     &control.status.heater_on);
 
 	summarize_temperature_state(&ambient, now_ms);
-	all_stale = control.status.stale_temp_count == HISPEC_LASER_COUNT;
+	all_stale = control.status.waiting_for_temps;
 	k_mutex_unlock(&control_lock);
 
-	if (all_stale && ambient.valid && ambient.ambient_c < LASERBANK_WARM_MIN_C) {
-		(void)hispec_laser_bank_power_set(true, NULL);
+	if (all_stale) {
+		if (ambient.valid && ambient.ambient_c < LASERBANK_WARM_MIN_C) {
+			(void)hispec_laser_bank_power_set(true, NULL);
+		} else {
+			apply_heater(false);
+		}
+		return;
 	}
 
 	k_mutex_lock(&control_lock, K_FOREVER);
@@ -311,11 +351,16 @@ static void tempcontrol_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	run_heater_control_cycle();
-	(void)k_work_reschedule(&tempcontrol_work,
-				 K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
+	(void)tempcontrol_reschedule(K_MSEC(LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS));
 }
 
-void laserbank_tempcontrol_start(void)
+void laserbank_tempcontrol_start(struct k_work_q *work_q)
 {
-	(void)k_work_reschedule(&tempcontrol_work, K_NO_WAIT);
+	__ASSERT_NO_MSG(work_q != NULL);
+	if (work_q == NULL) {
+		return;
+	}
+
+	tempcontrol_work_q = work_q;
+	(void)tempcontrol_reschedule(K_NO_WAIT);
 }

@@ -18,21 +18,21 @@
  */
 
 /** Query active MEMS routes or route-loss settings. */
-struct coo_cmd_response memsroute_get(const struct coo_cmd_request *cmd);
+int memsroute_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Apply one MEMS route or route-loss setting. */
-struct coo_cmd_response memsroute_set(const struct coo_cmd_request *cmd);
+int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Query all MEMS switches or one switch. */
-struct coo_cmd_response mems_get(const struct coo_cmd_request *cmd);
+int mems_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Apply one MEMS switch state or toggle profile. */
-struct coo_cmd_response mems_set(const struct coo_cmd_request *cmd);
+int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Query one AS splitter channel, usually with command key split/yj or split/hk. */
-struct coo_cmd_response splitting_get(const struct coo_cmd_request *cmd);
+int splitting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Apply one AS-PCB splitter channel using channel, ratio1, and ratio2. */
-struct coo_cmd_response splitting_set(const struct coo_cmd_request *cmd);
+int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_MEMS_COMMAND_H */

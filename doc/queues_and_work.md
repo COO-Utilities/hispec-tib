@@ -39,6 +39,22 @@ guard flag after the configured holdoff; no serial guard state is persisted.
 command. The command schedules `sys_reboot(SYS_REBOOT_COLD)` after a short
 response window and rejects later app commands while reboot is pending.
 
+## App Blocking Workqueue
+
+`main.c` starts one app-owned workqueue named `app_blocking`. It is for
+background work that can block on hardware I/O and therefore must not run on
+Zephyr's system workqueue. Zephyr Modbus client RX completion also runs on the
+system workqueue; moving blocking app work away from it prevents physically
+received Modbus frames from timing out before the RX parser work item can run.
+
+Current users:
+
+- `housekeeping.c` ambient-temperature refresh, which can block on DS18B20 I/O.
+- `laserbank_tempcontrol.c` heater policy, which can block on Maiman Modbus
+  polling and relay GPIO.
+- `lasers.c` auto-off expiration, which can block on Maiman Modbus while
+  stopping output.
+
 ## Generic Scheduled Action Helper
 
 `lib/coo_commons/scheduled_action.c` provides an optional fixed-table wrapper
@@ -61,17 +77,26 @@ in the MEMS thread. Every MEMS thread tick:
 The tick uses raw GPIO pin APIs because board profiles store expander pin
 numbers rather than `gpio_dt_spec` objects.
 
-Missed MEMS ticks are logged. High-to-low pulse cleanup is still applied, late
-low-to-high pulses are applied only when their requested high window has not
-fully elapsed, and fully stale high pulses are skipped.
+MEMS timing variation is aggregated. Warnings are reserved for active toggles
+where the rising pulse is late or skipped; base tick variation, static-switch
+delay, and high-to-low cleanup lateness are informational. High-to-low pulse
+cleanup is still applied, late low-to-high pulses are applied only when their
+requested high window has not fully elapsed, and fully stale high pulses are
+skipped. Static state changes may remain pending across multiple MEMS ticks
+when needed to satisfy the datasheet minimum interval between actuation pulses.
 
-## Network Reconnect Work
+## Network Reconnect and DHCP Fallback Work
 
-`lib/coo_commons/network.c` schedules reconnect work when Zephyr reports L4
-disconnect. The handler calls `conn_mgr_all_if_connect(true)`. Runtime IP
-changes from the `ip` command call `network_reconfigure()` directly from the
-command executor; that command may block while DHCP is tried, but it does not
-require reboot.
+`lib/coo_commons/network.c` schedules reconnect work when Zephyr connection
+manager reports L4 disconnect. It also schedules DHCP fallback work when
+DHCP-first mode is active and Zephyr reports the interface operationally up. If
+no lease arrives before `CONFIG_NETWORK_HELPER_DHCP_TIMEOUT_MS`, the fallback
+work item applies the configured static profile as a Zephyr-overridable IPv4
+address so DHCP can still replace it later. Runtime IP changes from the `ip`
+command call
+`network_reconfigure()` directly from the command executor; it starts DHCP or
+applies static policy but does not block for the DHCP wait and does not require
+reboot.
 
 ## SNTP Work
 

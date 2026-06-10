@@ -12,6 +12,9 @@
  */
 
 #include "app_settings.h"
+#include "attenuator.h"
+#include "lasers.h"
+#include "photodiode.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -27,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 1U
+#define APP_NVS_SCHEMA_VERSION 5U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -44,6 +47,7 @@ enum app_nvs_id {
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
+	APP_NVS_ID_MEMS = 0x0500,
 };
 
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT < 0x8000,
@@ -56,8 +60,14 @@ BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID
 	     "laser policy NVS ID block overlaps laser total block");
 BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
 	     "laser total NVS ID block overlaps route-loss block");
-BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= 0x8000,
-	     "route-loss NVS ID block overlaps reserved Zephyr settings IDs");
+BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
+	     "route-loss NVS ID block overlaps MEMS settings");
+BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
+	     "MEMS NVS ID overlaps reserved Zephyr settings IDs");
+BUILD_ASSERT(APP_ATTENUATOR_PHYSICAL_COUNT == ATTENUATOR_PHYSICAL_COUNT,
+	     "app settings and attenuator physical coefficient counts must match");
+BUILD_ASSERT(APP_LASER_CHANNEL_COUNT == HISPEC_LASER_COUNT,
+	     "app settings and laser channel counts must match");
 
 struct app_nvs_schema_marker {
 	uint32_t magic;
@@ -78,34 +88,38 @@ struct app_nvs_ip_settings {
 };
 
 struct app_nvs_pd_channel {
-	float dark_mv;
-	float lowest_dark_mv;
+	double dark_mv;
+	double lowest_dark_mv;
+	uint32_t dark_duration_ms;
+	double dark_noise_rms_mv;
 	uint8_t lowest_dark_valid;
-	uint8_t reserved[3];
-	float noise_warn_rms_mv;
+	uint8_t power;
+	uint8_t reserved[2];
+	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
+	uint32_t autooff_s;
 };
 
 struct app_nvs_laser_policy {
-	float nominal_current_ma;
-	float max_current_ma;
-	float threshold_current_ma;
-	float efficiency_mw_per_ma;
-	float wavelength_nm;
-	float current_set_calibration_pct;
-	float operating_temp_min_c;
-	float operating_temp_max_c;
-	float operating_temp_c;
+	double nominal_current_ma;
+	double max_current_ma;
+	double threshold_current_ma;
+	double efficiency_mw_per_ma;
+	double wavelength_nm;
+	double current_set_calibration_pct;
+	double operating_temp_min_c;
+	double operating_temp_max_c;
+	double operating_temp_c;
 	uint16_t tec_pid_p;
 	uint16_t tec_pid_i;
 	uint16_t tec_pid_d;
 	uint8_t disable_tec_at_autooff;
 	uint8_t reserved;
-	float dlambda_dT_nm_per_k;
-	float dlambda_dA_nm_per_ma;
+	double dlambda_dT_nm_per_k;
+	double dlambda_dA_nm_per_ma;
 	uint32_t autooff_s;
-	float tune_delta_nm;
+	double tune_delta_nm;
 };
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
@@ -166,11 +180,6 @@ static void str_set(char *dst, size_t dst_size, const char *src)
 	dst[dst_size - 1] = '\0';
 }
 
-static bool float_in_range(float value, float min_value, float max_value)
-{
-	return value >= min_value && value <= max_value;
-}
-
 static bool double_in_range(double value, double min_value, double max_value)
 {
 	return value >= min_value && value <= max_value;
@@ -204,29 +213,49 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			/* Default maps the full 0-5000 mV attenuator drive span
 			 * onto b=0..8 until lab-measured coefficients are stored.
 			 */
-			s->attenuator.channel[ch].physical[physical].slope = (float)(8.0 / 5000.0f);
-			s->attenuator.channel[ch].physical[physical].offset = 0.0f;
+			s->attenuator.channel[ch].physical[physical].slope = 8.0 / 5000.0;
+			s->attenuator.channel[ch].physical[physical].offset = 0.0;
 		}
 	}
-	s->photodiode.channel[0].dark_mv = 0.0f;
-	s->photodiode.channel[0].lowest_dark_mv = 0.0f;
-	s->photodiode.channel[0].lowest_dark_valid = false;
-	s->photodiode.channel[0].noise_warn_rms_mv = 3.0f;
-	s->photodiode.channel[0].responsivity_a_per_w = 0.93;
-	s->photodiode.channel[0].transimpedance_v_per_a = 5.0e10;
-	s->photodiode.channel[1].dark_mv = 0.0f;
-	s->photodiode.channel[1].lowest_dark_mv = 0.0f;
-	s->photodiode.channel[1].lowest_dark_valid = false;
-	s->photodiode.channel[1].noise_warn_rms_mv = 1.0f;
-	s->photodiode.channel[1].responsivity_a_per_w = 0.60971;
-	s->photodiode.channel[1].transimpedance_v_per_a = 2.375e9;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_duration_ms =
+		APP_PD_DARK_DURATION_USER;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_noise_rms_mv =
+		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
+		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv =
+		PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].responsivity_a_per_w =
+		PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].transimpedance_v_per_a =
+		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].power = APP_PD_POWER_AUTO;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
+		APP_PD_DARK_DURATION_USER;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_noise_rms_mv =
+		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
+		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv =
+		PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].responsivity_a_per_w =
+		PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].transimpedance_v_per_a =
+		PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].power = APP_PD_POWER_AUTO;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
-		s->laser.channel[i].current_set_calibration_pct = 100.0f;
+		s->laser.channel[i].current_set_calibration_pct = 100.0;
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
-		s->laser.channel[i].tune_delta_nm = 0.0f;
+		s->laser.channel[i].tune_delta_nm = 0.0;
 		s->laser.channel[i].total_emitting_s = 0.0;
 	}
 	s->boot_count = 0U;
@@ -415,10 +444,14 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 
 	stored.dark_mv = pd->dark_mv;
 	stored.lowest_dark_mv = pd->lowest_dark_mv;
+	stored.dark_duration_ms = pd->dark_duration_ms;
+	stored.dark_noise_rms_mv = pd->dark_noise_rms_mv;
 	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
 	stored.transimpedance_v_per_a = pd->transimpedance_v_per_a;
+	stored.power = (uint8_t)pd->power;
+	stored.autooff_s = pd->autooff_s;
 	(void)app_nvs_write(pd_nvs_id(channel), &stored, sizeof(stored));
 }
 
@@ -498,48 +531,50 @@ static void app_nvs_persist_route_loss_index(uint8_t index,
 	(void)app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
 }
 
+static void app_nvs_persist_mems(const struct app_mems_settings *mems)
+{
+	if (mems == NULL) {
+		return;
+	}
+
+	(void)app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems));
+}
+
 static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
 {
+	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
+
 	if (atten == NULL) {
 		return false;
 	}
 
-	for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-		const struct app_attenuator_physical_settings *p = &atten->physical[physical];
+	for (uint8_t i = 0U; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		const struct app_attenuator_physical_settings *p = &atten->physical[i];
 
-		if (!float_in_range(p->slope, -1000000000.0f, 1000000000.0f) ||
-		    !float_in_range(p->offset, -1000000000.0f, 1000000000.0f)) {
-			return false;
-		}
+		physical[i].slope = p->slope;
+		physical[i].offset = p->offset;
 	}
 
-	return true;
+	return attenuator_model_coefficients_valid(physical);
 }
 
-static bool pd_channel_valid(const struct app_nvs_pd_channel *pd)
+static void pd_settings_from_nvs(struct app_pd_channel_settings *pd,
+				 const struct app_nvs_pd_channel *stored)
 {
-	return pd != NULL &&
-	       float_in_range(pd->dark_mv, -5000.0f, 5000.0f) &&
-	       float_in_range(pd->lowest_dark_mv, -5000.0f, 5000.0f) &&
-	       float_in_range(pd->noise_warn_rms_mv, 0.0f, 5000.0f) &&
-	       double_in_range(pd->responsivity_a_per_w, 0.000001, 10.0) &&
-	       double_in_range(pd->transimpedance_v_per_a, 1.0, 1.0e12);
-}
+	if (pd == NULL || stored == NULL) {
+		return;
+	}
 
-static bool laser_policy_valid(const struct app_nvs_laser_policy *laser)
-{
-	return laser != NULL &&
-	       float_in_range(laser->nominal_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->max_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->threshold_current_ma, 0.0f, 1000.0f) &&
-	       float_in_range(laser->efficiency_mw_per_ma, 0.0f, 100.0f) &&
-	       float_in_range(laser->wavelength_nm, 1.0f, 10000.0f) &&
-	       float_in_range(laser->current_set_calibration_pct, 95.0f, 105.0f) &&
-	       float_in_range(laser->operating_temp_min_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->operating_temp_max_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->operating_temp_c, 15.0f, 40.0f) &&
-	       float_in_range(laser->dlambda_dT_nm_per_k, -10.0f, 10.0f) &&
-	       float_in_range(laser->dlambda_dA_nm_per_ma, -10.0f, 10.0f);
+	pd->dark_mv = stored->dark_mv;
+	pd->lowest_dark_mv = stored->lowest_dark_mv;
+	pd->dark_duration_ms = stored->dark_duration_ms;
+	pd->dark_noise_rms_mv = stored->dark_noise_rms_mv;
+	pd->lowest_dark_valid = stored->lowest_dark_valid != 0U;
+	pd->noise_warn_rms_mv = stored->noise_warn_rms_mv;
+	pd->responsivity_a_per_w = stored->responsivity_a_per_w;
+	pd->transimpedance_v_per_a = stored->transimpedance_v_per_a;
+	pd->power = (enum app_pd_power_mode)stored->power;
+	pd->autooff_s = stored->autooff_s;
 }
 
 static bool route_loss_record_valid(struct app_route_loss_record *record)
@@ -553,6 +588,59 @@ static bool route_loss_record_valid(struct app_route_loss_record *record)
 	return record->route[0] != '\0' &&
 	       record->laser[0] != '\0' &&
 	       double_in_range(record->transmission, 0.000000001, 1.0);
+}
+
+static bool mems_state_valid(char state)
+{
+	return state == 'A' || state == 'B';
+}
+
+static bool mems_settings_valid(const struct app_mems_settings *mems)
+{
+	if (mems == NULL) {
+		return false;
+	}
+
+	for (uint8_t i = 0U; i < APP_MEMS_SWITCH_COUNT; ++i) {
+		const struct app_mems_switch_settings *sw = &mems->switch_state[i];
+
+		if (sw->static_configured > 1U || sw->toggle_configured > 1U) {
+			return false;
+		}
+		if (sw->static_configured != 0U && !mems_state_valid(sw->static_state)) {
+			return false;
+		}
+		if (sw->toggle_configured != 0U &&
+		    (!mems_state_valid(sw->toggle_state) ||
+		     !(sw->toggle_duty_cycle > 0.0 &&
+		       sw->toggle_duty_cycle < 1.0))) {
+			return false;
+		}
+	}
+
+	for (uint8_t ch = 0U; ch < APP_MEMS_SPLIT_CHANNEL_COUNT; ++ch) {
+		const struct app_mems_split_settings *split = &mems->split[ch];
+		double sum;
+
+		if (split->configured > 1U) {
+			return false;
+		}
+		if (split->configured == 0U) {
+			continue;
+		}
+
+		sum = split->requested[0] + split->requested[1] + split->requested[2];
+		for (uint8_t i = 0U; i < APP_MEMS_SPLIT_OUTPUT_COUNT; ++i) {
+			if (!double_in_range(split->requested[i], 0.0, 1.0)) {
+				return false;
+			}
+		}
+		if (!double_in_range(sum, 0.999999, 1.000001)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static void app_nvs_load_board_type(struct app_settings_snapshot *s)
@@ -629,22 +717,19 @@ static void app_nvs_load_photodiode(struct app_settings_snapshot *s)
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		struct app_nvs_pd_channel stored;
 		struct app_pd_channel_settings *pd = &s->photodiode.channel[channel];
+		struct app_pd_channel_settings candidate;
 
 		if (!app_nvs_read_exact(pd_nvs_id(channel), &stored,
 					sizeof(stored), "photodiode")) {
 			continue;
 		}
-		if (!pd_channel_valid(&stored)) {
+		candidate = *pd;
+		pd_settings_from_nvs(&candidate, &stored);
+		if (!photodiode_settings_valid(&candidate)) {
 			LOG_WRN("Ignoring invalid stored photodiode channel %u", channel);
 			continue;
 		}
-
-		pd->dark_mv = stored.dark_mv;
-		pd->lowest_dark_mv = stored.lowest_dark_mv;
-		pd->lowest_dark_valid = stored.lowest_dark_valid != 0U;
-		pd->noise_warn_rms_mv = stored.noise_warn_rms_mv;
-		pd->responsivity_a_per_w = stored.responsivity_a_per_w;
-		pd->transimpedance_v_per_a = stored.transimpedance_v_per_a;
+		*pd = candidate;
 	}
 }
 
@@ -689,12 +774,16 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 {
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		struct app_nvs_laser_policy policy;
+		struct app_laser_channel_settings laser;
 		double total_emitting_s;
 
 		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
 				       sizeof(policy), "laser policy")) {
-			if (laser_policy_valid(&policy)) {
-				app_nvs_apply_laser_policy(&s->laser.channel[channel], &policy);
+			laser = s->laser.channel[channel];
+			app_nvs_apply_laser_policy(&laser, &policy);
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel,
+								   &laser) == 0) {
+				s->laser.channel[channel] = laser;
 			} else {
 				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
 			}
@@ -726,6 +815,21 @@ static void app_nvs_load_route_loss(struct app_settings_snapshot *s)
 	}
 }
 
+static void app_nvs_load_mems(struct app_settings_snapshot *s)
+{
+	struct app_mems_settings stored;
+
+	if (!app_nvs_read_exact(APP_NVS_ID_MEMS, &stored, sizeof(stored), "MEMS")) {
+		return;
+	}
+	if (!mems_settings_valid(&stored)) {
+		LOG_WRN("Ignoring invalid stored MEMS settings");
+		return;
+	}
+
+	s->mems = stored;
+}
+
 static void app_nvs_load_all(struct app_settings_snapshot *s)
 {
 	uint32_t value;
@@ -746,31 +850,51 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	app_nvs_load_laserbank(s);
 	app_nvs_load_laser(s);
 	app_nvs_load_route_loss(s);
+	app_nvs_load_mems(s);
 }
 
-static void delete_resettable_settings(void)
+static void delete_setting_record(uint16_t id, int *first_rc)
 {
-	(void)app_nvs_delete(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED);
-	(void)app_nvs_delete(APP_NVS_ID_BOOT_COUNT);
-	(void)app_nvs_delete(APP_NVS_ID_LAST_KNOWN_UTC_MS);
-	(void)app_nvs_delete(APP_NVS_ID_LAST_COMMAND);
-	(void)app_nvs_delete(APP_NVS_ID_IP);
-	(void)app_nvs_delete(APP_NVS_ID_MQTT);
-	(void)app_nvs_delete(APP_NVS_ID_LASERBANK);
+	int rc = app_nvs_delete(id);
+
+	if (rc != 0 && first_rc != NULL && *first_rc == 0) {
+		*first_rc = rc;
+	}
+}
+
+static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
+{
+	int first_rc = 0;
+
+	delete_setting_record(APP_NVS_ID_SERIAL_HOLDOFF_UNUSED, &first_rc);
+	delete_setting_record(APP_NVS_ID_BOARD_TYPE, &first_rc);
+	if (!keep_boot_count) {
+		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
+	}
+	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_MS, &first_rc);
+	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
+	if (!keep_ip) {
+		delete_setting_record(APP_NVS_ID_IP, &first_rc);
+	}
+	delete_setting_record(APP_NVS_ID_MQTT, &first_rc);
+	delete_setting_record(APP_NVS_ID_LASERBANK, &first_rc);
 
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(attenuator_nvs_id(channel));
+		delete_setting_record(attenuator_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(pd_nvs_id(channel));
+		delete_setting_record(pd_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
-		(void)app_nvs_delete(laser_policy_nvs_id(channel));
-		(void)app_nvs_delete(laser_total_nvs_id(channel));
+		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
+		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
-		(void)app_nvs_delete(route_loss_nvs_id(i));
+		delete_setting_record(route_loss_nvs_id(i), &first_rc);
 	}
+	delete_setting_record(APP_NVS_ID_MEMS, &first_rc);
+
+	return first_rc;
 }
 
 static int route_loss_record_index_locked(const char *route, const char *laser,
@@ -865,7 +989,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 	k_mutex_unlock(&g_settings.lock);
 
 	if (reset_needed) {
-		delete_resettable_settings();
+		(void)delete_resettable_settings(false, false);
 	}
 	if (persist_needed) {
 		app_nvs_persist_board_type(board_type);
@@ -874,6 +998,34 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		*changed = reset_needed;
 	}
 
+	return 0;
+}
+
+int app_settings_erase_non_ip_settings(void)
+{
+	struct app_ip_settings ip;
+	uint32_t boot_count;
+	int rc;
+
+	if (!app_nvs_ready) {
+		return -EIO;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	ip = g_settings.snapshot.ip;
+	boot_count = g_settings.snapshot.boot_count;
+	settings_defaults(&g_settings.snapshot);
+	g_settings.snapshot.ip = ip;
+	g_settings.snapshot.boot_count = boot_count;
+	k_mutex_unlock(&g_settings.lock);
+
+	rc = delete_resettable_settings(true, true);
+	if (rc != 0) {
+		LOG_WRN("Failed to erase all non-IP settings (%d)", rc);
+		return rc;
+	}
+
+	LOG_WRN("Erased stored non-IP settings; preserved IP settings and boot count");
 	return 0;
 }
 
@@ -967,6 +1119,21 @@ void app_settings_get_photodiode(struct app_photodiode_settings *out)
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	*out = g_settings.snapshot.photodiode;
 	k_mutex_unlock(&g_settings.lock);
+}
+
+bool app_settings_try_get_photodiode(struct app_photodiode_settings *out)
+{
+	if (out == NULL) {
+		return false;
+	}
+
+	if (k_mutex_lock(&g_settings.lock, K_NO_WAIT) != 0) {
+		return false;
+	}
+
+	*out = g_settings.snapshot.photodiode;
+	k_mutex_unlock(&g_settings.lock);
+	return true;
 }
 
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist)
@@ -1153,6 +1320,32 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 	}
 
 	return 0;
+}
+
+void app_settings_get_mems(struct app_mems_settings *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.mems;
+	k_mutex_unlock(&g_settings.lock);
+}
+
+void app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
+{
+	if (mems == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.mems = *mems;
+	k_mutex_unlock(&g_settings.lock);
+
+	if (persist) {
+		app_nvs_persist_mems(mems);
+	}
 }
 
 uint32_t app_settings_get_mqtt_revision(void)

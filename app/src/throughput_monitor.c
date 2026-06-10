@@ -38,7 +38,7 @@ BUILD_ASSERT((int)HOUSEKEEPING_POWER_YJ_PHOTODIODE == (int)PHOTODIODE_CHANNEL_YJ
 BUILD_ASSERT((int)HOUSEKEEPING_POWER_HK_PHOTODIODE == (int)PHOTODIODE_CHANNEL_HK,
 	     "HK photodiode relay index must match photodiode channel");
 BUILD_ASSERT(IS_ENABLED(CONFIG_LITTLE_ENDIAN),
-	     "throughput binary telemetry uses little-endian float layout");
+	     "throughput binary telemetry uses little-endian double layout");
 
 struct laser_pd_channel {
 	enum hispec_laser_id laser;
@@ -54,9 +54,9 @@ struct throughput_state {
 	enum photodiode_channel channel;
 	uint8_t attenuator_index;
 	char fiber;
-	float level_percent;
+	double level_percent;
 	int64_t started_ms;
-	uint32_t stopafter_s;
+	uint32_t off_in_s;
 	double max_flux_ph_s;
 	uint8_t high_count;
 	uint8_t low_count;
@@ -73,6 +73,11 @@ static const struct laser_pd_channel laser_pd_channels[] = {
 
 static struct throughput_state monitors[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(monitors_lock);
+
+static enum housekeeping_power_output pd_power_output(enum photodiode_channel channel)
+{
+	return (enum housekeeping_power_output)channel;
+}
 
 static int photodiode_channel_for_laser(enum hispec_laser_id laser,
 					enum photodiode_channel *channel)
@@ -123,6 +128,9 @@ static uint64_t realtime_ms(void)
 
 static void stop_locked(enum photodiode_channel channel)
 {
+	if (monitors[channel].active) {
+		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
+	}
 	memset(&monitors[channel], 0, sizeof(monitors[channel]));
 }
 
@@ -153,12 +161,6 @@ static void put_i16(uint8_t *payload, size_t payload_len, size_t *offset, int16_
 	put_bytes(payload, payload_len, offset, encoded, sizeof(encoded));
 }
 
-static void put_f32(uint8_t *payload, size_t payload_len, size_t *offset, float value)
-{
-	/* STM32 binary telemetry is specified as little-endian IEEE-754. */
-	put_bytes(payload, payload_len, offset, &value, sizeof(value));
-}
-
 static void put_f64(uint8_t *payload, size_t payload_len, size_t *offset, double value)
 {
 	/* STM32 binary telemetry is specified as little-endian IEEE-754. */
@@ -176,7 +178,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	double emitted_flux = 0.0;
 	double max_tx = 1.0;
 	double next_tx;
-	float next_percent;
+	double next_percent;
 	int rc;
 
 	if (pd->raw > INT16_MAX - 1024 || mean_net_mv <= 0.0) {
@@ -198,7 +200,7 @@ static int autolevel_adjust(struct throughput_state *state,
 
 	if (low || state->low_count >= TP_INSTANT_BAD_SAMPLES) {
 		if (state->max_flux_ph_s > 0.0 &&
-		    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) == 0 &&
+		    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0 &&
 		    laser_flux.flux_ph_s > 0.0) {
 			emitted_flux = laser_flux.flux_ph_s * atten->linear;
 			max_tx = state->max_flux_ph_s / laser_flux.flux_ph_s;
@@ -219,13 +221,13 @@ static int autolevel_adjust(struct throughput_state *state,
 				return 0;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->level_percent < 100.0f) {
-			next_percent = state->level_percent * 3.0f;
-			if (next_percent > 100.0f) {
-				next_percent = 100.0f;
+		} else if (state->level_percent < 100.0) {
+			next_percent = state->level_percent * 3.0;
+			if (next_percent > 100.0) {
+				next_percent = 100.0;
 			}
 			if (state->max_flux_ph_s > 0.0 && emitted_flux > 0.0) {
-				float capped = (float)((double)state->level_percent *
+				double capped = (double)((double)state->level_percent *
 						       state->max_flux_ph_s / emitted_flux);
 
 				if (capped < next_percent) {
@@ -253,10 +255,10 @@ static int autolevel_adjust(struct throughput_state *state,
 				next_tx = TP_MIN_ATTEN_TX;
 			}
 			(void)attenuator_set_linear(&attenuators[state->attenuator_index], next_tx);
-		} else if (state->level_percent > 0.0f) {
-			next_percent = state->level_percent / 3.0f;
-			if (next_percent < 0.0f) {
-				next_percent = 0.0f;
+		} else if (state->level_percent > 0.0) {
+			next_percent = state->level_percent / 3.0;
+			if (next_percent < 0.0) {
+				next_percent = 0.0;
 			}
 			rc = hispec_laser_set_output_percent_autooff(state->laser,
 								     next_percent, 0U);
@@ -305,14 +307,14 @@ static void publish_sample(const struct throughput_state *state,
 	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
-	pd_ontime_s = housekeeping_power_on_time_s((enum housekeeping_power_output)state->channel);
+	pd_ontime_s = housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
 				  (double)hispec_laser_current_on_time_s(state->laser) : 0.0;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
 	if (state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &atten) &&
-	    laser_estimate_flux(state->laser, 0.0f, 0.0f, &laser_flux) == 0) {
+	    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0) {
 		route_name_for_laser(laser_route, sizeof(laser_route), laser_name, state->fiber);
 		(void)app_settings_get_route_loss(pd_route, laser_name, &pd_route_tx);
 		(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx);
@@ -363,20 +365,20 @@ static void publish_sample(const struct throughput_state *state,
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, laser_route_tx);
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, atten.linear);
 		put_i16((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->raw);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mv);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_flux.current_ma);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)atten.attenuation_db);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_flux.wavelength_nm);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)pd_ontime_s);
-		put_f32((uint8_t *)msg.payload, sizeof(msg.payload), &off,
-			(float)laser_current_ontime_s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mv);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_flux.current_ma);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			atten.attenuation_db);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_flux.wavelength_nm);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			pd_ontime_s);
+		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+			laser_current_ontime_s);
 		msg.payload_len = off;
 		(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
 		return;
@@ -384,7 +386,7 @@ static void publish_sample(const struct throughput_state *state,
 
 	if (coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			"{\"channel\":\"%s\",\"laser\":\"%s\","
-			"\"autolevel\":%s,\"time\":%llu,\"tp\":",
+			"\"autolevel\":%s,\"t_ms\":%llu,\"tp\":",
 			channel_fiber, laser_name, state->autolevel ? "true" : "false",
 			(unsigned long long)time_ms) != 0 ||
 	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, tp, 6) != 0 ||
@@ -457,16 +459,16 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (local[i].stopafter_s > 0U &&
-			    now - local[i].started_ms >= (int64_t)local[i].stopafter_s * 1000) {
+			if (local[i].off_in_s > 0U &&
+			    now - local[i].started_ms >= (int64_t)local[i].off_in_s * 1000) {
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
 				continue;
 			}
 
-			if (housekeeping_power_get((enum housekeeping_power_output)i,
-						       &pd_power) == 0 && !pd_power) {
+			if (housekeeping_power_get(pd_power_output((enum photodiode_channel)i),
+						   &pd_power) == 0 && !pd_power) {
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
@@ -498,8 +500,11 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status)
 {
 	enum photodiode_channel channel;
+	enum housekeeping_power_output pd_power;
 	uint8_t attenuator_index;
+	struct app_photodiode_settings pd_settings;
 	struct throughput_state next = {0};
+	bool was_active;
 	int rc;
 
 	if (request == NULL) {
@@ -526,10 +531,26 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		attenuator_index = 0U;
 	}
 
-	rc = housekeeping_power_set((enum housekeeping_power_output)channel, true);
+	app_settings_get_photodiode(&pd_settings);
+	if (pd_settings.channel[channel].power == APP_PD_POWER_OVERRIDE_OFF) {
+		return -EACCES;
+	}
+
+	pd_power = pd_power_output(channel);
+	rc = housekeeping_power_set(pd_power, true);
 	if (rc != 0) {
 		return rc;
 	}
+
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	was_active = monitors[channel].active;
+	k_mutex_unlock(&monitors_lock);
+
+	/*
+	 * Throughput owns this stream until stopped. Auto mode may still arm a
+	 * deadline via pd queries, but it must not turn off a running monitor.
+	 */
+	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 
 	next.active = true;
 	next.autolevel = request->autolevel;
@@ -539,16 +560,19 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.channel = channel;
 	next.attenuator_index = attenuator_index;
 	next.fiber = request->fiber;
-	next.stopafter_s = request->stopafter_s;
+	next.off_in_s = request->off_in_s;
 	next.max_flux_ph_s = request->max_flux_ph_s;
 	next.started_ms = k_uptime_get();
 
 	if (request->has_laser && request->autolevel) {
-		next.level_percent = 100.0f;
+		next.level_percent = 100.0;
 		(void)attenuator_set_db(&attenuators[attenuator_index], 120.0);
 		rc = hispec_laser_set_output_percent_autooff(request->laser,
 							     next.level_percent, 0U);
 		if (rc != 0) {
+			if (!was_active) {
+				housekeeping_photodiode_autooff_inhibit(pd_power, false);
+			}
 			return rc;
 		}
 	}

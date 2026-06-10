@@ -31,10 +31,11 @@ LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
 #define LIGHT_M_PER_S 299792458.0
 
 #define LASER_AUTOFF_NO_DEADLINE 0LL
+#define LASER_COMMAND_LOCK_TIMEOUT_MS 250U
 
 /* One mutex protects the shared RS-485 bus sequencing and bank-power GPIO.
- * k_mutex_lock() sleeps the calling thread instead of busy-waiting while another
- * command is talking to the Maiman modules.
+ * Command-facing operations wait only briefly so background polling or another
+ * long Modbus operation can surface as "busy" instead of a generic failure.
  */
 static K_MUTEX_DEFINE(laser_lock);
 
@@ -45,8 +46,8 @@ struct on_time_runtime {
 };
 
 struct laser_output_estimate_state {
-	float current_ma;
-	float tec_temperature_c;
+	double current_ma;
+	double tec_temperature_c;
 	bool valid;
 };
 
@@ -55,11 +56,11 @@ static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
 static struct laser_output_estimate_state laser_output_estimate[HISPEC_LASER_COUNT];
 static int64_t laser_autooff_deadline_ms[HISPEC_LASER_COUNT];
+static struct k_work_q *laser_autooff_work_q;
 static int64_t bank_power_started_ms;
 static bool bank_power_requested_enabled;
 static bool laser_runtime_initialized;
-static enum hispec_laser_bank_power_mode bank_power_mode =
-	HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
+static enum hispec_laser_bank_power_mode bank_power_mode = HISPEC_LASER_BANK_POWER_AUTO; // HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
 
 static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1028_Y] = {
@@ -146,7 +147,7 @@ static void ensure_laser_runtime_settings_locked(void)
 	app_settings_get_laser(&stored);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		laser_settings[i] = stored.channel[i];
-		laser_output_estimate[i].current_ma = 0.0f;
+		laser_output_estimate[i].current_ma = 0.0;
 		laser_output_estimate[i].tec_temperature_c =
 			stored.channel[i].properties.operating_temp_c;
 		laser_output_estimate[i].valid = true;
@@ -157,8 +158,8 @@ static void ensure_laser_runtime_settings_locked(void)
 }
 
 static void output_estimate_set_locked(enum hispec_laser_id id,
-				       float current_ma,
-				       float tec_temperature_c)
+				       double current_ma,
+				       double tec_temperature_c)
 {
 	if (id < 0 || id >= HISPEC_LASER_COUNT) {
 		return;
@@ -178,19 +179,29 @@ static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
 	return &laser_settings[id].properties;
 }
 
-static bool float_is_valid(float value)
+static bool float_is_valid(double value)
 {
 	return value == value;
 }
 
-static bool float_is_positive(float value)
+static bool float_is_positive(double value)
 {
-	return float_is_valid(value) && value > 0.0f;
+	return float_is_valid(value) && value > 0.0;
 }
 
-static bool float_is_nonzero(float value)
+static bool float_is_nonzero(double value)
 {
-	return float_is_valid(value) && value != 0.0f;
+	return float_is_valid(value) && value != 0.0;
+}
+
+/* Keep wait policy visible at call sites; this helper only maps Zephyr mutex
+ * timeout return codes to the domain -EBUSY response expected by commands.
+ */
+static int laser_lock_with_timeout(k_timeout_t timeout)
+{
+	int rc = k_mutex_lock(&laser_lock, timeout);
+
+	return rc == 0 ? 0 : -EBUSY;
 }
 
 static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
@@ -218,7 +229,7 @@ static void on_time_runtime_update_locked(struct on_time_runtime *runtimes,
 	}
 }
 
-static float on_time_runtime_seconds_locked(const struct on_time_runtime *runtimes,
+static double on_time_runtime_seconds_locked(const struct on_time_runtime *runtimes,
 					    size_t count,
 					    int index)
 {
@@ -235,7 +246,7 @@ static float on_time_runtime_seconds_locked(const struct on_time_runtime *runtim
 		ms += k_uptime_get() - runtime->started_ms;
 	}
 
-	return (float)ms / 1000.0f;
+	return (double)ms / 1000.0;
 }
 
 static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
@@ -257,9 +268,9 @@ static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
 	(void)app_settings_update_laser_total_emitting((uint8_t)id, total, persist);
 }
 
-static float clampf_with_flag(float value, float min_value, float max_value, bool *clamped)
+static double clamp_with_flag(double value, double min_value, double max_value, bool *clamped)
 {
-	float out = value;
+	double out = value;
 
 	if (out < min_value) {
 		out = min_value;
@@ -391,14 +402,14 @@ static int zero_all_driver_currents_locked(bool stop_tecs)
 		maiman_driver_t drv;
 
 		maiman_init(&drv, laser_profiles[i].node_id);
-		if (!maiman_set_current(&drv, 0.0f) || !maiman_stop_device(&drv)) {
+		if (!maiman_set_current(&drv, 0.0) || !maiman_stop_device(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
 		if (stop_tecs && !maiman_stop_tec(&drv)) {
 			first_rc = first_rc == 0 ? -EIO : first_rc;
 		}
 		commit_current_runtime_locked((enum hispec_laser_id)i, true);
-		output_estimate_set_locked((enum hispec_laser_id)i, 0.0f,
+		output_estimate_set_locked((enum hispec_laser_id)i, 0.0,
 					   laser_output_estimate[i].tec_temperature_c);
 		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
 		if (stop_tecs) {
@@ -463,6 +474,10 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 
 	if (!enabled && was_enabled) {
 		zero_rc = zero_all_driver_currents_locked(true);
+		if (zero_rc != 0) {
+			LOG_WRN("Laser bank power-off driver cleanup failed rc=%d; continuing GPIO off",
+				zero_rc);
+		}
 	}
 
 	/* gpio_pin_set_dt() writes the logical active state described by
@@ -493,7 +508,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		}
 	}
 
-	return zero_rc;
+	return 0;
 }
 
 int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
@@ -540,7 +555,11 @@ int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode)
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	/* Power-mode changes may touch GPIO and drivers; report contention as busy. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
 	bank_power_mode = mode;
 	if (mode == HISPEC_LASER_BANK_POWER_OVERRIDE_ON) {
 		rc = bank_power_set_locked(true, NULL, true);
@@ -570,7 +589,11 @@ int hispec_laser_bank_clear_faults(uint32_t off_ms, uint32_t *actual_off_ms)
 		*actual_off_ms = 0U;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	/* Fault clear can power-cycle the bank; do not queue forever behind Modbus. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
 
 	if (!bank_power_requested_enabled) {
 		rc = 0;
@@ -613,21 +636,52 @@ out:
 	return rc;
 }
 
-static float level_percent_for_current(const laserprops_t *props, float current_ma)
+static double level_percent_for_current(const laserprops_t *props, double current_ma)
 {
-	float range;
+	double range;
 
 	if (props == NULL || !float_is_valid(current_ma)) {
 		return LASERPROP_NA;
 	}
 	range = props->nominal_current_ma - props->threshold_current_ma;
-	if (range <= 0.0f) {
+	if (range <= 0.0) {
 		return LASERPROP_NA;
 	}
-	if (current_ma <= 0.0f) {
-		return 0.0f;
+	if (current_ma <= 0.0) {
+		return 0.0;
 	}
-	return 100.0f * (current_ma - props->threshold_current_ma) / range;
+	return 100.0 * (current_ma - props->threshold_current_ma) / range;
+}
+
+static void init_temperature_channels(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
+{
+	memset(channels, 0,
+	       sizeof(struct hispec_laser_channel_temperature) * HISPEC_LASER_COUNT);
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		channels[i].id = laser_profiles[i].id;
+		channels[i].tec_temperature_c = LASERPROP_NA;
+	}
+}
+
+static void read_temperature_channel_locked(uint8_t index,
+					    struct hispec_laser_channel_temperature *channel)
+{
+	maiman_driver_t drv;
+	double tec_temp = LASERPROP_NA;
+	bool tec_started = false;
+	bool temp_ok;
+	bool state_ok = false;
+
+	maiman_init(&drv, laser_profiles[index].node_id);
+	temp_ok = maiman_read_tec_temperature_measured(&drv, &tec_temp);
+	if (temp_ok) {
+		state_ok = maiman_read_tec_started(&drv, &tec_started);
+	}
+
+	channel->valid = temp_ok && state_ok;
+	channel->tec_temperature_c = tec_temp;
+	channel->tec_enabled = state_ok && tec_started;
 }
 
 int hispec_laser_bank_read_temperatures(
@@ -639,40 +693,51 @@ int hispec_laser_bank_read_temperatures(
 		return -EINVAL;
 	}
 
-	memset(channels, 0,
-	       sizeof(struct hispec_laser_channel_temperature) * HISPEC_LASER_COUNT);
-	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		channels[i].id = laser_profiles[i].id;
-		channels[i].tec_temperature_c = LASERPROP_NA;
+	init_temperature_channels(channels);
+
+	/* Foreground temp reads report bus contention as busy, not missing data. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
 	}
-
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	if (!bank_power_requested_enabled) {
-		rc = 0;
-		goto out_unlock;
+	if (bank_power_requested_enabled) {
+		for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+			read_temperature_channel_locked(i, &channels[i]);
+		}
 	}
-
-	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		maiman_driver_t drv;
-		float tec_temp = LASERPROP_NA;
-		bool tec_started = false;
-		bool temp_ok;
-		bool state_ok;
-
-		maiman_init(&drv, laser_profiles[i].node_id);
-		temp_ok = maiman_read_tec_temperature_measured(&drv, &tec_temp);
-		state_ok = maiman_read_tec_started(&drv, &tec_started);
-
-		channels[i].valid = temp_ok && state_ok;
-		channels[i].tec_temperature_c = tec_temp;
-		channels[i].tec_enabled = state_ok && tec_started;
-	}
-
-	rc = 0;
-
-out_unlock:
 	k_mutex_unlock(&laser_lock);
-	return rc;
+	return 0;
+}
+
+int hispec_laser_bank_poll_temperatures(
+	struct hispec_laser_channel_temperature channels[HISPEC_LASER_COUNT])
+{
+	int rc;
+
+	if (channels == NULL) {
+		return -EINVAL;
+	}
+
+	init_temperature_channels(channels);
+
+	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
+		/* Background heater polling is opportunistic. Release the bus between
+		 * drivers so a command can cut in instead of waiting behind a full
+		 * six-node temperature sweep.
+		 */
+		rc = laser_lock_with_timeout(K_NO_WAIT);
+		if (rc != 0) {
+			return rc;
+		}
+		if (!bank_power_requested_enabled) {
+			k_mutex_unlock(&laser_lock);
+			return 0;
+		}
+		read_temperature_channel_locked(i, &channels[i]);
+		k_mutex_unlock(&laser_lock);
+	}
+
+	return 0;
 }
 
 static int verify_driver_locked(const struct hispec_laser_driver_profile *profile,
@@ -739,16 +804,16 @@ int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out)
 static int check_ocp_limit_locked(const struct hispec_laser_driver_profile *profile,
 				  maiman_driver_t *drv)
 {
-	float ocp_ma;
+	double ocp_ma;
 	const laserprops_t *props = runtime_props_locked(profile->id);
 
 	ocp_ma = maiman_get_current_protection_threshold(drv);
-	if (!float_is_valid(ocp_ma) || ocp_ma < 0.0f) {
+	if (!float_is_valid(ocp_ma) || ocp_ma < 0.0) {
 		return -EIO;
 	}
 
 	if (float_is_valid(props->dne_current_ma) && ocp_ma > props->dne_current_ma) {
-		(void)maiman_set_current(drv, 0.0f);
+		(void)maiman_set_current(drv, 0.0);
 		(void)maiman_stop_device(drv);
 		(void)maiman_stop_tec(drv);
 		(void)maiman_allow_interlock(drv);
@@ -757,6 +822,63 @@ static int check_ocp_limit_locked(const struct hispec_laser_driver_profile *prof
 	}
 
 	return 0;
+}
+
+static uint16_t effective_blocking_lock_status(uint16_t lock_status,
+					       uint16_t device_state)
+{
+	uint16_t blocking = lock_status & LOCK_STATE_BLOCKING_MASK;
+
+	/* The command path explicitly writes DENY_INTERLOCK before emission. Once
+	 * the driver reports that bit latched, the physical interlock lock bit is
+	 * informational for this firmware-owned setup rather than a sequence
+	 * blocker. Electrical/thermal/TEC lock bits remain hard blockers.
+	 */
+	if ((device_state & INTERLOCK_DENIED) != 0U) {
+		blocking &= (uint16_t)~LOCK_STATE_INTERLOCK;
+	}
+
+	return blocking;
+}
+
+static const char *laser_blocked_reason(bool bank_powered,
+					bool serial_matches,
+					uint16_t device_state,
+					uint16_t tec_state,
+					uint16_t blocking_lock_status)
+{
+	if (!bank_powered) {
+		return "bank_off";
+	}
+	if (!serial_matches) {
+		return "driver_identity_mismatch";
+	}
+	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
+		return "tec_not_started";
+	}
+	if ((blocking_lock_status & LOCK_STATE_LD_OVERCURRENT) != 0U) {
+		return "ld_overcurrent";
+	}
+	if ((blocking_lock_status & LOCK_STATE_LD_OVERHEAT) != 0U) {
+		return "ld_overheat";
+	}
+	if ((blocking_lock_status & LOCK_STATE_EXTERNAL_NTC_INTERLOCK) != 0U) {
+		return "external_ntc_interlock";
+	}
+	if ((blocking_lock_status & LOCK_STATE_TEC_ERROR) != 0U) {
+		return "tec_error";
+	}
+	if ((blocking_lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U) {
+		return "tec_selfheat";
+	}
+	if ((blocking_lock_status & LOCK_STATE_INTERLOCK) != 0U) {
+		return "interlock";
+	}
+	if ((device_state & OPERATION_STATE_STARTED) == 0U) {
+		return "not_emitting";
+	}
+
+	return NULL;
 }
 
 static int64_t next_autooff_deadline_locked(void)
@@ -799,15 +921,29 @@ static void laser_autooff_reschedule(void)
 {
 	const k_timeout_t timeout = laser_autooff_wait_timeout();
 
-	/* This delayable work runs on Zephyr's system workqueue. Auto-off is slow
-	 * best-effort cleanup, not a timing path, and the only blocking work here is
-	 * the Modbus stop sequence for an expired output.
+	/* Auto-off can run Modbus stop commands, so it uses the app blocking
+	 * workqueue instead of Zephyr's Modbus-RX system workqueue.
 	 */
+	if (laser_autooff_work_q == NULL) {
+		return;
+	}
 	if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
 		(void)k_work_cancel_delayable(&laser_autooff_work);
 	} else {
-		(void)k_work_reschedule(&laser_autooff_work, timeout);
+		(void)k_work_reschedule_for_queue(laser_autooff_work_q,
+						  &laser_autooff_work, timeout);
 	}
+}
+
+void hispec_laser_autooff_start(struct k_work_q *work_q)
+{
+	__ASSERT_NO_MSG(work_q != NULL);
+	if (work_q == NULL) {
+		return;
+	}
+
+	laser_autooff_work_q = work_q;
+	laser_autooff_reschedule();
 }
 
 static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile *profile,
@@ -831,6 +967,9 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a)) {
 		return -EIO;
 	}
+	if (!maiman_set_tec_temperature(drv, props->operating_temp_c)) {
+		return -EIO;
+	}
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
 		return -EIO;
 	}
@@ -838,8 +977,8 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	 * drivers during profile programming so stale pulse-mode register values
 	 * cannot survive a module replacement or manual reconfiguration.
 	 */
-	if (!maiman_set_frequency(drv, 0.0f) ||
-	    !maiman_set_duration(drv, 0.0f)) {
+	if (!maiman_set_frequency(drv, 0.0) ||
+	    !maiman_set_duration(drv, 0.0)) {
 		return -EIO;
 	}
 
@@ -871,7 +1010,7 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 
 	/* Put the driver in a non-emitting state before rewriting diode limits. */
 	(void)maiman_allow_interlock(&drv);
-	(void)maiman_set_current(&drv, 0.0f);
+	(void)maiman_set_current(&drv, 0.0);
 	(void)maiman_stop_device(&drv);
 	rc = apply_runtime_profile_locked(profile, &drv);
 	if (rc != 0) {
@@ -938,53 +1077,135 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id)
 }
 
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *profile,
-				     maiman_driver_t *drv)
+				     maiman_driver_t *drv,
+				     bool verbose)
 {
 	const laserprops_t *props = runtime_props_locked(profile->id);
-	float current_temp;
+	uint16_t device_state;
+	uint16_t tec_state;
 	uint16_t lock_status;
+	uint16_t blocking_lock_status;
 	int rc;
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare: ensure bank power mode=%s powered=%s",
+			profile->name,
+			hispec_laser_bank_power_mode_name(bank_power_mode),
+			bank_power_requested_enabled ? "true" : "false");
+	}
 	rc = ensure_bank_powered_locked();
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: bank power unavailable rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
-	maiman_init(drv, profile->node_id);
+	maiman_init_verbose(drv, profile->node_id, verbose);
+	if (verbose) {
+		LOG_INF("Laser %s prepare: verify driver node=%u",
+			profile->name, profile->node_id);
+	}
 	rc = verify_driver_locked(profile, drv, NULL);
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: driver identity rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
+	/* Driver preparation always writes the app-owned default operating
+	 * temperature before any TEC start. A bad default can make TEC startup fail
+	 * here and surface as an immediate laser fault.
+	 */
+	if (verbose) {
+		LOG_INF("Laser %s prepare: apply runtime profile temp=%.3fC max_current=%.3fmA tec_limit=%.3fA",
+			profile->name,
+			(double)props->operating_temp_c,
+			(double)props->max_current_ma,
+			(double)props->tec_max_current_a);
+	}
 	rc = apply_runtime_profile_locked(profile, drv);
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: runtime profile rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare: set internal current/enable/TEC controls and deny interlock",
+			profile->name);
+	}
 	if (!maiman_set_internal_current_control(drv, true) ||
 	    !maiman_set_internal_enable_control(drv, true) ||
 	    !maiman_set_internal_tec_temperature_control(drv, true) ||
 	    !maiman_set_internal_tec_enable_control(drv, true) ||
 	    !maiman_deny_interlock(drv)) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: control-mode write failed",
+				profile->name);
+		}
 		return -EIO;
 	}
 
-	if (!maiman_is_tec_started(drv)) {
-		current_temp = maiman_get_tec_temperature_measured(drv);
-		if (!float_is_valid(current_temp) || current_temp < -100.0f) {
-			current_temp = props->operating_temp_c;
+	if (!maiman_read_raw_tec_status(drv, &tec_state)) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: TEC status read failed",
+				profile->name);
 		}
-		if (!maiman_set_tec_temperature(drv, current_temp) ||
+		return -EIO;
+	}
+	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
+		/* Keep TEC startup tied to default_operating_temp_c. A later direct
+		 * setpoint command may change the setpoint only after this succeeds.
+		 */
+		if (verbose) {
+			LOG_INF("Laser %s prepare: start TEC at %.3fC",
+				profile->name, (double)props->operating_temp_c);
+		}
+		if (!maiman_set_tec_temperature(drv, props->operating_temp_c) ||
 		    !maiman_start_tec(drv)) {
+			if (verbose) {
+				LOG_WRN("Laser %s prepare failed: TEC start write failed",
+					profile->name);
+			}
 			return -EIO;
 		}
 	}
+	on_time_runtime_update_locked(laser_tec_runtime,
+				      ARRAY_SIZE(laser_tec_runtime),
+				      profile->id, true);
 
+	device_state = maiman_get_raw_status(drv);
 	lock_status = maiman_get_raw_lock_status(drv);
-	if ((lock_status & LOCK_STATE_BLOCKING_MASK) != 0U) {
+	blocking_lock_status = effective_blocking_lock_status(lock_status, device_state);
+	if (verbose) {
+		LOG_INF("Laser %s prepare status: state=0x%04x tec=0x%04x lock=0x%04x blocking=0x%04x",
+			profile->name, device_state, tec_state, lock_status,
+			blocking_lock_status);
+		if ((lock_status & LOCK_STATE_INTERLOCK) != 0U &&
+		    (device_state & INTERLOCK_DENIED) != 0U) {
+			LOG_INF("Laser %s prepare: physical interlock bit present but driver reports interlock denied",
+				profile->name);
+		}
+	}
+	if (blocking_lock_status != 0U) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: blocking lock_status=0x%04x reason=%s",
+				profile->name, blocking_lock_status,
+				laser_blocked_reason(true, true, device_state,
+						     tec_state, blocking_lock_status));
+		}
 		return -EIO;
 	}
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare complete", profile->name);
+	}
 	return 0;
 }
 
@@ -1008,7 +1229,7 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->current_on_time_s = LASERPROP_NA;
 	out->tec_on_time_s = LASERPROP_NA;
 	out->total_emitting_s = 0.0;
-	out->tune_delta_nm = 0.0f;
+	out->tune_delta_nm = 0.0;
 	out->autooff_s = 0U;
 	out->off_in_s = 0;
 	out->tec_temperature_set_c = LASERPROP_NA;
@@ -1041,7 +1262,11 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 
 	status_defaults(profile, out);
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	/* Status is retryable; avoid waiting forever behind driver timeouts. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
 	out->properties = runtime_props_locked(id);
 	out->current_on_time_s =
 		on_time_runtime_seconds_locked(laser_current_runtime,
@@ -1049,6 +1274,8 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	out->tec_on_time_s =
 		on_time_runtime_seconds_locked(laser_tec_runtime,
 					       ARRAY_SIZE(laser_tec_runtime), id);
+	out->current_runtime_active = laser_current_runtime[id].active;
+	out->tec_runtime_active = laser_tec_runtime[id].active;
 	out->total_emitting_s = laser_settings[id].total_emitting_s +
 				(double)out->current_on_time_s;
 	out->tune_delta_nm = laser_settings[id].tune_delta_nm;
@@ -1058,21 +1285,31 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	if (laser_autooff_deadline_ms[id] > 0) {
 		int64_t remaining_ms = laser_autooff_deadline_ms[id] - k_uptime_get();
 
-		out->off_in_s = remaining_ms > 0 ? (remaining_ms + 999) / 1000 : 0;
+		out->autooff_active = remaining_ms > 0;
+		out->off_in_s = out->autooff_active ? (remaining_ms + 999) / 1000 : 0;
 	}
 	out->bank_powered = bank_power_requested_enabled;
 	if (!out->bank_powered) {
+		out->blocked_reason = laser_blocked_reason(false, true, 0U, 0U, 0U);
 		rc = 0;
 		goto out_unlock;
 	}
 
 	maiman_init(&drv, profile->node_id);
 	out->device_id = maiman_get_device_id(&drv);
+	/* If identity reads time out, stop here instead of hammering every
+	 * engineering-status register while the module or bus is recovering.
+	 */
+	if (out->device_id == 0U) {
+		rc = -EIO;
+		goto out_unlock;
+	}
 	out->serial_number = maiman_get_serial_number(&drv);
 	out->serial_matches = (profile->expected_serial == 0U ||
 			       out->serial_number == profile->expected_serial);
-	if (out->device_id == 0U || out->serial_number == 0U) {
-		read_ok = false;
+	if (out->serial_number == 0U) {
+		rc = -EIO;
+		goto out_unlock;
 	}
 
 	out->device_state = maiman_get_raw_status(&drv);
@@ -1094,8 +1331,15 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 		(out->lock_status & LOCK_STATE_EXTERNAL_NTC_INTERLOCK) != 0U;
 	out->lock_tec_error = (out->lock_status & LOCK_STATE_TEC_ERROR) != 0U;
 	out->lock_tec_selfheat = (out->lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U;
-	out->ready_to_operate = out->tec_started &&
-				((out->lock_status & LOCK_STATE_BLOCKING_MASK) == 0U);
+	out->blocking_lock_status = effective_blocking_lock_status(out->lock_status,
+								   out->device_state);
+	out->ready_to_operate = out->serial_matches && out->tec_started &&
+				out->blocking_lock_status == 0U;
+	out->blocked_reason = laser_blocked_reason(out->bank_powered,
+						   out->serial_matches,
+						   out->device_state,
+						   out->tec_state,
+						   out->blocking_lock_status);
 
 	if (!maiman_get_current(&drv, &out->current_set_ma)) {
 		read_ok = false;
@@ -1148,7 +1392,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 		return rc;
 	}
 
-	if (!maiman_set_current(&drv, 0.0f) || !maiman_stop_device(&drv)) {
+	if (!maiman_set_current(&drv, 0.0) || !maiman_stop_device(&drv)) {
 		return -EIO;
 	}
 	if (stop_tec && !maiman_stop_tec(&drv)) {
@@ -1156,7 +1400,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	}
 
 	commit_current_runtime_locked(profile->id, true);
-	output_estimate_set_locked(profile->id, 0.0f,
+	output_estimate_set_locked(profile->id, 0.0,
 				   laser_output_estimate[profile->id].tec_temperature_c);
 	laser_autooff_deadline_ms[profile->id] = LASER_AUTOFF_NO_DEADLINE;
 	if (stop_tec) {
@@ -1198,7 +1442,7 @@ int hispec_laser_stop_all_outputs(bool stop_tecs)
 	return rc;
 }
 
-int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma)
+int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
@@ -1213,25 +1457,35 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, float current_ma)
 	props = runtime_props_locked(id);
 	k_mutex_unlock(&laser_lock);
 
-	if (!float_is_valid(current_ma) || current_ma < 0.0f ||
+	if (!float_is_valid(current_ma) || current_ma < 0.0 ||
 	    current_ma > props->max_current_ma) {
 		return -ERANGE;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	if (current_ma == 0.0f) {
+	/* Emission changes serialize on Modbus but should return busy if tied up. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
+	if (current_ma == 0.0) {
 		rc = stop_output_locked(profile, false);
 		goto out;
 	}
 
-	rc = prepare_to_operate_locked(profile, &drv);
+	rc = prepare_to_operate_locked(profile, &drv, true);
 	if (rc != 0) {
 		goto out;
 	}
 
+	LOG_INF("Laser %s emission request: current=%.3fmA",
+		profile->name, (double)current_ma);
 	if (!maiman_set_current(&drv, current_ma) || !maiman_start_device(&drv)) {
+		LOG_WRN("Laser %s emission start failed after prepare current=%.3fmA",
+			profile->name, (double)current_ma);
 		rc = -EIO;
 	} else {
+		LOG_INF("Laser %s emission started current=%.3fmA",
+			profile->name, (double)current_ma);
 		on_time_runtime_update_locked(laser_current_runtime,
 					      ARRAY_SIZE(laser_current_runtime), id, true);
 		on_time_runtime_update_locked(laser_tec_runtime,
@@ -1244,17 +1498,17 @@ out:
 	return rc;
 }
 
-int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw)
+int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw)
 {
 	const laserprops_t *props = hispec_laser_properties(id);
-	float current_ma;
+	double current_ma;
 
-	if (props == NULL || !float_is_valid(power_mw) || power_mw < 0.0f) {
+	if (props == NULL || !float_is_valid(power_mw) || power_mw < 0.0) {
 		return -EINVAL;
 	}
 
-	if (power_mw == 0.0f) {
-		return hispec_laser_set_current_ma(id, 0.0f);
+	if (power_mw == 0.0) {
+		return hispec_laser_set_current_ma(id, 0.0);
 	}
 	if (!float_is_positive(props->efficiency_mw_per_ma)) {
 		return -EINVAL;
@@ -1268,18 +1522,18 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, float power_mw)
 	return hispec_laser_set_current_ma(id, current_ma);
 }
 
-int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
+int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent)
 {
 	const laserprops_t *props = hispec_laser_properties(id);
-	float current_range_ma;
-	float current_ma;
+	double current_range_ma;
+	double current_ma;
 
-	if (props == NULL || !float_is_valid(percent) || percent < 0.0f || percent > 100.0f) {
+	if (props == NULL || !float_is_valid(percent) || percent < 0.0 || percent > 100.0) {
 		return -ERANGE;
 	}
 
-	if (percent == 0.0f) {
-		return hispec_laser_set_current_ma(id, 0.0f);
+	if (percent == 0.0) {
+		return hispec_laser_set_current_ma(id, 0.0);
 	}
 
 	current_range_ma = props->nominal_current_ma - props->threshold_current_ma;
@@ -1287,7 +1541,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
 		return -EINVAL;
 	}
 
-	current_ma = props->threshold_current_ma + current_range_ma * (percent / 100.0f);
+	current_ma = props->threshold_current_ma + current_range_ma * (percent / 100.0);
 	if (current_ma > props->max_current_ma) {
 		current_ma = props->max_current_ma;
 	}
@@ -1296,7 +1550,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, float percent)
 }
 
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
-					    float percent,
+					    double percent,
 					    uint32_t autooff_s)
 {
 	struct app_laser_channel_settings settings;
@@ -1313,13 +1567,13 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	props = &laser_settings[id].properties;
 	k_mutex_unlock(&laser_lock);
 
-	if (percent > 0.0f && settings.tune_delta_nm != 0.0f) {
+	if (percent > 0.0 && settings.tune_delta_nm != 0.0) {
 		struct hispec_laser_tune_request request = {
 			.desired_power_percent = percent,
 			.wavelength_nm = props->wavelength_nm + settings.tune_delta_nm,
 			.use_current = true,
 			.use_temperature = true,
-			.maximum_power_shift_percent = 100.0f,
+			.maximum_power_shift_percent = 100.0,
 			.apply = true,
 		};
 		struct hispec_laser_tune_result result = {0};
@@ -1331,7 +1585,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 
 	if (rc == 0) {
 		k_mutex_lock(&laser_lock, K_FOREVER);
-		if (percent > 0.0f) {
+		if (percent > 0.0) {
 			laser_autooff_deadline_ms[id] =
 				autooff_s == 0U ? LASER_AUTOFF_NO_DEADLINE :
 				k_uptime_get() + (int64_t)autooff_s * 1000LL;
@@ -1345,7 +1599,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	return rc;
 }
 
-int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperature_c)
+int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperature_c)
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
@@ -1366,11 +1620,19 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, float temperatur
 		return -ERANGE;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
-	rc = prepare_to_operate_locked(profile, &drv);
+	/* TEC writes share startup Modbus traffic; surface contention as busy. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
+	rc = prepare_to_operate_locked(profile, &drv, true);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
+		LOG_WRN("Laser %s TEC setpoint write failed temp=%.3fC",
+			profile->name, (double)temperature_c);
 		rc = -EIO;
 	} else if (rc == 0) {
+		LOG_INF("Laser %s TEC setpoint updated temp=%.3fC",
+			profile->name, (double)temperature_c);
 		output_estimate_set_locked(id, laser_output_estimate[id].current_ma,
 					   temperature_c);
 	}
@@ -1423,32 +1685,32 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->tec_max_current_a) ||
 	    !float_is_valid(props->dlambda_dT_nm_per_k) ||
 	    !float_is_valid(props->dlambda_dA_nm_per_ma) ||
-	    props->threshold_current_ma < 0.0f ||
-	    props->threshold_current_ma > 1000.0f ||
+	    props->threshold_current_ma < 0.0 ||
+	    props->threshold_current_ma > 1000.0 ||
 	    props->nominal_current_ma <= props->threshold_current_ma ||
-	    props->nominal_current_ma > 1000.0f ||
+	    props->nominal_current_ma > 1000.0 ||
 	    props->max_current_ma < props->nominal_current_ma ||
-	    props->max_current_ma > 1000.0f ||
-	    props->efficiency_mw_per_ma < 0.0f ||
-	    props->efficiency_mw_per_ma > 100.0f ||
-	    props->wavelength_nm < 1.0f ||
-	    props->wavelength_nm > 10000.0f ||
-	    settings->current_set_calibration_pct < 95.0f ||
-	    settings->current_set_calibration_pct > 105.0f ||
-	    props->tec_max_current_a <= 0.0f ||
+	    props->max_current_ma > 1000.0 ||
+	    props->efficiency_mw_per_ma < 0.0 ||
+	    props->efficiency_mw_per_ma > 100.0 ||
+	    props->wavelength_nm < 1.0 ||
+	    props->wavelength_nm > 10000.0 ||
+	    settings->current_set_calibration_pct < 95.0 ||
+	    settings->current_set_calibration_pct > 105.0 ||
+	    props->tec_max_current_a <= 0.0 ||
 	    props->tec_max_current_a > profile->properties->tec_max_current_a ||
-	    props->dlambda_dT_nm_per_k < -10.0f ||
-	    props->dlambda_dT_nm_per_k > 10.0f ||
-	    props->dlambda_dA_nm_per_ma < -10.0f ||
-	    props->dlambda_dA_nm_per_ma > 10.0f) {
+	    props->dlambda_dT_nm_per_k < -10.0 ||
+	    props->dlambda_dT_nm_per_k > 10.0 ||
+	    props->dlambda_dA_nm_per_ma < -10.0 ||
+	    props->dlambda_dA_nm_per_ma > 10.0) {
 		return -ERANGE;
 	}
 
 	if (!float_is_valid(props->operating_temp_range_c.min_c) ||
 	    !float_is_valid(props->operating_temp_range_c.max_c) ||
 	    !float_is_valid(props->operating_temp_c) ||
-	    props->operating_temp_range_c.min_c < 15.0f ||
-	    props->operating_temp_range_c.max_c > 40.0f ||
+	    props->operating_temp_range_c.min_c < 15.0 ||
+	    props->operating_temp_range_c.max_c > 40.0 ||
 	    props->operating_temp_range_c.min_c > props->operating_temp_range_c.max_c ||
 	    props->operating_temp_c < props->operating_temp_range_c.min_c ||
 	    props->operating_temp_c > props->operating_temp_range_c.max_c) {
@@ -1458,11 +1720,26 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	return 0;
 }
 
+int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
+					   const struct app_laser_channel_settings *settings)
+{
+	const struct hispec_laser_driver_profile *profile;
+	int rc;
+
+	rc = profile_for_id(id, &profile);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return validate_laser_settings(profile, settings);
+}
+
 static bool laser_driver_settings_differ(const struct app_laser_channel_settings *a,
 					 const struct app_laser_channel_settings *b)
 {
 	return a->properties.max_current_ma != b->properties.max_current_ma ||
 	       a->current_set_calibration_pct != b->current_set_calibration_pct ||
+	       a->properties.operating_temp_c != b->properties.operating_temp_c ||
 	       a->properties.tec_max_current_a != b->properties.tec_max_current_a ||
 	       a->properties.tec_pid.kp != b->properties.tec_pid.kp ||
 	       a->properties.tec_pid.ki != b->properties.tec_pid.ki ||
@@ -1472,11 +1749,17 @@ static bool laser_driver_settings_differ(const struct app_laser_channel_settings
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out)
 {
+	int rc;
+
 	if (out == NULL || id < 0 || id >= HISPEC_LASER_COUNT) {
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	/* Settings snapshots share runtime state; do not block behind long Modbus work. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
 	ensure_laser_runtime_settings_locked();
 	*out = laser_settings[id];
 	k_mutex_unlock(&laser_lock);
@@ -1505,7 +1788,11 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		return rc;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	/* Settings updates may reprogram drivers; keep command wait bounded. */
+	rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+	if (rc != 0) {
+		return rc;
+	}
 	ensure_laser_runtime_settings_locked();
 	previous = laser_settings[id];
 	apply_driver = laser_driver_settings_differ(&previous, settings);
@@ -1557,7 +1844,7 @@ out_unlock:
 	return rc;
 }
 
-int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
+int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist)
 {
 	struct app_laser_channel_settings settings;
@@ -1574,9 +1861,9 @@ int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, float delta_nm,
 	return hispec_laser_update_channel_settings(id, &settings, persist);
 }
 
-float hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
+double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
 {
-	float value = LASERPROP_NA;
+	double value = LASERPROP_NA;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	ensure_laser_runtime_settings_locked();
@@ -1616,9 +1903,9 @@ static void laser_autooff_work_handler(struct k_work *work)
 	laser_autooff_reschedule();
 }
 
-float hispec_laser_estimate_power_mw(const laserprops_t *properties, float current_ma)
+double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma)
 {
-	float power_mw;
+	double power_mw;
 
 	if (properties == NULL || !float_is_valid(current_ma) ||
 	    !float_is_positive(properties->efficiency_mw_per_ma)) {
@@ -1627,17 +1914,17 @@ float hispec_laser_estimate_power_mw(const laserprops_t *properties, float curre
 
 	power_mw = (current_ma - properties->threshold_current_ma) *
 		   properties->efficiency_mw_per_ma;
-	return (power_mw > 0.0f) ? power_mw : 0.0f;
+	return (power_mw > 0.0) ? power_mw : 0.0;
 }
 
 int laser_estimate_flux(enum hispec_laser_id id,
-			float fractional_noise,
-			float constant_noise_mw,
+			double fractional_noise,
+			double constant_noise_mw,
 			struct hispec_laser_flux_estimate *out)
 {
 	laserprops_t properties;
-	float current_ma;
-	float tec_temperature_c;
+	double current_ma;
+	double tec_temperature_c;
 	double power_mw;
 	double power_w;
 	double photon_j;
@@ -1663,9 +1950,9 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	    !float_is_valid(tec_temperature_c) ||
 	    !float_is_valid(fractional_noise) ||
 	    !float_is_valid(constant_noise_mw) ||
-	    fractional_noise < 0.0f || constant_noise_mw < 0.0f ||
+	    fractional_noise < 0.0 || constant_noise_mw < 0.0 ||
 	    !float_is_valid(properties.wavelength_nm) ||
-	    properties.wavelength_nm <= 0.0f) {
+	    properties.wavelength_nm <= 0.0) {
 		return -EINVAL;
 	}
 
@@ -1693,9 +1980,9 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	return 0;
 }
 
-float hispec_laser_current_on_time_s(enum hispec_laser_id id)
+double hispec_laser_current_on_time_s(enum hispec_laser_id id)
 {
-	float value;
+	double value;
 
 	k_mutex_lock(&laser_lock, K_FOREVER);
 	value = on_time_runtime_seconds_locked(laser_current_runtime,
@@ -1705,12 +1992,12 @@ float hispec_laser_current_on_time_s(enum hispec_laser_id id)
 	return value;
 }
 
-float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
-					  float tec_temperature_c,
-					  float current_ma)
+double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
+					  double tec_temperature_c,
+					  double current_ma)
 {
-	float delta_i_ma;
-	float delta_t_c;
+	double delta_i_ma;
+	double delta_t_c;
 
 	if (properties == NULL || !float_is_valid(tec_temperature_c) ||
 	    !float_is_valid(current_ma) ||
@@ -1719,7 +2006,7 @@ float hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
 		return LASERPROP_NA;
 	}
 
-	if (current_ma == 0.0f) {
+	if (current_ma == 0.0) {
 		return properties->wavelength_nm;
 	}
 
@@ -1736,20 +2023,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 {
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
-	float brightness;
-	float current_range_ma;
-	float desired_i_ma;
-	float initial_wavelength_nm;
-	float delta_lambda_nm;
-	float target_temp_c;
-	float delta_from_temp_nm;
-	float delta_remaining_nm;
-	float delta_i_ma;
-	float allowed_delta_i_ma;
-	float target_current_ma;
-	float delta_from_current_nm;
-	float estimated_wavelength_nm;
-	float estimated_power_mw;
+	double brightness;
+	double current_range_ma;
+	double desired_i_ma;
+	double initial_wavelength_nm;
+	double delta_lambda_nm;
+	double target_temp_c;
+	double delta_from_temp_nm;
+	double delta_remaining_nm;
+	double delta_i_ma;
+	double allowed_delta_i_ma;
+	double target_current_ma;
+	double delta_from_current_nm;
+	double estimated_wavelength_nm;
+	double estimated_power_mw;
 	bool temp_clamped = false;
 	bool current_clamped = false;
 	int rc;
@@ -1772,20 +2059,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (!float_is_valid(request->desired_power_percent) ||
 	    !float_is_valid(request->wavelength_nm) ||
 	    !float_is_valid(request->maximum_power_shift_percent) ||
-	    request->desired_power_percent < 0.0f ||
-	    request->desired_power_percent > 100.0f ||
-	    request->maximum_power_shift_percent < 0.0f) {
+	    request->desired_power_percent < 0.0 ||
+	    request->desired_power_percent > 100.0 ||
+	    request->maximum_power_shift_percent < 0.0) {
 		return -ERANGE;
 	}
 
-	if (request->desired_power_percent == 0.0f) {
-		result->target_current_ma = 0.0f;
+	if (request->desired_power_percent == 0.0) {
+		result->target_current_ma = 0.0;
 		result->target_temperature_c = props->operating_temp_c;
-		result->estimated_power_mw = 0.0f;
+		result->estimated_power_mw = 0.0;
 		result->estimated_wavelength_nm = props->wavelength_nm;
 		result->wavelength_error_nm = request->wavelength_nm - props->wavelength_nm;
 		if (request->apply) {
-			return hispec_laser_set_current_ma(id, 0.0f);
+			return hispec_laser_set_current_ma(id, 0.0);
 		}
 		return 0;
 	}
@@ -1800,9 +2087,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	brightness = request->desired_power_percent / 100.0f;
+	brightness = request->desired_power_percent / 100.0;
 	desired_i_ma = props->threshold_current_ma + current_range_ma * brightness;
-	desired_i_ma = clampf_with_flag(desired_i_ma, props->threshold_current_ma,
+	desired_i_ma = clamp_with_flag(desired_i_ma, props->threshold_current_ma,
 					props->max_current_ma, &current_clamped);
 
 	initial_wavelength_nm =
@@ -1813,7 +2100,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (request->use_temperature) {
 		target_temp_c = props->operating_temp_c +
 				delta_lambda_nm / props->dlambda_dT_nm_per_k;
-		target_temp_c = clampf_with_flag(target_temp_c,
+		target_temp_c = clamp_with_flag(target_temp_c,
 						 props->operating_temp_range_c.min_c,
 						 props->operating_temp_range_c.max_c,
 						 &temp_clamped);
@@ -1822,14 +2109,14 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			(target_temp_c - props->operating_temp_c);
 	} else {
 		target_temp_c = props->operating_temp_c;
-		delta_from_temp_nm = 0.0f;
+		delta_from_temp_nm = 0.0;
 	}
 
 	delta_remaining_nm = delta_lambda_nm - delta_from_temp_nm;
 	if (request->use_current) {
 		delta_i_ma = delta_remaining_nm / props->dlambda_dA_nm_per_ma;
 		allowed_delta_i_ma =
-			(request->maximum_power_shift_percent / 100.0f) * current_range_ma;
+			(request->maximum_power_shift_percent / 100.0) * current_range_ma;
 		if (delta_i_ma > allowed_delta_i_ma) {
 			delta_i_ma = allowed_delta_i_ma;
 			current_clamped = true;
@@ -1839,7 +2126,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			current_clamped = true;
 		}
 		target_current_ma = desired_i_ma + delta_i_ma;
-		target_current_ma = clampf_with_flag(target_current_ma,
+		target_current_ma = clamp_with_flag(target_current_ma,
 						    props->threshold_current_ma,
 						    props->max_current_ma,
 						    &current_clamped);
@@ -1871,15 +2158,25 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (request->apply) {
 		maiman_driver_t drv;
 
-		k_mutex_lock(&laser_lock, K_FOREVER);
-		rc = prepare_to_operate_locked(profile, &drv);
+		/* Applying a tune point writes TEC/current registers; use bounded wait. */
+		rc = laser_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
+		if (rc != 0) {
+			return rc;
+		}
+		rc = prepare_to_operate_locked(profile, &drv, true);
 		if (rc == 0 &&
 		    (!maiman_set_tec_temperature(&drv, target_temp_c) ||
 		     !maiman_set_current(&drv, target_current_ma) ||
 		     !maiman_start_device(&drv))) {
+			LOG_WRN("Laser %s tune apply failed temp=%.3fC current=%.3fmA",
+				profile->name, (double)target_temp_c,
+				(double)target_current_ma);
 			rc = -EIO;
 		}
 		if (rc == 0) {
+			LOG_INF("Laser %s tune applied temp=%.3fC current=%.3fmA",
+				profile->name, (double)target_temp_c,
+				(double)target_current_ma);
 			on_time_runtime_update_locked(laser_current_runtime,
 						      ARRAY_SIZE(laser_current_runtime),
 						      id, true);

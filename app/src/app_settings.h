@@ -4,7 +4,7 @@
  *
  * App-owned numeric NVS IDs store board identity, boot count, operator
  * network/MQTT configuration, attenuator coefficients, photodiode
- * calibration/response settings, laser policy, and route loss.
+ * calibration/response settings, laser policy, route loss, and MEMS intent.
  *
  * Copyright (c) 2026 Caltech Optical Observatories
  * SPDX-License-Identifier: Apache-2.0
@@ -52,10 +52,22 @@ struct app_mqtt_settings {
 #define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
 #define APP_ROUTE_LOSS_LASER_MAX_LEN 16
 #define APP_LASER_CHANNEL_COUNT 6
+#define APP_MEMS_SWITCH_COUNT 8
+#define APP_MEMS_SPLIT_CHANNEL_COUNT 2
+#define APP_MEMS_SPLIT_OUTPUT_COUNT 3
+#define APP_PD_DARK_DURATION_USER UINT32_MAX
+#define APP_PD_DARK_DURATION_MAX_MS 2000U
+#define APP_PD_DEFAULT_AUTOOFF_S 300U
+
+enum app_pd_power_mode {
+	APP_PD_POWER_AUTO = 0,
+	APP_PD_POWER_OVERRIDE_ON,
+	APP_PD_POWER_OVERRIDE_OFF,
+};
 
 struct app_attenuator_physical_settings {
-	float slope;
-	float offset;
+	double slope;
+	double offset;
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */
@@ -70,12 +82,18 @@ struct app_attenuator_settings {
 
 /** Photodiode calibration, response, and warning thresholds owned by app settings. */
 struct app_pd_channel_settings {
-	float dark_mv;
-	float lowest_dark_mv;
+	double dark_mv;
+	/* APP_PD_DARK_DURATION_USER means dark_mv was set directly, not measured. */
+	uint32_t dark_duration_ms;
+	/* Last dark-measurement RMS, kept even if dark_mv is later set directly. */
+	double dark_noise_rms_mv;
+	double lowest_dark_mv;
 	bool lowest_dark_valid;
-	float noise_warn_rms_mv;
+	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
 	double transimpedance_v_per_a;
+	enum app_pd_power_mode power;
+	uint32_t autooff_s;
 };
 
 struct app_photodiode_settings {
@@ -89,10 +107,10 @@ struct app_laserbank_settings {
 /** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
 struct app_laser_channel_settings {
 	laserprops_t properties;
-	float current_set_calibration_pct;
+	double current_set_calibration_pct;
 	bool disable_tec_at_autooff;
 	uint32_t autooff_s;
-	float tune_delta_nm;
+	double tune_delta_nm;
 	double total_emitting_s;
 };
 
@@ -112,6 +130,30 @@ struct app_route_loss_settings {
 	struct app_route_loss_record record[APP_ROUTE_LOSS_RECORD_COUNT];
 };
 
+/** User-requested MEMS state and restart intent. Physical state is not verified. */
+struct app_mems_switch_settings {
+	uint8_t static_configured;
+	char static_state;
+	uint8_t toggle_configured;
+	char toggle_state;
+	double toggle_duty_cycle;
+	uint32_t toggle_cycle_ms;
+	uint32_t toggle_duration_s;
+};
+
+struct app_mems_split_settings {
+	uint8_t configured;
+	uint8_t reserved[3];
+	double requested[APP_MEMS_SPLIT_OUTPUT_COUNT];
+	uint32_t cycle_ms;
+	uint32_t duration_s;
+};
+
+struct app_mems_settings {
+	struct app_mems_switch_settings switch_state[APP_MEMS_SWITCH_COUNT];
+	struct app_mems_split_settings split[APP_MEMS_SPLIT_CHANNEL_COUNT];
+};
+
 /** Persisted/runtime settings snapshot copied under a module mutex. */
 struct app_settings_snapshot {
 	char board_type[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
@@ -122,6 +164,7 @@ struct app_settings_snapshot {
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
 	struct app_route_loss_settings route_loss;
+	struct app_mems_settings mems;
 	uint32_t boot_count;
 	uint64_t last_known_utc_ms;
 	uint32_t mqtt_revision;
@@ -144,6 +187,14 @@ void app_settings_get_snapshot(struct app_settings_snapshot *out);
  * That treats a physically different solder-strap identity as a first boot.
  */
 int app_settings_note_board_type(const char *board_type, bool *changed);
+/**
+ * @brief Erase persisted app settings except IP settings and boot count.
+ *
+ * This may block on Zephyr NVS flash I/O. It also resets the runtime settings
+ * snapshot to defaults while preserving the current IP snapshot and boot count.
+ * The schema marker is preserved as storage metadata.
+ */
+int app_settings_erase_non_ip_settings(void);
 /** @brief Copy current IP settings. */
 void app_settings_get_ip(struct app_ip_settings *out);
 /** @brief Replace IP settings and optionally persist each IP key. */
@@ -166,6 +217,14 @@ void app_settings_update_attenuator_channel(uint8_t channel,
 					    bool persist);
 /** @brief Copy current photodiode calibration and warning settings. */
 void app_settings_get_photodiode(struct app_photodiode_settings *out);
+/**
+ * @brief Try to copy photodiode settings without sleeping.
+ *
+ * Timing-sensitive samplers use this to refresh cached calibration data without
+ * waiting behind command-thread settings updates. A false return leaves the
+ * caller's prior snapshot authoritative until a later refresh succeeds.
+ */
+bool app_settings_try_get_photodiode(struct app_photodiode_settings *out);
 /** @brief Replace all photodiode settings and optionally persist both channels. */
 void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist);
 /**
@@ -218,6 +277,10 @@ int app_settings_get_route_loss(const char *route, const char *laser,
  */
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
+/** @brief Copy MEMS user intent and optional restart metadata. */
+void app_settings_get_mems(struct app_mems_settings *out);
+/** @brief Replace MEMS user intent and optionally persist the MEMS NVS record. */
+void app_settings_update_mems(const struct app_mems_settings *mems, bool persist);
 /** @brief Monotonic runtime counter used by main.c to reconnect MQTT. */
 uint32_t app_settings_get_mqtt_revision(void);
 /** @brief Get persisted boot count. */

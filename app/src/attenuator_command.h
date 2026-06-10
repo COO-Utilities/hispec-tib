@@ -20,7 +20,7 @@
  * attenuator belongs to the active board profile, and may block on DAC I2C for
  * value readback. It does not modify hardware or settings.
  */
-struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd);
+int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Update one logical attenuator's value or model coefficients.
@@ -30,12 +30,12 @@ struct coo_cmd_response atten_setting_get(const struct coo_cmd_request *cmd);
  * block on DAC I2C and can enqueue attenuator range warnings through the domain
  * driver.
  */
-struct coo_cmd_response atten_setting_set(const struct coo_cmd_request *cmd);
+int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** @brief Query compact attenuator-calibration state. */
-struct coo_cmd_response atten_calibration_get(const struct coo_cmd_request *cmd);
+int atten_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** @brief Start/continue/stop attenuator calibration or fit manual batches. */
-struct coo_cmd_response atten_calibration_set(const struct coo_cmd_request *cmd);
+int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_ATTENUATOR_COMMAND_H */

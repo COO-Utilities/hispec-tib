@@ -53,6 +53,12 @@ Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
   registers to full drive and leaves both ports push-pull; firmware no longer
   writes the PCAL port-drive register directly.
 
+- FFLS 1 & 2 (sw channels 7 & 8) have their status pins connected to D62 and D63 (PF7 & PF9) on the PCB with on-PCB pullups.
+  - The FFLS pulls the sense line low for position B; high means position A.
+  - The Nucleo overlay includes `mems-ffls1-sense-gpios` and `mems-ffls2-sense-gpios` stubs with no internal pull because the PCB provides the pullups.
+  - Firmware does not presently consume these sense lines.
+  - Do not appear to need any solder bridges set.
+
 For board files:
 - Nucleo:
     - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
@@ -68,9 +74,49 @@ At the drive level transistors are
     - 1x each for FFLS
     - 2x 10k resistor for status line (pullup and current limiting)
 
+### Switch assignments
+PCAL assignments:
+  - sw1 A B: P0 6, 7 / gpio 6, 7 
+  - sw2 A B: P1 0, 1 / gpio 8, 9 
+  - sw3 A B: P0 4, 5 / gpio 4, 5 
+  - sw4 A B: P1 2, 3 / gpio 10, 11 
+  - sw5 A B: P1 4, 5 / gpio 12, 13 
+  - sw6 A B: P1 6, 7 / gpio 14, 15 
+  - sw7 A B: P0 2, 3 / gpio 2, 3 
+  - sw8 A B: P0 0, 1 / gpio 0, 1 
+
+- TIB:
+  - sw1: FFSW, SW1_TIBB1 YJATC laser retro or forward
+  - sw2: FFSW, SW1_TIBB2 YJ CAL/Laser selector
+  - sw3: FFSW, SW1_TIBB3 YJ FEI/AO selector
+  - sw4: FFSW, SW1_TIBR1 HKATC laser retro or forward
+  - sw5: FFSW, SW1_TIBR2 HK CAL/Laser selector
+  - sw6: FFSW, SW1_TIBR3 HK FEI/AO selector
+  - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
+  - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
+- AS
+  - sw1: FFSW, SW1_ASR1 HK Splitter in
+  - sw2: FFSW, SW1_ASR2 HK Splitter out 1 (Cal/Split1)
+  - sw3: FFSW, SW1_ASR3 HK Splitter out 2 (Split2/Split3)
+  - sw4: FFSW, SW1_ASB1 YJ Splitter in
+  - sw5: FFSW, SW1_ASB2 YJ Splitter out 1 (Cal/Split1)
+  - sw6: FFSW, SW1_ASB3 YJ Splitter out 2 (Split2/Split3) 
+  - sw7: NC
+  - sw8: NC
+  
+- CAL 
+  - sw1: FFSW, SW1_CAL1 LFC/Etalon Selector
+  - sw2: FFSW, SW1_CAL2 Lamp/BB Selector
+  - sw3: FFSW, SW1_CAL3 BB IS/Cal Selector
+  - sw4: FFSW, SW1_CAL4 Lamp+BB vs LFC+Eta Selector
+  - sw5: FFSW, SW1_CAL5 Cal/Dark Selector
+  - sw6: FFSW, SW1_CAL6 IS BB/Dark Selector
+  - sw7: FFSW, SW1_CAL7 MSR/TIB Selector
+  - sw8: NC
+
 ## TIB & CAL Attenuator Drive
-A pair of DAC7578SPW 8 chan DAC driving OPA2991 2 channel OpAmps
-- 0 - 4095 (Vref, default=Vcc)
+A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
+- 0 - 4095 count (Vref, default=Vcc via internal reference source)
 - Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
 - Use Vcc=3.3 with 1.51x opamp gain to avoid LL shifting
 - OpAmp supplies required current to attenuator.
@@ -102,8 +148,10 @@ Breadboard considerations:
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 128 SPS, ±6.144 range, 187.5 uV LSB
-- Sample each at 50 Hz muxing between the two
+- Run device at 250 SPS, ±6.144 range, 187.5 uV LSB
+- Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
+  preserves timing margin for the two-channel 20 ms sampler, at the cost of
+  less converter-side averaging than 128 SPS.
 - PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - Uses 2-channels of LL shifting for i2c 3.3-5V

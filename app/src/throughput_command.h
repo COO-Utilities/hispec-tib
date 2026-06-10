@@ -20,6 +20,6 @@
  * returns one command response. This adapter does not publish telemetry; the
  * active monitor thread later enqueues telemetry through outbound_queue.
  */
-struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd);
+int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_THROUGHPUT_COMMAND_H */

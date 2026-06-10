@@ -107,6 +107,16 @@ bool attenuator_model_linear_to_b(double linear, double *b);
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
                                     double attenuation_db, double *voltage);
 
+/**
+ * @brief Validate both physical attenuator model coefficient records.
+ *
+ * Coefficients must be finite, have positive slope, and produce a positive
+ * modeled attenuation change over the fixed attenuator drive span. This performs
+ * no DAC I/O and is used before applying or restoring persisted coefficients.
+ */
+bool attenuator_model_coefficients_valid(
+    const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT]);
+
 /** Set physical attenuator 1 by modeled dB. May block on I2C. */
 bool attenuator_set_dac1_db(struct attenuator *drv, double attenuation_db);
 

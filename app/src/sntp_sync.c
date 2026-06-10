@@ -33,7 +33,7 @@ LOG_MODULE_REGISTER(sntp_sync, LOG_LEVEL_INF);
 #define SNTP_SYNC_RESYNC_INTERVAL_MS 3600000U
 #define SNTP_SYNC_INITIAL_DELAY_MS 1000U
 #define SNTP_SYNC_STACK_SIZE 1400
-#define SNTP_SYNC_THREAD_PRIORITY 10
+#define SNTP_SYNC_THREAD_PRIORITY 14
 
 struct sntp_sync_runtime {
 	struct k_mutex lock;
@@ -139,13 +139,26 @@ static bool copy_dhcp_ntp_server(char *out, size_t out_len)
 static enum sntp_sync_source choose_ntp_server(char *out, size_t out_len)
 {
 	struct app_ip_settings ip_cfg = {0};
+	bool have_dhcp_ntp;
 	struct in_addr manual = {0};
+	char dhcp_server[NET_IPV4_ADDR_LEN] = {0};
 
 	if (out == NULL || out_len == 0U) {
 		return SNTP_SYNC_SOURCE_NONE;
 	}
 
 	app_settings_get_ip(&ip_cfg);
+	have_dhcp_ntp = copy_dhcp_ntp_server(dhcp_server, sizeof(dhcp_server));
+
+	/* prefer_dhcp_ntp means DHCP NTP wins when a lease supplied one. The
+	 * manual server remains a fallback so boards without DHCP option 42 can
+	 * still sync time on networks that only hand out address/router/DNS.
+	 */
+	if (ip_cfg.prefer_dhcp_ntp && have_dhcp_ntp) {
+		strncpy(out, dhcp_server, out_len - 1U);
+		out[out_len - 1U] = '\0';
+		return SNTP_SYNC_SOURCE_DHCP;
+	}
 
 	if (parse_ipv4_nonzero(ip_cfg.ntp, &manual)) {
 		strncpy(out, ip_cfg.ntp, out_len - 1U);
@@ -153,8 +166,9 @@ static enum sntp_sync_source choose_ntp_server(char *out, size_t out_len)
 		return SNTP_SYNC_SOURCE_MANUAL;
 	}
 
-	/* Design intent: DHCP-provided NTP is used when no manual override exists. */
-	if (copy_dhcp_ntp_server(out, out_len)) {
+	if (have_dhcp_ntp) {
+		strncpy(out, dhcp_server, out_len - 1U);
+		out[out_len - 1U] = '\0';
 		return SNTP_SYNC_SOURCE_DHCP;
 	}
 

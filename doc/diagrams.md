@@ -223,7 +223,7 @@ flowchart TD
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
   Stop -- yes --> StopReq[clear selected monitor or both monitors]
-  Stop -- no --> Validate[validate laser, fiber, format, autolevel, stopafter_s]
+  Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
   Map --> PdPower[enable selected photodiode relay]
   PdPower --> AutoStart{autolevel enabled}
@@ -236,7 +236,7 @@ flowchart TD
   Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
   Snapshot --> Active{channel active}
   Active -- no --> Sleep[k_sleep 100 ms]
-  Active -- yes --> Timeout{stopafter expired}
+  Active -- yes --> Timeout{off_in expired}
   Timeout -- yes --> Clear[clear monitor]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
@@ -327,7 +327,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Work[ambient temperature delayable work] --> Find[find DS18B20]
+  Work[app-blocking ambient delayable work] --> Find[find DS18B20]
   Find --> Ready{device ready}
   Ready -- no --> InitErr[cache unavailable status]
   InitErr --> Wait[next ambient sample]
@@ -421,7 +421,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Work[laser-bank temp-control delayable work] --> Cycle[run laserbank temp-control pass]
+  Work[app-blocking laser-bank temp-control work] --> Cycle[run laserbank temp-control pass]
   Cycle --> Settings[read laserbank settings]
   Settings --> Ambient[read cached ambient temperature]
   Ambient --> Power[read bank power state]
@@ -437,8 +437,8 @@ flowchart TD
   EnteredAuto -- yes --> PowerBank[power bank on]
   EnteredAuto -- no --> ReadTemps[read Maiman TEC temperatures]
   PowerBank --> ReadTemps
-  ReadTemps --> Cache[refresh valid per-laser temperature cache]
-  Cache --> Summarize[summarize valid, stale, disabled, and warm state]
+  ReadTemps --> Cache[refresh per-laser temperature cache]
+  Cache --> Summarize[summarize idle TEC probes and heater state]
   Summarize --> AllStaleCold{all stale and ambient below warm minimum}
   AllStaleCold -- yes --> KeepPower[best-effort bank power on]
   AllStaleCold -- no --> HeaterPolicy
@@ -476,7 +476,7 @@ flowchart TD
   Clear --> Ok
   ScheduleTimeout --> Ok
 
-  TimeoutActor[laser auto-off delayable work] --> Service[service expired auto-off deadlines]
+  TimeoutActor[app-blocking laser auto-off work] --> Service[service expired auto-off deadlines]
   Service --> Expired{deadline expired}
   Expired -- no --> Wait[reschedule nearest deadline]
   Expired -- yes --> StopOutput[hispec_laser_stop_output]

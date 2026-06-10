@@ -35,6 +35,24 @@ struct coo_json_string_choice {
 const char *coo_json_skip_ws(const char *text);
 
 /**
+ * @brief Validate that all top-level object keys are in @p allowed_keys.
+ *
+ * @p allowed_keys is a comma-separated list of accepted top-level key names.
+ * NULL or an empty string means no keys are accepted. Nested object/array keys
+ * are skipped; callers that accept nested objects own nested validation.
+ *
+ * @retval 0 JSON is an object and every top-level key is allowed.
+ * @retval -ENOENT A top-level key is not allowed; @p unknown_key receives it
+ *                 when a destination buffer is supplied.
+ * @retval -EINVAL Input is not a valid JSON object for this lightweight check.
+ * @retval -ENOSPC A key does not fit in @p unknown_key.
+ */
+int coo_json_validate_top_level_keys(const char *json,
+				     const char *allowed_keys,
+				     char *unknown_key,
+				     size_t unknown_key_len);
+
+/**
  * Match @p text against a case-insensitive static string-choice table.
  *
  * This helper only validates the command token and writes the associated
@@ -49,25 +67,12 @@ int coo_json_match_string_choice(const char *text,
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
-int coo_json_extract_float(const char *json, const char *key, float *value);
 /** Extract one required JSON number into a double. */
 int coo_json_extract_double(const char *json, const char *key, double *value);
 /** Extract a JSON number array into @p values. Supports up to 32 doubles. */
 int coo_json_extract_double_array(const char *json, const char *key,
 				  double *values, size_t max_values,
 				  size_t *parsed_len);
-/**
- * @brief Parse an optional float field and reject values outside a range.
- *
- * Missing fields are not errors and leave @p value unchanged. On success with
- * a present field, @p value is updated and @p changed is set true.
- *
- * @retval 0 Field was missing or parsed within range.
- * @retval -EINVAL Bad arguments, malformed JSON field, or out-of-range value.
- */
-int coo_json_extract_optional_float_range(const char *json, const char *key,
-					  float *value, bool *changed,
-					  float min_value, float max_value);
 /**
  * @brief Parse an optional bool field.
  *

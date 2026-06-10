@@ -28,6 +28,24 @@ config APP_DEFAULT_NTP_SERVER
 	  snapshot. The current settings schema stores IPv4 strings, not
 	  hostnames. Use 0.0.0.0 to prefer DHCP-provided NTP.
 
+config SET_SWITCH_STATE_AT_BOOT
+	bool "Reassert persisted MEMS static switch state at boot"
+	default y
+	help
+	  If enabled, boot initializes each MEMS switch target from the last
+	  user-commanded static state stored in app settings. The first MEMS
+	  service tick then resends that pulse because firmware cannot verify
+	  physical switch position across reboot or offline changes.
+
+config RESUME_TOGGLE_STATE_AT_BOOT
+	bool "Resume persisted MEMS toggle and split requests at boot"
+	default n
+	help
+	  If enabled, boot restarts persisted MEMS toggle/split requests using
+	  their originally commanded duration. Runtime remaining time is not
+	  preserved across reboot because doing so would require frequent NVS
+	  writes while switching.
+
 choice SNTP_LOG_LEVEL_CHOICE
 	default SNTP_LOG_LEVEL_DBG if SNTP
 endchoice

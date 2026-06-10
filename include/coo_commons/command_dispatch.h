@@ -24,7 +24,8 @@ struct nvs_fs;
  * handling, built-in command execution, bounded serial payload normalization,
  * optional lastcommand persistence, warning publication, and transport-shaped
  * response handling. Applications may still provide a custom execute callback
- * when they need to replace the default executor.
+ * for app-owned commands; library built-ins run first so an app extension cannot
+ * accidentally remove help, serialguard, or reboot behavior.
  */
 
 #define COO_CMD_TOPIC_MAX 96
@@ -46,8 +47,8 @@ struct nvs_fs;
 #define COO_CMD_SERIAL_LINE_MAX 128
 #endif
 
-#if defined(CONFIG_COO_MQTT_PAYLOAD_SIZE)
-#define COO_CMD_PAYLOAD_MAX CONFIG_COO_MQTT_PAYLOAD_SIZE
+#if defined(CONFIG_COO_CMD_PAYLOAD_SIZE)
+#define COO_CMD_PAYLOAD_MAX CONFIG_COO_CMD_PAYLOAD_SIZE
 #else
 #define COO_CMD_PAYLOAD_MAX 256
 #endif
@@ -119,7 +120,8 @@ struct coo_cmd_work {
 
 struct coo_cmd_spec;
 
-typedef struct coo_cmd_response (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd);
+typedef int (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd,
+				  struct coo_cmd_response *out);
 
 typedef int (*coo_cmd_format_response_topic_fn)(const char *key,
 						char *out,
@@ -140,7 +142,8 @@ typedef enum coo_cmd_msg_type (*coo_cmd_classify_fn)(
 typedef bool (*coo_cmd_supported_fn)(const struct coo_cmd_spec *spec,
 				     void *user_data);
 
-typedef void (*coo_cmd_reboot_prepare_fn)(void *user_data);
+typedef void (*coo_cmd_reboot_prepare_fn)(bool erase_non_ip_settings,
+					  void *user_data);
 
 struct coo_cmd_lastcommand {
 	bool valid;
@@ -174,6 +177,17 @@ struct coo_cmd_spec {
 	coo_cmd_serial_shorthand_fn serial_shorthand;
 	struct coo_cmd_serial_positional serial_positional;
 	coo_cmd_supported_fn supported;
+	/*
+	 * Exact key matching is the default. Set key_prefix_match only for
+	 * intentionally parameterized endpoint families such as atten/<name>/...
+	 * so typos like laser/angstatus do not silently dispatch to laser.
+	 */
+	bool key_prefix_match;
+	/*
+	 * Comma-separated top-level payload keys accepted by this endpoint.
+	 * NULL or "" means no payload keys are accepted.
+	 */
+	const char *allowed_payload_keys;
 	const struct coo_cmd_help_entry *help;
 	bool mqtt_query_allowed_during_serial_guard;
 };
@@ -181,11 +195,13 @@ struct coo_cmd_spec {
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, optional execute callback, and MQTT message-id
- * storage. The runtime owns the copied device identity and topic formatting
- * derived from it. The runtime helpers do not allocate memory; they block only
- * in the executor queue wait, optional NVS lastcommand persistence, reboot
- * prepare callback, and MQTT publish path used by the outbound drain.
+ * The application owns the queues, optional app-command execute callback, and
+ * MQTT message-id storage. The runtime owns the copied device identity, topic
+ * formatting derived from it, library built-ins, and scratch buffers used to
+ * keep large command payload storage off thread stacks. The runtime helpers do
+ * not allocate memory; they block only in the executor queue wait, optional NVS
+ * lastcommand persistence, reboot prepare callback, and MQTT publish path used
+ * by the outbound drain.
  */
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
@@ -206,6 +222,7 @@ struct coo_cmd_runtime {
 	struct k_work_delayable reboot_work;
 	atomic_t reboot_pending;
 	uint32_t reboot_delay_ms;
+	bool reboot_erase_non_ip_settings;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
 #endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
@@ -226,6 +243,10 @@ struct coo_cmd_runtime {
 	struct coo_cmd_request executor_cmd;
 	struct coo_cmd_response executor_out;
 	struct coo_cmd_response outbound_scratch;
+	/* Warning builders share one runtime buffer; if it is busy, warnings stay
+	 * local rather than blocking or allocating another full response.
+	 */
+	atomic_t warning_scratch_busy;
 	struct coo_cmd_response warning_scratch;
 };
 
@@ -385,12 +406,12 @@ int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
  *
  * MQTT correlation data is echoed exactly when it fits the request buffer.
  */
-struct coo_cmd_response
-coo_cmd_make_response(const struct coo_cmd_request *cmd,
-		      enum coo_cmd_msg_type msg_type,
-		      const char *payload,
-		      coo_cmd_format_response_topic_fn format_topic,
-		      void *user_data);
+int coo_cmd_make_response(struct coo_cmd_response *out,
+			  const struct coo_cmd_request *cmd,
+			  enum coo_cmd_msg_type msg_type,
+			  const char *payload,
+			  coo_cmd_format_response_topic_fn format_topic,
+			  void *user_data);
 
 /**
  * @brief Build a response using the request's normalized response topic.
@@ -399,37 +420,44 @@ coo_cmd_make_response(const struct coo_cmd_request *cmd,
  * this helper rather than repeating a local response-topic wrapper in each
  * command adapter.
  */
-struct coo_cmd_response
-coo_cmd_reply(const struct coo_cmd_request *cmd,
-		 enum coo_cmd_msg_type msg_type,
-		 const char *payload);
+int coo_cmd_reply(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  enum coo_cmd_msg_type msg_type,
+		  const char *payload);
 
 /** @brief Build the standard data-less success response: {"status":"ok"}. */
-struct coo_cmd_response coo_cmd_ok(const struct coo_cmd_request *cmd);
+int coo_cmd_ok(struct coo_cmd_response *out, const struct coo_cmd_request *cmd);
 
 /** @brief Build a structured error response with one error string. */
-struct coo_cmd_response coo_cmd_error(const struct coo_cmd_request *cmd,
-				      const char *msg);
+int coo_cmd_error(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  const char *msg);
 
 /** @brief Build a structured error response with one error string and rc. */
-struct coo_cmd_response coo_cmd_error_rc(const struct coo_cmd_request *cmd,
-					 const char *msg,
-					 int rc);
+int coo_cmd_error_rc(struct coo_cmd_response *out,
+		     const struct coo_cmd_request *cmd,
+		     const char *msg,
+		     int rc);
 
 /** @brief Build the standard malformed-command error response. */
-struct coo_cmd_response coo_cmd_invalid_response(const struct coo_cmd_request *cmd);
+int coo_cmd_invalid_response(struct coo_cmd_response *out,
+			     const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard unknown-command error response. */
-struct coo_cmd_response coo_cmd_unknown_response(const struct coo_cmd_request *cmd);
+int coo_cmd_unknown_response(struct coo_cmd_response *out,
+			     const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard unsupported-operation error response. */
-struct coo_cmd_response coo_cmd_unsupported_response(const struct coo_cmd_request *cmd);
+int coo_cmd_unsupported_response(struct coo_cmd_response *out,
+				 const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard busy error response. */
-struct coo_cmd_response coo_cmd_busy_response(const struct coo_cmd_request *cmd);
+int coo_cmd_busy_response(struct coo_cmd_response *out,
+			  const struct coo_cmd_request *cmd);
 
 /** @brief Build the standard serial-guard-active error response. */
-struct coo_cmd_response coo_cmd_serial_active_response(const struct coo_cmd_request *cmd);
+int coo_cmd_serial_active_response(struct coo_cmd_response *out,
+				   const struct coo_cmd_request *cmd);
 
 /**
  * @brief Build a best-effort warning publication.

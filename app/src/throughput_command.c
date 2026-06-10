@@ -103,11 +103,11 @@ static int throughput_apply_route_if_requested(const char *input,
 		return -EINVAL;
 	}
 
-	return mems_router_apply_named_route(&router, input, output,
+	return mems_router_apply_named_route(&router, input, output, false,
 					     &failed_switch, &failed_state);
 }
 
-struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd)
+int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	char stop[8] = {0};
 	char laser_name[16] = {0};
@@ -115,7 +115,7 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 	char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	struct throughput_monitor_request request = {0};
 	struct throughput_monitor_status status = {0};
-	uint32_t stopafter_s = 0U;
+	uint32_t off_in_s = 0U;
 	bool autolevel = true;
 	bool max_flux_present = false;
 	int choice_value;
@@ -127,24 +127,24 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 		if (coo_json_match_string_choice(stop, stop_choices,
 						 ARRAY_SIZE(stop_choices),
 						 &choice_value) != 0) {
-			return coo_cmd_error(cmd, "stop must be yj, hk, or all");
+			return coo_cmd_error(out, cmd, "stop must be yj, hk, or all");
 		}
 
 		rc = throughput_monitor_stop((uint8_t)choice_value, &status);
 		if (rc != 0) {
-			return coo_cmd_error(cmd, "stop failed");
+			return coo_cmd_error(out, cmd, "stop failed");
 		}
 
-		return coo_cmd_ok(cmd);
+		return coo_cmd_ok(out, cmd);
 	}
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid stop");
+		return coo_cmd_error(out, cmd, "invalid stop");
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "laser",
 					   laser_name, sizeof(laser_name));
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
-		return coo_cmd_error(cmd, "missing or invalid laser");
+		return coo_cmd_error(out, cmd, "missing or invalid laser");
 	}
 	if (strcmp(laser_name, "none") == 0) {
 		request.has_laser = false;
@@ -152,7 +152,7 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 	} else if (hispec_laser_id_from_name(laser_name, &request.laser) == 0) {
 		request.has_laser = true;
 	} else {
-		return coo_cmd_error(cmd, "missing or invalid laser");
+		return coo_cmd_error(out, cmd, "missing or invalid laser");
 	}
 
 	parse_rc = coo_json_extract_string_choice(cmd->payload, "fiber",
@@ -160,7 +160,7 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 						  ARRAY_SIZE(fiber_choices),
 						  &choice_value);
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "fiber must be M or S");
+		return coo_cmd_error(out, cmd, "fiber must be M or S");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
 		request.fiber = (char)choice_value;
@@ -170,19 +170,19 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 
 	if (coo_json_extract_optional_bool(cmd->payload, "autolevel",
 					   &autolevel, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid autolevel");
+		return coo_cmd_error(out, cmd, "invalid autolevel");
 	}
 
-	if (coo_json_extract_optional_u32(cmd->payload, "stopafter_s",
-					  &stopafter_s, NULL) != 0) {
-		return coo_cmd_error(cmd, "invalid stopafter_s");
+	if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
+					  &off_in_s, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid off_in_s");
 	}
 
 	if (coo_json_extract_optional_double_range(cmd->payload, "max_flux_ph_s",
 						   &request.max_flux_ph_s,
 						   &max_flux_present,
 						   0.0, 1.0e30) != 0) {
-		return coo_cmd_error(cmd, "invalid max_flux_ph_s");
+		return coo_cmd_error(out, cmd, "invalid max_flux_ph_s");
 	}
 
 	parse_rc = coo_json_extract_string_choice(cmd->payload, "format",
@@ -190,47 +190,50 @@ struct coo_cmd_response measure_throughput_set(const struct coo_cmd_request *cmd
 						  ARRAY_SIZE(format_choices),
 						  &choice_value);
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "format must be json or binary");
+		return coo_cmd_error(out, cmd, "format must be json or binary");
 	}
 	request.binary = parse_rc == COO_JSON_EXTRACT_OK &&
 			 choice_value == THROUGHPUT_FORMAT_BINARY;
 
 	request.autolevel = autolevel;
-	request.stopafter_s = stopafter_s;
+	request.off_in_s = off_in_s;
 
 	parse_rc = coo_json_extract_string(cmd->payload, "input", input, sizeof(input));
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid input");
+		return coo_cmd_error(out, cmd, "invalid input");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_MISSING && request.has_laser &&
 	    throughput_input_for_laser(request.laser, input, sizeof(input)) != 0) {
-		return coo_cmd_error(cmd, "invalid laser route");
+		return coo_cmd_error(out, cmd, "invalid laser route");
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "output", output, sizeof(output));
 	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(cmd, "invalid output");
+		return coo_cmd_error(out, cmd, "invalid output");
 	}
 
 	if (!request.has_laser) {
 		if (autolevel || input[0] == '\0' || output[0] == '\0' ||
 		    throughput_channel_from_input(input, &request.channel) != 0) {
-			return coo_cmd_error(cmd, "laser none requires input, output, and autolevel false");
+			return coo_cmd_error(out, cmd, "laser none requires input, output, and autolevel false");
 		}
 	} else if (max_flux_present && !autolevel) {
-		return coo_cmd_error(cmd, "max_flux_ph_s requires autolevel");
+		return coo_cmd_error(out, cmd, "max_flux_ph_s requires autolevel");
 	}
 
 	rc = throughput_apply_route_if_requested(input, output);
 	if (rc != 0) {
-		return coo_cmd_error(cmd, "failed to apply output route");
+		return coo_cmd_error(out, cmd, "failed to apply output route");
 	}
 
 	rc = throughput_monitor_start(&request, &status);
 	if (rc != 0) {
 		LOG_ERR("measure_throughput start failed: %d", rc);
-		return coo_cmd_error(cmd, "measure_throughput start failed");
+		if (rc == -EACCES) {
+			return coo_cmd_error(out, cmd, "photodiode power override_off");
+		}
+		return coo_cmd_error(out, cmd, "measure_throughput start failed");
 	}
 
-	return coo_cmd_ok(cmd);
+	return coo_cmd_ok(out, cmd);
 }

@@ -13,7 +13,6 @@ import argparse
 import itertools
 import json
 import logging
-import math
 import queue
 import re
 import struct
@@ -38,8 +37,16 @@ ATTENUATOR_NAMES = LASER_NAMES + ("lfc",)
 PD_CHANNELS = ("yj", "hk")
 FIBERS = ("M", "S")
 OVERRIDE_MODES = ("auto", "override_on", "override_off")
-MEMS_STATES = ("A", "B")
+MEMS_STATES = ("A", "B", "a", "b")
 MEMS_MAX_TOGGLE_DURATION_S = 4 * 60 * 60
+PD_DARK_MIN_MV = -5000.0
+PD_DARK_MAX_MV = 5000.0
+PD_NOISE_RMS_MIN_MV = 0.0
+PD_NOISE_RMS_MAX_MV = 5000.0
+PD_RESPONSIVITY_MIN_A_PER_W = 0.000001
+PD_RESPONSIVITY_MAX_A_PER_W = 10.0
+PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
+PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 
 _LASER_TO_PD_CHANNEL = {
     "1028y": "yj",
@@ -50,13 +57,13 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9f")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9d")
 THROUGHPUT_DTYPE = np.dtype(
     [
         ("channel", "U8"),
         ("laser", "U16"),
         ("autolevel", "?"),
-        ("time", "u8"),
+        ("t_ms", "u8"),
         ("tp", "f8"),
         ("tp_err", "f8"),
         ("tp_rms_err", "f8"),
@@ -68,15 +75,15 @@ THROUGHPUT_DTYPE = np.dtype(
         ("laser_route_tx", "f8"),
         ("atten_tx", "f8"),
         ("pd_raw", "i2"),
-        ("pd_mv", "f4"),
-        ("pd_net_mv", "f4"),
-        ("pd_mean_mv_1s", "f4"),
-        ("pd_rms_mv_0p5s", "f4"),
-        ("laser_current_ma", "f4"),
-        ("atten_db", "f4"),
-        ("wavelength_nm", "f4"),
-        ("pd_ontime_s", "f4"),
-        ("laser_current_ontime_s", "f4"),
+        ("pd_mv", "f8"),
+        ("pd_net_mv", "f8"),
+        ("pd_mean_mv_1s", "f8"),
+        ("pd_rms_mv_0p5s", "f8"),
+        ("laser_current_ma", "f8"),
+        ("atten_db", "f8"),
+        ("wavelength_nm", "f8"),
+        ("pd_ontime_s", "f8"),
+        ("laser_current_ontime_s", "f8"),
         ("flags", "O"),
     ]
 )
@@ -112,6 +119,15 @@ class HelpSummary:
 
 
 @dataclass(frozen=True)
+class Catalog:
+    board: str
+    lasers: tuple[str, ...]
+    route_inputs: tuple[str, ...]
+    route_outputs: tuple[str, ...]
+    routes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class MqttConfig:
     broker: str
     dns_supported: bool
@@ -134,13 +150,13 @@ class IpActiveConfig:
 
 @dataclass(frozen=True)
 class NtpConfig:
-    source: str
+    src: str
     server: str
 
 
 @dataclass(frozen=True)
 class IpConfig:
-    source: str
+    src: str
     trydhcpfirst: bool
     preferdhcpdns: bool
     preferdhcpntp: bool
@@ -159,7 +175,7 @@ class PartialSupport:
 @dataclass(frozen=True)
 class TimeStatus:
     utc: int
-    uptime: int
+    uptime_s: int
 
 
 @dataclass(frozen=True)
@@ -172,15 +188,15 @@ class SerialGuardStatus:
 @dataclass(frozen=True)
 class LastCommand:
     name: str
-    source: str
-    time: int
+    src: str
+    t_ms: int
 
 
 @dataclass(frozen=True)
 class StatusLaserSummary:
     power_mw: float | None = None
-    tec_on_time_s: float = 0.0
-    offin_s: int = 0
+    tec_on_s: float = 0.0
+    off_in_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -190,16 +206,16 @@ class StatusAttenSummary:
 
 @dataclass(frozen=True)
 class Status:
-    fwversion: str
-    bootcount: int
-    board_type: str
-    board_valid: bool
+    fw: str
+    boots: int
+    board: str
+    board_ok: bool
     mems_switches: int
-    relay_gpio_error: int
-    temp_c: float | None
-    pd_ontime: float
-    laserbank_ontime: int
-    lastcommand: LastCommand
+    relay_err: int
+    amb_c: float | None
+    pd_on_s: float
+    laserbank_on_s: int
+    lastcmd: LastCommand
     ip: IpConfig | None = None
     lasers: tuple[NamedValue, ...] = ()
     attens: tuple[NamedValue, ...] = ()
@@ -224,9 +240,10 @@ class MemsSwitchDetail:
     name: str
     state: str
     duty_cycle: float
-    requested_toggle_rate_hz: float = 0.0
-    toggle_rate_hz: float = 0.0
-    stopafter_s: int = 0
+    cycle_ms: int = 0
+    a_ms: int = 0
+    b_ms: int = 0
+    stop_in_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -249,7 +266,7 @@ class LaserStatus:
     emit_on_s: float
     emit_total_s: float
     temp_c: float | None
-    current_ma: float | None
+    i_mA: float | None
     level: float | None
     power_mw: float | None
     nominal_nm: float
@@ -258,7 +275,7 @@ class LaserStatus:
     tec_ma: float | None
     diode_v: float | None
     tec_v: float | None
-    offin_s: int
+    off_in_s: int
     oc_fault: bool
 
 
@@ -357,27 +374,24 @@ class LaserBankClearFaults:
 
 @dataclass(frozen=True)
 class LaserBankHeater:
-    heater_mode: str
+    mode: str
+    auto_state: str
     heater_on: bool
     bank_power: bool
     ambient_valid: bool
     ambient_c: float
     valid_temps: int
     stale_temps: int
-    any_disabled_below_15c: bool
-    any_disabled_above_off_threshold: bool
-    all_tecs_enabled: bool
-    all_tecs_enabled_ms: int
     last_error: int
-    last_poll_age_ms: int
+    poll_age_s: float
 
 
 @dataclass(frozen=True)
 class AttenuatorState:
     db: float
     linear: float
-    voltage1: float
-    voltage2: float
+    v1_mv: float
+    v2_mv: float
     db1: float
     db2: float
 
@@ -404,7 +418,7 @@ class AttenuatorFitMetrics:
 
 @dataclass(frozen=True)
 class AttenuatorCalibrationBatch:
-    voltage_mv: tuple[float, ...]
+    v_mV: tuple[float, ...]
     flux: tuple[float, ...]
 
 
@@ -423,7 +437,7 @@ class AttenuatorCalibrationStatus:
     error: int
     dac1: AttenuatorFitMetrics
     dac2: AttenuatorFitMetrics
-    voltage_mv: tuple[float, ...] = ()
+    v_mV: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -442,7 +456,10 @@ class PhotodiodeValues:
     hk_mean_mv_1s: float
     yj_rms_mv_0p5s: float
     hk_rms_mv_0p5s: float
-    uptime: int
+    yj_ontime_s: float
+    hk_ontime_s: float
+    yj_pd_is_off: bool = False
+    hk_pd_is_off: bool = False
 
 
 @dataclass(frozen=True)
@@ -456,27 +473,27 @@ class DarkStatus:
     stored: bool | None = None
     mean_dark_mv: float | None = None
     rms_mv: float | None = None
+    dark_noise_rms_mv: float = np.nan
     min_mv: float | None = None
     max_mv: float | None = None
     previous_dark_mv: float | None = None
     configured_dark_mv: float | None = None
-    lowest_dark_mv: float | None = None
-    lowest_dark_valid: bool | None = None
+    lowest_stored_dark_mv: float = np.nan
 
 
 @dataclass(frozen=True)
 class PhotodiodeSettings:
     channel: str
     dark_mv: float
-    lowest_dark_mv: float
-    lowest_dark_valid: bool
-    average: str
-    average_duration_ms: int
-    average_samples: int
-    average_target_samples: int
+    dark_duration_ms: int | Literal["user"]
+    dark_noise_rms_mv: float
+    lowest_stored_dark_mv: float
     noise_rms_mV: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
+    power: str
+    autooff_s: int
+    off_in_s: int | None
 
 
 @dataclass(frozen=True)
@@ -484,9 +501,8 @@ class SplitSwitchState:
     name: str
     state: str
     duty_cycle: float
-    numerator: int
-    denominator: int
-    tick_ms: int
+    a_ms: int
+    b_ms: int
 
 
 @dataclass(frozen=True)
@@ -496,8 +512,9 @@ class SplitState:
     ratio_actual: tuple[float, float, float]
     ratio_out: tuple[float, float, float]
     split_transmission: tuple[float, float, float]
+    cycle_ms: int
     switches: tuple[SplitSwitchState, SplitSwitchState, SplitSwitchState]
-    stopsin_s: int
+    stop_in_s: int
 
 
 @dataclass(frozen=True)
@@ -514,7 +531,7 @@ class ThroughputSample:
     channel: str
     laser: str
     autolevel: bool
-    time: int
+    t_ms: int
     tp: float
     tp_err: float
     tp_rms_err: float
@@ -570,13 +587,13 @@ def _require_choice(name: str, value: str, choices: Sequence[str]) -> str:
 
 def _require_float(name: str, value: float, min_value: float, max_value: float) -> float:
     value = float(value)
-    if not math.isfinite(value) or value < min_value or value > max_value:
+    if not np.isfinite(value) or value < min_value or value > max_value:
         raise HispecFibError(f"{name} must be in [{min_value}, {max_value}]")
     return value
 
 
 def _float_or_nan(value: Any) -> float:
-    return math.nan if value is None else float(value)
+    return np.nan if value is None else float(value)
 
 
 def _require_nonnegative_u32(name: str, value: int) -> int:
@@ -641,9 +658,19 @@ def _decode_help(data: Mapping[str, Any]) -> HelpSummary:
     return HelpSummary(help=str(data.get("help", "")))
 
 
+def _decode_catalog(data: Mapping[str, Any]) -> Catalog:
+    return Catalog(
+        board=str(data["board"]),
+        lasers=tuple(str(name) for name in data.get("lasers", ())),
+        route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
+        route_outputs=tuple(str(name) for name in data.get("route_outputs", ())),
+        routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
+    )
+
+
 def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
     return IpConfig(
-        source=str(data["source"]),
+        src=str(data["src"]),
         trydhcpfirst=bool(data["trydhcpfirst"]),
         preferdhcpdns=bool(data["preferdhcpdns"]),
         preferdhcpntp=bool(data["preferdhcpntp"]),
@@ -658,8 +685,8 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         data.get("lasers", {}),
         lambda _name, value: StatusLaserSummary(
             power_mw=value.get("power_mw"),
-            tec_on_time_s=float(value.get("tec_on_time_s", 0.0)),
-            offin_s=int(value.get("offin_s", 0)),
+            tec_on_s=float(value.get("tec_on_s", 0.0)),
+            off_in_s=int(value.get("off_in_s", 0)),
         ),
     )
     attens = _named_values(
@@ -667,16 +694,16 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         lambda _name, value: StatusAttenSummary(level_percent=value.get("level_%")),
     )
     return Status(
-        fwversion=str(data["fwversion"]),
-        bootcount=int(data["bootcount"]),
-        board_type=str(data["board_type"]),
-        board_valid=bool(data["board_valid"]),
+        fw=str(data["fw"]),
+        boots=int(data["boots"]),
+        board=str(data["board"]),
+        board_ok=bool(data["board_ok"]),
         mems_switches=int(data["mems_switches"]),
-        relay_gpio_error=int(data["relay_gpio_error"]),
-        temp_c=data.get("temp_c"),
-        pd_ontime=float(data["pd_ontime"]),
-        laserbank_ontime=int(data["laserbank_ontime"]),
-        lastcommand=_dataclass_from(LastCommand, data["lastcommand"]),
+        relay_err=int(data["relay_err"]),
+        amb_c=data.get("amb_c"),
+        pd_on_s=float(data["pd_on_s"]),
+        laserbank_on_s=int(data["laserbank_on_s"]),
+        lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
         ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
         lasers=lasers,
         attens=attens,
@@ -692,6 +719,7 @@ def _decode_temp(data: Mapping[str, Any]) -> TempStatus:
 
 
 def _default_mems_duty_cycle(state: str) -> float:
+    state = state.upper()
     if state.startswith("A"):
         return 1.0
     if state.startswith("B"):
@@ -719,9 +747,10 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
         name=name,
         state=state,
         duty_cycle=float(data.get("duty_cycle", _default_mems_duty_cycle(state))),
-        requested_toggle_rate_hz=float(data.get("requested_toggle_rate_hz", 0.0)),
-        toggle_rate_hz=float(data.get("toggle_rate_hz", 0.0)),
-        stopafter_s=int(data.get("stopafter_s", 0)),
+        cycle_ms=int(data.get("cycle_ms", 0)),
+        a_ms=int(data.get("a_ms", 0)),
+        b_ms=int(data.get("b_ms", 0)),
+        stop_in_s=int(data.get("stop_in_s", 0)),
     )
 
 
@@ -811,38 +840,60 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
         error=int(data["error"]),
         dac1=_decode_atten_fit(data.get("dac1", {"valid": False})),
         dac2=_decode_atten_fit(data.get("dac2", {"valid": False})),
-        voltage_mv=tuple(float(v) for v in data.get("voltage_mv", ())),
+        v_mV=tuple(float(v) for v in data.get("v_mV", ())),
     )
 
 
 def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any]) -> dict[str, list[float]]:
     if isinstance(batch, AttenuatorCalibrationBatch):
-        voltage_mv = batch.voltage_mv
+        voltage_mv = batch.v_mV
         flux = batch.flux
     elif isinstance(batch, Mapping):
-        voltage_mv = batch.get("voltage_mv", ())
+        voltage_mv = batch.get("v_mV", ())
         flux = batch.get("flux", ())
     else:
         if len(batch) != 2:
-            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (voltage_mv, flux)")
+            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (v_mV, flux)")
         voltage_mv = batch[0]
         flux = batch[1]
 
     voltage_values = tuple(float(v) for v in voltage_mv)
     flux_values = tuple(float(v) for v in flux)
     if len(voltage_values) != len(flux_values):
-        raise HispecFibError(f"{name} voltage_mv and flux lengths differ")
+        raise HispecFibError(f"{name} v_mV and flux lengths differ")
     if len(voltage_values) < 6 or len(voltage_values) > 20:
         raise HispecFibError(f"{name} must contain 6 to 20 points")
-    if any(not math.isfinite(v) for v in voltage_values):
-        raise HispecFibError(f"{name} voltage_mv contains non-finite values")
-    if any((not math.isfinite(v)) or v <= 0.0 for v in flux_values):
+    if any(not np.isfinite(v) for v in voltage_values):
+        raise HispecFibError(f"{name} v_mV contains non-finite values")
+    if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
         raise HispecFibError(f"{name} flux values must be positive and finite")
-    return {"voltage_mv": list(voltage_values), "flux": list(flux_values)}
+    return {"v_mV": list(voltage_values), "flux": list(flux_values)}
 
 
 def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
-    return _dataclass_from(DarkStatus, data)
+    return _dataclass_from(
+        DarkStatus,
+        data,
+        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
+        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
+    )
+
+
+def _decode_pdsettings(data: Mapping[str, Any]) -> PhotodiodeSettings:
+    duration = data.get("dark_duration_ms", "user")
+    return PhotodiodeSettings(
+        channel=str(data["channel"]),
+        dark_mv=float(data["dark_mv"]),
+        dark_duration_ms="user" if duration == "user" else int(duration),
+        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
+        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
+        noise_rms_mV=float(data["noise_rms_mV"]),
+        responsivity_a_per_w=float(data["responsivity_a_per_w"]),
+        transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
+        power=str(data["power"]),
+        autooff_s=int(data["autooff_s"]),
+        off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
+    )
 
 
 def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
@@ -852,8 +903,9 @@ def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
         ratio_actual=_as_tuple3(data["ratio_actual"], "ratio_actual"),
         ratio_out=_as_tuple3(data["ratio_out"], "ratio_out"),
         split_transmission=_as_tuple3(data["split_transmission"], "split_transmission"),
+        cycle_ms=int(data["cycle_ms"]),
         switches=tuple(_dataclass_from(SplitSwitchState, item) for item in data["switches"]),  # type: ignore[arg-type]
-        stopsin_s=int(data["stopsin_s"]),
+        stop_in_s=int(data["stop_in_s"]),
     )
 
 
@@ -879,27 +931,27 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             channel=str(data.get("channel", "")),
             laser=str(data.get("laser", "")),
             autolevel=bool(data.get("autolevel", False)),
-            time=int(data.get("time", 0)),
-            tp=_float_or_nan(data.get("tp", math.nan)),
-            tp_err=_float_or_nan(data.get("tp_err", math.nan)),
-            tp_rms_err=_float_or_nan(data.get("tp_rms_err", math.nan)),
-            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", math.nan)),
-            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", math.nan)),
-            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", math.nan)),
-            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", math.nan)),
-            pd_route_tx=_float_or_nan(data.get("pd_route_tx", math.nan)),
-            laser_route_tx=_float_or_nan(data.get("laser_route_tx", math.nan)),
-            atten_tx=_float_or_nan(data.get("atten_tx", math.nan)),
+            t_ms=int(data.get("t_ms", 0)),
+            tp=_float_or_nan(data.get("tp", np.nan)),
+            tp_err=_float_or_nan(data.get("tp_err", np.nan)),
+            tp_rms_err=_float_or_nan(data.get("tp_rms_err", np.nan)),
+            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", np.nan)),
+            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", np.nan)),
+            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", np.nan)),
+            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", np.nan)),
+            pd_route_tx=_float_or_nan(data.get("pd_route_tx", np.nan)),
+            laser_route_tx=_float_or_nan(data.get("laser_route_tx", np.nan)),
+            atten_tx=_float_or_nan(data.get("atten_tx", np.nan)),
             pd_raw=int(data.get("pd_raw", 0)),
-            pd_mv=_float_or_nan(data.get("pd_mv", math.nan)),
-            pd_net_mv=_float_or_nan(data.get("pd_net_mv", math.nan)),
-            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", math.nan)),
-            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", math.nan)),
-            laser_current_ma=_float_or_nan(data.get("laser_current_ma", math.nan)),
-            atten_db=_float_or_nan(data.get("atten_db", math.nan)),
-            wavelength_nm=_float_or_nan(data.get("wavelength_nm", math.nan)),
-            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", math.nan)),
-            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", math.nan)),
+            pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
+            pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
+            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", np.nan)),
+            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", np.nan)),
+            laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
+            atten_db=_float_or_nan(data.get("atten_db", np.nan)),
+            wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
+            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", np.nan)),
+            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", np.nan)),
             flags=tuple(str(flag) for flag in (data.get("flags") or ())),
         )
 
@@ -911,12 +963,12 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     channel = values[0].split(b"\0", 1)[0].decode("ascii", "replace")
     f64 = values[2:12]
     pd_raw = values[12]
-    f32 = values[13:22]
+    extra = values[13:22]
     return ThroughputSample(
         channel=channel,
         laser="",
         autolevel=False,
-        time=int(values[1]),
+        t_ms=int(values[1]),
         tp=float(f64[0]),
         tp_err=float(f64[1]),
         tp_rms_err=float(f64[2]),
@@ -928,15 +980,15 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         laser_route_tx=float(f64[8]),
         atten_tx=float(f64[9]),
         pd_raw=int(pd_raw),
-        pd_mv=float(f32[0]),
-        pd_net_mv=float(f32[1]),
-        pd_mean_mv_1s=float(f32[2]),
-        pd_rms_mv_0p5s=float(f32[3]),
-        laser_current_ma=float(f32[4]),
-        atten_db=float(f32[5]),
-        wavelength_nm=float(f32[6]),
-        pd_ontime_s=float(f32[7]),
-        laser_current_ontime_s=float(f32[8]),
+        pd_mv=float(extra[0]),
+        pd_net_mv=float(extra[1]),
+        pd_mean_mv_1s=float(extra[2]),
+        pd_rms_mv_0p5s=float(extra[3]),
+        laser_current_ma=float(extra[4]),
+        atten_db=float(extra[5]),
+        wavelength_nm=float(extra[6]),
+        pd_ontime_s=float(extra[7]),
+        laser_current_ontime_s=float(extra[8]),
         flags=(),
     )
 
@@ -1010,7 +1062,7 @@ class ThroughputMonitor:
     def plot_live(
         self,
         *,
-        x: str = "time",
+        x: str = "t_ms",
         y: str = "tp",
         interval_s: float = 0.5,
         max_points: int | None = None,
@@ -1139,6 +1191,9 @@ class HispecFibPcb:
     def help(self) -> HelpSummary:
         return _decode_help(self._request_json("help"))
 
+    def catalog(self) -> Catalog:
+        return _decode_catalog(self._request_json("catalog"))
+
     def status(self, *, ip: bool = False, lasers: bool = False, attens: bool = False) -> Status:
         payload = _optional_payload(ip=ip or None, lasers=lasers or None, attens=attens or None)
         return _decode_status(self._request_json("status", payload))
@@ -1186,10 +1241,10 @@ class HispecFibPcb:
     def time(self) -> TimeStatus:
         return _dataclass_from(TimeStatus, self._request_json("time"))
 
-    def set_time(self, linuxtime_ms: int | None = None) -> CommandOk:
-        if linuxtime_ms is None:
-            linuxtime_ms = int(time.time() * 1000)
-        return self._request_ok("time", {"linuxtime_ms": int(linuxtime_ms)})
+    def set_time(self, unix_ms: int | None = None) -> CommandOk:
+        if unix_ms is None:
+            unix_ms = int(time.time() * 1000)
+        return self._request_ok("time", {"unix_ms": int(unix_ms)})
 
     def temp(self) -> TempStatus:
         return _decode_temp(self._request_json("temp"))
@@ -1200,10 +1255,10 @@ class HispecFibPcb:
     def serialguard(self) -> SerialGuardStatus:
         return _dataclass_from(SerialGuardStatus, self._request_json("serialguard"))
 
-    def set_serialguard(self, seconds: int, *, persistent: bool = False) -> CommandOk:
+    def set_serialguard(self, seconds: int) -> CommandOk:
         return self._request_ok(
             "serialguard",
-            {"seconds": _require_nonnegative_u32("seconds", seconds), "persistent": persistent},
+            {"seconds": _require_nonnegative_u32("seconds", seconds)},
         )
 
     def mems(self) -> tuple[MemsSwitchState, ...]:
@@ -1213,34 +1268,40 @@ class HispecFibPcb:
         self,
         name: str,
         *,
-        state: Literal["A", "B"] | None = None,
+        state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
-        toggle_rate_hz: float | None = None,
-        stopafter_s: float | None = None,
+        cycle_ms: int | None = None,
+        off_in_s: float | None = None,
+        force: bool = False,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
-        if state is None and duty_cycle is None and toggle_rate_hz is None and stopafter_s is None:
+        if state is None and duty_cycle is None and cycle_ms is None and off_in_s is None and not force:
             return _decode_mems_detail(name, self._request_json(key))
         if state is None:
             raise HispecFibError("state is required when setting a MEMS switch")
         payload: dict[str, Any] = {"state": _require_choice("state", state, MEMS_STATES)}
+        if force:
+            payload["force"] = True
         if duty_cycle is not None:
             payload["duty_cycle"] = _require_float("duty_cycle", duty_cycle, 0.0, 1.0)
-        if toggle_rate_hz is not None:
-            payload["toggle_rate_hz"] = _require_float("toggle_rate_hz", toggle_rate_hz, 0.0, 1.0e9)
-            if payload["toggle_rate_hz"] == 0.0:
-                raise HispecFibError("toggle_rate_hz must be > 0")
-        if stopafter_s is not None:
-            payload["stopafter_s"] = _require_float(
-                "stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
+        if cycle_ms is not None:
+            payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
+            if payload["cycle_ms"] == 0:
+                raise HispecFibError("cycle_ms must be > 0")
+        if off_in_s is not None:
+            payload["off_in_s"] = _require_float(
+                "off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
             )
         return _decode_mems_detail(name, self._request_json(key, payload))
 
     def memsroute(self) -> MemsRoutes:
         return _decode_mems_routes(self._request_json("memsroute"))
 
-    def set_memsroute(self, input: str, output: str) -> CommandOk:
-        return self._request_ok("memsroute", {"input": input, "output": output})
+    def set_memsroute(self, input: str, output: str, *, force: bool = False) -> CommandOk:
+        payload: dict[str, Any] = {"input": input, "output": output}
+        if force:
+            payload["force"] = True
+        return self._request_ok("memsroute", payload)
 
     def route_loss(self, route: str) -> RouteLoss:
         return _decode_route_loss(self._request_json("memsroute/route_loss", {"route": route}))
@@ -1510,7 +1571,7 @@ class HispecFibPcb:
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
         _require_choice("channel", channel, PD_CHANNELS)
-        return _dataclass_from(PhotodiodeSettings, self._request_json(f"pdsettings/{channel}"))
+        return _decode_pdsettings(self._request_json(f"pdsettings/{channel}"))
 
     def set_pdsettings(
         self,
@@ -1520,6 +1581,8 @@ class HispecFibPcb:
         noise_rms_mV: float | None = None,
         responsivity_a_per_w: float | None = None,
         transimpedance_v_per_a: float | None = None,
+        power: Literal["auto", "override_on", "override_off"] | None = None,
+        autooff_s: int | None = None,
         persistent: bool = False,
     ) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
@@ -1528,22 +1591,36 @@ class HispecFibPcb:
             noise_rms_mV=noise_rms_mV,
             responsivity_a_per_w=responsivity_a_per_w,
             transimpedance_v_per_a=transimpedance_v_per_a,
+            power=power,
+            autooff_s=autooff_s,
             persistent=persistent,
         )
         if payload is None or set(payload) == {"persistent"}:
             raise HispecFibError("at least one photodiode setting must be supplied")
         if dark_mv is not None:
-            payload["dark_mv"] = _require_float("dark_mv", dark_mv, -5000.0, 5000.0)
+            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
         if noise_rms_mV is not None:
-            payload["noise_rms_mV"] = _require_float("noise_rms_mV", noise_rms_mV, 0.0, 5000.0)
+            payload["noise_rms_mV"] = _require_float(
+                "noise_rms_mV", noise_rms_mV, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
+            )
         if responsivity_a_per_w is not None:
             payload["responsivity_a_per_w"] = _require_float(
-                "responsivity_a_per_w", responsivity_a_per_w, 0.000001, 10.0
+                "responsivity_a_per_w",
+                responsivity_a_per_w,
+                PD_RESPONSIVITY_MIN_A_PER_W,
+                PD_RESPONSIVITY_MAX_A_PER_W,
             )
         if transimpedance_v_per_a is not None:
             payload["transimpedance_v_per_a"] = _require_float(
-                "transimpedance_v_per_a", transimpedance_v_per_a, 1.0, 1.0e12
+                "transimpedance_v_per_a",
+                transimpedance_v_per_a,
+                PD_TRANSIMPEDANCE_MIN_V_PER_A,
+                PD_TRANSIMPEDANCE_MAX_V_PER_A,
             )
+        if power is not None:
+            payload["power"] = _require_choice("power", power, ("auto", "override_on", "override_off"))
+        if autooff_s is not None:
+            payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
         return self._request_ok(f"pdsettings/{channel}", payload)
 
     def split_status(self, channel: Literal["yj", "hk"]) -> SplitState:
@@ -1556,7 +1633,8 @@ class HispecFibPcb:
         ratio1: float,
         ratio2: float,
         *,
-        stopafter_s: int = 0,
+        cycle_ms: int | None = None,
+        off_in_s: int = 0,
     ) -> SplitState:
         _require_choice("channel", channel, PD_CHANNELS)
         ratio1 = _require_float("ratio1", ratio1, 0.0, 1.0)
@@ -1567,10 +1645,14 @@ class HispecFibPcb:
             "channel": channel,
             "ratio1": ratio1,
             "ratio2": ratio2,
-            "stopafter_s": int(
-                _require_float("stopafter_s", stopafter_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
+            "off_in_s": int(
+                _require_float("off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
             ),
         }
+        if cycle_ms is not None:
+            payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
+            if payload["cycle_ms"] == 0:
+                raise HispecFibError("cycle_ms must be > 0")
         return _decode_split_state(self._request_json("split", payload))
 
     def measure_throughput(
@@ -1582,7 +1664,7 @@ class HispecFibPcb:
         input: str | None = None,
         output: str | None = None,
         max_flux_ph_s: float | None = None,
-        stopafter_s: int = 300,
+        off_in_s: int = 300,
         format: Literal["json", "binary"] = "json",
         collect: bool = False,
         channel: Literal["yj", "hk"] | None = None,
@@ -1617,7 +1699,7 @@ class HispecFibPcb:
             "laser": laser,
             "fiber": fiber,
             "autolevel": bool(autolevel),
-            "stopafter_s": _require_nonnegative_u32("stopafter_s", stopafter_s),
+            "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
             "format": format,
         }
         if input is not None:

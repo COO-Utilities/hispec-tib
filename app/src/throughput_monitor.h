@@ -23,7 +23,7 @@ struct throughput_monitor_request {
 	bool autolevel;
 	bool binary;
 	char fiber;
-	uint32_t stopafter_s;
+	uint32_t off_in_s;
 	double max_flux_ph_s;
 };
 

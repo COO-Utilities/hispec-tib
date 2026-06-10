@@ -20,19 +20,16 @@ config COO_NETWORK
 
 if COO_NETWORK
 
-config NETWORK_HELPER_FALLBACK_IPV4_ADDR
-	string "Fallback service IPv4 address"
-	default "192.168.88.2"
+config NETWORK_HELPER_DHCP_TIMEOUT_MS
+	int "DHCP wait before static fallback, in milliseconds"
+	default 6000
 	help
-	  Last-resort static address for direct service connectivity.
-
-config NETWORK_HELPER_FALLBACK_IPV4_NETMASK
-	string "Fallback service IPv4 netmask"
-	default "255.255.255.0"
-
-config NETWORK_HELPER_FALLBACK_IPV4_GW
-	string "Fallback service IPv4 gateway"
-	default "0.0.0.0"
+	  Time the COO network helper waits for a DHCPv4 lease before applying
+	  an overridable static IPv4 profile. The static/fallback profile uses
+	  CONFIG_NET_CONFIG_MY_IPV4_* so there is only one configured service
+	  address set. This is intentionally separate from Zephyr
+	  NET_CONFIG_INIT_TIMEOUT because this helper owns app-level
+	  DHCP/static/fallback selection.
 
 endif # COO_NETWORK
 
@@ -82,6 +79,24 @@ config COO_MQTT_PAYLOAD_SIZE
 	help
 	  Maximum size for MQTT message payloads. This defines the
 	  size of RX and TX buffers (2x this value total).
+
+config COO_CMD_PAYLOAD_SIZE
+	int "Maximum command payload size"
+	range 128 COO_MQTT_PAYLOAD_SIZE
+	default 512
+	help
+	  Maximum size for copied command request and response payloads. Keep this
+	  no larger than COO_MQTT_PAYLOAD_SIZE so MQTT responses fit the transport
+	  buffers, but tune it separately because command queues store full request
+	  and response objects.
+
+module = COO_MQTT
+module-str = COO MQTT client wrapper
+source "subsys/logging/Kconfig.template.log_config"
+
+choice COO_MQTT_LOG_LEVEL_CHOICE
+	default COO_MQTT_LOG_LEVEL_INF
+endchoice
 
 config COO_CMD_SERIAL_GUARD
 	bool "Command dispatcher serial guard"

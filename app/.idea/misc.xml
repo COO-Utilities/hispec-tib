@@ -11,6 +11,7 @@
   </component>
   <component name="WestSettings"><![CDATA[{
   "toolchainName": "Zephyr",
+  "westExecutable": "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/scripts/clion-west-builddir-wrapper.sh",
   "boardName": "nucleo_h563zi/stm32h563xx"
 }]]></component>
 </project>
