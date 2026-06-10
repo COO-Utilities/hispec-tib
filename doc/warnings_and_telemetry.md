@@ -34,8 +34,11 @@ Current warning codes seen in code:
 - `photodiode_noise`
 - `mems_timing_quantized`
 - `split_ratio_quantized`
-- `outbound_queue_full`
 - `laserbank_heater_override`
+
+`outbound_queue_full` is logged locally by the outbound drain when the queue is
+already at capacity. It is intentionally not emitted as MQTT/serial warning
+telemetry because doing so would add more output pressure during overload.
 
 ## Throughput Telemetry
 

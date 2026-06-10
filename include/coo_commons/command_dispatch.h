@@ -251,7 +251,6 @@ struct coo_cmd_runtime {
 	uint32_t serial_guard_seconds;
 #endif
 	bool outbound_full_warning_seen;
-	bool outbound_full_warning_mqtt_seen;
 	bool serial_initialized;
 	bool serial_line_overflow;
 	size_t serial_line_len;

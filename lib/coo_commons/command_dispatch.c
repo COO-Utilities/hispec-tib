@@ -2332,41 +2332,6 @@ void coo_cmd_runtime_mqtt_callback(const struct mqtt_publish_param *pub,
 	coo_cmd_runtime_handle_mqtt_publish(user_data, pub);
 }
 
-static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
-						struct mqtt_client *client,
-						bool mqtt_available)
-{
-	struct coo_cmd_response *warning;
-	uint16_t wrap_column = runtime != NULL && runtime->serial_wrap_column != 0U ?
-		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
-
-	if (runtime == NULL) {
-		return;
-	}
-	if (!runtime_emit_scratch_take(runtime)) {
-		return;
-	}
-
-	warning = &runtime->emit_scratch;
-	if (runtime == NULL || runtime->warning_topic[0] == '\0' ||
-	    runtime_build_warning(warning, runtime->warning_topic,
-				  COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-				  "outbound_queue_full",
-				  "outbound queue reached capacity",
-				  "command_drain") != 0) {
-		runtime_emit_scratch_release(runtime);
-		return;
-	}
-
-	coo_cmd_print_serial_response_pretty(warning, wrap_column);
-
-	if (mqtt_available &&
-	    coo_cmd_publish_mqtt(client, warning, runtime->mqtt_msg_id) != 0) {
-		LOG_WRN("Failed to publish outbound_queue_full warning");
-	}
-	runtime_emit_scratch_release(runtime);
-}
-
 void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 				    struct mqtt_client *client,
 				    bool mqtt_available)
@@ -2386,17 +2351,12 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 
 	outbound_full = (k_msgq_num_free_get(runtime->outbound_queue) == 0U);
 	if (outbound_full) {
-		if (!runtime->outbound_full_warning_seen ||
-		    (mqtt_available && !runtime->outbound_full_warning_mqtt_seen)) {
-			publish_outbound_queue_full_warning(runtime, client, mqtt_available);
+		if (!runtime->outbound_full_warning_seen) {
+			LOG_WRN("outbound_queue_full: outbound queue reached capacity context=command_drain");
 			runtime->outbound_full_warning_seen = true;
-			if (mqtt_available) {
-				runtime->outbound_full_warning_mqtt_seen = true;
-			}
 		}
 	} else {
 		runtime->outbound_full_warning_seen = false;
-		runtime->outbound_full_warning_mqtt_seen = false;
 	}
 
 	while (budget-- > 0 &&

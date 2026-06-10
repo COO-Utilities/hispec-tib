@@ -1100,11 +1100,14 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
   Other `event` values include `start`, `physical_start`, `signal_set`,
   `point_set`, `adjust`, `adjust_result`, `manual_point_set`, `manual_point`,
-  `fit_point`, `fit`, `complete`, `stop`, and `error`. `adjust_result` reports
-  the before/after photodiode means and renormalization scale update after an
-  automatic level adjustment. `fit_point` reports each scheduled point's flux,
-  normalized transmission, model coordinate, inclusion decision, exclusion
-  reason, predicted transmission, and residual dB when available.
+  `fit_dataset`, `fit`, `complete`, `stop`, and `error`. `adjust_result`
+  reports the before/after photodiode means and renormalization scale update
+  after an automatic level adjustment. `fit_dataset` is emitted in bounded
+  chunks and reports each scheduled point's voltage, flux, saturation flag,
+  fit inclusion decision, exclusion reason, normalized transmission, and
+  residual dB when available. `complete` and `error` include
+  `telemetry_drops`, the count of best-effort calibration telemetry messages
+  dropped because the outbound queue was full.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
