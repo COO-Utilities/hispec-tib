@@ -73,6 +73,8 @@ static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
 #define PD_ADC_UV_PER_COUNT_NUM 1875
 #define PD_ADC_UV_PER_COUNT_DEN 10
 #define PD_NOISE_ALPHA 0.02
+#define PD_NOISE_STEP_RESET_MV 50.0
+#define PD_NOISE_STEP_SUPPRESS_MS 1000U
 #define PD_HARDWARE_LOG_RATELIMIT_MS 10000U
 #define PD_TIMING_STATS_INTERVAL_MS 10000U
 #define PD_ADS1115_WAKE_US 25U
@@ -135,6 +137,7 @@ struct photodiode_runtime_channel {
     uint32_t sample_count;
     int64_t updated_ms;
     int64_t next_noise_warning_ms;
+    int64_t noise_warning_suppress_until_ms;
 };
 
 enum photodiode_average_owner {
@@ -730,6 +733,14 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
         if (snapshot.sample_count == 0U) {
             snapshot.smooth_mv = mv;
             snapshot.noise_var_mv2 = 0.0;
+        } else if (fabs(mv - snapshot.mv) > PD_NOISE_STEP_RESET_MV) {
+            /* A commanded optical step is not residual noise; restart the
+             * estimator and suppress warnings while the new level settles.
+             */
+            snapshot.smooth_mv = mv;
+            snapshot.noise_var_mv2 = 0.0;
+            snapshot.noise_warning_suppress_until_ms =
+                now + PD_NOISE_STEP_SUPPRESS_MS;
         } else {
             residual = mv - snapshot.smooth_mv;
             snapshot.smooth_mv += PD_NOISE_ALPHA * residual;
@@ -761,6 +772,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 
     if (rc == 0 && settings->noise_warn_rms_mv > 0.0 &&
         noise_rms > settings->noise_warn_rms_mv &&
+        now >= snapshot.noise_warning_suppress_until_ms &&
         now >= snapshot.next_noise_warning_ms) {
         char context[128];
 
