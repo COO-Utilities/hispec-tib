@@ -1063,6 +1063,42 @@ command wait budget, this command returns `{"error":"busy"}`.
   }
   ```
 
+- **Telemetry topic:** `dt/<device>/atten`
+- **Telemetry payload:** attenuator calibration emits one best-effort JSON
+  message per significant state transition, DAC setpoint, photodiode reading,
+  level adjustment, submitted manual point, and fit result. Calibration
+  continues if telemetry is dropped.
+  ```json
+  {
+    "event": "point_reading",
+    "state": "running",
+    "mode": "tib_auto",
+    "physical": "dac1",
+    "attenuator": 2,
+    "point_index": 4,
+    "point_count": 20,
+    "complete_pct": 10,
+    "sweep_mv": 4000.0,
+    "other_mv": 5000.0,
+    "mean_mv": 123.4,
+    "mean_net_mv": 120.1,
+    "rms_mv": 0.2,
+    "min_mv": 119.8,
+    "max_mv": 120.5,
+    "max_raw": 1024,
+    "samples": 15,
+    "target_samples": 15,
+    "duration_ms": 300,
+    "saturated": false,
+    "valid": true,
+    "scale": 1.0,
+    "flux": 120.1
+  }
+  ```
+  Other `event` values include `start`, `physical_start`, `signal_set`,
+  `point_set`, `adjust`, `manual_point_set`, `manual_point`, `fit`, `complete`,
+  `stop`, and `error`.
+
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
     A canceled calibration returns to `inactive`.

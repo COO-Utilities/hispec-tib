@@ -15,6 +15,7 @@
 #include <zsl/statistics.h>
 
 #include "app_settings.h"
+#include "app_identity.h"
 #include "attenuator.h"
 #include "command.h"
 #include "devices.h"
@@ -35,6 +36,7 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_MIN_FIT_POINTS ATTENUATOR_CAL_MIN_BATCH_POINTS
 #define ATTEN_CAL_MIN_TX 1.0e-10
 #define ATTEN_CAL_MAX_TX 0.999999
+#define ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX "atten"
 
 enum atten_cal_state {
 	ATTEN_CAL_STATE_INACTIVE = 0,
@@ -104,6 +106,9 @@ static const double voltage_schedule[ATTENUATOR_CAL_POINT_COUNT] = {
 static struct atten_cal_state_data cal;
 static K_MUTEX_DEFINE(cal_lock);
 
+static uint8_t complete_percent_locked(void);
+static bool sample_is_saturated(const struct photodiode_average_status *avg);
+
 static const char *state_name(enum atten_cal_state state)
 {
 	switch (state) {
@@ -138,6 +143,239 @@ static const char *mode_name(enum atten_cal_mode mode)
 static const char *physical_name(uint8_t physical_index)
 {
 	return physical_index == 0U ? "dac1" : "dac2";
+}
+
+static void atten_cal_publish_telemetry(struct coo_cmd_response *msg,
+					const char *log_msg)
+{
+	if (msg == NULL) {
+		return;
+	}
+
+	msg->payload_len = strlen(msg->payload);
+	if (k_msgq_put(&outbound_queue, msg, K_NO_WAIT) != 0) {
+		LOG_WRN("atten calibration telemetry queue full; event only logged");
+	}
+	LOG_INF("%s", log_msg != NULL ? log_msg : msg->payload);
+}
+
+static bool atten_cal_telemetry_begin(struct coo_cmd_response *msg,
+				      size_t *off,
+				      const char *event)
+{
+	if (msg == NULL || off == NULL || event == NULL) {
+		return false;
+	}
+
+	memset(msg, 0, sizeof(*msg));
+	msg->target = COO_CMD_OUT_MQTT_BEST_EFFORT;
+	msg->qos = 0U;
+	if (coo_cmd_format_data_topic(app_mqtt_device_id(),
+				      ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX,
+				      msg->topic, sizeof(msg->topic)) != 0) {
+		LOG_WRN("Failed to format attenuator calibration telemetry topic");
+		return false;
+	}
+
+	*off = 0U;
+	return coo_json_append(msg->payload, sizeof(msg->payload), off,
+		"{\"event\":\"%s\",\"state\":\"%s\",\"mode\":\"%s\","
+		"\"physical\":\"%s\",\"attenuator\":%u,\"point_index\":%u,"
+		"\"point_count\":%u,\"complete_pct\":%u",
+		event, state_name(cal.state), mode_name(cal.mode),
+		physical_name(cal.physical_index), cal.attenuator_index,
+		cal.point_index, ATTENUATOR_CAL_POINT_COUNT,
+		complete_percent_locked()) == 0;
+}
+
+static void atten_cal_emit_simple(const char *event)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	char log_msg[96];
+
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"dwell_ms\":%u,\"other_mv\":%.3f,"
+			    "\"laser\":\"%s\",\"laser_pct\":%.3f,"
+			    "\"pd_channel\":\"%s\",\"error\":%d}",
+			    cal.dwell_ms, cal.other_mv,
+			    hispec_laser_name(cal.laser), cal.laser_percent,
+			    photodiode_channel_names[cal.channel],
+			    cal.last_error) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal %s physical=%s point=%u/%u other_mv=%.1f error=%d",
+		 event, physical_name(cal.physical_index),
+		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		 ATTENUATOR_CAL_POINT_COUNT, cal.other_mv, cal.last_error);
+	atten_cal_publish_telemetry(&msg, log_msg);
+}
+
+static void atten_cal_emit_point_set(const char *event, double sweep_mv)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	char log_msg[128];
+
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
+			    "\"laser_pct\":%.3f}",
+			    sweep_mv, cal.other_mv, cal.laser_percent) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal %s physical=%s point=%u/%u sweep_mv=%.1f other_mv=%.1f laser_pct=%.2f",
+		 event, physical_name(cal.physical_index),
+		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		 ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
+		 cal.laser_percent);
+	atten_cal_publish_telemetry(&msg, log_msg);
+}
+
+static void atten_cal_emit_reading(const char *event,
+				   const struct photodiode_average_status *avg,
+				   double flux)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	double sweep_mv;
+	char log_msg[192];
+
+	if (avg == NULL) {
+		return;
+	}
+
+	sweep_mv = voltage_schedule[MIN(cal.point_index,
+					ATTENUATOR_CAL_POINT_COUNT - 1U)];
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
+			    "\"mean_mv\":%.6f,\"mean_net_mv\":%.6f,"
+			    "\"rms_mv\":%.6f,\"min_mv\":%.6f,"
+			    "\"max_mv\":%.6f,\"max_raw\":%d,"
+			    "\"samples\":%u,\"target_samples\":%u,"
+			    "\"duration_ms\":%u,\"saturated\":%s,"
+			    "\"valid\":%s,\"scale\":%.12g,\"flux\":%.12g}",
+			    sweep_mv, cal.other_mv,
+			    avg->result.mean_mv, avg->result.mean_net_mv,
+			    avg->result.rms_mv, avg->result.min_mv,
+			    avg->result.max_mv, avg->result.max_raw,
+			    avg->result.samples, avg->result.target_samples,
+			    avg->result.duration_ms,
+			    sample_is_saturated(avg) ? "true" : "false",
+			    flux > 0.0 ? "true" : "false",
+			    cal.scale, flux) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal %s physical=%s point=%u/%u sweep_mv=%.1f other_mv=%.1f mean_net_mv=%.4f flux=%.6g samples=%u saturated=%d",
+		 event, physical_name(cal.physical_index),
+		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		 ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
+		 avg->result.mean_net_mv, flux, avg->result.samples,
+		 sample_is_saturated(avg) ? 1 : 0);
+	atten_cal_publish_telemetry(&msg, log_msg);
+}
+
+static void atten_cal_emit_adjust(const char *kind,
+				  double before,
+				  double after,
+				  double measured_mv)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	char log_msg[160];
+
+	if (!atten_cal_telemetry_begin(&msg, &off, "adjust") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"kind\":\"%s\",\"before\":%.6f,"
+			    "\"after\":%.6f,\"measured_mv\":%.6f,"
+			    "\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
+			    "\"laser_pct\":%.3f}",
+			    kind, before, after, measured_mv,
+			    voltage_schedule[MIN(cal.point_index,
+						 ATTENUATOR_CAL_POINT_COUNT - 1U)],
+			    cal.other_mv, cal.laser_percent) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal adjust kind=%s physical=%s point=%u/%u before=%.3f after=%.3f measured_mv=%.3f",
+		 kind, physical_name(cal.physical_index),
+		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		 ATTENUATOR_CAL_POINT_COUNT, before, after, measured_mv);
+	atten_cal_publish_telemetry(&msg, log_msg);
+}
+
+static void atten_cal_emit_fit(uint8_t physical,
+			       const struct attenuator_calibration_fit_metrics *fit)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	char log_msg[192];
+
+	if (fit == NULL) {
+		return;
+	}
+
+	if (!atten_cal_telemetry_begin(&msg, &off, "fit") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"fit_physical\":\"%s\",\"valid\":%s,"
+			    "\"points\":%u,\"slope\":%.12g,\"offset\":%.12g,"
+			    "\"corr\":%.12g,\"rms_db\":%.12g,"
+			    "\"max_abs_db\":%.12g,\"min_tx\":%.12g,"
+			    "\"max_tx\":%.12g,\"voltage_span_mv\":%.6f}",
+			    physical_name(physical), fit->valid ? "true" : "false",
+			    fit->points, fit->slope, fit->offset,
+			    fit->correlation, fit->rms_db, fit->max_abs_db,
+			    fit->min_tx, fit->max_tx, fit->voltage_span_mv) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal fit physical=%s valid=%d points=%u slope=%.9g offset=%.9g corr=%.6f rms_db=%.6f max_abs_db=%.6f",
+		 physical_name(physical), fit->valid ? 1 : 0, fit->points,
+		 fit->slope, fit->offset, fit->correlation, fit->rms_db,
+		 fit->max_abs_db);
+	atten_cal_publish_telemetry(&msg, log_msg);
+}
+
+static void atten_cal_emit_manual_batch_point(uint8_t physical,
+					      size_t point_index,
+					      double voltage_mv,
+					      double flux)
+{
+	struct coo_cmd_response msg;
+	size_t off;
+	char log_msg[128];
+
+	if (!atten_cal_telemetry_begin(&msg, &off, "manual_point") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+			    ",\"fit_physical\":\"%s\",\"batch_index\":%u,"
+			    "\"sweep_mv\":%.3f,\"flux\":%.12g,"
+			    "\"valid\":%s}",
+			    physical_name(physical), (uint8_t)point_index,
+			    voltage_mv, flux, flux > 0.0 ? "true" : "false") != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	snprintk(log_msg, sizeof(log_msg),
+		 "atten cal manual_point physical=%s point=%u sweep_mv=%.1f flux=%.6g",
+		 physical_name(physical), (uint8_t)(point_index + 1U),
+		 voltage_mv, flux);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static uint32_t clamp_dwell(uint32_t dwell_ms)
@@ -488,8 +726,10 @@ static int fit_current_locked(bool apply_settings)
 		if (rc != 0) {
 			cal.last_error = rc;
 			cal.state = ATTEN_CAL_STATE_ERROR;
+			atten_cal_emit_simple("error");
 			return rc;
 		}
+		atten_cal_emit_fit(physical, &cal.fit[physical]);
 	}
 
 	if (apply_settings) {
@@ -497,6 +737,7 @@ static int fit_current_locked(bool apply_settings)
 		if (rc != 0) {
 			cal.last_error = rc;
 			cal.state = ATTEN_CAL_STATE_ERROR;
+			atten_cal_emit_simple("error");
 			return rc;
 		}
 	}
@@ -504,6 +745,7 @@ static int fit_current_locked(bool apply_settings)
 	cal.state = ATTEN_CAL_STATE_COMPLETE;
 	cal.phase = ATTEN_CAL_AUTO_NONE;
 	cal.point_index = ATTENUATOR_CAL_POINT_COUNT;
+	atten_cal_emit_simple("complete");
 	return 0;
 }
 
@@ -513,6 +755,7 @@ static void start_next_physical_locked(void)
 	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.scale = 1.0;
 	cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
+	atten_cal_emit_simple("physical_start");
 }
 
 static void auto_error_locked(int error)
@@ -520,6 +763,7 @@ static void auto_error_locked(int error)
 	cal.last_error = error;
 	cal.state = ATTEN_CAL_STATE_ERROR;
 	cal.phase = ATTEN_CAL_AUTO_NONE;
+	atten_cal_emit_simple("error");
 }
 
 static void record_current_point_locked(const struct photodiode_average_status *avg)
@@ -533,6 +777,7 @@ static void record_current_point_locked(const struct photodiode_average_status *
 		       !point->saturated &&
 		       avg->result.mean_net_mv > 0.0;
 	point->flux = point->valid ? (double)avg->result.mean_net_mv * cal.scale : 0.0;
+	atten_cal_emit_reading("point_reading", avg, point->flux);
 }
 
 static void auto_finish_point_locked(void)
@@ -577,6 +822,7 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(-EIO);
 			return;
 		}
+		atten_cal_emit_point_set("signal_set", sweep_mv);
 		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
 		cal.phase = ATTEN_CAL_AUTO_SIGNAL_SETTLE;
 		return;
@@ -606,10 +852,14 @@ static void auto_tick_locked(int64_t now_ms)
 		}
 		if ((double)avg.result.mean_net_mv < ATTEN_CAL_SIGNAL_MIN_MV &&
 		    cal.other_mv > 0.0) {
+			const double before = cal.other_mv;
+
 			cal.other_mv -= ATTEN_CAL_OTHER_STEP_MV;
 			if (cal.other_mv < 0.0) {
 				cal.other_mv = 0.0;
 			}
+			atten_cal_emit_adjust("other_mv", before, cal.other_mv,
+					      avg.result.mean_net_mv);
 			cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
 			return;
 		}
@@ -622,6 +872,7 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(-EIO);
 			return;
 		}
+		atten_cal_emit_point_set("point_set", sweep_mv);
 		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
 		cal.phase = ATTEN_CAL_AUTO_POINT_SETTLE;
 		return;
@@ -661,6 +912,8 @@ static void auto_tick_locked(int64_t now_ms)
 		return;
 	case ATTEN_CAL_AUTO_ADJUST_SET:
 		if (cal.adjust_uses_laser) {
+			const double before = cal.laser_percent;
+
 			cal.laser_percent /= 3.0;
 			if (cal.laser_percent < 1.0) {
 				cal.laser_percent = 1.0;
@@ -672,7 +925,11 @@ static void auto_tick_locked(int64_t now_ms)
 				auto_error_locked(rc);
 				return;
 			}
+			atten_cal_emit_adjust("laser_pct", before, cal.laser_percent,
+					      cal.pending_before_mv);
 		} else {
+			const double before = cal.other_mv;
+
 			cal.other_mv += ATTEN_CAL_OTHER_STEP_MV;
 			if (cal.other_mv > ATTENUATOR_DRIVE_MAX_MV) {
 				cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
@@ -683,6 +940,8 @@ static void auto_tick_locked(int64_t now_ms)
 				auto_error_locked(-EIO);
 				return;
 			}
+			atten_cal_emit_adjust("other_mv", before, cal.other_mv,
+					      cal.pending_before_mv);
 		}
 		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
 		cal.phase = ATTEN_CAL_AUTO_ADJUST_SETTLE;
@@ -811,6 +1070,7 @@ int attenuator_calibration_start_auto(
 	cal.laser = request->laser;
 	cal.channel = channel;
 	cal.wait_until_ms = k_uptime_get() + ATTEN_CAL_PD_POWER_SETTLE_MS;
+	atten_cal_emit_simple("start");
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;
@@ -846,6 +1106,11 @@ int attenuator_calibration_start_manual(uint8_t attenuator_index,
 	cal.last_error = manual_apply_current_locked();
 	if (cal.last_error != 0) {
 		cal.state = ATTEN_CAL_STATE_ERROR;
+		atten_cal_emit_simple("error");
+	} else {
+		atten_cal_emit_simple("start");
+		atten_cal_emit_point_set("manual_point_set",
+					 voltage_schedule[cal.point_index]);
 	}
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
@@ -882,6 +1147,7 @@ int attenuator_calibration_manual_continue(bool has_other_mv,
 		} else {
 			cal.state = ATTEN_CAL_STATE_COMPLETE;
 			cal.point_index = ATTENUATOR_CAL_POINT_COUNT;
+			atten_cal_emit_simple("complete");
 			goto out;
 		}
 	}
@@ -889,7 +1155,11 @@ int attenuator_calibration_manual_continue(bool has_other_mv,
 	cal.last_error = manual_apply_current_locked();
 	if (cal.last_error != 0) {
 		cal.state = ATTEN_CAL_STATE_ERROR;
+		atten_cal_emit_simple("error");
 		rc = cal.last_error;
+	} else {
+		atten_cal_emit_point_set("manual_point_set",
+					 voltage_schedule[cal.point_index]);
 	}
 
 out:
@@ -925,6 +1195,9 @@ int attenuator_calibration_fit_manual(
 			cal.points[p][i].voltage_mv = physical[p].voltage_mv[i];
 			cal.points[p][i].flux = physical[p].flux[i];
 			cal.points[p][i].valid = physical[p].flux[i] > 0.0;
+			atten_cal_emit_manual_batch_point(p, i,
+							  physical[p].voltage_mv[i],
+							  physical[p].flux[i]);
 		}
 	}
 	if (rc == 0) {
@@ -945,6 +1218,9 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	old_mode = cal.mode;
+	if (cal.state != ATTEN_CAL_STATE_INACTIVE) {
+		atten_cal_emit_simple("stop");
+	}
 	reset_locked(ATTEN_CAL_STATE_INACTIVE);
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
