@@ -1069,7 +1069,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **Telemetry topic:** `dt/<device>/atten`
 - **Telemetry payload:** attenuator calibration emits one best-effort JSON
   message per significant state transition, DAC setpoint, photodiode reading,
-  level adjustment, submitted manual point, and fit result. Calibration
+  level adjustment, submitted manual point, fit point, and fit result. Calibration
   continues if telemetry is dropped.
   ```json
   {
@@ -1099,8 +1099,12 @@ command wait budget, this command returns `{"error":"busy"}`.
   }
   ```
   Other `event` values include `start`, `physical_start`, `signal_set`,
-  `point_set`, `adjust`, `manual_point_set`, `manual_point`, `fit`, `complete`,
-  `stop`, and `error`.
+  `point_set`, `adjust`, `adjust_result`, `manual_point_set`, `manual_point`,
+  `fit_point`, `fit`, `complete`, `stop`, and `error`. `adjust_result` reports
+  the before/after photodiode means and renormalization scale update after an
+  automatic level adjustment. `fit_point` reports each scheduled point's flux,
+  normalized transmission, model coordinate, inclusion decision, exclusion
+  reason, predicted transmission, and residual dB when available.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.

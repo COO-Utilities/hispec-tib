@@ -112,6 +112,10 @@ static struct coo_cmd_response cal_telemetry_msg;
 
 static uint8_t complete_percent_locked(void);
 static bool sample_is_saturated(const struct photodiode_average_status *avg);
+static bool point_valid_for_fit(double tx);
+static const char *fit_point_exclusion_reason(const struct atten_cal_point *point,
+					      double max_flux, double *tx,
+					      double *b);
 
 static const char *state_name(enum atten_cal_state state)
 {
@@ -319,6 +323,42 @@ static void atten_cal_emit_adjust(const char *kind,
 		ATTENUATOR_CAL_POINT_COUNT, before, after, measured_mv);
 }
 
+static void atten_cal_emit_adjust_result(const struct photodiode_average_status *avg,
+					 double scale_before, bool scale_updated)
+{
+	struct coo_cmd_response *msg;
+	size_t off;
+
+	if (avg == NULL) {
+		return;
+	}
+
+	msg = atten_cal_telemetry_begin(&off, "adjust_result");
+	if (msg == NULL ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
+			    ",\"measured_before_mv\":%.6f,"
+			    "\"measured_after_mv\":%.6f,"
+			    "\"scale_before\":%.12g,\"scale_after\":%.12g,"
+			    "\"scale_updated\":%s,\"saturated\":%s,"
+			    "\"other_mv\":%.3f,\"laser_pct\":%.3f}",
+			    cal.pending_before_mv, avg->result.mean_net_mv,
+			    scale_before, cal.scale,
+			    scale_updated ? "true" : "false",
+			    sample_is_saturated(avg) ? "true" : "false",
+			    cal.other_mv, cal.laser_percent) != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	atten_cal_publish_telemetry(msg);
+	LOG_INF("atten cal adjust_result physical=%s point=%u/%u before_mv=%.3f after_mv=%.3f scale_before=%.9g scale_after=%.9g updated=%d saturated=%d",
+		physical_name(cal.physical_index),
+		MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		ATTENUATOR_CAL_POINT_COUNT, cal.pending_before_mv,
+		avg->result.mean_net_mv, scale_before, cal.scale,
+		scale_updated ? 1 : 0, sample_is_saturated(avg) ? 1 : 0);
+}
+
 static void atten_cal_emit_fit(uint8_t physical,
 			       const struct attenuator_calibration_fit_metrics *fit)
 {
@@ -350,6 +390,59 @@ static void atten_cal_emit_fit(uint8_t physical,
 		physical_name(physical), fit->valid ? 1 : 0, fit->points,
 		fit->slope, fit->offset, fit->correlation, fit->rms_db,
 		fit->max_abs_db);
+}
+
+static void atten_cal_emit_fit_point(uint8_t physical, uint8_t point_index,
+				     const struct atten_cal_point *point,
+				     const char *reason, double tx, double b,
+				     bool included,
+				     const struct zsl_sta_linreg *reg)
+{
+	struct coo_cmd_response *msg;
+	size_t off;
+	double predicted_tx = NAN;
+	double residual_db = NAN;
+
+	if (point == NULL || reason == NULL) {
+		return;
+	}
+
+	if (included && reg != NULL) {
+		predicted_tx = attenuator_model_b_to_linear((double)reg->slope *
+							    point->voltage_mv +
+							    (double)reg->intercept);
+		if (predicted_tx > 0.0 && tx > 0.0) {
+			residual_db = 10.0 * log10(predicted_tx / tx);
+		}
+	}
+
+	msg = atten_cal_telemetry_begin(&off, "fit_point");
+	if (msg == NULL ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
+			    ",\"fit_physical\":\"%s\",\"fit_index\":%u,"
+			    "\"sweep_mv\":%.3f,\"flux\":%.12g,"
+			    "\"saturated\":%s,\"included\":%s,"
+			    "\"reason\":\"%s\",\"tx\":%.12g,\"b\":%.12g,"
+			    "\"pred_tx\":",
+			    physical_name(physical), point_index,
+			    point->voltage_mv, point->flux,
+			    point->saturated ? "true" : "false",
+			    included ? "true" : "false", reason, tx, b) != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
+					  predicted_tx, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
+			    ",\"residual_db\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
+					  residual_db, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, "}") != 0) {
+		LOG_WRN("atten calibration telemetry payload too large");
+		return;
+	}
+
+	atten_cal_publish_telemetry(msg);
+	LOG_INF("atten cal fit_point physical=%s point=%u sweep_mv=%.1f flux=%.6g included=%d reason=%s tx=%.6g residual_db=%.6g",
+		physical_name(physical), point_index + 1U, point->voltage_mv,
+		point->flux, included ? 1 : 0, reason, tx, residual_db);
 }
 
 static void atten_cal_emit_manual_batch_point(uint8_t physical,
@@ -565,6 +658,49 @@ static bool set_physical_pair(uint8_t attenuator_index,
 					       other_mv);
 }
 
+static const char *fit_point_exclusion_reason(const struct atten_cal_point *point,
+					      double max_flux, double *tx,
+					      double *b)
+{
+	if (tx != NULL) {
+		*tx = 0.0;
+	}
+	if (b != NULL) {
+		*b = 0.0;
+	}
+	if (point == NULL) {
+		return "invalid";
+	}
+	if (point->saturated) {
+		return "saturated";
+	}
+	if (!point->valid) {
+		return "invalid";
+	}
+	if (point->flux <= 0.0) {
+		return "nonpositive_flux";
+	}
+	if (!(max_flux > 0.0)) {
+		return "no_max_flux";
+	}
+
+	if (tx != NULL) {
+		*tx = point->flux / max_flux;
+		if (*tx > ATTEN_CAL_MAX_TX) {
+			*tx = ATTEN_CAL_MAX_TX;
+		}
+		if (!point_valid_for_fit(*tx)) {
+			return "tx_range";
+		}
+		if (b == NULL || !attenuator_model_linear_to_b(*tx, b)) {
+			return "b_range";
+		}
+		return "included";
+	}
+
+	return "invalid";
+}
+
 static bool point_valid_for_fit(double tx)
 {
 	return tx > ATTEN_CAL_MIN_TX && tx <= ATTEN_CAL_MAX_TX;
@@ -615,16 +751,10 @@ static int fit_one_physical(uint8_t attenuator_index,
 	for (uint8_t i = 0U; i < ATTENUATOR_CAL_POINT_COUNT; ++i) {
 		double tx;
 		double b;
+		const char *reason;
 
-		if (!points[i].valid || points[i].saturated || points[i].flux <= 0.0) {
-			continue;
-		}
-		tx = points[i].flux / max_flux;
-		if (tx > ATTEN_CAL_MAX_TX) {
-			tx = ATTEN_CAL_MAX_TX;
-		}
-		if (!point_valid_for_fit(tx) ||
-		    !attenuator_model_linear_to_b(tx, &b)) {
+		reason = fit_point_exclusion_reason(&points[i], max_flux, &tx, &b);
+		if (strcmp(reason, "included") != 0) {
 			continue;
 		}
 
@@ -670,6 +800,17 @@ static int fit_one_physical(uint8_t attenuator_index,
 		if (fabs(residual_db) > max_abs_db) {
 			max_abs_db = fabs(residual_db);
 		}
+	}
+
+	for (uint8_t i = 0U; i < ATTENUATOR_CAL_POINT_COUNT; ++i) {
+		double tx;
+		double b;
+		const char *reason =
+			fit_point_exclusion_reason(&points[i], max_flux, &tx, &b);
+		bool included = strcmp(reason, "included") == 0;
+
+		atten_cal_emit_fit_point(physical_index, i, &points[i], reason,
+					 tx, b, included, &reg);
 	}
 
 	out->valid = true;
@@ -970,8 +1111,16 @@ static void auto_tick_locked(int64_t now_ms)
 			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
 			return;
 		}
-		if (avg.result.mean_net_mv > 0.0 && !sample_is_saturated(&avg)) {
-			cal.scale *= cal.pending_before_mv / (double)avg.result.mean_net_mv;
+		{
+			double scale_before = cal.scale;
+			bool scale_updated = false;
+
+			if (avg.result.mean_net_mv > 0.0 && !sample_is_saturated(&avg)) {
+				cal.scale *= cal.pending_before_mv /
+					     (double)avg.result.mean_net_mv;
+				scale_updated = true;
+			}
+			atten_cal_emit_adjust_result(&avg, scale_before, scale_updated);
 		}
 		record_current_point_locked(&avg);
 		auto_finish_point_locked();
