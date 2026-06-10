@@ -144,36 +144,40 @@ static const char *physical_name(uint8_t physical_index)
 	return physical_index == 0U ? "dac1" : "dac2";
 }
 
-static void atten_cal_publish_telemetry(const char *payload,
+static void atten_cal_publish_telemetry(struct coo_cmd_response *msg,
 					const char *log_msg)
 {
 	int rc;
 
-	if (payload == NULL) {
+	if (msg == NULL) {
 		return;
 	}
 
-	rc = coo_cmd_runtime_data_emit(command_runtime_get(),
-				       ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX,
-				       payload, strlen(payload), true);
+	msg->payload_len = strlen(msg->payload);
+	rc = coo_cmd_runtime_emit(command_runtime_get(),
+				  &(const struct coo_cmd_runtime_emit_args){
+					  .type = COO_CMD_RUNTIME_EMIT_DATA,
+					  .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					  .suffix = ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX,
+					  .out = msg,
+				  });
 	if (rc != 0) {
 		LOG_WRN("atten calibration telemetry dropped (%d); event only logged", rc);
 	}
-	LOG_INF("%s", log_msg != NULL ? log_msg : payload);
+	LOG_INF("%s", log_msg != NULL ? log_msg : msg->payload);
 }
 
-static bool atten_cal_telemetry_begin(char *payload,
-				      size_t payload_len,
+static bool atten_cal_telemetry_begin(struct coo_cmd_response *msg,
 				      size_t *off,
 				      const char *event)
 {
-	if (payload == NULL || payload_len == 0U || off == NULL || event == NULL) {
+	if (msg == NULL || off == NULL || event == NULL) {
 		return false;
 	}
 
+	memset(msg, 0, sizeof(*msg));
 	*off = 0U;
-	payload[0] = '\0';
-	return coo_json_append(payload, payload_len, off,
+	return coo_json_append(msg->payload, sizeof(msg->payload), off,
 		"{\"event\":\"%s\",\"state\":\"%s\",\"mode\":\"%s\","
 		"\"physical\":\"%s\",\"attenuator\":%u,\"point_index\":%u,"
 		"\"point_count\":%u,\"complete_pct\":%u",
@@ -185,12 +189,12 @@ static bool atten_cal_telemetry_begin(char *payload,
 
 static void atten_cal_emit_simple(const char *event)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	char log_msg[96];
 
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, event) ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"dwell_ms\":%u,\"other_mv\":%.3f,"
 			    "\"laser\":\"%s\",\"laser_pct\":%.3f,"
 			    "\"pd_channel\":\"%s\",\"error\":%d}",
@@ -207,17 +211,17 @@ static void atten_cal_emit_simple(const char *event)
 		 event, physical_name(cal.physical_index),
 		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
 		 ATTENUATOR_CAL_POINT_COUNT, cal.other_mv, cal.last_error);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static void atten_cal_emit_point_set(const char *event, double sweep_mv)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	char log_msg[128];
 
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, event) ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
 			    "\"laser_pct\":%.3f}",
 			    sweep_mv, cal.other_mv, cal.laser_percent) != 0) {
@@ -231,14 +235,14 @@ static void atten_cal_emit_point_set(const char *event, double sweep_mv)
 		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
 		 ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
 		 cal.laser_percent);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static void atten_cal_emit_reading(const char *event,
 				   const struct photodiode_average_status *avg,
 				   double flux)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	double sweep_mv;
 	char log_msg[192];
@@ -249,8 +253,8 @@ static void atten_cal_emit_reading(const char *event,
 
 	sweep_mv = voltage_schedule[MIN(cal.point_index,
 					ATTENUATOR_CAL_POINT_COUNT - 1U)];
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, event) ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, event) ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
 			    "\"mean_mv\":%.6f,\"mean_net_mv\":%.6f,"
 			    "\"rms_mv\":%.6f,\"min_mv\":%.6f,"
@@ -278,7 +282,7 @@ static void atten_cal_emit_reading(const char *event,
 		 ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
 		 avg->result.mean_net_mv, flux, avg->result.samples,
 		 sample_is_saturated(avg) ? 1 : 0);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static void atten_cal_emit_adjust(const char *kind,
@@ -286,12 +290,12 @@ static void atten_cal_emit_adjust(const char *kind,
 				  double after,
 				  double measured_mv)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	char log_msg[160];
 
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, "adjust") ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, "adjust") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"kind\":\"%s\",\"before\":%.6f,"
 			    "\"after\":%.6f,\"measured_mv\":%.6f,"
 			    "\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
@@ -309,13 +313,13 @@ static void atten_cal_emit_adjust(const char *kind,
 		 kind, physical_name(cal.physical_index),
 		 MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
 		 ATTENUATOR_CAL_POINT_COUNT, before, after, measured_mv);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static void atten_cal_emit_fit(uint8_t physical,
 			       const struct attenuator_calibration_fit_metrics *fit)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	char log_msg[192];
 
@@ -323,8 +327,8 @@ static void atten_cal_emit_fit(uint8_t physical,
 		return;
 	}
 
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, "fit") ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, "fit") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"fit_physical\":\"%s\",\"valid\":%s,"
 			    "\"points\":%u,\"slope\":%.12g,\"offset\":%.12g,"
 			    "\"corr\":%.12g,\"rms_db\":%.12g,"
@@ -343,7 +347,7 @@ static void atten_cal_emit_fit(uint8_t physical,
 		 physical_name(physical), fit->valid ? 1 : 0, fit->points,
 		 fit->slope, fit->offset, fit->correlation, fit->rms_db,
 		 fit->max_abs_db);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static void atten_cal_emit_manual_batch_point(uint8_t physical,
@@ -351,12 +355,12 @@ static void atten_cal_emit_manual_batch_point(uint8_t physical,
 					      double voltage_mv,
 					      double flux)
 {
-	char payload[MAX_PAYLOAD_LEN];
+	struct coo_cmd_response msg;
 	size_t off;
 	char log_msg[128];
 
-	if (!atten_cal_telemetry_begin(payload, sizeof(payload), &off, "manual_point") ||
-	    coo_json_append(payload, sizeof(payload), &off,
+	if (!atten_cal_telemetry_begin(&msg, &off, "manual_point") ||
+	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
 			    ",\"fit_physical\":\"%s\",\"batch_index\":%u,"
 			    "\"sweep_mv\":%.3f,\"flux\":%.12g,"
 			    "\"valid\":%s}",
@@ -370,7 +374,7 @@ static void atten_cal_emit_manual_batch_point(uint8_t physical,
 		 "atten cal manual_point physical=%s point=%u sweep_mv=%.1f flux=%.6g",
 		 physical_name(physical), (uint8_t)(point_index + 1U),
 		 voltage_mv, flux);
-	atten_cal_publish_telemetry(payload, log_msg);
+	atten_cal_publish_telemetry(&msg, log_msg);
 }
 
 static uint32_t clamp_dwell(uint32_t dwell_ms)
@@ -1019,17 +1023,23 @@ int attenuator_calibration_start_auto(
 		    cal.state == ATTEN_CAL_STATE_WAITING;
 	k_mutex_unlock(&cal_lock);
 	if (replacing) {
-		coo_cmd_runtime_warning_emit(command_runtime_get(),
-					     "atten_calibration_replaced",
-					     "attenuator calibration was replaced",
-					     NULL);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "atten_calibration_replaced",
+					     .msg = "attenuator calibration was replaced",
+				     });
 	}
 
 	if (throughput_monitor_any_active()) {
-		coo_cmd_runtime_warning_emit(command_runtime_get(),
-					     "throughput_stopped",
-					     "throughput monitoring was stopped for attenuator calibration",
-					     NULL);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "throughput_stopped",
+					     .msg = "throughput monitoring was stopped for attenuator calibration",
+				     });
 	}
 	(void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
 	rc = apply_route_pair(route_input, request->output);

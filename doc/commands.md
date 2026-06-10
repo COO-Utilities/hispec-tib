@@ -175,9 +175,11 @@ not be needed for normal serial operation.
 (warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
-- **Top-level helper:** `coo_cmd_runtime_warning_emit(command_runtime_get(), code, msg, context)`
-- **Queue behavior:** best-effort MQTT through `OUT_TARGET_MQTT_BEST_EFFORT`;
-  logs locally and drops if MQTT is unavailable or the outbound queue is full.
+- **Top-level helper:** `coo_cmd_runtime_emit(command_runtime_get(), &args)`
+- **Queue behavior:** warnings are usually best-effort MQTT, but the runtime
+  helper accepts an explicit delivery mode. Required warnings are retried by the
+  outbound drain after successful enqueue; enqueue can still fail if the bounded
+  outbound queue is full.
 - **Warning payload:**
   ```json
   {
@@ -190,7 +192,7 @@ not be needed for normal serial operation.
   ```
 
 Warnings do not imply command failure unless the command response also reports
-an error. Warning delivery is intentionally lossy and is not mirrored into
+an error. Most warning delivery is intentionally lossy and is not mirrored into
 sticky status fields. Current warning emitters include MQTT command rejection
 while serial guard is active and attenuator DAC-range clamping.
 

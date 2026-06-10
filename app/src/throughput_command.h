@@ -18,7 +18,7 @@
  *
  * Validates the MQTT/serial payload, starts or stops the matching monitor, and
  * returns one command response. This adapter does not publish telemetry; the
- * active monitor thread later enqueues telemetry through outbound_queue.
+ * active monitor thread later enqueues telemetry through the command runtime.
  */
 int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 

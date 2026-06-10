@@ -237,9 +237,15 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 	}
 	if (!devices_relay_gpio_online()) {
 		if (power_output_is_photodiode(output)) {
-			coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
-				"photodiode relay command ignored because relay GPIO expander is offline",
-				enabled ? "enable" : "disable");
+			coo_cmd_runtime_emit(
+				command_runtime_get(),
+				&(const struct coo_cmd_runtime_emit_args){
+					.type = COO_CMD_RUNTIME_EMIT_WARNING,
+					.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					.code = "relay_gpio_offline",
+					.msg = "photodiode relay command ignored because relay GPIO expander is offline",
+					.context = enabled ? "enable" : "disable",
+				});
 			return 0;
 		}
 		return -EIO;

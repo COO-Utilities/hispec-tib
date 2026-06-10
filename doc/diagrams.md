@@ -28,7 +28,7 @@ flowchart TD
   Exec --> TP
   Exec --> OutQ[outbound_queue]
   TP --> OutQ
-  Warnings[coo_cmd_runtime_warning_emit] --> OutQ
+  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
   MainLoop --> Console[serial print]
@@ -151,7 +151,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
-  Warning[coo_cmd_runtime_warning_emit] --> OutQ
+  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
   Throughput[throughput_monitor_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
@@ -212,7 +212,7 @@ flowchart TD
   Status --> SleepPeriod[sleep to 20 ms period]
   Persist --> SleepPeriod
   Noise --> Warn{noise above threshold}
-  Warn -- yes --> Emit[coo_cmd_runtime_warning_emit photodiode_noise]
+  Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
 ```

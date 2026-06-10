@@ -374,8 +374,14 @@ static void publish_sample(const struct throughput_state *state,
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
 			laser_current_ontime_s);
 		msg.payload_len = off;
-		(void)coo_cmd_runtime_data_emit(command_runtime_get(), topic_suffix,
-						 msg.payload, msg.payload_len, true);
+		(void)coo_cmd_runtime_emit(
+			command_runtime_get(),
+			&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_DATA,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.suffix = topic_suffix,
+				.out = &msg,
+			});
 		return;
 	}
 
@@ -424,8 +430,14 @@ static void publish_sample(const struct throughput_state *state,
 	}
 	msg.payload_len = strlen(msg.payload);
 
-	(void)coo_cmd_runtime_data_emit(command_runtime_get(), topic_suffix,
-					 msg.payload, msg.payload_len, true);
+	(void)coo_cmd_runtime_emit(
+		command_runtime_get(),
+		&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_DATA,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.suffix = topic_suffix,
+			.out = &msg,
+		});
 }
 
 void throughput_monitor_thread(void *p1, void *p2, void *p3)

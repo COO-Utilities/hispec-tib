@@ -12,7 +12,6 @@
 #define __DEVICE_C__
 
 #include "devices.h"
-#include "app_identity.h"
 #include "app_settings.h"
 #include "command.h"
 #include "maiman.h"
@@ -337,6 +336,7 @@ void devices_queue_boot_reset_telemetry(void)
 {
 	struct coo_cmd_response msg = {0};
 	char cause_text[128];
+	int written;
 	int rc;
 
 	if (!boot_reset_cause_valid || (boot_reset_cause & RESET_WATCHDOG) == 0U) {
@@ -344,25 +344,24 @@ void devices_queue_boot_reset_telemetry(void)
 	}
 
 	format_reset_cause_list(boot_reset_cause, cause_text, sizeof(cause_text));
-	msg.target = COO_CMD_OUT_MQTT;
-	msg.qos = 0;
-	rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "boot",
-				       msg.topic, sizeof(msg.topic));
-	if (rc != 0) {
-		LOG_WRN("Failed to format boot telemetry topic (%d)", rc);
-		return;
-	}
-
-	msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),
-				   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
-				   "\"watchdog\":true,\"raw_reset_cause\":%u}",
-				   cause_text, boot_reset_cause);
-	if (msg.payload_len >= sizeof(msg.payload)) {
+	written = snprintk(msg.payload, sizeof(msg.payload),
+			   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
+			   "\"watchdog\":true,\"raw_reset_cause\":%u}",
+			   cause_text, boot_reset_cause);
+	if (written < 0 || written >= (int)sizeof(msg.payload)) {
 		LOG_WRN("Boot telemetry payload too large");
 		return;
 	}
+	msg.payload_len = (size_t)written;
 
-	if (k_msgq_put(&outbound_queue, &msg, K_FOREVER) != 0) {
+	rc = coo_cmd_runtime_emit(command_runtime_get(),
+				  &(const struct coo_cmd_runtime_emit_args){
+					  .type = COO_CMD_RUNTIME_EMIT_DATA,
+					  .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+					  .suffix = "boot",
+					  .out = &msg,
+				  });
+	if (rc != 0) {
 		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
 	}
 }
@@ -782,9 +781,9 @@ int devices_relay_gpio_last_error(void)
 	return error;
 }
 
-//TODO change coo_cmd_runtime_warning_emit so can emit as required not best effort
 static void emit_relay_gpio_offline_warning_once(int error)
 {
+	struct coo_cmd_response msg;
 	char context[24];
 
 	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
@@ -796,9 +795,15 @@ static void emit_relay_gpio_offline_warning_once(int error)
 	k_mutex_unlock(&relay_gpio_lock);
 
 	snprintf(context, sizeof(context), "rc=%d", error);
-	coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
-			 "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
-			 context);
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+				     .out = &msg,
+				     .code = "relay_gpio_offline",
+				     .msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+				     .context = context,
+			     });
 }
 
 static bool configure_relay_gpio_outputs(void)

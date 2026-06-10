@@ -764,16 +764,21 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
         now >= snapshot.next_noise_warning_ms) {
         char context[128];
 
-        snprintk(context, sizeof(context),
-                 "channel=%s noise_rms_mv=%.3f threshold_mv=%.3f",
-                 photodiode_channel_names[channel],
-                 (double)noise_rms,
-                 (double)settings->noise_warn_rms_mv);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "photodiode_noise",
-                         "photodiode residual noise exceeded warning threshold",
-                         context);
+		snprintk(context, sizeof(context),
+			 "channel=%s noise_rms_mv=%.3f threshold_mv=%.3f",
+			 photodiode_channel_names[channel],
+			 (double)noise_rms,
+			 (double)settings->noise_warn_rms_mv);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "photodiode_noise",
+					     .msg = "photodiode residual noise exceeded warning threshold",
+					     .context = context,
+				     });
 
-        k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+		k_mutex_lock(&pd_runtime_lock, K_FOREVER);
         pd_runtime[channel].next_noise_warning_ms =
             now + PD_NOISE_WARNING_COOLDOWN_MS;
         k_mutex_unlock(&pd_runtime_lock);

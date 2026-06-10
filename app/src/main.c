@@ -411,17 +411,23 @@ int main(void)
 			if (rc == 0) {
 				mqtt_subscribed = false;
 				mqtt_revert_on_connect_failure = false;
-			} else if (mqtt_revert_on_connect_failure) {
-				char context[160];
+				} else if (mqtt_revert_on_connect_failure) {
+					char context[160];
 
-				snprintk(context, sizeof(context),
-					 "host=%s port=%u rc=%d",
-					 mqtt_cfg.host, mqtt_cfg.port, rc);
-				coo_cmd_runtime_warning_emit(command_runtime_get(), "mqtt_broker_revert",
-						 "MQTT broker connection failed; reverting to prior broker",
-						 context);
-				LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
-					rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
+					snprintk(context, sizeof(context),
+						 "host=%s port=%u rc=%d",
+						 mqtt_cfg.host, mqtt_cfg.port, rc);
+					coo_cmd_runtime_emit(
+						command_runtime_get(),
+						&(const struct coo_cmd_runtime_emit_args){
+							.type = COO_CMD_RUNTIME_EMIT_WARNING,
+							.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+							.code = "mqtt_broker_revert",
+							.msg = "MQTT broker connection failed; reverting to prior broker",
+							.context = context,
+						});
+					LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
+						rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
 				mqtt_cfg = prior_mqtt_cfg;
 				(void)coo_mqtt_set_broker_config(&mqtt_cfg);
 				restore_mqtt_config(&mqtt_cfg);

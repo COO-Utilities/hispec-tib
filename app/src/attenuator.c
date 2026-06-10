@@ -212,14 +212,19 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
         voltage = ATTENUATOR_DRIVE_MAX_MV;
     }
 
-    if (report_clamp) {
-        snprintk(context, sizeof(context),
-                 "channel=%u requested=%.3f clamped=%.3f",
-                 dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
-                         "attenuator command exceeded drive range and was clamped",
-                         context);
-    }
+	if (report_clamp) {
+		snprintk(context, sizeof(context),
+			 "channel=%u requested=%.3f clamped=%.3f",
+			 dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "attenuator_clamped",
+					     .msg = "attenuator command exceeded drive range and was clamped",
+					     .context = context,
+				     });
+	}
 
     code = attenuator_voltage_to_code(voltage);
     applied_voltage = attenuator_code_to_voltage(code);
@@ -328,14 +333,19 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
     max_db1 = attenuator_physical_max_db(&drv->coeff1);
     max_total_db = max_db1 + attenuator_physical_max_db(&drv->coeff2);
 
-    if (attenuation_db > max_total_db) {
-        snprintk(context, sizeof(context),
-                 "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
-                         "attenuator command exceeded modeled range and was clamped",
-                         context);
-        attenuation_db = max_total_db;
-    }
+	if (attenuation_db > max_total_db) {
+		snprintk(context, sizeof(context),
+			 "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "attenuator_clamped",
+					     .msg = "attenuator command exceeded modeled range and was clamped",
+					     .context = context,
+				     });
+		attenuation_db = max_total_db;
+	}
 
     db1 = attenuation_db < max_db1 ? attenuation_db : max_db1;
     db2 = attenuation_db - db1;

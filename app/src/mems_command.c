@@ -566,9 +566,14 @@ static void split_emit_quantization_warning(uint8_t channel_index,
              (double)state->output[0],
              (double)state->output[1],
              (double)state->output[2]);
-    coo_cmd_runtime_warning_emit(command_runtime_get(), "split_ratio_quantized",
-                     "requested split ratio was quantized to MEMS ticks",
-                     context);
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				     .code = "split_ratio_quantized",
+				     .msg = "requested split ratio was quantized to MEMS ticks",
+				     .context = context,
+			     });
 }
 
 static int split_channel_index_from_key(const char *key, uint8_t *index)
@@ -710,9 +715,14 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                  "channel=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                  channel_name == NULL ? "?" : channel_name,
                  cycle_ms, state.cycle_ms);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                         "requested MEMS cycle was quantized",
-                         context);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "mems_timing_quantized",
+					     .msg = "requested MEMS cycle was quantized",
+					     .context = context,
+				     });
     }
     return split_channel_response(cmd, &state, channel_index, out);
 }
@@ -1056,11 +1066,16 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             snprintk(context, sizeof(context),
                      "switch=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                      sw->name, cycle_ms, status.cycle_ms);
-            coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                             "requested MEMS cycle was quantized",
-                             context);
-        }
-    }
+			coo_cmd_runtime_emit(command_runtime_get(),
+					     &(const struct coo_cmd_runtime_emit_args){
+						     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+						     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+						     .code = "mems_timing_quantized",
+						     .msg = "requested MEMS cycle was quantized",
+						     .context = context,
+					     });
+		}
+	}
 
     return mems_response_for_switch(cmd, sw, out);
 }
