@@ -89,6 +89,51 @@ THROUGHPUT_DTYPE = np.dtype(
 )
 
 
+def _format_scalar(value: Any) -> str:
+    if isinstance(value, float):
+        if np.isnan(value):
+            return "nan"
+        return f"{value:.6g}"
+    return repr(value)
+
+
+def _format_sequence(value: Sequence[Any]) -> str:
+    items = tuple(value)
+    if not items:
+        return "()"
+    if len(items) <= 8:
+        return "(" + ", ".join(_format_repr(item) for item in items) + ("," if len(items) == 1 else "") + ")"
+
+    head = ", ".join(_format_repr(item) for item in items[:3])
+    tail = ", ".join(_format_repr(item) for item in items[-3:])
+    return f"({head}, ..., {tail}; n={len(items)})"
+
+
+def _format_repr(value: Any) -> str:
+    if isinstance(value, tuple):
+        return _format_sequence(value)
+    if isinstance(value, list):
+        return "[" + _format_sequence(tuple(value))[1:-1] + "]"
+    return _format_scalar(value)
+
+
+class ResponseRepr:
+    """Readable repr for notebook command response objects."""
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        return tuple((f.name, getattr(self, f.name)) for f in fields(self))
+
+    def __repr__(self) -> str:
+        parts = [f"{name}={_format_repr(value)}" for name, value in self._repr_items()]
+        inline = f"{type(self).__name__}(" + ", ".join(parts) + ")"
+        if len(inline) <= 100 and "\n" not in inline:
+            return inline
+        body = ",\n  ".join(parts)
+        return f"{type(self).__name__}(\n  {body}\n)"
+
+    __str__ = __repr__
+
+
 class HispecFibError(RuntimeError):
     """Local Python-side client error."""
 
@@ -102,24 +147,24 @@ class HispecFibPCBError(HispecFibError):
         self.response = response
 
 
-@dataclass(frozen=True)
-class NamedValue:
+@dataclass(frozen=True, repr=False)
+class NamedValue(ResponseRepr):
     name: str
     value: Any
 
 
-@dataclass(frozen=True)
-class CommandOk:
+@dataclass(frozen=True, repr=False)
+class CommandOk(ResponseRepr):
     status: str = "ok"
 
 
-@dataclass(frozen=True)
-class HelpSummary:
+@dataclass(frozen=True, repr=False)
+class HelpSummary(ResponseRepr):
     help: str
 
 
-@dataclass(frozen=True)
-class Catalog:
+@dataclass(frozen=True, repr=False)
+class Catalog(ResponseRepr):
     board: str
     lasers: tuple[str, ...]
     route_inputs: tuple[str, ...]
@@ -127,14 +172,14 @@ class Catalog:
     routes: tuple[tuple[str, str], ...]
 
 
-@dataclass(frozen=True)
-class MqttConfig:
+@dataclass(frozen=True, repr=False)
+class MqttConfig(ResponseRepr):
     broker: str
     dns_supported: bool
 
 
-@dataclass(frozen=True)
-class IpManualConfig:
+@dataclass(frozen=True, repr=False)
+class IpManualConfig(ResponseRepr):
     ip: str
     subnet: str
     gateway: str
@@ -142,20 +187,20 @@ class IpManualConfig:
     ntp: str
 
 
-@dataclass(frozen=True)
-class IpActiveConfig:
+@dataclass(frozen=True, repr=False)
+class IpActiveConfig(ResponseRepr):
     ready: bool
     ip: str
 
 
-@dataclass(frozen=True)
-class NtpConfig:
+@dataclass(frozen=True, repr=False)
+class NtpConfig(ResponseRepr):
     src: str
     server: str
 
 
-@dataclass(frozen=True)
-class IpConfig:
+@dataclass(frozen=True, repr=False)
+class IpConfig(ResponseRepr):
     src: str
     trydhcpfirst: bool
     preferdhcpdns: bool
@@ -165,47 +210,47 @@ class IpConfig:
     ntp: NtpConfig
 
 
-@dataclass(frozen=True)
-class PartialSupport:
+@dataclass(frozen=True, repr=False)
+class PartialSupport(ResponseRepr):
     dhcp: str = "ok"
     dns: str = "ok"
     ntp: str = "ok"
 
 
-@dataclass(frozen=True)
-class TimeStatus:
+@dataclass(frozen=True, repr=False)
+class TimeStatus(ResponseRepr):
     utc: int
     uptime_s: int
 
 
-@dataclass(frozen=True)
-class SerialGuardStatus:
+@dataclass(frozen=True, repr=False)
+class SerialGuardStatus(ResponseRepr):
     serialguard_s: int
     active: bool
     remaining_ms: int
 
 
-@dataclass(frozen=True)
-class LastCommand:
+@dataclass(frozen=True, repr=False)
+class LastCommand(ResponseRepr):
     name: str
     src: str
     t_ms: int
 
 
-@dataclass(frozen=True)
-class StatusLaserSummary:
+@dataclass(frozen=True, repr=False)
+class StatusLaserSummary(ResponseRepr):
     power_mw: float | None = None
     tec_on_s: float = 0.0
     off_in_s: int = 0
 
 
-@dataclass(frozen=True)
-class StatusAttenSummary:
+@dataclass(frozen=True, repr=False)
+class StatusAttenSummary(ResponseRepr):
     level_percent: float | None = None
 
 
-@dataclass(frozen=True)
-class Status:
+@dataclass(frozen=True, repr=False)
+class Status(ResponseRepr):
     fw: str
     boots: int
     board: str
@@ -221,22 +266,22 @@ class Status:
     attens: tuple[NamedValue, ...] = ()
 
 
-@dataclass(frozen=True)
-class TempStatus:
+@dataclass(frozen=True, repr=False)
+class TempStatus(ResponseRepr):
     ambient_c: float | None
     laserbank_c: float | None
     laser: tuple[NamedValue, ...]
 
 
-@dataclass(frozen=True)
-class MemsSwitchState:
+@dataclass(frozen=True, repr=False)
+class MemsSwitchState(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
 
 
-@dataclass(frozen=True)
-class MemsSwitchDetail:
+@dataclass(frozen=True, repr=False)
+class MemsSwitchDetail(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
@@ -246,20 +291,20 @@ class MemsSwitchDetail:
     stop_in_s: int = 0
 
 
-@dataclass(frozen=True)
-class MemsRoutes:
+@dataclass(frozen=True, repr=False)
+class MemsRoutes(ResponseRepr):
     active_routes: tuple[NamedValue, ...]
 
 
-@dataclass(frozen=True)
-class RouteLoss:
+@dataclass(frozen=True, repr=False)
+class RouteLoss(ResponseRepr):
     route: str
     lasers: tuple[NamedValue, ...] = ()
     split: tuple[float, float, float] | None = None
 
 
-@dataclass(frozen=True)
-class LaserStatus:
+@dataclass(frozen=True, repr=False)
+class LaserStatus(ResponseRepr):
     name: str
     powered: bool
     tec_on_s: float
@@ -279,21 +324,21 @@ class LaserStatus:
     oc_fault: bool
 
 
-@dataclass(frozen=True)
-class LaserTune:
+@dataclass(frozen=True, repr=False)
+class LaserTune(ResponseRepr):
     name: str
     tune_nm: float
 
 
-@dataclass(frozen=True)
-class TecPid:
+@dataclass(frozen=True, repr=False)
+class TecPid(ResponseRepr):
     p: int
     i: int
     d: int
 
 
-@dataclass(frozen=True)
-class LaserSettings:
+@dataclass(frozen=True, repr=False)
+class LaserSettings(ResponseRepr):
     name: str
     model: str
     nominal_current_ma: float
@@ -317,8 +362,8 @@ class LaserSettings:
     emit_total_s: float
 
 
-@dataclass(frozen=True)
-class LaserEngStatus:
+@dataclass(frozen=True, repr=False)
+class LaserEngStatus(ResponseRepr):
     name: str
     read_rc: int
     powered: bool
@@ -361,19 +406,19 @@ class LaserEngStatus:
     ntc_t_coeff: float | None
 
 
-@dataclass(frozen=True)
-class LaserBankPower:
+@dataclass(frozen=True, repr=False)
+class LaserBankPower(ResponseRepr):
     mode: str
     powered: bool
 
 
-@dataclass(frozen=True)
-class LaserBankClearFaults:
+@dataclass(frozen=True, repr=False)
+class LaserBankClearFaults(ResponseRepr):
     off_ms: int
 
 
-@dataclass(frozen=True)
-class LaserBankHeater:
+@dataclass(frozen=True, repr=False)
+class LaserBankHeater(ResponseRepr):
     mode: str
     auto_state: str
     heater_on: bool
@@ -386,8 +431,8 @@ class LaserBankHeater:
     poll_age_s: float
 
 
-@dataclass(frozen=True)
-class AttenuatorState:
+@dataclass(frozen=True, repr=False)
+class AttenuatorState(ResponseRepr):
     db: float
     linear: float
     v1_mv: float
@@ -396,14 +441,14 @@ class AttenuatorState:
     db2: float
 
 
-@dataclass(frozen=True)
-class AttenuatorCoeff:
+@dataclass(frozen=True, repr=False)
+class AttenuatorCoeff(ResponseRepr):
     dac1: tuple[float, float]
     dac2: tuple[float, float]
 
 
-@dataclass(frozen=True)
-class AttenuatorFitMetrics:
+@dataclass(frozen=True, repr=False)
+class AttenuatorFitMetrics(ResponseRepr):
     valid: bool
     points: int = 0
     slope: float | None = None
@@ -415,15 +460,28 @@ class AttenuatorFitMetrics:
     max_tx: float | None = None
     voltage_span_mv: float | None = None
 
+    def __repr__(self) -> str:
+        if not self.valid:
+            return "AttenuatorFitMetrics(valid=False)"
+        return (
+            "AttenuatorFitMetrics("
+            f"points={self.points}, slope={_format_repr(self.slope)}, "
+            f"offset={_format_repr(self.offset)}, corr={_format_repr(self.corr)}, "
+            f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
+            f"voltage_span_mv={_format_repr(self.voltage_span_mv)})"
+        )
 
-@dataclass(frozen=True)
-class AttenuatorCalibrationBatch:
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationBatch(ResponseRepr):
     v_mV: tuple[float, ...]
     flux: tuple[float, ...]
 
 
-@dataclass(frozen=True)
-class AttenuatorCalibrationStatus:
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationStatus(ResponseRepr):
     state: str
     mode: str
     physical: str
@@ -439,9 +497,24 @@ class AttenuatorCalibrationStatus:
     dac2: AttenuatorFitMetrics
     v_mV: tuple[float, ...] = ()
 
+    def __repr__(self) -> str:
+        return (
+            "AttenuatorCalibrationStatus(\n"
+            f"  state={self.state!r}, mode={self.mode!r}, physical={self.physical!r}, "
+            f"point={self.point!r}, complete_pct={self.complete_pct},\n"
+            f"  mv={_format_repr(self.mv)}, other_mv={_format_repr(self.other_mv)}, "
+            f"t_ms={self.t_ms}, error={self.error}, fit={self.fit!r},\n"
+            f"  dac1={self.dac1},\n"
+            f"  dac2={self.dac2},\n"
+            f"  v_mV={_format_repr(self.v_mV)}\n"
+            ")"
+        )
 
-@dataclass(frozen=True)
-class PhotodiodeValues:
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeValues(ResponseRepr):
     yjvalue: float
     yjvalue_err: float
     hkvalue: float
@@ -462,8 +535,8 @@ class PhotodiodeValues:
     hk_pd_is_off: bool = False
 
 
-@dataclass(frozen=True)
-class DarkStatus:
+@dataclass(frozen=True, repr=False)
+class DarkStatus(ResponseRepr):
     state: str
     channel: str
     duration_ms: int
@@ -481,8 +554,8 @@ class DarkStatus:
     lowest_stored_dark_mv: float = np.nan
 
 
-@dataclass(frozen=True)
-class PhotodiodeSettings:
+@dataclass(frozen=True, repr=False)
+class PhotodiodeSettings(ResponseRepr):
     channel: str
     dark_mv: float
     dark_duration_ms: int | Literal["user"]
@@ -496,8 +569,8 @@ class PhotodiodeSettings:
     off_in_s: int | None
 
 
-@dataclass(frozen=True)
-class SplitSwitchState:
+@dataclass(frozen=True, repr=False)
+class SplitSwitchState(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
@@ -505,8 +578,8 @@ class SplitSwitchState:
     b_ms: int
 
 
-@dataclass(frozen=True)
-class SplitState:
+@dataclass(frozen=True, repr=False)
+class SplitState(ResponseRepr):
     channel: str
     ratio_ask: tuple[float, float, float]
     ratio_actual: tuple[float, float, float]
@@ -517,8 +590,8 @@ class SplitState:
     stop_in_s: int
 
 
-@dataclass(frozen=True)
-class WarningEvent:
+@dataclass(frozen=True, repr=False)
+class WarningEvent(ResponseRepr):
     severity: str
     code: str
     msg: str
@@ -526,8 +599,8 @@ class WarningEvent:
     uptime_ms: int
 
 
-@dataclass(frozen=True)
-class ThroughputSample:
+@dataclass(frozen=True, repr=False)
+class ThroughputSample(ResponseRepr):
     channel: str
     laser: str
     autolevel: bool
@@ -643,11 +716,29 @@ def _to_object(value: Any) -> Any:
     return value
 
 
+def _is_atten_cal_status(data: Any) -> bool:
+    return isinstance(data, Mapping) and all(
+        key in data
+        for key in (
+            "state",
+            "mode",
+            "physical",
+            "fit",
+            "n",
+            "t_ms",
+            "complete_pct",
+            "point",
+            "mv",
+            "other_mv",
+        )
+    )
+
+
 def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
     if not payload:
         return CommandOk()
     data = _loads(payload)
-    if isinstance(data, Mapping) and "error" in data:
+    if isinstance(data, Mapping) and "error" in data and not _is_atten_cal_status(data):
         raise HispecFibPCBError(str(data["error"]), topic=topic, response=_to_object(data))
     if data == {"status": "ok"}:
         return CommandOk()
@@ -1752,7 +1843,7 @@ class HispecFibPcb:
 
     def _request_json(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         result = self._request(key, payload)
-        if isinstance(result, Mapping) and "error" in result:
+        if isinstance(result, Mapping) and "error" in result and not _is_atten_cal_status(result):
             raise HispecFibPCBError(str(result["error"]), response=_to_object(result))
         return result
 
