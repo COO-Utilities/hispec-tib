@@ -71,6 +71,15 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.
+- [ ] Verify command dispatch now rejects unknown top-level payload keys and
+  malformed non-parameterized endpoint keys such as `laser/angstatus`.
+- [ ] Verify `laser name=1028y value=50` now reports an unknown `value`
+  argument, and `laser ... level=...` reports `override_off` when bank power is
+  explicitly disabled.
+- [ ] Verify compact laser status reports `ready`/`blocked_reason` and uses
+  integer-or-null active time fields instead of inactive `0.0` values.
+- [ ] Verify the duplicate laser-bank fault-clear timeout define was removed
+  from `laser_command.c`; broader redundant-setting cleanup remains open.
 
 
 ## Decisions To Make

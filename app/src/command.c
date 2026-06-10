@@ -96,28 +96,45 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
         .usage = (_usage), .args = (_args), .values = (_values), \
         .notes = (_notes), .flags = (_flags) }
 
-#define CMD_SPEC(_key, _get, _set, _class, _guard, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = (_class), .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .allowed_payload_keys = (_keys), \
       CMD_HELP(_usage, _args, _values, _notes, _flags) }
 
-#define CMD_SPEC_CUSTOM(_key, _get, _set, _classify, _guard, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC_PREFIX(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = (_class), .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .key_prefix_match = true, .allowed_payload_keys = (_keys), \
+      CMD_HELP(_usage, _args, _values, _notes, _flags) }
+
+#define CMD_SPEC_CUSTOM(_key, _get, _set, _classify, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = COO_CMD_CLASS_CUSTOM, .custom_classify = (_classify), \
       .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .allowed_payload_keys = (_keys), \
       CMD_HELP(_usage, _args, _values, _notes, _flags) }
 
-#define CMD_SPEC_TIB(_key, _get, _set, _class, _guard, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC_TIB(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = (_class), .supported = command_tib_supported, \
       .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .allowed_payload_keys = (_keys), \
       CMD_HELP(_usage, _args, _values, _notes, _flags) }
 
-#define CMD_SPEC_TIB_CUSTOM(_key, _get, _set, _classify, _guard, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC_TIB_PREFIX(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
+    { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
+      .class_policy = (_class), .supported = command_tib_supported, \
+      .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .key_prefix_match = true, .allowed_payload_keys = (_keys), \
+      CMD_HELP(_usage, _args, _values, _notes, _flags) }
+
+#define CMD_SPEC_TIB_CUSTOM(_key, _get, _set, _classify, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = COO_CMD_CLASS_CUSTOM, .custom_classify = (_classify), \
       .supported = command_tib_supported, \
       .mqtt_query_allowed_during_serial_guard = (_guard), \
+      .allowed_payload_keys = (_keys), \
       CMD_HELP(_usage, _args, _values, _notes, _flags) }
 
 #define CMD_HELP_ONLY(_key, _supported, _usage, _args, _values, _notes, _flags) \
@@ -131,6 +148,7 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
  */
 static const struct coo_cmd_spec command_specs[] = {
     CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true,
+             "trydhcpfirst,preferdhcpdns,preferdhcpntp,ip,subnet,gateway,dns,ntp,persistent",
              "ip [trydhcpfirst=<bool> preferdhcpdns=<bool> preferdhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persistent=<bool>]",
              "query with no payload; effect when any listed field is supplied",
              "bool: true|false|on|off|yes|no",
@@ -139,6 +157,7 @@ static const struct coo_cmd_spec command_specs[] = {
     { .key = "mqtt", .query_handler = mqtt_get, .effect_handler = mqtt_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .serial_positional = { .field = { "broker", "persistent" }, .required_count = 1U },
+      .allowed_payload_keys = "broker,persistent",
       .mqtt_query_allowed_during_serial_guard = true,
       CMD_HELP("mqtt [broker=<host-or-ip:port> persistent=<bool>]",
                "broker is required for effect; persistent is optional",
@@ -149,22 +168,24 @@ static const struct coo_cmd_spec command_specs[] = {
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .serial_positional = { .field = { "unix_ms" }, .required_count = 1U,
                              .numeric_mask = BIT(0) },
+      .allowed_payload_keys = "unix_ms",
       .mqtt_query_allowed_during_serial_guard = true,
       CMD_HELP("time [unix_ms=<utc-ms>]",
                "unix_ms required for effect",
                "unsigned millisecond Unix epoch",
                "sets Zephyr realtime clock and records last known UTC",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
-    CMD_SPEC("temp", temp_get, NULL, COO_CMD_CLASS_DEFAULT, true,
+    CMD_SPEC("temp", temp_get, NULL, COO_CMD_CLASS_DEFAULT, true, "",
              "temp", "none", NULL, "cached housekeeping temperature status",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("status", status_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
+             "ip,lasers,attens",
              "status [ip=<bool> lasers=<bool> attens=<bool>]",
              "all fields optional",
              "bool: true|false|on|off|yes|no",
              "query-only firmware and subsystem status",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC("catalog", catalog_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
+    CMD_SPEC("catalog", catalog_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
              "catalog",
              "none",
              NULL,
@@ -172,13 +193,14 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_CUSTOM("memsroute/route_loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
+                    "route,1028y,1270j,1430yj,1430hk,1510h,2330k,split,persistent",
                     "memsroute/route_loss route=<route> [<laser>=<transmission> ... persistent=<bool>]",
                     "route required for effect; laser fields optional by query/effect mode",
                     "laser fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,split",
                     "stores user route-loss estimates used by optical calculations",
                     COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("memsroute", memsroute_get, memsroute_set,
-             COO_CMD_CLASS_DEFAULT, true,
+             COO_CMD_CLASS_DEFAULT, true, "input,output,force",
              "memsroute input=<input> output=<output> [force=<bool>]",
              "input and output required; force=true re-pulses route steps",
              "route names are board profile input/output route keys",
@@ -187,6 +209,8 @@ static const struct coo_cmd_spec command_specs[] = {
     { .key = "mems", .query_handler = mems_get, .effect_handler = mems_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .serial_shorthand = serial_mems_switch_shorthand,
+      .key_prefix_match = true,
+      .allowed_payload_keys = "state,duty_cycle,off_in_s,cycle_ms,force,toggle_rate_hz,value",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("mems/<switchname>", NULL,
                   "mems/<switchname> [state=<A|B> force=<bool> duty_cycle=<0..1> cycle_ms=<ms> off_in_s=<s>]",
@@ -194,8 +218,9 @@ static const struct coo_cmd_spec command_specs[] = {
                   "switchname is one active board MEMS switch name",
                   "serial shorthand accepts: mems/<switchname> A [duty_cycle] [off_in_s]",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC("split", splitting_get, splitting_set,
+    CMD_SPEC_PREFIX("split", splitting_get, splitting_set,
              COO_CMD_CLASS_DEFAULT, true,
+             "channel,ratio1,ratio2,ratio3,cycle_ms,off_in_s,toggle_rate_hz",
              "split [channel=<yj|hk> ratio1=<0..1> ratio2=<0..1> cycle_ms=<ms> off_in_s=<s>]",
              "channel, ratio1, and ratio2 are required for effect; cycle_ms and off_in_s optional",
              "channel: yj,hk",
@@ -203,61 +228,62 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COO_CMD_CLASS_DEFAULT, false,
+                 "laser,fiber,input,output,autolevel,max_flux_ph_s,off_in_s,format,stop",
                  "measure_throughput laser=<laser|none> [fiber=<M|S> input=<name> output=<name> autolevel=<bool> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
                  "stop with stop=<yj|hk|all>; laser=none requires input, output, and autolevel=false",
                  "format: json,binary",
                  "TIB-only throughput monitor command",
                  COO_CMD_HELP_EFFECT),
     CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_level,
-                        true,
+                        true, "name,level,autooff_s",
                         "laser name=<laser> [level=<percent> autooff_s=<s>]",
                         "name required; level makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only laser output status/set command",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/tune", laser_tune_get, laser_tune_set,
-                        classify_laser_tune, true,
+                        classify_laser_tune, true, "name,tune_nm,delta_nm",
                         "laser/tune name=<laser> [tune_nm=<nm>|delta_nm=<nm>]",
                         "name required; tune_nm or delta_nm makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only stored tune request",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("laser/status", laser_get, NULL,
-                 COO_CMD_CLASS_ALWAYS_QUERY, true,
+                 COO_CMD_CLASS_ALWAYS_QUERY, true, "name",
                  "laser/status name=<laser>",
                  "name required",
                  "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                  "TIB-only compact operational status",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("laser/engstatus", laser_engstatus_get, NULL,
-                 COO_CMD_CLASS_ALWAYS_QUERY, true,
+                 COO_CMD_CLASS_ALWAYS_QUERY, true, "name",
                  "laser/engstatus name=<laser>",
                  "name required",
                  "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                  "TIB-only engineering status; may perform slow Modbus reads",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/settings", laser_settings_get, laser_settings_set,
-                        classify_laser_settings, true,
+                        classify_laser_settings, true, "name,settings,persistent",
                         "laser/settings name=<laser> [settings={...} persistent=<bool>]",
                         "name required; settings object required for effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only app-owned laser policy/settings wrapper",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB("laserbank/power", laserbank_power, laserbank_power,
-                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true,
+    CMD_SPEC_TIB_PREFIX("laserbank/power", laserbank_power, laserbank_power,
+                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
                  "laserbank/power [mode=<auto|override_on|override_off>]",
                  "mode required for effect; suffix form laserbank/power/<mode> also works",
                  "mode: auto,override_on,override_off",
                  "TIB-only laser-bank supply override",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
-                 COO_CMD_CLASS_ALWAYS_EFFECT, false,
+                 COO_CMD_CLASS_ALWAYS_EFFECT, false, "",
                  "laserbank/clearfaults",
                  "none", NULL,
                  "TIB-only power-cycles the laser bank to clear latched faults",
                  COO_CMD_HELP_EFFECT),
-    CMD_SPEC_TIB("laserbank/heater", laserbank_heater, laserbank_heater,
-                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true,
+    CMD_SPEC_TIB_PREFIX("laserbank/heater", laserbank_heater, laserbank_heater,
+                 COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
                  "laserbank/heater [mode=<auto|override_on|override_off>]",
                  "mode required for effect; suffix form laserbank/heater/<mode> also works",
                  "mode: auto,override_on,override_off",
@@ -265,6 +291,7 @@ static const struct coo_cmd_spec command_specs[] = {
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
              COO_CMD_CLASS_DEFAULT, true,
+             "action,mode,stop,continue,other_mv,dac1,dac2,attenuator,laser,output,fiber,dwell_ms,persistent",
              "atten/calibrate action=<auto|manual|continue|fit|stop> [attenuator=<name> fiber=<dac1|dac2> other_mv=<mV> dwell_ms=<ms> persistent=<bool>]",
              "action required for effect; no payload queries calibration state",
              "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
@@ -273,6 +300,8 @@ static const struct coo_cmd_spec command_specs[] = {
     { .key = "atten", .query_handler = atten_setting_get,
       .effect_handler = atten_setting_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
+      .key_prefix_match = true,
+      .allowed_payload_keys = "value,dac1,dac2,persistent",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("atten/<name>/value", NULL,
                   "atten/<name>/value [value=<linear>]",
@@ -296,6 +325,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .class_policy = COO_CMD_CLASS_CUSTOM,
       .custom_classify = classify_pd,
       .supported = command_tib_supported,
+      .allowed_payload_keys = "channel,action,duration_ms,store,persistent",
       .mqtt_query_allowed_during_serial_guard = true,
       CMD_HELP("pd [channel=<yj|hk> action=<measure_dark|dark_status|reset_lowest_dark> duration_ms=<ms> store=<bool> persistent=<bool>]",
                "channel and action required for effects; no payload queries live values",
@@ -306,6 +336,8 @@ static const struct coo_cmd_spec command_specs[] = {
       .effect_handler = pd_settings_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
+      .key_prefix_match = true,
+      .allowed_payload_keys = "dark_mv,noise_rms_mV,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persistent",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pdsettings/<channel>", command_tib_supported,
                   "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persistent=<bool>]",
@@ -317,8 +349,10 @@ static const struct coo_cmd_spec command_specs[] = {
 
 #undef CMD_HELP
 #undef CMD_SPEC
+#undef CMD_SPEC_PREFIX
 #undef CMD_SPEC_CUSTOM
 #undef CMD_SPEC_TIB
+#undef CMD_SPEC_TIB_PREFIX
 #undef CMD_SPEC_TIB_CUSTOM
 #undef CMD_HELP_ONLY
 
@@ -1080,6 +1114,24 @@ static int catalog_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
+static int command_append_seconds_or_null(char *payload, size_t payload_len,
+                                          size_t *off, bool active, double seconds)
+{
+    if (!active || seconds < 0.0 || seconds != seconds) {
+        return coo_json_append(payload, payload_len, off, "null");
+    }
+    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
+}
+
+static int command_append_i64_or_null(char *payload, size_t payload_len,
+                                      size_t *off, bool active, int64_t seconds)
+{
+    if (!active) {
+        return coo_json_append(payload, payload_len, off, "null");
+    }
+    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
+}
+
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
@@ -1153,9 +1205,17 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                 coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                               rc == 0 ? laser.estimated_power_mw : (double)NAN, 3) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off,
-                                ",\"tec_on_s\":%.1f,\"off_in_s\":%lld}",
-                                rc == 0 ? (double)laser.tec_on_time_s : 0.0,
-                                rc == 0 ? (long long)laser.off_in_s : 0LL) != 0) {
+                                ",\"ready\":%s,\"tec_on_s\":",
+                                rc == 0 && laser.ready_to_operate ? "true" : "false") != 0 ||
+                command_append_seconds_or_null(payload, sizeof(payload), &off,
+                                               rc == 0 && laser.tec_runtime_active,
+                                               laser.tec_on_time_s) != 0 ||
+                coo_json_append(payload, sizeof(payload), &off,
+                                ",\"off_in_s\":") != 0 ||
+                command_append_i64_or_null(payload, sizeof(payload), &off,
+                                           rc == 0 && laser.autooff_active,
+                                           laser.off_in_s) != 0 ||
+                coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }
         }

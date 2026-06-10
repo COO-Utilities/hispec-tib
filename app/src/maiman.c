@@ -117,13 +117,30 @@ bool maiman_get_register_address(const char *name, laser_address_t *address_out)
 	return false;
 }
 
+static const char *maiman_register_name(uint16_t address)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(register_table); ++i) {
+		if (register_table[i].address == address) {
+			return register_table[i].name;
+		}
+	}
+
+	return "UNKNOWN";
+}
+
 void maiman_init(maiman_driver_t *drv, uint8_t node_id)
+{
+	maiman_init_verbose(drv, node_id, false);
+}
+
+void maiman_init_verbose(maiman_driver_t *drv, uint8_t node_id, bool verbose)
 {
 	if (drv == NULL) {
 		return;
 	}
 
 	drv->node_id = node_id;
+	drv->verbose = verbose;
 }
 
 /**
@@ -142,6 +159,10 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 			drv->node_id, address);
 		return false;
 	}
+	if (drv->verbose) {
+		LOG_INF("Modbus read node=%u reg=%s(0x%04x)",
+			drv->node_id, maiman_register_name(address), address);
+	}
 
 	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
 				       address, value, 1);
@@ -149,6 +170,10 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 		LOG_ERR("Modbus read node=%u reg=0x%04x failed: %d",
 			drv->node_id, address, err);
 		return false;
+	}
+	if (drv->verbose) {
+		LOG_INF("Modbus read node=%u reg=%s(0x%04x) value=0x%04x",
+			drv->node_id, maiman_register_name(address), address, *value);
 	}
 	return true;
 }
@@ -170,6 +195,10 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 			drv->node_id, address, value);
 		return false;
 	}
+	if (drv->verbose) {
+		LOG_INF("Modbus write node=%u reg=%s(0x%04x) value=0x%04x",
+			drv->node_id, maiman_register_name(address), address, value);
+	}
 
 	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
 					address, &value, 1);
@@ -177,6 +206,10 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x failed: %d",
 			drv->node_id, address, value, err);
 		return false;
+	}
+	if (drv->verbose) {
+		LOG_INF("Modbus write node=%u reg=%s(0x%04x) ok",
+			drv->node_id, maiman_register_name(address), address);
 	}
 	return true;
 }
@@ -243,6 +276,10 @@ bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, double divider,
 	if (!maiman_scaled_to_raw(value, divider, signed_value, &raw)) {
 		LOG_ERR("Scaled write reg=0x%04x out of range", address);
 		return false;
+	}
+	if (drv != NULL && drv->verbose) {
+		LOG_INF("Maiman scaled write node=%u reg=%s(0x%04x) value=%.4f raw=0x%04x",
+			drv->node_id, maiman_register_name(address), address, value, raw);
 	}
 
 	return maiman_write_u16(drv, address, raw);

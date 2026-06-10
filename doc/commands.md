@@ -62,6 +62,10 @@ Draft 0.1
   for interactive bring-up and debugging.
 - Board-specific commands are rejected before their domain handler runs when
   the selected board strap does not provide that hardware.
+- Command keys are exact-match by default. Only endpoint families documented
+  with topic suffixes, such as `atten/<laser>/value`, `split/yj`, or
+  `laserbank/power/<mode>`, opt into prefix matching. Unknown top-level payload
+  keys are rejected before the domain handler runs.
 
 ## Serial Command Form
 
@@ -613,9 +617,11 @@ float64 laser_current_ontime_s
   {
     "name": "<lasername>",
     "powered": true,
-    "tec_on_s": 0,
-    "emit_on_s": 0,
-    "emit_total_s": 0,
+    "ready": true,
+    "blocked_reason": null,
+    "tec_on_s": null,
+    "emit_on_s": null,
+    "emit_total_s": null,
     "temp_c": 0.0,
     "i_mA": 0.0,
     "level": 0.0,
@@ -626,7 +632,7 @@ float64 laser_current_ontime_s
     "tec_ma": 0.0,
     "diode_v": 0.0,
     "tec_v": 0.0,
-    "off_in_s": 0,
+    "off_in_s": null,
     "oc_fault": false
   }
   ```
@@ -643,8 +649,13 @@ float64 laser_current_ontime_s
   the laser bank as needed, prepares the TEC, sets the laser current, and restarts the auto-off timer. Setting level
   0 stops emission and writes driver current to 0. Laser output current is never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
-  `tec_on_s`, `emit_on_s`, and `emit_total_s` are firmware-owned counters. `emit_total_s` is persisted when emission
-  stops cleanly. `autooff_s` is optional and non-persistent; if supplied, it overrides the default configured through
+  `ready` reports whether the driver is prepared to operate without a blocking
+  SF8025 lock condition. `blocked_reason` is `null` when emission is active,
+  otherwise it reports a concise cause such as `bank_off`, `not_emitting`,
+  `tec_not_started`, `ld_overcurrent`, or `interlock`. Active time fields are
+  integer seconds while active and `null` when inactive. The persisted lifetime
+  total remains available through `laser/settings`. `autooff_s` is optional and
+  non-persistent; if supplied, it overrides the default configured through
   `laser/settings` for this start. If another laser-bank operation occupies the
   shared Maiman Modbus bus past the command wait budget, laser commands return
   `{"error":"busy"}`.
@@ -694,8 +705,8 @@ optional laser section of `status`.
 
 Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
 Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
-serial/device-id verification, and interlock flags. This command may be slower than `laser/status` because it reads
-many Modbus registers.
+serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock flags. This command may be slower than
+`laser/status` because it reads many Modbus registers.
 
 
 (laser-settings)=

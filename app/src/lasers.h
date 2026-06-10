@@ -80,6 +80,8 @@ struct hispec_laser_status {
 	bool lock_tec_error;
 	bool lock_tec_selfheat;
 	bool ready_to_operate;
+	uint16_t blocking_lock_status;
+	const char *blocked_reason;
 	double current_set_ma;
 	double level_percent;
 	double current_measured_ma;
@@ -88,6 +90,9 @@ struct hispec_laser_status {
 	double current_max_limit_ma;
 	double current_protection_threshold_ma;
 	double voltage_v;
+	bool current_runtime_active;
+	bool tec_runtime_active;
+	bool autooff_active;
 	double current_on_time_s;
 	double tec_on_time_s;
 	double total_emitting_s;
@@ -204,8 +209,8 @@ void hispec_laser_autooff_start(struct k_work_q *work_q);
  * enabling, sleeps for HISPEC_LASER_BANK_BOOT_DELAY_MS so the Maiman
  * controllers can boot before a following Modbus transaction. When disabling a
  * powered bank, first writes driver currents to zero and stops TECs as
- * practical; a Modbus shutdown failure is returned even if the GPIO transition
- * itself succeeds.
+ * practical; Modbus shutdown failures are logged but do not block the GPIO
+ * power-off transition.
  */
 int hispec_laser_bank_power_set(bool enabled, bool *transitioned);
 

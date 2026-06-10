@@ -155,12 +155,14 @@ int maiman_set_client_iface(int iface);
  */
 typedef struct {
 	uint8_t node_id;
+	bool verbose;
 } maiman_driver_t;
 
 /**
  * Initialize the driver with the target Modbus node ID.
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
+void maiman_init_verbose(maiman_driver_t *drv, uint8_t node_id, bool verbose);
 
 /** Read/write one raw holding register. Calls block on Modbus RTU I/O. */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);

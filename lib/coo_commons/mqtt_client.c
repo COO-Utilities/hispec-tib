@@ -52,7 +52,7 @@ static int num_subscriptions = 0;
 /* Keep failed broker attempts below the application watchdog interval. */
 #define MSECS_NET_POLL_TIMEOUT 3000
 /* Keep connected idle polling short enough for the application watchdog loop. */
-#define MSECS_PROCESS_POLL_TIMEOUT 1000
+#define MSECS_PROCESS_POLL_TIMEOUT 100
 
 bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
 				    struct coo_mqtt_broker_config *cfg)

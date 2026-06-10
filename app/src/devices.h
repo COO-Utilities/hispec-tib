@@ -33,7 +33,7 @@
  * blocking work off that queue so this short wait can fail fast without losing
  * physically received replies to workqueue starvation.
  */
-#define MODBUS_RX_TIMEOUT_US 5000U
+#define MODBUS_RX_TIMEOUT_US 75000U
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6

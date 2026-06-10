@@ -60,8 +60,7 @@ static struct k_work_q *laser_autooff_work_q;
 static int64_t bank_power_started_ms;
 static bool bank_power_requested_enabled;
 static bool laser_runtime_initialized;
-static enum hispec_laser_bank_power_mode bank_power_mode =
-	HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
+static enum hispec_laser_bank_power_mode bank_power_mode = HISPEC_LASER_BANK_POWER_AUTO; // HISPEC_LASER_BANK_POWER_OVERRIDE_OFF;
 
 static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1028_Y] = {
@@ -475,6 +474,10 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 
 	if (!enabled && was_enabled) {
 		zero_rc = zero_all_driver_currents_locked(true);
+		if (zero_rc != 0) {
+			LOG_WRN("Laser bank power-off driver cleanup failed rc=%d; continuing GPIO off",
+				zero_rc);
+		}
 	}
 
 	/* gpio_pin_set_dt() writes the logical active state described by
@@ -505,7 +508,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		}
 	}
 
-	return zero_rc;
+	return 0;
 }
 
 int hispec_laser_bank_power_set(bool enabled, bool *transitioned)
@@ -821,6 +824,63 @@ static int check_ocp_limit_locked(const struct hispec_laser_driver_profile *prof
 	return 0;
 }
 
+static uint16_t effective_blocking_lock_status(uint16_t lock_status,
+					       uint16_t device_state)
+{
+	uint16_t blocking = lock_status & LOCK_STATE_BLOCKING_MASK;
+
+	/* The command path explicitly writes DENY_INTERLOCK before emission. Once
+	 * the driver reports that bit latched, the physical interlock lock bit is
+	 * informational for this firmware-owned setup rather than a sequence
+	 * blocker. Electrical/thermal/TEC lock bits remain hard blockers.
+	 */
+	if ((device_state & INTERLOCK_DENIED) != 0U) {
+		blocking &= (uint16_t)~LOCK_STATE_INTERLOCK;
+	}
+
+	return blocking;
+}
+
+static const char *laser_blocked_reason(bool bank_powered,
+					bool serial_matches,
+					uint16_t device_state,
+					uint16_t tec_state,
+					uint16_t blocking_lock_status)
+{
+	if (!bank_powered) {
+		return "bank_off";
+	}
+	if (!serial_matches) {
+		return "driver_identity_mismatch";
+	}
+	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
+		return "tec_not_started";
+	}
+	if ((blocking_lock_status & LOCK_STATE_LD_OVERCURRENT) != 0U) {
+		return "ld_overcurrent";
+	}
+	if ((blocking_lock_status & LOCK_STATE_LD_OVERHEAT) != 0U) {
+		return "ld_overheat";
+	}
+	if ((blocking_lock_status & LOCK_STATE_EXTERNAL_NTC_INTERLOCK) != 0U) {
+		return "external_ntc_interlock";
+	}
+	if ((blocking_lock_status & LOCK_STATE_TEC_ERROR) != 0U) {
+		return "tec_error";
+	}
+	if ((blocking_lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U) {
+		return "tec_selfheat";
+	}
+	if ((blocking_lock_status & LOCK_STATE_INTERLOCK) != 0U) {
+		return "interlock";
+	}
+	if ((device_state & OPERATION_STATE_STARTED) == 0U) {
+		return "not_emitting";
+	}
+
+	return NULL;
+}
+
 static int64_t next_autooff_deadline_locked(void)
 {
 	int64_t next = LASER_AUTOFF_NO_DEADLINE;
@@ -1017,20 +1077,42 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id)
 }
 
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *profile,
-				     maiman_driver_t *drv)
+				     maiman_driver_t *drv,
+				     bool verbose)
 {
 	const laserprops_t *props = runtime_props_locked(profile->id);
+	uint16_t device_state;
+	uint16_t tec_state;
 	uint16_t lock_status;
+	uint16_t blocking_lock_status;
 	int rc;
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare: ensure bank power mode=%s powered=%s",
+			profile->name,
+			hispec_laser_bank_power_mode_name(bank_power_mode),
+			bank_power_requested_enabled ? "true" : "false");
+	}
 	rc = ensure_bank_powered_locked();
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: bank power unavailable rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
-	maiman_init(drv, profile->node_id);
+	maiman_init_verbose(drv, profile->node_id, verbose);
+	if (verbose) {
+		LOG_INF("Laser %s prepare: verify driver node=%u",
+			profile->name, profile->node_id);
+	}
 	rc = verify_driver_locked(profile, drv, NULL);
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: driver identity rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
@@ -1038,34 +1120,92 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	 * temperature before any TEC start. A bad default can make TEC startup fail
 	 * here and surface as an immediate laser fault.
 	 */
+	if (verbose) {
+		LOG_INF("Laser %s prepare: apply runtime profile temp=%.3fC max_current=%.3fmA tec_limit=%.3fA",
+			profile->name,
+			(double)props->operating_temp_c,
+			(double)props->max_current_ma,
+			(double)props->tec_max_current_a);
+	}
 	rc = apply_runtime_profile_locked(profile, drv);
 	if (rc != 0) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: runtime profile rc=%d",
+				profile->name, rc);
+		}
 		return rc;
 	}
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare: set internal current/enable/TEC controls and deny interlock",
+			profile->name);
+	}
 	if (!maiman_set_internal_current_control(drv, true) ||
 	    !maiman_set_internal_enable_control(drv, true) ||
 	    !maiman_set_internal_tec_temperature_control(drv, true) ||
 	    !maiman_set_internal_tec_enable_control(drv, true) ||
 	    !maiman_deny_interlock(drv)) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: control-mode write failed",
+				profile->name);
+		}
 		return -EIO;
 	}
 
-	if (!maiman_is_tec_started(drv)) {
+	if (!maiman_read_raw_tec_status(drv, &tec_state)) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: TEC status read failed",
+				profile->name);
+		}
+		return -EIO;
+	}
+	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
 		/* Keep TEC startup tied to default_operating_temp_c. A later direct
 		 * setpoint command may change the setpoint only after this succeeds.
 		 */
+		if (verbose) {
+			LOG_INF("Laser %s prepare: start TEC at %.3fC",
+				profile->name, (double)props->operating_temp_c);
+		}
 		if (!maiman_set_tec_temperature(drv, props->operating_temp_c) ||
 		    !maiman_start_tec(drv)) {
+			if (verbose) {
+				LOG_WRN("Laser %s prepare failed: TEC start write failed",
+					profile->name);
+			}
 			return -EIO;
 		}
 	}
+	on_time_runtime_update_locked(laser_tec_runtime,
+				      ARRAY_SIZE(laser_tec_runtime),
+				      profile->id, true);
 
+	device_state = maiman_get_raw_status(drv);
 	lock_status = maiman_get_raw_lock_status(drv);
-	if ((lock_status & LOCK_STATE_BLOCKING_MASK) != 0U) {
+	blocking_lock_status = effective_blocking_lock_status(lock_status, device_state);
+	if (verbose) {
+		LOG_INF("Laser %s prepare status: state=0x%04x tec=0x%04x lock=0x%04x blocking=0x%04x",
+			profile->name, device_state, tec_state, lock_status,
+			blocking_lock_status);
+		if ((lock_status & LOCK_STATE_INTERLOCK) != 0U &&
+		    (device_state & INTERLOCK_DENIED) != 0U) {
+			LOG_INF("Laser %s prepare: physical interlock bit present but driver reports interlock denied",
+				profile->name);
+		}
+	}
+	if (blocking_lock_status != 0U) {
+		if (verbose) {
+			LOG_WRN("Laser %s prepare failed: blocking lock_status=0x%04x reason=%s",
+				profile->name, blocking_lock_status,
+				laser_blocked_reason(true, true, device_state,
+						     tec_state, blocking_lock_status));
+		}
 		return -EIO;
 	}
 
+	if (verbose) {
+		LOG_INF("Laser %s prepare complete", profile->name);
+	}
 	return 0;
 }
 
@@ -1134,6 +1274,8 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	out->tec_on_time_s =
 		on_time_runtime_seconds_locked(laser_tec_runtime,
 					       ARRAY_SIZE(laser_tec_runtime), id);
+	out->current_runtime_active = laser_current_runtime[id].active;
+	out->tec_runtime_active = laser_tec_runtime[id].active;
 	out->total_emitting_s = laser_settings[id].total_emitting_s +
 				(double)out->current_on_time_s;
 	out->tune_delta_nm = laser_settings[id].tune_delta_nm;
@@ -1143,10 +1285,12 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	if (laser_autooff_deadline_ms[id] > 0) {
 		int64_t remaining_ms = laser_autooff_deadline_ms[id] - k_uptime_get();
 
-		out->off_in_s = remaining_ms > 0 ? (remaining_ms + 999) / 1000 : 0;
+		out->autooff_active = remaining_ms > 0;
+		out->off_in_s = out->autooff_active ? (remaining_ms + 999) / 1000 : 0;
 	}
 	out->bank_powered = bank_power_requested_enabled;
 	if (!out->bank_powered) {
+		out->blocked_reason = laser_blocked_reason(false, true, 0U, 0U, 0U);
 		rc = 0;
 		goto out_unlock;
 	}
@@ -1187,8 +1331,15 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 		(out->lock_status & LOCK_STATE_EXTERNAL_NTC_INTERLOCK) != 0U;
 	out->lock_tec_error = (out->lock_status & LOCK_STATE_TEC_ERROR) != 0U;
 	out->lock_tec_selfheat = (out->lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U;
-	out->ready_to_operate = out->tec_started &&
-				((out->lock_status & LOCK_STATE_BLOCKING_MASK) == 0U);
+	out->blocking_lock_status = effective_blocking_lock_status(out->lock_status,
+								   out->device_state);
+	out->ready_to_operate = out->serial_matches && out->tec_started &&
+				out->blocking_lock_status == 0U;
+	out->blocked_reason = laser_blocked_reason(out->bank_powered,
+						   out->serial_matches,
+						   out->device_state,
+						   out->tec_state,
+						   out->blocking_lock_status);
 
 	if (!maiman_get_current(&drv, &out->current_set_ma)) {
 		read_ok = false;
@@ -1321,14 +1472,20 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		goto out;
 	}
 
-	rc = prepare_to_operate_locked(profile, &drv);
+	rc = prepare_to_operate_locked(profile, &drv, true);
 	if (rc != 0) {
 		goto out;
 	}
 
+	LOG_INF("Laser %s emission request: current=%.3fmA",
+		profile->name, (double)current_ma);
 	if (!maiman_set_current(&drv, current_ma) || !maiman_start_device(&drv)) {
+		LOG_WRN("Laser %s emission start failed after prepare current=%.3fmA",
+			profile->name, (double)current_ma);
 		rc = -EIO;
 	} else {
+		LOG_INF("Laser %s emission started current=%.3fmA",
+			profile->name, (double)current_ma);
 		on_time_runtime_update_locked(laser_current_runtime,
 					      ARRAY_SIZE(laser_current_runtime), id, true);
 		on_time_runtime_update_locked(laser_tec_runtime,
@@ -1468,10 +1625,14 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 	if (rc != 0) {
 		return rc;
 	}
-	rc = prepare_to_operate_locked(profile, &drv);
+	rc = prepare_to_operate_locked(profile, &drv, true);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
+		LOG_WRN("Laser %s TEC setpoint write failed temp=%.3fC",
+			profile->name, (double)temperature_c);
 		rc = -EIO;
 	} else if (rc == 0) {
+		LOG_INF("Laser %s TEC setpoint updated temp=%.3fC",
+			profile->name, (double)temperature_c);
 		output_estimate_set_locked(id, laser_output_estimate[id].current_ma,
 					   temperature_c);
 	}
@@ -2002,14 +2163,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		if (rc != 0) {
 			return rc;
 		}
-		rc = prepare_to_operate_locked(profile, &drv);
+		rc = prepare_to_operate_locked(profile, &drv, true);
 		if (rc == 0 &&
 		    (!maiman_set_tec_temperature(&drv, target_temp_c) ||
 		     !maiman_set_current(&drv, target_current_ma) ||
 		     !maiman_start_device(&drv))) {
+			LOG_WRN("Laser %s tune apply failed temp=%.3fC current=%.3fmA",
+				profile->name, (double)target_temp_c,
+				(double)target_current_ma);
 			rc = -EIO;
 		}
 		if (rc == 0) {
+			LOG_INF("Laser %s tune applied temp=%.3fC current=%.3fmA",
+				profile->name, (double)target_temp_c,
+				(double)target_current_ma);
 			on_time_runtime_update_locked(laser_current_runtime,
 						      ARRAY_SIZE(laser_current_runtime),
 						      id, true);

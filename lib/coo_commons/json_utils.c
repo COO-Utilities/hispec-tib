@@ -32,6 +32,236 @@ const char *coo_json_skip_ws(const char *text)
 	return text;
 }
 
+static int coo_json_skip_string_value(const char **cursor)
+{
+	const char *p;
+
+	if (cursor == NULL || *cursor == NULL || **cursor != '"') {
+		return -EINVAL;
+	}
+
+	p = *cursor + 1;
+	while (*p != '\0') {
+		if (*p == '\\') {
+			p++;
+			if (*p == '\0') {
+				return -EINVAL;
+			}
+			p++;
+			continue;
+		}
+		if (*p == '"') {
+			*cursor = p + 1;
+			return 0;
+		}
+		p++;
+	}
+
+	return -EINVAL;
+}
+
+static int coo_json_read_top_key(const char **cursor, char *key, size_t key_len)
+{
+	const char *p;
+	size_t off = 0U;
+
+	if (cursor == NULL || *cursor == NULL || key == NULL || key_len == 0U ||
+	    **cursor != '"') {
+		return -EINVAL;
+	}
+
+	p = *cursor + 1;
+	while (*p != '\0') {
+		if (*p == '\\') {
+			return -EINVAL;
+		}
+		if (*p == '"') {
+			key[off] = '\0';
+			*cursor = p + 1;
+			return 0;
+		}
+		if (off + 1U >= key_len) {
+			return -ENOSPC;
+		}
+		key[off++] = *p++;
+	}
+
+	return -EINVAL;
+}
+
+static int coo_json_skip_value(const char **cursor)
+{
+	const char *p;
+	uint8_t object_depth = 0U;
+	uint8_t array_depth = 0U;
+	bool saw_primitive = false;
+
+	if (cursor == NULL || *cursor == NULL) {
+		return -EINVAL;
+	}
+
+	p = coo_json_skip_ws(*cursor);
+	if (*p == '"') {
+		return coo_json_skip_string_value(&p) == 0 ? (*cursor = p, 0) : -EINVAL;
+	}
+
+	if (*p == '{' || *p == '[') {
+		while (*p != '\0') {
+			if (*p == '"') {
+				if (coo_json_skip_string_value(&p) != 0) {
+					return -EINVAL;
+				}
+				continue;
+			}
+			if (*p == '{') {
+				object_depth++;
+				p++;
+				continue;
+			}
+			if (*p == '[') {
+				array_depth++;
+				p++;
+				continue;
+			}
+			if (*p == '}') {
+				if (object_depth == 0U) {
+					return -EINVAL;
+				}
+				object_depth--;
+				p++;
+				if (object_depth == 0U && array_depth == 0U) {
+					*cursor = p;
+					return 0;
+				}
+				continue;
+			}
+			if (*p == ']') {
+				if (array_depth == 0U) {
+					return -EINVAL;
+				}
+				array_depth--;
+				p++;
+				if (object_depth == 0U && array_depth == 0U) {
+					*cursor = p;
+					return 0;
+				}
+				continue;
+			}
+			p++;
+		}
+		return -EINVAL;
+	}
+
+	while (*p != '\0' && *p != ',' && *p != '}' && *p != ']') {
+		if (!isspace((unsigned char)*p)) {
+			saw_primitive = true;
+		}
+		p++;
+	}
+	if (!saw_primitive) {
+		return -EINVAL;
+	}
+
+	*cursor = p;
+	return 0;
+}
+
+static bool coo_json_key_allowed(const char *allowed, const char *key)
+{
+	const char *p = allowed;
+	size_t key_len;
+
+	if (allowed == NULL || key == NULL) {
+		return false;
+	}
+
+	key_len = strlen(key);
+	while (*p != '\0') {
+		const char *start;
+		const char *end;
+
+		while (*p == ',' || isspace((unsigned char)*p)) {
+			p++;
+		}
+		start = p;
+		while (*p != '\0' && *p != ',') {
+			p++;
+		}
+		end = p;
+		while (end > start && isspace((unsigned char)end[-1])) {
+			end--;
+		}
+		if ((size_t)(end - start) == key_len &&
+		    strncmp(start, key, key_len) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int coo_json_validate_top_level_keys(const char *json,
+				     const char *allowed_keys,
+				     char *unknown_key,
+				     size_t unknown_key_len)
+{
+	const char *p;
+	char key[64];
+	int rc;
+
+	if (json == NULL) {
+		return -EINVAL;
+	}
+
+	p = coo_json_skip_ws(json);
+	if (*p != '{') {
+		return -EINVAL;
+	}
+	p = coo_json_skip_ws(p + 1);
+	if (*p == '}') {
+		p = coo_json_skip_ws(p + 1);
+		return *p == '\0' ? 0 : -EINVAL;
+	}
+
+	while (*p != '\0') {
+		rc = coo_json_read_top_key(&p, key, sizeof(key));
+		if (rc != 0) {
+			return rc;
+		}
+		if (!coo_json_key_allowed(allowed_keys, key)) {
+			if (unknown_key != NULL && unknown_key_len > 0U) {
+				if (strlen(key) >= unknown_key_len) {
+					return -ENOSPC;
+				}
+				strcpy(unknown_key, key);
+			}
+			return -ENOENT;
+		}
+
+		p = coo_json_skip_ws(p);
+		if (*p != ':') {
+			return -EINVAL;
+		}
+		p++;
+		rc = coo_json_skip_value(&p);
+		if (rc != 0) {
+			return rc;
+		}
+		p = coo_json_skip_ws(p);
+		if (*p == ',') {
+			p = coo_json_skip_ws(p + 1);
+			continue;
+		}
+		if (*p == '}') {
+			p = coo_json_skip_ws(p + 1);
+			return *p == '\0' ? 0 : -EINVAL;
+		}
+		return -EINVAL;
+	}
+
+	return -EINVAL;
+}
+
 int coo_json_match_string_choice(const char *text,
 				 const struct coo_json_string_choice *choices,
 				 size_t choice_count,

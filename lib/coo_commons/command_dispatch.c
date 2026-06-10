@@ -110,6 +110,21 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	return runtime_init_serial_console(runtime);
 }
 
+static bool coo_cmd_spec_key_matches(const struct coo_cmd_spec *spec,
+				     const char *key)
+{
+	if (spec == NULL || spec->key == NULL || spec->key[0] == '\0' ||
+	    key == NULL) {
+		return false;
+	}
+
+	if (spec->key_prefix_match) {
+		return coo_cmd_key_matches_prefix(key, spec->key);
+	}
+
+	return strcmp(key, spec->key) == 0;
+}
+
 const struct coo_cmd_spec *
 coo_cmd_runtime_find_spec(const struct coo_cmd_runtime *runtime,
 			  const char *key)
@@ -125,7 +140,7 @@ coo_cmd_runtime_find_spec(const struct coo_cmd_runtime *runtime,
 		const struct coo_cmd_spec *spec = &runtime->command_specs[i];
 		const size_t len = spec->key != NULL ? strlen(spec->key) : 0U;
 
-		if (len == 0U || !coo_cmd_key_matches_prefix(key, spec->key)) {
+		if (len == 0U || !coo_cmd_spec_key_matches(spec, key)) {
 			continue;
 		}
 		if (len > best_len) {
@@ -1024,6 +1039,58 @@ int coo_cmd_serial_active_response(struct coo_cmd_response *out,
 			     "{\"error\":\"try later. local serial commands active\"}");
 }
 
+static int runtime_unknown_argument_response(struct coo_cmd_response *out,
+					     const struct coo_cmd_request *cmd,
+					     const char *key)
+{
+	int rc;
+
+	rc = coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, NULL);
+	if (rc != 0) {
+		return rc;
+	}
+	snprintk(out->payload, sizeof(out->payload),
+		 "{\"error\":\"unknown argument\",\"arg\":\"%s\"}",
+		 key != NULL ? key : "");
+	out->payload_len = strlen(out->payload);
+	return 0;
+}
+
+static int runtime_validation_reply(int reply_rc)
+{
+	return reply_rc == 0 ? 1 : reply_rc;
+}
+
+static int runtime_validate_payload_keys(const struct coo_cmd_spec *spec,
+					 const struct coo_cmd_request *cmd,
+					 struct coo_cmd_response *out)
+{
+	char unknown_key[64] = {0};
+	int rc;
+
+	if (spec == NULL || cmd == NULL || coo_cmd_payload_empty(cmd)) {
+		return 0;
+	}
+
+	rc = coo_json_validate_top_level_keys(cmd->payload,
+					      spec->allowed_payload_keys,
+					      unknown_key,
+					      sizeof(unknown_key));
+	if (rc == 0) {
+		return 0;
+	}
+	if (rc == -ENOENT) {
+		return runtime_validation_reply(
+			runtime_unknown_argument_response(out, cmd, unknown_key));
+	}
+	if (rc == -ENOSPC) {
+		return runtime_validation_reply(
+			coo_cmd_error(out, cmd, "argument name too long"));
+	}
+
+	return runtime_validation_reply(coo_cmd_error(out, cmd, "invalid payload"));
+}
+
 static int append_format(char *buf, size_t buf_len, size_t *off, const char *fmt, ...)
 {
 	va_list args;
@@ -1803,6 +1870,16 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 	}
 	if (!coo_cmd_runtime_spec_supported(runtime, spec)) {
 		return coo_cmd_error(out, cmd, "command unavailable on this board");
+	}
+	{
+		int validate_rc = runtime_validate_payload_keys(spec, cmd, out);
+
+		if (validate_rc > 0) {
+			return 0;
+		}
+		if (validate_rc < 0) {
+			return validate_rc;
+		}
 	}
 
 	handler = cmd->msg_type == COO_CMD_EFFECT ?

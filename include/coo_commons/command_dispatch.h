@@ -177,6 +177,17 @@ struct coo_cmd_spec {
 	coo_cmd_serial_shorthand_fn serial_shorthand;
 	struct coo_cmd_serial_positional serial_positional;
 	coo_cmd_supported_fn supported;
+	/*
+	 * Exact key matching is the default. Set key_prefix_match only for
+	 * intentionally parameterized endpoint families such as atten/<name>/...
+	 * so typos like laser/angstatus do not silently dispatch to laser.
+	 */
+	bool key_prefix_match;
+	/*
+	 * Comma-separated top-level payload keys accepted by this endpoint.
+	 * NULL or "" means no payload keys are accepted.
+	 */
+	const char *allowed_payload_keys;
 	const struct coo_cmd_help_entry *help;
 	bool mqtt_query_allowed_during_serial_guard;
 };
