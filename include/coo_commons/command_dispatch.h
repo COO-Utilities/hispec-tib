@@ -519,6 +519,18 @@ int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 				 const char *msg,
 				 const char *context);
 
+/**
+ * Queue one data publication using runtime identity and outbound queue.
+ *
+ * The topic is `dt/<device>/<suffix>`. This helper never publishes MQTT
+ * directly; the runtime outbound drain owns actual socket publication.
+ */
+int coo_cmd_runtime_data_emit(struct coo_cmd_runtime *runtime,
+			      const char *suffix,
+			      const void *payload,
+			      size_t payload_len,
+			      bool best_effort);
+
 /** Print a serial response as topic then space-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 				   uint16_t wrap_column);

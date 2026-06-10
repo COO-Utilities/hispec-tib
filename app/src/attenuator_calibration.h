@@ -95,6 +95,9 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status);
 /** Copy current calibration status. */
 void attenuator_calibration_get_status(struct attenuator_calibration_status *status);
 
+/** Return true while calibration owns attenuator-control sequencing. */
+bool attenuator_calibration_active(void);
+
 /** Append the compact calibration status JSON to @p payload. */
 int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,

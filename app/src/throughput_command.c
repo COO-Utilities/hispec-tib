@@ -232,6 +232,9 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		if (rc == -EACCES) {
 			return coo_cmd_error(out, cmd, "photodiode power override_off");
 		}
+		if (rc == -EBUSY) {
+			return coo_cmd_error(out, cmd, "attenuator calibration active");
+		}
 		return coo_cmd_error(out, cmd, "measure_throughput start failed");
 	}
 

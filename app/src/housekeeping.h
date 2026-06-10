@@ -39,10 +39,10 @@ int housekeeping_power_set(enum housekeeping_power_output output, bool enabled);
 int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled);
 
 /**
- * Return relay-output on-time tracked since boot.
+ * Return current continuous relay-output on-time.
  *
  * Housekeeping owns this runtime estimate because it owns slow relay writes.
- * It does not read back or infer pre-boot relay state.
+ * The value is zero when the output is off.
  */
 double housekeeping_power_on_time_s(enum housekeeping_power_output output);
 

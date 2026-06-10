@@ -1288,6 +1288,45 @@ int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
 	return 0;
 }
 
+int coo_cmd_runtime_data_emit(struct coo_cmd_runtime *runtime,
+			      const char *suffix,
+			      const void *payload,
+			      size_t payload_len,
+			      bool best_effort)
+{
+	struct coo_cmd_response out;
+	int rc;
+
+	if (runtime == NULL || suffix == NULL ||
+	    (payload == NULL && payload_len > 0U)) {
+		return -EINVAL;
+	}
+	if (payload_len > sizeof(out.payload)) {
+		return -ENOSPC;
+	}
+
+	memset(&out, 0, sizeof(out));
+	out.msg_type = COO_CMD_RESP_OK;
+	out.target = best_effort ? COO_CMD_OUT_MQTT_BEST_EFFORT : COO_CMD_OUT_MQTT;
+	out.qos = 0U;
+	rc = coo_cmd_format_data_topic(runtime->device_id, suffix,
+				       out.topic, sizeof(out.topic));
+	if (rc != 0) {
+		return rc;
+	}
+	if (payload_len > 0U) {
+		memcpy(out.payload, payload, payload_len);
+	}
+	out.payload_len = payload_len;
+
+	if (runtime->outbound_queue == NULL ||
+	    k_msgq_put(runtime->outbound_queue, &out, K_NO_WAIT) != 0) {
+		return -ENOSPC;
+	}
+
+	return 0;
+}
+
 static bool payload_has_text(const char *payload)
 {
 	payload = skip_serial_space(payload);

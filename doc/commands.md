@@ -542,9 +542,8 @@ decisions, and throughput math.
 
 `channel` combines the photodiode channel and fiber class with an underscore,
 for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
-milliseconds from the firmware clock. `pd_ontime_s` is the tracked on-time of
-the photodiode power relay for that channel since boot; it does not infer
-pre-boot relay state.
+milliseconds from the firmware clock. `pd_ontime_s` is the current continuous
+on-time of the photodiode power relay for that channel.
 
 **Telemetry payload (`format:"binary"`):**
 
@@ -603,6 +602,8 @@ float64 laser_current_ontime_s
   `null`. Shutting down the required photodiode power stops that monitor.
 - Changing the monitored laser output or its logical attenuator disables
   autolevel for the affected monitor; run the command again to re-enable it.
+- Starting a monitor with `autolevel:true` while attenuator calibration is
+  active is rejected because both paths would own attenuator control.
 - Dark measurement must not be started while an autolevel throughput monitor is
   running on that photodiode.
 
@@ -1119,6 +1120,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     transmission span, and voltage span.
   - Manual calibration returns the voltage schedule on completion or stop so an
     operator can record fluxes externally and submit the batch later.
+  - Starting manual calibration disables any active autolevel throughput monitor
+    for that logical attenuator. Non-autolevel monitoring can continue so an
+    operator can manually set routes/laser levels and log `pd` between steps.
 
 (pd)=
 ### `pd`
@@ -1217,8 +1221,9 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
     `true` only when the corresponding relay is off; ADC sampling and returned
     values continue regardless.
-  - `yj_ontime_s` and `hk_ontime_s` are the tracked relay on-times since boot,
-    using the same source as throughput `pd_ontime_s`.
+  - `yj_ontime_s` and `hk_ontime_s` are the current continuous relay on-times,
+    using the same source as throughput `pd_ontime_s`. A value is `0` when the
+    relay is off.
 
 (pdsettings)=
 ### `pdsettings`

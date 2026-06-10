@@ -32,7 +32,6 @@ LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 struct power_on_time_runtime {
 	bool active;
 	int64_t started_ms;
-	int64_t accumulated_ms;
 };
 
 static K_MUTEX_DEFINE(housekeeping_state_lock);
@@ -223,7 +222,6 @@ static void power_on_time_update_locked(enum housekeeping_power_output output,
 		return;
 	}
 	if (!active && runtime->active) {
-		runtime->accumulated_ms += now - runtime->started_ms;
 		runtime->active = false;
 		runtime->started_ms = 0;
 	}
@@ -278,7 +276,6 @@ int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
 double housekeeping_power_on_time_s(enum housekeeping_power_output output)
 {
 	struct power_on_time_runtime runtime;
-	int64_t ms;
 
 	if (output < 0 || output >= HOUSEKEEPING_POWER_OUTPUT_COUNT) {
 		return NAN;
@@ -288,11 +285,11 @@ double housekeeping_power_on_time_s(enum housekeeping_power_output output)
 	runtime = power_on_time[output];
 	k_mutex_unlock(&housekeeping_state_lock);
 
-	ms = runtime.accumulated_ms;
-	if (runtime.active) {
-		ms += k_uptime_get() - runtime.started_ms;
+	if (!runtime.active) {
+		return 0.0;
 	}
-	return (double)ms / 1000.0;
+
+	return (double)(k_uptime_get() - runtime.started_ms) / 1000.0;
 }
 
 static int64_t pd_next_autooff_deadline_locked(void)

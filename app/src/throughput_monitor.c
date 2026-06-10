@@ -12,7 +12,6 @@
 #include <time.h>
 
 #include "app_settings.h"
-#include "app_identity.h"
 #include "attenuator.h"
 #include "attenuator_calibration.h"
 #include "command.h"
@@ -288,6 +287,8 @@ static void publish_sample(const struct throughput_state *state,
 	char pd_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 	char laser_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 	const char *laser_name = state->has_laser ? hispec_laser_name(state->laser) : "none";
+	const char *topic_suffix = state->channel == PHOTODIODE_CHANNEL_YJ ?
+				   "yj_tput" : "hk_tput";
 	char channel_fiber[8] = {0};
 	double pd_route_tx = 1.0;
 	double laser_route_tx = 1.0;
@@ -343,13 +344,6 @@ static void publish_sample(const struct throughput_state *state,
 		}
 	}
 
-	msg.target = COO_CMD_OUT_MQTT_BEST_EFFORT;
-	msg.qos = 0;
-	(void)coo_cmd_format_data_topic(app_mqtt_device_id(),
-					state->channel == PHOTODIODE_CHANNEL_YJ ?
-					"yj_tput" : "hk_tput",
-					msg.topic, sizeof(msg.topic));
-
 	if (state->binary) {
 		put_bytes((uint8_t *)msg.payload, sizeof(msg.payload), &off,
 			  channel_fiber, sizeof(channel_fiber));
@@ -380,7 +374,8 @@ static void publish_sample(const struct throughput_state *state,
 		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
 			laser_current_ontime_s);
 		msg.payload_len = off;
-		(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
+		(void)coo_cmd_runtime_data_emit(command_runtime_get(), topic_suffix,
+						 msg.payload, msg.payload_len, true);
 		return;
 	}
 
@@ -429,7 +424,8 @@ static void publish_sample(const struct throughput_state *state,
 	}
 	msg.payload_len = strlen(msg.payload);
 
-	(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
+	(void)coo_cmd_runtime_data_emit(command_runtime_get(), topic_suffix,
+					 msg.payload, msg.payload_len, true);
 }
 
 void throughput_monitor_thread(void *p1, void *p2, void *p3)
@@ -513,6 +509,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	if (request->fiber != 'M' && request->fiber != 'S') {
 		return -EINVAL;
+	}
+	if (request->autolevel && attenuator_calibration_active()) {
+		return -EBUSY;
 	}
 	if (request->has_laser) {
 		if (photodiode_channel_for_laser(request->laser, &channel) != 0) {
