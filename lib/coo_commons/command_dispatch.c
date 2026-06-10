@@ -25,6 +25,7 @@
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 #define SERIAL_POLL_CHAR_BUDGET 64
+#define COO_CMD_SERIAL_LINE_END "\n"
 #define COO_CMD_LASTCOMMAND_MAGIC 0x434c4344U /* "CLCD" */
 #define COO_CMD_LASTCOMMAND_VERSION 1U
 #define COO_CMD_REBOOT_DEFAULT_DELAY_MS 3000U
@@ -1353,7 +1354,7 @@ static bool runtime_key_is_reboot(const char *key)
 
 static void serial_line_end(void)
 {
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }
 
 static uint16_t serial_print_prefix(const char *prefix)
@@ -2398,7 +2399,8 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		return;
 	}
 
-	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s" COO_CMD_SERIAL_LINE_END "        ",
+	       out->topic[0] != '\0' ? out->topic : "serial");
 	col = 8U;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
 
@@ -2410,7 +2412,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		}
 
 		if (ch == '\n' || (wrap_column != 0U && col >= wrap_column)) {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			col = 8U;
 			if (ch == '\n') {
 				continue;
@@ -2423,12 +2425,12 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		if (wrap_column != 0U &&
 		    (ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
 		    i + 1U < len) {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			col = 8U;
 		}
 	}
 
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }
 
 static const char *serial_payload_start(const char *payload)
@@ -2442,7 +2444,7 @@ static const char *serial_payload_start(const char *payload)
 
 static void serial_response_newline_indent(uint8_t indent, uint16_t *col)
 {
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 	*col = 8U;
 	for (uint8_t i = 0U; i < 8U; ++i) {
 		printk(" ");
@@ -2680,14 +2682,16 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 
 	payload = out->payload;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
-	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s" COO_CMD_SERIAL_LINE_END "        ",
+	       out->topic[0] != '\0' ? out->topic : "serial");
 
 	payload = serial_payload_start(payload);
 	if (payload != NULL && (*payload == '{' || *payload == '[')) {
 		if (!serial_print_json_payload(payload, len - (size_t)(payload - out->payload))) {
 			uint16_t col = 13U;
 
-			printk("{\"error\":\"serial JSON render failed\"}\r\n        raw: ");
+			printk("{\"error\":\"serial JSON render failed\"}"
+			       COO_CMD_SERIAL_LINE_END "        raw: ");
 			for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
 				const char ch = out->payload[i];
 
@@ -2696,7 +2700,7 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 				}
 				if (ch == '\n' ||
 				    (wrap_column != 0U && col >= wrap_column)) {
-					printk("\r\n        ");
+					printk(COO_CMD_SERIAL_LINE_END "        ");
 					col = 8U;
 					if (ch == '\n') {
 						continue;
@@ -2705,10 +2709,10 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 				printk("%c", ch);
 				col++;
 			}
-			printk("\r\n");
+			printk(COO_CMD_SERIAL_LINE_END);
 			return;
 		}
-		printk("\r\n");
+		printk(COO_CMD_SERIAL_LINE_END);
 		return;
 	}
 
@@ -2719,10 +2723,10 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 			continue;
 		}
 		if (ch == '\n') {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			continue;
 		}
 		printk("%c", ch);
 	}
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }

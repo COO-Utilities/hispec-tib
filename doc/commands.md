@@ -122,7 +122,7 @@ cmd/<device>/resp/<key>
 ```
 
 The first line is the MQTT response topic. The following lines are the response
-payload. The pretty renderer emits CRLF line endings, indents JSON-like
+payload. The pretty renderer emits LF line endings, indents JSON-like
 payloads, and wraps long non-JSON payloads at natural break points where
 possible.
 
