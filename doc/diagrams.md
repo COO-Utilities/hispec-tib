@@ -437,8 +437,8 @@ flowchart TD
   EnteredAuto -- yes --> PowerBank[power bank on]
   EnteredAuto -- no --> ReadTemps[read Maiman TEC temperatures]
   PowerBank --> ReadTemps
-  ReadTemps --> Cache[refresh valid per-laser temperature cache]
-  Cache --> Summarize[summarize valid, stale, disabled, and warm state]
+  ReadTemps --> Cache[refresh per-laser temperature cache]
+  Cache --> Summarize[summarize idle TEC probes and heater state]
   Summarize --> AllStaleCold{all stale and ambient below warm minimum}
   AllStaleCold -- yes --> KeepPower[best-effort bank power on]
   AllStaleCold -- no --> HeaterPolicy

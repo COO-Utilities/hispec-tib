@@ -26,11 +26,11 @@ struct laserbank_tempcontrol_status {
 	enum laserbank_heater_mode heater_mode;
 	bool bank_powered;
 	bool heater_on;
-	bool ambient_valid;
 	double ambient_c;
-	uint32_t ambient_age_ms;
-	uint8_t valid_temp_count;
-	uint8_t stale_temp_count;
+	/* Idle TEC readings approximate bank temperature; active TECs are excluded. */
+	uint8_t idle_tec_temp_count;
+	double idle_tec_temp_avg_c;
+	bool waiting_for_temps;
 	bool any_disabled_below_15c;
 	bool any_disabled_above_off_threshold;
 	bool all_tecs_enabled;

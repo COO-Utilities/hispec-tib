@@ -860,12 +860,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     "auto_state": "waiting_for_temps|warming_disabled_tec|disabled_tec_warm|tecs_running|holding|override_on|override_off",
     "heater_on": false,
     "bank_power": true,
-    "ambient_valid": true,
-    "ambient_c": 0.0,
-    "valid_temps": 6,
-    "stale_temps": 0,
+    "ambient_c": null,
+    "idle_tec_temps": 0,
+    "idle_tec_avg_c": null,
     "last_error": 0,
-    "poll_age_s": 0.0
+    "poll_age_s": 0
   }
   ```
 - **Payload or topic suffix -> laser-bank heater state after update:**
@@ -882,15 +881,20 @@ command wait budget, this command returns `{"error":"busy"}`.
   can initialize, polls TEC temperatures at a fixed interval, and drives the
   laser-bank heater through housekeeping relay-power helpers.
   `auto_state` summarizes the internal policy state without exposing the
-  control-loop booleans: `waiting_for_temps` means the cached driver
-  temperatures are stale; `warming_disabled_tec` means at least one valid driver
-  reports a disabled TEC below the heater-on threshold; `disabled_tec_warm`
-  means at least one disabled TEC is warm enough for heater turnoff;
-  `tecs_running` means all valid TECs are enabled; `holding` means no heater
-  state change was requested in the latest loop. The off threshold is 15 C when
-  ambient is valid and above 15 C, otherwise 20 C. If all laser temperatures are
-  stale, auto mode turns the heater off when ambient is invalid or at least 15 C.
-  When valid ambient is below 15 C, auto mode powers the bank so driver
+  control-loop booleans: `waiting_for_temps` means no fresh driver
+  temperatures are available; `warming_disabled_tec` means at least one idle TEC
+  probe is below the heater-on threshold; `disabled_tec_warm` means at least one
+  idle TEC probe is warm enough for heater turnoff; `tecs_running` means all
+  driver TECs are enabled; `holding` means no heater state change was requested
+  in the latest loop. `idle_tec_temps` counts fresh driver temperature readings
+  whose TEC is not started, and `idle_tec_avg_c` averages only those readings;
+  actively controlled TEC temperatures remain laser telemetry and are not used
+  for this aggregate. `ambient_c` and `idle_tec_avg_c` are `null` when
+  unavailable. `poll_age_s` is an integer age in seconds or `null` before the
+  first poll. The off threshold is 15 C when ambient is valid and above 15 C,
+  otherwise 20 C. If all laser temperatures are stale, auto mode turns the
+  heater off when ambient is invalid or at least 15 C. When valid ambient is
+  below 15 C, auto mode powers the bank so driver
   temperature monitors can initialize and leaves heater state unchanged until
   valid laser temperature data is available. If all TECs remain enabled for at
   least one control interval, the heater is turned off.

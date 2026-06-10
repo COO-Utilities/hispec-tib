@@ -87,6 +87,16 @@ LLMs Agents: Do NOT change heading names in this file.
 - Decide intended persistence for MEMS switch state, AS split requested/actual state and last-command metadata.
   - This involves looking at optical stability of repeated pulses to the same state
 
+- Static attens:
+  - # ### Anticipated Static Attenuation Chains
+    # - 1028: -90.0 to -73.0 dB, range 17.0 dB, **static -73.0 dB**
+    # - 1270:  -70.0 to -40.0 dB, range 30.0 dB, **static -40.0 dB**
+    # - 1430: range 0.0 dB, **static -100.0 dB**
+    # - 1510: -80.0 to -33.0 dB, range 47.0 dB, **static -33.0 dB**
+    # - 2330: -73.0 to -3.0 dB, range 70.0 dB, **static -3.0 dB**
+
+- "blocked_reason": "not_emitting", should ne "N/A (not_emittting" or some such
+
 ## TODOs
 
 - yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.

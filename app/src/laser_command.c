@@ -138,7 +138,7 @@ static const char *laserbank_tempcontrol_auto_state(
 	if (status->heater_mode == LASERBANK_HEATER_MODE_OVERRIDE_OFF) {
 		return "override_off";
 	}
-	if (status->stale_temp_count == HISPEC_LASER_COUNT) {
+	if (status->waiting_for_temps) {
 		return "waiting_for_temps";
 	}
 	if (status->any_disabled_below_15c) {
@@ -153,30 +153,44 @@ static const char *laserbank_tempcontrol_auto_state(
 	return "holding";
 }
 
-static void laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
+static int laserbank_tempcontrol_status_payload(char *payload, size_t payload_len)
 {
 	struct laserbank_tempcontrol_status status = {0};
-	double poll_age_s;
+	uint32_t poll_age_s;
+	size_t off = 0U;
 
 	laserbank_tempcontrol_get_status(&status);
-	poll_age_s = (double)status.last_poll_age_ms / 1000.0;
-	snprintk(payload, payload_len,
-		 "{\"mode\":\"%s\","
-		 "\"auto_state\":\"%s\","
-		 "\"heater_on\":%s,\"bank_power\":%s,"
-		 "\"ambient_valid\":%s,\"ambient_c\":%.2f,"
-		 "\"valid_temps\":%u,\"stale_temps\":%u,"
-		 "\"last_error\":%d,\"poll_age_s\":%.3f}",
-		 laserbank_heater_mode_name(status.heater_mode),
-		 laserbank_tempcontrol_auto_state(&status),
-		 status.heater_on ? "true" : "false",
-		 status.bank_powered ? "true" : "false",
-		 status.ambient_valid ? "true" : "false",
-		 (double)status.ambient_c,
-		 status.valid_temp_count,
-		 status.stale_temp_count,
-		 status.last_error,
-		 poll_age_s);
+	poll_age_s = status.last_poll_age_ms / 1000U;
+	if (coo_json_append(payload, payload_len, &off,
+			    "{\"mode\":\"%s\","
+			    "\"auto_state\":\"%s\","
+			    "\"heater_on\":%s,\"bank_power\":%s,"
+			    "\"ambient_c\":",
+			    laserbank_heater_mode_name(status.heater_mode),
+			    laserbank_tempcontrol_auto_state(&status),
+			    status.heater_on ? "true" : "false",
+			    status.bank_powered ? "true" : "false") != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  status.ambient_c, 2) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+			    ",\"idle_tec_temps\":%u,\"idle_tec_avg_c\":",
+			    status.idle_tec_temp_count) != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  status.idle_tec_temp_avg_c, 2) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+			    ",\"last_error\":%d,\"poll_age_s\":",
+			    status.last_error) != 0) {
+		return -ENOSPC;
+	}
+	if (status.last_poll_age_ms == UINT32_MAX) {
+		if (coo_json_append(payload, payload_len, &off, "null}") != 0) {
+			return -ENOSPC;
+		}
+	} else if (coo_json_append(payload, payload_len, &off, "%u}",
+				   poll_age_s) != 0) {
+		return -ENOSPC;
+	}
+	return 0;
 }
 
 int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -202,7 +216,9 @@ int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 		}
 	}
 
-	laserbank_tempcontrol_status_payload(payload, sizeof(payload));
+	if (laserbank_tempcontrol_status_payload(payload, sizeof(payload)) != 0) {
+		return coo_cmd_error(out, cmd, "laser bank heater response too large");
+	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
