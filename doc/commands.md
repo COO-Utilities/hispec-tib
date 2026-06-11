@@ -186,7 +186,7 @@ not be needed for normal serial operation.
     "code": "<stable_warning_code>",
     "msg": "<short human text>",
     "context": "<short context>",
-    "uptime_ms": 0
+    "uptime_s": 0
   }
   ```
 
@@ -419,8 +419,8 @@ and the AS for splitting fraction correction.
     stretch the requested cycle beyond MEMS tick granularity.
   - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - Request `off_in_s` max is 4 hours. Response `stop_in_s` is remaining
-    toggle time.
+  - Request `off_in_s` is integer seconds, with max 4 hours. Response
+    `stop_in_s` is remaining toggle time.
   - Static switch requests persist as user intent. With
     `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
     from that intent and resends the pulse shortly after startup. This reasserts
@@ -535,8 +535,8 @@ decisions, and throughput math.
   "laser_current_ma": 0.0,
   "atten_db": 0.0,
   "wavelength_nm": 1430.0,
-  "pd_ontime_s": 0.0,
-  "laser_current_ontime_s": 0.0,
+  "pd_ontime_s": 0,
+  "laser_current_ontime_s": 0,
   "flags": []
 }
 ```
@@ -544,7 +544,7 @@ decisions, and throughput math.
 `channel` combines the photodiode channel and fiber class with an underscore,
 for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
 milliseconds from the firmware clock. `pd_ontime_s` is the current continuous
-on-time of the photodiode power relay for that channel.
+integer on-time in seconds of the photodiode power relay for that channel.
 
 **Telemetry payload (`format:"binary"`):**
 
@@ -572,8 +572,8 @@ float64 pd_0p5s_rms_mv
 float64 laser_current_ma
 float64 atten_db
 float64 wavelength_nm
-float64 pd_ontime_s
-float64 laser_current_ontime_s
+uint64 pd_ontime_s
+uint64 laser_current_ontime_s
 ```
 
 **Notes:**
@@ -604,6 +604,8 @@ float64 laser_current_ontime_s
   fails with `photodiode power override_off`. While a monitor is running,
   photodiode auto-off is inhibited and `pdsettings/<channel>.off_in_s` reports
   `null`. Shutting down the required photodiode power stops that monitor.
+- `off_in_s` is an integer-second monitor auto-stop delay. `0` disables the
+  monitor auto-stop.
 - Changing the monitored laser output or its logical attenuator disables
   autolevel for the affected monitor; run the command again to re-enable it.
 - Starting a monitor with `autolevel:true` while attenuator calibration is
@@ -741,7 +743,7 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
       "dlambda_dA_nm_per_ma": 0.0,
       "autooff_s": 0,
       "tune_nm": 0.0,
-      "emit_total_s": 0.0
+      "emit_total_s": 0
     }
   }
   ```
@@ -1209,8 +1211,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     "hk_1s_mean_mv": 0.0,
     "yj_0p5s_rms_mv": 0.0,
     "hk_0p5s_rms_mv": 0.0,
-    "yj_ontime_s": 0.0,
-    "hk_ontime_s": 0.0,
+    "yj_ontime_s": 0,
+    "hk_ontime_s": 0,
     "yj_pd_is_off": true
   }
   ```
@@ -1432,7 +1434,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 ### `serialguard`
 - **No payload -> serial guard configuration and current state:**
   ```json
-  {"serialguard_s":30,"active":true,"remaining_ms":12000}
+  {"serialguard_s":30,"active":true,"remaining_s":12}
   ```
 - **Payload:** update serial guard configuration.
   ```json
@@ -1543,7 +1545,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 ### `reboot`
 - **No payload:** schedule a non-cancelable reboot after the response window.
   ```json
-  {"status":"ok","reboot_ms":3000}
+  {"status":"ok","rebooting_in_ms":3000}
   ```
 - **Payload:** erase persisted app settings except IP settings and boot count
   immediately before reboot.
@@ -1642,6 +1644,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
     cycle except for MEMS tick quantization and quantizes the split ratios
     inside that fixed cycle. `toggle_rate_hz` is rejected.
+  - `off_in_s` is integer seconds, with max 4 hours. `0` disables the split
+    auto-stop.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are

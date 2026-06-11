@@ -470,7 +470,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"dlambda_dT_nm_per_k\":%.6f,"
 		"\"dlambda_dA_nm_per_ma\":%.6f,"
 		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
-		"\"emit_total_s\":%.1f}}",
+		"\"emit_total_s\":%llu}}",
 		hispec_laser_name(id), p->model_number,
 		settings->expected_serial,
 		(double)p->nominal_current_ma,
@@ -492,7 +492,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->dlambda_dA_nm_per_ma,
 		settings->autooff_s,
 		(double)settings->tune_delta_nm,
-		settings->total_emitting_s);
+		(unsigned long long)settings->total_emitting_s);
 
 	return written >= 0 && written < (int)payload_len ? 0 : -ENOSPC;
 }

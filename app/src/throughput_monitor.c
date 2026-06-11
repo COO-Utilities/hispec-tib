@@ -306,8 +306,8 @@ static void publish_sample(const struct throughput_state *state,
 	double tp = NAN;
 	double tp_err = NAN;
 	double tp_rms_err = NAN;
-	double pd_ontime_s;
-	double laser_current_ontime_s;
+	uint64_t pd_ontime_s;
+	uint64_t laser_current_ontime_s;
 	double pd_1s_mean_mv;
 
 	if (laser_name == NULL) {
@@ -317,9 +317,9 @@ static void publish_sample(const struct throughput_state *state,
 	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
-	pd_ontime_s = housekeeping_power_on_time_s(pd_power_output(state->channel));
+	pd_ontime_s = (uint64_t)housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
-				  (double)hispec_laser_current_on_time_s(state->laser) : 0.0;
+				  (uint64_t)hispec_laser_current_on_time_s(state->laser) : 0U;
 	pd_1s_mean_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
 	if (state->has_laser &&
@@ -379,9 +379,9 @@ static void publish_sample(const struct throughput_state *state,
 			atten.attenuation_db);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_flux.wavelength_nm);
-		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
+		put_u64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			pd_ontime_s);
-		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
+		put_u64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_current_ontime_s);
 		msg->payload_len = off;
 		(void)coo_cmd_runtime_emit(
@@ -432,9 +432,10 @@ static void publish_sample(const struct throughput_state *state,
 	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  laser_flux.wavelength_nm, 4) != 0 ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
-			",\"pd_ontime_s\":%.3f,\"laser_current_ontime_s\":%.3f,"
+			",\"pd_ontime_s\":%llu,\"laser_current_ontime_s\":%llu,"
 			"\"flags\":[]}",
-			pd_ontime_s, laser_current_ontime_s) != 0) {
+			(unsigned long long)pd_ontime_s,
+			(unsigned long long)laser_current_ontime_s) != 0) {
 		LOG_WRN("throughput telemetry payload too large");
 		return;
 	}

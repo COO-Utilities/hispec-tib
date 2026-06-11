@@ -57,7 +57,7 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9d")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
 THROUGHPUT_DTYPE = np.dtype(
     [
         ("channel", "U8"),
@@ -82,8 +82,8 @@ THROUGHPUT_DTYPE = np.dtype(
         ("laser_current_ma", "f8"),
         ("atten_db", "f8"),
         ("wavelength_nm", "f8"),
-        ("pd_ontime_s", "f8"),
-        ("laser_current_ontime_s", "f8"),
+        ("pd_ontime_s", "u8"),
+        ("laser_current_ontime_s", "u8"),
         ("flags", "O"),
     ]
 )
@@ -227,7 +227,7 @@ class TimeStatus(ResponseRepr):
 class SerialGuardStatus(ResponseRepr):
     serialguard_s: int
     active: bool
-    remaining_ms: int
+    remaining_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -240,7 +240,7 @@ class LastCommand(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class StatusLaserSummary(ResponseRepr):
     power_mw: float | None = None
-    tec_on_s: float = 0.0
+    tec_on_s: int | None = None
     off_in_s: int = 0
 
 
@@ -258,7 +258,7 @@ class Status(ResponseRepr):
     mems_switches: int
     relay_err: int
     amb_c: float | None
-    pd_on_s: float
+    pd_on_s: int
     laserbank_on_s: int
     lastcmd: LastCommand
     ip: IpConfig | None = None
@@ -307,9 +307,9 @@ class RouteLoss(ResponseRepr):
 class LaserStatus(ResponseRepr):
     name: str
     powered: bool
-    tec_on_s: float
-    emit_on_s: float
-    emit_total_s: float
+    tec_on_s: int | None
+    emit_on_s: int | None
+    emit_total_s: int | None
     temp_c: float | None
     i_mA: float | None
     level: float | None
@@ -320,7 +320,7 @@ class LaserStatus(ResponseRepr):
     tec_ma: float | None
     diode_v: float | None
     tec_v: float | None
-    off_in_s: int
+    off_in_s: int | None
     oc_fault: bool
 
 
@@ -360,7 +360,7 @@ class LaserSettings(ResponseRepr):
     dlambda_dA_nm_per_ma: float
     autooff_s: int
     tune_nm: float
-    emit_total_s: float
+    emit_total_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -430,7 +430,7 @@ class LaserBankHeater(ResponseRepr):
     valid_temps: int
     stale_temps: int
     last_error: int
-    poll_age_s: float
+    poll_age_s: int | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -564,8 +564,8 @@ class PhotodiodeValues(ResponseRepr):
     hk_1s_mean_mv: float
     yj_0p5s_rms_mv: float
     hk_0p5s_rms_mv: float
-    yj_ontime_s: float
-    hk_ontime_s: float
+    yj_ontime_s: int
+    hk_ontime_s: int
     yj_pd_is_off: bool = False
     hk_pd_is_off: bool = False
 
@@ -630,7 +630,7 @@ class WarningEvent(ResponseRepr):
     code: str
     msg: str
     context: str
-    uptime_ms: int
+    uptime_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -657,8 +657,8 @@ class ThroughputSample(ResponseRepr):
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
-    pd_ontime_s: float
-    laser_current_ontime_s: float
+    pd_ontime_s: int
+    laser_current_ontime_s: int
     flags: tuple[str, ...] = ()
 
     def as_tuple(self) -> tuple[Any, ...]:
@@ -704,6 +704,10 @@ def _float_or_nan(value: Any) -> float:
 
 
 def _require_nonnegative_u32(name: str, value: int) -> int:
+    if isinstance(value, bool):
+        raise HispecFibError(f"{name} must be a non-negative uint32")
+    if isinstance(value, (float, np.floating)) and not float(value).is_integer():
+        raise HispecFibError(f"{name} must be a non-negative uint32")
     value = int(value)
     if value < 0 or value > 0xFFFFFFFF:
         raise HispecFibError(f"{name} must be a non-negative uint32")
@@ -810,7 +814,7 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         data.get("lasers", {}),
         lambda _name, value: StatusLaserSummary(
             power_mw=value.get("power_mw"),
-            tec_on_s=float(value.get("tec_on_s", 0.0)),
+            tec_on_s=None if value.get("tec_on_s") is None else int(value.get("tec_on_s")),
             off_in_s=int(value.get("off_in_s", 0)),
         ),
     )
@@ -826,7 +830,7 @@ def _decode_status(data: Mapping[str, Any]) -> Status:
         mems_switches=int(data["mems_switches"]),
         relay_err=int(data["relay_err"]),
         amb_c=data.get("amb_c"),
-        pd_on_s=float(data["pd_on_s"]),
+        pd_on_s=int(data["pd_on_s"]),
         laserbank_on_s=int(data["laserbank_on_s"]),
         lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
         ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
@@ -919,7 +923,7 @@ def _decode_laser_settings(data: Mapping[str, Any]) -> LaserSettings:
         dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
         autooff_s=int(settings["autooff_s"]),
         tune_nm=float(settings["tune_nm"]),
-        emit_total_s=float(settings["emit_total_s"]),
+        emit_total_s=int(settings["emit_total_s"]),
     )
 
 
@@ -1075,7 +1079,7 @@ def decode_warning(payload: bytes | str) -> WarningEvent:
         code=str(data.get("code", "")),
         msg=str(data.get("msg", "")),
         context=str(data.get("context", "")),
-        uptime_ms=int(data.get("uptime_ms", 0)),
+        uptime_s=int(data.get("uptime_s", 0)),
     )
 
 
@@ -1107,8 +1111,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
             atten_db=_float_or_nan(data.get("atten_db", np.nan)),
             wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
-            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", np.nan)),
-            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", np.nan)),
+            pd_ontime_s=int(data.get("pd_ontime_s", 0)),
+            laser_current_ontime_s=int(data.get("laser_current_ontime_s", 0)),
             flags=tuple(str(flag) for flag in (data.get("flags") or ())),
         )
 
@@ -1120,7 +1124,7 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     channel = values[0].split(b"\0", 1)[0].decode("ascii", "replace")
     f64 = values[2:12]
     pd_raw = values[12]
-    extra = values[13:22]
+    extra = values[13:20]
     return ThroughputSample(
         channel=channel,
         laser="",
@@ -1144,8 +1148,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         laser_current_ma=float(extra[4]),
         atten_db=float(extra[5]),
         wavelength_nm=float(extra[6]),
-        pd_ontime_s=float(extra[7]),
-        laser_current_ontime_s=float(extra[8]),
+        pd_ontime_s=int(values[20]),
+        laser_current_ontime_s=int(values[21]),
         flags=(),
     )
 
@@ -1428,7 +1432,7 @@ class HispecFibPcb:
         state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
         cycle_ms: int | None = None,
-        off_in_s: float | None = None,
+        off_in_s: int | None = None,
         force: bool = False,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
@@ -1446,9 +1450,9 @@ class HispecFibPcb:
             if payload["cycle_ms"] == 0:
                 raise HispecFibError("cycle_ms must be > 0")
         if off_in_s is not None:
-            payload["off_in_s"] = _require_float(
-                "off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
-            )
+            payload["off_in_s"] = _require_nonnegative_u32("off_in_s", off_in_s)
+            if payload["off_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
+                raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         return _decode_mems_detail(name, self._request_json(key, payload))
 
     def memsroute(self) -> MemsRoutes:
@@ -1814,10 +1818,10 @@ class HispecFibPcb:
             "channel": channel,
             "ratio1": ratio1,
             "ratio2": ratio2,
-            "off_in_s": int(
-                _require_float("off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
-            ),
+            "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
         }
+        if payload["off_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
+            raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         if cycle_ms is not None:
             payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
             if payload["cycle_ms"] == 0:
@@ -2064,11 +2068,11 @@ class HispecFibPcb:
         with self._warning_lock:
             self._warnings.append(event)
         self.logger.warning(
-            "PCB warning %s: %s context=%s uptime_ms=%s",
+            "PCB warning %s: %s context=%s uptime_s=%s",
             event.code,
             event.msg,
             event.context,
-            event.uptime_ms,
+            event.uptime_s,
         )
 
 

@@ -1142,6 +1142,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     bool has_lastcommand;
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t off = 0U;
+    uint64_t pd_on_s;
 
     if (coo_json_extract_optional_bool(cmd->payload, "ip",
                                        &include_ip, NULL) != 0) {
@@ -1158,6 +1159,8 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     housekeeping_get_temperature_status(&ts);
     has_lastcommand = coo_cmd_runtime_get_lastcommand(&command_runtime, &lastcommand);
+    pd_on_s = (uint64_t)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
+                            housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE));
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fw\":\"%s\",\"boots\":%u,"
                         "\"board\":\"%s\",\"board_ok\":%s,"
@@ -1172,10 +1175,9 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"pd_on_s\":%.1f,"
+                        ",\"pd_on_s\":%llu,"
                         "\"laserbank_on_s\":%u",
-                        (double)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
-                                    housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE)),
+                        (unsigned long long)pd_on_s,
                         hispec_laser_bank_power_on_duration_s()) != 0) {
         return coo_cmd_error(out, cmd, "status response too large");
     }

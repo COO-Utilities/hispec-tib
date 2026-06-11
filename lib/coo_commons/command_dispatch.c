@@ -1656,6 +1656,7 @@ static int runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
 				    struct coo_cmd_response *out)
 {
 	int64_t remaining_ms = 0;
+	int64_t remaining_s = 0;
 	k_ticks_t remaining_ticks;
 
 	if (runtime == NULL || out == NULL) {
@@ -1664,11 +1665,15 @@ static int runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
 
 	remaining_ticks = k_work_delayable_remaining_get(&runtime->serial_guard_work);
 	remaining_ms = k_ticks_to_ms_floor64(remaining_ticks);
+	if (remaining_ms > 0) {
+		remaining_s = (remaining_ms + (int64_t)MSEC_PER_SEC - 1LL) /
+			      (int64_t)MSEC_PER_SEC;
+	}
 	snprintk(out->payload, sizeof(out->payload),
-		 "{\"serialguard_s\":%u,\"active\":%s,\"remaining_ms\":%lld}",
+		 "{\"serialguard_s\":%u,\"active\":%s,\"remaining_s\":%lld}",
 		 runtime->serial_guard_seconds,
 		 runtime_serial_guard_active(runtime) ? "true" : "false",
-		 (long long)remaining_ms);
+		 (long long)remaining_s);
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
 
@@ -1808,12 +1813,12 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	runtime_record_lastcommand(runtime, cmd);
 	if (erase_non_ip_settings) {
 		snprintk(out->payload, sizeof(out->payload),
-			 "{\"status\":\"ok\",\"reboot_ms\":%u,"
+			 "{\"status\":\"ok\",\"rebooting_in_ms\":%u,"
 			 "\"erase_non_ip_settings\":true}",
 			 runtime->reboot_delay_ms);
 	} else {
 		snprintk(out->payload, sizeof(out->payload),
-			 "{\"status\":\"ok\",\"reboot_ms\":%u}",
+			 "{\"status\":\"ok\",\"rebooting_in_ms\":%u}",
 			 runtime->reboot_delay_ms);
 	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
