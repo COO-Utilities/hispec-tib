@@ -251,8 +251,8 @@ int hispec_laser_bank_poll_temperatures(
 /**
  * @brief Verify that the expected Maiman driver is at a channel's Modbus address.
  *
- * This checks the device ID and records the observed serial number. Serial
- * changes are accepted as driver replacements after the device ID matches.
+ * This checks the device ID and configured expected serial before driver-backed
+ * settings are written.
  */
 int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
 

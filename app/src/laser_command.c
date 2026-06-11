@@ -525,6 +525,8 @@ static int laser_parse_settings_update(const char *json,
 	double range[2] = {0};
 	size_t range_len = 0U;
 	char pid_json[128] = {0};
+	uint16_t parsed_serial;
+	bool serial_changed = false;
 	int rc;
 
 	if (json == NULL || settings == NULL || changed == NULL) {
@@ -595,6 +597,19 @@ static int laser_parse_settings_update(const char *json,
 	if (coo_json_extract_optional_u32(json, "autooff_s",
 					  &settings->autooff_s, changed) != 0) {
 		return -EINVAL;
+	}
+
+	parsed_serial = settings->expected_serial;
+	if (coo_json_extract_optional_u16(json, "expected_serial",
+					  &parsed_serial, &serial_changed) != 0) {
+		return -EINVAL;
+	}
+	if (serial_changed) {
+		if (parsed_serial == 0U) {
+			return -ERANGE;
+		}
+		settings->expected_serial = parsed_serial;
+		*changed = true;
 	}
 
 	return 0;

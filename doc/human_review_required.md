@@ -39,9 +39,10 @@ LLMs Agents: Do NOT change heading names in this file.
   integer-or-null active time fields instead of inactive `0.0` values.
 - [ ] Verify the duplicate laser-bank fault-clear timeout define was removed
   from `laser_command.c`; broader redundant-setting cleanup remains open.
-- [ ] Verify Maiman driver serial changes are logged, accepted after the device
-  ID matches, persisted as `laser/settings.expected_serial`, and no longer
-  block driver-backed laser setting programming.
+- [ ] Verify Maiman driver serial mismatches report
+  `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
+  programming, and can be resolved only by operator-updating
+  `laser/settings.expected_serial`.
 
 
 ## Decisions To Make

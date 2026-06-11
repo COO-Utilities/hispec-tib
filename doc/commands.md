@@ -709,10 +709,10 @@ optional laser section of `status`.
 Detailed engineering status derived from the Maiman status query used in
 `refrence_docs_examples/lasers.py`. Includes raw state, lock, and TEC-state
 registers, measured diode/TEC voltage and current, driver limits, PID, hard
-device-id verification, last accepted driver serial, `blocking_lock`,
+device-id verification, configured expected driver serial, `blocking_lock`,
 `blocked_reason`, and interlock flags. This command may be slower than
-`laser/status` because it reads many Modbus registers. A changed nonzero serial
-is logged, accepted, and persisted after the device ID matches.
+`laser/status` because it reads many Modbus registers. A serial mismatch is
+reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
 
 
 (laser-settings)=
@@ -759,6 +759,7 @@ is logged, accepted, and persisted after the device ID matches.
     "name": "<lasername>",
     "settings": {
       "nominal_current_ma": 0.0,
+      "expected_serial": 0,
       "max_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
@@ -786,14 +787,14 @@ is logged, accepted, and persisted after the device ID matches.
     startup preparation succeeds, so a bad default can make the TEC fail to start
     and make the laser appear to fault immediately.
   - Settings are checked when a laser is first talked to at each boot
-  - A mismatch between settings the driver stores in its EEPROM and controller
-    NVRAM will trigger a warning in the log and the driver values will be
-    programmed.
-  - `expected_serial` is the last accepted Maiman driver serial for this laser.
-    It is a read-only replacement diagnostic, not an operator-settable laser
-    calibration value. If a driver board is replaced, firmware accepts a changed
-    nonzero serial after the device ID matches, logs the change, and persists
-    the observed serial. A device-ID mismatch remains an identity fault.
+  - After device-ID and serial checks pass, a mismatch between settings the
+    driver stores in its EEPROM and controller NVRAM will trigger a warning in
+    the log and the driver values will be programmed.
+  - `expected_serial` is the operator-confirmed Maiman driver serial for this
+    laser/diode association. It must be nonzero. A serial mismatch blocks
+    driver-backed writes until the operator confirms the physical association
+    and updates `expected_serial`; firmware does not learn or persist changed
+    serials by itself. A device-ID mismatch remains an identity fault.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
     verifies them as practical, and then restores the previous bank power state.
     Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
@@ -806,7 +807,7 @@ is logged, accepted, and persisted after the device ID matches.
   - Changes to settings will disable laser emission and may disable the TEC (stops emission + any throughput measurement using that laser)
   - failures to set will leave all settings unchanged (rollback is performed or an error emitted)
   - Unsettable (attempts to set are silently ignored):
-    - `name`, `model`, `serial`, `expected_serial`
+    - `name`, `model`, `serial`
     - `overcurrent_threshold_ma`
   - Non-Driver settings:
     - `autooff_s`

@@ -17,7 +17,6 @@
 #include "photodiode.h"
 
 #include <errno.h>
-#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/device.h>
@@ -32,7 +31,6 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
 #define APP_NVS_SCHEMA_VERSION 6U
-#define APP_NVS_SCHEMA_VERSION_V5 5U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -125,8 +123,6 @@ struct app_nvs_laser_policy {
 	uint16_t expected_serial;
 	uint16_t reserved2;
 };
-
-#define APP_NVS_LASER_POLICY_V5_SIZE offsetof(struct app_nvs_laser_policy, expected_serial)
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
 	&LASER_1028,
@@ -379,12 +375,6 @@ static int app_nvs_ensure_schema(void)
 	    marker.magic == APP_NVS_SCHEMA_MAGIC &&
 	    marker.version == APP_NVS_SCHEMA_VERSION) {
 		return 0;
-	}
-	if (marker.magic == APP_NVS_SCHEMA_MAGIC &&
-	    marker.version == APP_NVS_SCHEMA_VERSION_V5) {
-		LOG_INF("Migrating app NVS schema %u to %u; preserving existing records",
-			APP_NVS_SCHEMA_VERSION_V5, APP_NVS_SCHEMA_VERSION);
-		return app_nvs_write_schema();
 	}
 
 	LOG_INF("Initializing app NVS schema %u; clearing old storage layout",
@@ -786,42 +776,12 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.tec_pid.kp = stored->tec_pid_p;
 	laser->properties.tec_pid.ki = stored->tec_pid_i;
 	laser->properties.tec_pid.kd = stored->tec_pid_d;
-	if (stored->expected_serial != 0U) {
-		laser->expected_serial = stored->expected_serial;
-	}
+	laser->expected_serial = stored->expected_serial;
 	laser->disable_tec_at_autooff = stored->disable_tec_at_autooff != 0U;
 	laser->properties.dlambda_dT_nm_per_k = stored->dlambda_dT_nm_per_k;
 	laser->properties.dlambda_dA_nm_per_ma = stored->dlambda_dA_nm_per_ma;
 	laser->autooff_s = stored->autooff_s;
 	laser->tune_delta_nm = stored->tune_delta_nm;
-}
-
-static bool app_nvs_read_laser_policy(uint8_t channel,
-				      struct app_nvs_laser_policy *policy)
-{
-	uint8_t raw[sizeof(*policy)] = {0};
-	int rc;
-
-	if (!app_nvs_ready || policy == NULL) {
-		return false;
-	}
-
-	rc = nvs_read(&app_nvs, laser_policy_nvs_id(channel), raw, sizeof(raw));
-	if (rc == (int)sizeof(*policy)) {
-		memcpy(policy, raw, sizeof(*policy));
-		return true;
-	}
-	if (rc == (int)APP_NVS_LASER_POLICY_V5_SIZE) {
-		memset(policy, 0, sizeof(*policy));
-		memcpy(policy, raw, APP_NVS_LASER_POLICY_V5_SIZE);
-		return true;
-	}
-	if (rc != -ENOENT) {
-		LOG_WRN("Ignoring invalid NVS laser policy id 0x%04x length (%d)",
-			laser_policy_nvs_id(channel), rc);
-	}
-
-	return false;
 }
 
 static void app_nvs_load_laser(struct app_settings_snapshot *s)
@@ -831,7 +791,8 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 		struct app_laser_channel_settings laser;
 		double total_emitting_s;
 
-		if (app_nvs_read_laser_policy(channel, &policy)) {
+		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
+				       sizeof(policy), "laser policy")) {
 			laser = s->laser.channel[channel];
 			app_nvs_apply_laser_policy(&laser, &policy);
 			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel,

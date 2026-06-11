@@ -34,8 +34,8 @@ Current app NVS records include:
   threshold, responsivity, and transimpedance.
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
-  intent and the last accepted Maiman driver serial used as a replacement
-  diagnostic.
+  intent and the operator-confirmed Maiman driver serial used as a physical
+  association check.
 - One laser total-emitting counter record per laser channel.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
@@ -65,8 +65,8 @@ silently reused on another.
 - Photodiode dark and dark-noise RMS default to 0 mV. YJ and HK have different
   default gain/noise warning values.
 - Laser expected serials default to the initial known driver/diode association.
-  The stored value is updated automatically when a nonzero observed serial
-  changes after the Maiman device ID matches.
+  Operators may update the value through `laser/settings` after confirming a
+  replacement driver is physically associated with the intended diode.
 - Route-loss records default to absent. Missing route-loss settings are treated
   as loss-free transmission, `1.0`.
 - MEMS switch intent defaults to absent. A switch with no stored intent defaults
@@ -95,10 +95,9 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v6 adds the per-laser `expected_serial` diagnostic field. Devices with a
-v5 schema marker are migrated by preserving existing records and writing the v6
-marker; old laser policy records continue to load and use the default serial
-until a replacement is observed and persisted.
+Schema v6 adds the per-laser `expected_serial` association field. Older schema
+markers are not migrated; firmware clears the old app settings layout, writes
+the v6 marker, and uses defaults.
 
 ## Intentionally Not Persisted
 
