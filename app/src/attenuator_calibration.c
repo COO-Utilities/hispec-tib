@@ -12,7 +12,6 @@
 #include <coo_commons/json_utils.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
-#include <zsl/statistics.h>
 
 #include "app_settings.h"
 #include "attenuator.h"
@@ -29,9 +28,13 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_STEP_SETTLE_MS 50U
 #define ATTEN_CAL_PD_POWER_SETTLE_MS 1000U
 #define ATTEN_CAL_SIGNAL_MIN_MV 20.0
-#define ATTEN_CAL_HIGH_MV 750.0
+#define ATTEN_CAL_TARGET_LOW_MV 250.0
+#define ATTEN_CAL_TARGET_HIGH_MV 4500.0
 #define ATTEN_CAL_SAT_RAW (INT16_MAX - 1024)
 #define ATTEN_CAL_OTHER_STEP_MV 512.0
+#define ATTEN_CAL_INITIAL_STEP_MV 500.0
+#define ATTEN_CAL_MIN_STEP_MV 10.0
+#define ATTEN_CAL_MAX_ADJUST_TRIES 18U
 #define ATTEN_CAL_MIN_FIT_POINTS ATTENUATOR_CAL_MIN_BATCH_POINTS
 #define ATTEN_CAL_MIN_TX 1.0e-10
 #define ATTEN_CAL_MAX_TX 0.999999
@@ -62,10 +65,21 @@ enum atten_cal_auto_phase {
 	ATTEN_CAL_AUTO_POINT_SET,
 	ATTEN_CAL_AUTO_POINT_SETTLE,
 	ATTEN_CAL_AUTO_POINT_AVG,
+	ATTEN_CAL_AUTO_RENORM_SET,
+	ATTEN_CAL_AUTO_RENORM_SETTLE,
+	ATTEN_CAL_AUTO_RENORM_AVG,
 	ATTEN_CAL_AUTO_ADJUST_SET,
 	ATTEN_CAL_AUTO_ADJUST_SETTLE,
 	ATTEN_CAL_AUTO_ADJUST_AVG,
 	ATTEN_CAL_AUTO_FIT,
+};
+
+enum atten_cal_adjust_action {
+	ATTEN_CAL_ADJUST_NONE = 0,
+	ATTEN_CAL_ADJUST_OTHER_UP,
+	ATTEN_CAL_ADJUST_OTHER_DOWN,
+	ATTEN_CAL_ADJUST_LASER_DOWN,
+	ATTEN_CAL_ADJUST_LASER_UP,
 };
 
 struct atten_cal_point {
@@ -89,9 +103,14 @@ struct atten_cal_state_data {
 	double other_mv;
 	double laser_percent;
 	double scale;
+	double sweep_mv;
+	double step_mv;
+	double renorm_mv;
+	double retry_mv;
 	double pending_before_mv;
 	int64_t wait_until_ms;
-	bool adjust_uses_laser;
+	enum atten_cal_adjust_action adjust_action;
+	uint8_t adjust_tries;
 	int last_error;
 	struct atten_cal_point points[2][ATTENUATOR_CAL_POINT_COUNT];
 	struct attenuator_calibration_fit_metrics fit[2];
@@ -120,6 +139,8 @@ static const char *fit_point_exclusion_reason(const struct atten_cal_point *poin
 						      double *b);
 static double fit_points_max_flux(
 	const struct atten_cal_point points[ATTENUATOR_CAL_POINT_COUNT]);
+static double current_sweep_mv_locked(void);
+static void auto_finish_physical_locked(void);
 
 static const char *state_name(enum atten_cal_state state)
 {
@@ -155,6 +176,31 @@ static const char *mode_name(enum atten_cal_mode mode)
 static const char *physical_name(uint8_t physical_index)
 {
 	return physical_index == 0U ? "dac1" : "dac2";
+}
+
+static double current_sweep_mv_locked(void)
+{
+	if (cal.mode == ATTEN_CAL_MODE_TIB_AUTO) {
+		return cal.sweep_mv;
+	}
+	return voltage_schedule[MIN(cal.point_index, ATTENUATOR_CAL_POINT_COUNT - 1U)];
+}
+
+static const char *adjust_action_name(enum atten_cal_adjust_action action)
+{
+	switch (action) {
+	case ATTEN_CAL_ADJUST_OTHER_UP:
+		return "other_mv";
+	case ATTEN_CAL_ADJUST_OTHER_DOWN:
+		return "other_mv";
+	case ATTEN_CAL_ADJUST_LASER_DOWN:
+		return "laser_pct";
+	case ATTEN_CAL_ADJUST_LASER_UP:
+		return "laser_pct";
+	case ATTEN_CAL_ADJUST_NONE:
+	default:
+		return "none";
+	}
 }
 
 static void atten_cal_publish_telemetry(struct coo_cmd_response *msg)
@@ -258,8 +304,7 @@ static void atten_cal_emit_reading(const char *event,
 		return;
 	}
 
-	sweep_mv = voltage_schedule[MIN(cal.point_index,
-					ATTENUATOR_CAL_POINT_COUNT - 1U)];
+	sweep_mv = current_sweep_mv_locked();
 	msg = atten_cal_telemetry_begin(&off, event);
 	if (msg == NULL ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
@@ -308,8 +353,7 @@ static void atten_cal_emit_adjust(const char *kind,
 			    "\"sweep_mv\":%.3f,\"other_mv\":%.3f,"
 			    "\"laser_pct\":%.3f}",
 			    kind, before, after, measured_mv,
-			    voltage_schedule[MIN(cal.point_index,
-						 ATTENUATOR_CAL_POINT_COUNT - 1U)],
+			    current_sweep_mv_locked(),
 			    cal.other_mv, cal.laser_percent) != 0) {
 		LOG_WRN("atten calibration telemetry payload too large");
 		return;
@@ -567,6 +611,25 @@ static bool sample_is_saturated(const struct photodiode_average_status *avg)
 	return avg->result.max_raw >= ATTEN_CAL_SAT_RAW;
 }
 
+static bool sample_is_usable(const struct photodiode_average_status *avg)
+{
+	return avg != NULL && !sample_is_saturated(avg) &&
+	       avg->result.mean_net_mv > ATTEN_CAL_SIGNAL_MIN_MV;
+}
+
+static bool sample_below_target(const struct photodiode_average_status *avg)
+{
+	return avg != NULL && !sample_is_saturated(avg) &&
+	       avg->result.mean_net_mv < ATTEN_CAL_TARGET_LOW_MV;
+}
+
+static bool sample_above_target(const struct photodiode_average_status *avg)
+{
+	return avg != NULL &&
+	       (sample_is_saturated(avg) ||
+		avg->result.mean_net_mv > ATTEN_CAL_TARGET_HIGH_MV);
+}
+
 static void copy_voltage_schedule(double out[ATTENUATOR_CAL_POINT_COUNT])
 {
 	memcpy(out, voltage_schedule, sizeof(voltage_schedule));
@@ -607,16 +670,20 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->state = state_name(cal.state);
 	status->mode = mode_name(cal.mode);
 	status->physical = physical_name(cal.physical_index);
-	status->fit = (cal.last_error != 0) ? "failed" :
-		      ((cal.fit[0].accepted && cal.fit[1].accepted) ? "ok" : "none");
+	if (cal.fit[0].accepted && cal.fit[1].accepted) {
+		status->fit = "ok";
+	} else if (cal.fit[0].accepted || cal.fit[1].accepted) {
+		status->fit = "partial";
+	} else {
+		status->fit = cal.last_error != 0 ? "failed" : "none";
+	}
 	status->attenuator_index = cal.attenuator_index;
 	status->physical_index = cal.physical_index;
 	status->point_index = cal.point_index;
 	status->point_count = ATTENUATOR_CAL_POINT_COUNT;
 	status->dwell_ms = cal.dwell_ms == 0U ? ATTEN_CAL_DEFAULT_DWELL_MS : cal.dwell_ms;
 	status->complete_pct = complete_percent_locked();
-	status->current_mv = voltage_schedule[MIN(cal.point_index,
-						  ATTENUATOR_CAL_POINT_COUNT - 1U)];
+	status->current_mv = current_sweep_mv_locked();
 	status->other_mv = (cal.state == ATTEN_CAL_STATE_INACTIVE && cal.other_mv == 0.0) ?
 			   ATTENUATOR_DRIVE_MAX_MV : cal.other_mv;
 	status->last_error = cal.last_error;
@@ -638,6 +705,8 @@ static void reset_locked(enum atten_cal_state state)
 	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.laser_percent = 100.0;
 	cal.scale = 1.0;
+	cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
+	cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
 }
 
 static int route_input_for_laser(enum hispec_laser_id laser, char *out, size_t out_len)
@@ -808,25 +877,26 @@ static int fit_one_physical(uint8_t attenuator_index,
 			    bool persistent,
 			    struct attenuator_calibration_fit_metrics *out)
 {
-	zsl_real_t x_data[ATTENUATOR_CAL_POINT_COUNT];
-	zsl_real_t y_data[ATTENUATOR_CAL_POINT_COUNT];
-	struct zsl_vec x = {
-		.sz = 0U,
-		.data = x_data,
-	};
-	struct zsl_vec y = {
-		.sz = 0U,
-		.data = y_data,
-	};
-	struct zsl_sta_linreg reg = {0};
+	double x_data[ATTENUATOR_CAL_POINT_COUNT];
+	double y_data[ATTENUATOR_CAL_POINT_COUNT];
 	double max_flux = 0.0;
 	double min_tx = 1.0;
 	double max_tx = 0.0;
 	double min_v = ATTENUATOR_DRIVE_MAX_MV;
 	double max_v = 0.0;
+	double sum_x = 0.0;
+	double sum_y = 0.0;
+	double sum_xx = 0.0;
+	double sum_yy = 0.0;
+	double sum_xy = 0.0;
+	double denom_x;
+	double denom_y;
+	double slope;
+	double intercept;
+	double correlation;
 	double sum_sq_db = 0.0;
 	double max_abs_db = 0.0;
-	int rc;
+	size_t point_count = 0U;
 
 	if (out == NULL || attenuator_index >= NUM_ATTENUATORS ||
 	    physical_index >= ATTENUATOR_PHYSICAL_COUNT) {
@@ -850,10 +920,14 @@ static int fit_one_physical(uint8_t attenuator_index,
 			continue;
 		}
 
-		x_data[x.sz] = (zsl_real_t)points[i].voltage_mv;
-		y_data[y.sz] = (zsl_real_t)b;
-		x.sz++;
-		y.sz++;
+		x_data[point_count] = points[i].voltage_mv;
+		y_data[point_count] = b;
+		sum_x += points[i].voltage_mv;
+		sum_y += b;
+		sum_xx += points[i].voltage_mv * points[i].voltage_mv;
+		sum_yy += b * b;
+		sum_xy += points[i].voltage_mv * b;
+		point_count++;
 		if (tx < min_tx) {
 			min_tx = tx;
 		}
@@ -868,20 +942,27 @@ static int fit_one_physical(uint8_t attenuator_index,
 		}
 	}
 
-	if (x.sz < ATTEN_CAL_MIN_FIT_POINTS || !(max_v > min_v)) {
+	if (point_count < ATTEN_CAL_MIN_FIT_POINTS || !(max_v > min_v)) {
 		return -ERANGE;
 	}
 
-	rc = zsl_sta_linear_reg(&x, &y, &reg);
-	if (rc != 0 || !(reg.slope > 0.0)) {
-		return rc != 0 ? rc : -ERANGE;
+	denom_x = (double)point_count * sum_xx - sum_x * sum_x;
+	denom_y = (double)point_count * sum_yy - sum_y * sum_y;
+	if (!(denom_x > 0.0) || !(denom_y > 0.0)) {
+		return -ERANGE;
+	}
+	slope = ((double)point_count * sum_xy - sum_x * sum_y) / denom_x;
+	intercept = (sum_y - slope * sum_x) / (double)point_count;
+	correlation = ((double)point_count * sum_xy - sum_x * sum_y) /
+		      sqrt(denom_x * denom_y);
+	if (!(slope > 0.0) || !isfinite(intercept) || !isfinite(correlation)) {
+		return -ERANGE;
 	}
 
-	for (size_t i = 0U; i < x.sz; ++i) {
-		double measured_tx = attenuator_model_b_to_linear((double)y.data[i]);
+	for (size_t i = 0U; i < point_count; ++i) {
+		double measured_tx = attenuator_model_b_to_linear(y_data[i]);
 		double predicted_tx =
-			attenuator_model_b_to_linear((double)reg.slope * (double)x.data[i] +
-						     (double)reg.intercept);
+			attenuator_model_b_to_linear(slope * x_data[i] + intercept);
 		double residual_db;
 
 		if (!(measured_tx > 0.0) || !(predicted_tx > 0.0)) {
@@ -895,11 +976,11 @@ static int fit_one_physical(uint8_t attenuator_index,
 	}
 
 	out->valid = true;
-	out->points = (uint8_t)x.sz;
-	out->slope = (double)reg.slope;
-	out->offset = (double)reg.intercept;
-	out->correlation = (double)reg.correlation;
-	out->rms_db = sqrt(sum_sq_db / (double)x.sz);
+	out->points = (uint8_t)point_count;
+	out->slope = slope;
+	out->offset = intercept;
+	out->correlation = correlation;
+	out->rms_db = sqrt(sum_sq_db / (double)point_count);
 	out->max_abs_db = max_abs_db;
 	out->min_tx = min_tx;
 	out->max_tx = max_tx;
@@ -918,26 +999,35 @@ static int apply_fit_to_settings(uint8_t attenuator_index,
 {
 	struct app_attenuator_channel_settings stored = {0};
 	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
+	struct attenuator *atten;
+	bool any_accepted;
 
-	if (attenuator_index >= NUM_ATTENUATORS ||
-	    !fit[0].accepted || !fit[1].accepted) {
+	if (attenuator_index >= NUM_ATTENUATORS || fit == NULL) {
 		return -EINVAL;
 	}
+	any_accepted = fit[0].accepted || fit[1].accepted;
+	if (!any_accepted) {
+		return -EINVAL;
+	}
+	atten = &attenuators[attenuator_index];
 
-	physical[0].slope = fit[0].slope;
-	physical[0].offset = fit[0].offset;
-	physical[1].slope = fit[1].slope;
-	physical[1].offset = fit[1].offset;
+	physical[0] = fit[0].accepted ? (struct attenuator_model_coeffs){
+		.slope = fit[0].slope,
+		.offset = fit[0].offset,
+	} : atten->coeff1;
+	physical[1] = fit[1].accepted ? (struct attenuator_model_coeffs){
+		.slope = fit[1].slope,
+		.offset = fit[1].offset,
+	} : atten->coeff2;
 
-	if (attenuator_apply_coefficients_preserve_db(&attenuators[attenuator_index],
-						      physical) != 0) {
+	if (attenuator_apply_coefficients_preserve_db(atten, physical) != 0) {
 		return -EIO;
 	}
 
-	stored.physical[0].slope = (double)fit[0].slope;
-	stored.physical[0].offset = (double)fit[0].offset;
-	stored.physical[1].slope = (double)fit[1].slope;
-	stored.physical[1].offset = (double)fit[1].offset;
+	stored.physical[0].slope = physical[0].slope;
+	stored.physical[0].offset = physical[0].offset;
+	stored.physical[1].slope = physical[1].slope;
+	stored.physical[1].offset = physical[1].offset;
 	app_settings_update_attenuator_channel(attenuator_index, &stored, persistent);
 	return 0;
 }
@@ -946,6 +1036,7 @@ static int fit_current_locked(bool apply_settings)
 {
 	int rc;
 	int first_error = 0;
+	bool any_accepted = false;
 
 	for (uint8_t physical = 0U; physical < ATTENUATOR_PHYSICAL_COUNT; ++physical) {
 		rc = fit_one_physical(cal.attenuator_index, physical,
@@ -955,12 +1046,13 @@ static int fit_current_locked(bool apply_settings)
 		if (rc != 0) {
 			first_error = first_error == 0 ? rc : first_error;
 		}
+		any_accepted = any_accepted || cal.fit[physical].accepted;
 	}
-	if (first_error != 0) {
-		cal.last_error = first_error;
+	if (!any_accepted) {
+		cal.last_error = first_error == 0 ? -ERANGE : first_error;
 		cal.state = ATTEN_CAL_STATE_ERROR;
 		atten_cal_emit_simple("error");
-		return first_error;
+		return cal.last_error;
 	}
 
 	if (apply_settings) {
@@ -973,6 +1065,10 @@ static int fit_current_locked(bool apply_settings)
 		}
 	}
 
+	if (first_error != 0) {
+		LOG_WRN("atten calibration completed with partial fit (%d)", first_error);
+	}
+	cal.last_error = 0;
 	cal.state = ATTEN_CAL_STATE_COMPLETE;
 	cal.phase = ATTEN_CAL_AUTO_NONE;
 	cal.point_index = ATTENUATOR_CAL_POINT_COUNT;
@@ -985,6 +1081,13 @@ static void start_next_physical_locked(void)
 	cal.point_index = 0U;
 	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.scale = 1.0;
+	cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
+	cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
+	cal.renorm_mv = ATTENUATOR_DRIVE_MAX_MV;
+	cal.retry_mv = ATTENUATOR_DRIVE_MAX_MV;
+	cal.pending_before_mv = 0.0;
+	cal.adjust_action = ATTEN_CAL_ADJUST_NONE;
+	cal.adjust_tries = 0U;
 	cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
 	atten_cal_emit_simple("physical_start");
 }
@@ -997,28 +1100,33 @@ static void auto_error_locked(int error)
 	atten_cal_emit_simple("error");
 }
 
+static void auto_give_up_physical_locked(const char *reason)
+{
+	LOG_WRN("atten calibration skipping physical=%s point=%u/%u reason=%s",
+		physical_name(cal.physical_index),
+		MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
+		ATTENUATOR_CAL_POINT_COUNT,
+		reason == NULL ? "range" : reason);
+	auto_finish_physical_locked();
+}
+
 static void record_current_point_locked(const struct photodiode_average_status *avg)
 {
 	struct atten_cal_point *point;
 
 	point = &cal.points[cal.physical_index][cal.point_index];
-	point->voltage_mv = voltage_schedule[cal.point_index];
+	point->voltage_mv = cal.sweep_mv;
 	point->saturated = sample_is_saturated(avg);
 	point->valid = avg->state == PHOTODIODE_AVERAGE_COMPLETE &&
-		       !point->saturated &&
-		       avg->result.mean_net_mv > 0.0;
+			       !point->saturated &&
+		       avg->result.mean_net_mv > ATTEN_CAL_SIGNAL_MIN_MV;
 	point->flux = point->valid ? (double)avg->result.mean_net_mv * cal.scale : 0.0;
 	atten_cal_emit_reading("point_reading", avg, point->flux);
+	cal.adjust_tries = 0U;
 }
 
-static void auto_finish_point_locked(void)
+static void auto_finish_physical_locked(void)
 {
-	cal.point_index++;
-	if (cal.point_index < ATTENUATOR_CAL_POINT_COUNT) {
-		cal.phase = ATTEN_CAL_AUTO_POINT_SET;
-		return;
-	}
-
 	if (cal.physical_index == 0U) {
 		cal.physical_index = 1U;
 		start_next_physical_locked();
@@ -1028,10 +1136,268 @@ static void auto_finish_point_locked(void)
 	cal.phase = ATTEN_CAL_AUTO_FIT;
 }
 
+static void auto_schedule_next_point_locked(const struct photodiode_average_status *avg)
+{
+	double next_mv;
+
+	if (cal.point_index == 0U) {
+		cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
+	} else if (avg != NULL &&
+		   avg->result.mean_net_mv > (ATTEN_CAL_TARGET_LOW_MV * 2.0)) {
+		cal.step_mv = MAX(cal.step_mv / 2.0, ATTEN_CAL_MIN_STEP_MV);
+	}
+
+	next_mv = cal.sweep_mv - cal.step_mv;
+	if (next_mv < 0.0 && cal.sweep_mv > 0.0) {
+		next_mv = 0.0;
+	}
+	if (cal.sweep_mv <= 0.0 || next_mv >= cal.sweep_mv) {
+		auto_finish_physical_locked();
+		return;
+	}
+
+	cal.sweep_mv = next_mv;
+	cal.phase = ATTEN_CAL_AUTO_POINT_SET;
+}
+
+static void auto_finish_point_locked(void)
+{
+	cal.point_index++;
+	if (cal.point_index >= ATTENUATOR_CAL_POINT_COUNT) {
+		auto_finish_physical_locked();
+		return;
+	}
+}
+
+static bool auto_adjust_possible(enum atten_cal_adjust_action action)
+{
+	switch (action) {
+	case ATTEN_CAL_ADJUST_OTHER_UP:
+		return cal.other_mv < ATTENUATOR_DRIVE_MAX_MV;
+	case ATTEN_CAL_ADJUST_OTHER_DOWN:
+		return cal.other_mv > 0.0;
+	case ATTEN_CAL_ADJUST_LASER_DOWN:
+		return cal.laser_percent > 3.0;
+	case ATTEN_CAL_ADJUST_LASER_UP:
+		return cal.laser_percent < 99.0;
+	case ATTEN_CAL_ADJUST_NONE:
+	default:
+		return false;
+	}
+}
+
+static enum atten_cal_adjust_action auto_choose_reduce_gain(double reference_mv)
+{
+	if (auto_adjust_possible(ATTEN_CAL_ADJUST_LASER_DOWN) &&
+	    (reference_mv < (ATTEN_CAL_TARGET_LOW_MV * 1.6) ||
+	     cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV)) {
+		return ATTEN_CAL_ADJUST_LASER_DOWN;
+	}
+	if (auto_adjust_possible(ATTEN_CAL_ADJUST_OTHER_UP)) {
+		return ATTEN_CAL_ADJUST_OTHER_UP;
+	}
+	if (auto_adjust_possible(ATTEN_CAL_ADJUST_LASER_DOWN)) {
+		return ATTEN_CAL_ADJUST_LASER_DOWN;
+	}
+	return ATTEN_CAL_ADJUST_NONE;
+}
+
+static enum atten_cal_adjust_action auto_choose_increase_gain(void)
+{
+	if (auto_adjust_possible(ATTEN_CAL_ADJUST_OTHER_DOWN)) {
+		return ATTEN_CAL_ADJUST_OTHER_DOWN;
+	}
+	if (auto_adjust_possible(ATTEN_CAL_ADJUST_LASER_UP)) {
+		return ATTEN_CAL_ADJUST_LASER_UP;
+	}
+	return ATTEN_CAL_ADJUST_NONE;
+}
+
+static int auto_apply_adjust_locked(void)
+{
+	double before;
+
+	switch (cal.adjust_action) {
+	case ATTEN_CAL_ADJUST_OTHER_UP:
+		before = cal.other_mv;
+		cal.other_mv += ATTEN_CAL_OTHER_STEP_MV;
+		if (cal.other_mv > ATTENUATOR_DRIVE_MAX_MV) {
+			cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
+		}
+		if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
+				       cal.renorm_mv, cal.other_mv)) {
+			return -EIO;
+		}
+		atten_cal_emit_adjust(adjust_action_name(cal.adjust_action), before,
+				      cal.other_mv, cal.pending_before_mv);
+		return 0;
+	case ATTEN_CAL_ADJUST_OTHER_DOWN:
+		before = cal.other_mv;
+		cal.other_mv -= ATTEN_CAL_OTHER_STEP_MV;
+		if (cal.other_mv < 0.0) {
+			cal.other_mv = 0.0;
+		}
+		if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
+				       cal.renorm_mv, cal.other_mv)) {
+			return -EIO;
+		}
+		atten_cal_emit_adjust(adjust_action_name(cal.adjust_action), before,
+				      cal.other_mv, cal.pending_before_mv);
+		return 0;
+	case ATTEN_CAL_ADJUST_LASER_DOWN:
+		before = cal.laser_percent;
+		cal.laser_percent /= 3.0;
+		if (cal.laser_percent < 1.0) {
+			cal.laser_percent = 1.0;
+		}
+		if (hispec_laser_set_output_percent_autooff(
+			    cal.laser, cal.laser_percent, 0U) != 0) {
+			return -EIO;
+		}
+		atten_cal_emit_adjust(adjust_action_name(cal.adjust_action), before,
+				      cal.laser_percent, cal.pending_before_mv);
+		return 0;
+	case ATTEN_CAL_ADJUST_LASER_UP:
+		before = cal.laser_percent;
+		cal.laser_percent *= 3.0;
+		if (cal.laser_percent > 100.0) {
+			cal.laser_percent = 100.0;
+		}
+		if (hispec_laser_set_output_percent_autooff(
+			    cal.laser, cal.laser_percent, 0U) != 0) {
+			return -EIO;
+		}
+		atten_cal_emit_adjust(adjust_action_name(cal.adjust_action), before,
+				      cal.laser_percent, cal.pending_before_mv);
+		return 0;
+	case ATTEN_CAL_ADJUST_NONE:
+	default:
+		return -ERANGE;
+	}
+}
+
+static void auto_begin_renorm_locked(double renorm_mv, double retry_mv,
+				     enum atten_cal_adjust_action action)
+{
+	cal.renorm_mv = renorm_mv;
+	cal.retry_mv = retry_mv;
+	cal.adjust_action = action;
+	cal.adjust_tries++;
+	cal.phase = ATTEN_CAL_AUTO_RENORM_SET;
+}
+
+static void auto_retry_after_overrange_locked(const struct photodiode_average_status *avg)
+{
+	double last_good_mv;
+	double retry_mv;
+
+	if (cal.point_index == 0U) {
+		cal.adjust_action = auto_choose_reduce_gain(avg->result.mean_net_mv);
+		if (!auto_adjust_possible(cal.adjust_action)) {
+			auto_give_up_physical_locked("no_gain_reduction");
+			return;
+		}
+		cal.renorm_mv = cal.sweep_mv;
+		cal.retry_mv = cal.sweep_mv;
+		cal.pending_before_mv = sample_is_saturated(avg) ?
+					0.0 : avg->result.mean_net_mv;
+		cal.adjust_tries++;
+		cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+		return;
+	}
+
+	last_good_mv = cal.points[cal.physical_index][cal.point_index - 1U].voltage_mv;
+	retry_mv = (last_good_mv + cal.sweep_mv) / 2.0;
+	if (last_good_mv - retry_mv < ATTEN_CAL_MIN_STEP_MV) {
+		retry_mv = last_good_mv - ATTEN_CAL_MIN_STEP_MV;
+	}
+	if (retry_mv < 0.0) {
+		retry_mv = 0.0;
+	}
+	cal.step_mv = MAX(last_good_mv - retry_mv, ATTEN_CAL_MIN_STEP_MV);
+	auto_begin_renorm_locked(last_good_mv, retry_mv, ATTEN_CAL_ADJUST_NONE);
+}
+
+static bool auto_retry_after_low_signal_locked(const struct photodiode_average_status *avg)
+{
+	enum atten_cal_adjust_action action = auto_choose_increase_gain();
+	double renorm_mv;
+
+	if (!auto_adjust_possible(action)) {
+		return false;
+	}
+	if (cal.point_index == 0U) {
+		cal.renorm_mv = cal.sweep_mv;
+		cal.retry_mv = cal.sweep_mv;
+		cal.pending_before_mv = sample_is_usable(avg) ?
+					avg->result.mean_net_mv : 0.0;
+		cal.adjust_action = action;
+		cal.adjust_tries++;
+		cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+		return true;
+	}
+
+	renorm_mv = sample_is_usable(avg) ?
+		    cal.sweep_mv :
+		    cal.points[cal.physical_index][cal.point_index - 1U].voltage_mv;
+	auto_begin_renorm_locked(renorm_mv, cal.sweep_mv, action);
+	return true;
+}
+
+static bool auto_set_pair_and_wait_locked(const char *event,
+					  double sweep_mv,
+					  enum atten_cal_auto_phase next_phase,
+					  int64_t now_ms)
+{
+	if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
+			       sweep_mv, cal.other_mv)) {
+		auto_error_locked(-EIO);
+		return false;
+	}
+	atten_cal_emit_point_set(event, sweep_mv);
+	cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
+	cal.phase = next_phase;
+	return true;
+}
+
+static bool auto_start_average_locked(enum atten_cal_auto_phase next_phase)
+{
+	int rc = photodiode_start_average(cal.channel, cal.dwell_ms, NULL);
+
+	if (rc != 0) {
+		auto_error_locked(rc);
+		return false;
+	}
+	cal.phase = next_phase;
+	return true;
+}
+
+static bool auto_average_complete_locked(struct photodiode_average_status *avg)
+{
+	int rc;
+
+	if (avg == NULL) {
+		auto_error_locked(-EINVAL);
+		return false;
+	}
+	rc = photodiode_get_average_status(cal.channel, avg);
+	if (rc != 0) {
+		auto_error_locked(rc);
+		return false;
+	}
+	if (avg->state == PHOTODIODE_AVERAGE_MEASURING) {
+		return false;
+	}
+	if (avg->state != PHOTODIODE_AVERAGE_COMPLETE) {
+		auto_error_locked(avg->last_error == 0 ? -EIO : avg->last_error);
+		return false;
+	}
+	return true;
+}
+
 static void auto_tick_locked(int64_t now_ms)
 {
 	struct photodiode_average_status avg = {0};
-	double sweep_mv;
 	int rc;
 
 	if (cal.state != ATTEN_CAL_STATE_RUNNING ||
@@ -1047,162 +1413,156 @@ static void auto_tick_locked(int64_t now_ms)
 		start_next_physical_locked();
 		return;
 	case ATTEN_CAL_AUTO_SIGNAL_SET:
-		sweep_mv = voltage_schedule[0];
-		if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
-				       sweep_mv, cal.other_mv)) {
-			auto_error_locked(-EIO);
-			return;
-		}
-		atten_cal_emit_point_set("signal_set", sweep_mv);
-		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
-		cal.phase = ATTEN_CAL_AUTO_SIGNAL_SETTLE;
+		(void)auto_set_pair_and_wait_locked(
+			"signal_set", cal.sweep_mv,
+			ATTEN_CAL_AUTO_SIGNAL_SETTLE, now_ms);
 		return;
 	case ATTEN_CAL_AUTO_SIGNAL_SETTLE:
 		if (now_ms < cal.wait_until_ms) {
 			return;
 		}
-		rc = photodiode_start_average(cal.channel, cal.dwell_ms, NULL);
-		if (rc != 0) {
-			auto_error_locked(rc);
-			return;
-		}
-		cal.phase = ATTEN_CAL_AUTO_SIGNAL_AVG;
+		(void)auto_start_average_locked(ATTEN_CAL_AUTO_SIGNAL_AVG);
 		return;
 	case ATTEN_CAL_AUTO_SIGNAL_AVG:
-		rc = photodiode_get_average_status(cal.channel, &avg);
-		if (rc != 0) {
-			auto_error_locked(rc);
+		if (!auto_average_complete_locked(&avg)) {
 			return;
 		}
-		if (avg.state == PHOTODIODE_AVERAGE_MEASURING) {
-			return;
-		}
-		if (avg.state != PHOTODIODE_AVERAGE_COMPLETE) {
-			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
-			return;
-		}
-		if ((sample_is_saturated(&avg) ||
-		     (double)avg.result.mean_net_mv > ATTEN_CAL_HIGH_MV) &&
-		    cal.laser_percent > 3.0) {
-			const double before = cal.laser_percent;
+		if (sample_above_target(&avg)) {
+			enum atten_cal_adjust_action action;
 
-			cal.laser_percent /= 3.0;
-			if (cal.laser_percent < 1.0) {
-				cal.laser_percent = 1.0;
-			}
-			rc = hispec_laser_set_output_percent_autooff(
-				cal.laser, (double)cal.laser_percent, 0U);
-			if (rc != 0) {
-				auto_error_locked(rc);
+			atten_cal_emit_reading("signal_probe", &avg, 0.0);
+			if (cal.adjust_tries >= ATTEN_CAL_MAX_ADJUST_TRIES) {
+				auto_give_up_physical_locked("signal_overrange");
 				return;
 			}
-			atten_cal_emit_adjust("laser_pct", before,
-					      cal.laser_percent,
-					      avg.result.mean_net_mv);
-			cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
-			return;
-		}
-		if (sample_is_saturated(&avg)) {
-			auto_error_locked(-ERANGE);
-			return;
-		}
-		if ((double)avg.result.mean_net_mv < ATTEN_CAL_SIGNAL_MIN_MV &&
-		    cal.other_mv > 0.0) {
-			const double before = cal.other_mv;
-
-			cal.other_mv -= ATTEN_CAL_OTHER_STEP_MV;
-			if (cal.other_mv < 0.0) {
-				cal.other_mv = 0.0;
+			action = auto_choose_reduce_gain(avg.result.mean_net_mv);
+			if (!auto_adjust_possible(action)) {
+				auto_give_up_physical_locked("no_gain_reduction");
+				return;
 			}
-			atten_cal_emit_adjust("other_mv", before, cal.other_mv,
-					      avg.result.mean_net_mv);
-			cal.phase = ATTEN_CAL_AUTO_SIGNAL_SET;
+			cal.renorm_mv = cal.sweep_mv;
+			cal.retry_mv = cal.sweep_mv;
+			cal.pending_before_mv = sample_is_saturated(&avg) ?
+						0.0 : avg.result.mean_net_mv;
+			cal.adjust_action = action;
+			cal.adjust_tries++;
+			cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+			return;
+		}
+		if (sample_below_target(&avg)) {
+			enum atten_cal_adjust_action action;
+
+			atten_cal_emit_reading("signal_probe", &avg, 0.0);
+			if (cal.adjust_tries >= ATTEN_CAL_MAX_ADJUST_TRIES) {
+				auto_give_up_physical_locked("signal_low");
+				return;
+			}
+			action = auto_choose_increase_gain();
+			if (!auto_adjust_possible(action)) {
+				if (sample_is_usable(&avg)) {
+					cal.phase = ATTEN_CAL_AUTO_POINT_SET;
+					return;
+				}
+				auto_give_up_physical_locked("no_gain_increase");
+				return;
+			}
+			cal.renorm_mv = cal.sweep_mv;
+			cal.retry_mv = cal.sweep_mv;
+			cal.pending_before_mv = avg.result.mean_net_mv;
+			cal.adjust_action = action;
+			cal.adjust_tries++;
+			cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+			return;
+		}
+		if (!sample_is_usable(&avg)) {
+			atten_cal_emit_reading("signal_probe", &avg, 0.0);
+			auto_give_up_physical_locked("signal_unusable");
 			return;
 		}
 		cal.phase = ATTEN_CAL_AUTO_POINT_SET;
 		return;
 	case ATTEN_CAL_AUTO_POINT_SET:
-		sweep_mv = voltage_schedule[cal.point_index];
-		if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
-				       sweep_mv, cal.other_mv)) {
-			auto_error_locked(-EIO);
-			return;
-		}
-		atten_cal_emit_point_set("point_set", sweep_mv);
-		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
-		cal.phase = ATTEN_CAL_AUTO_POINT_SETTLE;
+		(void)auto_set_pair_and_wait_locked(
+			"point_set", cal.sweep_mv,
+			ATTEN_CAL_AUTO_POINT_SETTLE, now_ms);
 		return;
 	case ATTEN_CAL_AUTO_POINT_SETTLE:
 		if (now_ms < cal.wait_until_ms) {
 			return;
 		}
-		rc = photodiode_start_average(cal.channel, cal.dwell_ms, NULL);
-		if (rc != 0) {
-			auto_error_locked(rc);
-			return;
-		}
-		cal.phase = ATTEN_CAL_AUTO_POINT_AVG;
+		(void)auto_start_average_locked(ATTEN_CAL_AUTO_POINT_AVG);
 		return;
 	case ATTEN_CAL_AUTO_POINT_AVG:
-		rc = photodiode_get_average_status(cal.channel, &avg);
-		if (rc != 0) {
-			auto_error_locked(rc);
+		if (!auto_average_complete_locked(&avg)) {
 			return;
 		}
-		if (avg.state == PHOTODIODE_AVERAGE_MEASURING) {
+		if (sample_above_target(&avg)) {
+			atten_cal_emit_reading("point_probe", &avg, 0.0);
+			if (cal.adjust_tries >= ATTEN_CAL_MAX_ADJUST_TRIES) {
+				auto_give_up_physical_locked("point_overrange");
+				return;
+			}
+			auto_retry_after_overrange_locked(&avg);
 			return;
 		}
-		if (avg.state != PHOTODIODE_AVERAGE_COMPLETE) {
-			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
-			return;
+		if (sample_below_target(&avg) &&
+		    auto_adjust_possible(auto_choose_increase_gain())) {
+			atten_cal_emit_reading("point_probe", &avg, 0.0);
+			if (cal.adjust_tries >= ATTEN_CAL_MAX_ADJUST_TRIES) {
+				auto_give_up_physical_locked("point_low");
+				return;
+			}
+			if (auto_retry_after_low_signal_locked(&avg)) {
+				return;
+			}
 		}
-		if (sample_is_saturated(&avg)) {
-			auto_error_locked(-ERANGE);
-			return;
-		}
-		if ((double)avg.result.mean_net_mv > ATTEN_CAL_HIGH_MV &&
-		    (cal.other_mv < ATTENUATOR_DRIVE_MAX_MV ||
-		     cal.laser_percent > 3.0)) {
-			cal.pending_before_mv = (double)avg.result.mean_net_mv;
-			cal.adjust_uses_laser = cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV;
-			cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+		if (!sample_is_usable(&avg)) {
+			atten_cal_emit_reading("point_probe", &avg, 0.0);
+			auto_give_up_physical_locked("point_unusable");
 			return;
 		}
 		record_current_point_locked(&avg);
 		auto_finish_point_locked();
+		if (cal.phase == ATTEN_CAL_AUTO_POINT_AVG) {
+			auto_schedule_next_point_locked(&avg);
+		}
+		return;
+	case ATTEN_CAL_AUTO_RENORM_SET:
+		(void)auto_set_pair_and_wait_locked(
+			"renorm_set", cal.renorm_mv,
+			ATTEN_CAL_AUTO_RENORM_SETTLE, now_ms);
+		return;
+	case ATTEN_CAL_AUTO_RENORM_SETTLE:
+		if (now_ms < cal.wait_until_ms) {
+			return;
+		}
+		(void)auto_start_average_locked(ATTEN_CAL_AUTO_RENORM_AVG);
+		return;
+	case ATTEN_CAL_AUTO_RENORM_AVG:
+		if (!auto_average_complete_locked(&avg)) {
+			return;
+		}
+		atten_cal_emit_reading("renorm_reading", &avg,
+				       sample_is_usable(&avg) ? avg.result.mean_net_mv : 0.0);
+		if (!sample_is_usable(&avg)) {
+			auto_give_up_physical_locked("renorm_unusable");
+			return;
+		}
+		cal.pending_before_mv = avg.result.mean_net_mv;
+		if (cal.adjust_action == ATTEN_CAL_ADJUST_NONE) {
+			cal.adjust_action = auto_choose_reduce_gain(cal.pending_before_mv);
+		}
+		if (!auto_adjust_possible(cal.adjust_action)) {
+			auto_give_up_physical_locked("no_adjustment");
+			return;
+		}
+		cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
 		return;
 	case ATTEN_CAL_AUTO_ADJUST_SET:
-		if (cal.adjust_uses_laser) {
-			const double before = cal.laser_percent;
-
-			cal.laser_percent /= 3.0;
-			if (cal.laser_percent < 1.0) {
-				cal.laser_percent = 1.0;
-			}
-			rc = hispec_laser_set_output_percent_autooff(cal.laser,
-								     (double)cal.laser_percent,
-								     0U);
-			if (rc != 0) {
-				auto_error_locked(rc);
-				return;
-			}
-			atten_cal_emit_adjust("laser_pct", before, cal.laser_percent,
-					      cal.pending_before_mv);
-		} else {
-			const double before = cal.other_mv;
-
-			cal.other_mv += ATTEN_CAL_OTHER_STEP_MV;
-			if (cal.other_mv > ATTENUATOR_DRIVE_MAX_MV) {
-				cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
-			}
-			if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
-					       voltage_schedule[cal.point_index],
-					       cal.other_mv)) {
-				auto_error_locked(-EIO);
-				return;
-			}
-			atten_cal_emit_adjust("other_mv", before, cal.other_mv,
-					      cal.pending_before_mv);
+		rc = auto_apply_adjust_locked();
+		if (rc != 0) {
+			auto_error_locked(rc);
+			return;
 		}
 		cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
 		cal.phase = ATTEN_CAL_AUTO_ADJUST_SETTLE;
@@ -1211,39 +1571,49 @@ static void auto_tick_locked(int64_t now_ms)
 		if (now_ms < cal.wait_until_ms) {
 			return;
 		}
-		rc = photodiode_start_average(cal.channel, cal.dwell_ms, NULL);
-		if (rc != 0) {
-			auto_error_locked(rc);
-			return;
-		}
-		cal.phase = ATTEN_CAL_AUTO_ADJUST_AVG;
+		(void)auto_start_average_locked(ATTEN_CAL_AUTO_ADJUST_AVG);
 		return;
 	case ATTEN_CAL_AUTO_ADJUST_AVG:
-		rc = photodiode_get_average_status(cal.channel, &avg);
-		if (rc != 0) {
-			auto_error_locked(rc);
-			return;
-		}
-		if (avg.state == PHOTODIODE_AVERAGE_MEASURING) {
-			return;
-		}
-		if (avg.state != PHOTODIODE_AVERAGE_COMPLETE) {
-			auto_error_locked(avg.last_error == 0 ? -EIO : avg.last_error);
+		if (!auto_average_complete_locked(&avg)) {
 			return;
 		}
 		{
 			double scale_before = cal.scale;
 			bool scale_updated = false;
 
-			if (avg.result.mean_net_mv > 0.0 && !sample_is_saturated(&avg)) {
+			if (sample_above_target(&avg)) {
+				atten_cal_emit_adjust_result(&avg, scale_before, false);
+				if (cal.adjust_tries >= ATTEN_CAL_MAX_ADJUST_TRIES) {
+					auto_give_up_physical_locked("adjust_overrange");
+					return;
+				}
+				cal.adjust_action =
+					auto_choose_reduce_gain(avg.result.mean_net_mv);
+				if (!auto_adjust_possible(cal.adjust_action)) {
+					auto_give_up_physical_locked("no_gain_reduction");
+					return;
+				}
+				cal.adjust_tries++;
+				cal.phase = ATTEN_CAL_AUTO_ADJUST_SET;
+				return;
+			}
+			if (!sample_is_usable(&avg) && cal.point_index > 0U) {
+				atten_cal_emit_adjust_result(&avg, scale_before, false);
+				auto_give_up_physical_locked("adjust_unusable");
+				return;
+			}
+			if (cal.point_index > 0U &&
+			    cal.pending_before_mv > ATTEN_CAL_SIGNAL_MIN_MV &&
+			    sample_is_usable(&avg)) {
 				cal.scale *= cal.pending_before_mv /
 					     (double)avg.result.mean_net_mv;
 				scale_updated = true;
 			}
 			atten_cal_emit_adjust_result(&avg, scale_before, scale_updated);
 		}
-		record_current_point_locked(&avg);
-		auto_finish_point_locked();
+		cal.sweep_mv = cal.retry_mv;
+		cal.adjust_action = ATTEN_CAL_ADJUST_NONE;
+		cal.phase = ATTEN_CAL_AUTO_POINT_SET;
 		return;
 	case ATTEN_CAL_AUTO_FIT:
 		(void)fit_current_locked(true);

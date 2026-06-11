@@ -1135,8 +1135,9 @@ command wait budget, this command returns `{"error":"busy"}`.
   }
   ```
   Other `event` values include `start`, `physical_start`, `signal_set`,
-  `point_set`, `adjust`, `adjust_result`, `manual_point_set`, `manual_point`,
-  `fit`, `complete`, `stop`, and `error`. `adjust_result`
+  `signal_probe`, `point_set`, `point_probe`, `renorm_set`,
+  `renorm_reading`, `adjust`, `adjust_result`, `manual_point_set`,
+  `manual_point`, `fit`, `complete`, `stop`, and `error`. `adjust_result`
   reports the before/after photodiode means and renormalization scale update
   after an automatic level adjustment. Fit input and residual diagnostics are
   retained in calibration state and queried through `atten/calibrate/data`
@@ -1144,25 +1145,35 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
-    A canceled calibration returns to `inactive`.
+    A canceled calibration returns to `inactive`. Fit state is `ok` when both
+    physical attenuators are accepted, `partial` when one side is accepted and
+    applied, `failed` after an unsuccessful fit, and `none` before a fit exists.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
   - TIB automatic calibration powers the selected photodiode, waits 1 s for the
     relay/source to settle, sets both physical attenuators to maximum DAC
-    voltage and the laser to full output, then sweeps about 20 DAC points per
-    physical attenuator. Each point has a fixed 50 ms step-settle before the
-    photodiode average begins.
-  - Automatic calibration reduces signal and resamples before a point exceeds
-    the high-signal headroom threshold. If a point is already saturated, the
-    run fails rather than applying a fit whose normalization cannot be trusted.
+    voltage and the laser to full output, then adaptively samples up to 20 DAC
+    points per physical attenuator. Each point has a fixed 50 ms step-settle
+    before the photodiode average begins.
+  - Automatic calibration targets settled photodiode readings between about
+    250 mV and 4500 mV. It keeps the non-swept attenuator as low as practical
+    for low-signal points, raises it as needed to prevent saturation, and may
+    reduce laser output before the held attenuator reaches its limit. When the
+    signal level changes, calibration re-measures a previous reference voltage
+    and updates an internal scale factor so retained fit fluxes remain
+    comparable.
+  - Saturated or overrange samples are probes, not fit points. The same point is
+    retried after level adjustment; if a physical attenuator cannot produce
+    enough usable points, that side is skipped and the opposite accepted side
+    can still be applied.
   - Automatic calibration uses short photodiode averages from the sampler
     thread. It does not start a new calibration thread; the throughput monitor
     thread advances the state machine.
   - The fit converts normalized flux to the attenuator model coordinate and
-    uses zscilib simple linear regression for `b = slope * v_mV + offset`.
-    Fit details include point count, correlation, residual RMS/max in dB, fitted
-    transmission span, and voltage span.
+    uses local double-precision linear regression for
+    `b = slope * v_mV + offset`. Fit details include point count, correlation,
+    residual RMS/max in dB, fitted transmission span, and voltage span.
   - Manual calibration returns the voltage schedule on completion or stop so an
     operator can record fluxes externally and submit the batch later.
   - Starting manual calibration disables any active autolevel throughput monitor
