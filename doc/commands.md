@@ -706,10 +706,13 @@ optional laser section of `status`.
   {"name":"<lasername>"}
   ```
 
-Detailed engineering status derived from the Maiman status query used in `refrence_docs_examples/lasers.py`.
-Includes raw state, lock, and TEC-state registers, measured diode/TEC voltage and current, driver limits, PID,
-serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock flags. This command may be slower than
-`laser/status` because it reads many Modbus registers.
+Detailed engineering status derived from the Maiman status query used in
+`refrence_docs_examples/lasers.py`. Includes raw state, lock, and TEC-state
+registers, measured diode/TEC voltage and current, driver limits, PID, hard
+device-id verification, last accepted driver serial, `blocking_lock`,
+`blocked_reason`, and interlock flags. This command may be slower than
+`laser/status` because it reads many Modbus registers. A changed nonzero serial
+is logged, accepted, and persisted after the device ID matches.
 
 
 (laser-settings)=
@@ -723,6 +726,7 @@ serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock 
     "name": "<lasername>",
     "settings": {
       "model": "<string>",
+      "expected_serial": 0,
       "nominal_current_ma": 0.0,
       "max_current_ma": 0.0,
       "current_set_calibration_pct": 0.0,
@@ -782,7 +786,14 @@ serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock 
     startup preparation succeeds, so a bad default can make the TEC fail to start
     and make the laser appear to fault immediately.
   - Settings are checked when a laser is first talked to at each boot
-  - A mismatch between those the driver stores in its eeprom and controllers NVRAM will trigger a warning in the log and the driver values will be programmed.
+  - A mismatch between settings the driver stores in its EEPROM and controller
+    NVRAM will trigger a warning in the log and the driver values will be
+    programmed.
+  - `expected_serial` is the last accepted Maiman driver serial for this laser.
+    It is a read-only replacement diagnostic, not an operator-settable laser
+    calibration value. If a driver board is replaced, firmware accepts a changed
+    nonzero serial after the device ID matches, logs the change, and persists
+    the observed serial. A device-ID mismatch remains an identity fault.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
     verifies them as practical, and then restores the previous bank power state.
     Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
@@ -795,7 +806,7 @@ serial/device-id verification, `blocking_lock`, `blocked_reason`, and interlock 
   - Changes to settings will disable laser emission and may disable the TEC (stops emission + any throughput measurement using that laser)
   - failures to set will leave all settings unchanged (rollback is performed or an error emitted)
   - Unsettable (attempts to set are silently ignored):
-    - `name`,`model`, `serial`
+    - `name`, `model`, `serial`, `expected_serial`
     - `overcurrent_threshold_ma`
   - Non-Driver settings:
     - `autooff_s`

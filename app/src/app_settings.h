@@ -108,6 +108,10 @@ struct app_laserbank_settings {
 struct app_laser_channel_settings {
 	laserprops_t properties;
 	double current_set_calibration_pct;
+	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
+	 * as an operator-settable laser calibration value.
+	 */
+	uint16_t expected_serial;
 	bool disable_tec_at_autooff;
 	uint32_t autooff_s;
 	double tune_delta_nm;

@@ -341,6 +341,7 @@ class TecPid(ResponseRepr):
 class LaserSettings(ResponseRepr):
     name: str
     model: str
+    expected_serial: int
     nominal_current_ma: float
     max_current_ma: float
     current_set_calibration_pct: float
@@ -369,6 +370,7 @@ class LaserEngStatus(ResponseRepr):
     powered: bool
     dev_id: int
     serial: int
+    expected_serial: int
     serial_ok: bool
     raw_state: int
     raw_lock: int
@@ -897,6 +899,7 @@ def _decode_laser_settings(data: Mapping[str, Any]) -> LaserSettings:
     return LaserSettings(
         name=str(data["name"]),
         model=str(settings["model"]),
+        expected_serial=int(settings["expected_serial"]),
         nominal_current_ma=float(settings["nominal_current_ma"]),
         max_current_ma=float(settings["max_current_ma"]),
         current_set_calibration_pct=float(settings["current_set_calibration_pct"]),

@@ -69,7 +69,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1028",
 		.node_id = 5U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8229U,
 		.properties = &LASER_1028,
 	},
 	[HISPEC_LASER_1270_J] = {
@@ -78,7 +77,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1270",
 		.node_id = 6U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8228U,
 		.properties = &LASER_1270,
 	},
 	[HISPEC_LASER_1430_YJ] = {
@@ -87,7 +85,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "yj1430",
 		.node_id = 4U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8222U,
 		.properties = &LASER_1430,
 	},
 	[HISPEC_LASER_1430_HK] = {
@@ -96,7 +93,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "hk1430",
 		.node_id = 3U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8227U,
 		.properties = &LASER_1430,
 	},
 	[HISPEC_LASER_1510_H] = {
@@ -105,7 +101,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1510",
 		.node_id = 1U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8225U,
 		.properties = &LASER_1510,
 	},
 	[HISPEC_LASER_2330_K] = {
@@ -114,7 +109,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "2330",
 		.node_id = 2U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8226U,
 		.properties = &LASER_2330,
 	},
 };
@@ -740,6 +734,36 @@ int hispec_laser_bank_poll_temperatures(
 	return 0;
 }
 
+static void note_driver_serial_locked(const struct hispec_laser_driver_profile *profile,
+				      uint16_t serial)
+{
+	uint16_t expected;
+
+	if (profile == NULL || profile->id < 0 || profile->id >= HISPEC_LASER_COUNT ||
+	    serial == 0U) {
+		return;
+	}
+
+	ensure_laser_runtime_settings_locked();
+	expected = laser_settings[profile->id].expected_serial;
+	if (serial == expected) {
+		return;
+	}
+
+	if (expected == 0U) {
+		LOG_INF("Laser %s node %u learned driver serial %u",
+			profile->name, profile->node_id, serial);
+	} else {
+		LOG_WRN("Laser %s node %u driver serial changed: expected %u got %u; accepting observed driver",
+			profile->name, profile->node_id, expected, serial);
+	}
+
+	laser_settings[profile->id].expected_serial = serial;
+	(void)app_settings_update_laser_channel((uint8_t)profile->id,
+						&laser_settings[profile->id],
+						true);
+}
+
 static int verify_driver_locked(const struct hispec_laser_driver_profile *profile,
 				maiman_driver_t *drv,
 				uint16_t *serial_out)
@@ -769,12 +793,7 @@ static int verify_driver_locked(const struct hispec_laser_driver_profile *profil
 	if (serial_out != NULL) {
 		*serial_out = serial;
 	}
-	if (profile->expected_serial != 0U && serial != profile->expected_serial) {
-		LOG_ERR("Laser %s node %u serial mismatch: expected %u got %u",
-			profile->name, profile->node_id,
-			profile->expected_serial, serial);
-		return -EADDRNOTAVAIL;
-	}
+	note_driver_serial_locked(profile, serial);
 
 	return 0;
 }
@@ -842,16 +861,12 @@ static uint16_t effective_blocking_lock_status(uint16_t lock_status,
 }
 
 static const char *laser_blocked_reason(bool bank_powered,
-					bool serial_matches,
 					uint16_t device_state,
 					uint16_t tec_state,
 					uint16_t blocking_lock_status)
 {
 	if (!bank_powered) {
 		return "bank_off";
-	}
-	if (!serial_matches) {
-		return "driver_identity_mismatch";
 	}
 	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
 		return "tec_not_started";
@@ -1197,7 +1212,7 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 		if (verbose) {
 			LOG_WRN("Laser %s prepare failed: blocking lock_status=0x%04x reason=%s",
 				profile->name, blocking_lock_status,
-				laser_blocked_reason(true, true, device_state,
+				laser_blocked_reason(true, device_state,
 						     tec_state, blocking_lock_status));
 		}
 		return -EIO;
@@ -1217,7 +1232,6 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->name = profile->name;
 	out->properties = profile->properties;
 	out->expected_device_id = profile->expected_device_id;
-	out->expected_serial = profile->expected_serial;
 	out->current_set_ma = LASERPROP_NA;
 	out->level_percent = LASERPROP_NA;
 	out->current_measured_ma = LASERPROP_NA;
@@ -1267,7 +1281,9 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	if (rc != 0) {
 		return rc;
 	}
+	ensure_laser_runtime_settings_locked();
 	out->properties = runtime_props_locked(id);
+	out->expected_serial = laser_settings[id].expected_serial;
 	out->current_on_time_s =
 		on_time_runtime_seconds_locked(laser_current_runtime,
 					       ARRAY_SIZE(laser_current_runtime), id);
@@ -1290,7 +1306,7 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	}
 	out->bank_powered = bank_power_requested_enabled;
 	if (!out->bank_powered) {
-		out->blocked_reason = laser_blocked_reason(false, true, 0U, 0U, 0U);
+		out->blocked_reason = laser_blocked_reason(false, 0U, 0U, 0U);
 		rc = 0;
 		goto out_unlock;
 	}
@@ -1304,13 +1320,22 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 		rc = -EIO;
 		goto out_unlock;
 	}
+	if (profile->expected_device_id != 0U &&
+	    out->device_id != profile->expected_device_id) {
+		LOG_ERR("Laser %s node %u device-id mismatch: expected 0x%04x got 0x%04x",
+			profile->name, profile->node_id,
+			profile->expected_device_id, out->device_id);
+		rc = -EADDRNOTAVAIL;
+		goto out_unlock;
+	}
 	out->serial_number = maiman_get_serial_number(&drv);
-	out->serial_matches = (profile->expected_serial == 0U ||
-			       out->serial_number == profile->expected_serial);
 	if (out->serial_number == 0U) {
 		rc = -EIO;
 		goto out_unlock;
 	}
+	note_driver_serial_locked(profile, out->serial_number);
+	out->expected_serial = laser_settings[id].expected_serial;
+	out->serial_matches = true;
 
 	out->device_state = maiman_get_raw_status(&drv);
 	out->tec_state = maiman_get_raw_tec_status(&drv);
@@ -1333,10 +1358,8 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	out->lock_tec_selfheat = (out->lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U;
 	out->blocking_lock_status = effective_blocking_lock_status(out->lock_status,
 								   out->device_state);
-	out->ready_to_operate = out->serial_matches && out->tec_started &&
-				out->blocking_lock_status == 0U;
+	out->ready_to_operate = out->tec_started && out->blocking_lock_status == 0U;
 	out->blocked_reason = laser_blocked_reason(out->bank_powered,
-						   out->serial_matches,
 						   out->device_state,
 						   out->tec_state,
 						   out->blocking_lock_status);

@@ -48,7 +48,6 @@ struct hispec_laser_driver_profile {
 	const char *modbus_name;
 	uint8_t node_id;
 	uint16_t expected_device_id;
-	uint16_t expected_serial;
 	const laserprops_t *properties;
 };
 
@@ -252,8 +251,8 @@ int hispec_laser_bank_poll_temperatures(
 /**
  * @brief Verify that the expected Maiman driver is at a channel's Modbus address.
  *
- * This checks both device ID and serial number so a bad NH8 hub address map
- * fails before current or TEC settings are written.
+ * This checks the device ID and records the observed serial number. Serial
+ * changes are accepted as driver replacements after the device ID matches.
  */
 int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
 

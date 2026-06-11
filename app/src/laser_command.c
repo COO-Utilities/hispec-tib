@@ -457,7 +457,8 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 
 	written = snprintk(payload, payload_len,
 		"{\"name\":\"%s\",\"settings\":{"
-		"\"model\":\"%s\",\"nominal_current_ma\":%.3f,"
+		"\"model\":\"%s\",\"expected_serial\":%u,"
+		"\"nominal_current_ma\":%.3f,"
 		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
@@ -471,6 +472,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
 		"\"emit_total_s\":%.1f}}",
 		hispec_laser_name(id), p->model_number,
+		settings->expected_serial,
 		(double)p->nominal_current_ma,
 		(double)p->max_current_ma,
 		(double)settings->current_set_calibration_pct,
@@ -668,11 +670,12 @@ int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_respon
 	}
 	if (coo_json_append(payload, sizeof(payload), &off,
 			    "{\"name\":\"%s\",\"read_rc\":%d,\"powered\":%s,"
-			    "\"dev_id\":%u,\"serial\":%u,\"serial_ok\":%s,"
+			    "\"dev_id\":%u,\"serial\":%u,\"expected_serial\":%u,"
+			    "\"serial_ok\":%s,"
 			    "\"raw_state\":%u,\"raw_lock\":%u,\"raw_tec\":%u,"
 			    "\"blocking_lock\":%u,\"blocked_reason\":",
 			    s.name, rc, s.bank_powered ? "true" : "false",
-			    s.device_id, s.serial_number,
+			    s.device_id, s.serial_number, s.expected_serial,
 			    s.serial_matches ? "true" : "false",
 			    s.device_state, s.lock_status, s.tec_state,
 			    s.blocking_lock_status) != 0 ||

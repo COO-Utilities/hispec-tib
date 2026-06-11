@@ -225,6 +225,10 @@ which slow resources it can touch, and known implementation-specific caveats.
   app-owned persisted settings in `app_settings.c`.
 - Notes: `laser/status` is the compact `laser` query alias; `laser/engstatus`
   reads raw Maiman engineering state; tune/settings can update app-owned values.
+- Notes: Maiman device ID is the hard driver identity check. The last accepted
+  driver serial is a persisted replacement diagnostic reported by
+  `laser/settings` and `laser/engstatus`; serial changes are logged and accepted
+  after the device ID matches.
 - Side effects: driver-backed settings updates temporarily power the bank if
   needed unless bank power is `override_off`.
 
