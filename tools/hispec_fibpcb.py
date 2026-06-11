@@ -1963,9 +1963,7 @@ class HispecFibPcb:
     def _subscribe_control_topics(self) -> None:
         topics = (
             f"cmd/{self.device}/resp/#",
-            f"dt/{self.device}/warning",
-            f"dt/{self.device}/yj_tput",
-            f"dt/{self.device}/hk_tput",
+            f"dt/{self.device}/#",
         )
         for topic in topics:
             rc, _mid = self._client.subscribe(topic, qos=0)
@@ -2019,9 +2017,40 @@ class HispecFibPcb:
             channel = "yj" if topic.endswith("/yj_tput") else "hk"
             with self._throughput_lock:
                 monitors = tuple(self._throughput_monitors)
+            matched = False
             for monitor in monitors:
                 if monitor.channel in ("all", channel):
+                    matched = True
                     monitor.enqueue_payload(bytes(msg.payload))
+            if not matched:
+                self.logger.debug("throughput telemetry on %s with no active monitor", topic)
+            return
+
+        if topic.startswith(f"dt/{self.device}/"):
+            self._log_telemetry_message(topic, msg.payload)
+            return
+
+        self.logger.debug("unhandled MQTT message on %s", topic)
+
+    def _log_telemetry_message(self, topic: str, payload: bytes) -> None:
+        suffix = topic[len(f"dt/{self.device}/") :]
+        text = payload.decode("utf-8", errors="replace")
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = text
+        level = logging.INFO
+        if suffix in ("err", "error") or (
+            isinstance(decoded, Mapping)
+            and str(decoded.get("severity", "")).lower() in ("err", "error", "fatal")
+        ):
+            level = logging.ERROR
+        elif suffix == "warning" or (
+            isinstance(decoded, Mapping)
+            and str(decoded.get("severity", "")).lower() == "warning"
+        ):
+            level = logging.WARNING
+        self.logger.log(level, "PCB telemetry %s: %r", topic, decoded)
 
     def _handle_warning(self, payload: bytes) -> None:
         try:
