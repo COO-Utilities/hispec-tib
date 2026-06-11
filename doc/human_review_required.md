@@ -49,7 +49,6 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## TODOs
-- "blocked_reason": "not_emitting", should ne "N/A (not_emittting)" or some such
 - go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
 - if yj_noise_rms_mv is the 1s rms noise it needs 1s in it yj_1s_rms_mv, having yj_rms_mv_0p5s and yj_noise_rms_mv invites ambiguity about why one includes noise.
 - yj_mean_mv_1s (and hk) need to become "yj/hk_1s_mean_mv"

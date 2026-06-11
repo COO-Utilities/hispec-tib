@@ -884,9 +884,6 @@ static const char *laser_blocked_reason(bool bank_powered,
 	if ((blocking_lock_status & LOCK_STATE_INTERLOCK) != 0U) {
 		return "interlock";
 	}
-	if ((device_state & OPERATION_STATE_STARTED) == 0U) {
-		return "not_emitting";
-	}
 
 	return NULL;
 }

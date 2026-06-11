@@ -653,10 +653,11 @@ float64 laser_current_ontime_s
   0 stops emission and writes driver current to 0. Laser output current is never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
   `ready` reports whether the driver is prepared to operate without a blocking
-  SF8025 lock condition. `blocked_reason` is `null` when emission is active,
-  otherwise it reports a concise cause such as `bank_off`, `not_emitting`,
-  `tec_not_started`, `ld_overcurrent`, or `interlock`. Active time fields are
-  integer seconds while active and `null` when inactive. The persisted lifetime
+  SF8025 lock condition. `blocked_reason` is `null` when no blocking condition
+  is present, including a ready but idle laser; otherwise it reports a concise
+  cause such as `bank_off`, `tec_not_started`, `ld_overcurrent`, or
+  `interlock`. Active time fields are integer seconds while active and `null`
+  when inactive. The persisted lifetime
   total remains available through `laser/settings`. `autooff_s` is optional and
   non-persistent; if supplied, it overrides the default configured through
   `laser/settings` for this start. If another laser-bank operation occupies the
