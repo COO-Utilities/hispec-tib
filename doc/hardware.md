@@ -166,6 +166,14 @@ For board files:
 Breadboard Considerations:
 - AF prototype board has 10K pullups, may need to get rid of as LL shifter boards also have pullups
 
+
+Static attenuation anticipated required:
+  - 1028: -90.0 to -73.0 dB, range 17.0 dB, **static -73.0 dB**
+  - 1270:  -70.0 to -40.0 dB, range 30.0 dB, **static -40.0 dB**
+  - 1430: range 0.0 dB, **static -100.0 dB**
+  - 1510: -80.0 to -33.0 dB, range 47.0 dB, **static -33.0 dB**
+  - 2330: -73.0 to -3.0 dB, range 70.0 dB, **static -3.0 dB**
+
 ## Laser Diode Control
 MODBUS
 - Use a UART with 485 driver chip (THVD1429DT)

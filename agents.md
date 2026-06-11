@@ -1,6 +1,6 @@
 # AGENTS.md - HISPEC-FIB AI and Developer Rules
 
-These rules are the canonical AI-assisted work rules for the HISPEC-FIB / HiSPEC-TIB Zephyr firmware repository. The workspace root `AGENTS.md` points here; `AGENTSv2.md` is a merged draft and must not be treated as a separate source of truth.
+These rules are the canonical AI-assisted work rules for the HISPEC-FIB / HiSPEC-TIB Zephyr firmware repository. The workspace root `AGENTS.md` points here;
 
 The goal is simple, explicit, maintainable C firmware that uses Zephyr correctly, avoids unnecessary code growth, and remains readable by non-expert embedded developers.
 
@@ -24,9 +24,9 @@ instead of continuing into speculative changes.
 
 ---
 
-## 2. Maintenance-Era Simplification Posture
+## 2. Simplification Posture
 
-The initial buildout is complete enough that simplification is now a primary goal.
+The development is complete enough that simplification is now a primary goal.
 
 Prefer, in order:
 
