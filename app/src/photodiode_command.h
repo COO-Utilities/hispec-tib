@@ -42,7 +42,7 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
  * @brief Update app-owned photodiode calibration settings for one channel.
  *
  * Validates numeric ranges and updates the app settings cache. Persistence is
- * controlled by the command payload's documented `persistent` field.
+ * controlled by the command payload's documented `persist` field.
  */
 int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 

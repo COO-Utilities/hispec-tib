@@ -64,7 +64,6 @@ comparison artifact, not a replacement for `commands.md`.
 | `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser <payload>` |
 | `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune <payload>` |
 | `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status <payload>` |
-| `laser/engstatus` | `cmd/<device>/req/laser/engstatus` | `cmd/<device>/resp/laser/engstatus` | `laser/engstatus <payload>` |
 | `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings <payload>` |
 | `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
@@ -219,15 +218,15 @@ which slow resources it can touch, and known implementation-specific caveats.
   auto-off handled by laser-owned delayable work.
 - Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
-### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
+### `laser/tune`, `laser/status`, `laser/settings`
 
 - Owner: `laser_command.c` handlers with hardware work in `lasers.c` and
   app-owned persisted settings in `app_settings.c`.
-- Notes: `laser/status` is the compact `laser` query alias; `laser/engstatus`
-  reads raw Maiman engineering state; tune/settings can update app-owned values.
+- Notes: `laser` is the compact status/set command; `laser/status` reads raw
+  Maiman engineering state; tune/settings can update app-owned values.
 - Notes: Maiman device ID is the hard driver identity check. The expected
   driver serial is persisted operator intent reported by `laser/settings` and
-  `laser/engstatus`; serial mismatches block driver-backed settings until the
+  `laser/status`; serial mismatches block driver-backed settings until the
   operator updates `expected_serial`.
 - Side effects: driver-backed settings updates temporarily power the bank if
   needed unless bank power is `override_off`.

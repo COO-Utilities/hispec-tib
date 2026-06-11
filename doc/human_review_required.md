@@ -37,6 +37,14 @@ LLMs Agents: Do NOT change heading names in this file.
   lab values are installed.
 - [ ] Verify compact laser status reports `ready`/`blocked_reason` and uses
   integer-or-null active time fields instead of inactive `0.0` values.
+- [ ] Verify `laser/status` is now the detailed engineering status command,
+  the old compact `laser/status` alias was removed, and `laser` remains the
+  compact status/set command.
+- [ ] Verify command schemas use `persist` as the only persistence request key,
+  default it to false when absent, and reject old `persistent`/`store` spellings.
+- [ ] Verify `pd` and throughput telemetry report raw/dark-corrected voltage
+  fields using `*_raw_mv`, `*_mv`, `*_1s_mean_mv`, `*_residual_rms_mv`, and
+  `*_0p5s_rms_mv` without the previous ambiguous field names.
 - [ ] Verify the duplicate laser-bank fault-clear timeout define was removed
   from `laser_command.c`; broader redundant-setting cleanup remains open.
 - [ ] Verify Maiman driver serial mismatches report
@@ -50,16 +58,12 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## TODOs
 - go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
-- if yj_noise_rms_mv is the 1s rms noise it needs 1s in it yj_1s_rms_mv, having yj_rms_mv_0p5s and yj_noise_rms_mv invites ambiguity about why one includes noise.
-- yj_mean_mv_1s (and hk) need to become "yj/hk_1s_mean_mv"
-- all of these mv levels should correct for dark yj_mv should not (assuming it is the instant sample reading) and then, in that case become yj_raw_mv
 - when the noise "resets" to 0 it makes it look like the noise has randomly gone away. This is actually MORE concerning than the discontinuities that the reset may be attempting to address. It should be allowed to briefly grow and those changes reverted or replaced with a temporarary nan until data to make a new reading is avaialble.
 
 -algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
 
 - investigate additionaly complexity of making "ok" only responses give get responses over serial this probably adds too much code as some might need waits/delays that come naturally if a user is at a serial console. but would be a quality of life user improvement
-- make all persistent/persist/store "persist" and default/absesnt to false across entire codebase
-- yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.
+- yj_0p5s_rms_mv is reporting 0.0 yet `yj_residual_rms_mv` is nonzero when there is a real photodiode connected, I suspect a bug.
 - test dark settings and persistence, especially `dark_duration_ms`,  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
 - Status needs to gain things we actually want.
 

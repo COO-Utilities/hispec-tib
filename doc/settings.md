@@ -75,12 +75,12 @@ silently reused on another.
 ## Persistence Side Effects
 
 NVS writes happen synchronously through Zephyr NVS and may block the caller.
-Command handlers that set `persistent:true` can therefore block in the executor
+Command handlers that set `persist:true` can therefore block in the executor
 thread.
 
 Photodiode dark-noise RMS updates happen in the sampler thread when any dark
 measurement completes. Active dark, lowest-dark, and persisted dark updates
-happen only when a user-started dark measurement completes with `store:true`.
+happen only when a user-started dark measurement completes with `persist:true`.
 
 MEMS static state requests and route applications update the persisted
 per-switch intent once per command. Toggle and split commands persist the

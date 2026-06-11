@@ -623,6 +623,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	char settings_json[MAX_PAYLOAD_LEN] = {0};
 	const char *json;
 	bool changed = false;
+	bool persist = false;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
@@ -638,6 +639,10 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "invalid settings object");
 	}
 	json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
+	if (coo_json_extract_optional_bool(cmd->payload, "persist",
+					   &persist, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid persist");
+	}
 
 	rc = laser_parse_settings_update(json, &settings, &changed);
 	if (rc != 0) {
@@ -648,7 +653,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 
 	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_update_channel_settings(id, &settings, true);
+	rc = hispec_laser_update_channel_settings(id, &settings, persist);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
 	}
@@ -666,7 +671,7 @@ static int json_append_named_float(char *payload, size_t payload_len,
 					     value, precision);
 }
 
-int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum hispec_laser_id id;
 	struct hispec_laser_status s = {0};

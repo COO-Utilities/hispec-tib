@@ -20,7 +20,7 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
-int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Query or set laser-bank power auto/override mode. */
 int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

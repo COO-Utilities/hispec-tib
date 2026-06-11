@@ -308,6 +308,7 @@ static void publish_sample(const struct throughput_state *state,
 	double tp_rms_err = NAN;
 	double pd_ontime_s;
 	double laser_current_ontime_s;
+	double pd_1s_mean_mv;
 
 	if (laser_name == NULL) {
 		return;
@@ -319,6 +320,7 @@ static void publish_sample(const struct throughput_state *state,
 	pd_ontime_s = housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
 				  (double)hispec_laser_current_on_time_s(state->laser) : 0.0;
+	pd_1s_mean_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
 	if (state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
@@ -369,7 +371,7 @@ static void publish_sample(const struct throughput_state *state,
 		put_i16((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->raw);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->mv);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->net_mv);
-		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->mean_mv_1s);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_1s_mean_mv);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->rms_mv_0p5s);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_flux.current_ma);
@@ -417,9 +419,9 @@ static void publish_sample(const struct throughput_state *state,
 			pd_route_tx, laser_route_tx, atten.linear, pd->raw) != 0 ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
 			",\"pd_mv\":%.4f,\"pd_net_mv\":%.4f,"
-			"\"pd_mean_mv_1s\":%.4f,\"pd_rms_mv_0p5s\":%.4f",
+			"\"pd_1s_mean_mv\":%.4f,\"pd_0p5s_rms_mv\":%.4f",
 			(double)pd->mv, (double)pd->net_mv,
-			(double)pd->mean_mv_1s, (double)pd->rms_mv_0p5s) != 0 ||
+			pd_1s_mean_mv, (double)pd->rms_mv_0p5s) != 0 ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"laser_current_ma\":") != 0 ||
 	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  laser_flux.current_ma, 4) != 0 ||

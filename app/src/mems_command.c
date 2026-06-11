@@ -370,9 +370,9 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
         return coo_cmd_error(out, cmd, "missing or invalid route");
     }
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    parse_rc = coo_json_extract_bool(cmd->payload, "persist", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "invalid persistent");
+        return coo_cmd_error(out, cmd, "invalid persist");
     }
 
     split_rc = route_loss_extract_split_tuple(cmd, split_tx);

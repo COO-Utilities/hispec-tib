@@ -77,8 +77,8 @@ THROUGHPUT_DTYPE = np.dtype(
         ("pd_raw", "i2"),
         ("pd_mv", "f8"),
         ("pd_net_mv", "f8"),
-        ("pd_mean_mv_1s", "f8"),
-        ("pd_rms_mv_0p5s", "f8"),
+        ("pd_1s_mean_mv", "f8"),
+        ("pd_0p5s_rms_mv", "f8"),
         ("laser_current_ma", "f8"),
         ("atten_db", "f8"),
         ("wavelength_nm", "f8"),
@@ -364,7 +364,7 @@ class LaserSettings(ResponseRepr):
 
 
 @dataclass(frozen=True, repr=False)
-class LaserEngStatus(ResponseRepr):
+class LaserEngineeringStatus(ResponseRepr):
     name: str
     read_rc: int
     powered: bool
@@ -554,14 +554,16 @@ class PhotodiodeValues(ResponseRepr):
     hkvalue_err: float
     yj_raw: int
     hk_raw: int
+    yj_raw_mv: float
+    hk_raw_mv: float
     yj_mv: float
     hk_mv: float
-    yj_noise_rms_mv: float
-    hk_noise_rms_mv: float
-    yj_mean_mv_1s: float
-    hk_mean_mv_1s: float
-    yj_rms_mv_0p5s: float
-    hk_rms_mv_0p5s: float
+    yj_residual_rms_mv: float
+    hk_residual_rms_mv: float
+    yj_1s_mean_mv: float
+    hk_1s_mean_mv: float
+    yj_0p5s_rms_mv: float
+    hk_0p5s_rms_mv: float
     yj_ontime_s: float
     hk_ontime_s: float
     yj_pd_is_off: bool = False
@@ -575,8 +577,7 @@ class DarkStatus(ResponseRepr):
     duration_ms: int
     samples: int
     target_samples: int
-    stored_on_complete: bool | None = None
-    stored: bool | None = None
+    persist: bool | None = None
     mean_dark_mv: float | None = None
     rms_mv: float | None = None
     dark_noise_rms_mv: float = np.nan
@@ -651,8 +652,8 @@ class ThroughputSample(ResponseRepr):
     pd_raw: int
     pd_mv: float
     pd_net_mv: float
-    pd_mean_mv_1s: float
-    pd_rms_mv_0p5s: float
+    pd_1s_mean_mv: float
+    pd_0p5s_rms_mv: float
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
@@ -922,8 +923,8 @@ def _decode_laser_settings(data: Mapping[str, Any]) -> LaserSettings:
     )
 
 
-def _decode_laser_eng(data: Mapping[str, Any]) -> LaserEngStatus:
-    return _dataclass_from(LaserEngStatus, data, pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))))
+def _decode_laser_status(data: Mapping[str, Any]) -> LaserEngineeringStatus:
+    return _dataclass_from(LaserEngineeringStatus, data, pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))))
 
 
 def _decode_atten_coeff(data: Mapping[str, Any]) -> AttenuatorCoeff:
@@ -1101,8 +1102,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             pd_raw=int(data.get("pd_raw", 0)),
             pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
             pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
-            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", np.nan)),
-            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", np.nan)),
+            pd_1s_mean_mv=_float_or_nan(data.get("pd_1s_mean_mv", np.nan)),
+            pd_0p5s_rms_mv=_float_or_nan(data.get("pd_0p5s_rms_mv", np.nan)),
             laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
             atten_db=_float_or_nan(data.get("atten_db", np.nan)),
             wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
@@ -1138,8 +1139,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         pd_raw=int(pd_raw),
         pd_mv=float(extra[0]),
         pd_net_mv=float(extra[1]),
-        pd_mean_mv_1s=float(extra[2]),
-        pd_rms_mv_0p5s=float(extra[3]),
+        pd_1s_mean_mv=float(extra[2]),
+        pd_0p5s_rms_mv=float(extra[3]),
         laser_current_ma=float(extra[4]),
         atten_db=float(extra[5]),
         wavelength_nm=float(extra[6]),
@@ -1368,7 +1369,7 @@ class HispecFibPcb:
         trydhcpfirst: bool | None = None,
         preferdhcpntp: bool | None = None,
         preferdhcpdns: bool | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk | PartialSupport:
         payload = _optional_payload(
             ip=ip,
@@ -1379,9 +1380,9 @@ class HispecFibPcb:
             trydhcpfirst=trydhcpfirst,
             preferdhcpntp=preferdhcpntp,
             preferdhcpdns=preferdhcpdns,
-            persistent=persistent,
+            persist=persist,
         )
-        if payload is None or set(payload) == {"persistent"}:
+        if payload is None or set(payload) == {"persist"}:
             raise HispecFibError("at least one IP field must be supplied")
         result = self._request_json("ip", payload)
         if isinstance(result, Mapping) and "status" not in result:
@@ -1391,8 +1392,8 @@ class HispecFibPcb:
     def mqtt_config(self) -> MqttConfig:
         return _dataclass_from(MqttConfig, self._request_json("mqtt"))
 
-    def set_mqtt_config(self, broker: str, *, persistent: bool = False) -> CommandOk:
-        return self._request_ok("mqtt", {"broker": broker, "persistent": persistent})
+    def set_mqtt_config(self, broker: str, *, persist: bool = False) -> CommandOk:
+        return self._request_ok("mqtt", {"broker": broker, "persist": persist})
 
     def time(self) -> TimeStatus:
         return _dataclass_from(TimeStatus, self._request_json("time"))
@@ -1470,9 +1471,9 @@ class HispecFibPcb:
         transmission: float | None = None,
         loss_db: float | None = None,
         split: Sequence[float | str] | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
-        payload: dict[str, Any] = {"route": route, "persistent": persistent}
+        payload: dict[str, Any] = {"route": route, "persist": persist}
         if split is not None:
             if laser is not None or transmission is not None or loss_db is not None:
                 raise HispecFibError("route loss uses either split or a laser value")
@@ -1494,10 +1495,6 @@ class HispecFibPcb:
             else:
                 raise HispecFibError("transmission or loss_db is required")
         return self._request_ok("memsroute/route_loss", payload)
-
-    def laser_status(self, name: str) -> LaserStatus:
-        _require_choice("name", name, LASER_NAMES)
-        return _dataclass_from(LaserStatus, self._request_json("laser/status", {"name": name}))
 
     def laser(self, name: str) -> LaserStatus:
         _require_choice("name", name, LASER_NAMES)
@@ -1551,6 +1548,8 @@ class HispecFibPcb:
         dlambda_dT_nm_per_k: float | None = None,
         dlambda_dA_nm_per_ma: float | None = None,
         autooff_s: int | None = None,
+        expected_serial: int | None = None,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
@@ -1567,6 +1566,7 @@ class HispecFibPcb:
             dlambda_dT_nm_per_k=dlambda_dT_nm_per_k,
             dlambda_dA_nm_per_ma=dlambda_dA_nm_per_ma,
             autooff_s=autooff_s,
+            expected_serial=expected_serial,
         )
         settings = settings or {}
         if tec_pid is not None:
@@ -1578,11 +1578,11 @@ class HispecFibPcb:
                 settings["tec_pid"] = {"p": int(tec_pid[0]), "i": int(tec_pid[1]), "d": int(tec_pid[2])}
         if not settings:
             raise HispecFibError("at least one laser settings field must be supplied")
-        return self._request_ok("laser/settings", {"name": name, "settings": settings})
+        return self._request_ok("laser/settings", {"name": name, "settings": settings, "persist": persist})
 
-    def laser_engstatus(self, name: str) -> LaserEngStatus:
+    def laser_status(self, name: str) -> LaserEngineeringStatus:
         _require_choice("name", name, LASER_NAMES)
-        return _decode_laser_eng(self._request_json("laser/engstatus", {"name": name}))
+        return _decode_laser_status(self._request_json("laser/status", {"name": name}))
 
     def laserbank_power(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
         if mode is None:
@@ -1625,14 +1625,14 @@ class HispecFibPcb:
         dac1: tuple[float, float],
         dac2: tuple[float, float],
         *,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
         if len(dac1) != 2 or len(dac2) != 2:
             raise HispecFibError("dac1 and dac2 must each contain slope and offset")
         return self._request_ok(
             f"atten/{laser}/coeff",
-            {"dac1": [float(dac1[0]), float(dac1[1])], "dac2": [float(dac2[0]), float(dac2[1])], "persistent": persistent},
+            {"dac1": [float(dac1[0]), float(dac1[1])], "dac2": [float(dac2[0]), float(dac2[1])], "persist": persist},
         )
 
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
@@ -1658,7 +1658,7 @@ class HispecFibPcb:
         output: str,
         fiber: Literal["M", "S"] = "M",
         dwell_ms: int = 300,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
         _require_choice("laser", laser, LASER_NAMES)
         fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
@@ -1667,7 +1667,7 @@ class HispecFibPcb:
             "output": str(output),
             "fiber": fiber,
             "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
-            "persistent": bool(persistent),
+            "persist": bool(persist),
         }
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
@@ -1676,14 +1676,14 @@ class HispecFibPcb:
         attenuator: str = "lfc",
         *,
         dwell_ms: int = 300,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
         _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
         payload = {
             "mode": "manual",
             "attenuator": attenuator,
             "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
-            "persistent": bool(persistent),
+            "persist": bool(persist),
         }
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
@@ -1702,13 +1702,13 @@ class HispecFibPcb:
         *,
         dac1: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
         dac2: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
-        persistent: bool = False,
+        persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
         _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
         payload = {
             "mode": "manual",
             "attenuator": attenuator,
-            "persistent": bool(persistent),
+            "persist": bool(persist),
             "dac1": _atten_cal_batch_payload("dac1", dac1),
             "dac2": _atten_cal_batch_payload("dac2", dac2),
         }
@@ -1717,13 +1717,13 @@ class HispecFibPcb:
     def pd(self) -> PhotodiodeValues:
         return _dataclass_from(PhotodiodeValues, self._request_json("pd"))
 
-    def measure_dark(self, channel: Literal["yj", "hk"], *, duration_ms: int = 0, store: bool = False) -> DarkStatus:
+    def measure_dark(self, channel: Literal["yj", "hk"], *, duration_ms: int = 0, persist: bool = False) -> DarkStatus:
         _require_choice("channel", channel, PD_CHANNELS)
         payload = {
             "action": "measure_dark",
             "channel": channel,
             "duration_ms": _require_nonnegative_u32("duration_ms", duration_ms),
-            "store": bool(store),
+            "persist": bool(persist),
         }
         return _decode_dark_status(self._request_json("pd", payload))
 
@@ -1731,11 +1731,11 @@ class HispecFibPcb:
         _require_choice("channel", channel, PD_CHANNELS)
         return _decode_dark_status(self._request_json("pd", {"action": "dark_status", "channel": channel}))
 
-    def reset_lowest_dark(self, channel: Literal["yj", "hk"], *, persistent: bool = True) -> CommandOk:
+    def reset_lowest_dark(self, channel: Literal["yj", "hk"], *, persist: bool = False) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
         return self._request_ok(
             "pd",
-            {"action": "reset_lowest_dark", "channel": channel, "persistent": persistent},
+            {"action": "reset_lowest_dark", "channel": channel, "persist": persist},
         )
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
@@ -1752,7 +1752,7 @@ class HispecFibPcb:
         transimpedance_v_per_a: float | None = None,
         power: Literal["auto", "override_on", "override_off"] | None = None,
         autooff_s: int | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
@@ -1762,9 +1762,9 @@ class HispecFibPcb:
             transimpedance_v_per_a=transimpedance_v_per_a,
             power=power,
             autooff_s=autooff_s,
-            persistent=persistent,
+            persist=persist,
         )
-        if payload is None or set(payload) == {"persistent"}:
+        if payload is None or set(payload) == {"persist"}:
             raise HispecFibError("at least one photodiode setting must be supplied")
         if dark_mv is not None:
             payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)

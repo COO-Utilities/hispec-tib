@@ -147,7 +147,6 @@ not be needed for normal serial operation.
 - [`laser`](#laser)
 - [`laser/tune`](#laser-tune)
 - [`laser/status`](#laser-status)
-- [`laser/engstatus`](#laser-engstatus)
 - [`laser/settings`](#laser-settings)
 - [`laserbank/power`](#laserbank-power)
 - [`laserbank/clearfaults`](#laserbank-clearfaults)
@@ -288,7 +287,7 @@ while serial guard is active and attenuator DAC-range clamping.
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": 0.93,
-    "persistent": true
+    "persist": true
   }
   ```
   or:
@@ -296,7 +295,7 @@ while serial guard is active and attenuator DAC-range clamping.
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": "0.32 dB",
-    "persistent": false
+    "persist": false
   }
   ```
   or:
@@ -304,7 +303,7 @@ while serial guard is active and attenuator DAC-range clamping.
   {
     "route": "yj_calin_to_yj_split",
     "split": ["0.32 dB", "0.32 dB", 0.93],
-    "persistent": true
+    "persist": true
   }
   ```
 - **Payload -> route-loss records for one route:**
@@ -531,8 +530,8 @@ decisions, and throughput math.
   "pd_raw": 0,
   "pd_mv": 0.0,
   "pd_net_mv": 0.0,
-  "pd_mean_mv_1s": 0.0,
-  "pd_rms_mv_0p5s": 0.0,
+  "pd_1s_mean_mv": 0.0,
+  "pd_0p5s_rms_mv": 0.0,
   "laser_current_ma": 0.0,
   "atten_db": 0.0,
   "wavelength_nm": 1430.0,
@@ -568,8 +567,8 @@ float64 atten_tx
 int16 pd_raw
 float64 pd_mv
 float64 pd_net_mv
-float64 pd_mean_mv_1s
-float64 pd_rms_mv_0p5s
+float64 pd_1s_mean_mv
+float64 pd_0p5s_rms_mv
 float64 laser_current_ma
 float64 atten_db
 float64 wavelength_nm
@@ -581,6 +580,9 @@ float64 laser_current_ontime_s
 - `tp` is unitless. `NaN` means offscale or insufficient information; values
   above unity are reported rather than clamped.
 - Flux values are photons per second.
+- `pd_mv` is the instantaneous raw ADC millivolt reading; `pd_net_mv` and
+  `pd_1s_mean_mv` subtract the configured dark level. `pd_0p5s_rms_mv` is the
+  half-second window RMS around its local mean.
 - Route transmissions default to `1.0` when no route-loss record is stored.
 - Both outbound laser route loss and inbound photodiode route loss are applied
   when estimating throughput.
@@ -691,17 +693,6 @@ float64 laser_current_ontime_s
 
 (laser-status)=
 ### `laser/status`
-- **Payload -> compact operational status:**
-  ```json
-  {"name":"<lasername>"}
-  ```
-  Response shape is the same as `laser` query.
-
-Compact operational status. This is the preferred status payload for normal users and is the source used by the
-optional laser section of `status`.
-
-(laser-engstatus)=
-### `laser/engstatus`
 - **Payload -> detailed engineering status:**
   ```json
   {"name":"<lasername>"}
@@ -712,7 +703,7 @@ Detailed engineering status derived from the Maiman status query used in
 registers, measured diode/TEC voltage and current, driver limits, PID, hard
 device-id verification, configured expected driver serial, `blocking_lock`,
 `blocked_reason`, and interlock flags. This command may be slower than
-`laser/status` because it reads many Modbus registers. A serial mismatch is
+the basic `laser` query because it reads many Modbus registers. A serial mismatch is
 reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
 
 
@@ -777,7 +768,8 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
       "dlambda_dT_nm_per_k": 0.0,
       "dlambda_dA_nm_per_ma": 0.0,
       "autooff_s": 0
-    }
+    },
+    "persist": true
   }
   ```
 
@@ -788,6 +780,9 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
     startup preparation succeeds, so a bad default can make the TEC fail to start
     and make the laser appear to fault immediately.
   - Settings are checked when a laser is first talked to at each boot
+  - `persist` is optional and defaults to false. Without `persist:true`,
+    accepted changes apply to runtime and driver-backed state but are not saved
+    in app NVS for the next controller boot.
   - After device-ID and serial checks pass, a mismatch between settings the
     driver stores in its EEPROM and controller NVRAM will trigger a warning in
     the log and the driver values will be programmed.
@@ -967,7 +962,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   {
     "dac1": [0.0016, 0.0],
     "dac2": [0.0016, 0.0],
-    "persistent": true
+    "persist": true
   }
   ```
 - **Serial form for `coeff`:** send the JSON object after the key. The default
@@ -975,7 +970,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient arrays. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0],"persistent":true}
+  atten/1028y/coeff {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0],"persist":true}
   ```
 
 - **Notes:**
@@ -995,7 +990,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define `b = slope * voltage + offset` for the
     attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.
-  - `persistent` is optional and defaults to false. A non-persistent coefficient
+  - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
@@ -1075,7 +1070,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "output": "yj_ao",
     "fiber": "M",
     "dwell_ms": 300,
-    "persistent": true
+    "persist": true
   }
   ```
 - **Payload:** start manual calibration on a calibration board.
@@ -1084,7 +1079,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "mode": "manual",
     "attenuator": "lfc",
     "dwell_ms": 300,
-    "persistent": true
+    "persist": true
   }
   ```
 - **Payload:** advance manual calibration by one voltage point. `other_mv` is
@@ -1103,7 +1098,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   {
     "mode": "manual",
     "attenuator": "lfc",
-    "persistent": true,
+    "persist": true,
     "dac1": {
       "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
@@ -1204,14 +1199,16 @@ command wait budget, this command returns `{"error":"busy"}`.
     "hkvalue_err": 0.0,
     "yj_raw": 0,
     "hk_raw": 0,
+    "yj_raw_mv": 0.0,
+    "hk_raw_mv": 0.0,
     "yj_mv": 0.0,
     "hk_mv": 0.0,
-    "yj_noise_rms_mv": 0.0,
-    "hk_noise_rms_mv": 0.0,
-    "yj_mean_mv_1s": 0.0,
-    "hk_mean_mv_1s": 0.0,
-    "yj_rms_mv_0p5s": 0.0,
-    "hk_rms_mv_0p5s": 0.0,
+    "yj_residual_rms_mv": 0.0,
+    "hk_residual_rms_mv": 0.0,
+    "yj_1s_mean_mv": 0.0,
+    "hk_1s_mean_mv": 0.0,
+    "yj_0p5s_rms_mv": 0.0,
+    "hk_0p5s_rms_mv": 0.0,
     "yj_ontime_s": 0.0,
     "hk_ontime_s": 0.0,
     "yj_pd_is_off": true
@@ -1223,7 +1220,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "action": "measure_dark",
     "channel": "yj",
     "duration_ms": 1280,
-    "store": false
+    "persist": false
   }
   ```
   Response:
@@ -1231,7 +1228,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   {
     "state": "measuring",
     "channel": "yj",
-    "stored_on_complete": false,
+    "persist": false,
     "duration_ms": 1280,
     "samples": 0,
     "target_samples": 64
@@ -1243,7 +1240,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "action": "measure_dark",
     "channel": "hk",
     "duration_ms": 1280,
-    "store": true
+    "persist": true
   }
   ```
 - **Payload -> dark measurement progress/result:** complete results include the
@@ -1259,16 +1256,19 @@ command wait budget, this command returns `{"error":"busy"}`.
   {
     "action": "reset_lowest_dark",
     "channel": "yj",
-    "persistent": true
+    "persist": true
   }
   ```
 
 - **Notes:**
+  - `yj_raw` and `hk_raw` are raw ADC counts. `yj_raw_mv` and `hk_raw_mv` are
+    instantaneous raw ADC millivolts. `yj_mv`, `hk_mv`, `yj_1s_mean_mv`, and
+    `hk_1s_mean_mv` subtract the configured dark level.
   - `measure_dark` starts or restarts the selected channel's short average,
     marks it as a dark measurement, and returns immediately with
     `state:"measuring"`.
   - Dark level is updated only after an explicit `measure_dark` with
-    `store:true` completes.
+    `persist:true` completes.
   - `duration_ms` is rounded to the nearest supported sample count at the
     monitor thread cadence and clamps to the same maximum window used by short
     photodiode averages. The response reports actual `duration_ms`,
@@ -1277,14 +1277,16 @@ command wait budget, this command returns `{"error":"busy"}`.
     channel. Complete dark results include measured mean/RMS/min/max.
   - `dark_noise_rms_mv` records the most recent dark-measurement RMS. Setting
     `dark_mv` directly does not change this value.
-  - `measure_dark` with `store:false` leaves stored calibration unchanged; its
+  - `measure_dark` with `persist:false` leaves stored calibration unchanged; its
     completed statistics are available through `dark_status`.
   - `lowest_stored_dark_mv` is updated only when a stored dark measurement is
     lower than the previous stored lowest value. It is `null` until a stored
     dark measurement has completed.
-  - Active monitoring tracks a simple residual RMS after smoothing. If it
-    exceeds the configured warning threshold, the firmware emits
-    `photodiode_noise` on `dt/<device>/warning`.
+  - Active monitoring tracks `yj_residual_rms_mv` and `hk_residual_rms_mv` as a
+    simple residual RMS after smoothing. If it exceeds the configured warning
+    threshold, the firmware emits `photodiode_noise` on `dt/<device>/warning`.
+  - `yj_0p5s_rms_mv` and `hk_0p5s_rms_mv` are half-second window RMS values
+    around each window's local mean.
   - Power estimates subtract stored dark mV and use `responsivity_a_per_w` and
     `transimpedance_v_per_a`.
   - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
@@ -1322,7 +1324,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "transimpedance_v_per_a": 5.0e10,
     "power": "auto",
     "autooff_s": 300,
-    "persistent": true
+    "persist": true
   }
   ```
 
@@ -1333,7 +1335,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `transimpedance_v_per_a`
   - `power`
   - `autooff_s`
-  - `persistent`
+  - `persist`
 
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
@@ -1344,7 +1346,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   is `null` unless a channel auto-off countdown is armed. Setting `dark_mv`
   directly marks the active
   dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
-  `pd measure_dark store=true` records the measured mean as the active dark and
+  `pd measure_dark persist=true` records the measured mean as the active dark and
   reports the actual averaging duration in `dark_duration_ms`.
   `dark_noise_rms_mv` is the most recent dark-measurement RMS and is not changed
   by manually setting `dark_mv`.
@@ -1386,7 +1388,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "trydhcpfirst": true,
     "preferdhcpntp": true,
     "preferdhcpdns": true,
-    "persistent": true
+    "persist": true
   }
   ```
 
@@ -1413,7 +1415,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```json
   {
     "broker": "<ipv4-or-hostname>:<port>",
-    "persistent": true
+    "persist": true
   }
   ```
 
@@ -1438,7 +1440,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "seconds": 30
   }
   ```
-  `value` is accepted as an alias for `seconds`. Supplying `persistent` is
+  `value` is accepted as an alias for `seconds`. Supplying `persist` is
   rejected; serial guard is runtime-only and is not restored after reboot.
 
 - **Notes:**

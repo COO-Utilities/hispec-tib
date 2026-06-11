@@ -206,10 +206,10 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
-		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+		if (coo_json_extract_optional_bool(cmd->payload, "persist",
 						   &persist, NULL) != 0) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-						  "{\"error\":\"Invalid persistent flag\"}");
+						  "{\"error\":\"Invalid persist flag\"}");
 		}
 
 		physical[0].slope = dac1_coeffs[0];
@@ -479,9 +479,9 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 		if (attenuator_index_from_name(atten_name, &attenuator_index) != 0) {
 			return coo_cmd_error(out, cmd, "invalid attenuator");
 		}
-		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+		if (coo_json_extract_optional_bool(cmd->payload, "persist",
 						   &persistent, NULL) != 0) {
-			return coo_cmd_error(out, cmd, "invalid persistent");
+			return coo_cmd_error(out, cmd, "invalid persist");
 		}
 		rc = attenuator_calibration_fit_manual(attenuator_index, batch,
 						       persistent, &status);
@@ -504,9 +504,9 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 						  &dwell_ms, NULL) != 0) {
 			return coo_cmd_error(out, cmd, "invalid dwell_ms");
 		}
-		if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+		if (coo_json_extract_optional_bool(cmd->payload, "persist",
 						   &persistent, NULL) != 0) {
-			return coo_cmd_error(out, cmd, "invalid persistent");
+			return coo_cmd_error(out, cmd, "invalid persist");
 		}
 		rc = attenuator_calibration_start_manual(attenuator_index,
 							 dwell_ms,
@@ -541,9 +541,9 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 					  &dwell_ms, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid dwell_ms");
 	}
-	if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+	if (coo_json_extract_optional_bool(cmd->payload, "persist",
 					   &persistent, NULL) != 0) {
-		return coo_cmd_error(out, cmd, "invalid persistent");
+		return coo_cmd_error(out, cmd, "invalid persist");
 	}
 	request.dwell_ms = dwell_ms;
 	request.persistent = persistent;
