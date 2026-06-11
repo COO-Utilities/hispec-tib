@@ -22,6 +22,7 @@
 
 struct attenuator_calibration_fit_metrics {
 	bool valid;
+	bool accepted;
 	uint8_t points;
 	double slope;
 	double offset;
@@ -102,6 +103,12 @@ bool attenuator_calibration_active(void);
 int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,
 	const struct attenuator_calibration_status *status);
+
+/** Append one retained calibration fit-data page as JSON. */
+int attenuator_calibration_format_data_page(char *payload,
+					    size_t payload_len,
+					    uint8_t physical_index,
+					    uint8_t start_index);
 
 /** Advance automatic calibration. Called only by the throughput monitor thread. */
 void attenuator_calibration_tick(const struct photodiode_status *pd_status,

@@ -1005,6 +1005,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "error": 0,
     "dac1": {
       "valid": true,
+      "accepted": true,
       "points": 12,
       "slope": 0.0016,
       "offset": 0.0,
@@ -1016,6 +1017,41 @@ command wait budget, this command returns `{"error":"busy"}`.
       "voltage_span_mv": 2400.0
     },
     "dac2": {"valid": false}
+  }
+  ```
+- **Fit data query:** retained calibration fit data is available as bounded
+  pages, independent of best-effort telemetry:
+  ```
+  atten/calibrate/data/<dac1|dac2>[/<start>]
+  ```
+  `start` is optional and defaults to `0`; the response includes `next` until
+  all scheduled points have been returned.
+  ```json
+  {
+    "state": "complete",
+    "mode": "tib_auto",
+    "physical": "dac1",
+    "start": 0,
+    "count": 5,
+    "point_count": 20,
+    "next": 5,
+    "fit_valid": true,
+    "fit_accepted": true,
+    "max_flux": 1234.5,
+    "points": [
+      {
+        "i": 0,
+        "v": 5000.0,
+        "f": 12.3,
+        "valid": true,
+        "sat": false,
+        "in": true,
+        "r": "included",
+        "tx": 0.01,
+        "b": 5.1,
+        "res": -0.2
+      }
+    ]
   }
   ```
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
@@ -1069,7 +1105,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **Telemetry topic:** `dt/<device>/atten`
 - **Telemetry payload:** attenuator calibration emits one best-effort JSON
   message per significant state transition, DAC setpoint, photodiode reading,
-  level adjustment, submitted manual point, fit point, and fit result. Calibration
+  level adjustment, submitted manual point, and fit result. Calibration
   continues if telemetry is dropped.
   ```json
   {
@@ -1100,14 +1136,11 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
   Other `event` values include `start`, `physical_start`, `signal_set`,
   `point_set`, `adjust`, `adjust_result`, `manual_point_set`, `manual_point`,
-  `fit_dataset`, `fit`, `complete`, `stop`, and `error`. `adjust_result`
+  `fit`, `complete`, `stop`, and `error`. `adjust_result`
   reports the before/after photodiode means and renormalization scale update
-  after an automatic level adjustment. `fit_dataset` is emitted in bounded
-  chunks and reports each scheduled point's voltage, flux, saturation flag,
-  fit inclusion decision, exclusion reason, normalized transmission, and
-  residual dB when available. `complete` and `error` include
-  `telemetry_drops`, the count of best-effort calibration telemetry messages
-  dropped because the outbound queue was full.
+  after an automatic level adjustment. Fit input and residual diagnostics are
+  retained in calibration state and queried through `atten/calibrate/data`
+  instead of being emitted as an end-of-run telemetry burst.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
@@ -1120,6 +1153,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     voltage and the laser to full output, then sweeps about 20 DAC points per
     physical attenuator. Each point has a fixed 50 ms step-settle before the
     photodiode average begins.
+  - Automatic calibration reduces signal and resamples before a point exceeds
+    the high-signal headroom threshold. If a point is already saturated, the
+    run fails rather than applying a fit whose normalization cannot be trusted.
   - Automatic calibration uses short photodiode averages from the sampler
     thread. It does not start a new calibration thread; the throughput monitor
     thread advances the state machine.

@@ -450,6 +450,7 @@ class AttenuatorCoeff(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class AttenuatorFitMetrics(ResponseRepr):
     valid: bool
+    accepted: bool = False
     points: int = 0
     slope: float | None = None
     offset: float | None = None
@@ -465,7 +466,8 @@ class AttenuatorFitMetrics(ResponseRepr):
             return "AttenuatorFitMetrics(valid=False)"
         return (
             "AttenuatorFitMetrics("
-            f"points={self.points}, slope={_format_repr(self.slope)}, "
+            f"accepted={self.accepted}, points={self.points}, "
+            f"slope={_format_repr(self.slope)}, "
             f"offset={_format_repr(self.offset)}, corr={_format_repr(self.corr)}, "
             f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
             f"voltage_span_mv={_format_repr(self.voltage_span_mv)})"
@@ -511,6 +513,35 @@ class AttenuatorCalibrationStatus(ResponseRepr):
         )
 
     __str__ = __repr__
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationDataPoint(ResponseRepr):
+    i: int
+    v: float
+    f: float
+    valid: bool
+    sat: bool
+    included: bool
+    reason: str
+    tx: float
+    b: float | None
+    residual_db: float | None
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationDataPage(ResponseRepr):
+    state: str
+    mode: str
+    physical: str
+    start: int
+    count: int
+    point_count: int
+    next: int | None
+    fit_valid: bool
+    fit_accepted: bool
+    max_flux: float
+    points: tuple[AttenuatorCalibrationDataPoint, ...]
 
 
 @dataclass(frozen=True, repr=False)
@@ -904,6 +935,7 @@ def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
         return AttenuatorFitMetrics(valid=False)
     return AttenuatorFitMetrics(
         valid=True,
+        accepted=bool(data.get("accepted", False)),
         points=int(data.get("points", 0)),
         slope=float(data["slope"]),
         offset=float(data["offset"]),
@@ -913,6 +945,36 @@ def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
         min_tx=float(data["min_tx"]),
         max_tx=float(data["max_tx"]),
         voltage_span_mv=float(data["voltage_span_mv"]),
+    )
+
+
+def _decode_atten_cal_data_page(data: Mapping[str, Any]) -> AttenuatorCalibrationDataPage:
+    return AttenuatorCalibrationDataPage(
+        state=str(data["state"]),
+        mode=str(data["mode"]),
+        physical=str(data["physical"]),
+        start=int(data["start"]),
+        count=int(data["count"]),
+        point_count=int(data["point_count"]),
+        next=None if data.get("next") is None else int(data["next"]),
+        fit_valid=bool(data.get("fit_valid", False)),
+        fit_accepted=bool(data.get("fit_accepted", False)),
+        max_flux=float(data.get("max_flux", 0.0)),
+        points=tuple(
+            AttenuatorCalibrationDataPoint(
+                i=int(point["i"]),
+                v=float(point["v"]),
+                f=float(point["f"]),
+                valid=bool(point.get("valid", False)),
+                sat=bool(point.get("sat", False)),
+                included=bool(point.get("in", False)),
+                reason=str(point.get("r", "")),
+                tx=float(point.get("tx", 0.0)),
+                b=None if point.get("b") is None else float(point["b"]),
+                residual_db=None if point.get("res") is None else float(point["res"]),
+            )
+            for point in data.get("points", ())
+        ),
     )
 
 
@@ -1572,6 +1634,19 @@ class HispecFibPcb:
 
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate"))
+
+    def atten_calibration_data(
+        self,
+        physical: Literal["dac1", "dac2"],
+        *,
+        start: int = 0,
+    ) -> AttenuatorCalibrationDataPage:
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        if start < 0:
+            raise HispecFibError("start must be non-negative")
+        return _decode_atten_cal_data_page(
+            self._request_json(f"atten/calibrate/data/{physical}/{int(start)}")
+        )
 
     def atten_calibrate_auto(
         self,

@@ -6,6 +6,7 @@
 #include "attenuator_command.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/sys/util.h>
@@ -275,6 +276,85 @@ static int atten_calibration_status_reply(
 				     "{\"error\":\"Calibration status payload too large\"}");
 	}
 	return coo_cmd_reply(out, cmd, type, payload);
+}
+
+static int parse_calibration_data_suffix(const char *key,
+					 uint8_t *physical_index,
+					 uint8_t *start_index)
+{
+	const char *suffix;
+	const char *slash;
+	char physical[8] = {0};
+	char start_text[8] = "0";
+	size_t physical_len;
+	size_t start_len;
+	char *end = NULL;
+	unsigned long parsed;
+
+	if (key == NULL || physical_index == NULL || start_index == NULL) {
+		return -EINVAL;
+	}
+
+	suffix = coo_cmd_key_suffix_after(key, "atten/calibrate/data");
+	if (suffix[0] == '\0') {
+		return -EINVAL;
+	}
+	slash = strchr(suffix, '/');
+	physical_len = slash == NULL ? strlen(suffix) : (size_t)(slash - suffix);
+	if (physical_len == 0U || physical_len >= sizeof(physical)) {
+		return -EINVAL;
+	}
+	memcpy(physical, suffix, physical_len);
+	physical[physical_len] = '\0';
+
+	if (slash != NULL) {
+		start_len = strlen(slash + 1U);
+		if (start_len == 0U || start_len >= sizeof(start_text) ||
+		    strchr(slash + 1U, '/') != NULL) {
+			return -EINVAL;
+		}
+		memcpy(start_text, slash + 1U, start_len + 1U);
+	}
+
+	if (strcmp(physical, "dac1") == 0) {
+		*physical_index = 0U;
+	} else if (strcmp(physical, "dac2") == 0) {
+		*physical_index = 1U;
+	} else {
+		return -EINVAL;
+	}
+
+	errno = 0;
+	parsed = strtoul(start_text, &end, 10);
+	if (errno != 0 || end == NULL || *end != '\0' ||
+	    parsed >= ATTENUATOR_CAL_POINT_COUNT) {
+		return -EINVAL;
+	}
+	*start_index = (uint8_t)parsed;
+	return 0;
+}
+
+int atten_calibration_data_get(const struct coo_cmd_request *cmd,
+			       struct coo_cmd_response *out)
+{
+	char payload[MAX_PAYLOAD_LEN] = {0};
+	uint8_t physical_index;
+	uint8_t start_index;
+	int rc;
+
+	rc = parse_calibration_data_suffix(cmd != NULL ? cmd->key : NULL,
+					   &physical_index, &start_index);
+	if (rc != 0) {
+		return coo_cmd_error(out, cmd,
+				     "use atten/calibrate/data/<dac1|dac2>[/<start>]");
+	}
+
+	rc = attenuator_calibration_format_data_page(payload, sizeof(payload),
+						     physical_index, start_index);
+	if (rc != 0) {
+		return coo_cmd_error(out, cmd, "calibration data page unavailable");
+	}
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 static int parse_calibration_batch_object(
