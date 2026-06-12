@@ -116,9 +116,13 @@ PCAL assignments:
 
 ## TIB & CAL Attenuator Drive
 A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
-- 0 - 4095 count (Vref, default=Vcc via internal reference source)
+- DAC codes are 0 - 4095; ideal output transfer uses `code / 4096`.
+- DAC reference mode is board-configured. With the DAC7678 internal reference,
+  `Vout = code / 4096 * 2 * 2.5V`, clipped by AVDD. With an external
+  reference, `Vout = code / 4096 * VREFIN`.
+- Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
+  toward the FVOA 0 - 5V command range; op-amp gain is firmware-calibrated.
 - Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
-- Use Vcc=3.3 with 1.51x opamp gain to avoid LL shifting
 - OpAmp supplies required current to attenuator.
 - Each laser channel uses a pair of physical attenuators:
   - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
