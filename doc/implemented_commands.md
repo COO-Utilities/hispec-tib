@@ -65,7 +65,7 @@ comparison artifact, not a replacement for `commands.md`.
 | `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune <payload>` |
 | `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status <payload>` |
 | `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings <payload>` |
-| `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
+| `atten/<laser>` / `atten/<laser>/coeff` | `cmd/<device>/req/atten/<laser>[/coeff]` | `cmd/<device>/resp/atten/<laser>[/coeff]` | `atten/<laser> [payload]`; `atten/<laser>/coeff [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
 | `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
 | `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
@@ -231,14 +231,15 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Side effects: driver-backed settings updates temporarily power the bank if
   needed unless bank power is `override_off`.
 
-### `atten/<laser>/value`, `atten/<laser>/valuedb`, and `atten/<laser>/coeff`
+### `atten/<laser>` and `atten/<laser>/coeff`
 
 - Owner: `atten_setting_get()`, `atten_setting_set()` in
   `app/src/attenuator_command.c`; DAC behavior in `app/src/attenuator.c`.
 - Board restriction: TIB supports all configured logical attenuators; CAL
   profiles support only their configured logical channel.
-- Side effects: value changes block on DAC I2C; coefficient changes update
-  runtime coefficients, reapply current attenuation, and can persist to NVS.
+- Side effects: value changes on `atten/<laser>` block on DAC I2C and return
+  applied DAC-readback state; coefficient changes update runtime coefficients,
+  reapply current attenuation, and can persist to NVS.
 - Enqueue: value changes can emit `attenuator_clamped`.
 
 ### `pd`

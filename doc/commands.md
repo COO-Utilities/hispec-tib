@@ -63,7 +63,7 @@ Draft 0.1
 - Board-specific commands are rejected before their domain handler runs when
   the selected board strap does not provide that hardware.
 - Command keys are exact-match by default. Only endpoint families documented
-  with topic suffixes, such as `atten/<laser>/value`, `split/yj`, or
+  with topic suffixes, such as `atten/<laser>/coeff`, `split/yj`, or
   `laserbank/power/<mode>`, opt into prefix matching. Unknown top-level payload
   keys are rejected before the domain handler runs.
 
@@ -151,8 +151,7 @@ not be needed for normal serial operation.
 - [`laserbank/power`](#laserbank-power)
 - [`laserbank/clearfaults`](#laserbank-clearfaults)
 - [`laserbank/heater`](#laserbank-heater)
-- [`atten/<laser>/value`](#atten-value)
-- [`atten/<laser>/valuedb`](#atten-valuedb)
+- [`atten/<laser>`](#atten)
 - [`atten/<laser>/coeff`](#atten-coeff)
 - [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
@@ -918,17 +917,14 @@ command wait budget, this command returns `{"error":"busy"}`.
   error because the heater relay cannot be driven.
 
 (atten)=
-(atten-value)=
-(atten-valuedb)=
 (atten-coeff)=
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
 - **Topics:**
-  - `cmd/<device>/req/atten/<laser>/value`
-  - `cmd/<device>/req/atten/<laser>/valuedb`
+  - `cmd/<device>/req/atten/<laser>`
   - `cmd/<device>/req/atten/<laser>/coeff`
   - Responses use the same key under `cmd/<device>/resp/...`.
-- **No payload to `value` or `valuedb` -> attenuator setting:**
+- **No payload to `atten/<laser>` -> attenuator setting:**
   ```json
   {
     "db": 12.5,
@@ -936,24 +932,27 @@ command wait budget, this command returns `{"error":"busy"}`.
     "v1_mv": 1234.0,
     "v2_mv": 0.0,
     "db1": 12.5,
-    "db2": 0.0
+    "db2": 0.0,
+    "linear1": 0.0562,
+    "linear2": 1.0
   }
   ```
-- **Payload to `value`:** set total linear transmission through the logical
-  attenuator.
+- **Payload to `atten/<laser>`:** set total attenuation or one or both physical
+  attenuators. `value` is total linear transmission and `value_db` is total
+  attenuation in dB. The total fields are mutually exclusive with the physical
+  `value1*` and `value2*` fields.
   ```json
   {"value":0.25}
+  {"value_db":12.5}
+  {"value1":0.25,"value2_db":6.0}
+  {"value1_mv":1234.0,"value2":1.0}
   ```
-- **Payload to `valuedb`:** set total attenuation in dB.
-  ```json
-  {"value":12.5}
-  ```
-- **Serial form for `valuedb`:** the serial shorthand wraps the single numeric
-  argument as the same `{"value":...}` payload. MQTT commands must still send
-  the JSON payload above.
-  ```text
-  atten/1028y/valuedb 12.5
-  ```
+  Each physical attenuator may use a different unit, but a single physical
+  attenuator may only use one unit per request. For example, `value1` and
+  `value2_db` is valid, while `value1` and `value1_db` in the same request is
+  rejected. Millivolt inputs are clamped to the supported drive span, quantized
+  to the DAC code, and responses report the applied millivolts read back from
+  the DAC.
 - **No payload to `coeff` -> model coefficients:**
   ```json
   {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0]}
@@ -978,7 +977,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **Notes:**
   - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
     or `2330k`. On calibration boards only, the LFC attenuator is addressed as
-    `atten/lfc/value`, `atten/lfc/valuedb`, and `atten/lfc/coeff`.
+    `atten/lfc` and `atten/lfc/coeff`.
   - Laser aliases accepted by the laser profile table, such as `1028`, also
     resolve to the matching TIB attenuator channel, but canonical command docs
     use the full logical laser names.
@@ -988,7 +987,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     attenuator API.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
   - `v1_mv` and `v2_mv` are DAC-backed attenuator drive setpoints in
-    millivolts.
+    millivolts after drive-span clamping and DAC-code quantization.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define `b = slope * voltage + offset` for the
     attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.

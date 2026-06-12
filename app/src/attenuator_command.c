@@ -6,6 +6,7 @@
 #include "attenuator_command.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,14 +24,11 @@
 
 enum attenuator_setting {
 	ATTENUATOR_SETTING_COEFF = 0,
-	ATTENUATOR_SETTING_VALUE,
-	ATTENUATOR_SETTING_VALUEDB,
+	ATTENUATOR_SETTING_COMPACT,
 };
 
 static const struct coo_json_string_choice attenuator_setting_choices[] = {
 	{ "coeff", ATTENUATOR_SETTING_COEFF },
-	{ "value", ATTENUATOR_SETTING_VALUE },
-	{ "valuedb", ATTENUATOR_SETTING_VALUEDB },
 };
 
 static const struct coo_json_string_choice attenuator_cal_fiber_choices[] = {
@@ -72,17 +70,25 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 	char setting_name[16] = {0};
 	int setting_value;
 
-	if (cmd == NULL || setting == NULL || attenuator_index == NULL ||
-	    coo_cmd_key_suffix_pair_copy(cmd->key, "atten",
-					 laser_name, sizeof(laser_name),
-					 setting_name, sizeof(setting_name)) != 0) {
+	if (cmd == NULL || setting == NULL || attenuator_index == NULL) {
 		return -EINVAL;
 	}
 
-	if (coo_json_match_string_choice(setting_name, attenuator_setting_choices,
-					 ARRAY_SIZE(attenuator_setting_choices),
-					 &setting_value) != 0) {
-		return -ENOTSUP;
+	if (coo_cmd_key_suffix_pair_copy(cmd->key, "atten",
+					 laser_name, sizeof(laser_name),
+					 setting_name, sizeof(setting_name)) == 0) {
+		if (coo_json_match_string_choice(setting_name, attenuator_setting_choices,
+						 ARRAY_SIZE(attenuator_setting_choices),
+						 &setting_value) != 0) {
+			return -ENOTSUP;
+		}
+		*setting = (enum attenuator_setting)setting_value;
+	} else if (coo_cmd_key_suffix_segment_copy(cmd->key, "atten",
+						   laser_name,
+						   sizeof(laser_name)) == 0) {
+		*setting = ATTENUATOR_SETTING_COMPACT;
+	} else {
+		return -EINVAL;
 	}
 
 	{
@@ -92,8 +98,40 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 			return rc;
 		}
 	}
-	*setting = (enum attenuator_setting)setting_value;
 	return 0;
+}
+
+static int attenuator_status_reply(const struct coo_cmd_request *cmd,
+				   struct coo_cmd_response *out,
+				   uint8_t attenuator_index)
+{
+	struct attenuator_status status = {0};
+	char payload[MAX_PAYLOAD_LEN] = {0};
+	double linear1;
+	double linear2;
+
+	if (!attenuator_get(&attenuators[attenuator_index], &status)) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Failed to read attenuator\"}");
+	}
+
+	linear1 = pow(10.0, -status.attenuation_db1 / 10.0);
+	linear2 = pow(10.0, -status.attenuation_db2 / 10.0);
+	snprintk(payload, sizeof(payload),
+		 "{\"db\":%.6f,\"linear\":%.12g,"
+		 "\"v1_mv\":%.6f,\"v2_mv\":%.6f,"
+		 "\"db1\":%.6f,\"db2\":%.6f,"
+		 "\"linear1\":%.12g,\"linear2\":%.12g}",
+		 status.attenuation_db,
+		 status.linear,
+		 status.voltage1,
+		 status.voltage2,
+		 status.attenuation_db1,
+		 status.attenuation_db2,
+		 linear1,
+		 linear2);
+
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -128,31 +166,214 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 			 attenuators[attenuator_index].coeff2.slope,
 			 attenuators[attenuator_index].coeff2.offset);
 		break;
-	case ATTENUATOR_SETTING_VALUE:
-	case ATTENUATOR_SETTING_VALUEDB: {
-		struct attenuator_status status = {0};
-
-		if (!attenuator_get(&attenuators[attenuator_index], &status)) {
-			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-						  "{\"error\":\"Failed to read attenuator\"}");
-		}
-		snprintk(payload, sizeof(payload),
-			 "{\"db\":%.6f,\"linear\":%.12g,"
-			 "\"v1_mv\":%.6f,\"v2_mv\":%.6f,"
-			 "\"db1\":%.6f,\"db2\":%.6f}",
-			 status.attenuation_db,
-			 status.linear,
-			 status.voltage1,
-			 status.voltage2,
-			 status.attenuation_db1,
-			 status.attenuation_db2);
-		break;
-	}
+	case ATTENUATOR_SETTING_COMPACT:
+		return attenuator_status_reply(cmd, out, attenuator_index);
 	default:
 		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
+}
+
+enum attenuator_physical_value_mode {
+	ATTENUATOR_PHYSICAL_VALUE_NONE = 0,
+	ATTENUATOR_PHYSICAL_VALUE_LINEAR,
+	ATTENUATOR_PHYSICAL_VALUE_DB,
+	ATTENUATOR_PHYSICAL_VALUE_MV,
+};
+
+struct attenuator_physical_value {
+	enum attenuator_physical_value_mode mode;
+	double value;
+};
+
+static int attenuator_extract_optional_double(const char *json,
+					      const char *key,
+					      double *value,
+					      bool *present)
+{
+	double parsed;
+	int rc;
+
+	if (value == NULL || present == NULL) {
+		return -EINVAL;
+	}
+
+	rc = coo_json_extract_double(json, key, &parsed);
+	if (rc == COO_JSON_EXTRACT_MISSING) {
+		return 0;
+	}
+	if (rc != COO_JSON_EXTRACT_OK || !isfinite(parsed)) {
+		return -EINVAL;
+	}
+
+	*value = parsed;
+	*present = true;
+	return 0;
+}
+
+static int attenuator_extract_physical_value(
+	const char *json,
+	const char *linear_key,
+	const char *db_key,
+	const char *mv_key,
+	struct attenuator_physical_value *out)
+{
+	bool linear_present = false;
+	bool db_present = false;
+	bool mv_present = false;
+	double linear = 0.0;
+	double db = 0.0;
+	double mv = 0.0;
+	uint8_t present_count;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+	out->mode = ATTENUATOR_PHYSICAL_VALUE_NONE;
+	out->value = 0.0;
+
+	if (attenuator_extract_optional_double(json, linear_key,
+					       &linear, &linear_present) != 0 ||
+	    attenuator_extract_optional_double(json, db_key, &db, &db_present) != 0 ||
+	    attenuator_extract_optional_double(json, mv_key, &mv, &mv_present) != 0) {
+		return -EINVAL;
+	}
+
+	present_count = (linear_present ? 1U : 0U) +
+			(db_present ? 1U : 0U) +
+			(mv_present ? 1U : 0U);
+	if (present_count > 1U) {
+		return -EALREADY;
+	}
+	if (linear_present) {
+		out->mode = ATTENUATOR_PHYSICAL_VALUE_LINEAR;
+		out->value = linear;
+	} else if (db_present) {
+		out->mode = ATTENUATOR_PHYSICAL_VALUE_DB;
+		out->value = db;
+	} else if (mv_present) {
+		out->mode = ATTENUATOR_PHYSICAL_VALUE_MV;
+		out->value = mv;
+	}
+
+	return 0;
+}
+
+static bool attenuator_set_physical_value(struct attenuator *drv,
+					  uint8_t physical_index,
+					  const struct attenuator_physical_value *request)
+{
+	double db;
+
+	if (drv == NULL || request == NULL) {
+		return false;
+	}
+
+	switch (request->mode) {
+	case ATTENUATOR_PHYSICAL_VALUE_NONE:
+		return true;
+	case ATTENUATOR_PHYSICAL_VALUE_LINEAR:
+		if (request->value <= 0.0 || request->value > 1.0) {
+			return false;
+		}
+		db = -10.0 * log10(request->value);
+		return physical_index == 0U ?
+		       attenuator_set_dac1_db(drv, db) :
+		       attenuator_set_dac2_db(drv, db);
+	case ATTENUATOR_PHYSICAL_VALUE_DB:
+		return physical_index == 0U ?
+		       attenuator_set_dac1_db(drv, request->value) :
+		       attenuator_set_dac2_db(drv, request->value);
+	case ATTENUATOR_PHYSICAL_VALUE_MV:
+		return attenuator_set_physical_voltage(drv, physical_index,
+						       request->value);
+	default:
+		return false;
+	}
+}
+
+static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
+					struct coo_cmd_response *out,
+					uint8_t attenuator_index)
+{
+	struct attenuator_physical_value physical[ATTENUATOR_PHYSICAL_COUNT];
+	bool total_linear_present = false;
+	bool total_db_present = false;
+	double total_linear = 0.0;
+	double total_db = 0.0;
+	bool has_physical;
+	int rc;
+
+	if (attenuator_extract_optional_double(cmd->payload, "value",
+					       &total_linear,
+					       &total_linear_present) != 0 ||
+	    attenuator_extract_optional_double(cmd->payload, "value_db",
+					       &total_db, &total_db_present) != 0) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Invalid attenuator value\"}");
+	}
+	if (total_linear_present && total_db_present) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Mixed total attenuation units\"}");
+	}
+
+	rc = attenuator_extract_physical_value(cmd->payload,
+					       "value1", "value1_db", "value1_mv",
+					       &physical[0]);
+	if (rc == -EALREADY) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Mixed attenuator 1 units\"}");
+	}
+	if (rc != 0) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Invalid attenuator 1 value\"}");
+	}
+	rc = attenuator_extract_physical_value(cmd->payload,
+					       "value2", "value2_db", "value2_mv",
+					       &physical[1]);
+	if (rc == -EALREADY) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Mixed attenuator 2 units\"}");
+	}
+	if (rc != 0) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Invalid attenuator 2 value\"}");
+	}
+
+	has_physical = physical[0].mode != ATTENUATOR_PHYSICAL_VALUE_NONE ||
+		       physical[1].mode != ATTENUATOR_PHYSICAL_VALUE_NONE;
+	if ((total_linear_present || total_db_present) && has_physical) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Mixed total and physical attenuator values\"}");
+	}
+	if (!total_linear_present && !total_db_present && !has_physical) {
+		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+				     "{\"error\":\"Missing attenuator value\"}");
+	}
+
+	if (total_linear_present) {
+		if (!attenuator_set_linear(&attenuators[attenuator_index],
+					   total_linear)) {
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+					     "{\"error\":\"Invalid linear transmission\"}");
+		}
+	} else if (total_db_present) {
+		if (!attenuator_set_db(&attenuators[attenuator_index], total_db)) {
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+					     "{\"error\":\"Invalid dB attenuation\"}");
+		}
+	} else {
+		for (uint8_t i = 0U; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+			if (!attenuator_set_physical_value(&attenuators[attenuator_index],
+							   i, &physical[i])) {
+				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+						     "{\"error\":\"Invalid physical attenuator value\"}");
+			}
+		}
+	}
+
+	return 0;
 }
 
 int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -231,36 +452,23 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 						       persist);
 		break;
 	}
-	case ATTENUATOR_SETTING_VALUE:
-	case ATTENUATOR_SETTING_VALUEDB: {
-		double value;
-
-		if (coo_json_extract_double(cmd->payload, "value", &value) !=
-		    COO_JSON_EXTRACT_OK) {
-			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-						  "{\"error\":\"Missing setting value\"}");
-		}
-
-		if (setting == ATTENUATOR_SETTING_VALUE) {
-			if (!attenuator_set_linear(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-							  "{\"error\":\"Invalid linear transmission\"}");
-			}
-		} else {
-			if (!attenuator_set_db(&attenuators[attenuator_index], value)) {
-				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-							  "{\"error\":\"Invalid dB attenuation\"}");
-			}
+	case ATTENUATOR_SETTING_COMPACT:
+		rc = attenuator_set_compact_value(cmd, out, attenuator_index);
+		if (rc != 0) {
+			return rc;
 		}
 		break;
-	}
 	default:
 		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, "{\"error\":\"Invalid setting\"}");
 	}
 
 	throughput_monitor_note_attenuator_changed(attenuator_index);
 
-	return coo_cmd_ok(out, cmd);
+	if (setting == ATTENUATOR_SETTING_COEFF) {
+		return coo_cmd_ok(out, cmd);
+	}
+
+	return attenuator_status_reply(cmd, out, attenuator_index);
 }
 
 static int atten_calibration_status_reply(

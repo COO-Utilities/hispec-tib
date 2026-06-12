@@ -441,6 +441,8 @@ class AttenuatorState(ResponseRepr):
     v2_mv: float
     db1: float
     db2: float
+    linear1: float
+    linear2: float
 
 
 @dataclass(frozen=True, repr=False)
@@ -1603,21 +1605,55 @@ class HispecFibPcb:
     def laserbank_clearfaults(self) -> LaserBankClearFaults:
         return _dataclass_from(LaserBankClearFaults, self._request_json("laserbank/clearfaults"))
 
-    def atten_value(self, laser: str) -> AttenuatorState:
+    def atten(
+        self,
+        laser: str,
+        *,
+        value: float | None = None,
+        value_db: float | None = None,
+        value1: float | None = None,
+        value2: float | None = None,
+        value1_db: float | None = None,
+        value2_db: float | None = None,
+        value1_mv: float | None = None,
+        value2_mv: float | None = None,
+    ) -> AttenuatorState:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return _dataclass_from(AttenuatorState, self._request_json(f"atten/{laser}/value"))
+        payload: dict[str, float] = {}
+        if value is not None:
+            payload["value"] = _require_float("value", value, 1e-300, 1.0)
+        if value_db is not None:
+            payload["value_db"] = _require_float("value_db", value_db, 0.0, 1e9)
+        if value1 is not None:
+            payload["value1"] = _require_float("value1", value1, 1e-300, 1.0)
+        if value2 is not None:
+            payload["value2"] = _require_float("value2", value2, 1e-300, 1.0)
+        if value1_db is not None:
+            payload["value1_db"] = _require_float("value1_db", value1_db, 0.0, 1e9)
+        if value2_db is not None:
+            payload["value2_db"] = _require_float("value2_db", value2_db, 0.0, 1e9)
+        if value1_mv is not None:
+            payload["value1_mv"] = _require_float("value1_mv", value1_mv, -1e9, 1e9)
+        if value2_mv is not None:
+            payload["value2_mv"] = _require_float("value2_mv", value2_mv, -1e9, 1e9)
 
-    def set_atten_value(self, laser: str, value: float) -> CommandOk:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return self._request_ok(f"atten/{laser}/value", {"value": _require_float("value", value, 1e-300, 1.0)})
+        request_payload = payload if payload else None
+        return _dataclass_from(
+            AttenuatorState,
+            self._request_json(f"atten/{laser}", request_payload),
+        )
+
+    def atten_value(self, laser: str) -> AttenuatorState:
+        return self.atten(laser)
+
+    def set_atten_value(self, laser: str, value: float) -> AttenuatorState:
+        return self.atten(laser, value=value)
 
     def atten_db(self, laser: str) -> AttenuatorState:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return _dataclass_from(AttenuatorState, self._request_json(f"atten/{laser}/valuedb"))
+        return self.atten(laser)
 
-    def set_atten_db(self, laser: str, value_db: float) -> CommandOk:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return self._request_ok(f"atten/{laser}/valuedb", {"value": _require_float("value_db", value_db, 0.0, 1e9)})
+    def set_atten_db(self, laser: str, value_db: float) -> AttenuatorState:
+        return self.atten(laser, value_db=value_db)
 
     def atten_coeff(self, laser: str) -> AttenuatorCoeff:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
