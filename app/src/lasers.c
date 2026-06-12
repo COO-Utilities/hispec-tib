@@ -51,6 +51,8 @@ struct laser_output_estimate_state {
 	bool valid;
 };
 
+// TODO remove all "hispec_" fromm this file, identify and carry out consolidation with overlapping non underscore names
+
 static struct on_time_runtime laser_current_runtime[HISPEC_LASER_COUNT];
 static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
@@ -924,6 +926,7 @@ static k_timeout_t laser_autooff_wait_timeout(void)
 	return wait_ms <= 0 ? K_NO_WAIT : K_MSEC(wait_ms);
 }
 
+
 static void laser_autooff_reschedule(void)
 {
 	const k_timeout_t timeout = laser_autooff_wait_timeout();
@@ -931,6 +934,8 @@ static void laser_autooff_reschedule(void)
 	/* Auto-off can run Modbus stop commands, so it uses the app blocking
 	 * workqueue instead of Zephyr's Modbus-RX system workqueue.
 	 */
+
+	//TODO
 	if (laser_autooff_work_q == NULL) {
 		return;
 	}

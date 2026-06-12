@@ -466,6 +466,7 @@ static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
     return COO_CMD_EFFECT;
 }
 
+// TODO serial_read_three_tokens and serial_single_value_payload are coo_command scope, not app command.c scope, refactor
 static int serial_read_three_tokens(const char *payload,
                                     char *t0, size_t t0_len,
                                     char *t1, size_t t1_len,
@@ -613,7 +614,7 @@ struct coo_cmd_runtime *command_runtime_get(void)
 
 
 /* COMMAND HANDLERS */
-
+//TODO evaluate moving mqtt, ip, and time commands to coo_command as builtins
 
 static int ip_status_payload(char *payload, size_t payload_len)
 {
@@ -1114,6 +1115,7 @@ static int catalog_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
+//TODO <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there. here and at least laser_coomand.c
 static int command_append_seconds_or_null(char *payload, size_t payload_len,
                                           size_t *off, bool active, double seconds)
 {

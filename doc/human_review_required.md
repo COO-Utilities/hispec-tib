@@ -5,9 +5,9 @@ source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
+## Locked-down code
+
 ## PCB Validation
-- [x] Verify boot MEMS switch state behavior.
-  - .15ms pulse A+B simultaneously at reboot then pulses A on all simultaneously about 6s later. is this ok?
 - [x] sort out FVOA ripple, is ok?
   - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns
@@ -60,13 +60,15 @@ LLMs Agents: Do NOT change heading names in this file.
 - go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
 - when the noise "resets" to 0 it makes it look like the noise has randomly gone away. This is actually MORE concerning than the discontinuities that the reset may be attempting to address. It should be allowed to briefly grow and those changes reverted or replaced with a temporarary nan until data to make a new reading is avaialble.
 
--algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
+- algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
 
 - investigate additionaly complexity of making "ok" only responses give get responses over serial this probably adds too much code as some might need waits/delays that come naturally if a user is at a serial console. but would be a quality of life user improvement
-- yj_0p5s_rms_mv is reporting 0.0 yet `yj_residual_rms_mv` is nonzero when there is a real photodiode connected, I suspect a bug.
 - test dark settings and persistence, especially `dark_duration_ms`,  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
 - Status needs to gain things we actually want.
 
 - `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
+- houskeeping laserbank and lasers ALL have several checks for a non-null work_q. This is just paranoia. The q is static and started by main and the 
+  program cant exist without it. Centralize and elimiinate this so that future readers to not wonder if it could be null. The app SHOULD break (though safely) if it is.
+- <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there.
 ## Deferred Owner-Specified Capabilities
