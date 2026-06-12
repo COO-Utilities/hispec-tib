@@ -449,6 +449,8 @@ class AttenuatorState(ResponseRepr):
 class AttenuatorCoeff(ResponseRepr):
     dac1: tuple[float, float]
     dac2: tuple[float, float]
+    gain1: float
+    gain2: float
 
 
 @dataclass(frozen=True, repr=False)
@@ -937,6 +939,8 @@ def _decode_atten_coeff(data: Mapping[str, Any]) -> AttenuatorCoeff:
     return AttenuatorCoeff(
         dac1=(float(data["dac1"][0]), float(data["dac1"][1])),
         dac2=(float(data["dac2"][0]), float(data["dac2"][1])),
+        gain1=float(data["gain1"]),
+        gain2=float(data["gain2"]),
     )
 
 
@@ -1026,8 +1030,8 @@ def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapp
         raise HispecFibError(f"{name} v_mV and flux lengths differ")
     if len(voltage_values) < 6 or len(voltage_values) > 20:
         raise HispecFibError(f"{name} must contain 6 to 20 points")
-    if any(not np.isfinite(v) for v in voltage_values):
-        raise HispecFibError(f"{name} v_mV contains non-finite values")
+    if any((not np.isfinite(v)) or v < 0.0 or v > 3300.0 for v in voltage_values):
+        raise HispecFibError(f"{name} v_mV values must be in [0.0, 3300.0]")
     if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
         raise HispecFibError(f"{name} flux values must be positive and finite")
     return {"v_mV": list(voltage_values), "flux": list(flux_values)}
@@ -1633,9 +1637,9 @@ class HispecFibPcb:
         if value2_db is not None:
             payload["value2_db"] = _require_float("value2_db", value2_db, 0.0, 1e9)
         if value1_mv is not None:
-            payload["value1_mv"] = _require_float("value1_mv", value1_mv, -1e9, 1e9)
+            payload["value1_mv"] = _require_float("value1_mv", value1_mv, 0.0, 3300.0)
         if value2_mv is not None:
-            payload["value2_mv"] = _require_float("value2_mv", value2_mv, -1e9, 1e9)
+            payload["value2_mv"] = _require_float("value2_mv", value2_mv, 0.0, 3300.0)
 
         request_payload = payload if payload else None
         return _dataclass_from(
@@ -1665,6 +1669,8 @@ class HispecFibPcb:
         dac1: tuple[float, float],
         dac2: tuple[float, float],
         *,
+        gain1: float = 1.533,
+        gain2: float = 1.533,
         persist: bool = False,
     ) -> CommandOk:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
@@ -1672,7 +1678,13 @@ class HispecFibPcb:
             raise HispecFibError("dac1 and dac2 must each contain slope and offset")
         return self._request_ok(
             f"atten/{laser}/coeff",
-            {"dac1": [float(dac1[0]), float(dac1[1])], "dac2": [float(dac2[0]), float(dac2[1])], "persist": persist},
+            {
+                "dac1": [float(dac1[0]), float(dac1[1])],
+                "dac2": [float(dac2[0]), float(dac2[1])],
+                "gain1": _require_float("gain1", gain1, 1e-12, 1e12),
+                "gain2": _require_float("gain2", gain2, 1e-12, 1e12),
+                "persist": persist,
+            },
         )
 
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
@@ -1730,7 +1742,7 @@ class HispecFibPcb:
     def atten_calibration_continue(self, *, other_mv: float | None = None) -> AttenuatorCalibrationStatus:
         payload: dict[str, Any] = {"continue": True}
         if other_mv is not None:
-            payload["other_mv"] = _require_float("other_mv", other_mv, 0.0, 4096.0)
+            payload["other_mv"] = _require_float("other_mv", other_mv, 0.0, 3300.0)
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
     def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:

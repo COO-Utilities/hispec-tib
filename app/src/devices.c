@@ -894,9 +894,11 @@ void setup_attenuators(void)
 
 		attenuators[attenuator_index].coeff1.slope = atten_settings.channel[attenuator_index].physical[0].slope;
 		attenuators[attenuator_index].coeff1.offset = atten_settings.channel[attenuator_index].physical[0].offset;
+		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
 
 		attenuators[attenuator_index].coeff2.slope = atten_settings.channel[attenuator_index].physical[1].slope;
 		attenuators[attenuator_index].coeff2.offset = atten_settings.channel[attenuator_index].physical[1].offset;
+		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
 	}
 }
 

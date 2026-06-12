@@ -238,8 +238,9 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Board restriction: TIB supports all configured logical attenuators; CAL
   profiles support only their configured logical channel.
 - Side effects: value changes on `atten/<laser>` block on DAC I2C and return
-  applied DAC-readback state; coefficient changes update runtime coefficients,
-  reapply current attenuation, and can persist to NVS.
+  applied DAC-readback state; coefficient changes update runtime slope, offset,
+  and per-physical op-amp gain, reapply current attenuation, and can persist to
+  NVS.
 - Enqueue: value changes can emit `attenuator_clamped`.
 
 ### `pd`

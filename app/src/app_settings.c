@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 6U
+#define APP_NVS_SCHEMA_VERSION 7U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -221,11 +221,15 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-			/* Default maps the full 0-5000 mV attenuator drive span
-			 * onto b=0..8 until lab-measured coefficients are stored.
+			/* Default maps the 0-3300 mV DAC span through the nominal
+			 * op-amp gain onto the FVOA model range until lab-measured
+			 * coefficients are stored.
 			 */
-			s->attenuator.channel[ch].physical[physical].slope = 8.0 / 5000.0;
+			s->attenuator.channel[ch].physical[physical].slope =
+				8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
 			s->attenuator.channel[ch].physical[physical].offset = 0.0;
+			s->attenuator.channel[ch].physical[physical].gain =
+				ATTENUATOR_DEFAULT_GAIN;
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
@@ -566,6 +570,7 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 
 		physical[i].slope = p->slope;
 		physical[i].offset = p->offset;
+		physical[i].gain = p->gain;
 	}
 
 	return attenuator_model_coefficients_valid(physical);

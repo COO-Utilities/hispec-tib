@@ -78,12 +78,12 @@ int attenuator_calibration_start_manual(uint8_t attenuator_index,
 					bool persistent,
 					struct attenuator_calibration_status *status);
 
-/** Advance manual stepping by one point; optional other_mv adjusts the held DAC. */
+/** Advance manual stepping by one point; optional other_mv adjusts the held DAC mV. */
 int attenuator_calibration_manual_continue(bool has_other_mv,
 					   double other_mv,
 					   struct attenuator_calibration_status *status);
 
-/** Fit manual batch flux feedback for one logical attenuator pair. */
+/** Fit manual batch flux feedback against DAC-side millivolts for one logical attenuator pair. */
 int attenuator_calibration_fit_manual(
 	uint8_t attenuator_index,
 	const struct attenuator_calibration_batch physical[2],

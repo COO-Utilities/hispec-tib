@@ -59,9 +59,9 @@ silently reused on another.
 - Last known UTC defaults to unset. Once SNTP or a `time` command sets the
   realtime clock, the value is persisted and restored on later boots until a
   fresher time source updates it.
-- Attenuator coefficients default to a linear `b = slope * voltage + offset`
-  model that maps the 0-5000 mV attenuator drive span onto `b = 0..8` until
-  calibrated/stored.
+- Attenuator coefficients default to
+  `b = gain * (slope * dac_mv + offset)`, with DAC output millivolts in the
+  0-3300 mV span and default gain 1.533, until calibrated/stored.
 - Photodiode dark and dark-noise RMS default to 0 mV. YJ and HK have different
   default gain/noise warning values.
 - Laser expected serials default to the initial known driver/diode association.

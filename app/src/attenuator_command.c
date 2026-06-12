@@ -160,11 +160,14 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	switch (setting) {
 	case ATTENUATOR_SETTING_COEFF:
 		snprintk(payload, sizeof(payload),
-			 "{\"dac1\":[%.12g,%.12g],\"dac2\":[%.12g,%.12g]}",
+			 "{\"dac1\":[%.12g,%.12g],\"dac2\":[%.12g,%.12g],"
+			 "\"gain1\":%.12g,\"gain2\":%.12g}",
 			 attenuators[attenuator_index].coeff1.slope,
 			 attenuators[attenuator_index].coeff1.offset,
 			 attenuators[attenuator_index].coeff2.slope,
-			 attenuators[attenuator_index].coeff2.offset);
+			 attenuators[attenuator_index].coeff2.offset,
+			 attenuators[attenuator_index].coeff1.gain,
+			 attenuators[attenuator_index].coeff2.gain);
 		break;
 	case ATTENUATOR_SETTING_COMPACT:
 		return attenuator_status_reply(cmd, out, attenuator_index);
@@ -407,6 +410,8 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		struct app_attenuator_channel_settings stored_coeffs = {0};
 		struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
 		bool persist = false;
+		double gain1;
+		double gain2;
 		int parse_rc;
 
 		parse_rc = coo_json_extract_double_array(cmd->payload, "dac1",
@@ -427,6 +432,14 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 						  "{\"error\":\"Improper arguments\"}");
 		}
 
+		if (coo_json_extract_double(cmd->payload, "gain1", &gain1) !=
+		    COO_JSON_EXTRACT_OK ||
+		    coo_json_extract_double(cmd->payload, "gain2", &gain2) !=
+		    COO_JSON_EXTRACT_OK) {
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+					     "{\"error\":\"Missing gain\"}");
+		}
+
 		if (coo_json_extract_optional_bool(cmd->payload, "persist",
 						   &persist, NULL) != 0) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
@@ -435,12 +448,16 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 
 		physical[0].slope = dac1_coeffs[0];
 		physical[0].offset = dac1_coeffs[1];
+		physical[0].gain = gain1;
 		physical[1].slope = dac2_coeffs[0];
 		physical[1].offset = dac2_coeffs[1];
+		physical[1].gain = gain2;
 		stored_coeffs.physical[0].slope = dac1_coeffs[0];
 		stored_coeffs.physical[0].offset = dac1_coeffs[1];
+		stored_coeffs.physical[0].gain = gain1;
 		stored_coeffs.physical[1].slope = dac2_coeffs[0];
 		stored_coeffs.physical[1].offset = dac2_coeffs[1];
+		stored_coeffs.physical[1].gain = gain2;
 
 		if (attenuator_apply_coefficients_preserve_db(
 			    &attenuators[attenuator_index], physical) != 0) {

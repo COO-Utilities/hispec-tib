@@ -24,6 +24,12 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define M_PI 3.14159265358979323846
 #endif
 
+static double attenuator_model_voltage_to_b(const struct attenuator_model_coeffs *coeffs,
+                                            double voltage)
+{
+    return coeffs->gain * ((coeffs->slope * voltage) + coeffs->offset);
+}
+
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
 {
     if (index == NULL || laser < 0 || laser >= HISPEC_LASER_COUNT) {
@@ -81,6 +87,8 @@ bool attenuator_init(struct attenuator *drv,
 
     attenuator_cfg_init(&drv->dac_cfg1, dac1, channel1);
     attenuator_cfg_init(&drv->dac_cfg2, dac2, channel2);
+    drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->attenuation_db = 0.0;
 
     return attenuator_channel_setup(&drv->dac_cfg1) &&
@@ -97,7 +105,7 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
         return 0.0;
     }
 
-    b = coeffs->slope * voltage + coeffs->offset;
+    b = attenuator_model_voltage_to_b(coeffs, voltage);
     transmission = attenuator_model_b_to_linear(b);
 
     if (transmission <= 0.0) {
@@ -120,6 +128,7 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
     double b;
 
     if (coeffs == NULL || voltage == NULL || coeffs->slope == 0.0 ||
+        coeffs->gain <= 0.0 ||
         attenuation_db < 0.0) {
         return false;
     }
@@ -138,7 +147,7 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
 
     inv = zsl_prob_erf_inv(&erf_arg);
     b = MODEL_ERF_SCALE - (double)inv;
-    *voltage = (b - coeffs->offset) / coeffs->slope;
+    *voltage = ((b / coeffs->gain) - coeffs->offset) / coeffs->slope;
 
     return true;
 }
@@ -148,7 +157,8 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
     double max_db;
 
     if (coeffs == NULL || !isfinite(coeffs->slope) ||
-        !isfinite(coeffs->offset) || coeffs->slope <= 0.0) {
+        !isfinite(coeffs->offset) || !isfinite(coeffs->gain) ||
+        coeffs->slope <= 0.0 || coeffs->gain <= 0.0) {
         return false;
     }
 
@@ -229,7 +239,7 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
     code = attenuator_voltage_to_code(voltage);
     applied_voltage = attenuator_code_to_voltage(code);
     /* dac_write_value() is the hardware side effect: it can block on I2C and
-     * changes the analog attenuation control voltage.
+     * changes the DAC output voltage that feeds the FVOA-drive op amp.
      */
     err = dac_write_value(dac_cfg->dev, dac_cfg->cfg.channel_id, code);
     if (err != 0) {
@@ -491,8 +501,8 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
         return false;
     }
 
-    b1 = drv->coeff1.slope * status.voltage1 + drv->coeff1.offset;
-    b2 = drv->coeff2.slope * status.voltage2 + drv->coeff2.offset;
+    b1 = attenuator_model_voltage_to_b(&drv->coeff1, status.voltage1);
+    b2 = attenuator_model_voltage_to_b(&drv->coeff2, status.voltage2);
     tx1 = attenuator_model_b_to_linear(b1);
     tx2 = attenuator_model_b_to_linear(b2);
     dtx1_db = attenuator_model_dlinear_db(b1);

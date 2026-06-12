@@ -117,10 +117,10 @@ struct atten_cal_state_data {
 };
 
 static const double voltage_schedule[ATTENUATOR_CAL_POINT_COUNT] = {
-	5000.0, 4500.0, 4000.0, 3700.0, 3500.0,
-	3350.0, 3250.0, 3175.0, 3100.0, 3050.0,
-	3000.0, 2950.0, 2875.0, 2800.0, 2650.0,
-	2500.0, 2000.0, 1500.0, 750.0, 0.0,
+	3300.0, 3050.0, 2800.0, 2550.0, 2300.0,
+	2050.0, 1800.0, 1550.0, 1300.0, 1100.0,
+	900.0, 750.0, 600.0, 475.0, 350.0,
+	250.0, 175.0, 100.0, 50.0, 0.0,
 };
 
 static struct atten_cal_state_data cal;
@@ -1011,13 +1011,19 @@ static int apply_fit_to_settings(uint8_t attenuator_index,
 	}
 	atten = &attenuators[attenuator_index];
 
+	/* Calibration fits measured b against DAC millivolts. Runtime keeps
+	 * op-amp gain as a separate coefficient term, so normalize accepted fits
+	 * by the configured gain before storing slope/offset.
+	 */
 	physical[0] = fit[0].accepted ? (struct attenuator_model_coeffs){
-		.slope = fit[0].slope,
-		.offset = fit[0].offset,
+		.slope = fit[0].slope / atten->coeff1.gain,
+		.offset = fit[0].offset / atten->coeff1.gain,
+		.gain = atten->coeff1.gain,
 	} : atten->coeff1;
 	physical[1] = fit[1].accepted ? (struct attenuator_model_coeffs){
-		.slope = fit[1].slope,
-		.offset = fit[1].offset,
+		.slope = fit[1].slope / atten->coeff2.gain,
+		.offset = fit[1].offset / atten->coeff2.gain,
+		.gain = atten->coeff2.gain,
 	} : atten->coeff2;
 
 	if (attenuator_apply_coefficients_preserve_db(atten, physical) != 0) {
@@ -1026,8 +1032,10 @@ static int apply_fit_to_settings(uint8_t attenuator_index,
 
 	stored.physical[0].slope = physical[0].slope;
 	stored.physical[0].offset = physical[0].offset;
+	stored.physical[0].gain = physical[0].gain;
 	stored.physical[1].slope = physical[1].slope;
 	stored.physical[1].offset = physical[1].offset;
+	stored.physical[1].gain = physical[1].gain;
 	app_settings_update_attenuator_channel(attenuator_index, &stored, persistent);
 	return 0;
 }

@@ -955,14 +955,16 @@ command wait budget, this command returns `{"error":"busy"}`.
   the DAC.
 - **No payload to `coeff` -> model coefficients:**
   ```json
-  {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0]}
+  {"dac1":[0.00158137,0.0],"dac2":[0.00158137,0.0],"gain1":1.533,"gain2":1.533}
   ```
 - **Payload to `coeff`:** set the linear model coefficients for the two physical
   attenuators that make up the logical attenuator.
   ```json
   {
-    "dac1": [0.0016, 0.0],
-    "dac2": [0.0016, 0.0],
+    "dac1": [0.00158137, 0.0],
+    "dac2": [0.00158137, 0.0],
+    "gain1": 1.533,
+    "gain2": 1.533,
     "persist": true
   }
   ```
@@ -971,7 +973,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient arrays. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":[0.0016,0.0],"dac2":[0.0016,0.0],"persist":true}
+  atten/1028y/coeff {"dac1":[0.00158137,0.0],"dac2":[0.00158137,0.0],"gain1":1.533,"gain2":1.533,"persist":true}
   ```
 
 - **Notes:**
@@ -986,11 +988,13 @@ command wait budget, this command returns `{"error":"busy"}`.
     second, and override any individual physical set point made through the C
     attenuator API.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
-  - `v1_mv` and `v2_mv` are DAC-backed attenuator drive setpoints in
-    millivolts after drive-span clamping and DAC-code quantization.
+  - `v1_mv` and `v2_mv` are DAC output setpoints in millivolts after 0-3300 mV
+    clamping and DAC-code quantization.
   - Coefficients are loaded from persistent app NVS during
-    `setup_attenuators()`. They define `b = slope * voltage + offset` for the
-    attenuation model `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`.
+    `setup_attenuators()`. They define
+    `b = gain * (slope * dac_mv + offset)` for the attenuation model
+    `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`. `gain1` and
+    `gain2` default to 1.533.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
@@ -1009,8 +1013,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     "t_ms": 300,
     "complete_pct": 0,
     "point": "1/20",
-    "mv": 5000.0,
-    "other_mv": 5000.0,
+    "mv": 3300.0,
+    "other_mv": 3300.0,
     "error": 0,
     "dac1": {
       "valid": true,
@@ -1050,7 +1054,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "points": [
       {
         "i": 0,
-        "v": 5000.0,
+        "v": 3300.0,
         "f": 12.3,
         "valid": true,
         "sat": false,
@@ -1101,11 +1105,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     "attenuator": "lfc",
     "persist": true,
     "dac1": {
-      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [3300.0, 3050.0, 2800.0, 2550.0, 2300.0, 2050.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     },
     "dac2": {
-      "v_mV": [5000.0, 4750.0, 4500.0, 4250.0, 4000.0, 3750.0],
+      "v_mV": [3300.0, 3050.0, 2800.0, 2550.0, 2300.0, 2050.0],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     }
   }
@@ -1126,8 +1130,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     "point_index": 4,
     "point_count": 20,
     "complete_pct": 10,
-    "sweep_mv": 4000.0,
-    "other_mv": 5000.0,
+    "sweep_mv": 2800.0,
+    "other_mv": 3300.0,
     "mean_mv": 123.4,
     "mean_net_mv": 120.1,
     "rms_mv": 0.2,
@@ -1181,8 +1185,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     thread advances the state machine.
   - The fit converts normalized flux to the attenuator model coordinate and
     uses local double-precision linear regression for
-    `b = slope * v_mV + offset`. Fit details include point count, correlation,
-    residual RMS/max in dB, fitted transmission span, and voltage span.
+    `b_measured = slope * v_mV + offset` with DAC-side millivolts. When a fit
+    is applied, the stored slope and offset are normalized by the configured
+    op-amp gain so runtime still uses `b = gain * (slope * dac_mv + offset)`.
+    Fit details include point count, correlation, residual RMS/max in dB,
+    fitted transmission span, and voltage span.
   - Manual calibration returns the voltage schedule on completion or stop so an
     operator can record fluxes externally and submit the batch later.
   - Starting manual calibration disables any active autolevel throughput monitor
