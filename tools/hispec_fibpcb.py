@@ -88,6 +88,34 @@ THROUGHPUT_DTYPE = np.dtype(
         ("flags", "O"),
     ]
 )
+ATTEN_CAL_DTYPE = np.dtype(
+    [
+        ("physical", "U8"),
+        ("i", "u2"),
+        ("event", "U16"),
+        ("reason", "U16"),
+        ("segment", "u1"),
+        ("v", "f8"),
+        ("other_mv", "f8"),
+        ("laser_pct", "f8"),
+        ("mean_mv", "f8"),
+        ("signal_mv", "f8"),
+        ("rms_mv", "f8"),
+        ("sigma_y_mv", "f8"),
+        ("sigma_x_mv", "f8"),
+        ("snr", "f8"),
+        ("flux", "f8"),
+        ("flux_sigma", "f8"),
+        ("scale", "f8"),
+        ("scale_sigma", "f8"),
+        ("samples", "u2"),
+        ("max_raw", "i2"),
+        ("flags", "u1"),
+        ("tx", "f8"),
+        ("b", "f8"),
+        ("residual_db", "f8"),
+    ]
+)
 
 
 def _format_scalar(value: Any) -> str:
@@ -524,16 +552,54 @@ class AttenuatorCalibrationStatus(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorCalibrationDataPoint(ResponseRepr):
+    physical: str
     i: int
-    v: float
-    f: float
-    valid: bool
-    sat: bool
-    included: bool
+    event: str
     reason: str
+    segment: int
+    v: float
+    other_mv: float
+    laser_pct: float
+    mean_mv: float
+    signal_mv: float
+    rms_mv: float
+    sigma_y_mv: float
+    sigma_x_mv: float
+    snr: float
+    flux: float
+    flux_sigma: float
+    scale: float
+    scale_sigma: float
+    samples: int
+    max_raw: int
+    flags: int
     tx: float
     b: float | None
     residual_db: float | None
+
+    @property
+    def valid(self) -> bool:
+        return self.reason == "ok"
+
+    @property
+    def sat(self) -> bool:
+        return self.reason == "saturated" or bool(self.flags & 0x01)
+
+    @property
+    def included(self) -> bool:
+        return bool(self.flags & 0x08)
+
+    @property
+    def f(self) -> float:
+        return self.flux
+
+    def as_tuple(self) -> tuple[Any, ...]:
+        return tuple(
+            getattr(self, name) if name not in ("b", "residual_db") else (
+                np.nan if getattr(self, name) is None else getattr(self, name)
+            )
+            for name in ATTEN_CAL_DTYPE.names
+        )
 
 
 @dataclass(frozen=True, repr=False)
@@ -543,12 +609,83 @@ class AttenuatorCalibrationDataPage(ResponseRepr):
     physical: str
     start: int
     count: int
+    record_count: int
     point_count: int
     next: int | None
     fit_valid: bool
     fit_accepted: bool
-    max_flux: float
+    record_overflow: bool
+    dark_mean_mv: float
+    dark_rms_mv: float
+    dark_sigma_mv: float
+    open_flux: float
     points: tuple[AttenuatorCalibrationDataPoint, ...]
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationDataset(ResponseRepr):
+    pages: tuple[AttenuatorCalibrationDataPage, ...]
+    points: tuple[AttenuatorCalibrationDataPoint, ...]
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        physicals = tuple(dict.fromkeys(point.physical for point in self.points))
+        return (
+            ("pages", len(self.pages)),
+            ("points", len(self.points)),
+            ("physicals", physicals),
+        )
+
+    def to_recarray(self) -> np.recarray:
+        return np.array(
+            [point.as_tuple() for point in self.points],
+            dtype=ATTEN_CAL_DTYPE,
+        ).view(np.recarray)
+
+    def to_dataframe(self):
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise HispecFibError("pandas is not installed") from exc
+        return pd.DataFrame.from_records(self.to_recarray(), columns=ATTEN_CAL_DTYPE.names)
+
+    def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        rec = self.to_recarray()
+        missing = [name for name in names if name not in rec.dtype.names]
+        if missing:
+            raise HispecFibError(f"unknown attenuator calibration field(s): {', '.join(missing)}")
+        arrays = tuple(rec[name] for name in names)
+        return arrays[0] if len(arrays) == 1 else arrays
+
+    def plot(
+        self,
+        *,
+        x: str = "v",
+        y: str = "flux",
+        physical: Literal["dac1", "dac2", "all"] = "all",
+        included_only: bool = False,
+        ax: Any = None,
+    ):
+        import matplotlib.pyplot as plt
+
+        physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
+        rec = self.to_recarray()
+        if physical != "all":
+            rec = rec[rec.physical == physical]
+        if included_only:
+            rec = rec[(rec.flags & 0x08) != 0]
+        if x not in rec.dtype.names or y not in rec.dtype.names:
+            raise HispecFibError(f"unknown plot field: {x if x not in rec.dtype.names else y}")
+        if ax is None:
+            _, ax = plt.subplots()
+        for name in ("dac1", "dac2"):
+            subset = rec[rec.physical == name]
+            if len(subset):
+                ax.plot(subset[x], subset[y], marker=".", linestyle="-", label=name)
+        ax.set_xlabel(x)
+        ax.set_ylabel(y)
+        if len(rec):
+            ax.legend()
+        return ax
 
 
 @dataclass(frozen=True, repr=False)
@@ -964,32 +1101,63 @@ def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
 
 
 def _decode_atten_cal_data_page(data: Mapping[str, Any]) -> AttenuatorCalibrationDataPage:
+    physical = str(data["physical"])
+    decoded_points: list[AttenuatorCalibrationDataPoint] = []
+    for point in data.get("points", ()):
+        valid = bool(point.get("valid", False))
+        sat = bool(point.get("sat", False))
+        included = bool(point.get("in", False))
+        flags = int(point.get("flags", 0))
+        if "flags" not in point:
+            flags = (0x01 if sat else 0) | (0x06 if valid else 0) | (0x08 if included else 0)
+        tx_value = point.get("tx")
+        b_value = point.get("b")
+        res_value = point.get("res")
+        decoded_points.append(
+            AttenuatorCalibrationDataPoint(
+                physical=physical,
+                i=int(point["i"]),
+                event=str(point.get("e", "point")),
+                reason=str(point.get("r", "ok" if valid else "invalid")),
+                segment=int(point.get("seg", 0)),
+                v=_float_or_nan(point.get("v")),
+                other_mv=_float_or_nan(point.get("o", point.get("other"))),
+                laser_pct=_float_or_nan(point.get("laser")),
+                mean_mv=_float_or_nan(point.get("mean")),
+                signal_mv=_float_or_nan(point.get("sig", point.get("signal"))),
+                rms_mv=_float_or_nan(point.get("rms")),
+                sigma_y_mv=_float_or_nan(point.get("sy")),
+                sigma_x_mv=_float_or_nan(point.get("sx")),
+                snr=_float_or_nan(point.get("snr")),
+                flux=_float_or_nan(point.get("f")),
+                flux_sigma=_float_or_nan(point.get("fs")),
+                scale=_float_or_nan(point.get("scale")),
+                scale_sigma=_float_or_nan(point.get("ss")),
+                samples=int(point.get("n", point.get("samples", 0))),
+                max_raw=int(point.get("raw", point.get("max_raw", 0))),
+                flags=flags,
+                tx=_float_or_nan(tx_value),
+                b=None if b_value is None else float(b_value),
+                residual_db=None if res_value is None else float(res_value),
+            )
+        )
     return AttenuatorCalibrationDataPage(
         state=str(data["state"]),
         mode=str(data["mode"]),
-        physical=str(data["physical"]),
+        physical=physical,
         start=int(data["start"]),
         count=int(data["count"]),
+        record_count=int(data.get("record_count", data.get("point_count", 0))),
         point_count=int(data["point_count"]),
         next=None if data.get("next") is None else int(data["next"]),
         fit_valid=bool(data.get("fit_valid", False)),
         fit_accepted=bool(data.get("fit_accepted", False)),
-        max_flux=float(data.get("max_flux", 0.0)),
-        points=tuple(
-            AttenuatorCalibrationDataPoint(
-                i=int(point["i"]),
-                v=float(point["v"]),
-                f=float(point["f"]),
-                valid=bool(point.get("valid", False)),
-                sat=bool(point.get("sat", False)),
-                included=bool(point.get("in", False)),
-                reason=str(point.get("r", "")),
-                tx=float(point.get("tx", 0.0)),
-                b=None if point.get("b") is None else float(point["b"]),
-                residual_db=None if point.get("res") is None else float(point["res"]),
-            )
-            for point in data.get("points", ())
-        ),
+        record_overflow=bool(data.get("record_overflow", False)),
+        dark_mean_mv=_float_or_nan(data.get("dark_mean_mv")),
+        dark_rms_mv=_float_or_nan(data.get("dark_rms_mv")),
+        dark_sigma_mv=_float_or_nan(data.get("dark_sigma_mv")),
+        open_flux=_float_or_nan(data.get("open_flux", data.get("max_flux"))),
+        points=tuple(decoded_points),
     )
 
 
@@ -1700,7 +1868,7 @@ class HispecFibPcb:
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate"))
 
-    def atten_calibration_data(
+    def atten_calibration_data_page(
         self,
         physical: Literal["dac1", "dac2"],
         *,
@@ -1712,6 +1880,42 @@ class HispecFibPcb:
         return _decode_atten_cal_data_page(
             self._request_json(f"atten/calibrate/data/{physical}/{int(start)}")
         )
+
+    def _atten_calibration_pages(
+        self,
+        physical: Literal["dac1", "dac2"],
+    ) -> list[AttenuatorCalibrationDataPage]:
+        pages: list[AttenuatorCalibrationDataPage] = []
+        next_start: int | None = 0
+        while next_start is not None:
+            page = self.atten_calibration_data_page(physical, start=next_start)
+            pages.append(page)
+            if page.next is not None and page.next <= next_start:
+                raise HispecFibError("attenuator calibration data pagination did not advance")
+            next_start = page.next
+        return pages
+
+    def atten_calibration_data(
+        self,
+        physical: Literal["dac1", "dac2", "all"] = "all",
+        *,
+        start: int | None = None,
+    ) -> AttenuatorCalibrationDataset | AttenuatorCalibrationDataPage:
+        physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
+        if start is not None:
+            if physical == "all":
+                raise HispecFibError("start can only be used with physical='dac1' or 'dac2'")
+            return self.atten_calibration_data_page(physical, start=start)
+
+        selected = ("dac1", "dac2") if physical == "all" else (physical,)
+        pages: list[AttenuatorCalibrationDataPage] = []
+        points: list[AttenuatorCalibrationDataPoint] = []
+        for name in selected:
+            physical_pages = self._atten_calibration_pages(name)  # type: ignore[arg-type]
+            pages.extend(physical_pages)
+            for page in physical_pages:
+                points.extend(page.points)
+        return AttenuatorCalibrationDataset(pages=tuple(pages), points=tuple(points))
 
     def atten_calibrate_auto(
         self,

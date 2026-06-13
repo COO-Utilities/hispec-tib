@@ -1040,35 +1040,60 @@ command wait budget, this command returns `{"error":"busy"}`.
   atten/calibrate/data/<dac1|dac2>[/<start>]
   ```
   `start` is optional and defaults to `0`; the response includes `next` until
-  all scheduled points have been returned.
+  all retained records for the requested physical FVOA have been returned.
   ```json
   {
-    "state": "complete",
+    "state": "error",
     "mode": "tib_auto",
     "physical": "dac1",
     "start": 0,
-    "count": 5,
-    "point_count": 20,
-    "next": 5,
+    "count": 2,
+    "record_count": 13,
+    "point_count": 128,
+    "next": 2,
     "fit_valid": true,
-    "fit_accepted": true,
-    "max_flux": 1234.5,
+    "fit_accepted": false,
+    "record_overflow": false,
+    "dark_mean_mv": -0.6,
+    "dark_rms_mv": 3.2,
+    "dark_sigma_mv": 0.83,
+    "open_flux": 92697.1,
     "points": [
       {
         "i": 0,
+        "e": "point",
+        "r": "ok",
+        "seg": 0,
         "v": 3300.0,
-        "f": 12.3,
-        "valid": true,
-        "sat": false,
-        "in": true,
-        "r": "included",
-        "tx": 0.01,
-        "b": 5.1,
-        "res": -0.2
+        "o": 1764.0,
+        "laser": 100.0,
+        "mean": 352.7,
+        "sig": 353.3,
+        "rms": 3.8,
+        "sy": 0.91,
+        "sx": 3.0,
+        "snr": 388.2,
+        "f": 353.3,
+        "fs": 0.91,
+        "scale": 1.0,
+        "ss": 0.0,
+        "n": 15,
+        "raw": 1881,
+        "flags": 14,
+        "tx": 0.00381,
+        "b": 5.88679,
+        "res": -14.8773
       }
     ]
   }
   ```
+  `points` are retained acquisition records, not only fit input points. Record
+  event `e` may be `point`, `anchor_before`, `link_probe`,
+  `anchor_after`, or `manual`. Reason `r` is `ok`, `saturated`,
+  `below_snr`, `adc_error`, or `invalid`. `sx` is the fixed DAC uncertainty
+  used by the fit, initially 3 mV. `sy` is the photodiode mean uncertainty
+  after combining the run-local dark uncertainty. `tx`, `b`, and `res` are
+  null unless that record was included in the current fit.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1119,79 +1144,98 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 - **Telemetry topic:** `dt/<device>/atten`
 - **Telemetry payload:** attenuator calibration emits one best-effort JSON
-  message per significant state transition, DAC setpoint, photodiode reading,
-  level adjustment, submitted manual point, and fit result. Calibration
-  continues if telemetry is dropped.
+  message per significant state transition, DAC setpoint, retained
+  measurement record, submitted manual point, and fit result. Calibration
+  continues if telemetry is dropped; authoritative acquisition data is queried
+  through `atten/calibrate/data`.
   ```json
   {
-    "event": "point_reading",
+    "event": "point",
     "state": "running",
     "mode": "tib_auto",
     "physical": "dac1",
     "attenuator": 2,
     "point_index": 4,
-    "point_count": 20,
+    "point_count": 128,
     "complete_pct": 10,
+    "i": 4,
+    "reason": "ok",
+    "segment": 0,
     "sweep_mv": 2800.0,
-    "other_mv": 3300.0,
+    "other_mv": 1764.0,
+    "laser_pct": 100.0,
     "mean_mv": 123.4,
-    "mean_net_mv": 120.1,
+    "signal_mv": 124.0,
     "rms_mv": 0.2,
-    "min_mv": 119.8,
-    "max_mv": 120.5,
-    "max_raw": 1024,
+    "sigma_y_mv": 0.1,
+    "sigma_x_mv": 3.0,
+    "snr": 1240.0,
     "samples": 15,
-    "target_samples": 15,
-    "duration_ms": 300,
+    "max_raw": 1024,
     "saturated": false,
-    "valid": true,
+    "usable": true,
+    "fit_eligible": true,
     "scale": 1.0,
-    "flux": 120.1
+    "scale_sigma": 0.0,
+    "flux": 124.0,
+    "flux_sigma": 0.1
   }
   ```
-  Other `event` values include `start`, `physical_start`, `signal_set`,
-  `signal_probe`, `point_set`, `point_probe`, `renorm_set`,
-  `renorm_reading`, `adjust`, `adjust_result`, `manual_point_set`,
-  `manual_point`, `fit`, `complete`, `stop`, and `error`. `adjust_result`
-  reports the before/after photodiode means and renormalization scale update
-  after an automatic level adjustment. Fit input and residual diagnostics are
-  retained in calibration state and queried through `atten/calibrate/data`
-  instead of being emitted as an end-of-run telemetry burst.
+  Other `event` values include `start`, `physical_start`, `dark_set`,
+  `point_set`, `anchor_before_set`, `link_probe_set`, `anchor_after_set`,
+  `anchor_before`, `link_probe`, `anchor_after`, `manual_point_set`,
+  `manual_point`, `fit`, `complete`, `stop`, and `error`. Fit input and
+  residual diagnostics are retained in calibration state and queried through
+  `atten/calibrate/data` instead of being emitted as an end-of-run telemetry
+  burst.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
     A canceled calibration returns to `inactive`. Fit state is `ok` when both
-    physical attenuators are accepted, `partial` when one side is accepted and
-    applied, `failed` after an unsuccessful fit, and `none` before a fit exists.
+    physical attenuators are accepted, `failed` after an unsuccessful fit, and
+    `none` before a fit exists. Calibration coefficients are persisted only
+    when `persist` is requested and both physical fits are accepted.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
-  - TIB automatic calibration powers the selected photodiode, waits 1 s for the
-    relay/source to settle, sets both physical attenuators to the maximum
-    firmware DAC-drive voltage and the laser to full output, then adaptively
-    samples up to 20 DAC points per physical attenuator. Each point has a fixed
-    50 ms step-settle before the photodiode average begins.
-  - Automatic calibration targets settled photodiode readings between about
-    250 mV and 4500 mV. It keeps the non-swept attenuator as low as practical
-    for low-signal points, raises it as needed to prevent saturation, and may
-    reduce laser output before the held attenuator reaches its limit. When the
-    signal level changes, calibration re-measures a previous reference voltage
-    and updates an internal scale factor so retained fit fluxes remain
-    comparable.
-  - Saturated or overrange samples are probes, not fit points. The same point is
-    retried after level adjustment; if a physical attenuator cannot produce
-    enough usable points, that side is skipped and the opposite accepted side
-    can still be applied.
+  - TIB automatic calibration powers the selected photodiode, stops laser
+    emission, sets both physical attenuators to the maximum firmware DAC-drive
+    voltage, waits 1 s for the relay/source to settle, and records a run-local
+    dark/noise average. The laser is then enabled at the first acquisition
+    level for each physical FVOA. The run-local dark is used only for this
+    calibration run; persistent photodiode dark calibration remains a separate
+    photodiode command.
+  - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
+    measurement is usable when it is not saturated and its dark-subtracted
+    signal is at least 5 sigma above the combined run-local dark and sample
+    mean uncertainty. Low-but-clean points are retained and may be fit inputs.
+    Saturated, below-SNR, ADC-error, and invalid measurements are retained as
+    records but are not fit inputs.
+  - The swept physical FVOA walks down in DAC millivolts from the open end. If
+    it brackets a sharp transition, firmware explicitly records an
+    `anchor_before` measurement at the last usable voltage, searches for a
+    usable `link_probe` at the lower retry voltage by changing the held FVOA,
+    then records `anchor_after` back at the same anchor voltage. The
+    before/after anchor ratio updates the flux scale and its uncertainty.
+    Laser level changes after usable data follow the same anchored path.
+  - Firmware does not try to classify or discard whole nonlinear regions. It
+    reports every retained acquisition record, and the fit uses only records
+    flagged as fit-eligible by saturation/SNR rules. External analysis can
+    inspect all retained records regardless of firmware fit success.
   - Automatic calibration uses short photodiode averages from the sampler
     thread. It does not start a new calibration thread; the throughput monitor
     thread advances the state machine.
-  - The fit converts normalized flux to the attenuator model coordinate and
-    uses local double-precision linear regression for
-    `b_measured = slope * v_mV + offset` with DAC-side millivolts. When a fit
-    is applied, the stored slope and offset are normalized by the configured
-    op-amp gain so runtime still uses `b = gain * (slope * dac_mv + offset)`.
-    Fit details include point count, correlation, residual RMS/max in dB,
-    fitted transmission span, and voltage span.
+  - The automatic fit normalizes flux to the best retained open-end reference,
+    converts transmission to the attenuator model coordinate, and uses
+    uncertainty-weighted double-precision linear regression for
+    `b_measured = slope * v_mV + offset` with DAC-side millivolts. The y
+    uncertainty comes from photodiode and anchor-scale propagation; the x
+    uncertainty is the fixed DAC uncertainty, initially 3 mV. When a fit is
+    applied, the stored slope and offset are normalized by the configured
+    op-amp gain so runtime still uses
+    `b = gain * (slope * dac_mv + offset)`. Fit details include point count,
+    correlation, residual RMS/max in dB, fitted transmission span, and voltage
+    span.
   - Manual calibration returns the voltage schedule on completion or stop so an
     operator can record fluxes externally and submit the batch later.
   - Starting manual calibration disables any active autolevel throughput monitor

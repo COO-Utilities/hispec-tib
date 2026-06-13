@@ -552,7 +552,7 @@ static int parse_calibration_data_suffix(const char *key,
 	errno = 0;
 	parsed = strtoul(start_text, &end, 10);
 	if (errno != 0 || end == NULL || *end != '\0' ||
-	    parsed >= ATTENUATOR_CAL_POINT_COUNT) {
+	    parsed >= ATTENUATOR_CAL_RECORD_COUNT) {
 		return -EINVAL;
 	}
 	*start_index = (uint8_t)parsed;

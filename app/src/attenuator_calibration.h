@@ -18,6 +18,7 @@
 #include "photodiode.h"
 
 #define ATTENUATOR_CAL_POINT_COUNT 20U
+#define ATTENUATOR_CAL_RECORD_COUNT 128U
 #define ATTENUATOR_CAL_MIN_BATCH_POINTS 6U
 
 struct attenuator_calibration_fit_metrics {
@@ -104,7 +105,7 @@ int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,
 	const struct attenuator_calibration_status *status);
 
-/** Append one retained calibration fit-data page as JSON. */
+/** Append one retained calibration data page as JSON. */
 int attenuator_calibration_format_data_page(char *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,
