@@ -20,7 +20,7 @@
 
 #define ATTENUATOR_PHYSICAL_COUNT 2
 #define ATTENUATOR_COEFF_COUNT 2
-/* DAC output span before the external FVOA-drive op amp. */
+/* Firmware command/model span for DAC output before the FVOA-drive op amp. */
 #define ATTENUATOR_DRIVE_MAX_MV 3300.0
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 
@@ -33,6 +33,8 @@ struct attenuator_model_coeffs {
 struct attenuator_dac_cfg {
     const struct device *dev;
     struct dac_channel_cfg cfg;
+    double ideal_full_scale_mv;
+    double drive_limit_mv;
     double voltage;
     double attenuation_db;
 };

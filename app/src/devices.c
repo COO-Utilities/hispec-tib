@@ -14,6 +14,7 @@
 #include "devices.h"
 #include "app_settings.h"
 #include "command.h"
+#include "drivers/dac/dac7x78.h"
 #include "maiman.h"
 #include "mems_switching.h"
 
@@ -148,6 +149,11 @@ static const struct attenuator_dac_pair attenuator_dac_pairs[NUM_ATTENUATORS] = 
 };
 BUILD_ASSERT(ARRAY_SIZE(attenuator_dac_pairs) == NUM_ATTENUATORS,
 	     "DAC pair table must match logical attenuator count");
+
+static const struct device *const attenuator_dac_devices[] = {
+	DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+	DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+};
 
 struct board_profile {
 	enum hispec_board_type board;
@@ -869,6 +875,64 @@ attenuator_dac_pair_for_index(uint8_t attenuator_index)
 	return &attenuator_dac_pairs[attenuator_index];
 }
 
+static uint8_t attenuator_dac_used_mask(const struct board_profile *profile,
+					const struct device *dev)
+{
+	uint8_t mask = 0U;
+
+	for (uint8_t i = 0U; i < profile->attenuator_count; ++i) {
+		uint8_t attenuator_index = profile->attenuator_first + i;
+		const struct attenuator_dac_pair *dac_pair =
+			attenuator_dac_pair_for_index(attenuator_index);
+
+		if (dac_pair->dev != dev) {
+			continue;
+		}
+
+		mask |= BIT(dac_pair->channel1);
+		mask |= BIT(dac_pair->channel2);
+	}
+
+	return mask;
+}
+
+static bool setup_attenuator_dac_power_states(const struct board_profile *profile)
+{
+	bool ok = true;
+
+	for (uint8_t i = 0U; i < ARRAY_SIZE(attenuator_dac_devices); ++i) {
+		const struct device *dev = attenuator_dac_devices[i];
+		uint8_t used_mask = attenuator_dac_used_mask(profile, dev);
+		uint8_t unused_mask =
+			(uint8_t)(BIT_MASK(DAC7X78_CHANNEL_COUNT) & ~used_mask);
+		int rc;
+
+		if (dev == NULL || !device_is_ready(dev)) {
+			LOG_ERR("Attenuator DAC unavailable for power-state setup");
+			ok = false;
+			continue;
+		}
+
+		rc = dac7x78_set_power_state(dev, used_mask, DAC7X78_POWER_NORMAL);
+		if (rc != 0) {
+			LOG_ERR("Failed to power up used DAC channels on %s: %d",
+				dev->name, rc);
+			ok = false;
+			continue;
+		}
+
+		rc = dac7x78_set_power_state(dev, unused_mask,
+					     DAC7X78_POWER_DOWN_HIGH_Z);
+		if (rc != 0) {
+			LOG_ERR("Failed to high-Z unused DAC channels on %s: %d",
+				dev->name, rc);
+			ok = false;
+		}
+	}
+
+	return ok;
+}
+
 void setup_attenuators(void)
 {
 	const struct board_profile *profile = current_profile();
@@ -880,6 +944,12 @@ void setup_attenuators(void)
 	}
 
 	app_settings_get_attenuator(&atten_settings);
+
+	if (!setup_attenuator_dac_power_states(profile)) {
+		LOG_ERR("Attenuator DAC power-state setup failed for %s",
+			profile->name);
+		return;
+	}
 
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;

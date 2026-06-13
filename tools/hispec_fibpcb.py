@@ -47,6 +47,7 @@ PD_RESPONSIVITY_MIN_A_PER_W = 0.000001
 PD_RESPONSIVITY_MAX_A_PER_W = 10.0
 PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
 PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
+ATTENUATOR_DRIVE_MAX_MV = 3300.0
 
 _LASER_TO_PD_CHANNEL = {
     "1028y": "yj",
@@ -1030,8 +1031,13 @@ def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapp
         raise HispecFibError(f"{name} v_mV and flux lengths differ")
     if len(voltage_values) < 6 or len(voltage_values) > 20:
         raise HispecFibError(f"{name} must contain 6 to 20 points")
-    if any((not np.isfinite(v)) or v < 0.0 or v > 3300.0 for v in voltage_values):
-        raise HispecFibError(f"{name} v_mV values must be in [0.0, 3300.0]")
+    if any(
+        (not np.isfinite(v)) or v < 0.0 or v > ATTENUATOR_DRIVE_MAX_MV
+        for v in voltage_values
+    ):
+        raise HispecFibError(
+            f"{name} v_mV values must be in [0.0, {ATTENUATOR_DRIVE_MAX_MV:.1f}]"
+        )
     if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
         raise HispecFibError(f"{name} flux values must be positive and finite")
     return {"v_mV": list(voltage_values), "flux": list(flux_values)}
@@ -1637,9 +1643,13 @@ class HispecFibPcb:
         if value2_db is not None:
             payload["value2_db"] = _require_float("value2_db", value2_db, 0.0, 1e9)
         if value1_mv is not None:
-            payload["value1_mv"] = _require_float("value1_mv", value1_mv, 0.0, 3300.0)
+            payload["value1_mv"] = _require_float(
+                "value1_mv", value1_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV
+            )
         if value2_mv is not None:
-            payload["value2_mv"] = _require_float("value2_mv", value2_mv, 0.0, 3300.0)
+            payload["value2_mv"] = _require_float(
+                "value2_mv", value2_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV
+            )
 
         request_payload = payload if payload else None
         return _dataclass_from(
@@ -1742,7 +1752,9 @@ class HispecFibPcb:
     def atten_calibration_continue(self, *, other_mv: float | None = None) -> AttenuatorCalibrationStatus:
         payload: dict[str, Any] = {"continue": True}
         if other_mv is not None:
-            payload["other_mv"] = _require_float("other_mv", other_mv, 0.0, 3300.0)
+            payload["other_mv"] = _require_float(
+                "other_mv", other_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV
+            )
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
     def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:

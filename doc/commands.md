@@ -950,9 +950,9 @@ command wait budget, this command returns `{"error":"busy"}`.
   Each physical attenuator may use a different unit, but a single physical
   attenuator may only use one unit per request. For example, `value1` and
   `value2_db` is valid, while `value1` and `value1_db` in the same request is
-  rejected. Millivolt inputs are clamped to the supported drive span, quantized
-  to the DAC code, and responses report the applied millivolts read back from
-  the DAC.
+  rejected. Millivolt inputs are clamped to the firmware drive span, quantized
+  through the board-configured DAC transfer, and responses report the applied
+  DAC-side millivolts read back from the DAC.
 - **No payload to `coeff` -> model coefficients:**
   ```json
   {"dac1":[0.00158137,0.0],"dac2":[0.00158137,0.0],"gain1":1.533,"gain2":1.533}
@@ -988,8 +988,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     second, and override any individual physical set point made through the C
     attenuator API.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
-  - `v1_mv` and `v2_mv` are DAC output setpoints in millivolts after 0-3300 mV
-    clamping and DAC-code quantization.
+  - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
+    drive span. The firmware converts them to DAC codes using the
+    board-configured DAC reference transfer, then responses report the applied
+    DAC-side millivolts after code quantization and output-rail clipping.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define
     `b = gain * (slope * dac_mv + offset)` for the attenuation model
@@ -1165,10 +1167,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
   - TIB automatic calibration powers the selected photodiode, waits 1 s for the
-    relay/source to settle, sets both physical attenuators to maximum DAC
-    voltage and the laser to full output, then adaptively samples up to 20 DAC
-    points per physical attenuator. Each point has a fixed 50 ms step-settle
-    before the photodiode average begins.
+    relay/source to settle, sets both physical attenuators to the maximum
+    firmware DAC-drive voltage and the laser to full output, then adaptively
+    samples up to 20 DAC points per physical attenuator. Each point has a fixed
+    50 ms step-settle before the photodiode average begins.
   - Automatic calibration targets settled photodiode readings between about
     250 mV and 4500 mV. It keeps the non-swept attenuator as low as practical
     for low-signal points, raises it as needed to prevent saturation, and may
