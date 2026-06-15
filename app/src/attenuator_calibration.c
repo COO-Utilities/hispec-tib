@@ -1902,16 +1902,15 @@ int attenuator_calibration_start_auto(
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
-	replacing = cal.state == ATTEN_CAL_STATE_RUNNING ||
-		    cal.state == ATTEN_CAL_STATE_WAITING;
+	replacing = cal.state == ATTEN_CAL_STATE_RUNNING || cal.state == ATTEN_CAL_STATE_WAITING;
 	k_mutex_unlock(&cal_lock);
 	if (replacing) {
 		coo_cmd_runtime_emit(command_runtime_get(),
 				     &(const struct coo_cmd_runtime_emit_args){
 					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
 					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "atten_calibration_replaced",
-					     .msg = "attenuator calibration was replaced",
+					     .code = "atten_calibration_restart",
+					     .msg = "restarting attenuator calibration",
 				     });
 	}
 
@@ -1921,7 +1920,7 @@ int attenuator_calibration_start_auto(
 					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
 					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 					     .code = "throughput_stopped",
-					     .msg = "throughput monitoring was stopped for attenuator calibration",
+					     .msg = "stopping auto throughput for attenuator calibration",
 				     });
 	}
 	(void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
