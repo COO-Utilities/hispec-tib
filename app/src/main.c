@@ -66,7 +66,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define APP_BLOCKING_WORKQ_PRIORITY 7
 
 //Set to 1 to get periodic timing summaries in more detail, may  (will) mess with timing
-#define APP_TIMING_SUMMARY_LOGS 1
+#define APP_TIMING_SUMMARY_LOGS 0
 
 #define WDT_TIMEOUT_MS 15000U
 #define MQTT_CONNECT_RETRY_MS 5000
