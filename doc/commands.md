@@ -505,6 +505,12 @@ for every nominal laser wavelength. The photodiode sampler owns ADC reads and
 dark tracking. The throughput monitor owns streaming output, autolevel
 decisions, and throughput math.
 
+Transient ADC read/write errors are treated as missing photodiode samples:
+firmware emits a `photodiode_adc_error` warning, leaves the last good rolling
+value intact for streaming consumers, and excludes the failed sample from any
+active short average. A short average becomes unusable only when all attempted
+samples in the window fail.
+
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
 - `dt/<device>/hk_tput`
@@ -1034,24 +1040,24 @@ command wait budget, this command returns `{"error":"busy"}`.
     "dac2": {"valid": false}
   }
   ```
-- **Fit data query:** retained calibration acquisition records are available as
-  bounded compact pages, independent of best-effort telemetry:
+- **Record data query:** retained calibration acquisition records are available
+  as bounded binary MQTT chunks, independent of best-effort telemetry:
   ```
-  atten/calibrate/data/<dac1|dac2>[/<start>]
+  atten/calibrate/records/<dac1|dac2>[/<start>]
   ```
-  `start` is optional and defaults to `0`. The response is not JSON; it is an
-  ASCII envelope followed by hex-encoded little-endian records:
-  ```text
-  HACD1 state=complete mode=tib_auto physical=dac1 start=0 count=2 total=13 next=2 fit_valid=0 fit_accepted=0 overflow=0 record_size=72 data=...
-  ```
-  Each record has layout `<16f h H 4B>`: `v_mV`, `other_mv`, `laser_pct`,
+  `start` is optional and defaults to `0`. The response is not JSON and is
+  MQTT-only because the serial response printer is string-oriented. The first
+  16 bytes are `<4s 12B>`: magic `HAC2`, version, physical index, start,
+  count, total, next, state, mode, fit-valid, fit-accepted, overflow, and
+  record-size. `next=255` means the chunk is complete. Each following record
+  has little-endian layout `<16f h H 4B>`: `v_mV`, `other_mv`, `laser_pct`,
   `mean_mv`, `signal_mv`, `rms_mv`, `sigma_y_mv`, `sigma_x_mv`, `snr`,
   `flux`, `flux_sigma`, `scale`, `scale_sigma`, `tx`, `b`, `residual_db`,
   `max_raw`, `samples`, `event`, `reason`, `segment`, and `flags`. Event codes
   are `0=point`, `1=anchor_before`, `2=link_probe`, `3=anchor_after`,
   `4=manual`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
-  `3=adc_error`, `4=invalid`. `next=-1` means the page is complete. The Python
-  tool decodes this envelope into `AttenuatorCalibrationDataPage` objects.
+  `3=adc_error`, `4=invalid`. The Python tool decodes chunks directly into a
+  NumPy record array.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1090,11 +1096,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     "attenuator": "lfc",
     "persist": true,
     "dac1": {
-      "v_mV": [3300.0, 3050.0, 2800.0, 2550.0, 2300.0, 2050.0],
+      "v_mV": [3261.6, 2074.4, 2035.2, 1983.0, 1950.4, 1917.8],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     },
     "dac2": {
-      "v_mV": [3300.0, 3050.0, 2800.0, 2550.0, 2300.0, 2050.0],
+      "v_mV": [3261.6, 2074.4, 2035.2, 1983.0, 1950.4, 1917.8],
       "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
     }
   }
@@ -1105,7 +1111,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   message per significant state transition, DAC setpoint, retained
   measurement record, submitted manual point, and fit result. Calibration
   continues if telemetry is dropped; authoritative acquisition data is queried
-  through `atten/calibrate/data`.
+  through `atten/calibrate/records`.
   ```json
   {
     "event": "point",
@@ -1119,7 +1125,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "i": 4,
     "reason": "ok",
     "segment": 0,
-    "sweep_mv": 2800.0,
+    "sweep_mv": 1983.0,
     "other_mv": 1764.0,
     "laser_pct": 100.0,
     "mean_mv": 123.4,
@@ -1144,7 +1150,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   `anchor_before`, `link_probe`, `anchor_after`, `manual_point_set`,
   `manual_point`, `fit`, `complete`, `stop`, and `error`. Fit input and
   residual diagnostics are retained in calibration state and queried through
-  `atten/calibrate/data` instead of being emitted as an end-of-run telemetry
+  `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
   burst.
 
 - **Notes:**
@@ -1174,8 +1180,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     Low-but-clean points are retained and may be fit inputs. Saturated,
     below-SNR, ADC-error, and invalid measurements are retained as records but
     are not fit inputs.
-  - The ordinary automatic sweep walks the same 20-point DAC-voltage schedule
-    reported for manual calibration, from maximum attenuation toward open. If
+  - The ordinary automatic sweep walks a 20-point DAC-side voltage schedule
+    converted from the digitized FVOA datasheet dB/V curve using nominal
+    1.533 drive gain, plus a 5 V plateau point. The schedule is deliberately
+    dense around the high-attenuation knee and runs from maximum attenuation
+    toward open. If
     it brackets a sharp transition, firmware explicitly records an
     `anchor_before` measurement at the last usable voltage, searches for a
     usable `link_probe` at the lower retry voltage by changing the held FVOA,
@@ -1291,6 +1300,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     monitor thread cadence and clamps to the same maximum window used by short
     photodiode averages. The response reports actual `duration_ms`,
     accumulated `samples`, and `target_samples`.
+  - A transient ADC error during the dark window discards that sample and
+    emits a warning. The dark average still completes from remaining valid
+    samples; an all-failed window reports `state:"error"`.
   - `dark_status` reports the current or most recent short average for that
     channel. Complete dark results include measured mean/RMS/min/max.
   - `dark_noise_rms_mv` records the most recent dark-measurement RMS. Setting

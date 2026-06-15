@@ -105,11 +105,12 @@ int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,
 	const struct attenuator_calibration_status *status);
 
-/** Append one retained calibration data page as a compact text envelope plus hex records. */
-int attenuator_calibration_format_data_page(char *payload,
+/** Write one retained calibration-record binary chunk into @p payload. */
+int attenuator_calibration_write_data_chunk(void *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,
-					    uint8_t start_index);
+					    uint8_t start_index,
+					    size_t *written);
 
 /** Advance automatic calibration. Called only by the throughput monitor thread. */
 void attenuator_calibration_tick(const struct photodiode_status *pd_status,

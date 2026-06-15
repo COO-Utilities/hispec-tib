@@ -7,11 +7,20 @@
  * second. Each logical attenuator has two physical FVOAs in series. The FVOA
  * range is much larger than the photodiode plus laser dynamic range, so one
  * FVOA and the laser level are used as range extenders while the other FVOA is
- * swept. The ordinary sweep follows the shared 20-point voltage schedule; the
- * anchor/link path is only for extending range across saturation/floor
- * brackets. The acquisition must retain enough raw points to understand where
- * the FVOA is below the photodiode floor, where it transitions, and where it
- * plateaus near maximum attenuation.
+ * swept.
+ *
+ * Owner lab intent, retained until the physical model is validated:
+ *   1. Put one FVOA open, one at maximum attenuation, laser at full power.
+ *   2. Walk the swept FVOA down until the photodiode leaves saturation.
+ *   3. If the whole range is saturated, reduce laser power and repeat.
+ *   4. Once a usable corridor is found, densely probe the high-attenuation
+ *      knee, then use the other FVOA as a range extender to keep exploring.
+ *   5. Repeat for the other physical FVOA.
+ *
+ * The nominal sweep is the digitized datasheet dB/V curve converted to
+ * DAC-side millivolts, plus a 5 V FVOA plateau point. It is deliberately dense
+ * around the knee; do not replace it with evenly spaced DAC codes without
+ * matching lab evidence.
  *
  * A failed fit is not a failed acquisition. The run completes, does not persist
  * coefficients, and leaves retained records for host-side analysis.
@@ -55,7 +64,14 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_ADC_CLIP_MV 5000.0
 #define ATTEN_CAL_DAC_SIGMA_MV 3.0
 #define ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX "atten"
-#define ATTEN_CAL_DATA_PAGE_RECORDS 2U
+#define ATTEN_CAL_DATA_CHUNK_HEADER_SIZE 16U
+#define ATTEN_CAL_DATA_CHUNK_RECORDS \
+	((COO_CMD_PAYLOAD_MAX - ATTEN_CAL_DATA_CHUNK_HEADER_SIZE) / sizeof(struct atten_cal_record))
+#define ATTEN_CAL_DATA_CHUNK_MAGIC0 'H'
+#define ATTEN_CAL_DATA_CHUNK_MAGIC1 'A'
+#define ATTEN_CAL_DATA_CHUNK_MAGIC2 'C'
+#define ATTEN_CAL_DATA_CHUNK_MAGIC3 '2'
+#define ATTEN_CAL_DATA_CHUNK_VERSION 1U
 
 enum atten_cal_state {
 	ATTEN_CAL_STATE_INACTIVE = 0,
@@ -159,6 +175,8 @@ struct atten_cal_record {
 
 BUILD_ASSERT(sizeof(struct atten_cal_record) == 72U,
 	     "host calibration record decoder expects 72-byte records");
+BUILD_ASSERT(ATTEN_CAL_DATA_CHUNK_RECORDS > 0U,
+	     "calibration data chunk must carry at least one record");
 
 struct atten_cal_state_data {
 	enum atten_cal_state state;
@@ -210,10 +228,10 @@ struct atten_cal_state_data {
 };
 
 static const double voltage_schedule[ATTENUATOR_CAL_POINT_COUNT] = {
-	3300.0, 3050.0, 2800.0, 2550.0, 2300.0,
-	2050.0, 1800.0, 1550.0, 1300.0, 1100.0,
-	900.0, 750.0, 600.0, 475.0, 350.0,
-	250.0, 175.0, 100.0, 50.0, 0.0,
+	3261.6, 2074.4, 2035.2, 1983.0, 1950.4,
+	1917.8, 1885.2, 1852.6, 1820.0, 1787.3,
+	1754.7, 1722.1, 1696.0, 1663.4, 1611.2,
+	1572.1, 1513.4, 1454.7, 1232.9, 0.0,
 };
 
 static const double auto_laser_levels_pct[] = {100.0, 10.0, 2.0};
@@ -232,6 +250,9 @@ static bool point_valid_for_fit(double tx);
 static double current_sweep_mv_locked(void);
 static void auto_finish_physical_locked(void);
 static void auto_error_locked(int error);
+
+/* -------------------------------------------------------------------------- */
+/* Names, telemetry, and compact operator-visible events.                     */
 
 static const char *state_name(enum atten_cal_state state)
 {
@@ -521,6 +542,9 @@ static void atten_cal_emit_manual_batch_point(uint8_t physical,
 		voltage_mv, flux);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Measurement classification and retained raw-record creation.               */
+
 static uint32_t clamp_dwell(uint32_t dwell_ms)
 {
 	if (dwell_ms == 0U) {
@@ -591,11 +615,17 @@ static void measurement_from_average(const struct photodiode_average_status *avg
 	if (!(measurement->sigma_y_mv > 0.0)) {
 		measurement->sigma_y_mv = ATTEN_CAL_ADC_LSB_MV;
 	}
-	measurement->snr = measurement->signal_mv / measurement->sigma_y_mv;
 	if (measurement->saturated) {
+		/* Clipped ADC samples are retained for the lab record but are not
+		 * measurements with meaningful SNR.
+		 */
+		measurement->snr = NAN;
 		measurement->reason = ATTEN_CAL_REASON_SATURATED;
-	} else if (measurement->signal_mv <= 0.0 ||
-		   measurement->snr < ATTEN_CAL_SNR_USABLE) {
+		return;
+	}
+	measurement->snr = measurement->signal_mv / measurement->sigma_y_mv;
+	if (measurement->signal_mv <= 0.0 ||
+	    measurement->snr < ATTEN_CAL_SNR_USABLE) {
 		measurement->reason = ATTEN_CAL_REASON_BELOW_SNR;
 	} else {
 		measurement->reason = ATTEN_CAL_REASON_OK;
@@ -707,6 +737,9 @@ static uint8_t complete_percent_locked(void)
 	}
 	return 0U;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Shared state/status copying and route/DAC control helpers.                 */
 
 static void copy_status_locked(struct attenuator_calibration_status *status)
 {
@@ -852,6 +885,9 @@ static bool set_physical_pair(uint8_t attenuator_index,
 	return attenuator_set_physical_voltage(atten, sweep_physical == 0U ? 1U : 0U,
 					       other_mv);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Fit model and manual/auto fit extraction from retained records.            */
 
 static bool point_valid_for_fit(double tx)
 {
@@ -1352,6 +1388,9 @@ static int fit_current_locked(bool apply_settings)
 	return 0;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Automatic lab acquisition flow.                                            */
+
 static void auto_error_locked(int error)
 {
 	cal.last_error = error;
@@ -1513,6 +1552,10 @@ static bool auto_next_sweep_lower_locked(void)
 
 static void auto_begin_link_locked(void)
 {
+	/* Range extension: anchor a usable point, move the other FVOA or laser
+	 * level until this photodiode is usable again, then scale the next
+	 * segment back through anchor_before/anchor_after records.
+	 */
 	if (!cal.have_last_good ||
 	    cal.record_count[cal.physical_index] >= ATTENUATOR_CAL_RECORD_COUNT) {
 		auto_skip_physical_locked("no_link_anchor");
@@ -1981,6 +2024,9 @@ int attenuator_calibration_start_auto(
 	return 0;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Manual command path.                                                       */
+
 static int manual_apply_current_locked(void)
 {
 	if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
@@ -2119,6 +2165,9 @@ int attenuator_calibration_fit_manual(
 	return rc;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Public status, record retrieval, and throughput-thread tick entry points.  */
+
 int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 {
 	enum atten_cal_mode old_mode;
@@ -2231,77 +2280,64 @@ int attenuator_calibration_format_status(
 	return 0;
 }
 
-static int append_hex_bytes(char *payload, size_t payload_len, size_t *off,
-			    const void *data, size_t data_len)
-{
-	static const char hex[] = "0123456789abcdef";
-	const uint8_t *bytes = data;
-
-	if (payload == NULL || off == NULL || data == NULL) {
-		return -EINVAL;
-	}
-	if (*off + (data_len * 2U) >= payload_len) {
-		return -ENOSPC;
-	}
-	for (size_t i = 0U; i < data_len; ++i) {
-		payload[(*off)++] = hex[(bytes[i] >> 4) & 0x0f];
-		payload[(*off)++] = hex[bytes[i] & 0x0f];
-	}
-	payload[*off] = '\0';
-	return 0;
-}
-
-int attenuator_calibration_format_data_page(char *payload,
+int attenuator_calibration_write_data_chunk(void *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,
-					    uint8_t start_index)
+					    uint8_t start_index,
+					    size_t *written)
 {
+	uint8_t *bytes = payload;
 	uint8_t count;
 	uint8_t total;
 	uint8_t next;
-	size_t off = 0U;
-	int rc = 0;
+	size_t byte_count;
 
-	if (payload == NULL || physical_index >= ATTENUATOR_PHYSICAL_COUNT ||
+	if (payload == NULL || written == NULL ||
+	    payload_len < ATTEN_CAL_DATA_CHUNK_HEADER_SIZE ||
+	    physical_index >= ATTENUATOR_PHYSICAL_COUNT ||
 	    start_index >= ATTENUATOR_CAL_RECORD_COUNT) {
 		return -EINVAL;
 	}
+	*written = 0U;
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	total = cal.record_count[physical_index];
 	count = start_index < total ?
-		MIN(ATTEN_CAL_DATA_PAGE_RECORDS, (uint8_t)(total - start_index)) : 0U;
+		MIN((uint8_t)ATTEN_CAL_DATA_CHUNK_RECORDS,
+		    (uint8_t)(total - start_index)) : 0U;
 	next = (start_index + count < total) ? (uint8_t)(start_index + count) : UINT8_MAX;
-
-	if (coo_json_append(payload, payload_len, &off,
-			    "HACD1 state=%s mode=%s physical=%s start=%u count=%u "
-			    "total=%u next=%d fit_valid=%u fit_accepted=%u "
-			    "overflow=%u record_size=%u data=",
-			    state_name(cal.state), mode_name(cal.mode),
-			    physical_name(physical_index), start_index, count, total,
-			    next == UINT8_MAX ? -1 : (int)next,
-			    cal.fit[physical_index].valid ? 1U : 0U,
-			    cal.fit[physical_index].accepted ? 1U : 0U,
-			    cal.record_overflow[physical_index] ? 1U : 0U,
-			    (unsigned int)sizeof(struct atten_cal_record)) != 0) {
-		rc = -ENOSPC;
-		goto out;
+	byte_count = ATTEN_CAL_DATA_CHUNK_HEADER_SIZE +
+		     ((size_t)count * sizeof(struct atten_cal_record));
+	if (byte_count > payload_len) {
+		k_mutex_unlock(&cal_lock);
+		return -ENOSPC;
 	}
 
-	for (uint8_t idx = start_index; idx < start_index + count; ++idx) {
-		const struct atten_cal_record *record = &cal.records[physical_index][idx];
-
-		rc = append_hex_bytes(payload, payload_len, &off,
-				      record, sizeof(*record));
-		if (rc != 0) {
-			rc = -ENOSPC;
-			goto out;
-		}
+	memset(bytes, 0, byte_count);
+	bytes[0] = ATTEN_CAL_DATA_CHUNK_MAGIC0;
+	bytes[1] = ATTEN_CAL_DATA_CHUNK_MAGIC1;
+	bytes[2] = ATTEN_CAL_DATA_CHUNK_MAGIC2;
+	bytes[3] = ATTEN_CAL_DATA_CHUNK_MAGIC3;
+	bytes[4] = ATTEN_CAL_DATA_CHUNK_VERSION;
+	bytes[5] = physical_index;
+	bytes[6] = start_index;
+	bytes[7] = count;
+	bytes[8] = total;
+	bytes[9] = next;
+	bytes[10] = (uint8_t)cal.state;
+	bytes[11] = (uint8_t)cal.mode;
+	bytes[12] = cal.fit[physical_index].valid ? 1U : 0U;
+	bytes[13] = cal.fit[physical_index].accepted ? 1U : 0U;
+	bytes[14] = cal.record_overflow[physical_index] ? 1U : 0U;
+	bytes[15] = (uint8_t)sizeof(struct atten_cal_record);
+	if (count > 0U) {
+		memcpy(bytes + ATTEN_CAL_DATA_CHUNK_HEADER_SIZE,
+		       &cal.records[physical_index][start_index],
+		       (size_t)count * sizeof(struct atten_cal_record));
 	}
-
-out:
+	*written = byte_count;
 	k_mutex_unlock(&cal_lock);
-	return rc;
+	return 0;
 }
 
 void attenuator_calibration_tick(const struct photodiode_status *pd_status,

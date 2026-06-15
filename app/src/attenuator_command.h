@@ -35,9 +35,9 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 /** @brief Query compact attenuator-calibration state. */
 int atten_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
-/** @brief Query retained attenuator-calibration fit data in bounded pages. */
-int atten_calibration_data_get(const struct coo_cmd_request *cmd,
-			       struct coo_cmd_response *out);
+/** @brief Query retained attenuator-calibration records as binary MQTT chunks. */
+int atten_calibration_records_get(const struct coo_cmd_request *cmd,
+				  struct coo_cmd_response *out);
 
 /** @brief Start/continue/stop attenuator calibration or fit manual batches. */
 int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

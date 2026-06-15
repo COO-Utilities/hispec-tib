@@ -503,9 +503,9 @@ static int atten_calibration_status_reply(
 	return coo_cmd_reply(out, cmd, type, payload);
 }
 
-static int parse_calibration_data_suffix(const char *key,
-					 uint8_t *physical_index,
-					 uint8_t *start_index)
+static int parse_calibration_records_suffix(const char *key,
+					    uint8_t *physical_index,
+					    uint8_t *start_index)
 {
 	const char *suffix;
 	const char *slash;
@@ -520,7 +520,7 @@ static int parse_calibration_data_suffix(const char *key,
 		return -EINVAL;
 	}
 
-	suffix = coo_cmd_key_suffix_after(key, "atten/calibrate/data");
+	suffix = coo_cmd_key_suffix_after(key, "atten/calibrate/records");
 	if (suffix[0] == '\0') {
 		return -EINVAL;
 	}
@@ -559,27 +559,39 @@ static int parse_calibration_data_suffix(const char *key,
 	return 0;
 }
 
-int atten_calibration_data_get(const struct coo_cmd_request *cmd,
-			       struct coo_cmd_response *out)
+int atten_calibration_records_get(const struct coo_cmd_request *cmd,
+				  struct coo_cmd_response *out)
 {
-	char payload[MAX_PAYLOAD_LEN] = {0};
 	uint8_t physical_index;
 	uint8_t start_index;
+	size_t written = 0U;
 	int rc;
 
-	rc = parse_calibration_data_suffix(cmd != NULL ? cmd->key : NULL,
-					   &physical_index, &start_index);
-	if (rc != 0) {
+	if (cmd != NULL && cmd->source == COO_CMD_SOURCE_SERIAL) {
 		return coo_cmd_error(out, cmd,
-				     "use atten/calibrate/data/<dac1|dac2>[/<start>]");
+				     "calibration records are binary MQTT payloads");
 	}
 
-	rc = attenuator_calibration_format_data_page(payload, sizeof(payload),
-						     physical_index, start_index);
+	rc = parse_calibration_records_suffix(cmd != NULL ? cmd->key : NULL,
+					      &physical_index, &start_index);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "calibration data page unavailable");
+		return coo_cmd_error(out, cmd,
+				     "use atten/calibrate/records/<dac1|dac2>[/<start>]");
 	}
-	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
+
+	rc = coo_cmd_make_response(out, cmd, COO_CMD_RESP_OK, NULL, NULL, NULL);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = attenuator_calibration_write_data_chunk(out->payload, sizeof(out->payload),
+						     physical_index, start_index,
+						     &written);
+	if (rc != 0) {
+		return coo_cmd_error(out, cmd, "calibration records unavailable");
+	}
+	out->payload_len = written;
+	return 0;
 }
 
 static int parse_calibration_batch_object(
