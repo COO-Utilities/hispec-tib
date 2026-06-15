@@ -13,6 +13,7 @@ import argparse
 import itertools
 import json
 import logging
+import math
 import queue
 import re
 import struct
@@ -48,6 +49,37 @@ PD_RESPONSIVITY_MAX_A_PER_W = 10.0
 PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
 PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 ATTENUATOR_DRIVE_MAX_MV = 3300.0
+ATTENUATOR_DEFAULT_GAIN = 1.533
+ATTENUATOR_MODEL_ERF_SCALE = 4.0
+ATTENUATOR_ADC_CLIP_MV = 5000.0
+ATTENUATOR_CAL_SNR_USABLE = 5.0
+ATTENUATOR_FVOA_DATASHEET_FULL_RANGE_V = 5.0
+ATTENUATOR_FVOA_DATASHEET_CONTROL_MAX_V = 5.5
+ATTENUATOR_CAL_SCHEDULE_DAC_MV = np.array(
+    (
+        3300.0,
+        3050.0,
+        2800.0,
+        2550.0,
+        2300.0,
+        2050.0,
+        1800.0,
+        1550.0,
+        1300.0,
+        1100.0,
+        900.0,
+        750.0,
+        600.0,
+        475.0,
+        350.0,
+        250.0,
+        175.0,
+        100.0,
+        50.0,
+        0.0,
+    ),
+    dtype=float,
+)
 
 _LASER_TO_PD_CHANNEL = {
     "1028y": "yj",
@@ -94,12 +126,16 @@ THROUGHPUT_DTYPE = np.dtype(
 ATTEN_CAL_DTYPE = np.dtype(
     [
         ("physical", "U8"),
-        ("i", "u2"),
+        ("record", "u2"),
         ("event", "U16"),
         ("reason", "U16"),
         ("segment", "u1"),
-        ("v", "f8"),
-        ("other_mv", "f8"),
+        ("v_dac_mv", "f8"),
+        ("v_fvoa_mv", "f8"),
+        ("v_fvoa_v", "f8"),
+        ("other_dac_mv", "f8"),
+        ("other_fvoa_mv", "f8"),
+        ("other_fvoa_v", "f8"),
         ("laser_pct", "f8"),
         ("mean_mv", "f8"),
         ("signal_mv", "f8"),
@@ -107,16 +143,23 @@ ATTEN_CAL_DTYPE = np.dtype(
         ("sigma_y_mv", "f8"),
         ("sigma_x_mv", "f8"),
         ("snr", "f8"),
-        ("flux", "f8"),
-        ("flux_sigma", "f8"),
+        ("scaled_signal", "f8"),
+        ("scaled_signal_sigma", "f8"),
         ("scale", "f8"),
         ("scale_sigma", "f8"),
         ("samples", "u2"),
         ("max_raw", "i2"),
         ("flags", "u1"),
-        ("tx", "f8"),
-        ("b", "f8"),
-        ("residual_db", "f8"),
+        ("usable", "?"),
+        ("saturated", "?"),
+        ("fit_eligible", "?"),
+        ("included", "?"),
+        ("firmware_tx", "f8"),
+        ("firmware_b", "f8"),
+        ("firmware_residual_db", "f8"),
+        ("derived_open_ref", "?"),
+        ("derived_rel_tx", "f8"),
+        ("derived_rel_atten_db", "f8"),
     ]
 )
 
@@ -553,142 +596,466 @@ class AttenuatorCalibrationStatus(ResponseRepr):
     __str__ = __repr__
 
 
-@dataclass(frozen=True, repr=False)
-class AttenuatorCalibrationDataPoint(ResponseRepr):
-    physical: str
-    i: int
-    event: str
-    reason: str
-    segment: int
-    v: float
-    other_mv: float
-    laser_pct: float
-    mean_mv: float
-    signal_mv: float
-    rms_mv: float
-    sigma_y_mv: float
-    sigma_x_mv: float
-    snr: float
-    flux: float
-    flux_sigma: float
-    scale: float
-    scale_sigma: float
-    samples: int
-    max_raw: int
-    flags: int
-    tx: float
-    b: float | None
-    residual_db: float | None
+_ATTEN_CAL_REASON_COLORS = {
+    "ok": "tab:blue",
+    "saturated": "tab:red",
+    "below_snr": "tab:orange",
+    "adc_error": "tab:purple",
+    "invalid": "0.45",
+}
+_ATTEN_CAL_EVENT_MARKERS = {
+    "point": "o",
+    "anchor_before": "^",
+    "link_probe": "s",
+    "anchor_after": "v",
+    "manual": "D",
+}
 
-    @property
-    def valid(self) -> bool:
-        return self.reason == "ok"
 
-    @property
-    def sat(self) -> bool:
-        return self.reason == "saturated" or bool(self.flags & 0x01)
+def _atten_cal_empty_records() -> np.recarray:
+    return np.array([], dtype=ATTEN_CAL_DTYPE).view(np.recarray)
 
-    @property
-    def included(self) -> bool:
-        return bool(self.flags & 0x08)
 
-    @property
-    def f(self) -> float:
-        return self.flux
+def _atten_model_tx_from_b(b: np.ndarray | Sequence[float]) -> np.ndarray:
+    b_arr = np.asarray(b, dtype=float)
+    erf = np.vectorize(math.erf, otypes=[float])
+    erf_scale = math.erf(ATTENUATOR_MODEL_ERF_SCALE)
+    tx = (erf_scale + erf(ATTENUATOR_MODEL_ERF_SCALE - b_arr)) / (2.0 * erf_scale)
+    return np.clip(tx, 0.0, 1.0)
 
-    def as_tuple(self) -> tuple[Any, ...]:
-        return tuple(
-            getattr(self, name) if name not in ("b", "residual_db") else (
-                np.nan if getattr(self, name) is None else getattr(self, name)
-            )
-            for name in ATTEN_CAL_DTYPE.names
+
+def _atten_cal_record_row(
+    *,
+    physical: str,
+    record: int,
+    event: str,
+    reason: str,
+    segment: int,
+    v_dac_mv: float,
+    other_dac_mv: float,
+    laser_pct: float,
+    mean_mv: float,
+    signal_mv: float,
+    rms_mv: float,
+    sigma_y_mv: float,
+    sigma_x_mv: float,
+    snr: float,
+    scaled_signal: float,
+    scaled_signal_sigma: float,
+    scale: float,
+    scale_sigma: float,
+    samples: int,
+    max_raw: int,
+    flags: int,
+    firmware_tx: float = np.nan,
+    firmware_b: float = np.nan,
+    firmware_residual_db: float = np.nan,
+) -> tuple[Any, ...]:
+    flags = int(flags)
+    included = bool(flags & 0x08)
+    usable = bool(flags & 0x02)
+    saturated = reason == "saturated" or bool(flags & 0x01)
+    fit_eligible = bool(flags & 0x04)
+    if not included:
+        firmware_tx = np.nan
+        firmware_b = np.nan
+        firmware_residual_db = np.nan
+    return (
+        physical,
+        int(record),
+        event,
+        reason,
+        int(segment),
+        float(v_dac_mv),
+        float(v_dac_mv) * ATTENUATOR_DEFAULT_GAIN,
+        float(v_dac_mv) * ATTENUATOR_DEFAULT_GAIN / 1000.0,
+        float(other_dac_mv),
+        float(other_dac_mv) * ATTENUATOR_DEFAULT_GAIN,
+        float(other_dac_mv) * ATTENUATOR_DEFAULT_GAIN / 1000.0,
+        float(laser_pct),
+        float(mean_mv),
+        float(signal_mv),
+        float(rms_mv),
+        float(sigma_y_mv),
+        float(sigma_x_mv),
+        float(snr),
+        float(scaled_signal),
+        float(scaled_signal_sigma),
+        float(scale),
+        float(scale_sigma),
+        int(samples),
+        int(max_raw),
+        flags,
+        usable,
+        saturated,
+        fit_eligible,
+        included,
+        float(firmware_tx),
+        float(firmware_b),
+        float(firmware_residual_db),
+        False,
+        np.nan,
+        np.nan,
+    )
+
+
+def _atten_cal_records_from_rows(rows: Sequence[tuple[Any, ...]]) -> np.recarray:
+    if not rows:
+        return _atten_cal_empty_records()
+    return np.array(rows, dtype=ATTEN_CAL_DTYPE).view(np.recarray)
+
+
+def _derive_atten_cal_records(records: np.recarray) -> np.recarray:
+    rec = np.array(records, dtype=ATTEN_CAL_DTYPE, copy=True).view(np.recarray)
+    if len(rec) == 0:
+        return rec
+    rec.derived_open_ref[:] = False
+    rec.derived_rel_tx[:] = np.nan
+    rec.derived_rel_atten_db[:] = np.nan
+    for physical in tuple(dict.fromkeys(str(value) for value in rec.physical)):
+        phys = rec.physical == physical
+        candidates = (
+            phys
+            & rec.fit_eligible
+            & rec.usable
+            & np.isfinite(rec.scaled_signal)
+            & (rec.scaled_signal > 0.0)
+            & (rec.v_dac_mv <= 10.0)
         )
-
-
-@dataclass(frozen=True, repr=False)
-class AttenuatorCalibrationDataPage(ResponseRepr):
-    state: str
-    mode: str
-    physical: str
-    start: int
-    count: int
-    record_count: int
-    point_count: int
-    next: int | None
-    fit_valid: bool
-    fit_accepted: bool
-    record_overflow: bool
-    dark_mean_mv: float
-    dark_rms_mv: float
-    dark_sigma_mv: float
-    open_flux: float
-    points: tuple[AttenuatorCalibrationDataPoint, ...]
+        if not np.any(candidates):
+            continue
+        candidate_indices = np.nonzero(candidates)[0]
+        open_index = candidate_indices[np.argmax(rec.scaled_signal[candidate_indices])]
+        open_signal = rec.scaled_signal[open_index]
+        if not (open_signal > 0.0):
+            continue
+        rec.derived_open_ref[open_index] = True
+        valid = phys & np.isfinite(rec.scaled_signal) & (rec.scaled_signal > 0.0)
+        rel_tx = rec.scaled_signal[valid] / open_signal
+        rec.derived_rel_tx[valid] = rel_tx
+        positive = valid.copy()
+        positive[valid] = rel_tx > 0.0
+        rec.derived_rel_atten_db[positive] = -10.0 * np.log10(rec.derived_rel_tx[positive])
+    return rec
 
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorCalibrationDataset(ResponseRepr):
-    pages: tuple[AttenuatorCalibrationDataPage, ...]
-    points: tuple[AttenuatorCalibrationDataPoint, ...]
+    records: np.recarray
+    meta: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "records", _derive_atten_cal_records(self.records))
 
     def _repr_items(self) -> tuple[tuple[str, Any], ...]:
-        physicals = tuple(dict.fromkeys(point.physical for point in self.points))
+        physicals = tuple(dict.fromkeys(str(value) for value in self.records.physical))
+        counts = tuple((name, int(np.sum(self.records.physical == name))) for name in physicals)
         return (
-            ("pages", len(self.pages)),
-            ("points", len(self.points)),
+            ("records", len(self.records)),
             ("physicals", physicals),
+            ("counts", counts),
         )
 
-    def to_recarray(self) -> np.recarray:
-        return np.array(
-            [point.as_tuple() for point in self.points],
-            dtype=ATTEN_CAL_DTYPE,
-        ).view(np.recarray)
+    def to_recarray(self, *, copy: bool = False) -> np.recarray:
+        return self.records.copy().view(np.recarray) if copy else self.records
 
     def to_dataframe(self):
         try:
             import pandas as pd
         except ImportError as exc:
             raise HispecFibError("pandas is not installed") from exc
-        return pd.DataFrame.from_records(self.to_recarray(), columns=ATTEN_CAL_DTYPE.names)
+        return pd.DataFrame.from_records(self.records, columns=ATTEN_CAL_DTYPE.names)
 
     def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
-        rec = self.to_recarray()
-        missing = [name for name in names if name not in rec.dtype.names]
+        missing = [name for name in names if name not in self.records.dtype.names]
         if missing:
             raise HispecFibError(f"unknown attenuator calibration field(s): {', '.join(missing)}")
-        arrays = tuple(rec[name] for name in names)
+        arrays = tuple(self.records[name] for name in names)
         return arrays[0] if len(arrays) == 1 else arrays
 
     def plot(
         self,
         *,
-        x: str = "v",
-        y: str = "flux",
         physical: Literal["dac1", "dac2", "all"] = "all",
-        included_only: bool = False,
-        ax: Any = None,
+        figsize: tuple[float, float] | None = None,
+        show_schedule: bool = True,
+        show_datasheet: bool = True,
     ):
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
 
         physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
-        rec = self.to_recarray()
+        rec = self.records
+        if len(rec) == 0:
+            raise HispecFibError("attenuator calibration dataset is empty")
+        physicals = tuple(name for name in ("dac1", "dac2") if np.any(rec.physical == name))
         if physical != "all":
-            rec = rec[rec.physical == physical]
-        if included_only:
-            rec = rec[(rec.flags & 0x08) != 0]
-        if x not in rec.dtype.names or y not in rec.dtype.names:
-            raise HispecFibError(f"unknown plot field: {x if x not in rec.dtype.names else y}")
-        if ax is None:
-            _, ax = plt.subplots()
-        for name in ("dac1", "dac2"):
-            subset = rec[rec.physical == name]
-            if len(subset):
-                ax.plot(subset[x], subset[y], marker=".", linestyle="-", label=name)
-        ax.set_xlabel(x)
-        ax.set_ylabel(y)
-        if len(rec):
-            ax.legend()
-        return ax
+            physicals = (physical,)
+        if not physicals:
+            raise HispecFibError("no calibration records for requested physical attenuator")
+
+        ncols = len(physicals)
+        nrows = 8
+        if figsize is None:
+            figsize = (7.0 * ncols + 2.0, 21.5)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False, sharex=False)
+        fig.suptitle(
+            "Attenuator calibration diagnostic data; detector signal is uncalibrated mV-derived data",
+            fontsize=13,
+        )
+
+        reason_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="none",
+                color=color,
+                label=reason,
+                markersize=5,
+            )
+            for reason, color in _ATTEN_CAL_REASON_COLORS.items()
+        ]
+        event_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker=marker,
+                linestyle="none",
+                color="0.25",
+                label=event,
+                markerfacecolor="none",
+                markersize=5,
+            )
+            for event, marker in _ATTEN_CAL_EVENT_MARKERS.items()
+        ]
+
+        def styled_points(ax: Any, sub: np.recarray, x: str, y: str, *, yerr: str | None = None) -> None:
+            for event, marker in _ATTEN_CAL_EVENT_MARKERS.items():
+                for reason, color in _ATTEN_CAL_REASON_COLORS.items():
+                    mask = (
+                        (sub.event == event)
+                        & (sub.reason == reason)
+                        & np.isfinite(sub[x])
+                        & np.isfinite(sub[y])
+                    )
+                    if not np.any(mask):
+                        continue
+                    err = None
+                    if yerr is not None:
+                        err = np.asarray(sub[yerr][mask], dtype=float)
+                        err[~np.isfinite(err)] = 0.0
+                    ax.errorbar(
+                        sub[x][mask],
+                        sub[y][mask],
+                        yerr=err,
+                        fmt=marker,
+                        linestyle="none",
+                        color=color,
+                        markersize=4.0,
+                        alpha=0.85,
+                        markeredgewidth=0.8,
+                        capsize=0,
+                        elinewidth=0.55,
+                    )
+
+        def add_voltage_signposts(ax: Any) -> None:
+            if show_schedule:
+                for voltage in ATTENUATOR_CAL_SCHEDULE_DAC_MV * ATTENUATOR_DEFAULT_GAIN / 1000.0:
+                    ax.axvline(voltage, color="0.88", linewidth=0.45, zorder=0)
+            if show_datasheet:
+                ax.axvline(
+                    ATTENUATOR_FVOA_DATASHEET_FULL_RANGE_V,
+                    color="tab:purple",
+                    linestyle="--",
+                    linewidth=0.9,
+                    alpha=0.8,
+                    label="datasheet full-range drive",
+                )
+                ax.axvline(
+                    ATTENUATOR_FVOA_DATASHEET_CONTROL_MAX_V,
+                    color="tab:purple",
+                    linestyle=":",
+                    linewidth=0.9,
+                    alpha=0.8,
+                    label="datasheet 62.5um control max",
+                )
+
+        for col, name in enumerate(physicals):
+            sub = rec[rec.physical == name]
+            record = sub.record.astype(float)
+
+            ax = axes[0, col]
+            styled_points(ax, sub, "v_fvoa_v", "other_fvoa_v")
+            add_voltage_signposts(ax)
+            ax.set_title(f"{name}: control path")
+            ax.set_xlabel("swept FVOA drive, nominal V")
+            ax.set_ylabel("held FVOA drive, nominal V")
+            ax.set_xlim(left=-0.1, right=max(5.7, np.nanmax(sub.v_fvoa_v) + 0.2))
+            ax.set_ylim(bottom=-0.1, top=max(5.7, np.nanmax(sub.other_fvoa_v) + 0.2))
+
+            ax = axes[1, col]
+            ax.scatter(record, sub.v_fvoa_v, s=14, color="tab:blue", label="swept FVOA")
+            ax.scatter(record, sub.other_fvoa_v, s=14, color="tab:green", marker="x", label="held FVOA")
+            ax.set_title("command sequence; no point-to-point line implied")
+            ax.set_xlabel("record")
+            ax.set_ylabel("nominal FVOA drive, V")
+            axb = ax.twinx()
+            axb.scatter(record, sub.laser_pct, s=10, color="0.35", marker=".", label="laser %")
+            axb.set_ylabel("laser command, %")
+            ax.legend(loc="upper left", fontsize="x-small")
+            axb.legend(loc="upper right", fontsize="x-small")
+
+            ax = axes[2, col]
+            styled_points(ax, sub, "record", "signal_mv", yerr="sigma_y_mv")
+            ax.scatter(record, sub.mean_mv, s=8, color="0.35", alpha=0.45, label="ADC mean")
+            ax.axhline(0.0, color="0.3", linewidth=0.8)
+            ax.axhline(
+                ATTENUATOR_ADC_CLIP_MV,
+                color="tab:red",
+                linestyle="--",
+                linewidth=0.8,
+                label="ADC clip classifier",
+            )
+            ax.set_title("detector signal; colored error bars are sigma_y used by fit")
+            ax.set_xlabel("record")
+            ax.set_ylabel("mV")
+            ax.legend(loc="best", fontsize="x-small")
+
+            ax = axes[3, col]
+            positive_snr = np.where(sub.snr > 0.0, sub.snr, np.nan)
+            ax.scatter(record, positive_snr, s=13, color="tab:blue", label="SNR")
+            ax.axhline(
+                ATTENUATOR_CAL_SNR_USABLE,
+                color="tab:orange",
+                linestyle="--",
+                linewidth=0.9,
+                label="SNR usable threshold",
+            )
+            ax.set_yscale("log")
+            ax.set_title("quality; sample RMS is shown separately from fit sigma_y")
+            ax.set_xlabel("record")
+            ax.set_ylabel("SNR")
+            axb = ax.twinx()
+            axb.scatter(record, sub.rms_mv, s=10, color="0.4", marker="x", label="sample RMS mV")
+            axb.set_ylabel("sample RMS, mV")
+            ax.legend(loc="upper left", fontsize="x-small")
+            axb.legend(loc="upper right", fontsize="x-small")
+
+            ax = axes[4, col]
+            styled_points(ax, sub, "v_fvoa_v", "signal_mv", yerr="sigma_y_mv")
+            ax.axhline(0.0, color="0.3", linewidth=0.8)
+            add_voltage_signposts(ax)
+            ax.set_title("physical response; vertical gray lines are firmware schedule")
+            ax.set_xlabel("swept FVOA drive, nominal V")
+            ax.set_ylabel("dark-subtracted detector signal, mV")
+            ax.set_xlim(left=-0.1, right=max(5.7, np.nanmax(sub.v_fvoa_v) + 0.2))
+
+            ax = axes[5, col]
+            included = sub.included & np.isfinite(sub.firmware_b) & np.isfinite(sub.firmware_tx)
+            if np.any(included):
+                ax.scatter(
+                    sub.v_fvoa_v[included],
+                    sub.firmware_b[included],
+                    s=18,
+                    color="tab:blue",
+                    label="included b(V)",
+                )
+            add_voltage_signposts(ax)
+            ax.set_title("firmware control-law coordinate; points only")
+            ax.set_xlabel("swept FVOA drive, nominal V")
+            ax.set_ylabel("firmware model coordinate b")
+            ax.set_xlim(left=-0.1, right=max(5.7, np.nanmax(sub.v_fvoa_v) + 0.2))
+            axb = ax.twinx()
+            if np.any(included):
+                axb.scatter(
+                    sub.v_fvoa_v[included],
+                    sub.firmware_tx[included],
+                    s=14,
+                    color="tab:green",
+                    marker=".",
+                    label="included tx(b)",
+                )
+            axb.set_ylabel("firmware relative transmission")
+            ax.legend(loc="upper left", fontsize="x-small")
+            axb.legend(loc="upper right", fontsize="x-small")
+
+            ax = axes[6, col]
+            b_grid = np.linspace(-1.0, 9.0, 500)
+            tx_grid = _atten_model_tx_from_b(b_grid)
+            ax.plot(b_grid, tx_grid, color="0.25", linewidth=1.0, label="ERT tx(b) model")
+            if np.any(included):
+                ax.scatter(
+                    sub.firmware_b[included],
+                    sub.firmware_tx[included],
+                    s=18,
+                    color="tab:blue",
+                    label="firmware-included records",
+                )
+            ax.set_title("attenuation model coordinate; included points only")
+            ax.set_xlabel("model coordinate b")
+            ax.set_ylabel("relative transmission")
+            ax.set_ylim(-0.05, 1.05)
+            axb = ax.twinx()
+            atten_grid = np.full_like(tx_grid, np.nan)
+            positive = tx_grid > 0.0
+            atten_grid[positive] = -10.0 * np.log10(tx_grid[positive])
+            axb.plot(b_grid, atten_grid, color="tab:red", linewidth=0.8, alpha=0.55, label="model dB")
+            axb.set_ylabel("model attenuation, dB")
+            ax.legend(loc="upper right", fontsize="x-small")
+            axb.legend(loc="center right", fontsize="x-small")
+
+            ax = axes[7, col]
+            residual = sub.included & np.isfinite(sub.firmware_residual_db)
+            if np.any(residual):
+                ax.scatter(
+                    sub.v_fvoa_v[residual],
+                    sub.firmware_residual_db[residual],
+                    s=16,
+                    color="tab:blue",
+                    label="firmware fit residual",
+                )
+            ax.axhline(0.0, color="0.25", linewidth=0.8)
+            add_voltage_signposts(ax)
+            ax.set_title("fit residuals and explicit open-reference assumption")
+            ax.set_xlabel("swept FVOA drive, nominal V")
+            ax.set_ylabel("firmware residual, dB")
+            axb = ax.twinx()
+            rel = np.isfinite(sub.derived_rel_atten_db)
+            if np.any(rel):
+                axb.scatter(
+                    sub.v_fvoa_v[rel],
+                    sub.derived_rel_atten_db[rel],
+                    s=10,
+                    color="tab:green",
+                    marker=".",
+                    alpha=0.65,
+                    label="derived attenuation vs selected open ref",
+                )
+                refs = sub.derived_open_ref
+                if np.any(refs):
+                    axb.scatter(
+                        sub.v_fvoa_v[refs],
+                        sub.derived_rel_atten_db[refs],
+                        s=60,
+                        facecolors="none",
+                        edgecolors="tab:green",
+                        linewidths=1.2,
+                        label="selected open reference",
+                    )
+            axb.set_ylabel("derived relative attenuation, dB")
+            ax.legend(loc="upper left", fontsize="x-small")
+            axb.legend(loc="upper right", fontsize="x-small")
+
+        axes[0, 0].legend(
+            handles=reason_handles + event_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.38),
+            ncol=5,
+            fontsize="x-small",
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
+        return fig
 
 
 @dataclass(frozen=True, repr=False)
@@ -1103,7 +1470,7 @@ def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
     )
 
 
-def _decode_atten_cal_binary_page(payload: bytes | str) -> AttenuatorCalibrationDataPage:
+def _decode_atten_cal_binary_page(payload: bytes | str) -> tuple[Mapping[str, Any], np.recarray, int | None]:
     text = payload.decode("ascii") if isinstance(payload, (bytes, bytearray)) else payload
     try:
         meta_text, hex_data = text.split(" data=", 1)
@@ -1125,22 +1492,21 @@ def _decode_atten_cal_binary_page(payload: bytes | str) -> AttenuatorCalibration
 
     physical = str(meta["physical"])
     start = int(meta["start"])
-    points: list[AttenuatorCalibrationDataPoint] = []
+    rows: list[tuple[Any, ...]] = []
     for i in range(count):
         values = _ATTEN_CAL_RECORD_BINARY.unpack_from(raw, i * record_size)
         flags = int(values[21])
-        included = bool(flags & 0x08)
         event_id = int(values[18])
         reason_id = int(values[19])
-        points.append(
-            AttenuatorCalibrationDataPoint(
+        rows.append(
+            _atten_cal_record_row(
                 physical=physical,
-                i=start + i,
+                record=start + i,
                 event=_ATTEN_CAL_EVENTS[event_id] if event_id < len(_ATTEN_CAL_EVENTS) else "unknown",
                 reason=_ATTEN_CAL_REASONS[reason_id] if reason_id < len(_ATTEN_CAL_REASONS) else "invalid",
                 segment=int(values[20]),
-                v=float(values[0]),
-                other_mv=float(values[1]),
+                v_dac_mv=float(values[0]),
+                other_dac_mv=float(values[1]),
                 laser_pct=float(values[2]),
                 mean_mv=float(values[3]),
                 signal_mv=float(values[4]),
@@ -1148,41 +1514,38 @@ def _decode_atten_cal_binary_page(payload: bytes | str) -> AttenuatorCalibration
                 sigma_y_mv=float(values[6]),
                 sigma_x_mv=float(values[7]),
                 snr=float(values[8]),
-                flux=float(values[9]),
-                flux_sigma=float(values[10]),
+                scaled_signal=float(values[9]),
+                scaled_signal_sigma=float(values[10]),
                 scale=float(values[11]),
                 scale_sigma=float(values[12]),
                 samples=int(values[17]),
                 max_raw=int(values[16]),
                 flags=flags,
-                tx=float(values[13]) if included else np.nan,
-                b=float(values[14]) if included else None,
-                residual_db=float(values[15]) if included else None,
+                firmware_tx=float(values[13]),
+                firmware_b=float(values[14]),
+                firmware_residual_db=float(values[15]),
             )
         )
 
     next_value = int(meta["next"])
-    return AttenuatorCalibrationDataPage(
-        state=str(meta.get("state", "unknown")),
-        mode=str(meta.get("mode", "unknown")),
-        physical=physical,
-        start=start,
-        count=count,
-        record_count=int(meta["total"]),
-        point_count=128,
-        next=None if next_value < 0 else next_value,
-        fit_valid=bool(int(meta.get("fit_valid", "0"))),
-        fit_accepted=bool(int(meta.get("fit_accepted", "0"))),
-        record_overflow=bool(int(meta.get("overflow", "0"))),
-        dark_mean_mv=np.nan,
-        dark_rms_mv=np.nan,
-        dark_sigma_mv=np.nan,
-        open_flux=np.nan,
-        points=tuple(points),
-    )
+    page_meta = {
+        "state": str(meta.get("state", "unknown")),
+        "mode": str(meta.get("mode", "unknown")),
+        "physical": physical,
+        "start": start,
+        "count": count,
+        "record_count": int(meta["total"]),
+        "point_count": 128,
+        "next": None if next_value < 0 else next_value,
+        "fit_valid": bool(int(meta.get("fit_valid", "0"))),
+        "fit_accepted": bool(int(meta.get("fit_accepted", "0"))),
+        "record_overflow": bool(int(meta.get("overflow", "0"))),
+        "record_size": record_size,
+    }
+    return page_meta, _atten_cal_records_from_rows(rows), page_meta["next"]
 
 
-def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> AttenuatorCalibrationDataPage:
+def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> tuple[Mapping[str, Any], np.recarray, int | None]:
     if isinstance(data, (bytes, bytearray, str)):
         text = data.decode("ascii") if isinstance(data, (bytes, bytearray)) else data
         if text.lstrip().startswith("{"):
@@ -1190,7 +1553,7 @@ def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> Attenu
         return _decode_atten_cal_binary_page(data)
 
     physical = str(data["physical"])
-    decoded_points: list[AttenuatorCalibrationDataPoint] = []
+    rows: list[tuple[Any, ...]] = []
     for point in data.get("points", ()):
         valid = bool(point.get("valid", False))
         sat = bool(point.get("sat", False))
@@ -1201,15 +1564,15 @@ def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> Attenu
         tx_value = point.get("tx")
         b_value = point.get("b")
         res_value = point.get("res")
-        decoded_points.append(
-            AttenuatorCalibrationDataPoint(
+        rows.append(
+            _atten_cal_record_row(
                 physical=physical,
-                i=int(point["i"]),
+                record=int(point["i"]),
                 event=str(point.get("e", "point")),
                 reason=str(point.get("r", "ok" if valid else "invalid")),
                 segment=int(point.get("seg", 0)),
-                v=_float_or_nan(point.get("v")),
-                other_mv=_float_or_nan(point.get("o", point.get("other"))),
+                v_dac_mv=_float_or_nan(point.get("v")),
+                other_dac_mv=_float_or_nan(point.get("o", point.get("other"))),
                 laser_pct=_float_or_nan(point.get("laser")),
                 mean_mv=_float_or_nan(point.get("mean")),
                 signal_mv=_float_or_nan(point.get("sig", point.get("signal"))),
@@ -1217,36 +1580,37 @@ def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> Attenu
                 sigma_y_mv=_float_or_nan(point.get("sy")),
                 sigma_x_mv=_float_or_nan(point.get("sx")),
                 snr=_float_or_nan(point.get("snr")),
-                flux=_float_or_nan(point.get("f")),
-                flux_sigma=_float_or_nan(point.get("fs")),
+                scaled_signal=_float_or_nan(point.get("f", point.get("flux"))),
+                scaled_signal_sigma=_float_or_nan(point.get("fs", point.get("flux_sigma"))),
                 scale=_float_or_nan(point.get("scale")),
                 scale_sigma=_float_or_nan(point.get("ss")),
                 samples=int(point.get("n", point.get("samples", 0))),
                 max_raw=int(point.get("raw", point.get("max_raw", 0))),
                 flags=flags,
-                tx=_float_or_nan(tx_value),
-                b=None if b_value is None else float(b_value),
-                residual_db=None if res_value is None else float(res_value),
+                firmware_tx=_float_or_nan(tx_value),
+                firmware_b=_float_or_nan(b_value),
+                firmware_residual_db=_float_or_nan(res_value),
             )
         )
-    return AttenuatorCalibrationDataPage(
-        state=str(data["state"]),
-        mode=str(data["mode"]),
-        physical=physical,
-        start=int(data["start"]),
-        count=int(data["count"]),
-        record_count=int(data.get("record_count", data.get("point_count", 0))),
-        point_count=int(data["point_count"]),
-        next=None if data.get("next") is None else int(data["next"]),
-        fit_valid=bool(data.get("fit_valid", False)),
-        fit_accepted=bool(data.get("fit_accepted", False)),
-        record_overflow=bool(data.get("record_overflow", False)),
-        dark_mean_mv=_float_or_nan(data.get("dark_mean_mv")),
-        dark_rms_mv=_float_or_nan(data.get("dark_rms_mv")),
-        dark_sigma_mv=_float_or_nan(data.get("dark_sigma_mv")),
-        open_flux=_float_or_nan(data.get("open_flux", data.get("max_flux"))),
-        points=tuple(decoded_points),
-    )
+    next_value = None if data.get("next") is None else int(data["next"])
+    page_meta = {
+        "state": str(data.get("state", "unknown")),
+        "mode": str(data.get("mode", "unknown")),
+        "physical": physical,
+        "start": int(data.get("start", 0)),
+        "count": int(data.get("count", len(rows))),
+        "record_count": int(data.get("record_count", data.get("point_count", len(rows)))),
+        "point_count": int(data.get("point_count", 0)),
+        "next": next_value,
+        "fit_valid": bool(data.get("fit_valid", False)),
+        "fit_accepted": bool(data.get("fit_accepted", False)),
+        "record_overflow": bool(data.get("record_overflow", False)),
+        "dark_mean_mv": _float_or_nan(data.get("dark_mean_mv")),
+        "dark_rms_mv": _float_or_nan(data.get("dark_rms_mv")),
+        "dark_sigma_mv": _float_or_nan(data.get("dark_sigma_mv")),
+        "open_flux": _float_or_nan(data.get("open_flux", data.get("max_flux"))),
+    }
+    return page_meta, _atten_cal_records_from_rows(rows), next_value
 
 
 def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationStatus:
@@ -1961,7 +2325,7 @@ class HispecFibPcb:
         physical: Literal["dac1", "dac2"],
         *,
         start: int = 0,
-    ) -> AttenuatorCalibrationDataPage:
+    ) -> tuple[Mapping[str, Any], np.recarray, int | None]:
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
         if start < 0:
             raise HispecFibError("start must be non-negative")
@@ -1972,38 +2336,49 @@ class HispecFibPcb:
     def _atten_calibration_pages(
         self,
         physical: Literal["dac1", "dac2"],
-    ) -> list[AttenuatorCalibrationDataPage]:
-        pages: list[AttenuatorCalibrationDataPage] = []
+    ) -> tuple[tuple[Mapping[str, Any], ...], np.recarray]:
+        pages: list[Mapping[str, Any]] = []
+        chunks: list[np.recarray] = []
         next_start: int | None = 0
         while next_start is not None:
-            page = self._atten_calibration_data_page(physical, start=next_start)
+            page, records, next_value = self._atten_calibration_data_page(physical, start=next_start)
             pages.append(page)
-            if page.next is not None and page.next <= next_start:
+            if len(records):
+                chunks.append(records)
+            if next_value is not None and next_value <= next_start:
                 raise HispecFibError("attenuator calibration data pagination did not advance")
-            next_start = page.next
-        return pages
+            next_start = next_value
+        if not chunks:
+            return tuple(pages), _atten_cal_empty_records()
+        records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
+        return tuple(pages), records
 
     def atten_calibration_data(
         self,
         physical: Literal["dac1", "dac2", "all"] = "all",
         *,
         start: int | None = None,
-    ) -> AttenuatorCalibrationDataset | AttenuatorCalibrationDataPage:
+    ) -> AttenuatorCalibrationDataset:
         physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
         if start is not None:
             if physical == "all":
                 raise HispecFibError("start can only be used with physical='dac1' or 'dac2'")
-            return self._atten_calibration_data_page(physical, start=start)
+            page, records, _ = self._atten_calibration_data_page(physical, start=start)
+            return AttenuatorCalibrationDataset(records=records, meta=(page,))
 
         selected = ("dac1", "dac2") if physical == "all" else (physical,)
-        pages: list[AttenuatorCalibrationDataPage] = []
-        points: list[AttenuatorCalibrationDataPoint] = []
+        pages: list[Mapping[str, Any]] = []
+        chunks: list[np.recarray] = []
         for name in selected:
-            physical_pages = self._atten_calibration_pages(name)  # type: ignore[arg-type]
+            physical_pages, records = self._atten_calibration_pages(name)  # type: ignore[arg-type]
             pages.extend(physical_pages)
-            for page in physical_pages:
-                points.extend(page.points)
-        return AttenuatorCalibrationDataset(pages=tuple(pages), points=tuple(points))
+            if len(records):
+                chunks.append(records)
+        if not chunks:
+            records = _atten_cal_empty_records()
+        else:
+            records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
+        return AttenuatorCalibrationDataset(records=records, meta=tuple(pages))
 
     def atten_calibrate_auto(
         self,
