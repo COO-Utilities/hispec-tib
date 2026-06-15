@@ -59,6 +59,9 @@ _LASER_TO_PD_CHANNEL = {
 }
 
 _THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
+_ATTEN_CAL_RECORD_BINARY = struct.Struct("<16fhH4B")
+_ATTEN_CAL_EVENTS = ("point", "anchor_before", "link_probe", "anchor_after", "manual")
+_ATTEN_CAL_REASONS = ("ok", "saturated", "below_snr", "adc_error", "invalid")
 THROUGHPUT_DTYPE = np.dtype(
     [
         ("channel", "U8"),
@@ -1100,7 +1103,92 @@ def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
     )
 
 
-def _decode_atten_cal_data_page(data: Mapping[str, Any]) -> AttenuatorCalibrationDataPage:
+def _decode_atten_cal_binary_page(payload: bytes | str) -> AttenuatorCalibrationDataPage:
+    text = payload.decode("ascii") if isinstance(payload, (bytes, bytearray)) else payload
+    try:
+        meta_text, hex_data = text.split(" data=", 1)
+    except ValueError as exc:
+        raise HispecFibError("invalid attenuator calibration data payload") from exc
+    parts = meta_text.split()
+    if not parts or parts[0] != "HACD1":
+        raise HispecFibError("unsupported attenuator calibration data payload")
+    meta = dict(part.split("=", 1) for part in parts[1:] if "=" in part)
+    count = int(meta["count"])
+    record_size = int(meta["record_size"])
+    if record_size != _ATTEN_CAL_RECORD_BINARY.size:
+        raise HispecFibError(
+            f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
+        )
+    raw = bytes.fromhex(hex_data)
+    if len(raw) != count * record_size:
+        raise HispecFibError("attenuator calibration data length mismatch")
+
+    physical = str(meta["physical"])
+    start = int(meta["start"])
+    points: list[AttenuatorCalibrationDataPoint] = []
+    for i in range(count):
+        values = _ATTEN_CAL_RECORD_BINARY.unpack_from(raw, i * record_size)
+        flags = int(values[21])
+        included = bool(flags & 0x08)
+        event_id = int(values[18])
+        reason_id = int(values[19])
+        points.append(
+            AttenuatorCalibrationDataPoint(
+                physical=physical,
+                i=start + i,
+                event=_ATTEN_CAL_EVENTS[event_id] if event_id < len(_ATTEN_CAL_EVENTS) else "unknown",
+                reason=_ATTEN_CAL_REASONS[reason_id] if reason_id < len(_ATTEN_CAL_REASONS) else "invalid",
+                segment=int(values[20]),
+                v=float(values[0]),
+                other_mv=float(values[1]),
+                laser_pct=float(values[2]),
+                mean_mv=float(values[3]),
+                signal_mv=float(values[4]),
+                rms_mv=float(values[5]),
+                sigma_y_mv=float(values[6]),
+                sigma_x_mv=float(values[7]),
+                snr=float(values[8]),
+                flux=float(values[9]),
+                flux_sigma=float(values[10]),
+                scale=float(values[11]),
+                scale_sigma=float(values[12]),
+                samples=int(values[17]),
+                max_raw=int(values[16]),
+                flags=flags,
+                tx=float(values[13]) if included else np.nan,
+                b=float(values[14]) if included else None,
+                residual_db=float(values[15]) if included else None,
+            )
+        )
+
+    next_value = int(meta["next"])
+    return AttenuatorCalibrationDataPage(
+        state=str(meta.get("state", "unknown")),
+        mode=str(meta.get("mode", "unknown")),
+        physical=physical,
+        start=start,
+        count=count,
+        record_count=int(meta["total"]),
+        point_count=128,
+        next=None if next_value < 0 else next_value,
+        fit_valid=bool(int(meta.get("fit_valid", "0"))),
+        fit_accepted=bool(int(meta.get("fit_accepted", "0"))),
+        record_overflow=bool(int(meta.get("overflow", "0"))),
+        dark_mean_mv=np.nan,
+        dark_rms_mv=np.nan,
+        dark_sigma_mv=np.nan,
+        open_flux=np.nan,
+        points=tuple(points),
+    )
+
+
+def _decode_atten_cal_data_page(data: Mapping[str, Any] | bytes | str) -> AttenuatorCalibrationDataPage:
+    if isinstance(data, (bytes, bytearray, str)):
+        text = data.decode("ascii") if isinstance(data, (bytes, bytearray)) else data
+        if text.lstrip().startswith("{"):
+            return _decode_atten_cal_data_page(_loads(text))
+        return _decode_atten_cal_binary_page(data)
+
     physical = str(data["physical"])
     decoded_points: list[AttenuatorCalibrationDataPoint] = []
     for point in data.get("points", ()):
@@ -1878,7 +1966,7 @@ class HispecFibPcb:
         if start < 0:
             raise HispecFibError("start must be non-negative")
         return _decode_atten_cal_data_page(
-            self._request_json(f"atten/calibrate/data/{physical}/{int(start)}")
+            self._request_payload(f"atten/calibrate/data/{physical}/{int(start)}")
         )
 
     def _atten_calibration_pages(
@@ -2192,6 +2280,33 @@ class HispecFibPcb:
         if isinstance(result, Mapping) and "error" in result and not _is_atten_cal_status(result):
             raise HispecFibPCBError(str(result["error"]), response=_to_object(result))
         return result
+
+    def _request_payload(self, key: str, payload: Mapping[str, Any] | None = None) -> bytes:
+        self._ensure_connected()
+        topic = f"cmd/{self.device}/req/{key}"
+        response_topic = f"cmd/{self.device}/resp/{key}"
+        corr = next(self._corr_counter).to_bytes(8, "little", signed=False)
+        pending = _PendingRequest(topic=response_topic)
+        with self._pending_lock:
+            self._pending[corr] = pending
+        props = Properties(PacketTypes.PUBLISH)
+        props.ResponseTopic = response_topic
+        props.CorrelationData = corr
+        data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        try:
+            info = self._client.publish(topic, payload=data, qos=0, properties=props)
+            if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                raise HispecFibError(f"MQTT publish failed with rc={info.rc}")
+            if not pending.event.wait(self.timeout_s):
+                raise HispecFibError(f"timed out waiting for {response_topic}")
+            assert pending.payload is not None
+            raw = pending.payload
+            if raw.lstrip().startswith(b"{"):
+                _decode_ok_or_raise(response_topic, raw)
+            return raw
+        finally:
+            with self._pending_lock:
+                self._pending.pop(corr, None)
 
     def _request(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         self._ensure_connected()

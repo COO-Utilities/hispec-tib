@@ -3,12 +3,18 @@
  * @brief Automatic and manual attenuator calibration.
  */
 
-/* Automatic TIB calibration is primarily a bounded acquisition routine. It uses
- * a run-local dark/noise average, SNR-based measurement classification, explicit
- * anchor measurements before/after any laser or held-FVOA range change, and
- * retained records for every measurement. Firmware only persists when both
- * physical FVOAs produce accepted fits; otherwise the retained records are the
- * calibration output for external analysis.
+/* Automatic TIB calibration is a lab acquisition routine first and a model fit
+ * second. Each logical attenuator has two physical FVOAs in series. The FVOA
+ * range is much larger than the photodiode plus laser dynamic range, so one
+ * FVOA and the laser level are used as range extenders while the other FVOA is
+ * swept. The ordinary sweep follows the shared 20-point voltage schedule; the
+ * anchor/link path is only for extending range across saturation/floor
+ * brackets. The acquisition must retain enough raw points to understand where
+ * the FVOA is below the photodiode floor, where it transitions, and where it
+ * plateaus near maximum attenuation.
+ *
+ * A failed fit is not a failed acquisition. The run completes, does not persist
+ * coefficients, and leaves retained records for host-side analysis.
  */
 
 #include "attenuator_calibration.h"
@@ -36,7 +42,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_STEP_SETTLE_MS 50U
 #define ATTEN_CAL_PD_POWER_SETTLE_MS 1000U
 #define ATTEN_CAL_SAT_RAW (INT16_MAX - 1024)
-#define ATTEN_CAL_INITIAL_STEP_MV (ATTENUATOR_DRIVE_MAX_MV / 2.0)
 #define ATTEN_CAL_MIN_STEP_MV 10.0
 #define ATTEN_CAL_LINK_MIN_STEP_MV 20.0
 #define ATTEN_CAL_MAX_ADJUST_TRIES 20U
@@ -47,6 +52,7 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_SNR_USABLE 5.0
 #define ATTEN_CAL_SNR_FIT 5.0
 #define ATTEN_CAL_ADC_LSB_MV 0.1875
+#define ATTEN_CAL_ADC_CLIP_MV 5000.0
 #define ATTEN_CAL_DAC_SIGMA_MV 3.0
 #define ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX "atten"
 #define ATTEN_CAL_DATA_PAGE_RECORDS 2U
@@ -151,6 +157,9 @@ struct atten_cal_record {
 	uint8_t flags;
 };
 
+BUILD_ASSERT(sizeof(struct atten_cal_record) == 72U,
+	     "host calibration record decoder expects 72-byte records");
+
 struct atten_cal_state_data {
 	enum atten_cal_state state;
 	enum atten_cal_mode mode;
@@ -159,6 +168,7 @@ struct atten_cal_state_data {
 	uint8_t attenuator_index;
 	uint8_t physical_index;
 	uint8_t point_index;
+	uint8_t schedule_index;
 	uint32_t dwell_ms;
 	bool persistent;
 	enum hispec_laser_id laser;
@@ -168,7 +178,6 @@ struct atten_cal_state_data {
 	double scale;
 	double scale_rel_var;
 	double sweep_mv;
-	double step_mv;
 	double dark_mean_mv;
 	double dark_rms_mv;
 	double dark_sigma_mv;
@@ -374,7 +383,13 @@ static void atten_cal_emit_simple(const char *event)
 static void atten_cal_emit_point_set(const char *event, double sweep_mv)
 {
 	struct coo_cmd_response *msg;
+	uint8_t display_index = MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT);
 	size_t off;
+
+	if (cal.mode == ATTEN_CAL_MODE_TIB_AUTO &&
+	    cal.measure_kind == ATTEN_CAL_MEASURE_POINT) {
+		display_index = MIN(cal.schedule_index + 1U, ATTENUATOR_CAL_POINT_COUNT);
+	}
 
 	msg = atten_cal_telemetry_begin(&off, event);
 	if (msg == NULL ||
@@ -389,8 +404,7 @@ static void atten_cal_emit_point_set(const char *event, double sweep_mv)
 	atten_cal_publish_telemetry(msg);
 	LOG_INF("atten cal %s physical=%s point=%u/%u sweep_mv=%.1f other_mv=%.1f laser_pct=%.2f",
 		event, physical_name(cal.physical_index),
-		MIN(cal.point_index + 1U, ATTENUATOR_CAL_POINT_COUNT),
-		ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
+		display_index, ATTENUATOR_CAL_POINT_COUNT, sweep_mv, cal.other_mv,
 		cal.laser_percent);
 }
 
@@ -523,7 +537,9 @@ static bool sample_is_saturated(const struct photodiode_average_status *avg)
 	if (avg == NULL) {
 		return false;
 	}
-	return avg->result.max_raw >= ATTEN_CAL_SAT_RAW;
+	return avg->result.max_raw >= ATTEN_CAL_SAT_RAW ||
+	       avg->result.mean_mv >= ATTEN_CAL_ADC_CLIP_MV ||
+	       avg->result.max_mv >= ATTEN_CAL_ADC_CLIP_MV;
 }
 
 static double average_mean_sigma_mv(const struct photodiode_average_status *avg)
@@ -702,11 +718,11 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->state = state_name(cal.state);
 	status->mode = mode_name(cal.mode);
 	status->physical = physical_name(cal.physical_index);
-		if (cal.fit[0].accepted && cal.fit[1].accepted) {
-			status->fit = "ok";
-		} else {
-			status->fit = cal.last_error != 0 ? "failed" : "none";
-		}
+	if (cal.fit[0].accepted && cal.fit[1].accepted) {
+		status->fit = "ok";
+	} else {
+		status->fit = cal.last_error != 0 ? "failed" : "none";
+	}
 	status->attenuator_index = cal.attenuator_index;
 	status->physical_index = cal.physical_index;
 	status->point_index = cal.point_index;
@@ -737,8 +753,7 @@ static void reset_locked(enum atten_cal_state state)
 	cal.laser_percent = 100.0;
 	cal.scale = 1.0;
 	cal.scale_rel_var = 0.0;
-	cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
-	cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
+	cal.sweep_mv = voltage_schedule[0];
 }
 
 static int route_input_for_laser(enum hispec_laser_id laser, char *out, size_t out_len)
@@ -1304,8 +1319,16 @@ static int fit_current_locked(bool apply_settings)
 	}
 	if (!all_accepted) {
 		cal.last_error = first_error == 0 ? -ERANGE : first_error;
-		cal.state = ATTEN_CAL_STATE_ERROR;
-		atten_cal_emit_simple("error");
+		if (cal.mode == ATTEN_CAL_MODE_TIB_AUTO) {
+			cal.state = ATTEN_CAL_STATE_COMPLETE;
+			cal.phase = ATTEN_CAL_AUTO_NONE;
+			LOG_WRN("atten calibration acquisition complete with failed fit (%d)",
+				cal.last_error);
+			atten_cal_emit_simple("complete");
+		} else {
+			cal.state = ATTEN_CAL_STATE_ERROR;
+			atten_cal_emit_simple("error");
+		}
 		return cal.last_error;
 	}
 
@@ -1360,11 +1383,11 @@ static bool auto_set_laser_level_locked(uint8_t level_index)
 static void reset_current_physical_locked(void)
 {
 	cal.point_index = 0U;
+	cal.schedule_index = 0U;
 	cal.other_mv = 0.0;
 	cal.scale = 1.0;
 	cal.scale_rel_var = 0.0;
-	cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
-	cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
+	cal.sweep_mv = voltage_schedule[0];
 	cal.have_last_good = false;
 	cal.last_good_mv = 0.0;
 	cal.last_good_signal_mv = 0.0;
@@ -1441,8 +1464,8 @@ static bool auto_next_laser_reset_locked(const char *reason)
 	cal.have_last_good = false;
 	cal.have_low_signal = false;
 	cal.have_sat = false;
-	cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
-	cal.step_mv = ATTEN_CAL_INITIAL_STEP_MV;
+	cal.schedule_index = 0U;
+	cal.sweep_mv = voltage_schedule[0];
 	cal.segment_id++;
 	cal.adjust_tries = 0U;
 	LOG_INF("atten cal laser_reset physical=%s reason=%s laser_pct=%.3f",
@@ -1474,20 +1497,18 @@ static bool auto_reduce_laser_with_anchor_locked(const char *reason)
 
 static bool auto_next_sweep_lower_locked(void)
 {
-	double next_mv;
+	while (cal.schedule_index + 1U < ATTENUATOR_CAL_POINT_COUNT) {
+		double next_mv;
 
-	if (cal.sweep_mv <= 0.0) {
-		return false;
+		cal.schedule_index++;
+		next_mv = voltage_schedule[cal.schedule_index];
+		if (next_mv < cal.sweep_mv) {
+			cal.sweep_mv = next_mv;
+			return true;
+		}
 	}
-	next_mv = cal.sweep_mv - cal.step_mv;
-	if (next_mv < 0.0) {
-		next_mv = 0.0;
-	}
-	if (next_mv >= cal.sweep_mv) {
-		return false;
-	}
-	cal.sweep_mv = next_mv;
-	return true;
+
+	return false;
 }
 
 static void auto_begin_link_locked(void)
@@ -1567,7 +1588,6 @@ static void auto_record_and_finish_if_full_locked(enum atten_cal_record_event ev
 static void auto_handle_point_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
-	double previous_signal = cal.have_last_good ? cal.last_good_signal_mv : 0.0;
 	bool had_sat = cal.have_sat;
 
 	auto_record_and_finish_if_full_locked(ATTEN_CAL_EVENT_POINT, measurement,
@@ -1593,10 +1613,6 @@ static void auto_handle_point_locked(const struct atten_cal_measurement *measure
 			cal.sweep_mv = (cal.last_good_mv + cal.sat_mv) * 0.5;
 		} else {
 			cal.have_sat = false;
-			if (previous_signal > 0.0 &&
-			    measurement->signal_mv > previous_signal * 1.8) {
-				cal.step_mv = MAX(cal.step_mv * 0.5, ATTEN_CAL_MIN_STEP_MV);
-			}
 			if (!auto_next_sweep_lower_locked()) {
 				auto_finish_physical_locked();
 				return;
@@ -1761,7 +1777,6 @@ static void auto_handle_anchor_after_locked(const struct atten_cal_measurement *
 	auto_update_last_good_locked(measurement);
 	cal.have_low_signal = false;
 	cal.have_sat = false;
-	cal.step_mv = MAX(cal.link_anchor_mv - cal.link_retry_mv, ATTEN_CAL_MIN_STEP_MV);
 	cal.sweep_mv = cal.link_retry_mv;
 	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_POINT);
 }
@@ -2216,15 +2231,34 @@ int attenuator_calibration_format_status(
 	return 0;
 }
 
+static int append_hex_bytes(char *payload, size_t payload_len, size_t *off,
+			    const void *data, size_t data_len)
+{
+	static const char hex[] = "0123456789abcdef";
+	const uint8_t *bytes = data;
+
+	if (payload == NULL || off == NULL || data == NULL) {
+		return -EINVAL;
+	}
+	if (*off + (data_len * 2U) >= payload_len) {
+		return -ENOSPC;
+	}
+	for (size_t i = 0U; i < data_len; ++i) {
+		payload[(*off)++] = hex[(bytes[i] >> 4) & 0x0f];
+		payload[(*off)++] = hex[bytes[i] & 0x0f];
+	}
+	payload[*off] = '\0';
+	return 0;
+}
+
 int attenuator_calibration_format_data_page(char *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,
 					    uint8_t start_index)
 {
-	const struct attenuator_calibration_fit_metrics *fit;
-	const struct atten_cal_record *open_record = NULL;
 	uint8_t count;
 	uint8_t total;
+	uint8_t next;
 	size_t off = 0U;
 	int rc = 0;
 
@@ -2234,108 +2268,35 @@ int attenuator_calibration_format_data_page(char *payload,
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
-	fit = &cal.fit[physical_index];
 	total = cal.record_count[physical_index];
 	count = start_index < total ?
 		MIN(ATTEN_CAL_DATA_PAGE_RECORDS, (uint8_t)(total - start_index)) : 0U;
-	(void)find_open_reference(physical_index, &open_record);
+	next = (start_index + count < total) ? (uint8_t)(start_index + count) : UINT8_MAX;
 
 	if (coo_json_append(payload, payload_len, &off,
-			    "{\"state\":\"%s\",\"mode\":\"%s\","
-			    "\"physical\":\"%s\",\"start\":%u,"
-			    "\"count\":%u,\"record_count\":%u,"
-			    "\"point_count\":%u,\"next\":",
+			    "HACD1 state=%s mode=%s physical=%s start=%u count=%u "
+			    "total=%u next=%d fit_valid=%u fit_accepted=%u "
+			    "overflow=%u record_size=%u data=",
 			    state_name(cal.state), mode_name(cal.mode),
-			    physical_name(physical_index), start_index,
-			    count, total, ATTENUATOR_CAL_RECORD_COUNT) != 0) {
-		rc = -ENOSPC;
-		goto out;
-	}
-	if (start_index + count < total) {
-		if (coo_json_append(payload, payload_len, &off, "%u",
-				    start_index + count) != 0) {
-			rc = -ENOSPC;
-			goto out;
-		}
-	} else if (coo_json_append(payload, payload_len, &off, "null") != 0) {
-		rc = -ENOSPC;
-		goto out;
-	}
-	if (coo_json_append(payload, payload_len, &off,
-			    ",\"fit_valid\":%s,\"fit_accepted\":%s,"
-			    "\"record_overflow\":%s,\"dark_mean_mv\":",
-			    fit->valid ? "true" : "false",
-			    fit->accepted ? "true" : "false",
-			    cal.record_overflow[physical_index] ? "true" : "false") != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  cal.dark_valid ? cal.dark_mean_mv : (double)NAN, 6) != 0 ||
-	    coo_json_append(payload, payload_len, &off, ",\"dark_rms_mv\":") != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  cal.dark_valid ? cal.dark_rms_mv : (double)NAN, 6) != 0 ||
-	    coo_json_append(payload, payload_len, &off, ",\"dark_sigma_mv\":") != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  cal.dark_valid ? cal.dark_sigma_mv : (double)NAN, 6) != 0 ||
-	    coo_json_append(payload, payload_len, &off, ",\"open_flux\":") != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  open_record != NULL ? (double)open_record->flux : (double)NAN,
-					  6) != 0 ||
-	    coo_json_append(payload, payload_len, &off, ",\"points\":[") != 0) {
+			    physical_name(physical_index), start_index, count, total,
+			    next == UINT8_MAX ? -1 : (int)next,
+			    cal.fit[physical_index].valid ? 1U : 0U,
+			    cal.fit[physical_index].accepted ? 1U : 0U,
+			    cal.record_overflow[physical_index] ? 1U : 0U,
+			    (unsigned int)sizeof(struct atten_cal_record)) != 0) {
 		rc = -ENOSPC;
 		goto out;
 	}
 
 	for (uint8_t idx = start_index; idx < start_index + count; ++idx) {
 		const struct atten_cal_record *record = &cal.records[physical_index][idx];
-		bool included;
 
-		included = (record->flags & ATTEN_CAL_RECORD_FIT_INCLUDED) != 0U;
-		if (idx > start_index &&
-		    coo_json_append(payload, payload_len, &off, ",") != 0) {
+		rc = append_hex_bytes(payload, payload_len, &off,
+				      record, sizeof(*record));
+		if (rc != 0) {
 			rc = -ENOSPC;
 			goto out;
 		}
-		if (coo_json_append(payload, payload_len, &off,
-				    "{\"i\":%u,\"e\":\"%s\",\"r\":\"%s\","
-				    "\"seg\":%u,\"v\":%.3f,\"o\":%.3f,"
-				    "\"laser\":%.3f,\"mean\":%.6g,"
-				    "\"sig\":%.6g,\"rms\":%.6g,"
-				    "\"sy\":%.6g,\"sx\":%.3f,\"snr\":%.6g,"
-				    "\"f\":%.6g,\"fs\":%.6g,\"scale\":%.6g,"
-				    "\"ss\":%.6g,\"n\":%u,\"raw\":%d,"
-				    "\"flags\":%u,\"tx\":",
-				    idx, record_event_name(record->event),
-				    record_reason_name(record->reason),
-				    record->segment, (double)record->sweep_mv,
-				    (double)record->other_mv,
-				    (double)record->laser_pct,
-				    (double)record->mean_mv,
-				    (double)record->signal_mv,
-				    (double)record->rms_mv,
-				    (double)record->sigma_y_mv,
-				    (double)record->sigma_x_mv,
-				    (double)record->snr,
-				    (double)record->flux,
-				    (double)record->flux_sigma,
-				    (double)record->scale,
-				    (double)record->scale_sigma,
-				    record->samples, record->max_raw,
-				    record->flags) != 0 ||
-		    coo_json_append_float_or_null(payload, payload_len, &off,
-						  included ? record->tx : NAN, 6) != 0 ||
-		    coo_json_append(payload, payload_len, &off, ",\"b\":") != 0 ||
-		    coo_json_append_float_or_null(payload, payload_len, &off,
-						  included ? record->b : NAN, 6) != 0 ||
-		    coo_json_append(payload, payload_len, &off, ",\"res\":") != 0 ||
-		    coo_json_append_float_or_null(payload, payload_len, &off,
-						  included ? record->residual_db : NAN, 6) != 0 ||
-		    coo_json_append(payload, payload_len, &off, "}") != 0) {
-			rc = -ENOSPC;
-			goto out;
-		}
-	}
-
-	if (coo_json_append(payload, payload_len, &off, "]}") != 0) {
-		rc = -ENOSPC;
 	}
 
 out:

@@ -10,6 +10,7 @@
 #include <zephyr/drivers/adc.h>        // ADC API
 #include <zephyr/logging/log.h>        // LOG_ERR, LOG_WRN, etc.
 #include <zephyr/sys/util.h>
+#include <errno.h>
 #include <stdint.h>                    // int16_t, int64_t, etc.
 #include <string.h>
 #include <math.h>
@@ -150,6 +151,7 @@ struct photodiode_average_request {
     enum photodiode_average_state state;
     enum photodiode_average_owner owner;
     bool store_dark;
+    uint32_t attempts;
     double sum_mv;
     double sum_net_mv;
     double rms_mean_mv;
@@ -601,6 +603,46 @@ static void pd_average_finish_dark_locked(enum photodiode_channel channel,
                                            avg->store_dark);
 }
 
+static void pd_average_finish_locked(enum photodiode_channel channel,
+                                     struct photodiode_average_request *avg)
+{
+    double mean;
+    double variance;
+
+    if (avg == NULL) {
+        return;
+    }
+
+    avg->result.channel = channel;
+    if (avg->result.samples == 0U) {
+        avg->result.mean_mv = NAN;
+        avg->result.mean_net_mv = NAN;
+        avg->result.rms_mv = NAN;
+        avg->result.min_mv = NAN;
+        avg->result.max_mv = NAN;
+        avg->result.max_raw = 0;
+        avg->last_error = avg->last_error == 0 ? -ENODATA : avg->last_error;
+        avg->state = PHOTODIODE_AVERAGE_ERROR;
+        return;
+    }
+
+    mean = avg->sum_mv / (double)avg->result.samples;
+    variance = avg->rms_m2_mv2 / (double)avg->result.samples;
+    if (variance < 0.0) {
+        variance = 0.0;
+    }
+
+    avg->result.mean_mv = mean;
+    avg->result.mean_net_mv = avg->sum_net_mv / (double)avg->result.samples;
+    avg->result.rms_mv = sqrt(variance);
+    avg->result.min_mv = avg->min_mv;
+    avg->result.max_mv = avg->max_mv;
+    avg->result.max_raw = avg->max_raw;
+    avg->last_error = 0;
+    pd_average_finish_dark_locked(channel, avg);
+    avg->state = PHOTODIODE_AVERAGE_COMPLETE;
+}
+
 static void pd_average_sample_locked(enum photodiode_channel channel,
                                      int rc, int16_t raw, double mv, double net_mv)
 {
@@ -608,17 +650,18 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
     uint32_t count;
     double delta;
     double delta2;
-    double mean;
-    double variance;
 
     if (avg->state != PHOTODIODE_AVERAGE_MEASURING ||
-        avg->result.samples >= avg->result.target_samples) {
+        avg->attempts >= avg->result.target_samples) {
         return;
     }
 
+    avg->attempts++;
     if (rc != 0) {
-        avg->state = PHOTODIODE_AVERAGE_ERROR;
         avg->last_error = rc;
+        if (avg->attempts >= avg->result.target_samples) {
+            pd_average_finish_locked(channel, avg);
+        }
         return;
     }
 
@@ -647,26 +690,11 @@ static void pd_average_sample_locked(enum photodiode_channel channel,
     delta2 = mv - avg->rms_mean_mv;
     avg->rms_m2_mv2 += delta * delta2;
 
-    if (avg->result.samples < avg->result.target_samples) {
+    if (avg->attempts < avg->result.target_samples) {
         return;
     }
 
-    mean = avg->sum_mv / (double)avg->result.samples;
-    variance = avg->rms_m2_mv2 / (double)avg->result.samples;
-    if (variance < 0.0) {
-        variance = 0.0;
-    }
-
-    avg->result.channel = channel;
-    avg->result.mean_mv = mean;
-    avg->result.mean_net_mv = avg->sum_net_mv / (double)avg->result.samples;
-    avg->result.rms_mv = sqrt(variance);
-    avg->result.min_mv = avg->min_mv;
-    avg->result.max_mv = avg->max_mv;
-    avg->result.max_raw = avg->max_raw;
-    avg->last_error = 0;
-    pd_average_finish_dark_locked(channel, avg);
-    avg->state = PHOTODIODE_AVERAGE_COMPLETE;
+    pd_average_finish_locked(channel, avg);
 }
 
 static double pd_window_rms_mv(const struct photodiode_runtime_channel *snapshot)
@@ -715,6 +743,26 @@ static void pd_window_update(double mv, struct photodiode_runtime_channel *snaps
     snapshot->rms_mv_0p5s = pd_window_rms_mv(snapshot);
 }
 
+static void pd_emit_adc_error_warning(enum photodiode_channel channel, int rc)
+{
+    char context[64];
+
+    if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT || rc == 0) {
+        return;
+    }
+
+    snprintk(context, sizeof(context), "channel=%s rc=%d",
+             photodiode_channel_names[channel], rc);
+    coo_cmd_runtime_emit(command_runtime_get(),
+                         &(const struct coo_cmd_runtime_emit_args){
+                             .type = COO_CMD_RUNTIME_EMIT_WARNING,
+                             .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+                             .code = "photodiode_adc_error",
+                             .msg = "photodiode ADC sample discarded",
+                             .context = context,
+                         });
+}
+
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
                               const struct app_pd_channel_settings *settings)
 {
@@ -760,15 +808,24 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
         snapshot.noise_rms_mv = noise_rms;
         pd_window_update(mv, &snapshot);
         snapshot.sample_count++;
+        snapshot.updated_ms = now;
     } else {
-        snapshot.valid = false;
+        /* A failed ADC transaction is a missing sample, not an optical value.
+         * Keep the last good rolling values so downstream code sees fewer
+         * samples and a last_error, not a fabricated zero or invalid level.
+         */
+        mv = NAN;
     }
 
     snapshot.last_error = rc;
-    snapshot.updated_ms = now;
     pd_runtime[channel] = snapshot;
     pd_average_sample_locked(channel, rc, raw, mv, snapshot.net_mv);
     k_mutex_unlock(&pd_runtime_lock);
+
+    if (rc != 0) {
+        pd_emit_adc_error_warning(channel, rc);
+        return;
+    }
 
     if (rc == 0 && settings->noise_warn_rms_mv > 0.0 &&
         noise_rms > settings->noise_warn_rms_mv &&

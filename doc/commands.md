@@ -1034,66 +1034,24 @@ command wait budget, this command returns `{"error":"busy"}`.
     "dac2": {"valid": false}
   }
   ```
-- **Fit data query:** retained calibration fit data is available as bounded
-  pages, independent of best-effort telemetry:
+- **Fit data query:** retained calibration acquisition records are available as
+  bounded compact pages, independent of best-effort telemetry:
   ```
   atten/calibrate/data/<dac1|dac2>[/<start>]
   ```
-  `start` is optional and defaults to `0`; the response includes `next` until
-  all retained records for the requested physical FVOA have been returned.
-  ```json
-  {
-    "state": "error",
-    "mode": "tib_auto",
-    "physical": "dac1",
-    "start": 0,
-    "count": 2,
-    "record_count": 13,
-    "point_count": 128,
-    "next": 2,
-    "fit_valid": true,
-    "fit_accepted": false,
-    "record_overflow": false,
-    "dark_mean_mv": -0.6,
-    "dark_rms_mv": 3.2,
-    "dark_sigma_mv": 0.83,
-    "open_flux": 92697.1,
-    "points": [
-      {
-        "i": 0,
-        "e": "point",
-        "r": "ok",
-        "seg": 0,
-        "v": 3300.0,
-        "o": 1764.0,
-        "laser": 100.0,
-        "mean": 352.7,
-        "sig": 353.3,
-        "rms": 3.8,
-        "sy": 0.91,
-        "sx": 3.0,
-        "snr": 388.2,
-        "f": 353.3,
-        "fs": 0.91,
-        "scale": 1.0,
-        "ss": 0.0,
-        "n": 15,
-        "raw": 1881,
-        "flags": 14,
-        "tx": 0.00381,
-        "b": 5.88679,
-        "res": -14.8773
-      }
-    ]
-  }
+  `start` is optional and defaults to `0`. The response is not JSON; it is an
+  ASCII envelope followed by hex-encoded little-endian records:
+  ```text
+  HACD1 state=complete mode=tib_auto physical=dac1 start=0 count=2 total=13 next=2 fit_valid=0 fit_accepted=0 overflow=0 record_size=72 data=...
   ```
-  `points` are retained acquisition records, not only fit input points. Record
-  event `e` may be `point`, `anchor_before`, `link_probe`,
-  `anchor_after`, or `manual`. Reason `r` is `ok`, `saturated`,
-  `below_snr`, `adc_error`, or `invalid`. `sx` is the fixed DAC uncertainty
-  used by the fit, initially 3 mV. `sy` is the photodiode mean uncertainty
-  after combining the run-local dark uncertainty. `tx`, `b`, and `res` are
-  null unless that record was included in the current fit.
+  Each record has layout `<16f h H 4B>`: `v_mV`, `other_mv`, `laser_pct`,
+  `mean_mv`, `signal_mv`, `rms_mv`, `sigma_y_mv`, `sigma_x_mv`, `snr`,
+  `flux`, `flux_sigma`, `scale`, `scale_sigma`, `tx`, `b`, `residual_db`,
+  `max_raw`, `samples`, `event`, `reason`, `segment`, and `flags`. Event codes
+  are `0=point`, `1=anchor_before`, `2=link_probe`, `3=anchor_after`,
+  `4=manual`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
+  `3=adc_error`, `4=invalid`. `next=-1` means the page is complete. The Python
+  tool decodes this envelope into `AttenuatorCalibrationDataPage` objects.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1191,10 +1149,13 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 - **Notes:**
   - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
-    A canceled calibration returns to `inactive`. Fit state is `ok` when both
-    physical attenuators are accepted, `failed` after an unsuccessful fit, and
-    `none` before a fit exists. Calibration coefficients are persisted only
-    when `persist` is requested and both physical fits are accepted.
+    A canceled calibration returns to `inactive`. If automatic acquisition
+    completes but the fit is not accepted, state is `complete`, fit is `failed`,
+    coefficients are not persisted, and retained data remains available for lab
+    analysis. Fit state is `ok` when both physical attenuators are accepted,
+    `failed` after an unsuccessful fit, and `none` before a fit exists.
+    Calibration coefficients are persisted only when `persist` is requested and
+    both physical fits are accepted.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
@@ -1206,12 +1167,15 @@ command wait budget, this command returns `{"error":"busy"}`.
     calibration run; persistent photodiode dark calibration remains a separate
     photodiode command.
   - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
-    measurement is usable when it is not saturated and its dark-subtracted
-    signal is at least 5 sigma above the combined run-local dark and sample
-    mean uncertainty. Low-but-clean points are retained and may be fit inputs.
-    Saturated, below-SNR, ADC-error, and invalid measurements are retained as
-    records but are not fit inputs.
-  - The swept physical FVOA walks down in DAC millivolts from the open end. If
+    measurement is usable when it is not ADC/electrical clipped and its
+    dark-subtracted signal is at least 5 sigma above the combined run-local dark
+    and sample mean uncertainty. Saturation here means actual ADC clipping near
+    5 V, not a merely high photodiode voltage with electrical headroom.
+    Low-but-clean points are retained and may be fit inputs. Saturated,
+    below-SNR, ADC-error, and invalid measurements are retained as records but
+    are not fit inputs.
+  - The ordinary automatic sweep walks the same 20-point DAC-voltage schedule
+    reported for manual calibration, from maximum attenuation toward open. If
     it brackets a sharp transition, firmware explicitly records an
     `anchor_before` measurement at the last usable voltage, searches for a
     usable `link_probe` at the lower retry voltage by changing the held FVOA,

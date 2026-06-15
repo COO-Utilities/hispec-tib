@@ -105,7 +105,7 @@ int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,
 	const struct attenuator_calibration_status *status);
 
-/** Append one retained calibration data page as JSON. */
+/** Append one retained calibration data page as a compact text envelope plus hex records. */
 int attenuator_calibration_format_data_page(char *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,

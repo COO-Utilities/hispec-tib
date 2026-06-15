@@ -322,7 +322,7 @@ static void publish_sample(const struct throughput_state *state,
 				  (uint64_t)hispec_laser_current_on_time_s(state->laser) : 0U;
 	pd_1s_mean_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
-	if (state->has_laser &&
+	if (pd->valid && state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &atten) &&
 	    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0) {
@@ -494,7 +494,8 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (local[i].has_laser && local[i].autolevel &&
+			if (pd_status->channel[i].valid &&
+			    local[i].has_laser && local[i].autolevel &&
 			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
 							     0.0, 0.0, &atten)) {
 				(void)autolevel_adjust(&local[i], &pd_status->channel[i],
