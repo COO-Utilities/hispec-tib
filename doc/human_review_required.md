@@ -57,6 +57,8 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## TODOs
+- start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.
+  - go through all commands and verify that invaid arguments are rejected with an informative error message. a minimum of "bad argument" and, where simple, low-code, and general a "<arg> invalid, see catalog" 
 - go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
 - when the noise "resets" to 0 it makes it look like the noise has randomly gone away. This is actually MORE concerning than the discontinuities that the reset may be attempting to address. It should be allowed to briefly grow and those changes reverted or replaced with a temporarary nan until data to make a new reading is avaialble.
 
