@@ -1868,7 +1868,7 @@ class HispecFibPcb:
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate"))
 
-    def atten_calibration_data_page(
+    def _atten_calibration_data_page(
         self,
         physical: Literal["dac1", "dac2"],
         *,
@@ -1888,7 +1888,7 @@ class HispecFibPcb:
         pages: list[AttenuatorCalibrationDataPage] = []
         next_start: int | None = 0
         while next_start is not None:
-            page = self.atten_calibration_data_page(physical, start=next_start)
+            page = self._atten_calibration_data_page(physical, start=next_start)
             pages.append(page)
             if page.next is not None and page.next <= next_start:
                 raise HispecFibError("attenuator calibration data pagination did not advance")
@@ -1905,7 +1905,7 @@ class HispecFibPcb:
         if start is not None:
             if physical == "all":
                 raise HispecFibError("start can only be used with physical='dac1' or 'dac2'")
-            return self.atten_calibration_data_page(physical, start=start)
+            return self._atten_calibration_data_page(physical, start=start)
 
         selected = ("dac1", "dac2") if physical == "all" else (physical,)
         pages: list[AttenuatorCalibrationDataPage] = []
