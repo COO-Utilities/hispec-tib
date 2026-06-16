@@ -2193,18 +2193,6 @@ class HispecFibPcb:
             self._request_json(f"atten/{laser}", request_payload),
         )
 
-    def atten_value(self, laser: str) -> AttenuatorState:
-        return self.atten(laser)
-
-    def set_atten_value(self, laser: str, value: float) -> AttenuatorState:
-        return self.atten(laser, value=value)
-
-    def atten_db(self, laser: str) -> AttenuatorState:
-        return self.atten(laser)
-
-    def set_atten_db(self, laser: str, value_db: float) -> AttenuatorState:
-        return self.atten(laser, value_db=value_db)
-
     def atten_coeff(self, laser: str) -> AttenuatorCoeff:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
         return _decode_atten_coeff(self._request_json(f"atten/{laser}/coeff"))
