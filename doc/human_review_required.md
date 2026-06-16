@@ -20,33 +20,14 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Command/API Mismatches
 
 ### LLM Resolved; Human Review Requested
-
-- [ ] Verify MEMS and split non-constant duty responses now report actual
-  `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` timing fields.
-- [ ] Verify heater `auto` mode turns the heater off when all laser temperatures
-  are stale and ambient is invalid or at least 15 C.
-- [ ] Verify `pcb.set_serialguard(seconds)` no longer sends `persistent:false`
-  and can update expiry while serial guard is active.
 - [ ] Verify `laser/settings` temporarily powers the bank for driver-backed
   updates and documents that `default_operating_temp_c` is the TEC start
   setpoint.
-- [ ] Verify `pdsettings` reports `dark_duration_ms`, `dark_noise_rms_mv`, and
-  `lowest_stored_dark_mv` without exposing `lowest_dark_valid`.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.
-- [ ] Verify compact laser status reports `ready`/`blocked_reason` and uses
-  integer-or-null active time fields instead of inactive `0.0` values.
-- [ ] Verify `laser/status` is now the detailed engineering status command,
-  the old compact `laser/status` alias was removed, and `laser` remains the
-  compact status/set command.
 - [ ] Verify command schemas use `persist` as the only persistence request key,
   default it to false when absent, and reject old `persistent`/`store` spellings.
-- [ ] Verify `pd` and throughput telemetry report raw/dark-corrected voltage
-  fields using `*_raw_mv`, `*_mv`, `*_1s_mean_mv`, `*_residual_rms_mv`, and
-  `*_0p5s_rms_mv` without the previous ambiguous field names.
-- [ ] Verify the duplicate laser-bank fault-clear timeout define was removed
-  from `laser_command.c`; broader redundant-setting cleanup remains open.
 - [ ] Verify Maiman driver serial mismatches report
   `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
   programming, and can be resolved only by operator-updating
@@ -73,4 +54,24 @@ LLMs Agents: Do NOT change heading names in this file.
 - houskeeping laserbank and lasers ALL have several checks for a non-null work_q. This is just paranoia. The q is static and started by main and the 
   program cant exist without it. Centralize and elimiinate this so that future readers to not wonder if it could be null. The app SHOULD break (though safely) if it is.
 - <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there.
+
+- should  yj_residual_rms_mv/hk_residual_rms_mv be renamed to *_smoothed_rms_mv
+
+- FIX (check ALL python helpers for comand drift):
+  - pcb.laserbank_heater(mode='override_on')
+    Traceback (most recent call last):
+    File "/Users/jibailey/src/hispec-zephyr-mlang/.venv/lib/python3.13/site-packages/IPython/core/interactiveshell.py", line 3748, in run_code
+    exec(code_obj, self.user_global_ns, self.user_ns)
+      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "<ipython-input-28-6f0710221e92>", line 1, in <module>
+      pcb.laserbank_heater(mode='override_on')
+      ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 2493, in laserbank_heater
+      return _dataclass_from(LaserBankHeater, self._request_json("laserbank/heater"))
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 1568, in _dataclass_from
+      values = {name: mapping.get(name) for name in names if name in mapping}
+             ^^^^^^^^^^^^^
+TypeError: LaserBankHeater.__init__() missing 3 required positional arguments: 'ambient_valid', 'valid_temps', and 'stale_temps'
+
 ## Deferred Owner-Specified Capabilities
