@@ -2,10 +2,10 @@
  * @file attenuator_calibration.h
  * @brief Attenuator calibration state machine shared by commands and throughput thread.
  *
- * Commands start/stop/manual-step calibration and format compact status
- * replies. The throughput monitor thread calls attenuator_calibration_tick()
- * so automatic TIB calibration reuses the existing photodiode polling thread
- * instead of creating another worker.
+ * Commands start/stop calibration and format compact status replies. The
+ * throughput monitor thread calls attenuator_calibration_tick() so automatic
+ * TIB calibration reuses the existing photodiode polling thread instead of
+ * creating another worker.
  */
 #ifndef HISPEC_ATTENUATOR_CALIBRATION_H
 #define HISPEC_ATTENUATOR_CALIBRATION_H
@@ -17,28 +17,21 @@
 #include "lasers.h"
 #include "photodiode.h"
 
-#define ATTENUATOR_CAL_POINT_COUNT 20U
 #define ATTENUATOR_CAL_RECORD_COUNT 128U
-#define ATTENUATOR_CAL_MIN_BATCH_POINTS 6U
+#define ATTENUATOR_CAL_MIN_FIT_POINTS 6U
 
 struct attenuator_calibration_fit_metrics {
 	bool valid;
 	bool accepted;
 	uint8_t points;
-	double slope;
-	double offset;
+	double fvoa_50pct_mv;
+	double slope_inv_fvoa_mv;
 	double correlation;
 	double rms_db;
 	double max_abs_db;
 	double min_tx;
 	double max_tx;
-	double voltage_span_mv;
-};
-
-struct attenuator_calibration_batch {
-	double voltage_mv[ATTENUATOR_CAL_POINT_COUNT];
-	double flux[ATTENUATOR_CAL_POINT_COUNT];
-	size_t len;
+	double fvoa_span_mv;
 };
 
 struct attenuator_calibration_status {
@@ -55,8 +48,6 @@ struct attenuator_calibration_status {
 	double current_mv;
 	double other_mv;
 	int last_error;
-	bool include_voltage_schedule;
-	double voltage_schedule_mv[ATTENUATOR_CAL_POINT_COUNT];
 	struct attenuator_calibration_fit_metrics fit_metrics[2];
 };
 
@@ -73,25 +64,7 @@ int attenuator_calibration_start_auto(
 	const struct attenuator_calibration_auto_request *request,
 	struct attenuator_calibration_status *status);
 
-/** Start manual stepping for one logical attenuator pair. */
-int attenuator_calibration_start_manual(uint8_t attenuator_index,
-					uint32_t dwell_ms,
-					bool persistent,
-					struct attenuator_calibration_status *status);
-
-/** Advance manual stepping by one point; optional other_mv adjusts the held DAC mV. */
-int attenuator_calibration_manual_continue(bool has_other_mv,
-					   double other_mv,
-					   struct attenuator_calibration_status *status);
-
-/** Fit manual batch flux feedback against DAC-side millivolts for one logical attenuator pair. */
-int attenuator_calibration_fit_manual(
-	uint8_t attenuator_index,
-	const struct attenuator_calibration_batch physical[2],
-	bool persistent,
-	struct attenuator_calibration_status *status);
-
-/** Cancel calibration and return inactive state plus any schedule captured so far. */
+/** Cancel calibration and return inactive state. */
 int attenuator_calibration_stop(struct attenuator_calibration_status *status);
 
 /** Copy current calibration status. */

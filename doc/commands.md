@@ -964,25 +964,43 @@ command wait budget, this command returns `{"error":"busy"}`.
   DAC-side millivolts read back from the DAC.
 - **No payload to `coeff` -> model coefficients:**
   ```json
-  {"dac1":[0.00158137,0.0],"dac2":[0.00158137,0.0],"gain1":1.533,"gain2":1.533}
+  {
+    "dac1": {
+      "fvoa_50pct_mv": 2529.45,
+      "slope_inv_fvoa_mv": 0.00158137,
+      "gain": 1.533
+    },
+    "dac2": {
+      "fvoa_50pct_mv": 2529.45,
+      "slope_inv_fvoa_mv": 0.00158137,
+      "gain": 1.533
+    }
+  }
   ```
-- **Payload to `coeff`:** set the linear model coefficients for the two physical
-  attenuators that make up the logical attenuator.
+- **Payload to `coeff`:** set the model coefficients for the two physical
+  attenuators that make up the logical attenuator. Both `dac1` and `dac2`
+  objects are required.
   ```json
   {
-    "dac1": [0.00158137, 0.0],
-    "dac2": [0.00158137, 0.0],
-    "gain1": 1.533,
-    "gain2": 1.533,
+    "dac1": {
+      "fvoa_50pct_mv": 3144.95,
+      "slope_inv_fvoa_mv": 0.00303104,
+      "gain": 1.533
+    },
+    "dac2": {
+      "fvoa_50pct_mv": 3456.12,
+      "slope_inv_fvoa_mv": 0.00247498,
+      "gain": 1.533
+    },
     "persist": true
   }
   ```
 - **Serial form for `coeff`:** send the JSON object after the key. The default
   serial shorthand only builds a `value` payload, so it is not useful for
-  coefficient arrays. The MQTT payload is the same JSON object without the
+  coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":[0.00158137,0.0],"dac2":[0.00158137,0.0],"gain1":1.533,"gain2":1.533,"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"gain":1.533},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"gain":1.533},"persist":true}
   ```
 
 - **Notes:**
@@ -1002,10 +1020,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     board-configured DAC reference transfer, then responses report the applied
     DAC-side millivolts after code quantization and output-rail clipping.
   - Coefficients are loaded from persistent app NVS during
-    `setup_attenuators()`. They define
-    `b = gain * (slope * dac_mv + offset)` for the attenuation model
-    `transmission = (erf(4) + erf(4 - b)) / (2 * erf(4))`. `gain1` and
-    `gain2` default to 1.533.
+    `setup_attenuators()`. They define the erf coordinate
+    `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
+    `transmission = (erf(4) - erf(delta)) / (2 * erf(4))`. Runtime dB/linear
+    set commands normalize against the modeled open transmission at DAC 0.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
@@ -1020,25 +1038,25 @@ command wait budget, this command returns `{"error":"busy"}`.
     "mode": "none",
     "physical": "dac1",
     "fit": "none",
-    "n": 20,
+    "n": 128,
     "t_ms": 300,
     "complete_pct": 0,
-    "point": "1/20",
-    "mv": 3300.0,
+    "point": "1/128",
+    "mv": 0.0,
     "other_mv": 3300.0,
     "error": 0,
     "dac1": {
       "valid": true,
       "accepted": true,
       "points": 12,
-      "slope": 0.0016,
-      "offset": 0.0,
+      "fvoa_50pct_mv": 3144.95,
+      "slope_inv_fvoa_mv": 0.00303104,
       "corr": 0.999,
       "rms_db": 0.1,
       "max_abs_db": 0.2,
       "min_tx": 1.0e-6,
       "max_tx": 0.9,
-      "voltage_span_mv": 2400.0
+      "fvoa_span_mv": 2400.0
     },
     "dac2": {"valid": false}
   }
@@ -1050,17 +1068,18 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
   `start` is optional and defaults to `0`. The response is not JSON and is
   MQTT-only because the serial response printer is string-oriented. The first
-  16 bytes are `<4s 12B>`: magic `HAC2`, version, physical index, start,
+  16 bytes are `<4s 12B>`: magic `HAC3`, version, physical index, start,
   count, total, next, state, mode, fit-valid, fit-accepted, overflow, and
   record-size. `next=255` means the chunk is complete. Each following record
-  has little-endian layout `<16f h H 4B>`: `v_mV`, `other_mv`, `laser_pct`,
+  has little-endian layout `<16f h H 4B>`: `sweep_mv`, `other_mv`, `laser_pct`,
   `mean_mv`, `signal_mv`, `rms_mv`, `sigma_y_mv`, `sigma_x_mv`, `snr`,
   `flux`, `flux_sigma`, `scale`, `scale_sigma`, `tx`, `b`, `residual_db`,
   `max_raw`, `samples`, `event`, `reason`, `segment`, and `flags`. Event codes
-  are `0=point`, `1=anchor_before`, `2=link_probe`, `3=anchor_after`,
-  `4=manual`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
-  `3=adc_error`, `4=invalid`. The Python tool decodes chunks directly into a
-  NumPy record array.
+  are `0=point`, `1=initial_probe`, `2=bridge_before`, `3=bridge_probe`,
+  `4=bridge_after`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
+  `3=adc_error`, `4=invalid`. State codes are `0=inactive`, `1=running`,
+  `2=complete`, `3=error`; mode codes are `0=none`, `1=tib_auto`. The Python
+  tool decodes chunks directly into a NumPy record array.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1072,49 +1091,17 @@ command wait budget, this command returns `{"error":"busy"}`.
     "persist": true
   }
   ```
-- **Payload:** start manual calibration on a calibration board.
-  ```json
-  {
-    "mode": "manual",
-    "attenuator": "lfc",
-    "dwell_ms": 300,
-    "persist": true
-  }
-  ```
-- **Payload:** advance manual calibration by one voltage point. `other_mv` is
-  optional and sets the held physical attenuator DAC voltage for the next point.
-  ```json
-  {"continue": true, "other_mv": 2800.0}
-  ```
 - **Payload:** stop/cancel any calibration.
   ```json
   {"stop": true}
-  ```
-- **Payload:** fit manual feedback after the operator has measured fluxes.
-  Flux units are arbitrary but must be positive and consistent within each
-  physical attenuator sweep.
-  ```json
-  {
-    "mode": "manual",
-    "attenuator": "lfc",
-    "persist": true,
-    "dac1": {
-      "v_mV": [3261.6, 2074.4, 2035.2, 1983.0, 1950.4, 1917.8],
-      "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-    },
-    "dac2": {
-      "v_mV": [3261.6, 2074.4, 2035.2, 1983.0, 1950.4, 1917.8],
-      "flux": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-    }
-  }
   ```
 
 - **Telemetry topic:** `dt/<device>/atten`
 - **Telemetry payload:** attenuator calibration emits one best-effort JSON
   message per significant state transition, DAC setpoint, retained
-  measurement record, submitted manual point, and fit result. Calibration
-  continues if telemetry is dropped; authoritative acquisition data is queried
-  through `atten/calibrate/records`.
+  measurement record, bridge measurement, and fit result. Calibration continues
+  if telemetry is dropped; authoritative acquisition data is queried through
+  `atten/calibrate/records`.
   ```json
   {
     "event": "point",
@@ -1122,9 +1109,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     "mode": "tib_auto",
     "physical": "dac1",
     "attenuator": 2,
-    "point_index": 4,
-    "point_count": 128,
     "complete_pct": 10,
+    "record_count": 4,
     "i": 4,
     "reason": "ok",
     "segment": 0,
@@ -1144,27 +1130,27 @@ command wait budget, this command returns `{"error":"busy"}`.
     "fit_eligible": true,
     "scale": 1.0,
     "scale_sigma": 0.0,
-    "flux": 124.0,
-    "flux_sigma": 0.1
+    "relative_tx": 0.5,
+    "relative_signal_mv": 124.0,
+    "relative_signal_sigma_mv": 0.1
   }
   ```
-  Other `event` values include `start`, `physical_start`,
-  `point_set`, `anchor_before_set`, `link_probe_set`, `anchor_after_set`,
-  `anchor_before`, `link_probe`, `anchor_after`, `manual_point_set`,
-  `manual_point`, `fit`, `complete`, `stop`, and `error`. Fit input and
-  residual diagnostics are retained in calibration state and queried through
-  `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
-  burst.
+  Other `event` values include `start`, `physical_start`, `initial_probe_set`,
+  `point_set`, `bridge_before_set`, `bridge_probe_set`, `bridge_after_set`,
+  `initial_probe`, `bridge_before`, `bridge_probe`, `bridge_after`, `fit`,
+  `complete`, `stop`, and `error`. Fit input and residual diagnostics are
+  retained in calibration state and queried through `atten/calibrate/records`
+  instead of being emitted as an end-of-run telemetry burst.
 
 - **Notes:**
-  - State names are `inactive`, `running`, `waiting`, `complete`, and `error`.
+  - State names are `inactive`, `running`, `complete`, and `error`.
     A canceled calibration returns to `inactive`. If automatic acquisition
     completes but the fit is not accepted, state is `complete`, fit is `failed`,
     coefficients are not persisted, and retained data remains available for lab
     analysis. Fit state is `ok` when both physical attenuators are accepted,
     `failed` after an unsuccessful fit, and `none` before a fit exists.
-    Calibration coefficients are persisted only when `persist` is requested and
-    both physical fits are accepted.
+    Accepted calibration coefficients are applied to runtime attenuator control;
+    they are persisted to NVS only when `persist` is requested.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
@@ -1182,17 +1168,12 @@ command wait budget, this command returns `{"error":"busy"}`.
     Low-but-clean points are retained and may be fit inputs. Saturated,
     below-SNR, ADC-error, and invalid measurements are retained as records but
     are not fit inputs.
-  - The ordinary automatic sweep walks a 20-point DAC-side voltage schedule
-    converted from the digitized FVOA datasheet dB/V curve using nominal
-    1.533 drive gain, plus a 5 V plateau point. The schedule is deliberately
-    dense around the high-attenuation knee and runs from maximum attenuation
-    toward open. If
-    it brackets a sharp transition, firmware explicitly records an
-    `anchor_before` measurement at the last usable voltage, searches for a
-    usable `link_probe` at the lower retry voltage by changing the held FVOA,
-    then records `anchor_after` back at the same anchor voltage. The
-    before/after anchor ratio updates the flux scale and its uncertainty.
-    Laser level changes after usable data follow the same anchored path.
+  - Automatic calibration does not use a voltage schedule or datasheet limits
+    to choose calibration points. For each physical FVOA it binary-searches the
+    companion FVOA to find a non-saturated open reference, binary-sweeps the
+    DUT toward attenuation until the next point is below SNR or clipped, then
+    bridge-normalizes by holding the DUT and opening the companion FVOA. The
+    bridge before/after ratio updates the flux scale and its uncertainty.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
     flagged as fit-eligible by saturation/SNR rules. External analysis can
@@ -1203,19 +1184,11 @@ command wait budget, this command returns `{"error":"busy"}`.
   - The automatic fit normalizes flux to the best retained open-end reference,
     converts transmission to the attenuator model coordinate, and uses
     uncertainty-weighted double-precision linear regression for
-    `b_measured = slope * v_mV + offset` with DAC-side millivolts. The y
-    uncertainty comes from photodiode and anchor-scale propagation; the x
-    uncertainty is the fixed DAC uncertainty, initially 3 mV. When a fit is
-    applied, the stored slope and offset are normalized by the configured
-    op-amp gain so runtime still uses
-    `b = gain * (slope * dac_mv + offset)`. Fit details include point count,
-    correlation, residual RMS/max in dB, fitted transmission span, and voltage
-    span.
-  - Manual calibration returns the voltage schedule on completion or stop so an
-    operator can record fluxes externally and submit the batch later.
-  - Starting manual calibration disables any active autolevel throughput monitor
-    for that logical attenuator. Non-autolevel monitoring can continue so an
-    operator can manually set routes/laser levels and log `pd` between steps.
+    `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)`. The y
+    uncertainty comes from photodiode and bridge-scale propagation; the x
+    uncertainty is the fixed DAC uncertainty, initially 3 mV. Fit details
+    include point count, correlation, residual RMS/max in dB, fitted
+    transmission span, and FVOA-drive span.
 
 (pd)=
 ### `pd`

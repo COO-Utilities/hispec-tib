@@ -221,15 +221,16 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-			/* Default maps the 0-3300 mV DAC span through the nominal
-			 * op-amp gain onto the FVOA model range until lab-measured
-			 * coefficients are stored.
-			 */
-			s->attenuator.channel[ch].physical[physical].slope =
-				8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
-			s->attenuator.channel[ch].physical[physical].offset = 0.0;
-			s->attenuator.channel[ch].physical[physical].gain =
-				ATTENUATOR_DEFAULT_GAIN;
+				/* Default centers the nominal 0-3300 mV DAC span near the
+				 * FVOA half-shutter point until lab-measured coefficients
+				 * are stored.
+				 */
+				s->attenuator.channel[ch].physical[physical].fvoa_50pct_mv =
+					0.5 * ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+				s->attenuator.channel[ch].physical[physical].slope_inv_fvoa_mv =
+					8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+				s->attenuator.channel[ch].physical[physical].gain =
+					ATTENUATOR_DEFAULT_GAIN;
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
@@ -568,8 +569,8 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 	for (uint8_t i = 0U; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
 		const struct app_attenuator_physical_settings *p = &atten->physical[i];
 
-		physical[i].slope = p->slope;
-		physical[i].offset = p->offset;
+		physical[i].fvoa_50pct_mv = p->fvoa_50pct_mv;
+		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
 		physical[i].gain = p->gain;
 	}
 

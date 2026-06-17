@@ -19,14 +19,13 @@
 #include "lasers.h"
 
 #define ATTENUATOR_PHYSICAL_COUNT 2
-#define ATTENUATOR_COEFF_COUNT 2
 /* Firmware command/model span for DAC output before the FVOA-drive op amp. */
 #define ATTENUATOR_DRIVE_MAX_MV 3300.0
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 
 struct attenuator_model_coeffs {
-    double slope;
-    double offset;
+    double fvoa_50pct_mv;
+    double slope_inv_fvoa_mv;
     double gain;
 };
 
@@ -80,16 +79,16 @@ int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index);
 /**
  * @brief Convert a physical attenuator voltage to modeled attenuation in dB.
  *
- * The model is transmission = (erf(4) + erf(4 - b)) / (2 * erf(4)), where
- * b = gain * (slope * voltage + offset). The voltage is DAC output
- * millivolts before the external FVOA-drive op amp. This helper does not
- * perform DAC I/O.
+ * The model is transmission = (erf(4) - erf(delta)) / (2 * erf(4)), where
+ * delta = slope_inv_fvoa_mv * (gain * voltage - fvoa_50pct_mv). The voltage is
+ * DAC output millivolts before the external FVOA-drive op amp. This helper does
+ * not perform DAC I/O.
  */
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       double voltage);
 
 /**
- * @brief Convert the model coordinate b to linear transmission.
+ * @brief Convert the model erf-delta coordinate to linear transmission.
  *
  * This helper performs no I/O. It is used by fit/residual code that needs the
  * same physical model as normal attenuator control.
@@ -97,7 +96,7 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
 double attenuator_model_b_to_linear(double b);
 
 /**
- * @brief Convert linear transmission to the model coordinate b.
+ * @brief Convert linear transmission to the model erf-delta coordinate.
  *
  * Returns false when @p linear is outside the invertible open interval.
  */
@@ -107,8 +106,8 @@ bool attenuator_model_linear_to_b(double linear, double *b);
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.
  *
  * This is the inverse of attenuator_model_voltage_to_db(). Returns false when
- * the coefficient slope is zero or the requested attenuation is outside the
- * model domain.
+ * the inverse slope is zero or the requested attenuation is outside the model
+ * domain.
  */
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
                                     double attenuation_db, double *voltage);
@@ -116,9 +115,10 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
 /**
  * @brief Validate both physical attenuator model coefficient records.
  *
- * Coefficients must be finite, have positive slope, and produce a positive
- * modeled attenuation change over the fixed DAC drive span. This performs no
- * DAC I/O and is used before applying or restoring persisted coefficients.
+ * Coefficients must be finite, have positive slope, positive drive gain, and
+ * produce a positive modeled attenuation change over the fixed DAC drive span.
+ * This performs no DAC I/O and is used before applying or restoring persisted
+ * coefficients.
  */
 bool attenuator_model_coefficients_valid(
     const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT]);

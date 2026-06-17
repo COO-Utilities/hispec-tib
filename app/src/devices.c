@@ -962,12 +962,12 @@ void setup_attenuators(void)
 			continue;
 		}
 
-		attenuators[attenuator_index].coeff1.slope = atten_settings.channel[attenuator_index].physical[0].slope;
-		attenuators[attenuator_index].coeff1.offset = atten_settings.channel[attenuator_index].physical[0].offset;
+		attenuators[attenuator_index].coeff1.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[0].fvoa_50pct_mv;
+		attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[0].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
 
-		attenuators[attenuator_index].coeff2.slope = atten_settings.channel[attenuator_index].physical[1].slope;
-		attenuators[attenuator_index].coeff2.offset = atten_settings.channel[attenuator_index].physical[1].offset;
+		attenuators[attenuator_index].coeff2.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[1].fvoa_50pct_mv;
+		attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[1].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
 	}
 }

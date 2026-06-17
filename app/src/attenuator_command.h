@@ -39,7 +39,7 @@ int atten_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 int atten_calibration_records_get(const struct coo_cmd_request *cmd,
 				  struct coo_cmd_response *out);
 
-/** @brief Start/continue/stop attenuator calibration or fit manual batches. */
+/** @brief Start or stop automatic attenuator calibration. */
 int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #endif /* HISPEC_ATTENUATOR_COMMAND_H */

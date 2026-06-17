@@ -43,8 +43,6 @@ struct app_mqtt_settings {
 
 /** Number of logical attenuator channels whose calibration may be persisted. */
 #define APP_ATTENUATOR_CHANNEL_COUNT 6
-/** Number of fitted slope/offset coefficients per physical attenuator. */
-#define APP_ATTENUATOR_COEFF_COUNT 2
 #define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
@@ -66,9 +64,9 @@ enum app_pd_power_mode {
 };
 
 struct app_attenuator_physical_settings {
-	double slope;
-	double offset;
-	/* External op-amp gain applied as b = gain * (slope * dac_mv + offset). */
+	double fvoa_50pct_mv;
+	double slope_inv_fvoa_mv;
+	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
 };
 
