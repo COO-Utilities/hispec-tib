@@ -172,7 +172,6 @@ Therefore:
 * Do not support old telemetry formats.
 * Do not maintain old binary payload layouts.
 * Do not add migration code for old settings unless explicitly requested.
-* Do not keep aliases such as `persistent`/`store` when the intended key is `persist`.
 * Do not support multiple names for one operation.
 
 When replacing an unreleased interface, delete the old interface and update the firmware, docs, and Python host helper together.

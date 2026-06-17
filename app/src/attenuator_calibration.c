@@ -1524,7 +1524,7 @@ int attenuator_calibration_start_auto(
 	cal.attenuator_index = attenuator_index;
 	cal.physical_index = 0U;
 	cal.dwell_ms = clamp_dwell(request->dwell_ms);
-	cal.persistent = request->persistent;
+	cal.persistent = request->persist;
 	cal.laser = request->laser;
 	cal.channel = channel;
 	cal.laser_percent = 0.0;

@@ -23,8 +23,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.
-- [ ] Verify command schemas use `persist` as the only persistence request key,
-  default it to false when absent, and reject old `persistent`/`store` spellings.
 - [ ] Verify Maiman driver serial mismatches report
   `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
   programming, and can be resolved only by operator-updating

@@ -446,8 +446,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
 		bool persist = false;
 
-		if (coo_json_extract_optional_bool(cmd->payload, "persist",
-						   &persist, NULL) != 0) {
+		if (coo_json_extract_optional_bool(cmd->payload, "persist", &persist, NULL) != 0) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Invalid persist flag\"}");
 		}
@@ -619,7 +618,7 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 		.fiber = 'M',
 	};
 	uint32_t dwell_ms = 0U;
-	bool persistent = false;
+	bool persist = false;
 	bool stop = false;
 	int rc;
 	int parse_rc;
@@ -654,16 +653,14 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
 		request.fiber = (char)choice_value;
 	}
-	if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms",
-					  &dwell_ms, NULL) != 0) {
+	if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms", &dwell_ms, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid dwell_ms");
 	}
-	if (coo_json_extract_optional_bool(cmd->payload, "persist",
-					   &persistent, NULL) != 0) {
+	if (coo_json_extract_optional_bool(cmd->payload, "persist", &persist, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid persist");
 	}
 	request.dwell_ms = dwell_ms;
-	request.persistent = persistent;
+	request.persist = persist;
 
 	rc = attenuator_calibration_start_auto(&request, &status);
 	if (rc != 0 && status.state == NULL) {

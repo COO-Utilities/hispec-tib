@@ -1683,10 +1683,10 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 {
 	uint32_t holdoff_s = 0U;
 	bool was_active;
-	bool persistent = false;
+	bool persist = false;
 	int parse_rc_seconds;
 	int parse_rc_value;
-	int parse_rc_persistent;
+	int parse_rc_persist;
 
 	if (runtime == NULL || cmd == NULL) {
 		return coo_cmd_error(out, cmd, "serial guard unavailable");
@@ -1703,11 +1703,8 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 		return coo_cmd_error(out, cmd, "missing seconds");
 	}
 
-	parse_rc_persistent = coo_json_extract_bool(cmd->payload, "persistent", &persistent);
-	if (parse_rc_persistent == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(out, cmd, "invalid persistent");
-	}
-	if (parse_rc_persistent == COO_JSON_EXTRACT_OK) {
+	parse_rc_persist = coo_json_extract_bool(cmd->payload, "persist", &persist);
+	if (parse_rc_persist != COO_JSON_EXTRACT_MISSING) {
 		return coo_cmd_error(out, cmd, "serialguard persistence unsupported");
 	}
 

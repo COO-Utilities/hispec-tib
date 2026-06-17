@@ -312,7 +312,7 @@ flowchart TD
   Load --> Runtime[runtime settings snapshot]
   Command[effect request] --> Parse[validate JSON fields]
   Parse --> Update[update runtime snapshot]
-  Update --> Persist{persistent true}
+  Update --> Persist{persist true}
   Persist -- yes --> Save[write numeric NVS record]
   Persist -- no --> Volatile[runtime only]
   BoardChange[board type changed] --> BoardClear[delete non-board app records]

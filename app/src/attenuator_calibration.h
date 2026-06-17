@@ -56,7 +56,7 @@ struct attenuator_calibration_auto_request {
 	const char *output;
 	char fiber;
 	uint32_t dwell_ms;
-	bool persistent;
+	bool persist;
 };
 
 /** Start automatic TIB calibration for the laser's logical attenuator pair. */
