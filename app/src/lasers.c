@@ -1129,8 +1129,10 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	}
 
 	/* Driver preparation always writes the app-owned default operating
-	 * temperature before any TEC start. A bad default can make TEC startup fail
-	 * here and surface as an immediate laser fault.
+	 * temperature before any TEC start. Tune application may replace this with
+	 * a live setpoint later, but the stored default remains the startup
+	 * baseline. A bad default can make TEC startup fail here and surface as an
+	 * immediate laser fault.
 	 */
 	if (verbose) {
 		LOG_INF("Laser %s prepare: apply runtime profile temp=%.3fC max_current=%.3fmA tec_limit=%.3fA",
@@ -1172,8 +1174,8 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 		return -EIO;
 	}
 	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
-		/* Keep TEC startup tied to default_operating_temp_c. A later direct
-		 * setpoint command may change the setpoint only after this succeeds.
+		/* Keep TEC startup tied to default_operating_temp_c. Later live
+		 * setpoint writes may change the driver only after this succeeds.
 		 */
 		if (verbose) {
 			LOG_INF("Laser %s prepare: start TEC at %.3fC",
@@ -1590,6 +1592,10 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	k_mutex_unlock(&laser_lock);
 
 	if (percent > 0.0 && settings.tune_delta_nm != 0.0) {
+		/* Positive level commands apply the stored tune request. Setting
+		 * level 0 stops emission but intentionally leaves tune_delta_nm
+		 * stored for the next start.
+		 */
 		struct hispec_laser_tune_request request = {
 			.desired_power_percent = percent,
 			.wavelength_nm = props->wavelength_nm + settings.tune_delta_nm,
@@ -1797,6 +1803,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 	struct app_laser_channel_settings previous;
 	maiman_driver_t drv;
 	bool apply_driver;
+	bool settings_applied = false;
 	bool was_powered = false;
 	int rc;
 	int power_restore_rc = 0;
@@ -1845,6 +1852,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		}
 		if (rc != 0) {
 			laser_settings[id] = previous;
+		} else {
+			settings_applied = true;
 		}
 
 restore_power:
@@ -1856,12 +1865,16 @@ restore_power:
 		}
 	} else {
 		laser_settings[id] = *settings;
+		settings_applied = true;
 	}
 
 out_unlock:
 	k_mutex_unlock(&laser_lock);
 
-	if (rc == 0) {
+	if (settings_applied) {
+		/* A failed restore-to-off is reported because the bank state needs
+		 * attention, but it does not undo successfully programmed settings.
+		 */
 		(void)app_settings_update_laser_channel((uint8_t)id, settings, persist);
 	}
 	return rc;
@@ -1880,6 +1893,9 @@ int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 	if (rc != 0) {
 		return rc;
 	}
+	/* Store the tuning request. It is applied later by positive laser-level
+	 * commands, not immediately written to TEC/current registers here.
+	 */
 	settings.tune_delta_nm = delta_nm;
 	return hispec_laser_update_channel_settings(id, &settings, persist);
 }

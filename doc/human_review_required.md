@@ -20,9 +20,6 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Command/API Mismatches
 
 ### LLM Resolved; Human Review Requested
-- [ ] Verify `laser/settings` temporarily powers the bank for driver-backed
-  updates and documents that `default_operating_temp_c` is the TEC start
-  setpoint.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.

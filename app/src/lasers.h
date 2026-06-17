@@ -328,6 +328,7 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);
+/** @brief Store the wavelength tune offset applied by future positive laser starts. */
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist);
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);

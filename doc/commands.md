@@ -663,8 +663,11 @@ uint64 laser_current_ontime_s
   ```
 
 - **Notes:** `level` is 0-100% of the nominal current range above threshold current. Setting a positive level powers
-  the laser bank as needed, prepares the TEC, sets the laser current, and restarts the auto-off timer. Setting level
-  0 stops emission and writes driver current to 0. Laser output current is never persisted by app settings. The Maiman
+  the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
+  request when `tune_nm` is nonzero, sets the laser current, and restarts the
+  auto-off timer. Setting level 0 stops emission and writes driver current to 0;
+  it does not clear the stored `laser/tune` request. Laser output current is
+  never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
   `ready` reports whether the driver is prepared to operate without a blocking
   SF8025 lock condition. `blocked_reason` is `null` when no blocking condition
@@ -698,9 +701,13 @@ uint64 laser_current_ontime_s
   }
   ```
 - **Notes:** Sets the wavelength tuning request used when running the laser.
-  The request is stored by firmware and used on future positive `laser` level
-  commands. It is best-effort: large shifts are clamped by the TEC temperature
-  range and allowed current adjustment.
+  The request is stored by firmware; it does not immediately write TEC
+  temperature or laser current. Future positive `laser` level commands apply
+  the stored offset relative to `laser/settings.wavelength_nm`. Reissuing a
+  positive `laser` level after changing level does not require retuning because
+  firmware reapplies the stored offset. Setting `laser` level 0 stops emission
+  without clearing the stored tune request. Tuning is best-effort: large shifts
+  are clamped by the TEC temperature range and allowed current adjustment.
 
 
 (laser-status)=
@@ -786,11 +793,19 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
   ```
 
 - **Notes:**
-  - It is the user's responsibility to ensure the triple of (nominal_current_ma, default_operating_temp_c, wavelength_nm) are aligned and in sync as these form the basis of wavelength tuning
-  - `default_operating_temp_c` is the TEC setpoint applied during driver
-    preparation and TEC start. Direct TEC setpoint changes are applied only after
-    startup preparation succeeds, so a bad default can make the TEC fail to start
-    and make the laser appear to fault immediately.
+  - It is the user's responsibility to ensure the triple of
+    (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
+    aligned and in sync because these values form the baseline for wavelength
+    tuning.
+  - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
+    applied during driver preparation and TEC start. It is not the live tuned
+    TEC setpoint. Tuning may write a different live TEC setpoint when a positive
+    `laser` level command applies the stored `tune_nm`, but it does not overwrite
+    `default_operating_temp_c`.
+  - Changing `default_operating_temp_c` changes the baseline used by future tune
+    calculations. Existing `tune_nm` remains stored, but the next positive
+    `laser` level command may compute a different TEC/current point from the new
+    baseline.
   - Settings are checked when a laser is first talked to at each boot
   - `persist` is optional and defaults to false. Without `persist:true`,
     accepted changes apply to runtime and driver-backed state but are not saved
@@ -813,7 +828,11 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
   - Changes to settings will disable laser emission and may disable the TEC (stops emission + any throughput measurement using that laser)
-  - failures to set will leave all settings unchanged (rollback is performed or an error emitted)
+  - Failures before driver programming completes leave settings unchanged
+    (rollback is performed or an error emitted). If programming succeeds but
+    restoring the previous bank power state fails, the successfully applied
+    settings are still retained and persisted when requested; the command still
+    reports the restore error because bank power needs operator attention.
   - Unsettable (attempts to set are silently ignored):
     - `name`, `model`, `serial`
     - `overcurrent_threshold_ma`
