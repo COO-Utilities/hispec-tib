@@ -29,9 +29,8 @@ Current app NVS records include:
 - Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel.
 - One photodiode settings record per photodiode channel, including active dark
-  mV, whether that dark was user-set or measured, measured-dark averaging
-  duration when applicable, last measured dark RMS, lowest stored dark mV, noise
-  threshold, responsivity, and transimpedance.
+  window result, lowest stored dark window result, noise threshold,
+  responsivity, transimpedance, relay power intent, and auto-off delay.
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical
@@ -62,8 +61,8 @@ silently reused on another.
 - Attenuator coefficients default to
   `b = gain * (slope * dac_mv + offset)`, with DAC output millivolts in the
   0-3300 mV span and default gain 1.533, until calibrated/stored.
-- Photodiode dark and dark-noise RMS default to 0 mV. YJ and HK have different
-  default gain/noise warning values.
+- Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
+  different default gain/noise warning values.
 - Laser expected serials default to the initial known driver/diode association.
   Operators may update the value through `laser/settings` after confirming a
   replacement driver is physically associated with the intended diode.
@@ -78,9 +77,11 @@ NVS writes happen synchronously through Zephyr NVS and may block the caller.
 Command handlers that set `persist:true` can therefore block in the executor
 thread.
 
-Photodiode dark-noise RMS updates happen in the sampler thread when any dark
-measurement completes. Active dark, lowest-dark, and persisted dark updates
-happen only when a user-started dark measurement completes with `persist:true`.
+Photodiode active dark windows, forced dark values, lowest-dark records, and
+persisted dark updates happen only through `pd/dark/<channel>`.
+`pdsettings/<channel>` owns photodiode response settings and relay power intent;
+it does not update or report dark summaries. `persist:true` on `pd/dark` writes
+that dark settings snapshot to NVS.
 
 MEMS static state requests and route applications update the persisted
 per-switch intent once per command. Toggle and split commands persist the

@@ -45,7 +45,8 @@ LLMs Agents: Do NOT change heading names in this file.
 - algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
 
 - investigate additionaly complexity of making "ok" only responses give get responses over serial this probably adds too much code as some might need waits/delays that come naturally if a user is at a serial console. but would be a quality of life user improvement
-- test dark settings and persistence, especially `dark_duration_ms`,  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
+- test `pd/dark/<channel>` measurement, forced dark with optional `rms_mv`,
+  lowest-dark reset, and dark-window persistence over reboot.
 - Status needs to gain things we actually want.
 
 - `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.

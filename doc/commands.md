@@ -507,9 +507,9 @@ decisions, and throughput math.
 
 Transient ADC read/write errors are treated as missing photodiode samples:
 firmware emits a `photodiode_adc_error` warning, leaves the last good rolling
-value intact for streaming consumers, and excludes the failed sample from any
-active short average. A short average becomes unusable only when all attempted
-samples in the window fail.
+value intact for streaming consumers, and counts the failed sample in the
+active photodiode windows. A window becomes unusable only when all attempted
+samples in that window fail.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`
@@ -535,8 +535,8 @@ samples in the window fail.
   "pd_raw": 0,
   "pd_mv": 0.0,
   "pd_net_mv": 0.0,
-  "pd_1s_mean_mv": 0.0,
-  "pd_0p5s_rms_mv": 0.0,
+  "pd_mean_net_mv": 0.0,
+  "pd_mean_net_err_mv": 0.0,
   "laser_current_ma": 0.0,
   "atten_db": 0.0,
   "wavelength_nm": 1430.0,
@@ -572,8 +572,8 @@ float64 atten_tx
 int16 pd_raw
 float64 pd_mv
 float64 pd_net_mv
-float64 pd_1s_mean_mv
-float64 pd_0p5s_rms_mv
+float64 pd_mean_net_mv
+float64 pd_mean_net_err_mv
 float64 laser_current_ma
 float64 atten_db
 float64 wavelength_nm
@@ -585,9 +585,11 @@ uint64 laser_current_ontime_s
 - `tp` is unitless. `NaN` means offscale or insufficient information; values
   above unity are reported rather than clamped.
 - Flux values are photons per second.
-- `pd_mv` is the instantaneous raw ADC millivolt reading; `pd_net_mv` and
-  `pd_1s_mean_mv` subtract the configured dark level. `pd_0p5s_rms_mv` is the
-  half-second window RMS around its local mean.
+- `pd_mv` is the instantaneous raw ADC millivolt reading and `pd_net_mv` is
+  the instantaneous dark-subtracted value. `pd_mean_net_mv` and
+  `pd_mean_net_err_mv` come from the photodiode sampler's fixed monitoring
+  window. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
+  `app/src/photodiode.h`.
 - `atten_tx` and `atten_db` are dynamic logical attenuator terms normalized to
   the modeled 0 V FVOA state. Static assembly and route losses belong in
   `memsroute/route_loss`.
@@ -598,7 +600,7 @@ uint64 laser_current_ontime_s
   `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` from `fiber:"M"|"S"` and the outbound laser
   route as `<lasername>_to_<M|S>`. These names are route-loss record keys, not
   MEMS route-table entries.
-- The 1 s mean controls autolevel. Below 20% usable range, firmware requests
+- The fixed-window net mean controls autolevel. Below 20% usable range, firmware requests
   3x flux. Above 80%, it requests 1/3 flux.
 - Five consecutive saturated samples or five consecutive below-dark samples
   trigger immediate autolevel adjustment.
@@ -618,8 +620,8 @@ uint64 laser_current_ontime_s
   autolevel for the affected monitor; run the command again to re-enable it.
 - Starting a monitor with `autolevel:true` while attenuator calibration is
   active is rejected because both paths would own attenuator control.
-- Dark measurement must not be started while an autolevel throughput monitor is
-  running on that photodiode.
+- Throughput uses the photodiode sampler windows; it does not own or start
+  dark commits.
 
 
 (laser)=
@@ -1031,6 +1033,9 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 (atten-calibrate)=
 ### `atten/calibrate`
+The implementation flow, bridge-normalization sequence, and retained-record
+ownership are documented in `attenuator_calibration.md`.
+
 - **No payload -> compact calibration state:**
   ```json
   {
@@ -1154,12 +1159,14 @@ command wait budget, this command returns `{"error":"busy"}`.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
-  - TIB automatic calibration powers the selected photodiode, stops laser
-    emission, sets both physical attenuators to the maximum firmware DAC-drive
-    voltage, and waits 1 s for the relay/source and photodiode bandwidth to
-    settle. It does not measure a private calibration dark. Each average uses
-    the photodiode thread's configured dark-subtracted `mean_net_mv`; updating
-    dark remains a separate photodiode command.
+  - TIB automatic calibration requires the selected photodiode to already be
+    powered and producing valid sampler data. It stops laser emission, sets
+    both physical attenuators to the maximum firmware DAC-drive voltage, sets
+    the photodiode internal configurable-window duration to `dwell_ms`, and
+    then waits that dwell after each attenuator change. It does not measure a
+    private calibration dark. Each point uses the photodiode configurable
+    window's configured dark-subtracted `mean_net_mv`; updating dark remains a
+    separate `pd/dark/<channel>` operation.
   - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
     measurement is usable when it is not ADC/electrical clipped and its
     dark-subtracted signal is at least 5 sigma above the sample mean
@@ -1178,9 +1185,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     reports every retained acquisition record, and the fit uses only records
     flagged as fit-eligible by saturation/SNR rules. External analysis can
     inspect all retained records regardless of firmware fit success.
-  - Automatic calibration uses short photodiode averages from the sampler
-    thread. It does not start a new calibration thread; the throughput monitor
-    thread advances the state machine.
+  - Automatic calibration uses the sampler-owned internal photodiode
+    configurable window. It does not start a separate photodiode measurement or
+    a new calibration thread; the throughput monitor thread advances the state
+    machine.
   - The automatic fit normalizes flux to the best retained open-end reference,
     converts transmission to the attenuator model coordinate, and uses
     uncertainty-weighted double-precision linear regression for
@@ -1192,114 +1200,101 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 (pd)=
 ### `pd`
-- **No payload -> photodiode values:**
+- **Topic:** `cmd/<device>/req/pd` or `cmd/<device>/req/pd/<yj|hk>`
+- **No payload -> photodiode values and the public monitoring window:**
   ```json
   {
-    "yjvalue": 0.0,
-    "yjvalue_err": 0.0,
-    "hkvalue": 0.0,
-    "hkvalue_err": 0.0,
-    "yj_raw": 0,
-    "hk_raw": 0,
-    "yj_raw_mv": 0.0,
-    "hk_raw_mv": 0.0,
-    "yj_mv": 0.0,
-    "hk_mv": 0.0,
-    "yj_residual_rms_mv": 0.0,
-    "hk_residual_rms_mv": 0.0,
-    "yj_1s_mean_mv": 0.0,
-    "hk_1s_mean_mv": 0.0,
-    "yj_0p5s_rms_mv": 0.0,
-    "hk_0p5s_rms_mv": 0.0,
-    "yj_ontime_s": 0,
-    "hk_ontime_s": 0,
-    "yj_pd_is_off": true
+    "yj": {
+      "raw": 0,
+      "mv": 0.0,
+      "net_mv": 0.0,
+      "net_err_mv": 0.0,
+      "power_uw": 0.0,
+      "power_err_uw": 0.0,
+      "dark_mv": 0.0,
+      "dark_err_mv": 0.0,
+      "window": {
+        "length_ms": 0,
+        "failed_samples": 0,
+        "mean_mv": 0.0,
+        "mean_net_mv": 0.0,
+        "rms_mv": 0.0,
+        "mean_net_err_mv": 0.0,
+        "min_mv": 0.0,
+        "max_mv": 0.0,
+        "power_uw": 0.0,
+        "power_err_uw": 0.0
+      },
+      "pd_is_off": false,
+      "ontime_s": 0
+    },
+    "hk": {}
   }
   ```
-- **Payload -> dark measurement state:** measure dark without storing.
+- **Single-channel query:** `pd/yj` returns only the selected channel:
   ```json
-  {
-    "action": "measure_dark",
-    "channel": "yj",
-    "duration_ms": 1280,
-    "persist": false
-  }
-  ```
-  Response:
-  ```json
-  {
-    "state": "measuring",
-    "channel": "yj",
-    "persist": false,
-    "duration_ms": 1280,
-    "samples": 0,
-    "target_samples": 64
-  }
-  ```
-- **Payload -> dark measurement state:** measure dark and persist it.
-  ```json
-  {
-    "action": "measure_dark",
-    "channel": "hk",
-    "duration_ms": 1280,
-    "persist": true
-  }
-  ```
-- **Payload -> dark measurement progress/result:** complete results include the
-  measured mean/RMS/min/max.
-  ```json
-  {
-    "action": "dark_status",
-    "channel": "yj"
-  }
-  ```
-- **Payload:** reset lowest-ever dark tracking.
-  ```json
-  {
-    "action": "reset_lowest_dark",
-    "channel": "yj",
-    "persist": true
-  }
+  {"yj": {}}
   ```
 
 - **Notes:**
-  - `yj_raw` and `hk_raw` are raw ADC counts. `yj_raw_mv` and `hk_raw_mv` are
-    instantaneous raw ADC millivolts. `yj_mv`, `hk_mv`, `yj_1s_mean_mv`, and
-    `hk_1s_mean_mv` subtract the configured dark level.
-  - `measure_dark` starts or restarts the selected channel's short average,
-    marks it as a dark measurement, and returns immediately with
-    `state:"measuring"`.
-  - Dark level is updated only after an explicit `measure_dark` with
-    `persist:true` completes.
-  - `duration_ms` is rounded to the nearest supported sample count at the
-    monitor thread cadence and clamps to the same maximum window used by short
-    photodiode averages. The response reports actual `duration_ms`,
-    accumulated `samples`, and `target_samples`.
-  - A transient ADC error during the dark window discards that sample and
-    emits a warning. The dark average still completes from remaining valid
-    samples; an all-failed window reports `state:"error"`.
-  - `dark_status` reports the current or most recent short average for that
-    channel. Complete dark results include measured mean/RMS/min/max.
-  - `dark_noise_rms_mv` records the most recent dark-measurement RMS. Setting
-    `dark_mv` directly does not change this value.
-  - `measure_dark` with `persist:false` leaves stored calibration unchanged; its
-    completed statistics are available through `dark_status`.
-  - `lowest_stored_dark_mv` is updated only when a stored dark measurement is
-    lower than the previous stored lowest value. It is `null` until a stored
-    dark measurement has completed.
-  - Active monitoring tracks `yj_residual_rms_mv` and `hk_residual_rms_mv` as a
-    simple residual RMS after smoothing. If it exceeds the configured warning
-    threshold, the firmware emits `photodiode_noise` on `dt/<device>/warning`.
-  - `yj_0p5s_rms_mv` and `hk_0p5s_rms_mv` are half-second window RMS values
-    around each window's local mean.
-  - Power estimates subtract stored dark mV and use `responsivity_a_per_w` and
-    `transimpedance_v_per_a`.
-  - `yj_pd_is_off` and `hk_pd_is_off` are normally omitted. A key appears with
-    `true` only when the corresponding relay is off; ADC sampling and returned
-    values continue regardless.
-  - `yj_ontime_s` and `hk_ontime_s` are the current continuous relay on-times,
-    using the same source as throughput `pd_ontime_s`. A value is `0` when the
-    relay is off.
+  - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
+    In auto power mode, a query enables the selected photodiode relay or relays.
+  - `raw`, `mv`, `net_mv`, `net_err_mv`, `power_uw`, and `power_err_uw` are the
+    latest sample and its propagated dark error. Invalid latest samples are
+    reported with null floating-point values and the raw sentinel.
+  - `window` is the fixed public monitoring window used by throughput and
+    autolevel. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
+    `app/src/photodiode.h`.
+  - The internal configurable window used by dark measurement and attenuator
+    calibration is not exposed through the command API.
+  - Dark measurement and forced dark updates are done through
+    `pd/dark/<channel>`, not through `pd` or `pdsettings`.
+
+(pddark)=
+### `pd/dark`
+- **Topic:** `cmd/<device>/req/pd/dark/<yj|hk>`
+- **No payload -> active and lowest dark windows:**
+  ```json
+  {
+    "channel": "yj",
+    "dark": {
+      "length_ms": 0,
+      "failed_samples": 0,
+      "mean_mv": 0.0,
+      "mean_net_mv": 0.0,
+      "rms_mv": 0.0,
+      "mean_net_err_mv": 0.0,
+      "min_mv": 0.0,
+      "max_mv": 0.0,
+      "power_uw": 0.0,
+      "power_err_uw": 0.0
+    },
+    "lowest_dark": {}
+  }
+  ```
+- **Payload:** measure, force, or reset one channel's dark.
+  ```json
+  {"duration_ms": 1000, "persist": false}
+  ```
+  ```json
+  {"dark_mv": 0.0, "rms_mv": 1.5, "persist": true}
+  ```
+  ```json
+  {"reset_lowest": true}
+  ```
+
+- **Notes:**
+  - `duration_ms` uses the internal configurable photodiode window, waits for
+    that duration, and commits the resulting window as the active dark.
+  - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
+    `dark_mv`; if omitted, firmware uses
+    `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
+  - `duration_ms` and `dark_mv` are mutually exclusive. Durations must be
+    greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
+    `app/src/app_settings.h`.
+  - `reset_lowest:true` resets the lowest-dark record to the active dark.
+  - `persist` defaults false. Dark commands do not check laser state,
+    attenuator state, or routes.
 
 (pdsettings)=
 ### `pdsettings`
@@ -1308,11 +1303,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```json
   {
     "channel": "yj",
-    "dark_mv": 0.0,
-    "dark_duration_ms": "user",
-    "dark_noise_rms_mv": 0.0,
-    "lowest_stored_dark_mv": null,
-    "noise_rms_mV": 3.0,
+    "noise_rms_mv": 3.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10,
     "power": "auto",
@@ -1323,8 +1314,7 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **Payload:** update one channel's photodiode settings.
   ```json
   {
-    "noise_rms_mV": 3.0,
-    "dark_mv": 0.0,
+    "noise_rms_mv": 3.0,
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 5.0e10,
     "power": "auto",
@@ -1334,8 +1324,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   ```
 
 - **Current set fields:**
-  - `dark_mv`
-  - `noise_rms_mV`
+  - `noise_rms_mv`
   - `responsivity_a_per_w`
   - `transimpedance_v_per_a`
   - `power`
@@ -1344,17 +1333,12 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
-  command keys and separate app NVS records. Dark and lowest-dark values are
-  persisted through app settings. `power` is the relay intent for this channel:
-  `auto`, `override_on`, or `override_off`. `autooff_s` is the channel's
-  automatic power-off delay used when firmware auto-enables the relay; `off_in_s`
-  is `null` unless a channel auto-off countdown is armed. Setting `dark_mv`
-  directly marks the active
-  dark as user-supplied and reports `dark_duration_ms:"user"`. A completed
-  `pd measure_dark persist=true` records the measured mean as the active dark and
-  reports the actual averaging duration in `dark_duration_ms`.
-  `dark_noise_rms_mv` is the most recent dark-measurement RMS and is not changed
-  by manually setting `dark_mv`.
+  command keys and separate app NVS records. `power` is the relay intent for
+  this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
+  channel's automatic power-off delay used when firmware auto-enables the
+  relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
+  Dark and lowest-dark values are queried and updated through
+  `pd/dark/<channel>`.
 
 (ip)=
 ### `ip`

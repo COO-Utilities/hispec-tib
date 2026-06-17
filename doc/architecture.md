@@ -32,8 +32,8 @@ Runtime ownership is:
   helper APIs.
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
-- `photodiode.c`: ADC sampling, dark calibration, noise tracking, and rolling
-  sample windows.
+- `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
+  noise warnings.
 - `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
@@ -121,8 +121,7 @@ Empty or no-payload requests are queries except for dispatcher built-ins such as
 `laserbank/power/override_on`. Non-empty payloads normally mean an effect
 request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
-`memsroute/route_loss` payloads that contain only `route`, and `pd` dark-status
-payloads.
+`memsroute/route_loss` payloads that contain only `route`.
 
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:

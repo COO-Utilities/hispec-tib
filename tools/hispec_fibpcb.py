@@ -97,8 +97,8 @@ THROUGHPUT_DTYPE = np.dtype(
         ("pd_raw", "i2"),
         ("pd_mv", "f8"),
         ("pd_net_mv", "f8"),
-        ("pd_1s_mean_mv", "f8"),
-        ("pd_0p5s_rms_mv", "f8"),
+        ("pd_mean_net_mv", "f8"),
+        ("pd_mean_net_err_mv", "f8"),
         ("laser_current_ma", "f8"),
         ("atten_db", "f8"),
         ("wavelength_nm", "f8"),
@@ -155,14 +155,31 @@ ATTEN_GRID_DTYPE = np.dtype(
         ("fvoa2_v", "f8"),
         ("pd_mv", "f8"),
         ("pd_raw_mv", "f8"),
-        ("pd_residual_rms_mv", "f8"),
-        ("pd_0p5s_rms_mv", "f8"),
+        ("pd_rms_mv", "f8"),
+        ("pd_mean_net_err_mv", "f8"),
         ("pd_dark_mv", "f8"),
         ("gain1", "f8"),
         ("gain2", "f8"),
     ]
 )
 ATTEN_GRID_DEFAULT_FILE = "attenuator_grid_dataset.npz"
+_ATTEN_GRID_OLD_NAMES = (
+    "record",
+    "elapsed_s",
+    "laser",
+    "laser_pct",
+    "dac1_mv",
+    "dac2_mv",
+    "fvoa1_v",
+    "fvoa2_v",
+    "pd_mv",
+    "pd_raw_mv",
+    "pd_residual_rms_mv",
+    "pd_0p5s_rms_mv",
+    "pd_dark_mv",
+    "gain1",
+    "gain2",
+)
 
 
 def _format_scalar(value: Any) -> str:
@@ -695,6 +712,25 @@ def _atten_grid_pd_error_mv(
     return sigma
 
 
+def _coerce_atten_grid_records(records: np.ndarray) -> np.recarray:
+    arr = np.asarray(records)
+    names = tuple(arr.dtype.names or ())
+    if names == ATTEN_GRID_DTYPE.names:
+        return arr.astype(ATTEN_GRID_DTYPE, copy=False).view(np.recarray)
+    if names != _ATTEN_GRID_OLD_NAMES:
+        raise HispecFibError("attenuator grid dataset format changed; regenerate the grid dataset")
+
+    converted = np.empty(arr.shape, dtype=ATTEN_GRID_DTYPE)
+    for name in ATTEN_GRID_DTYPE.names:
+        if name == "pd_rms_mv":
+            converted[name] = arr["pd_residual_rms_mv"]
+        elif name == "pd_mean_net_err_mv":
+            converted[name] = arr["pd_0p5s_rms_mv"]
+        else:
+            converted[name] = arr[name]
+    return converted.view(np.recarray)
+
+
 def _atten_datasheet_region_anchors() -> tuple[float, float, float, float]:
     voltage = ATTENUATOR_FVOA_DATASHEET_V[1:]
     db = ATTENUATOR_FVOA_DATASHEET_DB[1:]
@@ -1067,13 +1103,10 @@ class AttenuatorGridDataset(ResponseRepr):
     channel: str = "yj"
 
     def __post_init__(self) -> None:
-        records = np.asarray(self.records)
-        if records.dtype.names is not None and tuple(records.dtype.names) != ATTEN_GRID_DTYPE.names:
-            raise HispecFibError("attenuator grid dataset format changed; regenerate the grid dataset")
         object.__setattr__(
             self,
             "records",
-            np.array(records, dtype=ATTEN_GRID_DTYPE, copy=False).view(np.recarray),
+            _coerce_atten_grid_records(np.asarray(self.records)),
         )
         object.__setattr__(self, "channel", _require_choice("channel", self.channel, PD_CHANNELS))
 
@@ -1116,10 +1149,7 @@ class AttenuatorGridDataset(ResponseRepr):
     @classmethod
     def load(cls, path: str = ATTEN_GRID_DEFAULT_FILE) -> "AttenuatorGridDataset":
         with np.load(path, allow_pickle=False) as data:
-            records = np.asarray(data["records"])
-            if tuple(records.dtype.names or ()) != ATTEN_GRID_DTYPE.names:
-                raise HispecFibError("attenuator grid dataset format changed; regenerate the grid dataset")
-            records = records.astype(ATTEN_GRID_DTYPE, copy=False).view(np.recarray)
+            records = _coerce_atten_grid_records(np.asarray(data["records"]))
             channel = str(np.asarray(data["channel"]).item())
         return cls(records=records, channel=channel)
 
@@ -1312,7 +1342,7 @@ class AttenuatorGridDataset(ResponseRepr):
         rail_mv = _atten_grid_rail_mv(_atten_grid_reference_mv(np.asarray(self.records.pd_mv, dtype=float), None))
         sigma = _atten_grid_pd_error_mv(
             y,
-            sub.pd_0p5s_rms_mv,
+            sub.pd_mean_net_err_mv,
             reference_mv=reference,
             max_mv=max_mv,
         )
@@ -1869,13 +1899,13 @@ class AttenuatorGridDataset(ResponseRepr):
         rail_mv = _atten_grid_rail_mv(observed_pd_max_mv)
         rms = _atten_grid_pd_error_mv(
             y,
-            sub.pd_0p5s_rms_mv,
+            sub.pd_mean_net_err_mv,
             reference_mv=slice_fit.sweep_plateau_pd_mv,
             max_mv=max_mv,
         )
         rms_plot = _atten_grid_pd_error_mv(
             y,
-            sub.pd_0p5s_rms_mv,
+            sub.pd_mean_net_err_mv,
             reference_mv=slice_fit.sweep_plateau_pd_mv,
             max_mv=max_mv,
             hard_rail=True,
@@ -2187,55 +2217,51 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
 
 @dataclass(frozen=True, repr=False)
-class PhotodiodeValues(ResponseRepr):
-    yjvalue: float
-    yjvalue_err: float
-    hkvalue: float
-    hkvalue_err: float
-    yj_raw: int
-    hk_raw: int
-    yj_raw_mv: float
-    hk_raw_mv: float
-    yj_mv: float
-    hk_mv: float
-    yj_residual_rms_mv: float
-    hk_residual_rms_mv: float
-    yj_1s_mean_mv: float
-    hk_1s_mean_mv: float
-    yj_0p5s_rms_mv: float
-    hk_0p5s_rms_mv: float
-    yj_ontime_s: int
-    hk_ontime_s: int
-    yj_pd_is_off: bool = False
-    hk_pd_is_off: bool = False
+class PhotodiodeWindow(ResponseRepr):
+    length_ms: int
+    failed_samples: int
+    mean_mv: float = np.nan
+    mean_net_mv: float = np.nan
+    rms_mv: float = np.nan
+    mean_net_err_mv: float = np.nan
+    min_mv: float = np.nan
+    max_mv: float = np.nan
+    power_uw: float = np.nan
+    power_err_uw: float = np.nan
 
 
 @dataclass(frozen=True, repr=False)
-class DarkStatus(ResponseRepr):
-    state: str
+class PhotodiodeChannelValues(ResponseRepr):
+    raw: int
+    mv: float
+    net_mv: float
+    net_err_mv: float
+    power_uw: float
+    power_err_uw: float
+    dark_mv: float
+    dark_err_mv: float
+    window: PhotodiodeWindow
+    pd_is_off: bool
+    ontime_s: int
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeValues(ResponseRepr):
+    yj: PhotodiodeChannelValues | None = None
+    hk: PhotodiodeChannelValues | None = None
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeDark(ResponseRepr):
     channel: str
-    duration_ms: int
-    samples: int
-    target_samples: int
-    persist: bool | None = None
-    mean_dark_mv: float | None = None
-    rms_mv: float | None = None
-    dark_noise_rms_mv: float = np.nan
-    min_mv: float | None = None
-    max_mv: float | None = None
-    previous_dark_mv: float | None = None
-    configured_dark_mv: float | None = None
-    lowest_stored_dark_mv: float = np.nan
+    dark: PhotodiodeWindow
+    lowest_dark: PhotodiodeWindow
 
 
 @dataclass(frozen=True, repr=False)
 class PhotodiodeSettings(ResponseRepr):
     channel: str
-    dark_mv: float
-    dark_duration_ms: int | Literal["user"]
-    dark_noise_rms_mv: float
-    lowest_stored_dark_mv: float
-    noise_rms_mV: float
+    noise_rms_mv: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
     power: str
@@ -2292,8 +2318,8 @@ class ThroughputSample(ResponseRepr):
     pd_raw: int
     pd_mv: float
     pd_net_mv: float
-    pd_1s_mean_mv: float
-    pd_0p5s_rms_mv: float
+    pd_mean_net_mv: float
+    pd_mean_net_err_mv: float
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
@@ -2541,12 +2567,49 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
     )
 
 
-def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
-    return _dataclass_from(
-        DarkStatus,
-        data,
-        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
-        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
+def _decode_pd_window(data: Mapping[str, Any]) -> PhotodiodeWindow:
+    return PhotodiodeWindow(
+        length_ms=int(data.get("length_ms", 0)),
+        failed_samples=int(data.get("failed_samples", 0)),
+        mean_mv=_float_or_nan(data.get("mean_mv", np.nan)),
+        mean_net_mv=_float_or_nan(data.get("mean_net_mv", np.nan)),
+        rms_mv=_float_or_nan(data.get("rms_mv", np.nan)),
+        mean_net_err_mv=_float_or_nan(data.get("mean_net_err_mv", np.nan)),
+        min_mv=_float_or_nan(data.get("min_mv", np.nan)),
+        max_mv=_float_or_nan(data.get("max_mv", np.nan)),
+        power_uw=_float_or_nan(data.get("power_uw", np.nan)),
+        power_err_uw=_float_or_nan(data.get("power_err_uw", np.nan)),
+    )
+
+
+def _decode_pd_channel(data: Mapping[str, Any]) -> PhotodiodeChannelValues:
+    return PhotodiodeChannelValues(
+        raw=int(data.get("raw", 0)),
+        mv=_float_or_nan(data.get("mv", np.nan)),
+        net_mv=_float_or_nan(data.get("net_mv", np.nan)),
+        net_err_mv=_float_or_nan(data.get("net_err_mv", np.nan)),
+        power_uw=_float_or_nan(data.get("power_uw", np.nan)),
+        power_err_uw=_float_or_nan(data.get("power_err_uw", np.nan)),
+        dark_mv=_float_or_nan(data.get("dark_mv", np.nan)),
+        dark_err_mv=_float_or_nan(data.get("dark_err_mv", np.nan)),
+        window=_decode_pd_window(data.get("window", {})),
+        pd_is_off=bool(data.get("pd_is_off", False)),
+        ontime_s=int(data.get("ontime_s", 0)),
+    )
+
+
+def _decode_pd(data: Mapping[str, Any]) -> PhotodiodeValues:
+    return PhotodiodeValues(
+        yj=_decode_pd_channel(data["yj"]) if "yj" in data else None,
+        hk=_decode_pd_channel(data["hk"]) if "hk" in data else None,
+    )
+
+
+def _decode_pd_dark(data: Mapping[str, Any]) -> PhotodiodeDark:
+    return PhotodiodeDark(
+        channel=str(data["channel"]),
+        dark=_decode_pd_window(data.get("dark", {})),
+        lowest_dark=_decode_pd_window(data.get("lowest_dark", {})),
     )
 
 
@@ -2599,8 +2662,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             pd_raw=int(data.get("pd_raw", 0)),
             pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
             pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
-            pd_1s_mean_mv=_float_or_nan(data.get("pd_1s_mean_mv", np.nan)),
-            pd_0p5s_rms_mv=_float_or_nan(data.get("pd_0p5s_rms_mv", np.nan)),
+            pd_mean_net_mv=_float_or_nan(data.get("pd_mean_net_mv", np.nan)),
+            pd_mean_net_err_mv=_float_or_nan(data.get("pd_mean_net_err_mv", np.nan)),
             laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
             atten_db=_float_or_nan(data.get("atten_db", np.nan)),
             wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
@@ -2636,8 +2699,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         pd_raw=int(pd_raw),
         pd_mv=float(extra[0]),
         pd_net_mv=float(extra[1]),
-        pd_1s_mean_mv=float(extra[2]),
-        pd_0p5s_rms_mv=float(extra[3]),
+        pd_mean_net_mv=float(extra[2]),
+        pd_mean_net_err_mv=float(extra[3]),
         laser_current_ma=float(extra[4]),
         atten_db=float(extra[5]),
         wavelength_nm=float(extra[6]),
@@ -3280,7 +3343,7 @@ class HispecFibPcb:
         dac1_mv: Sequence[float] | None = None,
         dac2_mv: Sequence[float] | None = None,
         laser_pct: float = 100.0,
-        pd_settle_s: float = 0.2,
+        dwell_s: float = 1.0,
         drive_gain: float = ATTENUATOR_DEFAULT_GAIN,
         channel: Literal["yj", "hk"] | None = None,
     ) -> AttenuatorGridDataset:
@@ -3289,7 +3352,9 @@ class HispecFibPcb:
             channel = _LASER_TO_PD_CHANNEL[laser]  # type: ignore[assignment]
         channel = _require_choice("channel", channel, PD_CHANNELS)  # type: ignore[assignment]
         laser_pct = _require_float("laser_pct", laser_pct, 0.0, 100.0)
-        pd_settle_s = _require_float("pd_settle_s", pd_settle_s, 0.0, 60.0)
+        dwell_s = float(dwell_s)
+        if not math.isfinite(dwell_s) or dwell_s < 0.0:
+            raise HispecFibError("dwell_s must be finite and nonnegative")
         drive_gain = _require_float("drive_gain", drive_gain, 1.0e-12, 1.0e12)
 
         if dac1_mv is None and dac2_mv is None:
@@ -3316,7 +3381,7 @@ class HispecFibPcb:
                 f"dac1_mv and dac2_mv values must be in [0.0, {ATTENUATOR_DRIVE_MAX_MV:.1f}]"
             )
 
-        pd_dark_mv = self.pdsettings(channel).dark_mv
+        pd_dark_mv = self.pd_dark(channel).dark.mean_mv
         self.set_laser_level(laser, laser_pct)
 
         rows: list[tuple[Any, ...]] = []
@@ -3325,10 +3390,13 @@ class HispecFibPcb:
         for value1_mv in dac1_values:
             for value2_mv in dac2_values:
                 self.atten(laser, value1_mv=float(value1_mv), value2_mv=float(value2_mv))
-                if pd_settle_s > 0.0:
-                    time.sleep(pd_settle_s)
-                pd = self.pd()
-                prefix = f"{channel}_"
+                if dwell_s > 0.0:
+                    time.sleep(dwell_s)
+                pd = self.pd(channel)
+                pd_channel = getattr(pd, channel)
+                if pd_channel is None:
+                    raise HispecFibError(f"pd/{channel} response did not include {channel}")
+                pd_window = pd_channel.window
                 rows.append(
                     (
                         record,
@@ -3339,10 +3407,10 @@ class HispecFibPcb:
                         float(value2_mv),
                         float(value1_mv) * drive_gain / 1000.0,
                         float(value2_mv) * drive_gain / 1000.0,
-                        float(getattr(pd, f"{prefix}mv")),
-                        float(getattr(pd, f"{prefix}raw_mv")),
-                        float(getattr(pd, f"{prefix}residual_rms_mv")),
-                        float(getattr(pd, f"{prefix}0p5s_rms_mv")),
+                        float(pd_window.mean_net_mv),
+                        float(pd_window.mean_mv),
+                        float(pd_window.rms_mv),
+                        float(pd_window.mean_net_err_mv),
                         pd_dark_mv,
                         drive_gain,
                         drive_gain,
@@ -3565,41 +3633,46 @@ class HispecFibPcb:
     def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate", {"stop": True}))
 
-    def pd(self) -> PhotodiodeValues:
-        return _dataclass_from(PhotodiodeValues, self._request_json("pd"))
+    def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
+        if channel is None:
+            return _decode_pd(self._request_json("pd"))
+        channel = _require_choice("channel", channel, PD_CHANNELS)
+        return _decode_pd(self._request_json(f"pd/{channel}"))
 
-    def measure_dark(self, channel: Literal["yj", "hk"], *, duration_ms: int = 0, persist: bool = False) -> DarkStatus:
+    def pd_dark(
+        self,
+        channel: Literal["yj", "hk"],
+        *,
+        duration_ms: int | None = None,
+        dark_mv: float | None = None,
+        rms_mv: float | None = None,
+        reset_lowest: bool | None = None,
+        persist: bool = False,
+    ) -> PhotodiodeDark:
         _require_choice("channel", channel, PD_CHANNELS)
-        payload = {
-            "action": "measure_dark",
-            "channel": channel,
-            "duration_ms": _require_nonnegative_u32("duration_ms", duration_ms),
-            "persist": bool(persist),
-        }
-        return _decode_dark_status(self._request_json("pd", payload))
-
-    def dark_status(self, channel: Literal["yj", "hk"]) -> DarkStatus:
-        _require_choice("channel", channel, PD_CHANNELS)
-        return _decode_dark_status(self._request_json("pd", {"action": "dark_status", "channel": channel}))
-
-    def reset_lowest_dark(self, channel: Literal["yj", "hk"], *, persist: bool = False) -> CommandOk:
-        _require_choice("channel", channel, PD_CHANNELS)
-        return self._request_ok(
-            "pd",
-            {"action": "reset_lowest_dark", "channel": channel, "persist": persist},
+        payload = _optional_payload(
+            duration_ms=duration_ms,
+            dark_mv=dark_mv,
+            rms_mv=rms_mv,
+            reset_lowest=reset_lowest,
+            persist=persist,
         )
+        if payload is None or set(payload) == {"persist"}:
+            return _decode_pd_dark(self._request_json(f"pd/dark/{channel}"))
+        if duration_ms is not None:
+            payload["duration_ms"] = _require_nonnegative_u32("duration_ms", duration_ms)
+        if dark_mv is not None:
+            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
+        if rms_mv is not None:
+            payload["rms_mv"] = _require_float("rms_mv", rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV)
+        return _decode_pd_dark(self._request_json(f"pd/dark/{channel}", payload))
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
         _require_choice("channel", channel, PD_CHANNELS)
         data = self._request_json(f"pdsettings/{channel}")
-        duration = data.get("dark_duration_ms", "user")
         return PhotodiodeSettings(
             channel=str(data["channel"]),
-            dark_mv=float(data["dark_mv"]),
-            dark_duration_ms="user" if duration == "user" else int(duration),
-            dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
-            lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
-            noise_rms_mV=float(data["noise_rms_mV"]),
+            noise_rms_mv=float(data["noise_rms_mv"]),
             responsivity_a_per_w=float(data["responsivity_a_per_w"]),
             transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
             power=str(data["power"]),
@@ -3611,8 +3684,7 @@ class HispecFibPcb:
         self,
         channel: Literal["yj", "hk"],
         *,
-        dark_mv: float | None = None,
-        noise_rms_mV: float | None = None,
+        noise_rms_mv: float | None = None,
         responsivity_a_per_w: float | None = None,
         transimpedance_v_per_a: float | None = None,
         power: Literal["auto", "override_on", "override_off"] | None = None,
@@ -3621,8 +3693,7 @@ class HispecFibPcb:
     ) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
-            dark_mv=dark_mv,
-            noise_rms_mV=noise_rms_mV,
+            noise_rms_mv=noise_rms_mv,
             responsivity_a_per_w=responsivity_a_per_w,
             transimpedance_v_per_a=transimpedance_v_per_a,
             power=power,
@@ -3631,11 +3702,9 @@ class HispecFibPcb:
         )
         if payload is None or set(payload) == {"persist"}:
             raise HispecFibError("at least one photodiode setting must be supplied")
-        if dark_mv is not None:
-            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
-        if noise_rms_mV is not None:
-            payload["noise_rms_mV"] = _require_float(
-                "noise_rms_mV", noise_rms_mV, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
+        if noise_rms_mv is not None:
+            payload["noise_rms_mv"] = _require_float(
+                "noise_rms_mv", noise_rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
             )
         if responsivity_a_per_w is not None:
             payload["responsivity_a_per_w"] = _require_float(

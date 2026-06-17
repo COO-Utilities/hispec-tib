@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 7U
+#define APP_NVS_SCHEMA_VERSION 8U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -88,10 +88,8 @@ struct app_nvs_ip_settings {
 };
 
 struct app_nvs_pd_channel {
-	double dark_mv;
-	double lowest_dark_mv;
-	uint32_t dark_duration_ms;
-	double dark_noise_rms_mv;
+	struct app_pd_dark_result dark;
+	struct app_pd_dark_result lowest_dark;
 	uint8_t lowest_dark_valid;
 	uint8_t power;
 	uint8_t reserved[2];
@@ -233,13 +231,20 @@ static void settings_defaults(struct app_settings_snapshot *s)
 					ATTENUATOR_DEFAULT_GAIN;
 		}
 	}
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_duration_ms =
-		APP_PD_DARK_DURATION_USER;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_noise_rms_mv =
-		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
-		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_DARK_MV,
+		};
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+		};
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv =
 		PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV;
@@ -249,13 +254,20 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].power = APP_PD_POWER_AUTO;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
-		APP_PD_DARK_DURATION_USER;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_noise_rms_mv =
-		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
-		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_DARK_MV,
+		};
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+		};
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv =
 		PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV;
@@ -459,10 +471,8 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 		return;
 	}
 
-	stored.dark_mv = pd->dark_mv;
-	stored.lowest_dark_mv = pd->lowest_dark_mv;
-	stored.dark_duration_ms = pd->dark_duration_ms;
-	stored.dark_noise_rms_mv = pd->dark_noise_rms_mv;
+	stored.dark = pd->dark;
+	stored.lowest_dark = pd->lowest_dark;
 	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
@@ -584,10 +594,8 @@ static void pd_settings_from_nvs(struct app_pd_channel_settings *pd,
 		return;
 	}
 
-	pd->dark_mv = stored->dark_mv;
-	pd->lowest_dark_mv = stored->lowest_dark_mv;
-	pd->dark_duration_ms = stored->dark_duration_ms;
-	pd->dark_noise_rms_mv = stored->dark_noise_rms_mv;
+	pd->dark = stored->dark;
+	pd->lowest_dark = stored->lowest_dark;
 	pd->lowest_dark_valid = stored->lowest_dark_valid != 0U;
 	pd->noise_warn_rms_mv = stored->noise_warn_rms_mv;
 	pd->responsivity_a_per_w = stored->responsivity_a_per_w;

@@ -31,8 +31,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 
 #define ATTEN_CAL_DEFAULT_DWELL_MS 300U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-#define ATTEN_CAL_PD_POWER_SETTLE_MS 1000U
-#define ATTEN_CAL_STEP_SETTLE_MS 100U
 #define ATTEN_CAL_ADC_LSB_MV 0.1875
 #define ATTEN_CAL_ADC_CLIP_MV 5000.0
 #define ATTEN_CAL_SAT_RAW (INT16_MAX - 1024)
@@ -68,11 +66,7 @@ enum atten_cal_mode {
 
 enum atten_cal_phase {
 	ATTEN_CAL_PHASE_NONE = 0,
-	ATTEN_CAL_PHASE_PD_SETTLE,
-	ATTEN_CAL_PHASE_SET,
-	ATTEN_CAL_PHASE_SETTLE,
-	ATTEN_CAL_PHASE_AVERAGE,
-	ATTEN_CAL_PHASE_FIT,
+	ATTEN_CAL_PHASE_WAIT_WINDOW,
 };
 
 enum atten_cal_measure_kind {
@@ -197,7 +191,9 @@ static struct coo_cmd_response cal_telemetry_msg;
 static void copy_status_locked(struct attenuator_calibration_status *status);
 static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 					 double sweep_mv, double other_mv);
+static void auto_fit_locked(void);
 
+/** Return the JSON/status spelling for an internal calibration state. */
 static const char *state_name(enum atten_cal_state state)
 {
 	switch (state) {
@@ -214,6 +210,7 @@ static const char *state_name(enum atten_cal_state state)
 	}
 }
 
+/** Return the JSON/status spelling for an internal calibration mode. */
 static const char *mode_name(enum atten_cal_mode mode)
 {
 	switch (mode) {
@@ -226,11 +223,13 @@ static const char *mode_name(enum atten_cal_mode mode)
 	}
 }
 
+/** Return the public physical-FVOA name for a physical index. */
 static const char *physical_name(uint8_t physical_index)
 {
 	return physical_index == 0U ? "dac1" : "dac2";
 }
 
+/** Return the retained-record and telemetry event spelling for an event id. */
 static const char *record_event_name(uint8_t event)
 {
 	switch ((enum atten_cal_record_event)event) {
@@ -249,6 +248,7 @@ static const char *record_event_name(uint8_t event)
 	}
 }
 
+/** Return the retained-record and telemetry reason spelling for a reason id. */
 static const char *record_reason_name(uint8_t reason)
 {
 	switch ((enum atten_cal_record_reason)reason) {
@@ -267,6 +267,7 @@ static const char *record_reason_name(uint8_t reason)
 	}
 }
 
+/** Clamp a requested dwell to the calibration-supported averaging interval. */
 static uint32_t clamp_dwell(uint32_t dwell_ms)
 {
 	if (dwell_ms == 0U) {
@@ -275,6 +276,7 @@ static uint32_t clamp_dwell(uint32_t dwell_ms)
 	return MIN(dwell_ms, ATTEN_CAL_MAX_DWELL_MS);
 }
 
+/** Estimate calibration progress from physical index and retained record count. */
 static uint8_t complete_percent_locked(void)
 {
 	uint16_t count;
@@ -291,16 +293,19 @@ static uint8_t complete_percent_locked(void)
 			    (ATTENUATOR_PHYSICAL_COUNT * ATTENUATOR_CAL_RECORD_COUNT));
 }
 
+/** Return the absolute uncertainty of the current bridge normalization scale. */
 static double current_scale_sigma_locked(void)
 {
 	return cal.segment_scale * sqrt(MAX(cal.segment_scale_rel_var, 0.0));
 }
 
+/** Decide whether a normalized transmission lies in the invertible fit domain. */
 static bool point_valid_for_fit(double tx)
 {
 	return tx > ATTEN_CAL_MIN_TX && tx < ATTEN_CAL_MAX_TX;
 }
 
+/** Publish one already-formatted best-effort calibration telemetry message. */
 static void atten_cal_publish_telemetry(struct coo_cmd_response *msg)
 {
 	if (msg == NULL) {
@@ -317,6 +322,7 @@ static void atten_cal_publish_telemetry(struct coo_cmd_response *msg)
 		});
 }
 
+/** Start a common telemetry JSON object populated with current calibration state. */
 static struct coo_cmd_response *atten_cal_telemetry_begin(size_t *off,
 							  const char *event)
 {
@@ -346,6 +352,7 @@ static struct coo_cmd_response *atten_cal_telemetry_begin(size_t *off,
 	return msg;
 }
 
+/** Emit a short state-transition telemetry message with the last error code. */
 static void atten_cal_emit_simple(const char *event)
 {
 	size_t off = 0U;
@@ -361,6 +368,7 @@ static void atten_cal_emit_simple(const char *event)
 	atten_cal_publish_telemetry(msg);
 }
 
+/** Emit telemetry after a new DAC pair setpoint has been issued. */
 static void atten_cal_emit_set(const char *event)
 {
 	size_t off = 0U;
@@ -375,6 +383,7 @@ static void atten_cal_emit_set(const char *event)
 	atten_cal_publish_telemetry(msg);
 }
 
+/** Emit telemetry for a retained measurement record. */
 static void atten_cal_emit_record(const struct atten_cal_record *record)
 {
 	size_t off = 0U;
@@ -412,6 +421,7 @@ static void atten_cal_emit_record(const struct atten_cal_record *record)
 	atten_cal_publish_telemetry(msg);
 }
 
+/** Emit telemetry for one physical-FVOA fit result. */
 static void atten_cal_emit_fit(uint8_t physical,
 			       const struct attenuator_calibration_fit_metrics *fit)
 {
@@ -446,32 +456,18 @@ static void atten_cal_emit_fit(uint8_t physical,
 	atten_cal_publish_telemetry(msg);
 }
 
-static bool sample_is_saturated(const struct photodiode_average_status *avg)
+/** Decide whether a photodiode window clipped the ADC path. */
+static bool sample_is_saturated(const struct photodiode_window_result *window)
 {
-	return avg == NULL ||
-	       avg->result.max_raw >= ATTEN_CAL_SAT_RAW ||
-	       avg->result.mean_mv >= ATTEN_CAL_ADC_CLIP_MV ||
-	       avg->result.max_mv >= ATTEN_CAL_ADC_CLIP_MV;
+	return window == NULL ||
+	       window->max_raw >= ATTEN_CAL_SAT_RAW ||
+	       window->mean_mv >= ATTEN_CAL_ADC_CLIP_MV ||
+	       window->max_mv >= ATTEN_CAL_ADC_CLIP_MV;
 }
 
-static double average_mean_sigma_mv(const struct photodiode_average_status *avg)
-{
-	double samples;
-	double rms_mean;
-	double adc_mean;
-
-	if (avg == NULL || avg->result.samples == 0U) {
-		return ATTEN_CAL_ADC_LSB_MV;
-	}
-
-	samples = (double)avg->result.samples;
-	rms_mean = avg->result.rms_mv / sqrt(samples);
-	adc_mean = (ATTEN_CAL_ADC_LSB_MV / sqrt(12.0)) / sqrt(samples);
-	return sqrt(rms_mean * rms_mean + adc_mean * adc_mean);
-}
-
-static void measurement_from_average(const struct photodiode_average_status *avg,
-				     struct atten_cal_measurement *measurement)
+/** Convert the current photodiode configurable window into the calibration measurement model. */
+static void measurement_from_window(const struct photodiode_window_result *window,
+				    struct atten_cal_measurement *measurement)
 {
 	if (measurement == NULL) {
 		return;
@@ -479,19 +475,19 @@ static void measurement_from_average(const struct photodiode_average_status *avg
 	memset(measurement, 0, sizeof(*measurement));
 	measurement->reason = ATTEN_CAL_REASON_INVALID;
 
-	if (avg == NULL || avg->state != PHOTODIODE_AVERAGE_COMPLETE ||
-	    avg->result.samples == 0U) {
+	if (window == NULL || !window->valid ||
+	    window->sample_length == window->failed_samples) {
 		measurement->reason = ATTEN_CAL_REASON_ADC_ERROR;
 		return;
 	}
 
-	measurement->mean_mv = avg->result.mean_mv;
-	measurement->signal_mv = avg->result.mean_net_mv;
-	measurement->rms_mv = avg->result.rms_mv;
-	measurement->sigma_y_mv = average_mean_sigma_mv(avg);
-	measurement->samples = avg->result.samples;
-	measurement->max_raw = avg->result.max_raw;
-	measurement->saturated = sample_is_saturated(avg);
+	measurement->mean_mv = window->mean_mv;
+	measurement->signal_mv = window->mean_net_mv;
+	measurement->rms_mv = window->rms_mv;
+	measurement->sigma_y_mv = window->mean_net_err_mv;
+	measurement->samples = window->sample_length - window->failed_samples;
+	measurement->max_raw = window->max_raw;
+	measurement->saturated = sample_is_saturated(window);
 	if (!(measurement->sigma_y_mv > 0.0) || !isfinite(measurement->sigma_y_mv)) {
 		measurement->sigma_y_mv = ATTEN_CAL_ADC_LSB_MV;
 	}
@@ -514,6 +510,7 @@ static void measurement_from_average(const struct photodiode_average_status *avg
 	measurement->usable = true;
 }
 
+/** Retain one measurement, compute normalized fields, and optionally mark it fit-eligible. */
 static bool append_record_locked(enum atten_cal_record_event event,
 				 const struct atten_cal_measurement *measurement,
 				 bool fit_candidate,
@@ -601,6 +598,7 @@ static bool append_record_locked(enum atten_cal_record_event event,
 	return true;
 }
 
+/** Map a laser id to the MEMS input route used for calibration launch. */
 static int route_input_for_laser(enum hispec_laser_id laser, char *out, size_t out_len)
 {
 	const char *name;
@@ -634,6 +632,7 @@ static int route_input_for_laser(enum hispec_laser_id laser, char *out, size_t o
 	return 0;
 }
 
+/** Choose the photodiode channel and loopback route for automatic TIB calibration. */
 static int pd_route_for_auto(enum hispec_laser_id laser, char fiber,
 			     enum photodiode_channel *channel,
 			     char *input, size_t input_len,
@@ -673,6 +672,7 @@ static int pd_route_for_auto(enum hispec_laser_id laser, char fiber,
 	return 0;
 }
 
+/** Write the swept and companion FVOA DAC voltages for a logical attenuator. */
 static bool set_physical_pair(uint8_t attenuator_index,
 			      uint8_t sweep_physical,
 			      double sweep_mv,
@@ -693,6 +693,7 @@ static bool set_physical_pair(uint8_t attenuator_index,
 					       other_mv);
 }
 
+/** Reset all calibration state while preserving the requested top-level state. */
 static void reset_locked(enum atten_cal_state state)
 {
 	memset(&cal, 0, sizeof(cal));
@@ -706,6 +707,7 @@ static void reset_locked(enum atten_cal_state state)
 	cal.sweep_high_mv = ATTENUATOR_DRIVE_MAX_MV;
 }
 
+/** Copy internal calibration state into the public command/status structure. */
 static void copy_status_locked(struct attenuator_calibration_status *status)
 {
 	if (status == NULL) {
@@ -735,6 +737,7 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	memcpy(status->fit_metrics, cal.fit, sizeof(status->fit_metrics));
 }
 
+/** Put calibration into terminal error state and emit the corresponding telemetry. */
 static void auto_error_locked(int error)
 {
 	cal.last_error = error;
@@ -743,6 +746,7 @@ static void auto_error_locked(int error)
 	atten_cal_emit_simple("error");
 }
 
+/** Apply one of the bounded initial laser levels used to find a safe start. */
 static bool auto_set_laser_level_locked(uint8_t level_index)
 {
 	if (level_index >= ARRAY_SIZE(initial_laser_levels_pct)) {
@@ -757,25 +761,59 @@ static bool auto_set_laser_level_locked(uint8_t level_index)
 	return true;
 }
 
+/** Return the next midpoint for companion-FVOA binary searches. */
 static double search_midpoint_locked(void)
 {
 	return (cal.search_low_mv + cal.search_high_mv) * 0.5;
 }
 
+/** Return the next midpoint for DUT-FVOA binary sweeps. */
 static double sweep_midpoint_locked(void)
 {
 	return (cal.sweep_low_mv + cal.sweep_high_mv) * 0.5;
 }
 
+/** Set DAC voltages for a measurement and wait one photodiode configurable window. */
 static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 					 double sweep_mv, double other_mv)
 {
+	const char *event = "set";
+
 	cal.measure_kind = kind;
 	cal.sweep_mv = CLAMP(sweep_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV);
 	cal.other_mv = CLAMP(other_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV);
-	cal.phase = ATTEN_CAL_PHASE_SET;
+	if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
+			       cal.sweep_mv, cal.other_mv)) {
+		auto_error_locked(-EIO);
+		return;
+	}
+	throughput_monitor_note_attenuator_changed(cal.attenuator_index);
+	switch (kind) {
+	case ATTEN_CAL_MEASURE_INITIAL_PROBE:
+		event = "initial_probe_set";
+		break;
+	case ATTEN_CAL_MEASURE_REFERENCE:
+	case ATTEN_CAL_MEASURE_SWEEP:
+		event = "point_set";
+		break;
+	case ATTEN_CAL_MEASURE_BRIDGE_BEFORE:
+		event = "bridge_before_set";
+		break;
+	case ATTEN_CAL_MEASURE_BRIDGE_PROBE:
+		event = "bridge_probe_set";
+		break;
+	case ATTEN_CAL_MEASURE_BRIDGE_AFTER:
+		event = "bridge_after_set";
+		break;
+	default:
+		break;
+	}
+	atten_cal_emit_set(event);
+	cal.wait_until_ms = k_uptime_get() + cal.dwell_ms;
+	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;
 }
 
+/** Initialize acquisition state for the current physical FVOA and schedule its first probe. */
 static void auto_start_next_physical_locked(void)
 {
 	uint8_t physical = cal.physical_index;
@@ -811,6 +849,7 @@ static void auto_start_next_physical_locked(void)
 	atten_cal_emit_simple("physical_start");
 }
 
+/** Finish the current physical FVOA and either start the second one or fit the pair. */
 static void auto_finish_physical_locked(void)
 {
 	LOG_INF("atten cal physical complete physical=%s records=%u overflow=%d",
@@ -823,9 +862,10 @@ static void auto_finish_physical_locked(void)
 		auto_start_next_physical_locked();
 		return;
 	}
-	cal.phase = ATTEN_CAL_PHASE_FIT;
+	auto_fit_locked();
 }
 
+/** Start a bridge-normalization operation from the last usable DUT point. */
 static void auto_begin_bridge_locked(void)
 {
 	if (cal.other_mv <= ATTEN_CAL_SEARCH_STEP_MV) {
@@ -838,6 +878,7 @@ static void auto_begin_bridge_locked(void)
 				     cal.sweep_low_mv, cal.other_mv);
 }
 
+/** Handle companion-search probes used to find a non-saturated open reference. */
 static void auto_handle_initial_probe_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -882,6 +923,7 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 				     0.0, search_midpoint_locked());
 }
 
+/** Accept the DUT-open reference that normalizes the first sweep segment. */
 static void auto_handle_reference_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -908,6 +950,7 @@ static void auto_handle_reference_locked(const struct atten_cal_measurement *mea
 				     sweep_midpoint_locked(), cal.other_mv);
 }
 
+/** Handle ordinary DUT sweep measurements and decide whether to continue or bridge. */
 static void auto_handle_sweep_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -942,6 +985,7 @@ static void auto_handle_sweep_locked(const struct atten_cal_measurement *measure
 				     sweep_midpoint_locked(), cal.other_mv);
 }
 
+/** Record the low-signal side of a bridge and begin opening the companion FVOA. */
 static void auto_handle_bridge_before_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -966,6 +1010,7 @@ static void auto_handle_bridge_before_locked(const struct atten_cal_measurement 
 				     cal.sweep_low_mv, search_midpoint_locked());
 }
 
+/** Handle companion-FVOA bridge probes during the non-saturated binary search. */
 static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -998,6 +1043,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 				     cal.sweep_low_mv, search_midpoint_locked());
 }
 
+/** Accept bridge normalization, update scale variance, and resume DUT sweeping. */
 static void auto_handle_bridge_after_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
@@ -1038,77 +1084,7 @@ static void auto_handle_bridge_after_locked(const struct atten_cal_measurement *
 				     sweep_midpoint_locked(), cal.other_mv);
 }
 
-static bool auto_set_pair_and_wait_locked(int64_t now_ms)
-{
-	const char *event = "set";
-
-	if (!set_physical_pair(cal.attenuator_index, cal.physical_index,
-			       cal.sweep_mv, cal.other_mv)) {
-		auto_error_locked(-EIO);
-		return false;
-	}
-	throughput_monitor_note_attenuator_changed(cal.attenuator_index);
-	switch (cal.measure_kind) {
-	case ATTEN_CAL_MEASURE_INITIAL_PROBE:
-		event = "initial_probe_set";
-		break;
-	case ATTEN_CAL_MEASURE_REFERENCE:
-	case ATTEN_CAL_MEASURE_SWEEP:
-		event = "point_set";
-		break;
-	case ATTEN_CAL_MEASURE_BRIDGE_BEFORE:
-		event = "bridge_before_set";
-		break;
-	case ATTEN_CAL_MEASURE_BRIDGE_PROBE:
-		event = "bridge_probe_set";
-		break;
-	case ATTEN_CAL_MEASURE_BRIDGE_AFTER:
-		event = "bridge_after_set";
-		break;
-	default:
-		break;
-	}
-	atten_cal_emit_set(event);
-	cal.wait_until_ms = now_ms + ATTEN_CAL_STEP_SETTLE_MS;
-	cal.phase = ATTEN_CAL_PHASE_SETTLE;
-	return true;
-}
-
-static bool auto_start_average_locked(void)
-{
-	int rc = photodiode_start_average(cal.channel, cal.dwell_ms, NULL);
-
-	if (rc != 0) {
-		auto_error_locked(rc);
-		return false;
-	}
-	cal.phase = ATTEN_CAL_PHASE_AVERAGE;
-	return true;
-}
-
-static bool auto_average_complete_locked(struct photodiode_average_status *avg)
-{
-	int rc;
-
-	if (avg == NULL) {
-		auto_error_locked(-EINVAL);
-		return false;
-	}
-	rc = photodiode_get_average_status(cal.channel, avg);
-	if (rc != 0) {
-		auto_error_locked(rc);
-		return false;
-	}
-	if (avg->state == PHOTODIODE_AVERAGE_MEASURING) {
-		return false;
-	}
-	if (avg->state != PHOTODIODE_AVERAGE_COMPLETE) {
-		auto_error_locked(avg->last_error == 0 ? -EIO : avg->last_error);
-		return false;
-	}
-	return true;
-}
-
+/** Dispatch a completed measurement to the handler for the scheduled measure kind. */
 static void auto_handle_measurement_locked(const struct atten_cal_measurement *measurement)
 {
 	switch (cal.measure_kind) {
@@ -1137,6 +1113,7 @@ static void auto_handle_measurement_locked(const struct atten_cal_measurement *m
 	}
 }
 
+/** Convert one retained record into weighted linear-fit coordinates. */
 static bool record_to_fit_point(const struct atten_cal_record *record,
 				double gain, double *x_out,
 				double *delta_out, double *sigma_delta_out)
@@ -1183,6 +1160,7 @@ static bool record_to_fit_point(const struct atten_cal_record *record,
 	return true;
 }
 
+/** Fit one physical FVOA's retained records to the firmware attenuator model. */
 static int fit_one_physical_locked(uint8_t physical,
 				   struct attenuator_calibration_fit_metrics *out)
 {
@@ -1328,6 +1306,7 @@ static int fit_one_physical_locked(uint8_t physical,
 	return out->accepted ? 0 : -ERANGE;
 }
 
+/** Apply accepted pair fits to runtime control and optionally persist them. */
 static int apply_fit_to_settings_locked(void)
 {
 	struct attenuator *atten = &attenuators[cal.attenuator_index];
@@ -1363,6 +1342,7 @@ static int apply_fit_to_settings_locked(void)
 	return 0;
 }
 
+/** Fit both physical FVOAs and move calibration to complete or error state. */
 static void auto_fit_locked(void)
 {
 	int first_error = 0;
@@ -1404,9 +1384,10 @@ static void auto_fit_locked(void)
 	atten_cal_emit_simple("complete");
 }
 
-static void auto_tick_locked(int64_t now_ms)
+/** Advance automatic calibration after a scheduled photodiode window dwell. */
+static void auto_tick_locked(const struct photodiode_status *pd_status, int64_t now_ms)
 {
-	struct photodiode_average_status avg = {0};
+	const struct photodiode_window_result *window;
 	struct atten_cal_measurement measurement = {0};
 
 	if (cal.state != ATTEN_CAL_STATE_RUNNING ||
@@ -1415,37 +1396,25 @@ static void auto_tick_locked(int64_t now_ms)
 	}
 
 	switch (cal.phase) {
-	case ATTEN_CAL_PHASE_PD_SETTLE:
+	case ATTEN_CAL_PHASE_WAIT_WINDOW:
 		if (now_ms < cal.wait_until_ms) {
 			return;
 		}
-		auto_start_next_physical_locked();
-		break;
-	case ATTEN_CAL_PHASE_SET:
-		(void)auto_set_pair_and_wait_locked(now_ms);
-		break;
-	case ATTEN_CAL_PHASE_SETTLE:
-		if (now_ms < cal.wait_until_ms) {
+		if (pd_status == NULL) {
+			auto_error_locked(-EINVAL);
 			return;
 		}
-		(void)auto_start_average_locked();
-		break;
-	case ATTEN_CAL_PHASE_AVERAGE:
-		if (!auto_average_complete_locked(&avg)) {
-			return;
-		}
-		measurement_from_average(&avg, &measurement);
+		window = &pd_status->channel[cal.channel].configurable_window;
+		measurement_from_window(window, &measurement);
 		auto_handle_measurement_locked(&measurement);
-		break;
-	case ATTEN_CAL_PHASE_FIT:
-		auto_fit_locked();
 		break;
 	case ATTEN_CAL_PHASE_NONE:
 	default:
-		break;
+			return;
 	}
 }
 
+/** Start automatic TIB calibration after command parsing has built a request. */
 int attenuator_calibration_start_auto(
 	const struct attenuator_calibration_auto_request *request,
 	struct attenuator_calibration_status *status)
@@ -1455,8 +1424,10 @@ int attenuator_calibration_start_auto(
 	char pd_output[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	enum photodiode_channel channel;
 	struct app_photodiode_settings pd_settings;
+	struct photodiode_status pd_status;
 	uint8_t attenuator_index;
 	double dark_mv;
+	bool pd_power = false;
 	bool replacing;
 	int rc;
 
@@ -1482,11 +1453,22 @@ int attenuator_calibration_start_auto(
 	}
 
 	app_settings_get_photodiode(&pd_settings);
-	dark_mv = pd_settings.channel[channel].dark_mv;
+	dark_mv = pd_settings.channel[channel].dark.mean_mv;
 	if (!isfinite(dark_mv) ||
 	    dark_mv < PHOTODIODE_DARK_MIN_MV ||
 	    dark_mv > PHOTODIODE_DARK_MAX_MV) {
 		return -EINVAL;
+	}
+	rc = housekeeping_power_get((enum housekeeping_power_output)channel, &pd_power);
+	if (rc != 0) {
+		return rc;
+	}
+	if (!pd_power) {
+		return -EACCES;
+	}
+	photodiode_get_status(&pd_status);
+	if (!isfinite(pd_status.channel[channel].mv)) {
+		return -ENODATA;
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -1521,7 +1503,8 @@ int attenuator_calibration_start_auto(
 	if (rc != 0) {
 		return rc;
 	}
-	rc = housekeeping_power_set((enum housekeeping_power_output)channel, true);
+	rc = photodiode_set_configurable_window_duration(channel,
+							 clamp_dwell(request->dwell_ms));
 	if (rc != 0) {
 		return rc;
 	}
@@ -1537,7 +1520,7 @@ int attenuator_calibration_start_auto(
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	reset_locked(ATTEN_CAL_STATE_RUNNING);
 	cal.mode = ATTEN_CAL_MODE_TIB_AUTO;
-	cal.phase = ATTEN_CAL_PHASE_PD_SETTLE;
+	cal.phase = ATTEN_CAL_PHASE_NONE;
 	cal.attenuator_index = attenuator_index;
 	cal.physical_index = 0U;
 	cal.dwell_ms = clamp_dwell(request->dwell_ms);
@@ -1545,15 +1528,16 @@ int attenuator_calibration_start_auto(
 	cal.laser = request->laser;
 	cal.channel = channel;
 	cal.laser_percent = 0.0;
-	cal.wait_until_ms = k_uptime_get() + ATTEN_CAL_PD_POWER_SETTLE_MS;
 	LOG_INF("atten cal using configured photodiode dark channel=%s dark_mv=%.6f",
 		photodiode_channel_names[channel], dark_mv);
 	atten_cal_emit_simple("start");
+	auto_start_next_physical_locked();
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;
 }
 
+/** Stop calibration, discard active sequencing state, and return inactive status. */
 int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 {
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -1566,6 +1550,7 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 	return 0;
 }
 
+/** Return a mutex-protected snapshot of current calibration status. */
 void attenuator_calibration_get_status(struct attenuator_calibration_status *status)
 {
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -1573,6 +1558,7 @@ void attenuator_calibration_get_status(struct attenuator_calibration_status *sta
 	k_mutex_unlock(&cal_lock);
 }
 
+/** Report whether calibration currently owns attenuator sequencing. */
 bool attenuator_calibration_active(void)
 {
 	bool active;
@@ -1583,6 +1569,7 @@ bool attenuator_calibration_active(void)
 	return active;
 }
 
+/** Append one fit-metrics object to the compact JSON status payload. */
 static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 			   const char *name,
 			   const struct attenuator_calibration_fit_metrics *fit)
@@ -1604,6 +1591,7 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 		fit->min_tx, fit->max_tx, fit->fvoa_span_mv);
 }
 
+/** Format the compact command response for current calibration status. */
 int attenuator_calibration_format_status(
 	char *payload, size_t payload_len,
 	const struct attenuator_calibration_status *status)
@@ -1637,6 +1625,7 @@ int attenuator_calibration_format_status(
 	return 0;
 }
 
+/** Copy retained calibration records into the host binary chunk format. */
 int attenuator_calibration_write_data_chunk(void *payload,
 					    size_t payload_len,
 					    uint8_t physical_index,
@@ -1697,12 +1686,11 @@ int attenuator_calibration_write_data_chunk(void *payload,
 	return 0;
 }
 
+/** Public tick hook called by the throughput monitor thread. */
 void attenuator_calibration_tick(const struct photodiode_status *pd_status,
 				 int64_t now_ms)
 {
-	ARG_UNUSED(pd_status);
-
 	k_mutex_lock(&cal_lock, K_FOREVER);
-	auto_tick_locked(now_ms);
+	auto_tick_locked(pd_status, now_ms);
 	k_mutex_unlock(&cal_lock);
 }

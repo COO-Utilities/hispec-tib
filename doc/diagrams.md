@@ -201,20 +201,29 @@ flowchart TD
   Adc -- no --> Sleep[k_sleep retry]
   Adc -- yes --> Sample[read ADS1115 YJ and HK]
   Sample --> Convert[counts to mV and power estimate]
-  Convert --> Average{short average active}
-  Average -- yes --> Accumulate[accumulate average stats]
-  Accumulate --> Complete{target samples reached}
-  Complete -- yes --> Store{dark store requested}
-  Store -- yes --> Persist[update photodiode settings]
-  Store -- no --> Status[update average status]
-  Complete -- no --> Status
-  Average -- no --> Noise[update residual noise]
-  Status --> SleepPeriod[sleep to 20 ms period]
-  Persist --> SleepPeriod
-  Noise --> Warn{noise above threshold}
+  Convert --> Step{sharp sample step}
+  Step -- yes --> Close[close current configurable and fixed windows]
+  Step -- no --> Windows
+  Close --> Windows[append sample to configurable and fixed windows]
+  Windows --> Status[update latest sample and window results]
+  Status --> Warn{fixed-window RMS above threshold}
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
+  SleepPeriod[sleep to 20 ms period]
+
+  DarkCmd[pd/dark/yj or pd/dark/hk] --> DarkMode{duration_ms or dark_mv}
+  DarkMode -- duration_ms --> Measure[set configurable window and wait duration]
+  Measure --> Commit[copy configurable window to dark settings]
+  DarkMode -- dark_mv --> Force[force dark with optional rms_mv]
+  Force --> Commit
+  Commit --> Lowest{reset or lower than stored lowest}
+  Lowest -- yes --> LowestStore[update lowest dark]
+  Lowest -- no --> Persist
+  LowestStore --> Persist
+  Commit --> Persist{persist requested}
+  Persist -- yes --> NVS[write NVS]
+  Persist -- no --> Runtime[update runtime settings only]
 ```
 
 ## 11. Throughput Monitor Flow

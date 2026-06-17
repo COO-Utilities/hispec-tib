@@ -177,7 +177,9 @@ static int autolevel_adjust(struct throughput_state *state,
 			    const struct photodiode_channel_status *pd,
 			    const struct attenuator_transmission_estimate *atten)
 {
-	double mean_net_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
+	double mean_net_mv = pd->fixed_window.valid ?
+			     (double)pd->fixed_window.mean_net_mv :
+			     (double)pd->net_mv;
 	bool low = mean_net_mv < (TP_ADC_USABLE_MV * TP_LOW_FRACTION);
 	bool high = mean_net_mv > (TP_ADC_USABLE_MV * TP_HIGH_FRACTION);
 	struct hispec_laser_flux_estimate laser_flux = {0};
@@ -308,7 +310,8 @@ static void publish_sample(const struct throughput_state *state,
 	double tp_rms_err = NAN;
 	uint64_t pd_ontime_s;
 	uint64_t laser_current_ontime_s;
-	double pd_1s_mean_mv;
+	double pd_mean_net_mv;
+	double pd_mean_net_err_mv;
 
 	if (laser_name == NULL) {
 		return;
@@ -320,9 +323,13 @@ static void publish_sample(const struct throughput_state *state,
 	pd_ontime_s = (uint64_t)housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
 				  (uint64_t)hispec_laser_current_on_time_s(state->laser) : 0U;
-	pd_1s_mean_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
+	pd_mean_net_mv = pd->fixed_window.valid ?
+			 (double)pd->fixed_window.mean_net_mv : (double)pd->net_mv;
+	pd_mean_net_err_mv = pd->fixed_window.valid ?
+			     (double)pd->fixed_window.mean_net_err_mv :
+			     (double)pd->net_err_mv;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
-	if (pd->valid && state->has_laser &&
+	if (isfinite((double)pd->mv) && state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &atten) &&
 	    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0) {
@@ -331,10 +338,10 @@ static void publish_sample(const struct throughput_state *state,
 		(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx);
 
 		pd_flux = photodiode_photon_flux_from_mv(
-			pd->net_mv, laser_flux.wavelength_nm,
+			pd_mean_net_mv, laser_flux.wavelength_nm,
 			&pd_settings.channel[state->channel]) / pd_route_tx;
 		pd_flux_err = photodiode_photon_flux_from_mv(
-			pd->rms_mv_0p5s, laser_flux.wavelength_nm,
+			pd_mean_net_err_mv, laser_flux.wavelength_nm,
 			&pd_settings.channel[state->channel]) / pd_route_tx;
 		emitted_flux = laser_flux.flux_ph_s * atten.linear * laser_route_tx;
 		emitted_flux_err = sqrt((laser_flux.flux_err_ph_s * atten.linear * laser_route_tx) *
@@ -371,8 +378,9 @@ static void publish_sample(const struct throughput_state *state,
 		put_i16((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->raw);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->mv);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->net_mv);
-		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_1s_mean_mv);
-		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->rms_mv_0p5s);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_mean_net_mv);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
+			pd_mean_net_err_mv);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_flux.current_ma);
 		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
@@ -419,9 +427,9 @@ static void publish_sample(const struct throughput_state *state,
 			pd_route_tx, laser_route_tx, atten.linear, pd->raw) != 0 ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
 			",\"pd_mv\":%.4f,\"pd_net_mv\":%.4f,"
-			"\"pd_1s_mean_mv\":%.4f,\"pd_0p5s_rms_mv\":%.4f",
+			"\"pd_mean_net_mv\":%.4f,\"pd_mean_net_err_mv\":%.4f",
 			(double)pd->mv, (double)pd->net_mv,
-			pd_1s_mean_mv, (double)pd->rms_mv_0p5s) != 0 ||
+			pd_mean_net_mv, pd_mean_net_err_mv) != 0 ||
 	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"laser_current_ma\":") != 0 ||
 	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  laser_flux.current_ma, 4) != 0 ||
@@ -494,7 +502,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (pd_status->channel[i].valid &&
+			if (isfinite((double)pd_status->channel[i].mv) &&
 			    local[i].has_laser && local[i].autolevel &&
 			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
 							     0.0, 0.0, &atten)) {

@@ -235,9 +235,9 @@ The procedure is then repeated for the second FVOA in the logical attenuator pai
 
 ## Lab Notes
 
-For calibration, every photodiode average should use the photodiode thread's configured dark-subtracted result. If the configured dark is invalid, the calibration should fail plainly. A user-provided dark is acceptable. The calibration routine should not invent a local dark from its own data.
+For calibration, every photodiode measurement should use the photodiode thread's configured dark-subtracted internal configurable-window result. If the configured dark is invalid, the calibration should fail plainly. A user-provided dark is acceptable through `pd/dark/<channel>`. The calibration routine should not invent a local dark from its own data.
 
-Presently, `pd_0p5s_rms_mv` is the reliable RMS error in current telemetry. It may not always be the final preferred error estimate. In current lab data, physically representative uncertainties are closer to:
+Presently, `pd_mean_net_err_mv` is the telemetry error propagated from the fixed photodiode window. It may not always be the final preferred error estimate. In current lab data, physically representative uncertainties are closer to:
 
 ```text
 low signal region:

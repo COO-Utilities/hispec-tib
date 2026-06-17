@@ -11,7 +11,6 @@
 #include "command.h"
 #include <errno.h>
 #include <math.h>
-#include <strings.h>
 #include <string.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
@@ -81,9 +80,6 @@ static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *c
 static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
                                                      const struct coo_cmd_spec *spec,
                                                      void *user_data);
-static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
-                                         const struct coo_cmd_spec *spec,
-                                         void *user_data);
 static int catalog_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out);
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
@@ -315,29 +311,41 @@ static const struct coo_cmd_spec command_specs[] = {
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
                   "send JSON for coeff updates; key=value shorthand cannot express arrays",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    { .key = "pd", .query_handler = pd_get, .effect_handler = pd_set,
-      .class_policy = COO_CMD_CLASS_CUSTOM,
-      .custom_classify = classify_pd,
+    { .key = "pd/dark", .query_handler = pd_dark_get, .effect_handler = pd_dark_set,
+      .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
-      .allowed_payload_keys = "channel,action,duration_ms,persist",
+      .key_prefix_match = true,
+      .allowed_payload_keys = "duration_ms,dark_mv,rms_mv,reset_lowest,persist",
+      .mqtt_query_allowed_during_serial_guard = true },
+    CMD_HELP_ONLY("pd/dark/<channel>", command_tib_supported,
+                  "pd/dark/<channel> [duration_ms=<ms>|dark_mv=<mV> rms_mv=<mV> reset_lowest=<bool> persist=<bool>]",
+                  "channel required in key; duration_ms measures dark, dark_mv forces dark; persist defaults false",
+                  "channel: yj,hk",
+                  "TIB-only photodiode dark measurement and forced dark update",
+                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    { .key = "pd", .query_handler = pd_get, .effect_handler = NULL,
+      .class_policy = COO_CMD_CLASS_DEFAULT,
+      .supported = command_tib_supported,
+      .key_prefix_match = true,
+      .allowed_payload_keys = "",
       .mqtt_query_allowed_during_serial_guard = true,
-      CMD_HELP("pd [channel=<yj|hk> action=<measure_dark|dark_status|reset_lowest_dark> duration_ms=<ms> persist=<bool>]",
-               "channel and action required for effects; no payload queries live values",
-               "channel: yj,hk; action: measure_dark,dark_status,reset_lowest_dark",
-               "TIB-only photodiode status and dark-calibration actions",
-               COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
+      CMD_HELP("pd[/<channel>]",
+               "query only; no payload",
+               "channel: yj,hk",
+               "TIB-only photodiode latest-sample and monitoring-window status",
+               COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
     { .key = "pdsettings", .query_handler = pd_settings_get,
       .effect_handler = pd_settings_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
       .key_prefix_match = true,
-      .allowed_payload_keys = "dark_mv,noise_rms_mV,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persist",
+      .allowed_payload_keys = "noise_rms_mv,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persist",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pdsettings/<channel>", command_tib_supported,
-                  "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persist=<bool>]",
+                  "pdsettings/<channel> [noise_rms_mv=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persist=<bool>]",
                   "channel required in key; listed fields optional for effect",
                   "channel: yj,hk",
-                  "TIB-only app-owned photodiode calibration/settings and relay power intent",
+                  "TIB-only app-owned photodiode response settings and relay power intent",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
 };
 
@@ -437,27 +445,6 @@ static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_reques
            coo_json_extract_object(cmd->payload, "settings",
                                    settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
-}
-
-static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
-                                         const struct coo_cmd_spec *spec,
-                                         void *user_data)
-{
-    char action[20] = {0};
-
-    ARG_UNUSED(spec);
-    ARG_UNUSED(user_data);
-
-    if (cmd == NULL || coo_cmd_payload_empty(cmd)) {
-        return COO_CMD_QUERY;
-    }
-    if (coo_json_extract_string(cmd->payload, "action",
-                                action, sizeof(action)) == COO_JSON_EXTRACT_OK &&
-        strcasecmp(action, "dark_status") == 0) {
-        return COO_CMD_QUERY;
-    }
-
-    return COO_CMD_EFFECT;
 }
 
 // TODO serial_read_three_tokens and serial_single_value_payload are coo_command scope, not app command.c scope, refactor

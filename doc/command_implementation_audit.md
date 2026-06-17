@@ -82,7 +82,6 @@ payload-query shapes:
 - `laser` when `level` is absent
 - `laser/tune` when `tune_nm` and `delta_nm` are absent
 - `laser/settings` when the nested `settings` object is absent
-- `pd` when `action` is `dark_status`
 
 The old MQTT `msg_type` payload convention is not used by command ingress.
 

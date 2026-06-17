@@ -245,21 +245,31 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 ### `pd`
 
-- Owner: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`; sampling,
-  short averages, and dark persistence in `app/src/photodiode.c`.
+- Owner: `pd_get()` in `app/src/photodiode_command.c`; sampling, moving
+  windows, and dark snapshots in `app/src/photodiode.c`.
 - Board restriction: TIB only.
-- Side effects: dark measurement starts the sampler-owned short-average
-  accumulator; persistence is delegated to photodiode/settings code.
-- Query note: dark-status action is classified as a pure query and does not
-  update `lastcommand`.
+- Side effects: query-only. `pd` queries both channels; `pd/yj` and `pd/hk`
+  query one channel. Queries auto-enable selected photodiodes only when that
+  channel's power mode is `auto`.
+
+### `pd/dark/<yj|hk>`
+
+- Owner: `pd_dark_get()`, `pd_dark_set()` in `app/src/photodiode_command.c`;
+  configurable dark windows in `app/src/photodiode.c`; persistent dark records
+  in `app/src/app_settings.c`.
+- Board restriction: TIB only.
+- Side effects: measures dark with `duration_ms`, forces dark with `dark_mv`
+  and optional `rms_mv`, resets lowest-dark tracking with `reset_lowest`, and
+  optionally persists the selected channel's dark settings.
 
 ### `pdsettings/<yj|hk>`
 
 - Owner: `pd_settings_get()`, `pd_settings_set()` in
   `app/src/photodiode_command.c`.
 - Board restriction: TIB only.
-- Side effects: updates runtime photodiode calibration/settings and optional
-  NVS persistence.
+- Side effects: updates runtime photodiode response settings, relay power
+  intent, auto-off duration, and optional NVS persistence. Dark values are not
+  accepted or reported by `pdsettings`.
 
 ### `temp`
 
