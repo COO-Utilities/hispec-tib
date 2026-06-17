@@ -36,7 +36,6 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## Decisions To Make
 
-
 ## TODOs
 - start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.
   - go through all commands and verify that invaid arguments are rejected with an informative error message. a minimum of "bad argument" and, where simple, low-code, and general a "<arg> invalid, see catalog" 
@@ -58,7 +57,7 @@ LLMs Agents: Do NOT change heading names in this file.
 - should  yj_residual_rms_mv/hk_residual_rms_mv be renamed to *_smoothed_rms_mv
 
 - FIX (check ALL python helpers for comand drift):
-  - pcb.laserbank_heater(mode='override_on')
+  - pcb.laserbank_heaster(mode='override_on')
     Traceback (most recent call last):
     File "/Users/jibailey/src/hispec-zephyr-mlang/.venv/lib/python3.13/site-packages/IPython/core/interactiveshell.py", line 3748, in run_code
     exec(code_obj, self.user_global_ns, self.user_ns)

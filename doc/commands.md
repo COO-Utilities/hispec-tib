@@ -588,6 +588,9 @@ uint64 laser_current_ontime_s
 - `pd_mv` is the instantaneous raw ADC millivolt reading; `pd_net_mv` and
   `pd_1s_mean_mv` subtract the configured dark level. `pd_0p5s_rms_mv` is the
   half-second window RMS around its local mean.
+- `atten_tx` and `atten_db` are dynamic logical attenuator terms normalized to
+  the modeled 0 V FVOA state. Static assembly and route losses belong in
+  `memsroute/route_loss`.
 - Route transmissions default to `1.0` when no route-loss record is stored.
 - Both outbound laser route loss and inbound photodiode route loss are applied
   when estimating throughput.
@@ -1145,7 +1148,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     "flux_sigma": 0.1
   }
   ```
-  Other `event` values include `start`, `physical_start`, `dark_set`,
+  Other `event` values include `start`, `physical_start`,
   `point_set`, `anchor_before_set`, `link_probe_set`, `anchor_after_set`,
   `anchor_before`, `link_probe`, `anchor_after`, `manual_point_set`,
   `manual_point`, `fit`, `complete`, `stop`, and `error`. Fit input and
@@ -1167,15 +1170,14 @@ command wait budget, this command returns `{"error":"busy"}`.
     selects the photodiode route as in `measure_throughput`.
   - TIB automatic calibration powers the selected photodiode, stops laser
     emission, sets both physical attenuators to the maximum firmware DAC-drive
-    voltage, waits 1 s for the relay/source to settle, and records a run-local
-    dark/noise average. The laser is then enabled at the first acquisition
-    level for each physical FVOA. The run-local dark is used only for this
-    calibration run; persistent photodiode dark calibration remains a separate
-    photodiode command.
+    voltage, and waits 1 s for the relay/source and photodiode bandwidth to
+    settle. It does not measure a private calibration dark. Each average uses
+    the photodiode thread's configured dark-subtracted `mean_net_mv`; updating
+    dark remains a separate photodiode command.
   - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
     measurement is usable when it is not ADC/electrical clipped and its
-    dark-subtracted signal is at least 5 sigma above the combined run-local dark
-    and sample mean uncertainty. Saturation here means actual ADC clipping near
+    dark-subtracted signal is at least 5 sigma above the sample mean
+    uncertainty. Saturation here means actual ADC clipping near
     5 V, not a merely high photodiode voltage with electrical headroom.
     Low-but-clean points are retained and may be fit inputs. Saturated,
     below-SNR, ADC-error, and invalid measurements are retained as records but

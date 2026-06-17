@@ -19,6 +19,7 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define DAC_MAX_CODE        ((1 << DAC_RESOLUTION_BITS) - 1)
 #define MODEL_ERF_SCALE     4.0
 #define MODEL_MAX_DB        120.0
+#define MODEL_MIN_TX        1.0e-300
 #define ATTENUATOR_DB_EPSILON 1.0e-6
 #define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5
 #ifndef M_PI
@@ -29,6 +30,52 @@ static double attenuator_model_voltage_to_b(const struct attenuator_model_coeffs
                                             double voltage)
 {
     return coeffs->gain * ((coeffs->slope * voltage) + coeffs->offset);
+}
+
+static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *coeffs,
+                                          double voltage)
+{
+    double transmission;
+
+    if (coeffs == NULL) {
+        return 0.0;
+    }
+
+    transmission = attenuator_model_b_to_linear(
+        attenuator_model_voltage_to_b(coeffs, voltage));
+    if (!isfinite(transmission) || transmission <= 0.0) {
+        return 0.0;
+    }
+    if (transmission > 1.0) {
+        return 1.0;
+    }
+    return transmission;
+}
+
+static double attenuator_model_open_linear(const struct attenuator_model_coeffs *coeffs)
+{
+    return attenuator_model_raw_linear(coeffs, 0.0);
+}
+
+static double attenuator_model_relative_linear(const struct attenuator_model_coeffs *coeffs,
+                                               double voltage)
+{
+    double open_tx = attenuator_model_open_linear(coeffs);
+    double tx = attenuator_model_raw_linear(coeffs, voltage);
+    double relative;
+
+    if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
+        return 0.0;
+    }
+
+    relative = tx / open_tx;
+    if (!isfinite(relative) || relative <= 0.0) {
+        return 0.0;
+    }
+    if (relative > 1.0) {
+        return 1.0;
+    }
+    return relative;
 }
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
@@ -115,15 +162,13 @@ bool attenuator_init(struct attenuator *drv,
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       double voltage)
 {
-    double b;
     double transmission;
 
     if (coeffs == NULL) {
         return 0.0;
     }
 
-    b = attenuator_model_voltage_to_b(coeffs, voltage);
-    transmission = attenuator_model_b_to_linear(b);
+    transmission = attenuator_model_relative_linear(coeffs, voltage);
 
     if (transmission <= 0.0) {
         return MODEL_MAX_DB;
@@ -139,7 +184,8 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
                                     double attenuation_db, double *voltage)
 {
     const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    zsl_real_t transmission;
+    double open_tx;
+    double target_tx;
     zsl_real_t erf_arg;
     zsl_real_t inv;
     double b;
@@ -155,9 +201,20 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
         return true;
     }
 
-    transmission = ZSL_POW((zsl_real_t)10.0,
-                           (zsl_real_t)(-attenuation_db / 10.0));
-    erf_arg = ((zsl_real_t)2.0 * erf_scale * transmission) - erf_scale;
+    open_tx = attenuator_model_open_linear(coeffs);
+    if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
+        return false;
+    }
+
+    target_tx = open_tx * pow(10.0, -attenuation_db / 10.0);
+    if (!(target_tx > MODEL_MIN_TX) || !isfinite(target_tx)) {
+        return false;
+    }
+    if (target_tx > 1.0) {
+        target_tx = 1.0;
+    }
+
+    erf_arg = ((zsl_real_t)2.0 * erf_scale * (zsl_real_t)target_tx) - erf_scale;
     if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
         return false;
     }
@@ -493,11 +550,14 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
 double attenuator_model_b_to_linear(double b)
 {
     const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    double transmission = (double)((erf_scale +
-                                    ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE -
-                                            (zsl_real_t)b)) /
-                                   ((zsl_real_t)2.0 * erf_scale));
+    // double transmission = (double)((erf_scale +
+    //                                 ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE -
+    //                                         (zsl_real_t)b)) /
+    //                                ((zsl_real_t)2.0 * erf_scale));
 
+    if (!isfinite(transmission)) {
+        return (isfinite(b) && b < 0.0) ? 1.0 : 0.0;
+    }
     if (transmission < 0.0) {
         return 0.0;
     }
@@ -545,6 +605,8 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
     double b2;
     double tx1;
     double tx2;
+    double open_tx1;
+    double open_tx2;
     double dtx1_db;
     double dtx2_db;
     double var;
@@ -559,10 +621,22 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
 
     b1 = attenuator_model_voltage_to_b(&drv->coeff1, status.voltage1);
     b2 = attenuator_model_voltage_to_b(&drv->coeff2, status.voltage2);
-    tx1 = attenuator_model_b_to_linear(b1);
-    tx2 = attenuator_model_b_to_linear(b2);
-    dtx1_db = attenuator_model_dlinear_db(b1);
-    dtx2_db = attenuator_model_dlinear_db(b2);
+    open_tx1 = attenuator_model_open_linear(&drv->coeff1);
+    open_tx2 = attenuator_model_open_linear(&drv->coeff2);
+    if (!(open_tx1 > MODEL_MIN_TX) || !(open_tx2 > MODEL_MIN_TX)) {
+        return false;
+    }
+
+    tx1 = attenuator_model_b_to_linear(b1) / open_tx1;
+    tx2 = attenuator_model_b_to_linear(b2) / open_tx2;
+    if (tx1 > 1.0) {
+        tx1 = 1.0;
+    }
+    if (tx2 > 1.0) {
+        tx2 = 1.0;
+    }
+    dtx1_db = attenuator_model_dlinear_db(b1) / open_tx1;
+    dtx2_db = attenuator_model_dlinear_db(b2) / open_tx2;
     var = (tx2 * dtx1_db * sigma_b1) * (tx2 * dtx1_db * sigma_b1) +
           (tx1 * dtx2_db * sigma_b2) * (tx1 * dtx2_db * sigma_b2);
 

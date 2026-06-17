@@ -98,7 +98,6 @@ enum atten_cal_auto_phase {
 
 enum atten_cal_measure_kind {
 	ATTEN_CAL_MEASURE_NONE = 0,
-	ATTEN_CAL_MEASURE_DARK,
 	ATTEN_CAL_MEASURE_POINT,
 	ATTEN_CAL_MEASURE_ANCHOR_BEFORE,
 	ATTEN_CAL_MEASURE_LINK_PROBE,
@@ -196,10 +195,6 @@ struct atten_cal_state_data {
 	double scale;
 	double scale_rel_var;
 	double sweep_mv;
-	double dark_mean_mv;
-	double dark_rms_mv;
-	double dark_sigma_mv;
-	bool dark_valid;
 	bool have_last_good;
 	double last_good_mv;
 	double last_good_signal_mv;
@@ -604,14 +599,8 @@ static void measurement_from_average(const struct photodiode_average_status *avg
 	measurement->samples = avg->result.samples;
 	measurement->max_raw = avg->result.max_raw;
 	measurement->saturated = sample_is_saturated(avg);
-	if (cal.dark_valid) {
-		measurement->signal_mv = avg->result.mean_mv - cal.dark_mean_mv;
-		measurement->sigma_y_mv = sqrt(avg_sigma * avg_sigma +
-						cal.dark_sigma_mv * cal.dark_sigma_mv);
-	} else {
-		measurement->signal_mv = avg->result.mean_mv;
-		measurement->sigma_y_mv = avg_sigma;
-	}
+	measurement->signal_mv = avg->result.mean_net_mv;
+	measurement->sigma_y_mv = avg_sigma;
 	if (!(measurement->sigma_y_mv > 0.0)) {
 		measurement->sigma_y_mv = ATTEN_CAL_ADC_LSB_MV;
 	}
@@ -1827,8 +1816,6 @@ static void auto_handle_anchor_after_locked(const struct atten_cal_measurement *
 static const char *measure_set_event_name(enum atten_cal_measure_kind kind)
 {
 	switch (kind) {
-	case ATTEN_CAL_MEASURE_DARK:
-		return "dark_set";
 	case ATTEN_CAL_MEASURE_POINT:
 		return "point_set";
 	case ATTEN_CAL_MEASURE_ANCHOR_BEFORE:
@@ -1858,7 +1845,6 @@ static void auto_handle_measurement_locked(const struct atten_cal_measurement *m
 	case ATTEN_CAL_MEASURE_ANCHOR_AFTER:
 		auto_handle_anchor_after_locked(measurement);
 		return;
-	case ATTEN_CAL_MEASURE_DARK:
 	case ATTEN_CAL_MEASURE_NONE:
 	default:
 		auto_error_locked(-EINVAL);
@@ -1881,13 +1867,9 @@ static void auto_tick_locked(int64_t now_ms)
 		if (now_ms < cal.wait_until_ms) {
 			return;
 		}
-		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_DARK);
+		start_next_physical_locked();
 		return;
 	case ATTEN_CAL_AUTO_MEASURE_SET:
-		if (cal.measure_kind == ATTEN_CAL_MEASURE_DARK) {
-			cal.sweep_mv = ATTENUATOR_DRIVE_MAX_MV;
-			cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
-		}
 		(void)auto_set_pair_and_wait_locked(
 			measure_set_event_name(cal.measure_kind), now_ms);
 		return;
@@ -1899,18 +1881,6 @@ static void auto_tick_locked(int64_t now_ms)
 		return;
 	case ATTEN_CAL_AUTO_MEASURE_AVG:
 		if (!auto_average_complete_locked(&avg)) {
-			return;
-		}
-		if (cal.measure_kind == ATTEN_CAL_MEASURE_DARK) {
-			cal.dark_mean_mv = avg.result.mean_mv;
-			cal.dark_rms_mv = avg.result.rms_mv;
-			cal.dark_sigma_mv = average_mean_sigma_mv(&avg);
-			cal.dark_valid = true;
-			LOG_INF("atten cal dark mean_mv=%.6f rms_mv=%.6f sigma_mv=%.6f samples=%u max_raw=%d",
-				cal.dark_mean_mv, cal.dark_rms_mv,
-				cal.dark_sigma_mv, avg.result.samples,
-				avg.result.max_raw);
-			start_next_physical_locked();
 			return;
 		}
 		measurement_from_average(&avg, &measurement);
@@ -1933,7 +1903,9 @@ int attenuator_calibration_start_auto(
 	char pd_input[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	char pd_output[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	enum photodiode_channel channel;
+	struct app_photodiode_settings pd_settings;
 	uint8_t attenuator_index;
+	double dark_mv;
 	bool replacing;
 	int rc;
 
@@ -1957,6 +1929,13 @@ int attenuator_calibration_start_auto(
 			       pd_output, sizeof(pd_output));
 	if (rc != 0) {
 		return rc;
+	}
+	app_settings_get_photodiode(&pd_settings);
+	dark_mv = pd_settings.channel[channel].dark_mv;
+	if (!isfinite(dark_mv) ||
+	    dark_mv < PHOTODIODE_DARK_MIN_MV ||
+	    dark_mv > PHOTODIODE_DARK_MAX_MV) {
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -2016,8 +1995,10 @@ int attenuator_calibration_start_auto(
 	cal.laser = request->laser;
 	cal.channel = channel;
 	cal.laser_percent = 0.0;
-	cal.measure_kind = ATTEN_CAL_MEASURE_DARK;
+	cal.measure_kind = ATTEN_CAL_MEASURE_NONE;
 	cal.wait_until_ms = k_uptime_get() + ATTEN_CAL_PD_POWER_SETTLE_MS;
+	LOG_INF("atten cal using configured photodiode dark channel=%s dark_mv=%.6f",
+		photodiode_channel_names[channel], dark_mv);
 	atten_cal_emit_simple("start");
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
