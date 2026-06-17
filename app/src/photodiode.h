@@ -3,9 +3,8 @@
  * @brief TIB photodiode sampling, rolling status windows, and dark-calibration state.
  *
  * The sampler thread owns ADC reads, per-channel moving windows, and dark
- * calibration snapshots. Command handlers can set the internal configurable
- * window duration or commit a completed configurable window as dark; they do
- * not read the ADC.
+ * calibration snapshots. Command handlers can request internal configurable
+ * window changes or dark captures; they do not read the ADC.
  */
 
 #ifndef PHOTODIODE_H
@@ -77,6 +76,8 @@ struct photodiode_channel_status {
 	struct photodiode_window_result last_fixed_window;
 	struct photodiode_window_result dark_window;
 	struct photodiode_window_result lowest_dark_window;
+	bool dark_pending;
+	uint32_t dark_duration_ms;
 };
 
 struct photodiode_status {
@@ -138,5 +139,28 @@ bool photodiode_settings_valid(const struct app_pd_channel_settings *settings);
  */
 int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
 						uint32_t duration_ms);
+
+/**
+ * @brief Start a sampler-owned dark capture using the configurable window.
+ *
+ * The command returns immediately after arming the capture. The sampler commits
+ * the completed configurable window as dark when the requested sample count is
+ * reached. No laser, route, or attenuator policy is checked here.
+ */
+int photodiode_start_dark_capture(enum photodiode_channel channel,
+				  uint32_t duration_ms,
+				  bool persist,
+				  bool reset_lowest);
+
+/** @brief Force one channel's dark result to a user-supplied value. */
+int photodiode_force_dark(enum photodiode_channel channel,
+			  double mean_mv,
+			  double rms_mv,
+			  bool persist,
+			  bool reset_lowest);
+
+/** @brief Reset the lowest-dark record to the active dark for one channel. */
+int photodiode_reset_lowest_dark(enum photodiode_channel channel,
+				 bool persist);
 
 #endif //PHOTODIODE_H

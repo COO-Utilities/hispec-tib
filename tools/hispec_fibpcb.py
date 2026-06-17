@@ -2218,7 +2218,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class PhotodiodeWindow(ResponseRepr):
-    length_ms: int
+    duration_ms: int
     failed_samples: int
     mean_mv: float = np.nan
     mean_net_mv: float = np.nan
@@ -2254,6 +2254,8 @@ class PhotodiodeValues(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class PhotodiodeDark(ResponseRepr):
     channel: str
+    pending: bool
+    duration_ms: int
     dark: PhotodiodeWindow
     lowest_dark: PhotodiodeWindow
 
@@ -2569,7 +2571,7 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
 
 def _decode_pd_window(data: Mapping[str, Any]) -> PhotodiodeWindow:
     return PhotodiodeWindow(
-        length_ms=int(data.get("length_ms", 0)),
+        duration_ms=int(data.get("duration_ms", 0)),
         failed_samples=int(data.get("failed_samples", 0)),
         mean_mv=_float_or_nan(data.get("mean_mv", np.nan)),
         mean_net_mv=_float_or_nan(data.get("mean_net_mv", np.nan)),
@@ -2608,6 +2610,8 @@ def _decode_pd(data: Mapping[str, Any]) -> PhotodiodeValues:
 def _decode_pd_dark(data: Mapping[str, Any]) -> PhotodiodeDark:
     return PhotodiodeDark(
         channel=str(data["channel"]),
+        pending=bool(data.get("pending", False)),
+        duration_ms=int(data.get("duration_ms", 0)),
         dark=_decode_pd_window(data.get("dark", {})),
         lowest_dark=_decode_pd_window(data.get("lowest_dark", {})),
     )

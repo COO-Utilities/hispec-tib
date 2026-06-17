@@ -81,7 +81,7 @@ struct app_attenuator_settings {
 
 /** Persisted/runtime photodiode dark measurement metadata. */
 struct app_pd_dark_result {
-	uint32_t length_ms;
+	uint32_t duration_ms;
 	uint16_t failed_samples;
 	double mean_mv;
 	double rms_mv;

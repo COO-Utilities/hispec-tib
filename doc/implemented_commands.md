@@ -258,9 +258,9 @@ which slow resources it can touch, and known implementation-specific caveats.
   configurable dark windows in `app/src/photodiode.c`; persistent dark records
   in `app/src/app_settings.c`.
 - Board restriction: TIB only.
-- Side effects: measures dark with `duration_ms`, forces dark with `dark_mv`
-  and optional `rms_mv`, resets lowest-dark tracking with `reset_lowest`, and
-  optionally persists the selected channel's dark settings.
+- Side effects: arms a sampler-owned dark capture with `duration_ms`, forces
+  dark with `dark_mv` and optional `rms_mv`, resets lowest-dark tracking with
+  `reset_lowest`, and optionally persists the selected channel's dark settings.
 
 ### `pdsettings/<yj|hk>`
 

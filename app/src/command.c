@@ -319,7 +319,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pd/dark/<channel>", command_tib_supported,
                   "pd/dark/<channel> [duration_ms=<ms>|dark_mv=<mV> rms_mv=<mV> reset_lowest=<bool> persist=<bool>]",
-                  "channel required in key; duration_ms measures dark, dark_mv forces dark; persist defaults false",
+                  "channel required in key; duration_ms arms dark capture, dark_mv forces dark; persist defaults false",
                   "channel: yj,hk",
                   "TIB-only photodiode dark measurement and forced dark update",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),

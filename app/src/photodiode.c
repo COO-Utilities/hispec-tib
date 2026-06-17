@@ -131,6 +131,14 @@ struct pd_window_runtime {
 	struct photodiode_window_result last;
 };
 
+struct photodiode_dark_action {
+	bool pending;
+	bool persist;
+	bool reset_lowest;
+	uint16_t target_sample_length;
+	uint32_t duration_ms;
+};
+
 struct photodiode_runtime_channel {
 	int16_t raw;
 	double mv;
@@ -142,6 +150,7 @@ struct photodiode_runtime_channel {
 	int64_t next_noise_warning_ms;
 	struct pd_window_runtime configurable_window;
 	struct pd_window_runtime fixed_window;
+	struct photodiode_dark_action dark_action;
 };
 
 static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
@@ -458,7 +467,7 @@ static bool pd_dark_result_valid(const struct app_pd_dark_result *dark)
 		return false;
 	}
 
-	return dark->length_ms <= APP_PD_DARK_DURATION_MAX_MS &&
+	return dark->duration_ms <= APP_PD_DARK_DURATION_MAX_MS &&
 	       isfinite((double)dark->mean_mv) &&
 	       dark->mean_mv >= PHOTODIODE_DARK_MIN_MV &&
 	       dark->mean_mv <= PHOTODIODE_DARK_MAX_MV &&
@@ -508,6 +517,11 @@ static uint16_t pd_window_duration_to_samples(uint32_t duration_ms)
 	requested_ms += PUBLISH_INTERVAL_MS / 2U;
 	samples = requested_ms / PUBLISH_INTERVAL_MS;
 	return (uint16_t)CLAMP(samples, 1U, PD_WINDOW_MAX_SAMPLES);
+}
+
+static uint32_t pd_window_samples_to_duration_ms(uint16_t samples)
+{
+	return (uint32_t)samples * PUBLISH_INTERVAL_MS;
 }
 
 static void pd_window_result_clear(struct photodiode_window_result *result)
@@ -567,14 +581,13 @@ static void pd_windows_ensure_locked(struct photodiode_runtime_channel *channel)
 	}
 }
 
-static void pd_window_close_current(struct pd_window_runtime *window)
+static void pd_window_snapshot_last(struct pd_window_runtime *window)
 {
 	if (window == NULL || window->target_samples == 0U) {
 		return;
 	}
 
 	window->last = window->current;
-	pd_window_reset_current(window);
 }
 
 static void pd_window_recompute(struct pd_window_runtime *window,
@@ -707,9 +720,9 @@ pd_dark_window_from_settings(const struct app_pd_dark_result *dark,
 	}
 
 	result.valid = true;
-	result.sample_length = dark->length_ms == 0U ?
+	result.sample_length = dark->duration_ms == 0U ?
 			       0U :
-			       pd_window_duration_to_samples(dark->length_ms);
+			       pd_window_duration_to_samples(dark->duration_ms);
 	result.failed_samples = dark->failed_samples;
 	result.end_ms = 0;
 	result.mean_mv = dark->mean_mv;
@@ -722,6 +735,94 @@ pd_dark_window_from_settings(const struct app_pd_dark_result *dark,
 	result.power_err_uw = photodiode_power_uw_from_mv(dark->rms_mv, settings);
 	result.max_raw = dark->max_raw;
 	return result;
+}
+
+static struct app_pd_dark_result
+pd_dark_result_from_window(const struct photodiode_window_result *window)
+{
+	struct app_pd_dark_result dark = {0};
+
+	if (window == NULL) {
+		return dark;
+	}
+
+	dark.duration_ms = pd_window_samples_to_duration_ms(window->sample_length);
+	dark.failed_samples = window->failed_samples;
+	dark.mean_mv = window->mean_mv;
+	dark.rms_mv = window->rms_mv;
+	dark.min_mv = window->min_mv;
+	dark.max_mv = window->max_mv;
+	dark.max_raw = window->max_raw;
+	return dark;
+}
+
+static void pd_update_lowest_dark(struct app_pd_channel_settings *ch,
+				  bool reset_lowest)
+{
+	if (ch == NULL) {
+		return;
+	}
+
+	if (reset_lowest || !ch->lowest_dark_valid ||
+	    ch->dark.mean_mv < ch->lowest_dark.mean_mv) {
+		ch->lowest_dark = ch->dark;
+		ch->lowest_dark_valid = true;
+	}
+}
+
+static void pd_commit_dark_result(enum photodiode_channel channel,
+				  const struct app_pd_dark_result *dark,
+				  bool persist,
+				  bool reset_lowest,
+				  bool forced)
+{
+	struct app_photodiode_settings settings;
+
+	if (dark == NULL || channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
+		return;
+	}
+
+	app_settings_get_photodiode(&settings);
+	settings.channel[channel].dark = *dark;
+	if (!forced)
+		pd_update_lowest_dark(&settings.channel[channel], reset_lowest);
+	app_settings_update_photodiode_channel((uint8_t)channel,
+					       &settings.channel[channel],
+					       persist);
+}
+
+static bool pd_stage_completed_dark_locked(
+	struct photodiode_runtime_channel *runtime,
+	struct app_pd_dark_result *dark,
+	bool *persist,
+	bool *reset_lowest,
+	bool *failed)
+{
+	const struct photodiode_window_result *window;
+
+	if (runtime == NULL || dark == NULL || persist == NULL ||
+	    reset_lowest == NULL || failed == NULL ||
+	    !runtime->dark_action.pending) {
+		return false;
+	}
+
+	window = &runtime->configurable_window.current;
+	if (window->sample_length < runtime->dark_action.target_sample_length) {
+		return false;
+	}
+
+	*persist = runtime->dark_action.persist;
+	*reset_lowest = runtime->dark_action.reset_lowest;
+	*failed = !window->valid || window->sample_length == 0U ||
+		  window->sample_length == window->failed_samples;
+	runtime->dark_action.pending = false;
+
+	if (*failed) {
+		return false;
+	}
+
+	*dark = pd_dark_result_from_window(window);
+	return true;
 }
 
 static void pd_emit_adc_error_warning(enum photodiode_channel channel, int rc)
@@ -741,18 +842,43 @@ static void pd_emit_adc_error_warning(enum photodiode_channel channel, int rc)
                              .code = "photodiode_adc_error",
                              .msg = "photodiode ADC sample discarded",
                              .context = context,
-                         });
+	                         });
+}
+
+static void pd_emit_dark_failed_warning(enum photodiode_channel channel)
+{
+	char context[64];
+
+	if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
+		return;
+	}
+
+	snprintk(context, sizeof(context), "channel=%s",
+		 photodiode_channel_names[channel]);
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				     .code = "photodiode_dark_failed",
+				     .msg = "photodiode dark capture had no valid samples",
+				     .context = context,
+			     });
 }
 
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
                               const struct app_pd_channel_settings *settings)
 {
 	struct photodiode_runtime_channel *runtime;
+	struct app_pd_dark_result completed_dark = {0};
 	double mv = NAN;
 	double net_mv = NAN;
 	double net_err_mv = NAN;
 	double noise_rms = 0.0;
 	bool emit_noise_warning = false;
+	bool commit_dark = false;
+	bool dark_failed = false;
+	bool dark_persist = false;
+	bool dark_reset_lowest = false;
 	int64_t now = k_uptime_get();
 
 	if (rc == 0) {
@@ -770,8 +896,8 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	pd_windows_ensure_locked(runtime);
 
 	if (rc == 0 && pd_sample_is_step(runtime, mv)) {
-		pd_window_close_current(&runtime->configurable_window);
-		pd_window_close_current(&runtime->fixed_window);
+		pd_window_snapshot_last(&runtime->configurable_window);
+		pd_window_snapshot_last(&runtime->fixed_window);
 	}
 
 	if (rc == 0) {
@@ -787,6 +913,10 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 
 	pd_window_add_sample(&runtime->configurable_window, rc, raw, mv, net_mv, settings, now);
 	pd_window_add_sample(&runtime->fixed_window, rc, raw, mv, net_mv, settings, now);
+	commit_dark = pd_stage_completed_dark_locked(runtime, &completed_dark,
+						     &dark_persist,
+						     &dark_reset_lowest,
+						     &dark_failed);
 
 	if (rc == 0 && runtime->fixed_window.current.valid) {
 		noise_rms = runtime->fixed_window.current.rms_mv;
@@ -799,6 +929,12 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 		}
 	}
 	k_mutex_unlock(&pd_runtime_lock);
+
+	if (commit_dark) {
+		pd_commit_dark_result(channel, &completed_dark, dark_persist, dark_reset_lowest, false);
+	} else if (dark_failed) {
+		pd_emit_dark_failed_warning(channel);
+	}
 
 	if (rc != 0) {
 		pd_emit_adc_error_warning(channel, rc);
@@ -864,19 +1000,33 @@ void photodiode_get_status(struct photodiode_status *out)
         dst->fixed_window = src->fixed_window.current;
         dst->last_fixed_window = src->fixed_window.last;
         dst->dark_window = pd_dark_window_from_settings(&ch->dark, true, ch);
-        dst->lowest_dark_window =
-            pd_dark_window_from_settings(&ch->lowest_dark,
-                                         ch->lowest_dark_valid,
-                                         ch);
-    }
+	        dst->lowest_dark_window =
+	            pd_dark_window_from_settings(&ch->lowest_dark,
+	                                         ch->lowest_dark_valid,
+	                                         ch);
+		dst->dark_pending = src->dark_action.pending;
+		dst->dark_duration_ms = src->dark_action.pending ?
+					src->dark_action.duration_ms : 0U;
+	    }
     k_mutex_unlock(&pd_runtime_lock);
+}
+
+static void pd_set_configurable_window_locked(struct photodiode_runtime_channel *runtime,
+					      uint16_t sample_count)
+{
+	struct pd_window_runtime *window;
+
+	pd_windows_ensure_locked(runtime);
+	window = &runtime->configurable_window;
+	window->last = window->current;
+	window->target_samples = sample_count;
+	pd_window_reset_current(window);
 }
 
 int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
 						uint32_t duration_ms)
 {
 	uint16_t sample_count;
-	struct pd_window_runtime *window;
 
 	if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
 		return -EINVAL;
@@ -888,12 +1038,98 @@ int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
 	sample_count = pd_window_duration_to_samples(duration_ms);
 
 	k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-	pd_windows_ensure_locked(&pd_runtime[channel]);
-	window = &pd_runtime[channel].configurable_window;
-	window->last = window->current;
-	window->target_samples = sample_count;
-	pd_window_reset_current(window);
+	if (pd_runtime[channel].dark_action.pending) {
+		k_mutex_unlock(&pd_runtime_lock);
+		return -EBUSY;
+	}
+	pd_set_configurable_window_locked(&pd_runtime[channel], sample_count);
 	k_mutex_unlock(&pd_runtime_lock);
+	return 0;
+}
+
+int photodiode_start_dark_capture(enum photodiode_channel channel,
+				  uint32_t duration_ms,
+				  bool persist,
+				  bool reset_lowest)
+{
+	uint16_t sample_count;
+	struct photodiode_runtime_channel *runtime;
+
+	if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT ||
+	    duration_ms == 0U || duration_ms > APP_PD_DARK_DURATION_MAX_MS) {
+		return -EINVAL;
+	}
+	if (adc_dev == NULL || !device_is_ready(adc_dev)) {
+		return -ENODEV;
+	}
+
+	sample_count = pd_window_duration_to_samples(duration_ms);
+
+	k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+	runtime = &pd_runtime[channel];
+	pd_windows_ensure_locked(runtime);
+	if (runtime->dark_action.pending) {
+		k_mutex_unlock(&pd_runtime_lock);
+		return -EBUSY;
+	}
+	pd_set_configurable_window_locked(runtime, sample_count);
+	runtime->dark_action = (struct photodiode_dark_action){
+		.pending = true,
+		.persist = persist,
+		.reset_lowest = reset_lowest,
+		.target_sample_length = sample_count,
+		.duration_ms = pd_window_samples_to_duration_ms(sample_count),
+	};
+	k_mutex_unlock(&pd_runtime_lock);
+	return 0;
+}
+
+int photodiode_force_dark(enum photodiode_channel channel,
+			  double mean_mv,
+			  double rms_mv,
+			  bool persist,
+			  bool reset_lowest)
+{
+	struct app_pd_dark_result dark;
+
+	if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT ||
+	    !isfinite(mean_mv) ||
+	    mean_mv < PHOTODIODE_DARK_MIN_MV ||
+	    mean_mv > PHOTODIODE_DARK_MAX_MV ||
+	    !isfinite(rms_mv) ||
+	    rms_mv < PHOTODIODE_NOISE_RMS_MIN_MV ||
+	    rms_mv > PHOTODIODE_NOISE_RMS_MAX_MV) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+	pd_runtime[channel].dark_action.pending = false;
+	k_mutex_unlock(&pd_runtime_lock);
+
+	dark = (struct app_pd_dark_result){
+		.mean_mv = mean_mv,
+		.rms_mv = rms_mv,
+		.min_mv = mean_mv,
+		.max_mv = mean_mv,
+	};
+	pd_commit_dark_result(channel, &dark, persist, reset_lowest, true);
+	return 0;
+}
+
+int photodiode_reset_lowest_dark(enum photodiode_channel channel,
+				 bool persist)
+{
+	struct app_photodiode_settings settings;
+
+	if (channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	app_settings_get_photodiode(&settings);
+	pd_update_lowest_dark(&settings.channel[channel], true);
+	app_settings_update_photodiode_channel((uint8_t)channel,
+					       &settings.channel[channel],
+					       persist);
 	return 0;
 }
 

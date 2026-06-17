@@ -12,9 +12,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
+#include "attenuator_calibration.h"
 #include "app_settings.h"
 #include "housekeeping.h"
 #include "photodiode.h"
+#include "throughput_monitor.h"
 
 #include <coo_commons/command_dispatch.h>
 #include <coo_commons/json_utils.h>
@@ -106,7 +108,7 @@ static int pd_parse_channel_from_key_base(const struct coo_cmd_request *cmd,
 	return pd_parse_channel_name(channel_name, channel);
 }
 
-static uint32_t pd_window_length_ms(const struct photodiode_window_result *window)
+static uint32_t pd_window_duration_ms(const struct photodiode_window_result *window)
 {
 	return window == NULL ? 0U :
 	       (uint32_t)window->sample_length * PUBLISH_INTERVAL_MS;
@@ -127,12 +129,12 @@ static int pd_append_window_json(char *payload, size_t payload_len, size_t *off,
 				 const struct photodiode_window_result *window)
 {
 	const bool valid = window != NULL && window->valid;
-	const uint32_t length_ms = pd_window_length_ms(window);
+	const uint32_t duration_ms = pd_window_duration_ms(window);
 	const uint16_t failed_samples = window == NULL ? 0U : window->failed_samples;
 
 	if (coo_json_append(payload, payload_len, off,
-			    "{\"length_ms\":%u,\"failed_samples\":%u",
-			    length_ms, failed_samples) != 0 ||
+			    "{\"duration_ms\":%u,\"failed_samples\":%u",
+			    duration_ms, failed_samples) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mean_mv",
 				  valid ? window->mean_mv : (double)NAN, 3) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mean_net_mv",
@@ -286,46 +288,6 @@ int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-static struct app_pd_dark_result
-pd_dark_from_window(const struct photodiode_window_result *window)
-{
-	struct app_pd_dark_result dark = {0};
-
-	if (window == NULL) {
-		return dark;
-	}
-	dark.length_ms = pd_window_length_ms(window);
-	dark.failed_samples = window->failed_samples;
-	dark.mean_mv = window->mean_mv;
-	dark.rms_mv = window->rms_mv;
-	dark.min_mv = window->min_mv;
-	dark.max_mv = window->max_mv;
-	dark.max_raw = window->max_raw;
-	return dark;
-}
-
-static struct app_pd_dark_result pd_forced_dark(double mean_mv, double rms_mv)
-{
-	return (struct app_pd_dark_result){
-		.mean_mv = mean_mv,
-		.rms_mv = rms_mv,
-		.min_mv = mean_mv,
-		.max_mv = mean_mv,
-	};
-}
-
-static void pd_update_lowest_dark(struct app_pd_channel_settings *ch, bool reset_lowest)
-{
-	if (ch == NULL) {
-		return;
-	}
-	if (reset_lowest || !ch->lowest_dark_valid ||
-	    ch->dark.mean_mv < ch->lowest_dark.mean_mv) {
-		ch->lowest_dark = ch->dark;
-		ch->lowest_dark_valid = true;
-	}
-}
-
 static int pd_dark_response(const struct coo_cmd_request *cmd,
 			    enum photodiode_channel channel,
 			    struct coo_cmd_response *out)
@@ -336,8 +298,10 @@ static int pd_dark_response(const struct coo_cmd_request *cmd,
 
 	photodiode_get_status(&status);
 	if (coo_json_append(payload, sizeof(payload), &off,
-			    "{\"channel\":\"%s\",\"dark\":",
-			    photodiode_channel_names[channel]) != 0 ||
+			    "{\"channel\":\"%s\",\"pending\":%s,\"duration_ms\":%u,\"dark\":",
+			    photodiode_channel_names[channel],
+			    status.channel[channel].dark_pending ? "true" : "false",
+			    status.channel[channel].dark_duration_ms) != 0 ||
 	    pd_append_window_json(payload, sizeof(payload), &off,
 				  &status.channel[channel].dark_window) != 0 ||
 	    coo_json_append(payload, sizeof(payload), &off, ",\"lowest_dark\":") != 0 ||
@@ -363,9 +327,6 @@ int pd_dark_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	struct app_photodiode_settings settings;
-	struct photodiode_status status;
-	const struct photodiode_window_result *window;
 	enum photodiode_channel channel;
 	uint32_t duration_ms = 0U;
 	double dark_mv = NAN;
@@ -421,35 +382,36 @@ int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "duration_ms, dark_mv, or reset_lowest required");
 	}
 
-	app_settings_get_photodiode(&settings);
 	if (duration_supplied) {
 		if (duration_ms == 0U ||
 		    duration_ms > APP_PD_DARK_DURATION_MAX_MS) {
 			return coo_cmd_error(out, cmd, "duration_ms out of range");
 		}
-		rc = photodiode_set_configurable_window_duration(channel, duration_ms);
+		if (attenuator_calibration_active()) {
+			return coo_cmd_error(out, cmd, "attenuator calibration active");
+		}
+		if (throughput_monitor_autolevel_active(channel)) {
+			return coo_cmd_error(out, cmd,
+					     "dark measurement blocked by autolevel throughput monitor");
+		}
+		rc = photodiode_start_dark_capture(channel, duration_ms, persist,
+						   reset_lowest);
 		if (rc != 0) {
-			return coo_cmd_error_rc(out, cmd, "dark window update failed", rc);
+			return coo_cmd_error_rc(out, cmd, "dark capture start failed", rc);
 		}
-		k_sleep(K_MSEC(duration_ms));
-		photodiode_get_status(&status);
-		window = &status.channel[channel].configurable_window;
-		if (!window->valid || window->sample_length == 0U ||
-		    window->sample_length == window->failed_samples) {
-			return coo_cmd_error(out, cmd, "dark window has no valid samples");
-		}
-		settings.channel[channel].dark = pd_dark_from_window(window);
-		pd_update_lowest_dark(&settings.channel[channel], reset_lowest);
 	} else if (dark_supplied) {
-		settings.channel[channel].dark = pd_forced_dark(dark_mv, rms_mv);
-		pd_update_lowest_dark(&settings.channel[channel], reset_lowest);
+		rc = photodiode_force_dark(channel, dark_mv, rms_mv, persist,
+					   reset_lowest);
+		if (rc != 0) {
+			return coo_cmd_error_rc(out, cmd, "dark update failed", rc);
+		}
 	} else if (reset_lowest) {
-		pd_update_lowest_dark(&settings.channel[channel], true);
+		rc = photodiode_reset_lowest_dark(channel, persist);
+		if (rc != 0) {
+			return coo_cmd_error_rc(out, cmd, "lowest dark reset failed", rc);
+		}
 	}
 
-	app_settings_update_photodiode_channel((uint8_t)channel,
-					       &settings.channel[channel],
-					       persist);
 	return pd_dark_response(cmd, channel, out);
 }
 

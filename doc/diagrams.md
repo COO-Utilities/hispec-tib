@@ -202,10 +202,13 @@ flowchart TD
   Adc -- yes --> Sample[read ADS1115 YJ and HK]
   Sample --> Convert[counts to mV and power estimate]
   Convert --> Step{sharp sample step}
-  Step -- yes --> Close[close current configurable and fixed windows]
+  Step -- yes --> Snapshot[snapshot current windows to last]
   Step -- no --> Windows
-  Close --> Windows[append sample to configurable and fixed windows]
+  Snapshot --> Windows[append sample to configurable and fixed windows]
   Windows --> Status[update latest sample and window results]
+  Status --> PendingDark{dark capture pending and window complete}
+  PendingDark -- yes --> DarkCommit[commit configurable window as dark]
+  PendingDark -- no --> Warn
   Status --> Warn{fixed-window RMS above threshold}
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
@@ -213,10 +216,11 @@ flowchart TD
   SleepPeriod[sleep to 20 ms period]
 
   DarkCmd[pd/dark/yj or pd/dark/hk] --> DarkMode{duration_ms or dark_mv}
-  DarkMode -- duration_ms --> Measure[set configurable window and wait duration]
-  Measure --> Commit[copy configurable window to dark settings]
+  DarkMode -- duration_ms --> Arm[set configurable window and arm pending dark]
+  Arm --> Query[command returns pending status]
   DarkMode -- dark_mv --> Force[force dark with optional rms_mv]
-  Force --> Commit
+  Force --> Commit[update active dark]
+  DarkCommit --> Commit
   Commit --> Lowest{reset or lower than stored lowest}
   Lowest -- yes --> LowestStore[update lowest dark]
   Lowest -- no --> Persist

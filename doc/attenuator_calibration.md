@@ -105,8 +105,9 @@ configurable window, not the last closed window. The window supplies:
 - failed sample count,
 - min/max and max raw code.
 
-The sampler's step detection keeps the last configurable window available for
-diagnostics, but calibration normally ignores it because it represents a prior
+The sampler's step detection snapshots the current configurable window into the
+last configurable window without resetting the current rolling window.
+Calibration normally ignores the last window because it represents a prior
 optical level.
 
 ## Per-Physical Acquisition

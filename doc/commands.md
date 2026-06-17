@@ -1233,7 +1233,7 @@ ownership are documented in `attenuator_calibration.md`.
       "dark_mv": 0.0,
       "dark_err_mv": 0.0,
       "window": {
-        "length_ms": 0,
+        "duration_ms": 0,
         "failed_samples": 0,
         "mean_mv": 0.0,
         "mean_net_mv": 0.0,
@@ -1276,8 +1276,10 @@ ownership are documented in `attenuator_calibration.md`.
   ```json
   {
     "channel": "yj",
+    "pending": false,
+    "duration_ms": 0,
     "dark": {
-      "length_ms": 0,
+      "duration_ms": 0,
       "failed_samples": 0,
       "mean_mv": 0.0,
       "mean_net_mv": 0.0,
@@ -1303,8 +1305,9 @@ ownership are documented in `attenuator_calibration.md`.
   ```
 
 - **Notes:**
-  - `duration_ms` uses the internal configurable photodiode window, waits for
-    that duration, and commits the resulting window as the active dark.
+  - `duration_ms` arms a sampler-owned dark capture using the internal
+    configurable photodiode window and returns immediately. Query
+    `pd/dark/<channel>` to see `pending:false` and the resulting dark window.
   - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
     `dark_mv`; if omitted, firmware uses
     `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
@@ -1312,8 +1315,9 @@ ownership are documented in `attenuator_calibration.md`.
     greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
     `app/src/app_settings.h`.
   - `reset_lowest:true` resets the lowest-dark record to the active dark.
-  - `persist` defaults false. Dark commands do not check laser state,
-    attenuator state, or routes.
+  - `persist` defaults false. Duration captures are rejected while attenuator
+    calibration or autolevel throughput owns the configurable window. Dark
+    commands do not check laser state, attenuator position, or routes.
 
 (pdsettings)=
 ### `pdsettings`
