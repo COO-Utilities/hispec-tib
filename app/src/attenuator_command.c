@@ -16,6 +16,7 @@
 #include "attenuator.h"
 #include "attenuator_calibration.h"
 #include "devices.h"
+#include "housekeeping.h"
 #include "lasers.h"
 #include "throughput_monitor.h"
 
@@ -35,6 +36,40 @@ static const struct coo_json_string_choice attenuator_cal_fiber_choices[] = {
 	{ "m", 'M' },
 	{ "s", 'S' },
 };
+
+struct atten_calibration_routes {
+	const char *laser_input;
+	enum photodiode_channel pd_channel;
+	const char *pd_input[2];
+	const char *pd_output;
+};
+
+static const struct atten_calibration_routes atten_calibration_routes[HISPEC_LASER_COUNT] = {
+	[HISPEC_LASER_1028_Y] = {
+		"yj_laser", PHOTODIODE_CHANNEL_YJ, { "yj_mm", "yj_sm" }, "yj_pd" },
+	[HISPEC_LASER_1270_J] = {
+		"yj_laser", PHOTODIODE_CHANNEL_YJ, { "yj_mm", "yj_sm" }, "yj_pd" },
+	[HISPEC_LASER_1430_YJ] = {
+		"yj_1430", PHOTODIODE_CHANNEL_YJ, { "yj_mm", "yj_sm" }, "yj_pd" },
+	[HISPEC_LASER_1430_HK] = {
+		"hk_1430", PHOTODIODE_CHANNEL_HK, { "hk_mm", "hk_sm" }, "hk_pd" },
+	[HISPEC_LASER_1510_H] = {
+		"hk_laser", PHOTODIODE_CHANNEL_HK, { "hk_mm", "hk_sm" }, "hk_pd" },
+	[HISPEC_LASER_2330_K] = {
+		"hk_laser", PHOTODIODE_CHANNEL_HK, { "hk_mm", "hk_sm" }, "hk_pd" },
+};
+
+static int atten_calibration_pd_error(const struct coo_cmd_request *cmd,
+				      struct coo_cmd_response *out,
+				      enum photodiode_channel channel,
+				      const char *problem)
+{
+	char message[64] = {0};
+
+	snprintk(message, sizeof(message), "photodiode %s %s",
+		 photodiode_channel_names[channel], problem);
+	return coo_cmd_error(out, cmd, message);
+}
 
 static int attenuator_index_from_name(const char *name, uint8_t *attenuator_index)
 {
@@ -611,13 +646,19 @@ int atten_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct attenuator_calibration_status status = {0};
+	struct app_photodiode_settings pd_settings;
+	struct photodiode_status pd_status;
 	char laser_name[16] = {0};
 	char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	struct attenuator_calibration_auto_request request = {
 		.output = output,
-		.fiber = 'M',
 	};
+	const struct atten_calibration_routes *routes;
+	char fiber = 'M';
 	uint32_t dwell_ms = 0U;
+	uint8_t attenuator_index;
+	double dark_mv;
+	bool pd_power = false;
 	bool persist = false;
 	bool stop = false;
 	int rc;
@@ -651,7 +692,7 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 		return coo_cmd_error(out, cmd, "fiber must be M or S");
 	}
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
-		request.fiber = (char)choice_value;
+		fiber = (char)choice_value;
 	}
 	if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms", &dwell_ms, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid dwell_ms");
@@ -662,9 +703,49 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	request.dwell_ms = dwell_ms;
 	request.persist = persist;
 
+	if (attenuator_index_from_laser_id(request.laser, &attenuator_index) != 0 ||
+	    !devices_attenuator_channel_available(attenuator_index)) {
+		return coo_cmd_error(out, cmd, "attenuator unavailable for laser");
+	}
+	request.attenuator_index = attenuator_index;
+	routes = &atten_calibration_routes[request.laser];
+	if (mems_router_get_route(&router, routes->laser_input, request.output) == NULL) {
+		return coo_cmd_error(out, cmd, "invalid output route for laser");
+	}
+	request.route_input = routes->laser_input;
+	request.channel = routes->pd_channel;
+	request.pd_input = routes->pd_input[fiber == 'M' ? 0U : 1U];
+	request.pd_output = routes->pd_output;
+	if (mems_router_get_route(&router, request.pd_input,
+				  routes->pd_output) == NULL) {
+		return coo_cmd_error(out, cmd, "invalid photodiode route for laser/fiber");
+	}
+
+	app_settings_get_photodiode(&pd_settings);
+	dark_mv = pd_settings.channel[request.channel].dark.mean_mv;
+	if (!isfinite(dark_mv) ||
+	    dark_mv < PHOTODIODE_DARK_MIN_MV ||
+	    dark_mv > PHOTODIODE_DARK_MAX_MV) {
+		return atten_calibration_pd_error(cmd, out, request.channel, "dark invalid");
+	}
+	rc = housekeeping_power_get((enum housekeeping_power_output)request.channel, &pd_power);
+	if (rc != 0) {
+		return coo_cmd_error_rc(out, cmd, "photodiode power read failed", rc);
+	}
+	if (!pd_power) {
+		return atten_calibration_pd_error(cmd, out, request.channel, "power is off");
+	}
+	photodiode_get_status(&pd_status);
+	if (pd_status.channel[request.channel].dark_pending) {
+		return atten_calibration_pd_error(cmd, out, request.channel, "dark capture active");
+	}
+	if (!isfinite(pd_status.channel[request.channel].mv)) {
+		return atten_calibration_pd_error(cmd, out, request.channel, "sample unavailable");
+	}
+
 	rc = attenuator_calibration_start_auto(&request, &status);
 	if (rc != 0 && status.state == NULL) {
-		return coo_cmd_error(out, cmd, "attenuator calibration start failed");
+		return coo_cmd_error_rc(out, cmd, "attenuator calibration hardware setup failed", rc);
 	}
 	return atten_calibration_status_reply(
 		cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);

@@ -53,8 +53,12 @@ struct attenuator_calibration_status {
 
 struct attenuator_calibration_auto_request {
 	enum hispec_laser_id laser;
+	uint8_t attenuator_index;
+	enum photodiode_channel channel;
+	const char *route_input;
 	const char *output;
-	char fiber;
+	const char *pd_input;
+	const char *pd_output;
 	uint32_t dwell_ms;
 	bool persist;
 };

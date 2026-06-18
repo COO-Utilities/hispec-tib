@@ -23,7 +23,6 @@
 #include "attenuator.h"
 #include "command.h"
 #include "devices.h"
-#include "housekeeping.h"
 #include "mems_switching.h"
 #include "throughput_monitor.h"
 
@@ -596,80 +595,6 @@ static bool append_record_locked(enum atten_cal_record_event event,
 		*out = record;
 	}
 	return true;
-}
-
-/** Map a laser id to the MEMS input route used for calibration launch. */
-static int route_input_for_laser(enum hispec_laser_id laser, char *out, size_t out_len)
-{
-	const char *name;
-
-	if (out == NULL || out_len == 0U) {
-		return -EINVAL;
-	}
-
-	switch (laser) {
-	case HISPEC_LASER_1430_YJ:
-		name = "yj_1430";
-		break;
-	case HISPEC_LASER_1430_HK:
-		name = "hk_1430";
-		break;
-	case HISPEC_LASER_1028_Y:
-	case HISPEC_LASER_1270_J:
-		name = "yj_laser";
-		break;
-	case HISPEC_LASER_1510_H:
-	case HISPEC_LASER_2330_K:
-		name = "hk_laser";
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (snprintk(out, out_len, "%s", name) >= out_len) {
-		return -ENOSPC;
-	}
-	return 0;
-}
-
-/** Choose the photodiode channel and loopback route for automatic TIB calibration. */
-static int pd_route_for_auto(enum hispec_laser_id laser, char fiber,
-			     enum photodiode_channel *channel,
-			     char *input, size_t input_len,
-			     char *output, size_t output_len)
-{
-	const char *prefix;
-	const char *kind;
-
-	if (channel == NULL || input == NULL || output == NULL ||
-	    input_len == 0U || output_len == 0U ||
-	    (fiber != 'M' && fiber != 'S')) {
-		return -EINVAL;
-	}
-
-	switch (laser) {
-	case HISPEC_LASER_1028_Y:
-	case HISPEC_LASER_1270_J:
-	case HISPEC_LASER_1430_YJ:
-		*channel = PHOTODIODE_CHANNEL_YJ;
-		prefix = "yj";
-		break;
-	case HISPEC_LASER_1430_HK:
-	case HISPEC_LASER_1510_H:
-	case HISPEC_LASER_2330_K:
-		*channel = PHOTODIODE_CHANNEL_HK;
-		prefix = "hk";
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	kind = fiber == 'M' ? "mm" : "sm";
-	if (snprintk(input, input_len, "%s_%s", prefix, kind) >= input_len ||
-	    snprintk(output, output_len, "%s_pd", prefix) >= output_len) {
-		return -ENOSPC;
-	}
-	return 0;
 }
 
 /** Write the swept and companion FVOA DAC voltages for a logical attenuator. */
@@ -1419,56 +1344,16 @@ int attenuator_calibration_start_auto(
 	const struct attenuator_calibration_auto_request *request,
 	struct attenuator_calibration_status *status)
 {
-	char route_input[MEMS_SOURCEDEST_MAX_LEN] = {0};
-	char pd_input[MEMS_SOURCEDEST_MAX_LEN] = {0};
-	char pd_output[MEMS_SOURCEDEST_MAX_LEN] = {0};
-	enum photodiode_channel channel;
-	struct app_photodiode_settings pd_settings;
-	struct photodiode_status pd_status;
-	uint8_t attenuator_index;
-	double dark_mv;
-	bool pd_power = false;
 	bool replacing;
 	int rc;
 
-	if (devices_board_type() != HISPEC_BOARD_TIB) {
-		return -ENODEV;
-	}
-	if (request == NULL || request->output == NULL ||
+	if (request == NULL || request->route_input == NULL ||
+	    request->output == NULL || request->pd_input == NULL ||
+	    request->pd_output == NULL ||
 	    request->output[0] == '\0' ||
-	    attenuator_index_from_laser_id(request->laser, &attenuator_index) != 0 ||
-	    !devices_attenuator_channel_available(attenuator_index)) {
+	    request->channel < 0 || request->channel >= PHOTODIODE_CHANNEL_COUNT ||
+	    !devices_attenuator_channel_available(request->attenuator_index)) {
 		return -EINVAL;
-	}
-
-	rc = route_input_for_laser(request->laser, route_input, sizeof(route_input));
-	if (rc != 0) {
-		return rc;
-	}
-	rc = pd_route_for_auto(request->laser, request->fiber, &channel,
-			       pd_input, sizeof(pd_input),
-			       pd_output, sizeof(pd_output));
-	if (rc != 0) {
-		return rc;
-	}
-
-	app_settings_get_photodiode(&pd_settings);
-	dark_mv = pd_settings.channel[channel].dark.mean_mv;
-	if (!isfinite(dark_mv) ||
-	    dark_mv < PHOTODIODE_DARK_MIN_MV ||
-	    dark_mv > PHOTODIODE_DARK_MAX_MV) {
-		return -EINVAL;
-	}
-	rc = housekeeping_power_get((enum housekeeping_power_output)channel, &pd_power);
-	if (rc != 0) {
-		return rc;
-	}
-	if (!pd_power) {
-		return -EACCES;
-	}
-	photodiode_get_status(&pd_status);
-	if (!isfinite(pd_status.channel[channel].mv)) {
-		return -ENODATA;
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -1494,21 +1379,21 @@ int attenuator_calibration_start_auto(
 	}
 	(void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
 
-	rc = mems_router_apply_named_route(&router, route_input, request->output,
+	rc = mems_router_apply_named_route(&router, request->route_input, request->output,
 					   false, NULL, NULL);
 	if (rc == 0) {
-		rc = mems_router_apply_named_route(&router, pd_input, pd_output,
+		rc = mems_router_apply_named_route(&router, request->pd_input, request->pd_output,
 						   false, NULL, NULL);
 	}
 	if (rc != 0) {
 		return rc;
 	}
-	rc = photodiode_set_configurable_window_duration(channel,
+	rc = photodiode_set_configurable_window_duration(request->channel,
 							 clamp_dwell(request->dwell_ms));
 	if (rc != 0) {
 		return rc;
 	}
-	if (!set_physical_pair(attenuator_index, 0U,
+	if (!set_physical_pair(request->attenuator_index, 0U,
 			       ATTENUATOR_DRIVE_MAX_MV, ATTENUATOR_DRIVE_MAX_MV)) {
 		return -EIO;
 	}
@@ -1521,15 +1406,13 @@ int attenuator_calibration_start_auto(
 	reset_locked(ATTEN_CAL_STATE_RUNNING);
 	cal.mode = ATTEN_CAL_MODE_TIB_AUTO;
 	cal.phase = ATTEN_CAL_PHASE_NONE;
-	cal.attenuator_index = attenuator_index;
+	cal.attenuator_index = request->attenuator_index;
 	cal.physical_index = 0U;
 	cal.dwell_ms = clamp_dwell(request->dwell_ms);
 	cal.persistent = request->persist;
 	cal.laser = request->laser;
-	cal.channel = channel;
+	cal.channel = request->channel;
 	cal.laser_percent = 0.0;
-	LOG_INF("atten cal using configured photodiode dark channel=%s dark_mv=%.6f",
-		photodiode_channel_names[channel], dark_mv);
 	atten_cal_emit_simple("start");
 	auto_start_next_physical_locked();
 	copy_status_locked(status);
