@@ -224,6 +224,15 @@ Every retained record is available through
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
 
+In retained records, `flux` is the measurement normalized by the cumulative
+bridge segment scale, and `flux_sigma` is the uncertainty of that normalized
+quantity as it is used by the firmware fit. For fit-eligible records this
+includes the photodiode mean uncertainty, bridge/segment-scale uncertainty, and
+the open-reference uncertainty. The Python helper keeps the firmware field names
+for `sweep_mv`, `other_mv`, `flux`, `flux_sigma`, `tx`, `b`, and `residual_db`.
+It also adds `fvoa_mv` and `other_fvoa_mv` as host-side plotting coordinates
+derived from DAC millivolts and the default FVOA drive gain.
+
 The retained record events are:
 
 | Event | Meaning |
@@ -245,6 +254,23 @@ and fits:
 ```text
 delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)
 ```
+
+## Notebook Inspection
+
+`tools/attenuator_calibration_lab.ipynb` is the lab-side inspection script for
+this flow. It has two intentionally separate paths:
+
+- the embedded path runs `atten_calibrate_auto`, retrieves
+  `atten_calibration_data`, and plots retained records, bridge events,
+  residuals, and the coefficient-derived 2D attenuation surface;
+- the manual exploration path directly calls `atten()`, sleeps for the
+  configured dwell, and reads `pd()` so SNR, saturation, bridge, and fit
+  thresholds can be changed quickly.
+
+The manual path supports both the firmware-style weighted fit and a SciPy
+least-squares exploratory fit. Its plots show propagated photodiode and
+normalization uncertainty; coefficients should be reviewed before any
+`set_atten_coeff(..., persist=True)` command is used.
 
 An accepted coefficient object contains:
 

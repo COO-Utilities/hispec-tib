@@ -1103,7 +1103,11 @@ ownership are documented in `attenuator_calibration.md`.
   `4=bridge_after`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
   `3=adc_error`, `4=invalid`. State codes are `0=inactive`, `1=running`,
   `2=complete`, `3=error`; mode codes are `0=none`, `1=tib_auto`. The Python
-  tool decodes chunks directly into a NumPy record array.
+  tool decodes chunks directly into a NumPy record array using the firmware
+  names `sweep_mv`, `other_mv`, `flux`, `flux_sigma`, `tx`, `b`, and
+  `residual_db`. It also adds convenience `fvoa_mv` and `other_fvoa_mv`
+  columns derived from DAC millivolts and the default FVOA drive gain; those
+  columns are host-side coordinates, not additional firmware measurements.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1212,9 +1216,10 @@ ownership are documented in `attenuator_calibration.md`.
     converts transmission to the attenuator model coordinate, and uses
     uncertainty-weighted double-precision linear regression for
     `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)`. The y
-    uncertainty comes from photodiode and bridge-scale propagation; the x
-    uncertainty is the fixed DAC uncertainty, initially 3 mV. Fit details
-    include point count, correlation, residual RMS/max in dB, fitted
+    uncertainty comes from photodiode mean uncertainty, bridge/segment-scale
+    propagation, and the open-reference uncertainty carried in `flux_sigma`;
+    the x uncertainty is the fixed DAC uncertainty, initially 3 mV. Fit
+    details include point count, correlation, residual RMS/max in dB, fitted
     transmission span, and FVOA-drive span.
 
 (pd)=
