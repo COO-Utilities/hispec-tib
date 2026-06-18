@@ -522,7 +522,6 @@ static bool append_record_locked(enum atten_cal_record_event event,
 	double normalized_signal = 0.0;
 	double normalized_sigma = 0.0;
 	double tx = 0.0;
-	double tx_sigma = 0.0;
 	double rel_var = 0.0;
 
 	if (out != NULL) {
@@ -548,14 +547,12 @@ static bool append_record_locked(enum atten_cal_record_event event,
 		rel_var = (measurement->sigma_y_mv / measurement->signal_mv) *
 			  (measurement->sigma_y_mv / measurement->signal_mv) +
 			  (scale_sigma / cal.segment_scale) *
-			  (scale_sigma / cal.segment_scale);
+			  (scale_sigma / cal.segment_scale) +
+			  (cal.open_sigma_mv / cal.open_signal_mv) *
+			  (cal.open_sigma_mv / cal.open_signal_mv);
 		normalized_sigma = fabs(normalized_signal) * sqrt(rel_var);
 		tx = measurement->signal_mv /
 		     (cal.open_signal_mv * cal.segment_scale);
-		rel_var += (cal.open_sigma_mv / cal.open_signal_mv) *
-			   (cal.open_sigma_mv / cal.open_signal_mv);
-		tx_sigma = fabs(tx) * sqrt(rel_var);
-		ARG_UNUSED(tx_sigma);
 	}
 
 	record->sweep_mv = (float)cal.sweep_mv;
