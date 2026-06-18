@@ -199,6 +199,7 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 	return 0;
 }
 
+//todo inline this single caller function
 static int pd_query_channels(const struct coo_cmd_request *cmd,
 			     bool include[PHOTODIODE_CHANNEL_COUNT])
 {
@@ -338,11 +339,15 @@ int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	bool rms_supplied = false;
 	bool reset_supplied = false;
 	int rc;
+	bool include[PHOTODIODE_CHANNEL_COUNT];
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) include[i] = false;
 
 	rc = pd_parse_channel_from_key_base(cmd, "pd/dark", &channel);
 	if (rc != 0) {
 		return coo_cmd_error(out, cmd, "pd/dark key must be pd/dark/yj or pd/dark/hk");
 	}
+	include[channel] = true;
+
 	if (coo_json_extract_optional_bool(cmd->payload, "persist",
 					   &persist, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid persist");
@@ -394,8 +399,8 @@ int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 			return coo_cmd_error(out, cmd,
 					     "dark measurement blocked by autolevel throughput monitor");
 		}
-		rc = photodiode_start_dark_capture(channel, duration_ms, persist,
-						   reset_lowest);
+		pd_auto_enable_selected(include);
+		rc = photodiode_start_dark_capture(channel, duration_ms, persist, reset_lowest);
 		if (rc != 0) {
 			return coo_cmd_error_rc(out, cmd, "dark capture start failed", rc);
 		}
