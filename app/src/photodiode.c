@@ -63,10 +63,7 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
     "hk",
 };
 
-static void photodiode_sample_timer_handler(struct k_timer *timer);
-
-static K_SEM_DEFINE(pd_sample_sem, 0, 1);
-static K_TIMER_DEFINE(pd_sample_timer, photodiode_sample_timer_handler, NULL);
+static K_TIMER_DEFINE(pd_sample_timer, NULL, NULL);
 
 /* Hardware docs specify ADS1115 +/-6.144 V full scale at ADC_GAIN_1_3, which
  * gives 187.5 uV per signed 16-bit count.
@@ -109,15 +106,6 @@ static const struct photodiode_wavelength_coefficient wavelength_coefficients[] 
     { 2329.81, 1.0 },
 };
 
-static void photodiode_sample_timer_handler(struct k_timer *timer)
-{
-    ARG_UNUSED(timer);
-
-    /* Timer expiry is interrupt context; ADS1115 I/O stays in the photodiode
-     * thread so ADC bus transactions never run in the ISR.
-     */
-    k_sem_give(&pd_sample_sem);
-}
 
 struct pd_window_runtime {
 	uint16_t target_samples;
@@ -223,13 +211,6 @@ static uint64_t pd_adc_over_us(uint64_t adc_elapsed_us)
     const uint64_t floor_us = pd_ads1115_adc_floor_us();
 
     return adc_elapsed_us > floor_us ? adc_elapsed_us - floor_us : 0U;
-}
-
-static void pd_timing_note_missed_intervals(uint32_t elapsed_samples)
-{
-    if (elapsed_samples > 1U) {
-        pd_timing_stats.missed_intervals += elapsed_samples - 1U;
-    }
 }
 
 static void pd_timing_note_adc(enum photodiode_channel channel, int rc)
@@ -1163,10 +1144,9 @@ void photodiode_thread(void *p1, void *p2, void *p3)
         uint32_t elapsed_samples;
         bool settings_refreshed;
 
-        k_sem_take(&pd_sample_sem, K_FOREVER);
-        loop_start_cycles = k_cycle_get_64();
-        elapsed_samples = k_timer_status_get(&pd_sample_timer);
-        pd_timing_note_missed_intervals(elapsed_samples);
+        elapsed_samples = k_timer_status_sync(&pd_sample_timer);
+    	loop_start_cycles = k_cycle_get_64();
+    	pd_timing_stats.missed_intervals += elapsed_samples > 1U ? elapsed_samples - 1U : 0U;
 
         settings_refreshed = app_settings_try_get_photodiode(&settings);
         pd_timing_note_settings(settings_refreshed);
