@@ -9,6 +9,12 @@
   <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$">
     <contentRoot DIR="$PROJECT_DIR$/../.." />
   </component>
+  <component name="CidrRootsConfiguration">
+    <excludeRoots>
+      <file path="$PROJECT_DIR$/../doc/_build_doxygen" />
+      <file path="$PROJECT_DIR$/../doc/_build_sphinx" />
+    </excludeRoots>
+  </component>
   <component name="WestSettings"><![CDATA[{
   "toolchainName": "Zephyr",
   "westExecutable": "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/scripts/clion-west-builddir-wrapper.sh",
