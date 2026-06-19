@@ -53,6 +53,9 @@ ATTENUATOR_DEFAULT_GAIN = 1.533
 ATTENUATOR_MODEL_ERF_SCALE = 4.0
 ATTENUATOR_ADC_CLIP_MV = 5000.0
 ATTENUATOR_CAL_SNR_USABLE = 5.0
+ATTEN_CAL_MIN_TX = 1.0e-10
+ATTEN_CAL_MAX_TX = 0.999999
+ATTEN_CAL_MIN_DB_ERR = 1.0e-6
 ATTENUATOR_FIT_MIN_SIGMA_DB = 0.5
 ATTENUATOR_CENSORED_SIGMA_DB = 3.0
 ATTENUATOR_UPPER_RANGE_MIN_ERROR_MV = 200.0
@@ -71,11 +74,11 @@ _LASER_TO_PD_CHANNEL = {
 }
 
 _THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
-_ATTEN_CAL_RECORD_BINARY = struct.Struct("<16fhH4B")
+_ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
 _ATTEN_CAL_CHUNK_HEADER = struct.Struct("<4s12B")
-_ATTEN_CAL_CHUNK_MAGIC = b"HAC3"
-_ATTEN_CAL_EVENTS = ("point", "initial_probe", "bridge_before", "bridge_probe", "bridge_after")
-_ATTEN_CAL_REASONS = ("ok", "saturated", "below_snr", "adc_error", "invalid")
+_ATTEN_CAL_CHUNK_MAGIC = b"HAC4"
+_ATTEN_CAL_EVENTS = ("point", "initial_probe", "reference", "bridge_before", "bridge_probe", "bridge_after")
+_ATTEN_CAL_CLASSIFICATIONS = ("ok", "saturated", "below_snr", "adc_error")
 _ATTEN_CAL_STATES = ("inactive", "running", "complete", "error")
 _ATTEN_CAL_MODES = ("none", "tib_auto")
 THROUGHPUT_DTYPE = np.dtype(
@@ -112,32 +115,33 @@ ATTEN_CAL_DTYPE = np.dtype(
         ("physical", "U8"),
         ("record", "u2"),
         ("event", "U16"),
-        ("reason", "U16"),
+        ("classification", "U16"),
         ("segment", "u1"),
         ("sweep_mv", "f8"),
         ("fvoa_mv", "f8"),
         ("other_mv", "f8"),
         ("other_fvoa_mv", "f8"),
         ("laser_pct", "f8"),
-        ("mean_mv", "f8"),
         ("signal_mv", "f8"),
-        ("rms_mv", "f8"),
-        ("sigma_y_mv", "f8"),
-        ("sigma_x_mv", "f8"),
-        ("snr", "f8"),
-        ("flux", "f8"),
-        ("flux_sigma", "f8"),
-        ("scale", "f8"),
-        ("scale_sigma", "f8"),
-        ("samples", "u2"),
-        ("max_raw", "i2"),
-        ("flags", "u1"),
-        ("usable", "?"),
-        ("saturated", "?"),
-        ("fit_eligible", "?"),
-        ("included", "?"),
+        ("signal_err_mv", "f8"),
+        ("max_mv", "f8"),
+    ]
+)
+ATTEN_CAL_DERIVED_DTYPE = np.dtype(
+    ATTEN_CAL_DTYPE.descr
+    + [
+        ("acq_snr", "f8"),
+        ("bridge_index", "i2"),
+        ("segment_scale", "f8"),
+        ("segment_scale_rel_var", "f8"),
+        ("scaled_signal_mv", "f8"),
+        ("scaled_signal_err_mv", "f8"),
         ("tx", "f8"),
-        ("b", "f8"),
+        ("tx_err", "f8"),
+        ("db", "f8"),
+        ("db_err", "f8"),
+        ("fit_candidate", "?"),
+        ("included", "?"),
         ("residual_db", "f8"),
     ]
 )
@@ -608,16 +612,24 @@ class AttenuatorCalibrationStatus(ResponseRepr):
     __str__ = __repr__
 
 
-_ATTEN_CAL_REASON_COLORS = {
+_ATTEN_CAL_CLASSIFICATION_COLORS = {
     "ok": "tab:blue",
     "saturated": "tab:red",
     "below_snr": "tab:orange",
     "adc_error": "tab:purple",
-    "invalid": "0.45",
+}
+_ATTEN_CAL_EVENT_COLORS = {
+    "point": "tab:blue",
+    "initial_probe": "0.55",
+    "reference": "tab:cyan",
+    "bridge_before": "tab:orange",
+    "bridge_probe": "tab:green",
+    "bridge_after": "tab:red",
 }
 _ATTEN_CAL_EVENT_MARKERS = {
     "point": "o",
     "initial_probe": "s",
+    "reference": "*",
     "bridge_before": "^",
     "bridge_probe": "P",
     "bridge_after": "v",
@@ -751,64 +763,29 @@ def _atten_cal_record_row(
     physical: str,
     record: int,
     event: str,
-    reason: str,
+    classification: str,
     segment: int,
     sweep_mv: float,
     other_mv: float,
     laser_pct: float,
-    mean_mv: float,
     signal_mv: float,
-    rms_mv: float,
-    sigma_y_mv: float,
-    sigma_x_mv: float,
-    snr: float,
-    flux: float,
-    flux_sigma: float,
-    scale: float,
-    scale_sigma: float,
-    samples: int,
-    max_raw: int,
-    flags: int,
-    tx: float = np.nan,
-    b: float = np.nan,
-    residual_db: float = np.nan,
+    signal_err_mv: float,
+    max_mv: float,
 ) -> tuple[Any, ...]:
-    flags = int(flags)
-    included = bool(flags & 0x08)
-    usable = bool(flags & 0x02)
-    saturated = reason == "saturated" or bool(flags & 0x01)
-    fit_eligible = bool(flags & 0x04)
     return (
         physical,
         int(record),
         event,
-        reason,
+        classification,
         int(segment),
         float(sweep_mv),
         float(sweep_mv) * ATTENUATOR_DEFAULT_GAIN,
         float(other_mv),
         float(other_mv) * ATTENUATOR_DEFAULT_GAIN,
         float(laser_pct),
-        float(mean_mv),
         float(signal_mv),
-        float(rms_mv),
-        float(sigma_y_mv),
-        float(sigma_x_mv),
-        float(snr),
-        float(flux),
-        float(flux_sigma),
-        float(scale),
-        float(scale_sigma),
-        int(samples),
-        int(max_raw),
-        flags,
-        usable,
-        saturated,
-        fit_eligible,
-        included,
-        float(tx),
-        float(b),
-        float(residual_db),
+        float(signal_err_mv),
+        float(max_mv),
     )
 
 
@@ -864,14 +841,31 @@ def _atten_tx_from_coeff(
     return _atten_model_tx_from_b(_atten_b_from_coeff(coeff, dac_mv))
 
 
+def _atten_relative_tx_from_coeff(
+    coeff: tuple[float, float, float],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    open_tx = float(_atten_tx_from_coeff(coeff, [0.0])[0])
+    tx = _atten_tx_from_coeff(coeff, dac_mv)
+    if not np.isfinite(open_tx) or open_tx <= 0.0:
+        return np.full_like(np.asarray(tx, dtype=float), np.nan, dtype=float)
+    return np.clip(tx / open_tx, 1.0e-300, 1.0)
+
+
+def _atten_db_from_coeff(
+    coeff: tuple[float, float, float],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    return _atten_db_from_tx(_atten_relative_tx_from_coeff(coeff, dac_mv))
+
+
 def _atten_pair_db_from_coeffs(
     dac1_coeff: tuple[float, float, float],
     dac2_coeff: tuple[float, float, float],
     dac1_mv: np.ndarray | Sequence[float],
     dac2_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
-    tx = _atten_tx_from_coeff(dac1_coeff, dac1_mv) * _atten_tx_from_coeff(dac2_coeff, dac2_mv)
-    return _atten_db_from_tx(tx)
+    return _atten_db_from_coeff(dac1_coeff, dac1_mv) + _atten_db_from_coeff(dac2_coeff, dac2_mv)
 
 
 def _atten_cal_pair_dac(records: np.recarray) -> tuple[np.ndarray, np.ndarray]:
@@ -889,15 +883,14 @@ def _atten_cal_pair_sample_db(
     dac2_coeff: tuple[float, float, float],
 ) -> np.ndarray:
     physical = np.asarray(records.physical).astype(str)
-    tx = np.asarray(records.tx, dtype=float)
     _, dac2 = _atten_cal_pair_dac(records)
     dac1, _ = _atten_cal_pair_dac(records)
-    companion_tx = np.where(
+    companion_db = np.where(
         physical == "dac1",
-        _atten_tx_from_coeff(dac2_coeff, dac2),
-        _atten_tx_from_coeff(dac1_coeff, dac1),
+        _atten_db_from_coeff(dac2_coeff, dac2),
+        _atten_db_from_coeff(dac1_coeff, dac1),
     )
-    return _atten_db_from_tx(tx * companion_tx)
+    return np.asarray(records.db, dtype=float) + companion_db
 
 
 def _atten_grid_datasheet_b_line() -> tuple[float, float]:
@@ -2300,79 +2293,217 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         records = self.records[np.asarray(self.records.physical).astype(str) == physical]
         return AttenuatorCalibrationDataset(records=records.view(np.recarray), meta=self.meta)
 
+    def _fit_coeff_for_physical(self, physical: str) -> tuple[float, float, float] | None:
+        for item in self.meta:
+            fits = item.get("fits") if isinstance(item, Mapping) else None
+            if not isinstance(fits, Mapping):
+                continue
+            fit = fits.get(physical)
+            if not isinstance(fit, AttenuatorFitMetrics) or not fit.valid:
+                continue
+            if fit.fvoa_50pct_mv is None or fit.slope_inv_fvoa_mv is None:
+                continue
+            return (float(fit.fvoa_50pct_mv), float(fit.slope_inv_fvoa_mv), ATTENUATOR_DEFAULT_GAIN)
+        return None
+
+    @staticmethod
+    def _accepted_bridges(rec: np.recarray) -> list[dict[str, Any]]:
+        events = np.asarray(rec.event).astype(str)
+        classifications = np.asarray(rec.classification).astype(str)
+        bridges: list[dict[str, Any]] = []
+        for after_pos in np.flatnonzero((events == "bridge_after") & (classifications == "ok")):
+            after = rec[after_pos]
+            before_pos: int | None = None
+            for i in range(after_pos - 1, -1, -1):
+                if (
+                    events[i] == "bridge_before"
+                    and classifications[i] == "ok"
+                    and int(rec[i].segment) + 1 == int(after.segment)
+                ):
+                    before_pos = i
+                    break
+            if before_pos is None:
+                continue
+            before = rec[before_pos]
+            if before.signal_mv <= 0.0 or after.signal_mv <= 0.0:
+                continue
+            ratio = float(after.signal_mv / before.signal_mv)
+            rel_var = float((before.signal_err_mv / before.signal_mv) ** 2 + (after.signal_err_mv / after.signal_mv) ** 2)
+            bridges.append(
+                {
+                    "bridge_index": len(bridges),
+                    "boundary_index": int(after.record),
+                    "before_record": int(before.record),
+                    "after_record": int(after.record),
+                    "from_segment": int(before.segment),
+                    "to_segment": int(after.segment),
+                    "sweep_mv": float(after.sweep_mv),
+                    "other_before_mv": float(before.other_mv),
+                    "other_after_mv": float(after.other_mv),
+                    "signal_before_mv": float(before.signal_mv),
+                    "signal_after_mv": float(after.signal_mv),
+                    "ratio": ratio,
+                    "ratio_rel_var": rel_var,
+                }
+            )
+        return bridges
+
+    def derived(
+        self,
+        *,
+        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+    ) -> np.recarray:
+        out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
+        for name in ATTEN_CAL_DTYPE.names:
+            out[name] = self.records[name]
+        for name in ATTEN_CAL_DERIVED_DTYPE.names:
+            if name in ATTEN_CAL_DTYPE.names:
+                continue
+            if out.dtype[name].kind == "b":
+                out[name] = False
+            elif out.dtype[name].kind in "iu":
+                out[name] = -1
+            else:
+                out[name] = np.nan
+
+        coeffs = {
+            "dac1": _atten_coeff_tuple("dac1", dac1) if dac1 is not None else self._fit_coeff_for_physical("dac1"),
+            "dac2": _atten_coeff_tuple("dac2", dac2) if dac2 is not None else self._fit_coeff_for_physical("dac2"),
+        }
+
+        for physical in ("dac1", "dac2"):
+            mask = np.asarray(out["physical"]).astype(str) == physical
+            if not np.any(mask):
+                continue
+            rec = out[mask].view(np.recarray)
+            ok = np.asarray(rec.classification).astype(str) == "ok"
+            signal = np.asarray(rec.signal_mv, dtype=float)
+            signal_err = np.asarray(rec.signal_err_mv, dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rec.acq_snr[:] = signal / signal_err
+
+            ref_candidates = np.flatnonzero((np.asarray(rec.event).astype(str) == "reference") & ok & (signal > 0.0) & (signal_err > 0.0))
+            if len(ref_candidates) == 0:
+                out[mask] = rec
+                continue
+            ref = rec[ref_candidates[0]]
+            open_signal = float(ref.signal_mv)
+            open_err = float(ref.signal_err_mv)
+            open_rel_var = (open_err / open_signal) ** 2
+            segment_scale: dict[int, float] = {0: 1.0}
+            segment_rel_var: dict[int, float] = {0: 0.0}
+            for bridge in self._accepted_bridges(rec):
+                from_segment = int(bridge["from_segment"])
+                to_segment = int(bridge["to_segment"])
+                if from_segment not in segment_scale:
+                    continue
+                segment_scale[to_segment] = segment_scale[from_segment] * float(bridge["ratio"])
+                segment_rel_var[to_segment] = segment_rel_var[from_segment] + float(bridge["ratio_rel_var"])
+                rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
+
+            for i, row in enumerate(rec):
+                segment = int(row.segment)
+                if str(row.classification) != "ok" or segment not in segment_scale:
+                    continue
+                if not (row.signal_mv > 0.0 and row.signal_err_mv > 0.0):
+                    continue
+                scale = segment_scale[segment]
+                scale_rel_var = segment_rel_var[segment]
+                scaled_signal = float(row.signal_mv) / scale
+                scaled_rel_var = (float(row.signal_err_mv) / float(row.signal_mv)) ** 2 + scale_rel_var
+                scaled_err = abs(scaled_signal) * math.sqrt(max(scaled_rel_var, 0.0))
+                tx = scaled_signal / open_signal
+                tx_rel_var = scaled_rel_var + open_rel_var
+                tx_err = abs(tx) * math.sqrt(max(tx_rel_var, 0.0))
+                db = float(_atten_db_from_tx([tx])[0])
+                db_err = (10.0 / math.log(10.0)) * math.sqrt(max(tx_rel_var, 0.0))
+                rec.segment_scale[i] = scale
+                rec.segment_scale_rel_var[i] = scale_rel_var
+                rec.scaled_signal_mv[i] = scaled_signal
+                rec.scaled_signal_err_mv[i] = scaled_err
+                rec.tx[i] = tx
+                rec.tx_err[i] = tx_err
+                rec.db[i] = db
+                rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
+                rec.fit_candidate[i] = (
+                    str(row.event) in ("point", "bridge_before")
+                    and ATTEN_CAL_MIN_TX < tx < ATTEN_CAL_MAX_TX
+                )
+            coeff = coeffs[physical]
+            if coeff is not None:
+                model_db = _atten_db_from_coeff(coeff, rec.sweep_mv)
+                rec.residual_db[:] = model_db - rec.db
+                rec.included[:] = rec.fit_candidate & np.isfinite(rec.residual_db)
+            out[mask] = rec
+        return out.view(np.recarray)
+
     def bridge_table(self):
         try:
             import pandas as pd
         except ImportError as exc:
             raise HispecFibError("pandas is not installed") from exc
-        bridge_events = ("bridge_before", "bridge_probe", "bridge_after")
-        mask = np.isin(np.asarray(self.records.event).astype(str), bridge_events)
+        rows: list[dict[str, Any]] = []
+        for physical in ("dac1", "dac2"):
+            rec = self.physical(physical).records
+            for row in self._accepted_bridges(rec):
+                item = dict(row)
+                item["physical"] = physical
+                rows.append(item)
         columns = (
             "physical",
-            "record",
-            "event",
-            "reason",
-            "segment",
+            "bridge_index",
+            "boundary_index",
+            "before_record",
+            "after_record",
+            "from_segment",
+            "to_segment",
             "sweep_mv",
-            "fvoa_mv",
-            "other_mv",
-            "other_fvoa_mv",
-            "signal_mv",
-            "sigma_y_mv",
-            "snr",
-            "flux",
-            "flux_sigma",
-            "scale",
-            "scale_sigma",
-            "tx",
-            "usable",
-            "fit_eligible",
-            "included",
+            "other_before_mv",
+            "other_after_mv",
+            "signal_before_mv",
+            "signal_after_mv",
+            "ratio",
+            "ratio_rel_var",
         )
-        return pd.DataFrame.from_records(self.records[mask], columns=columns)
+        return pd.DataFrame(rows, columns=columns)
 
     def plot_physical(
         self,
         physical: Literal["dac1", "dac2"] = "dac1",
         *,
         x_axis: Literal["fvoa_mv", "sweep_mv"] = "fvoa_mv",
-        figsize: tuple[float, float] = (10.0, 8.0),
+        figsize: tuple[float, float] = (10.0, 10.0),
     ):
         import matplotlib.pyplot as plt
 
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
         x_axis = _require_choice("x_axis", x_axis, ("fvoa_mv", "sweep_mv"))  # type: ignore[assignment]
-        rec = self.physical(physical).records
+        rec = self.physical(physical).derived()
         if len(rec) == 0:
             raise HispecFibError(f"no retained records for {physical}")
 
         x = np.asarray(rec[x_axis], dtype=float)
         signal = np.asarray(rec.signal_mv, dtype=float)
-        sigma_signal = np.asarray(rec.sigma_y_mv, dtype=float)
-        tx = np.asarray(rec.tx, dtype=float)
-        flux = np.asarray(rec.flux, dtype=float)
-        flux_sigma = np.asarray(rec.flux_sigma, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            rel_sigma = flux_sigma / flux
-            attenuation_db = _atten_db_from_tx(tx)
-            attenuation_sigma_db = (10.0 / math.log(10.0)) * rel_sigma
-        finite_signal_err = np.isfinite(x) & np.isfinite(signal) & np.isfinite(sigma_signal) & (sigma_signal > 0.0)
-        finite_atten_err = (
-            np.isfinite(x)
-            & np.isfinite(attenuation_db)
-            & np.isfinite(attenuation_sigma_db)
-            & (attenuation_sigma_db > 0.0)
-        )
+        signal_err = np.asarray(rec.signal_err_mv, dtype=float)
+        scaled_signal = np.asarray(rec.scaled_signal_mv, dtype=float)
+        scaled_signal_err = np.asarray(rec.scaled_signal_err_mv, dtype=float)
+        attenuation_db = np.asarray(rec.db, dtype=float)
+        attenuation_sigma_db = np.asarray(rec.db_err, dtype=float)
+        residual_db = np.asarray(rec.residual_db, dtype=float)
+        finite_signal_err = np.isfinite(x) & np.isfinite(signal) & np.isfinite(signal_err) & (signal_err > 0.0)
+        finite_scaled_err = np.isfinite(x) & np.isfinite(scaled_signal) & np.isfinite(scaled_signal_err) & (scaled_signal_err > 0.0)
+        finite_atten_err = np.isfinite(x) & np.isfinite(attenuation_db) & np.isfinite(attenuation_sigma_db) & (attenuation_sigma_db > 0.0)
 
-        fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True, constrained_layout=True)
+        fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=True, constrained_layout=True)
         fig.suptitle(f"{physical} retained attenuator calibration records")
 
-        axes[0].set_title("photodiode signal with propagated mean uncertainty")
+        axes[0].set_title("raw dark-subtracted photodiode signal")
         if np.any(finite_signal_err):
             axes[0].errorbar(
                 x[finite_signal_err],
                 signal[finite_signal_err],
-                yerr=sigma_signal[finite_signal_err],
+                yerr=signal_err[finite_signal_err],
                 fmt="none",
                 ecolor="0.60",
                 elinewidth=0.55,
@@ -2381,9 +2512,23 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             )
         axes[0].set_ylabel("signal_mv")
 
-        axes[1].set_title("normalized transmission converted to attenuation")
-        if np.any(finite_atten_err):
+        axes[1].set_title("bridge-scaled signal")
+        if np.any(finite_scaled_err):
             axes[1].errorbar(
+                x[finite_scaled_err],
+                scaled_signal[finite_scaled_err],
+                yerr=scaled_signal_err[finite_scaled_err],
+                fmt="none",
+                ecolor="0.60",
+                elinewidth=0.55,
+                capsize=0,
+                zorder=1,
+            )
+        axes[1].set_ylabel("scaled_signal_mv")
+
+        axes[2].set_title("attenuation from derived normalized transmission")
+        if np.any(finite_atten_err):
+            axes[2].errorbar(
                 x[finite_atten_err],
                 attenuation_db[finite_atten_err],
                 yerr=attenuation_sigma_db[finite_atten_err],
@@ -2393,23 +2538,26 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 capsize=0,
                 zorder=1,
             )
-        axes[1].set_ylabel("-10 log10(tx)")
+        axes[2].set_ylabel("attenuation_db")
 
-        axes[2].set_title("firmware fit residuals for included records")
-        axes[2].axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
-        axes[2].set_ylabel("residual_db")
-        axes[2].set_xlabel("FVOA drive (mV)" if x_axis == "fvoa_mv" else "DAC drive (mV)")
+        axes[3].set_title("fit residuals for derived fit candidates")
+        axes[3].axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
+        axes[3].set_ylabel("residual_db")
+        axes[3].set_xlabel("FVOA drive (mV)" if x_axis == "fvoa_mv" else "DAC drive (mV)")
 
         event_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.event).astype(str)))
-        reason_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.reason).astype(str)))
+        classification_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.classification).astype(str)))
         for event in event_values:
             marker = _ATTEN_CAL_EVENT_MARKERS.get(event, "o")
             event_mask = np.asarray(rec.event).astype(str) == event
-            for reason in reason_values:
-                mask = event_mask & (np.asarray(rec.reason).astype(str) == reason)
+            for classification in classification_values:
+                mask = event_mask & (np.asarray(rec.classification).astype(str) == classification)
                 if not np.any(mask):
                     continue
-                color = _ATTEN_CAL_REASON_COLORS.get(reason, "0.35")
+                color = _ATTEN_CAL_EVENT_COLORS.get(
+                    event, _ATTEN_CAL_CLASSIFICATION_COLORS.get(classification, "0.35")
+                )
+                alpha = 0.85 if classification == "ok" else 0.62
                 included = mask & np.asarray(rec.included, dtype=bool)
                 other = mask & ~np.asarray(rec.included, dtype=bool)
                 if np.any(other):
@@ -2419,17 +2567,26 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         marker=marker,
                         s=28,
                         color=color,
-                        alpha=0.75,
-                        label=f"{event}/{reason}",
+                        alpha=alpha,
+                        label=f"{event}/{classification}",
                         zorder=2,
                     )
                     axes[1].scatter(
+                        x[other],
+                        scaled_signal[other],
+                        marker=marker,
+                        s=28,
+                        color=color,
+                        alpha=alpha,
+                        zorder=2,
+                    )
+                    axes[2].scatter(
                         x[other],
                         attenuation_db[other],
                         marker=marker,
                         s=28,
                         color=color,
-                        alpha=0.75,
+                        alpha=alpha,
                         zorder=2,
                     )
                 if np.any(included):
@@ -2441,10 +2598,20 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         facecolors=color,
                         edgecolors="black",
                         linewidths=0.8,
-                        label=f"{event}/{reason} included",
+                        label=f"{event}/{classification} included",
                         zorder=3,
                     )
                     axes[1].scatter(
+                        x[included],
+                        scaled_signal[included],
+                        marker=marker,
+                        s=48,
+                        facecolors=color,
+                        edgecolors="black",
+                        linewidths=0.8,
+                        zorder=3,
+                    )
+                    axes[2].scatter(
                         x[included],
                         attenuation_db[included],
                         marker=marker,
@@ -2455,12 +2622,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         zorder=3,
                     )
 
-        residual = np.asarray(rec.residual_db, dtype=float)
-        included = np.asarray(rec.included, dtype=bool) & np.isfinite(x) & np.isfinite(residual)
+        included = np.asarray(rec.included, dtype=bool) & np.isfinite(x) & np.isfinite(residual_db)
         if np.any(included):
-            axes[2].scatter(
+            axes[3].scatter(
                 x[included],
-                residual[included],
+                residual_db[included],
                 s=38,
                 color="black",
                 alpha=0.85,
@@ -2469,11 +2635,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         for segment in np.unique(np.asarray(rec.segment, dtype=int)):
             mask = np.asarray(rec.segment, dtype=int) == segment
             if np.any(mask):
-                axes[2].text(
+                axes[3].text(
                     float(np.nanmedian(x[mask])),
                     0.95,
                     f"seg {segment}",
-                    transform=axes[2].get_xaxis_transform(),
+                    transform=axes[3].get_xaxis_transform(),
                     ha="center",
                     va="top",
                     fontsize=8,
@@ -2538,21 +2704,19 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         fig.colorbar(mesh, ax=ax, label="pair attenuation (dB)")
 
         if overlay_records and len(self.records):
-            rec = self.records
+            rec = self.derived(dac1=dac1_coeff, dac2=dac2_coeff)
             sample_dac1, sample_dac2 = _atten_cal_pair_dac(rec)
             sample_x = sample_dac1 * dac1_coeff[2] if axis == "fvoa_mv" else sample_dac1
             sample_y = sample_dac2 * dac2_coeff[2] if axis == "fvoa_mv" else sample_dac2
             sample_db = _atten_cal_pair_sample_db(rec, dac1_coeff, dac2_coeff)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                sample_sigma_db = (10.0 / math.log(10.0)) * (
-                    np.asarray(rec.flux_sigma, dtype=float) / np.asarray(rec.flux, dtype=float)
-                )
+            sample_sigma_db = np.asarray(rec.db_err, dtype=float)
             sizes = np.clip(24.0 + 5.0 * np.nan_to_num(sample_sigma_db, nan=0.0, posinf=20.0), 24.0, 130.0)
             finite = (
                 np.isfinite(sample_x)
                 & np.isfinite(sample_y)
                 & np.isfinite(sample_db)
-                & np.asarray(rec.usable, dtype=bool)
+                & np.isfinite(sample_sigma_db)
+                & (np.asarray(rec.classification).astype(str) == "ok")
                 & (np.asarray(rec.tx, dtype=float) > 0.0)
                 & (sample_x >= 0.0)
                 & (sample_x <= x_max)
@@ -2596,7 +2760,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         label=f"{event} included",
                     )
             ax.legend(loc="best", fontsize="x-small", ncol=2)
-            ax.set_title("coefficient surface with auto-calibration records; marker area follows tx uncertainty")
+            ax.set_title("coefficient surface with auto-calibration records; marker area follows dB uncertainty")
         else:
             ax.set_title("coefficient-only attenuation surface")
 
@@ -3879,7 +4043,7 @@ class HispecFibPcb:
             overflow,
             record_size,
         ) = _ATTEN_CAL_CHUNK_HEADER.unpack_from(payload)
-        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 1:
+        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 3:
             raise HispecFibError("unsupported attenuator calibration record chunk")
         if physical_index >= 2:
             raise HispecFibError("invalid physical attenuator in record chunk")
@@ -3895,35 +4059,25 @@ class HispecFibPcb:
         records_offset = _ATTEN_CAL_CHUNK_HEADER.size
         for i in range(count):
             values = _ATTEN_CAL_RECORD_BINARY.unpack_from(payload, records_offset + i * record_size)
-            flags = int(values[21])
-            event_id = int(values[18])
-            reason_id = int(values[19])
+            event_id = int(values[6])
+            classification_id = int(values[7])
             rows.append(
                 _atten_cal_record_row(
                     physical=physical_name,
                     record=start_index + i,
                     event=_ATTEN_CAL_EVENTS[event_id] if event_id < len(_ATTEN_CAL_EVENTS) else "unknown",
-                    reason=_ATTEN_CAL_REASONS[reason_id] if reason_id < len(_ATTEN_CAL_REASONS) else "invalid",
-                    segment=int(values[20]),
+                    classification=(
+                        _ATTEN_CAL_CLASSIFICATIONS[classification_id]
+                        if classification_id < len(_ATTEN_CAL_CLASSIFICATIONS)
+                        else "unknown"
+                    ),
+                    segment=int(values[8]),
                     sweep_mv=float(values[0]),
                     other_mv=float(values[1]),
                     laser_pct=float(values[2]),
-                    mean_mv=float(values[3]),
-                    signal_mv=float(values[4]),
-                    rms_mv=float(values[5]),
-                    sigma_y_mv=float(values[6]),
-                    sigma_x_mv=float(values[7]),
-                    snr=float(values[8]),
-                    flux=float(values[9]),
-                    flux_sigma=float(values[10]),
-                    scale=float(values[11]),
-                    scale_sigma=float(values[12]),
-                    samples=int(values[17]),
-                    max_raw=int(values[16]),
-                    flags=flags,
-                    tx=float(values[13]),
-                    b=float(values[14]),
-                    residual_db=float(values[15]),
+                    signal_mv=float(values[3]),
+                    signal_err_mv=float(values[4]),
+                    max_mv=float(values[5]),
                 )
             )
 

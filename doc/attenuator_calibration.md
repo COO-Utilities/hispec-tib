@@ -110,6 +110,27 @@ last configurable window without resetting the current rolling window.
 Calibration normally ignores the last window because it represents a prior
 optical level.
 
+## Usable-Band Model
+
+The acquisition logic treats photodiode readings as a band:
+
+- `saturated`: the photodiode mean is pinned at the ADC rail, so the optical
+  signal is too bright;
+- `ok`: the dark-subtracted mean is positive and has enough SNR;
+- `below_snr`: the optical signal is too dim for a useful fitted point.
+
+These are not interchangeable failure modes. A saturated DUT sweep sample is
+retained as a diagnostic record and the sweep continues toward more DUT
+attenuation. A below-SNR DUT sweep sample marks the dim edge of the current
+segment and starts bridge normalization from the latest retained usable anchor.
+
+For the companion FVOA the DAC direction must be read carefully: lower companion
+DAC opens the companion and raises photodiode signal; higher companion DAC
+attenuates more. Companion searches maintain a low-DAC saturated side, a
+more-attenuated high-DAC side, and the lowest usable companion DAC candidate.
+That candidate is the highest non-saturated photodiode signal found by the
+bounded search.
+
 ## Per-Physical Acquisition
 
 Each logical attenuator has two physical FVOAs. Calibration runs the same
@@ -127,11 +148,14 @@ flowchart TD
   Reference --> ReferenceOK{reference usable}
   ReferenceOK -- no --> Error
   ReferenceOK -- yes --> Sweep[binary sweep DUT toward attenuation]
-  Sweep --> PointOK{point usable}
-  PointOK -- yes --> MoreRange{DUT near max drive}
+  Sweep --> Band{photodiode band}
+  Band -- saturated --> Bright[retain diagnostic; sweep toward more DUT attenuation]
+  Bright --> MoreRange{DUT near max drive}
+  Band -- ok --> Usable[retain fit candidate; update latest anchor]
+  Usable --> MoreRange
   MoreRange -- yes --> FinishPhysical
   MoreRange -- no --> Sweep
-  PointOK -- no --> Bracket{transition bracketed}
+  Band -- below_snr --> Bracket{dim edge bracketed}
   Bracket -- no --> FinishPhysical
   Bracket -- yes --> Bridge[bridge normalize]
   Bridge --> Sweep
@@ -145,10 +169,13 @@ at maximum attenuation. If even that clips the ADC, firmware retries with lower
 laser output levels. The companion binary search then finds the most open
 companion setting that is still non-saturated.
 
-The DUT sweep is binary. A usable point extends the low side of the sweep; an
-unusable point narrows the high side. When the sweep brackets the useful region
-before the DUT reaches full drive, firmware performs bridge normalization
-instead of discarding the remaining dynamic range.
+The DUT sweep is binary and classification-aware. A usable point updates the latest
+bridge anchor and extends the lower side of the useful sweep. A saturated point
+is too bright, so it also advances the search toward more DUT attenuation but is
+not a fit candidate and does not become a bridge trigger. A below-SNR point narrows
+the dim side of the sweep. When that dim edge is bracketed before the DUT
+reaches full drive, firmware performs bridge normalization instead of discarding
+the remaining dynamic range.
 
 ## Bridge Normalization
 
@@ -162,9 +189,10 @@ sequenceDiagram
   Cal->>DUT: hold last usable DUT drive
   Cal->>Other: keep current companion drive
   PD-->>Cal: bridge_before signal
-  Cal->>Other: binary-open companion until non-saturated
+  Cal->>Other: search lower companion DAC for lowest usable point
   PD-->>Cal: bridge_probe records
-  PD-->>Cal: bridge_after signal
+  Cal->>Other: confirm usable companion candidate
+  PD-->>Cal: bridge_after signal if accepted
   Cal->>Cal: ratio = after / before
   Cal->>Cal: segment_scale *= ratio
   Cal->>Cal: add bridge variance to scale variance
@@ -175,6 +203,13 @@ Because the DUT FVOA does not move during the bridge, the before/after
 photodiode ratio measures only the change in companion transmission. Later DUT
 measurements are divided by the cumulative segment scale so all segments share
 the open-reference normalization.
+
+If a bridge confirmation is saturated or below-SNR, that result is folded back
+into the companion bracket and retained as a `bridge_probe`; it is not by itself
+evidence that the swept-DUT anchor is bad. Swept-DUT backoff is reserved for
+cases where `bridge_before` is unusable, the companion search cannot find a
+useful candidate with real headroom, or bridge ratio validation remains
+impossible after bounded probing.
 
 ## Tick State
 
@@ -203,13 +238,13 @@ flowchart TD
   Window[photodiode configurable window] --> Measurement[classify measurement]
   Measurement --> Record[append retained record]
   Record --> Telemetry[emit best-effort telemetry]
-  Record --> FitEligible{usable and tx in fit domain}
+  Record --> Derive[derive bridge scales, scaled signal, tx, dB]
+  Derive --> FitEligible{classification ok and tx in fit domain}
   FitEligible -- yes --> FitInput[fit candidate]
   FitEligible -- no --> RetainedOnly[diagnostic record only]
 
-  FitInput --> Convert[tx to erf-delta]
-  Convert --> WLS[weighted linear fit]
-  WLS --> Metrics[residuals, correlation, span]
+  FitInput --> Optimize[weighted dB-space model fit]
+  Optimize --> Metrics[residuals, correlation, span]
   Metrics --> Accepted{both physical fits accepted}
   Accepted -- no --> CompleteFailed[complete with fit failed]
   Accepted -- yes --> Apply[apply runtime coefficients]
@@ -220,39 +255,62 @@ flowchart TD
 ```
 
 Every retained record is available through
-`atten/calibrate/records/<dac1|dac2>[/<start>]` as a bounded binary HAC3 chunk.
+`atten/calibrate/records/<dac1|dac2>[/<start>]` as a bounded binary HAC4 chunk.
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
 
-In retained records, `flux` is the measurement normalized by the cumulative
-bridge segment scale, and `flux_sigma` is the uncertainty of that normalized
-quantity as it is used by the firmware fit. For fit-eligible records this
-includes the photodiode mean uncertainty, bridge/segment-scale uncertainty, and
-the open-reference uncertainty. The Python helper keeps the firmware field names
-for `sweep_mv`, `other_mv`, `flux`, `flux_sigma`, `tx`, `b`, and `residual_db`.
-It also adds `fvoa_mv` and `other_fvoa_mv` as host-side plotting coordinates
-derived from DAC millivolts and the default FVOA drive gain.
+Saturation classification is based on the photodiode window mean reaching the
+ADC rail. Window extrema are diagnostic only, since electrical and optical noise
+can produce isolated rail excursions without pinning the diode. If a bridge
+cannot be completed from the held DUT anchor after bounded companion probing,
+the acquisition backs off to an earlier usable sweep point in the current
+segment and overwrites the marginal retained records. The backoff is bounded by
+the firmware constants for ADC-range fraction and by at most half of the current
+segment's usable sweep points; each backoff emits live telemetry/logging so the
+operator can see the discarded boundary attempts.
+
+Retained records store raw acquisition facts only: `sweep_mv`, `other_mv`,
+`laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`, `event`,
+`classification`, and `segment`. The Python helper keeps those firmware names
+and adds `fvoa_mv` and `other_fvoa_mv` as host-side plotting coordinates
+derived from DAC millivolts and the default FVOA drive gain. Bridge scale,
+scaled signal, relative transmission, dB attenuation, fit inclusion, and
+residuals are computed from the raw records and accepted bridge boundaries
+after acquisition.
 
 The retained record events are:
 
 | Event | Meaning |
 | --- | --- |
-| `point` | open reference or ordinary DUT sweep point |
+| `point` | ordinary DUT sweep point |
 | `initial_probe` | companion-search point before the open reference |
-| `bridge_before` | low-SNR edge before opening the companion |
-| `bridge_probe` | companion binary-search point during bridge |
+| `reference` | open reference that normalizes relative transmission |
+| `bridge_before` | boundary repeat before opening the companion |
+| `bridge_probe` | companion search point or failed bridge confirmation |
 | `bridge_after` | accepted post-bridge normalization point |
 
-The fit converts normalized transmission to the attenuator model coordinate:
+The derived relative transmission for a fit point is:
 
 ```text
-delta = erfinv(erf(4) - 2 * erf(4) * tx)
+tx = signal_mv / (reference_signal_mv * segment_scale[segment])
 ```
 
-and fits:
+with relative variance:
 
 ```text
-delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)
+(sigma_tx / tx)^2 =
+    (signal_err_mv / signal_mv)^2
+  + (reference_signal_err_mv / reference_signal_mv)^2
+  + (sigma_segment_scale / segment_scale)^2
+```
+
+The fit minimizes uncertainty-weighted residuals in attenuator model dB output
+space:
+
+```text
+measured_db = -10 * log10(tx)
+residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv, gain)
+         - measured_db
 ```
 
 ## Notebook Inspection

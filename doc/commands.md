@@ -1092,22 +1092,23 @@ ownership are documented in `attenuator_calibration.md`.
   ```
   `start` is optional and defaults to `0`. The response is not JSON and is
   MQTT-only because the serial response printer is string-oriented. The first
-  16 bytes are `<4s 12B>`: magic `HAC3`, version, physical index, start,
+  16 bytes are `<4s 12B>`: magic `HAC4`, version, physical index, start,
   count, total, next, state, mode, fit-valid, fit-accepted, overflow, and
-  record-size. `next=255` means the chunk is complete. Each following record
-  has little-endian layout `<16f h H 4B>`: `sweep_mv`, `other_mv`, `laser_pct`,
-  `mean_mv`, `signal_mv`, `rms_mv`, `sigma_y_mv`, `sigma_x_mv`, `snr`,
-  `flux`, `flux_sigma`, `scale`, `scale_sigma`, `tx`, `b`, `residual_db`,
-  `max_raw`, `samples`, `event`, `reason`, `segment`, and `flags`. Event codes
-  are `0=point`, `1=initial_probe`, `2=bridge_before`, `3=bridge_probe`,
-  `4=bridge_after`; reason codes are `0=ok`, `1=saturated`, `2=below_snr`,
-  `3=adc_error`, `4=invalid`. State codes are `0=inactive`, `1=running`,
-  `2=complete`, `3=error`; mode codes are `0=none`, `1=tib_auto`. The Python
-  tool decodes chunks directly into a NumPy record array using the firmware
-  names `sweep_mv`, `other_mv`, `flux`, `flux_sigma`, `tx`, `b`, and
-  `residual_db`. It also adds convenience `fvoa_mv` and `other_fvoa_mv`
-  columns derived from DAC millivolts and the default FVOA drive gain; those
-  columns are host-side coordinates, not additional firmware measurements.
+  record-size. `next=255` means the chunk is complete. Version 3 chunks use
+  record size 27 bytes. Each following record has little-endian layout
+  `<6f 3B>`: `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`,
+  `signal_err_mv`, `max_mv`, `event`, `classification`, and `segment`.
+  Event codes are `0=point`, `1=initial_probe`, `2=reference`,
+  `3=bridge_before`, `4=bridge_probe`, `5=bridge_after`; classification codes
+  are `0=ok`, `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
+  `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
+  `0=none`, `1=tib_auto`. The Python tool decodes chunks directly into a NumPy
+  raw record array with those firmware names. It also adds convenience
+  `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
+  default FVOA drive gain; those columns are host-side coordinates, not
+  additional firmware measurements. Bridge scale, scaled signal, transmission,
+  dB attenuation, fit inclusion, and residuals are derived from the raw records
+  and the accepted bridge boundaries after acquisition.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
   ```json
@@ -1139,34 +1140,22 @@ ownership are documented in `attenuator_calibration.md`.
     "attenuator": 2,
     "complete_pct": 10,
     "record_count": 4,
-    "i": 4,
-    "reason": "ok",
     "segment": 0,
     "sweep_mv": 1983.0,
     "other_mv": 1764.0,
     "laser_pct": 100.0,
-    "mean_mv": 123.4,
+    "i": 4,
+    "classification": "ok",
     "signal_mv": 124.0,
-    "rms_mv": 0.2,
-    "sigma_y_mv": 0.1,
-    "sigma_x_mv": 3.0,
-    "snr": 1240.0,
-    "samples": 15,
-    "max_raw": 1024,
-    "saturated": false,
-    "usable": true,
-    "fit_eligible": true,
-    "scale": 1.0,
-    "scale_sigma": 0.0,
-    "relative_tx": 0.5,
-    "relative_signal_mv": 124.0,
-    "relative_signal_sigma_mv": 0.1
+    "signal_err_mv": 0.1,
+    "max_mv": 124.6
   }
   ```
   Other `event` values include `start`, `physical_start`, `initial_probe_set`,
   `point_set`, `bridge_before_set`, `bridge_probe_set`, `bridge_after_set`,
-  `initial_probe`, `bridge_before`, `bridge_probe`, `bridge_after`, `fit`,
-  `complete`, `stop`, and `error`. Fit input and residual diagnostics are
+  `initial_probe`, `reference`, `bridge_before`, `bridge_probe`, `bridge_after`,
+  `bridge_backoff`, `fit`, `complete`, `stop`, and `error`. Fit input and
+  residual diagnostics are
   retained in calibration state and queried through `atten/calibrate/records`
   instead of being emitted as an end-of-run telemetry burst.
 
@@ -1196,31 +1185,33 @@ ownership are documented in `attenuator_calibration.md`.
     uncertainty. Saturation here means actual ADC clipping near
     5 V, not a merely high photodiode voltage with electrical headroom.
     Low-but-clean points are retained and may be fit inputs. Saturated,
-    below-SNR, ADC-error, and invalid measurements are retained as records but
-    are not fit inputs.
+    below-SNR, and ADC-error measurements are retained as records but are not
+    fit inputs.
   - Automatic calibration does not use a voltage schedule or datasheet limits
     to choose calibration points. For each physical FVOA it binary-searches the
-    companion FVOA to find a non-saturated open reference, binary-sweeps the
-    DUT toward attenuation until the next point is below SNR or clipped, then
-    bridge-normalizes by holding the DUT and opening the companion FVOA. The
-    bridge before/after ratio updates the flux scale and its uncertainty.
+    companion FVOA to find the lowest usable companion DAC, binary-sweeps the
+    DUT toward attenuation, skips saturated bright-side sweep records as
+    diagnostics, and bridge-normalizes when the sweep reaches the below-SNR dim
+    edge. Bridge normalization holds the DUT and opens the companion FVOA; the
+    bridge before/after ratio updates the segment scale and its uncertainty.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
-    flagged as fit-eligible by saturation/SNR rules. External analysis can
+    derived as fit candidates by classification and transmission-domain rules. External analysis can
     inspect all retained records regardless of firmware fit success.
   - Automatic calibration uses the sampler-owned internal photodiode
     configurable window. It does not start a separate photodiode measurement or
     a new calibration thread; the throughput monitor thread advances the state
     machine.
-  - The automatic fit normalizes flux to the best retained open-end reference,
-    converts transmission to the attenuator model coordinate, and uses
-    uncertainty-weighted double-precision linear regression for
-    `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)`. The y
-    uncertainty comes from photodiode mean uncertainty, bridge/segment-scale
-    propagation, and the open-reference uncertainty carried in `flux_sigma`;
-    the x uncertainty is the fixed DAC uncertainty, initially 3 mV. Fit
-    details include point count, correlation, residual RMS/max in dB, fitted
-    transmission span, and FVOA-drive span.
+  - The automatic fit derives all normalized quantities from raw records after
+    acquisition. It divides each retained signal by the open reference and the
+    cumulative bridge segment scale, converts that relative transmission to dB,
+    and optimizes the attenuator model directly in dB output space while
+    keeping the coefficient names and meanings `fvoa_50pct_mv` and
+    `slope_inv_fvoa_mv`. The y uncertainty comes from photodiode mean
+    uncertainty, bridge/segment-scale propagation, and the open-reference
+    uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
+    3 mV. Fit details include point count, correlation, residual RMS/max in dB,
+    fitted transmission span, and FVOA-drive span.
 
 (pd)=
 ### `pd`

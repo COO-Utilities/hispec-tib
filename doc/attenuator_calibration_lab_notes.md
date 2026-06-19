@@ -30,7 +30,7 @@ Each FVOA is driven from approximately 0-5 V by an op-amp with a gain of about 1
 
 The photodiodes in the system output an approximately 0-10 V signal that is mapped onto a portion of the ADC range: 0-5 V in PCB Rev. 1 lab testing, and 0-2 V in PCB Rev. 2, which has not yet been fabricated. The photodiode is monitored steadily by its own portion of the codebase, which corrects for and maintains a record of the dark level by turning off all light paths to the photodiode and taking a reading. It also maintains the RMS noise of the samples.
 
-Photodiode saturation occurs somewhat above 10 V; lab testing shows saturation around 10.3-11.4 V. At these levels, the ADC readings no longer meaningfully represent the diode voltage other than as a strict lower bound on detected flux. This means values above 5 V in Rev. 1, and above 2 V in Rev. 2, must be treated statistically in fits as lower bounds on the detected flux or on the photodiode millivolt reading that would have been expected in the absence of saturation.
+Photodiode saturation occurs somewhat above 10 V; lab testing shows saturation around 10.3-11.4 V. At these levels, the ADC readings no longer meaningfully represent the diode voltage other than as a strict lower bound on the optical signal. This means values above 5 V in Rev. 1, and above 2 V in Rev. 2, must be treated statistically in fits as lower bounds on the photodiode millivolt reading that would have been expected in the absence of saturation.
 
 The attenuator is commanded by setting either model linear transmission, model dB attenuation, or DAC output millivolts.
 
@@ -76,8 +76,8 @@ The photodiode plus ADC can directly observe only a small fraction of the full s
 ```text
 measured_pd_signal_mv =
     min(
-        flux_to_mv_gain
-        * laser_flux
+        signal_scale_mv
+        * laser_output
         * fvoa1_tx
         * fvoa2_tx
         * transmission_loss,
@@ -129,7 +129,7 @@ pd_signal_mv =
     * fvoa_companion_tx[k]
 ```
 
-where `measurement_scale` includes laser flux, fixed route throughput, photodiode responsivity, ADC scaling, and any other factors that are constant during the segment.
+where `measurement_scale` includes laser output, fixed route throughput, photodiode responsivity, ADC scaling, and any other factors that are constant during the segment.
 
 The first segment is normalized using the DUT fully open:
 
