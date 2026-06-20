@@ -45,9 +45,10 @@ struct attenuator_calibration_status {
 	uint8_t point_count;
 	uint32_t dwell_ms;
 	uint8_t complete_pct;
-	double current_mv;
-	double other_mv;
+	float current_mv;
+	float other_mv;
 	int last_error;
+	uint8_t laser_percent;
 	struct attenuator_calibration_fit_metrics fit_metrics[2];
 };
 

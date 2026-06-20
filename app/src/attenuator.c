@@ -21,21 +21,21 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define MODEL_MAX_DB        120.0
 #define MODEL_MIN_TX        1.0e-300
 #define ATTENUATOR_DB_EPSILON 1.0e-6
-#define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5
+#define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5f
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 static double attenuator_model_voltage_to_delta(const struct attenuator_model_coeffs *coeffs,
-                                                double voltage)
+                                                float voltage)
 {
-    double fvoa_drive_mv = coeffs->gain * voltage;
+    double fvoa_drive_mv = coeffs->gain * (double) voltage;
 
     return coeffs->slope_inv_fvoa_mv * (fvoa_drive_mv - coeffs->fvoa_50pct_mv);
 }
 
 static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *coeffs,
-                                          double voltage)
+                                          float voltage)
 {
     double transmission;
 
@@ -43,8 +43,7 @@ static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *
         return 0.0;
     }
 
-    transmission = attenuator_model_b_to_linear(
-        attenuator_model_voltage_to_delta(coeffs, voltage));
+    transmission = attenuator_model_b_to_linear(attenuator_model_voltage_to_delta(coeffs, voltage));
     if (!isfinite(transmission) || transmission <= 0.0) {
         return 0.0;
     }
@@ -56,11 +55,11 @@ static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *
 
 static double attenuator_model_open_linear(const struct attenuator_model_coeffs *coeffs)
 {
-    return attenuator_model_raw_linear(coeffs, 0.0);
+    return attenuator_model_raw_linear(coeffs, 0.0f);
 }
 
 static double attenuator_model_relative_linear(const struct attenuator_model_coeffs *coeffs,
-                                               double voltage)
+                                               float voltage)
 {
     double open_tx = attenuator_model_open_linear(coeffs);
     double tx = attenuator_model_raw_linear(coeffs, voltage);
@@ -96,7 +95,7 @@ static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
     dac_cfg->dev = dev;
     dac_cfg->ideal_full_scale_mv = ATTENUATOR_DRIVE_MAX_MV;
     dac_cfg->drive_limit_mv = ATTENUATOR_DRIVE_MAX_MV;
-    dac_cfg->voltage = 0.0;
+    dac_cfg->voltage = 0.0f;
     dac_cfg->attenuation_db = 0.0;
     dac_cfg->cfg.channel_id = channel;
     dac_cfg->cfg.resolution = DAC_RESOLUTION_BITS;
@@ -113,23 +112,17 @@ static bool attenuator_channel_setup(struct attenuator_dac_cfg *dac_cfg)
     int err;
 
     if (dac_cfg->dev == NULL || !device_is_ready(dac_cfg->dev)) {
-        LOG_ERR("DAC device unavailable for channel %u",
-                dac_cfg->cfg.channel_id);
+        LOG_ERR("DAC device unavailable for channel %u", dac_cfg->cfg.channel_id);
         return false;
     }
 
     err = dac7x78_get_transfer(dac_cfg->dev, &transfer);
-    if (err != 0 || transfer.ideal_full_scale_uv == 0U ||
-        transfer.output_limit_uv == 0U) {
-        LOG_ERR("DAC transfer setup failed for channel %u: %d",
-                dac_cfg->cfg.channel_id, err);
+    if (err != 0 || transfer.ideal_full_scale_uv == 0U || transfer.output_limit_uv == 0U) {
+        LOG_ERR("DAC transfer setup failed for channel %u: %d", dac_cfg->cfg.channel_id, err);
         return false;
     }
-    dac_cfg->ideal_full_scale_mv =
-        (double)transfer.ideal_full_scale_uv / 1000.0;
-    dac_cfg->drive_limit_mv =
-        MIN(ATTENUATOR_DRIVE_MAX_MV,
-            (double)transfer.output_limit_uv / 1000.0);
+    dac_cfg->ideal_full_scale_mv = (float) transfer.ideal_full_scale_uv / 1000.0f;
+    dac_cfg->drive_limit_mv = MIN(ATTENUATOR_DRIVE_MAX_MV, (float) transfer.output_limit_uv / 1000.0f);
 
     /* dac_channel_setup() prepares the selected channel in the DAC driver and
      * may perform I2C transactions depending on the underlying implementation.
@@ -153,11 +146,11 @@ bool attenuator_init(struct attenuator *drv,
 
     attenuator_cfg_init(&drv->dac_cfg1, dac1, channel1);
     attenuator_cfg_init(&drv->dac_cfg2, dac2, channel2);
-    drv->coeff1.fvoa_50pct_mv = 0.5 * ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
-    drv->coeff1.slope_inv_fvoa_mv = 8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff1.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff1.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
-    drv->coeff2.fvoa_50pct_mv = 0.5 * ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
-    drv->coeff2.slope_inv_fvoa_mv = 8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff2.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff2.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->attenuation_db = 0.0;
 
@@ -166,7 +159,7 @@ bool attenuator_init(struct attenuator *drv,
 }
 
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
-                                      double voltage)
+                                      float voltage)
 {
     double transmission;
 
@@ -183,17 +176,16 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
         return 0.0;
     }
 
-    return -10.0 * (double)ZSL_LOG10((zsl_real_t)transmission);
+    return -10.0 * ZSL_LOG10(transmission);
 }
 
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
-                                    double attenuation_db, double *voltage)
+                                    double attenuation_db, float *voltage)
 {
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
+    const double erf_scale = ZSL_ERF(MODEL_ERF_SCALE);
     double open_tx;
     double target_tx;
-    zsl_real_t erf_arg;
-    zsl_real_t inv;
+    double erf_arg;
     double delta;
 
     if (coeffs == NULL || voltage == NULL || coeffs->slope_inv_fvoa_mv == 0.0 ||
@@ -203,7 +195,7 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
     }
 
     if (attenuation_db <= ATTENUATOR_DB_EPSILON) {
-        *voltage = 0.0;
+        *voltage = 0.0f;
         return true;
     }
 
@@ -220,15 +212,13 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
         target_tx = 1.0;
     }
 
-    erf_arg = erf_scale - ((zsl_real_t)2.0 * erf_scale * (zsl_real_t)target_tx);
-    if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
+    erf_arg = erf_scale - 2.0 * erf_scale * target_tx;
+    if (erf_arg <= -1.0 || erf_arg >= 1.0) {
         return false;
     }
 
-    inv = zsl_prob_erf_inv(&erf_arg);
-    delta = (double)inv;
-    *voltage = ((delta / coeffs->slope_inv_fvoa_mv) +
-                coeffs->fvoa_50pct_mv) / coeffs->gain;
+    delta = zsl_prob_erf_inv(&erf_arg);
+    *voltage = (float) ((delta / coeffs->slope_inv_fvoa_mv + coeffs->fvoa_50pct_mv) / coeffs->gain);
 
     return true;
 }
@@ -263,27 +253,27 @@ bool attenuator_model_coefficients_valid(
     return true;
 }
 
-static double attenuator_drive_limit_mv(const struct attenuator_dac_cfg *dac_cfg)
+static float attenuator_drive_limit_mv(const struct attenuator_dac_cfg *dac_cfg)
 {
-    if (dac_cfg == NULL || dac_cfg->drive_limit_mv <= 0.0) {
+    if (dac_cfg == NULL || dac_cfg->drive_limit_mv <= 0.0f) {
         return ATTENUATOR_DRIVE_MAX_MV;
     }
 
     return dac_cfg->drive_limit_mv;
 }
 
-static double attenuator_code_to_voltage(const struct attenuator_dac_cfg *dac_cfg,
+static float attenuator_code_to_voltage(const struct attenuator_dac_cfg *dac_cfg,
                                          uint32_t code)
 {
-    double voltage;
-    double drive_limit = attenuator_drive_limit_mv(dac_cfg);
+    float voltage;
+    float drive_limit = attenuator_drive_limit_mv(dac_cfg);
 
-    if (dac_cfg == NULL || dac_cfg->ideal_full_scale_mv <= 0.0) {
-        return 0.0;
+    if (dac_cfg == NULL || dac_cfg->ideal_full_scale_mv <= 0.0f) {
+        return 0.0f;
     }
 
     voltage = (dac_cfg->ideal_full_scale_mv /
-               (double)(1 << DAC_RESOLUTION_BITS)) * (double)code;
+               (float)(1 << DAC_RESOLUTION_BITS)) * (float)code;
     if (voltage > drive_limit) {
         return drive_limit;
     }
@@ -292,18 +282,18 @@ static double attenuator_code_to_voltage(const struct attenuator_dac_cfg *dac_cf
 }
 
 static uint32_t attenuator_voltage_to_code(const struct attenuator_dac_cfg *dac_cfg,
-                                           double voltage)
+                                           float voltage)
 {
-    double ideal_full_scale_mv;
+    float ideal_full_scale_mv;
     uint32_t code;
 
-    if (dac_cfg == NULL || dac_cfg->ideal_full_scale_mv <= 0.0) {
+    if (dac_cfg->ideal_full_scale_mv <= 0.0f) {
         return 0U;
     }
 
     ideal_full_scale_mv = dac_cfg->ideal_full_scale_mv;
     code = (uint32_t)(((voltage / ideal_full_scale_mv) *
-                       (double)(1 << DAC_RESOLUTION_BITS)) + 0.5);
+                       (float)(1 << DAC_RESOLUTION_BITS)) + 0.5f);
 
     if (code > DAC_MAX_CODE) {
         return DAC_MAX_CODE;
@@ -314,13 +304,13 @@ static uint32_t attenuator_voltage_to_code(const struct attenuator_dac_cfg *dac_
 
 static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
                                      const struct attenuator_model_coeffs *coeffs,
-                                     double voltage)
+                                     float voltage)
 {
-    double unclamped_voltage = voltage;
+    float unclamped_voltage = voltage;
     bool report_clamp = false;
     uint32_t code;
-    double applied_voltage;
-    double drive_limit;
+    float applied_voltage;
+    float drive_limit;
     int err;
     char context[64];
 
@@ -329,9 +319,9 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
     }
 
     drive_limit = attenuator_drive_limit_mv(dac_cfg);
-    if (voltage < 0.0) {
+    if (voltage < 0.0f) {
         report_clamp = voltage < -ATTENUATOR_VOLTAGE_WARN_EPS_MV;
-        voltage = 0.0;
+        voltage = 0.0f;
     } else if (voltage > drive_limit) {
         report_clamp = voltage > drive_limit + ATTENUATOR_VOLTAGE_WARN_EPS_MV;
         voltage = drive_limit;
@@ -340,7 +330,7 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
 	if (report_clamp) {
 		snprintk(context, sizeof(context),
 			 "channel=%u requested=%.3f clamped=%.3f",
-			 dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
+			 dac_cfg->cfg.channel_id, (double)unclamped_voltage, (double)voltage);
 		coo_cmd_runtime_emit(command_runtime_get(),
 				     &(const struct coo_cmd_runtime_emit_args){
 					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
@@ -368,25 +358,42 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
     return true;
 }
 
-static bool attenuator_set_physical_db(struct attenuator_dac_cfg *dac_cfg,
-                                       const struct attenuator_model_coeffs *coeffs,
-                                       double attenuation_db)
+bool attenuator_set_physical_db(struct attenuator *drv,
+                                uint8_t physical_index,
+                                double attenuation_db)
 {
-    double voltage;
+    float voltage;
     double max_db;
+    struct attenuator_model_coeffs *coeffs;
+    struct attenuator_dac_cfg *dac_cfg;
+
+    if (drv == NULL) {
+        return false;
+    }
+
+    switch (physical_index) {
+        case 0:
+            dac_cfg = &drv->dac_cfg1;
+            coeffs = &drv->coeff1;
+            break;
+        case 1:
+            dac_cfg = &drv->dac_cfg2;
+            coeffs = &drv->coeff2;
+            break;
+        default:
+            return false;
+    }
 
     if (dac_cfg == NULL || coeffs == NULL || attenuation_db < 0.0) {
         return false;
     }
 
-    max_db = attenuator_model_voltage_to_db(coeffs,
-                                            attenuator_drive_limit_mv(dac_cfg));
+    max_db = attenuator_model_voltage_to_db(coeffs, attenuator_drive_limit_mv(dac_cfg));
     if (attenuation_db <= ATTENUATOR_DB_EPSILON) {
-        return attenuator_write_voltage(dac_cfg, coeffs, 0.0);
+        return attenuator_write_voltage(dac_cfg, coeffs, 0.0f);
     }
     if (max_db > 0.0 && attenuation_db >= max_db - ATTENUATOR_DB_EPSILON) {
-        return attenuator_write_voltage(dac_cfg, coeffs,
-                                        attenuator_drive_limit_mv(dac_cfg));
+        return attenuator_write_voltage(dac_cfg, coeffs, attenuator_drive_limit_mv(dac_cfg));
     }
 
     if (!attenuator_model_db_to_voltage(coeffs, attenuation_db, &voltage)) {
@@ -396,35 +403,9 @@ static bool attenuator_set_physical_db(struct attenuator_dac_cfg *dac_cfg,
     return attenuator_write_voltage(dac_cfg, coeffs, voltage);
 }
 
-bool attenuator_set_dac1_db(struct attenuator *drv, double attenuation_db)
-{
-    return drv != NULL &&
-           attenuator_set_physical_db(&drv->dac_cfg1, &drv->coeff1,
-                                      attenuation_db);
-}
-
-bool attenuator_set_dac2_db(struct attenuator *drv, double attenuation_db)
-{
-    return drv != NULL &&
-           attenuator_set_physical_db(&drv->dac_cfg2, &drv->coeff2,
-                                      attenuation_db);
-}
-
-bool attenuator_set_dac1_voltage(struct attenuator *drv, double voltage)
-{
-    return drv != NULL &&
-           attenuator_write_voltage(&drv->dac_cfg1, &drv->coeff1, voltage);
-}
-
-bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage)
-{
-    return drv != NULL &&
-           attenuator_write_voltage(&drv->dac_cfg2, &drv->coeff2, voltage);
-}
-
 bool attenuator_set_physical_voltage(struct attenuator *drv,
                                      uint8_t physical_index,
-                                     double voltage)
+                                     float voltage)
 {
     if (drv == NULL) {
         return false;
@@ -432,9 +413,9 @@ bool attenuator_set_physical_voltage(struct attenuator *drv,
 
     switch (physical_index) {
     case 0:
-        return attenuator_set_dac1_voltage(drv, voltage);
+        return attenuator_write_voltage(&drv->dac_cfg1, &drv->coeff1, voltage);
     case 1:
-        return attenuator_set_dac2_voltage(drv, voltage);
+        return attenuator_write_voltage(&drv->dac_cfg2, &drv->coeff2, voltage);
     default:
         return false;
     }
@@ -443,8 +424,7 @@ bool attenuator_set_physical_voltage(struct attenuator *drv,
 static double attenuator_physical_max_db(const struct attenuator_dac_cfg *dac_cfg,
                                          const struct attenuator_model_coeffs *coeffs)
 {
-    return attenuator_model_voltage_to_db(coeffs,
-                                          attenuator_drive_limit_mv(dac_cfg));
+    return attenuator_model_voltage_to_db(coeffs,attenuator_drive_limit_mv(dac_cfg));
 }
 
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
@@ -460,8 +440,7 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
     }
 
     max_db1 = attenuator_physical_max_db(&drv->dac_cfg1, &drv->coeff1);
-    max_total_db = max_db1 + attenuator_physical_max_db(&drv->dac_cfg2,
-                                                        &drv->coeff2);
+    max_total_db = max_db1 + attenuator_physical_max_db(&drv->dac_cfg2, &drv->coeff2);
 
 	if (attenuation_db > max_total_db) {
 		snprintk(context, sizeof(context),
@@ -483,10 +462,10 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
         db2 = 0.0;
     }
 
-    if (!attenuator_set_dac1_db(drv, db1)) {
+    if (!attenuator_set_physical_db(drv, 0, db1)) {
         return false;
     }
-    if (!attenuator_set_dac2_db(drv, db2)) {
+    if (!attenuator_set_physical_db(drv, 1, db2)) {
         return false;
     }
 

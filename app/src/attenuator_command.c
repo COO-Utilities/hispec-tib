@@ -355,16 +355,11 @@ static bool attenuator_set_physical_value(struct attenuator *drv,
 			return false;
 		}
 		db = -10.0 * log10(request->value);
-		return physical_index == 0U ?
-		       attenuator_set_dac1_db(drv, db) :
-		       attenuator_set_dac2_db(drv, db);
+		return attenuator_set_physical_db(drv, physical_index, db);
 	case ATTENUATOR_PHYSICAL_VALUE_DB:
-		return physical_index == 0U ?
-		       attenuator_set_dac1_db(drv, request->value) :
-		       attenuator_set_dac2_db(drv, request->value);
+		return attenuator_set_physical_db(drv, physical_index, request->value);
 	case ATTENUATOR_PHYSICAL_VALUE_MV:
-		return attenuator_set_physical_voltage(drv, physical_index,
-						       request->value);
+		return attenuator_set_physical_voltage(drv, physical_index, (float)request->value);
 	default:
 		return false;
 	}
@@ -747,6 +742,5 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	if (rc != 0 && status.state == NULL) {
 		return coo_cmd_error_rc(out, cmd, "attenuator calibration hardware setup failed", rc);
 	}
-	return atten_calibration_status_reply(
-		cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);
+	return atten_calibration_status_reply(cmd, &status, rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);
 }
