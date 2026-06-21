@@ -116,10 +116,7 @@ enum atten_cal_measure_kind {
 enum atten_cal_record_event {
 	ATTEN_CAL_EVENT_POINT = 0,
 	ATTEN_CAL_EVENT_INITIAL_PROBE,
-	ATTEN_CAL_EVENT_REFERENCE,
-	ATTEN_CAL_EVENT_BRIDGE_BEFORE,
 	ATTEN_CAL_EVENT_BRIDGE_PROBE,
-	ATTEN_CAL_EVENT_BRIDGE_AFTER,
 };
 
 enum atten_cal_record_classification {
@@ -198,6 +195,8 @@ struct atten_cal_state_data {
 	/* Others */
 	int64_t wait_until_ms;
 	int last_error;
+	uint8_t reference_record_index[ATTENUATOR_PHYSICAL_COUNT];
+	bool reference_record_index_valid[ATTENUATOR_PHYSICAL_COUNT];
 	struct atten_cal_record records[ATTENUATOR_PHYSICAL_COUNT][ATTENUATOR_CAL_RECORD_COUNT];
 	struct atten_cal_bridge bridges[ATTENUATOR_PHYSICAL_COUNT][ATTENUATOR_CAL_RECORD_COUNT];
 	uint8_t record_count[ATTENUATOR_PHYSICAL_COUNT];
@@ -263,14 +262,10 @@ static const char *record_event_name(uint8_t event)
 		return "point";
 	case ATTEN_CAL_EVENT_INITIAL_PROBE:
 		return "initial_probe";
-	case ATTEN_CAL_EVENT_REFERENCE:
-		return "reference";
-	case ATTEN_CAL_EVENT_BRIDGE_BEFORE:
-		return "bridge_before";
+	// case ATTEN_CAL_EVENT_REFERENCE:
+	// 	return "reference";
 	case ATTEN_CAL_EVENT_BRIDGE_PROBE:
 		return "bridge_probe";
-	case ATTEN_CAL_EVENT_BRIDGE_AFTER:
-		return "bridge_after";
 	default:
 		return "unknown";
 	}
@@ -548,47 +543,6 @@ static bool append_record_locked(enum atten_cal_record_event event,
 	return true;
 }
 
-/** Copy one record for a new use. */
-static bool append_copied_record_locked(enum atten_cal_record_event event,
-				 uint8_t copy_index,
-				 struct atten_cal_record **out)
-{
-	struct atten_cal_record *record;
-	uint8_t physical = cal.physical_index;
-	uint8_t index;
-
-	*out = NULL;
-
-	if (physical >= ATTENUATOR_PHYSICAL_COUNT) {
-		return false;
-	}
-	if (cal.record_count[physical] >= ATTENUATOR_CAL_RECORD_COUNT) {
-		cal.record_overflow[physical] = true;
-		return false;
-	}
-	if (copy_index >= cal.record_count[physical]) {
-		return false;
-	}
-
-	if (cal.records[physical][copy_index].segment != cal.segment_id) {
-		LOG_ERR("segment mismatch on copy");
-		return false;
-	}
-
-	index = cal.record_count[physical]++;
-	record = &cal.records[physical][index];
-
-	memset(record, 0, sizeof(*record));
-	*record = cal.records[physical][copy_index];
-	record->event = (uint8_t) event;
-
-	cal.point_index = index;
-
-	atten_cal_emit_record(record);
-	*out = record;
-	return true;
-}
-
 /** Write the swept and companion FVOA DAC voltages for a logical attenuator. */
 static bool set_physical_pair(uint8_t attenuator_index,
 			      uint8_t sweep_physical,
@@ -731,15 +685,6 @@ static bool companion_search_note_measurement_locked(enum atten_cal_record_class
 	}
 	cal.search_tries++;
 	return true;
-}
-
-/** Return whether a retained record can anchor bridge normalization. */
-static bool record_is_bridge_anchor(const struct atten_cal_record *record)
-{
-	return record != NULL && record->classification == ATTEN_CAL_CLASSIFICATION_OK &&
-	       (record->event == ATTEN_CAL_EVENT_REFERENCE ||
-	       	record->event == ATTEN_CAL_EVENT_POINT ||
-			record->event == ATTEN_CAL_EVENT_BRIDGE_AFTER);
 }
 
 /** Set DAC voltages for a measurement and wait one photodiode configurable window. */
@@ -891,15 +836,11 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 			// }
 		}
 
-		struct atten_cal_record *ref_record = NULL;
-		(void)append_copied_record_locked(ATTEN_CAL_EVENT_REFERENCE, reference_index, &ref_record);
+		cal.reference_record_index[cal.physical_index] = reference_index;
+		cal.reference_record_index_valid[cal.physical_index] = true;
 
-		if (ref_record == NULL) {
-			auto_error_locked(-ENOSPC);
-			return;
-		}
-
-		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_SWEEP,  0, ref_record->other_mv);
+		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_SWEEP,  0,
+			cal.records[cal.physical_index][reference_index].other_mv);
 		return;
 	}
 
@@ -962,23 +903,40 @@ static void auto_begin_bridge_locked(void)
 	uint8_t anchor_index = 0U;
 	const struct atten_cal_record *anchor=NULL;
 
+	// Trying to start a bridge but we are as open as we can go. All done, can't go deeper (without more light)
 	if (cal.other_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV) {
 		auto_finish_physical_locked();
 		return;
 	}
 
+	bool all_below_snr = true;
+	uint8_t count = 0;
 	/** Find the latest usable DUT point in the current segment. */
 	for (uint8_t i = cal.record_count[physical]; i > 0U; --i) {
 		const struct atten_cal_record *record = &cal.records[physical][i - 1U];
-		if (record->segment == cal.segment_id &&  record_is_bridge_anchor(record)) {
-			anchor = record;
-			anchor_index = i-1;
-			break;
+
+		if (record->segment == cal.segment_id && record->event == ATTEN_CAL_EVENT_POINT) {
+			count++;
+			if (record->classification != ATTEN_CAL_CLASSIFICATION_BELOW_SNR){
+				all_below_snr = false;
+			}
+			if (record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
+				anchor = record;
+				anchor_index = i-1;
+				break;
+			}
 		}
+
 	}
 
 	if (anchor == NULL) {
-		LOG_ERR("No usable bridge anchor found in segment %u, shouldbe impossible", cal.segment_id);
+		if (all_below_snr && count==1 && cal.segment_id > 0) {
+			LOG_INF("No bridge anchor found in segment %u, only one faint point. Odd. assuming done.", cal.segment_id);
+			auto_finish_physical_locked();
+			return;
+		}
+		// all sweep points in previous segment were saturated or below sn limit (and yet not at max drive)
+		LOG_ERR("No usable bridge anchor found in segment %u, should be impossible", cal.segment_id);
 		auto_error_locked(-ERANGE);
 		return;
 	}
@@ -1094,23 +1052,15 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 * it defines the new segment scale but it is not a fit candidate because it is correlated with the scale it defines.
 */
 static void auto_close_bridge_locked(uint8_t index) {
-	struct atten_cal_record *record = NULL;
-
-	/** Save the record */
-	(void)append_copied_record_locked(ATTEN_CAL_EVENT_BRIDGE_AFTER, index, &record);
-	if (record == NULL) {
-		auto_error_locked(-ENOSPC);
-		return;
-	}
 
 	/** Adopt and Save the bridge */
-	cal.other_mv = record->other_mv;
+	cal.other_mv = cal.records[cal.physical_index][index].other_mv;
 	if (cal.bridge_before_index_valid && cal.bridge_count[cal.physical_index] < ATTENUATOR_CAL_RECORD_COUNT) {
 		struct atten_cal_bridge *bridge =
 			&cal.bridges[cal.physical_index][cal.bridge_count[cal.physical_index]++];
 
 		bridge->before_record_index = cal.bridge_before_index;
-		bridge->after_record_index = cal.point_index;
+		bridge->after_record_index = index;
 	}
 
 	/** Reset bridging */
@@ -1135,24 +1085,6 @@ static bool record_is_fit_candidate(const struct atten_cal_record *record)
 		return false;
 	}
 	return record->event == ATTEN_CAL_EVENT_POINT;
-}
-
-/** Locate the open-reference record that defines relative transmission. */
-static const struct atten_cal_record *reference_record_locked(uint8_t physical)
-{
-	if (physical >= ATTENUATOR_PHYSICAL_COUNT) {
-		return NULL;
-	}
-	for (uint8_t i = 0U; i < cal.record_count[physical]; ++i) {
-		const struct atten_cal_record *record = &cal.records[physical][i];
-
-		if (record->event == ATTEN_CAL_EVENT_REFERENCE &&
-		    record->classification == ATTEN_CAL_CLASSIFICATION_OK &&
-		    record->signal_err_mv > 0.0f) {
-			return record;
-		}
-	}
-	return NULL;
 }
 
 /**
@@ -1240,10 +1172,11 @@ static int build_fit_points_locked(uint8_t physical,
 
 	*point_count_out = 0U;
 
-	reference = reference_record_locked(physical);
-	if (reference == NULL) {
+	if (!cal.reference_record_index_valid[physical]) {
 		return -ERANGE;
 	}
+	reference = &cal.records[physical][cal.reference_record_index[physical]]; //reference_record_locked(physical);
+
 	open_signal = (double)reference->signal_mv;
 	open_err = (double)reference->signal_err_mv;
 	open_rel_var = (open_err / open_signal) * (open_err / open_signal);
