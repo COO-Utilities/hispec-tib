@@ -75,9 +75,11 @@ _LASER_TO_PD_CHANNEL = {
 
 _THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
 _ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
-_ATTEN_CAL_CHUNK_HEADER = struct.Struct("<4s12B")
+_ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
+_ATTEN_CAL_BRIDGE_BINARY = struct.Struct("<2B")
 _ATTEN_CAL_CHUNK_MAGIC = b"HAC4"
-_ATTEN_CAL_EVENTS = ("point", "initial_probe", "reference", "bridge_before", "bridge_probe", "bridge_after")
+_ATTEN_CAL_METADATA_KIND = 0
+_ATTEN_CAL_EVENTS = ("point", "initial_probe", "bridge_probe")
 _ATTEN_CAL_CLASSIFICATIONS = ("ok", "saturated", "below_snr", "adc_error")
 _ATTEN_CAL_STATES = ("inactive", "running", "complete", "error")
 _ATTEN_CAL_MODES = ("none", "tib_auto")
@@ -621,17 +623,21 @@ _ATTEN_CAL_CLASSIFICATION_COLORS = {
 _ATTEN_CAL_EVENT_COLORS = {
     "point": "tab:blue",
     "initial_probe": "0.55",
-    "reference": "tab:cyan",
-    "bridge_before": "tab:orange",
     "bridge_probe": "tab:green",
-    "bridge_after": "tab:red",
 }
 _ATTEN_CAL_EVENT_MARKERS = {
     "point": "o",
     "initial_probe": "s",
+    "bridge_probe": "P",
+}
+_ATTEN_CAL_ROLE_COLORS = {
+    "reference": "tab:cyan",
+    "bridge_before": "tab:orange",
+    "bridge_after": "tab:red",
+}
+_ATTEN_CAL_ROLE_MARKERS = {
     "reference": "*",
     "bridge_before": "^",
-    "bridge_probe": "P",
     "bridge_after": "v",
 }
 
@@ -2307,28 +2313,53 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         return None
 
     @staticmethod
-    def _accepted_bridges(rec: np.recarray) -> list[dict[str, Any]]:
-        events = np.asarray(rec.event).astype(str)
-        classifications = np.asarray(rec.classification).astype(str)
+    def _record_by_index(rec: np.recarray, record_index: int) -> Any | None:
+        matches = np.flatnonzero(np.asarray(rec.record, dtype=int) == int(record_index))
+        if len(matches) == 0:
+            return None
+        return rec[int(matches[0])]
+
+    def _physical_meta(self, physical: str) -> Mapping[str, Any] | None:
+        for item in self.meta:
+            if (
+                isinstance(item, Mapping)
+                and item.get("physical") == physical
+                and "record_chunk_count" in item
+            ):
+                return item
+        return None
+
+    def _role_record_indices(self, physical: str) -> dict[str, list[int]]:
+        meta = self._physical_meta(physical)
+        roles = {"reference": [], "bridge_before": [], "bridge_after": []}
+        if meta is None:
+            return roles
+        if meta.get("reference_valid"):
+            roles["reference"].append(int(meta["reference_record"]))
+        for bridge in meta.get("bridges", ()):
+            roles["bridge_before"].append(int(bridge["before_record"]))
+            roles["bridge_after"].append(int(bridge["after_record"]))
+        return roles
+
+    def _accepted_bridges(self, physical: str, rec: np.recarray) -> list[dict[str, Any]]:
+        meta = self._physical_meta(physical)
+        if meta is None:
+            return []
         bridges: list[dict[str, Any]] = []
-        for after_pos in np.flatnonzero((events == "bridge_after") & (classifications == "ok")):
-            after = rec[after_pos]
-            before_pos: int | None = None
-            for i in range(after_pos - 1, -1, -1):
-                if (
-                    events[i] == "bridge_before"
-                    and classifications[i] == "ok"
-                    and int(rec[i].segment) + 1 == int(after.segment)
-                ):
-                    before_pos = i
-                    break
-            if before_pos is None:
+        for bridge in meta.get("bridges", ()):
+            before = self._record_by_index(rec, int(bridge["before_record"]))
+            after = self._record_by_index(rec, int(bridge["after_record"]))
+            if before is None or after is None:
                 continue
-            before = rec[before_pos]
             if before.signal_mv <= 0.0 or after.signal_mv <= 0.0:
                 continue
+            if before.signal_err_mv <= 0.0 or after.signal_err_mv <= 0.0:
+                continue
             ratio = float(after.signal_mv / before.signal_mv)
-            rel_var = float((before.signal_err_mv / before.signal_mv) ** 2 + (after.signal_err_mv / after.signal_mv) ** 2)
+            rel_var = float(
+                (before.signal_err_mv / before.signal_mv) ** 2
+                + (after.signal_err_mv / after.signal_mv) ** 2
+            )
             bridges.append(
                 {
                     "bridge_index": len(bridges),
@@ -2377,23 +2408,32 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if not np.any(mask):
                 continue
             rec = out[mask].view(np.recarray)
-            ok = np.asarray(rec.classification).astype(str) == "ok"
             signal = np.asarray(rec.signal_mv, dtype=float)
             signal_err = np.asarray(rec.signal_err_mv, dtype=float)
             with np.errstate(divide="ignore", invalid="ignore"):
                 rec.acq_snr[:] = signal / signal_err
 
-            ref_candidates = np.flatnonzero((np.asarray(rec.event).astype(str) == "reference") & ok & (signal > 0.0) & (signal_err > 0.0))
-            if len(ref_candidates) == 0:
+            meta = self._physical_meta(physical)
+            if meta is None or not meta.get("reference_valid"):
                 out[mask] = rec
                 continue
-            ref = rec[ref_candidates[0]]
+            ref = self._record_by_index(rec, int(meta["reference_record"]))
+            if ref is None:
+                out[mask] = rec
+                continue
+            if not (
+                str(ref.classification) == "ok"
+                and ref.signal_mv > 0.0
+                and ref.signal_err_mv > 0.0
+            ):
+                out[mask] = rec
+                continue
             open_signal = float(ref.signal_mv)
             open_err = float(ref.signal_err_mv)
             open_rel_var = (open_err / open_signal) ** 2
             segment_scale: dict[int, float] = {0: 1.0}
             segment_rel_var: dict[int, float] = {0: 0.0}
-            for bridge in self._accepted_bridges(rec):
+            for bridge in self._accepted_bridges(physical, rec):
                 from_segment = int(bridge["from_segment"])
                 to_segment = int(bridge["to_segment"])
                 if from_segment not in segment_scale:
@@ -2427,7 +2467,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.db[i] = db
                 rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
                 rec.fit_candidate[i] = (
-                    str(row.event) in ("point", "bridge_before")
+                    str(row.event) == "point"
                     and ATTEN_CAL_MIN_TX < tx < ATTEN_CAL_MAX_TX
                 )
             coeff = coeffs[physical]
@@ -2446,7 +2486,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         rows: list[dict[str, Any]] = []
         for physical in ("dac1", "dac2"):
             rec = self.physical(physical).records
-            for row in self._accepted_bridges(rec):
+            for row in self._accepted_bridges(physical, rec):
                 item = dict(row)
                 item["physical"] = physical
                 rows.append(item)
@@ -2621,6 +2661,30 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         linewidths=0.8,
                         zorder=3,
                     )
+
+        roles = self._role_record_indices(physical)
+        role_y = (signal, scaled_signal, attenuation_db)
+        for role, indices in roles.items():
+            if not indices:
+                continue
+            role_mask = np.isin(np.asarray(rec.record, dtype=int), np.asarray(indices, dtype=int)) & np.isfinite(x)
+            if not np.any(role_mask):
+                continue
+            for ax, y in zip(axes[:3], role_y, strict=False):
+                finite_role = role_mask & np.isfinite(y)
+                if not np.any(finite_role):
+                    continue
+                ax.scatter(
+                    x[finite_role],
+                    y[finite_role],
+                    marker=_ATTEN_CAL_ROLE_MARKERS[role],
+                    s=92,
+                    facecolors="none",
+                    edgecolors=_ATTEN_CAL_ROLE_COLORS[role],
+                    linewidths=1.3,
+                    label=role,
+                    zorder=4,
+                )
 
         included = np.asarray(rec.included, dtype=bool) & np.isfinite(x) & np.isfinite(residual_db)
         if np.any(included):
@@ -4013,52 +4077,110 @@ class HispecFibPcb:
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate"))
 
-    def _atten_calibration_record_chunk(
+    def _atten_calibration_metadata(
         self,
         physical: Literal["dac1", "dac2"],
-        *,
-        start: int = 0,
-    ) -> tuple[Mapping[str, Any], np.recarray, int | None]:
+    ) -> Mapping[str, Any]:
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
-        if start < 0:
-            raise HispecFibError("start must be non-negative")
-        payload = self._request_payload(f"atten/calibrate/records/{physical}/{int(start)}")
+        payload = self._request_payload(f"atten/calibrate/records/{physical}")
         if not isinstance(payload, (bytes, bytearray)):
-            raise HispecFibError("attenuator calibration records must be binary")
-        if len(payload) < _ATTEN_CAL_CHUNK_HEADER.size:
-            raise HispecFibError("attenuator calibration record chunk is too short")
+            raise HispecFibError("attenuator calibration metadata must be binary")
+        if len(payload) < _ATTEN_CAL_METADATA_HEADER.size:
+            raise HispecFibError("attenuator calibration metadata is too short")
 
         (
             magic,
             version,
+            kind,
             physical_index,
-            start_index,
-            count,
-            total,
-            next_value,
             state_id,
             mode_id,
             fit_valid,
             fit_accepted,
             overflow,
             record_size,
-        ) = _ATTEN_CAL_CHUNK_HEADER.unpack_from(payload)
-        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 3:
-            raise HispecFibError("unsupported attenuator calibration record chunk")
+            records_per_chunk,
+            record_count,
+            record_chunk_count,
+            reference_valid,
+            reference_record,
+            bridge_count,
+        ) = _ATTEN_CAL_METADATA_HEADER.unpack_from(payload)
+        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 3 or kind != _ATTEN_CAL_METADATA_KIND:
+            raise HispecFibError("unsupported attenuator calibration metadata")
         if physical_index >= 2:
-            raise HispecFibError("invalid physical attenuator in record chunk")
+            raise HispecFibError("invalid physical attenuator in metadata")
         if record_size != _ATTEN_CAL_RECORD_BINARY.size:
             raise HispecFibError(
                 f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
             )
-        if len(payload) < _ATTEN_CAL_CHUNK_HEADER.size + count * record_size:
-            raise HispecFibError("attenuator calibration record chunk length mismatch")
+        expected_len = _ATTEN_CAL_METADATA_HEADER.size + bridge_count * _ATTEN_CAL_BRIDGE_BINARY.size
+        if len(payload) < expected_len:
+            raise HispecFibError("attenuator calibration metadata length mismatch")
+
+        bridges: list[dict[str, int]] = []
+        for i in range(bridge_count):
+            before_record, after_record = _ATTEN_CAL_BRIDGE_BINARY.unpack_from(
+                payload,
+                _ATTEN_CAL_METADATA_HEADER.size + i * _ATTEN_CAL_BRIDGE_BINARY.size,
+            )
+            bridges.append(
+                {
+                    "bridge_index": i,
+                    "before_record": int(before_record),
+                    "after_record": int(after_record),
+                }
+            )
 
         physical_name = ("dac1", "dac2")[physical_index]
+        if physical_name != physical:
+            raise HispecFibError("attenuator calibration metadata physical mismatch")
+        return {
+            "state": _ATTEN_CAL_STATES[state_id] if state_id < len(_ATTEN_CAL_STATES) else "unknown",
+            "mode": _ATTEN_CAL_MODES[mode_id] if mode_id < len(_ATTEN_CAL_MODES) else "unknown",
+            "physical": physical_name,
+            "fit_valid": bool(fit_valid),
+            "fit_accepted": bool(fit_accepted),
+            "record_overflow": bool(overflow),
+            "record_size": int(record_size),
+            "records_per_chunk": int(records_per_chunk),
+            "record_count": int(record_count),
+            "record_chunk_count": int(record_chunk_count),
+            "reference_valid": bool(reference_valid),
+            "reference_record": int(reference_record),
+            "bridge_count": int(bridge_count),
+            "bridges": tuple(bridges),
+        }
+
+    def _atten_calibration_record_chunk(
+        self,
+        physical: Literal["dac1", "dac2"],
+        metadata: Mapping[str, Any],
+        chunk: int,
+    ) -> np.recarray:
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        if chunk < 0:
+            raise HispecFibError("chunk must be non-negative")
+        if int(metadata["record_chunk_count"]) <= chunk:
+            raise HispecFibError("attenuator calibration record chunk is out of range")
+        payload = self._request_payload(f"atten/calibrate/records/{physical}/{int(chunk)}")
+        if not isinstance(payload, (bytes, bytearray)):
+            raise HispecFibError("attenuator calibration records must be binary")
+        record_size = int(metadata["record_size"])
+        if record_size != _ATTEN_CAL_RECORD_BINARY.size:
+            raise HispecFibError(
+                f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
+            )
+        if len(payload) % record_size != 0:
+            raise HispecFibError("attenuator calibration record chunk length mismatch")
+
+        physical_name = str(metadata["physical"])
+        records_per_chunk = int(metadata["records_per_chunk"])
+        start_index = int(chunk) * records_per_chunk
+        count = len(payload) // record_size
         rows: list[tuple[Any, ...]] = []
-        records_offset = _ATTEN_CAL_CHUNK_HEADER.size
         for i in range(count):
-            values = _ATTEN_CAL_RECORD_BINARY.unpack_from(payload, records_offset + i * record_size)
+            values = _ATTEN_CAL_RECORD_BINARY.unpack_from(payload, i * record_size)
             event_id = int(values[6])
             classification_id = int(values[7])
             rows.append(
@@ -4081,53 +4203,38 @@ class HispecFibPcb:
                 )
             )
 
-        meta = {
-            "state": _ATTEN_CAL_STATES[state_id] if state_id < len(_ATTEN_CAL_STATES) else "unknown",
-            "mode": _ATTEN_CAL_MODES[mode_id] if mode_id < len(_ATTEN_CAL_MODES) else "unknown",
-            "physical": physical_name,
-            "start": int(start_index),
-            "count": int(count),
-            "record_count": int(total),
-            "next": None if next_value == 0xFF else int(next_value),
-            "fit_valid": bool(fit_valid),
-            "fit_accepted": bool(fit_accepted),
-            "record_overflow": bool(overflow),
-            "record_size": int(record_size),
-        }
-        return meta, np.array(rows, dtype=ATTEN_CAL_DTYPE).view(np.recarray), meta["next"]
+        return np.array(rows, dtype=ATTEN_CAL_DTYPE).view(np.recarray)
 
     def _atten_calibration_record_chunks(
         self,
         physical: Literal["dac1", "dac2"],
-    ) -> tuple[tuple[Mapping[str, Any], ...], np.recarray]:
-        metas: list[Mapping[str, Any]] = []
+    ) -> tuple[Mapping[str, Any], np.recarray]:
+        meta = self._atten_calibration_metadata(physical)
         chunks: list[np.recarray] = []
-        next_start: int | None = 0
-        while next_start is not None:
-            meta, records, next_value = self._atten_calibration_record_chunk(physical, start=next_start)
-            metas.append(meta)
+        for chunk in range(int(meta["record_chunk_count"])):
+            records = self._atten_calibration_record_chunk(physical, meta, chunk)
             if len(records):
                 chunks.append(records)
-            if next_value is not None and next_value <= next_start:
-                raise HispecFibError("attenuator calibration record chunks did not advance")
-            next_start = next_value
         if not chunks:
-            return tuple(metas), np.array([], dtype=ATTEN_CAL_DTYPE).view(np.recarray)
+            return meta, np.array([], dtype=ATTEN_CAL_DTYPE).view(np.recarray)
         records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
-        return tuple(metas), records
+        if len(records) != int(meta["record_count"]):
+            raise HispecFibError("attenuator calibration record count does not match metadata")
+        return meta, records
 
     def atten_calibration_data(
         self,
         physical: Literal["dac1", "dac2", "all"] = "all",
         *,
-        start: int | None = None,
+        chunk: int | None = None,
     ) -> AttenuatorCalibrationDataset:
         physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
-        if start is not None:
+        if chunk is not None:
             if physical == "all":
-                raise HispecFibError("start can only be used with physical='dac1' or 'dac2'")
+                raise HispecFibError("chunk can only be used with physical='dac1' or 'dac2'")
             status = self.atten_calibration_status()
-            meta, records, _ = self._atten_calibration_record_chunk(physical, start=start)
+            meta = self._atten_calibration_metadata(physical)
+            records = self._atten_calibration_record_chunk(physical, meta, int(chunk))
             return AttenuatorCalibrationDataset(
                 records=records,
                 meta=(
@@ -4149,8 +4256,8 @@ class HispecFibPcb:
         ]
         chunks: list[np.recarray] = []
         for name in selected:
-            physical_metas, records = self._atten_calibration_record_chunks(name)  # type: ignore[arg-type]
-            metas.extend(physical_metas)
+            physical_meta, records = self._atten_calibration_record_chunks(name)  # type: ignore[arg-type]
+            metas.append(physical_meta)
             if len(records):
                 chunks.append(records)
         if not chunks:

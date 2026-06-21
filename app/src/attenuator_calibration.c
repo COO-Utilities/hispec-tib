@@ -59,7 +59,8 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-#define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4 //~~3ms
+/* One ADC cycle is just under 3 ms; the pad prevents reading a partial window. */
+#define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
 #define ATTEN_CAL_ADC_LSB_MV 0.1875f
 #define ATTEN_CAL_ADC_CLIP_MV 5000.0f
 /* Minimum bracket width for companion-FVOA binary searches. */
@@ -79,16 +80,17 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_FIT_MIN_SLOPE 1.0e-12
 #define ATTEN_CAL_FIT_MAX_SLOPE 1.0
 #define ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX "atten"
-#define ATTEN_CAL_DATA_CHUNK_HEADER_SIZE 16U
 #define ATTEN_CAL_DATA_CHUNK_RECORD_SIZE 27U
-#define ATTEN_CAL_DATA_CHUNK_RECORDS \
-	((COO_CMD_PAYLOAD_MAX - ATTEN_CAL_DATA_CHUNK_HEADER_SIZE) / \
-	 ATTEN_CAL_DATA_CHUNK_RECORD_SIZE)
+#define ATTEN_CAL_DATA_METADATA_HEADER_SIZE 19U
+#define ATTEN_CAL_DATA_BRIDGE_ENTRY_SIZE 2U
+#define ATTEN_CAL_DATA_RECORDS_PER_CHUNK \
+	(COO_CMD_PAYLOAD_MAX / ATTEN_CAL_DATA_CHUNK_RECORD_SIZE)
 #define ATTEN_CAL_DATA_CHUNK_MAGIC0 'H'
 #define ATTEN_CAL_DATA_CHUNK_MAGIC1 'A'
 #define ATTEN_CAL_DATA_CHUNK_MAGIC2 'C'
 #define ATTEN_CAL_DATA_CHUNK_MAGIC3 '4'
 #define ATTEN_CAL_DATA_CHUNK_VERSION 3U
+#define ATTEN_CAL_DATA_KIND_METADATA 0U
 
 enum atten_cal_state {
 	ATTEN_CAL_STATE_INACTIVE = 0,
@@ -146,8 +148,10 @@ struct atten_cal_record {
 	uint8_t segment;
 };
 
-BUILD_ASSERT(ATTEN_CAL_DATA_CHUNK_RECORDS > 0U,
+BUILD_ASSERT(ATTEN_CAL_DATA_RECORDS_PER_CHUNK > 0U,
 	     "calibration data chunk must carry at least one record");
+BUILD_ASSERT(ATTEN_CAL_DATA_RECORDS_PER_CHUNK <= UINT8_MAX,
+	     "calibration data records per chunk must fit in wire metadata");
 
 struct atten_cal_bridge {
 	uint8_t before_record_index;
@@ -187,11 +191,9 @@ struct atten_cal_state_data {
 	bool search_candidate_valid;
 	uint8_t search_candidate_record_index;
 	uint8_t search_tries;
-	/* Held-DUT bridge measurement and bounded swept-anchor backoff state. */
+	/* Held-DUT bridge measurement selected from retained point records. */
 	uint8_t bridge_before_index;
 	bool bridge_before_index_valid;
-	// bridge_start_other_mv = cal.records[cal.physical_index][cal.bridge_before_index].other_mv;
-	// bridge_before_signal_mv = cal.records[cal.physical_index][cal.bridge_before_index].signal_mv;
 	/* Others */
 	int64_t wait_until_ms;
 	int last_error;
@@ -262,8 +264,6 @@ static const char *record_event_name(uint8_t event)
 		return "point";
 	case ATTEN_CAL_EVENT_INITIAL_PROBE:
 		return "initial_probe";
-	// case ATTEN_CAL_EVENT_REFERENCE:
-	// 	return "reference";
 	case ATTEN_CAL_EVENT_BRIDGE_PROBE:
 		return "bridge_probe";
 	default:
@@ -717,7 +717,7 @@ static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 	}
 	atten_cal_emit_set(event);
 	cal.wait_until_ms = k_uptime_get() + cal.dwell_ms;
-	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW; //-> auto_tick_locked()
+	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;
 }
 
 /** Initialize acquisition state for the current physical FVOA and schedule its first probe. */
@@ -750,7 +750,7 @@ static void auto_start_next_physical_locked(void)
 	if (!auto_set_laser_level_locked(0U)) {
 		return;
 	}
-	//todo set some extra dwell for laser??
+	/* The first scheduled window provides the settling delay after changing laser level. */
 	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 	atten_cal_emit_simple("physical_start");
 }
@@ -776,7 +776,6 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 {
 	struct atten_cal_record *record = NULL;
 
-
 	(void)append_record_locked(ATTEN_CAL_EVENT_INITIAL_PROBE, measurement, &record);
 	if (record == NULL) {
 		auto_error_locked(-ENOSPC);
@@ -788,20 +787,18 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 		return;
 	}
 
-	if (record->classification==ATTEN_CAL_CLASSIFICATION_SATURATED &&
+	if (record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED &&
 		cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV - ATTEN_CAL_SEARCH_MIN_STEP_MV) {
 
-		/* Decrease laser level & try again */
-
 		if (cal.laser_level_index + 1U >= ARRAY_SIZE(initial_laser_levels_pct)) {
-			auto_error_locked(-ERANGE); //can't go fainter, still too bright :(
+			auto_error_locked(-ERANGE);
 			return;
 		}
 		if (!auto_set_laser_level_locked((uint8_t)(cal.laser_level_index + 1U))) {
 			return;
 		}
 
-		//todo set some extra dwell for laser??
+		/* The next scheduled window provides the settling delay after changing laser level. */
 		companion_search_begin_locked(0.0f, ATTENUATOR_DRIVE_MAX_MV);
 		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 
@@ -810,41 +807,26 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 
 
 	if (cal.search_high_mv - cal.search_low_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV ||
-		cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
+	    cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
 
-		/** We've run out of tries (should be impossible) or the search window is too small, time to decide */
-
-		/** The last measured point is good, or a previous one was */
+		/* The bracket is narrow enough; adopt the brightest retained usable initial probe. */
 		uint8_t reference_index = cal.search_candidate_record_index;
 		if (!cal.search_candidate_valid) {
-			// for (uint8_t i = 1; i <=cal.point_index; ++i) {
-			// 	const struct atten_cal_record *candidate_record = &cal.records[cal.physical_index][cal.point_index-i];
-			//
-			// 	if (candidate_record->event == ATTEN_CAL_EVENT_INITIAL_PROBE &&
-			// 		candidate_record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
-			// 		reference_index=cal.point_index-i;
-			// 		break;
-			// 		}
-			// }
-			//
-			// if (reference_index == cal.point_index) {
-				// somehow no good initial reference. This should be impossible, would have caught above with laser
-				LOG_INF("atten cal initial probe no viable initial reference. impossible. physical=%s",
-						physical_name(cal.physical_index));
-				auto_error_locked(-ERANGE); //can't go fainter, still too bright :(
-				return;
-			// }
+			LOG_INF("atten cal initial probe no viable initial reference. impossible. physical=%s",
+				physical_name(cal.physical_index));
+			auto_error_locked(-ERANGE);
+			return;
 		}
 
 		cal.reference_record_index[cal.physical_index] = reference_index;
 		cal.reference_record_index_valid[cal.physical_index] = true;
 
-		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_SWEEP,  0,
+		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_SWEEP, 0.0f,
 			cal.records[cal.physical_index][reference_index].other_mv);
 		return;
 	}
 
-	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE,  0.0f, search_midpoint_locked());
+	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE, 0.0f, search_midpoint_locked());
 }
 
 /**
@@ -901,9 +883,9 @@ static void auto_begin_bridge_locked(void)
 {
 	uint8_t physical = cal.physical_index;
 	uint8_t anchor_index = 0U;
-	const struct atten_cal_record *anchor=NULL;
+	const struct atten_cal_record *anchor = NULL;
 
-	// Trying to start a bridge but we are as open as we can go. All done, can't go deeper (without more light)
+	/* The companion is already as open as firmware allows; there is no more range to bridge into. */
 	if (cal.other_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV) {
 		auto_finish_physical_locked();
 		return;
@@ -911,31 +893,30 @@ static void auto_begin_bridge_locked(void)
 
 	bool all_below_snr = true;
 	uint8_t count = 0;
-	/** Find the latest usable DUT point in the current segment. */
+	/* Find the latest usable DUT point in the current segment. */
 	for (uint8_t i = cal.record_count[physical]; i > 0U; --i) {
 		const struct atten_cal_record *record = &cal.records[physical][i - 1U];
 
 		if (record->segment == cal.segment_id && record->event == ATTEN_CAL_EVENT_POINT) {
 			count++;
-			if (record->classification != ATTEN_CAL_CLASSIFICATION_BELOW_SNR){
+			if (record->classification != ATTEN_CAL_CLASSIFICATION_BELOW_SNR) {
 				all_below_snr = false;
 			}
 			if (record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
 				anchor = record;
-				anchor_index = i-1;
+				anchor_index = i - 1U;
 				break;
 			}
 		}
-
 	}
 
 	if (anchor == NULL) {
-		if (all_below_snr && count==1 && cal.segment_id > 0) {
-			LOG_INF("No bridge anchor found in segment %u, only one faint point. Odd. assuming done.", cal.segment_id);
+		if (all_below_snr && count == 1U && cal.segment_id > 0U) {
+			LOG_INF("No bridge anchor found in segment %u, only one faint point. Odd. assuming done.",
+				cal.segment_id);
 			auto_finish_physical_locked();
 			return;
 		}
-		// all sweep points in previous segment were saturated or below sn limit (and yet not at max drive)
 		LOG_ERR("No usable bridge anchor found in segment %u, should be impossible", cal.segment_id);
 		auto_error_locked(-ERANGE);
 		return;
@@ -945,7 +926,7 @@ static void auto_begin_bridge_locked(void)
 	cal.bridge_before_index = anchor_index;
 	cal.bridge_before_index_valid = true;
 
-	/**  We are in a new segment */
+	/* Bridge probes and any following DUT sweep points belong to a new scaled segment. */
 	cal.segment_id++;
 
 	companion_search_begin_locked(0.0f, cal.other_mv);
@@ -956,7 +937,6 @@ static void auto_begin_bridge_locked(void)
 static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record = NULL;
-
 
 	(void)append_record_locked(ATTEN_CAL_EVENT_BRIDGE_PROBE, measurement, &record);
 	if (record == NULL) {
@@ -970,69 +950,55 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 	}
 
 	if (cal.search_high_mv - cal.search_low_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV ||
-		cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
+	    cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
 
-		/** We've run out of tries (should be impossible) or the search window is too small, time to decide */
+		/* The bracket is narrow enough; adopt the brightest retained usable bridge probe. */
 
 		uint8_t bridge_index = cal.search_candidate_record_index;
 		if (!cal.search_candidate_valid) {
-			// We need to search again with a floor > cal.search_candidate_mv
-
 			float search_floor = 0;
 			for (uint8_t i = 1; i <= cal.point_index; ++i) {
-				const struct atten_cal_record *candidate_record = &cal.records[cal.physical_index][cal.point_index-i];
+				const struct atten_cal_record *candidate_record =
+					&cal.records[cal.physical_index][cal.point_index - i];
 
 				if (candidate_record->event == ATTEN_CAL_EVENT_BRIDGE_PROBE &&
-					candidate_record->segment == cal.segment_id) {
-					// if (candidate_record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
-					// 	bridge_index=cal.point_index-i;
-					// 	break;
-					// }
-					 if (candidate_record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED) {
+				    candidate_record->segment == cal.segment_id) {
+					if (candidate_record->classification ==
+					    ATTEN_CAL_CLASSIFICATION_SATURATED) {
 						search_floor = fmaxf(search_floor, candidate_record->other_mv);
 						break;
 					}
 				}
 			}
 
-			// if (bridge_index == cal.point_index){
-				if (search_floor==0) {
-					/** Every bridge probe was below SNR something is either wrong or we started a bridge right at the
-					 * end of a sweep. either way no more to do */
-					LOG_INF("atten cal bridge probe all below snr. impossible unless noise conspires with sweep end. physical=%s",
-							physical_name(cal.physical_index));
-					auto_finish_physical_locked();
-					return;
-				}
-
-				if (fabsf(search_floor - cal.other_mv) < ATTEN_CAL_SEARCH_MIN_STEP_MV) {
-					// somehow no good bridge probe as all were saturated, try again with a higher attenuation floor.
-					// If we are here, I think we should ALWAYS be here (and we should never get here)
-					LOG_INF("atten cal bridge probe no viable new point. impossible. physical=%s",
-							physical_name(cal.physical_index));
-					auto_error_locked(-ERANGE);
-					return;
-				}
-
-				// somehow no good bridge probe as all were saturated, try again with a higher attenuation floor
-				LOG_INF("atten cal bridge probe no viable new point. impossible. physical=%s",
-						physical_name(cal.physical_index));
-
-				companion_search_begin_locked(search_floor, cal.other_mv);
-				auto_schedule_measure_locked(ATTEN_CAL_MEASURE_BRIDGE_PROBE, cal.sweep_mv, search_midpoint_locked());
-
+			if (search_floor == 0.0f) {
+				/* Every bridge probe was below SNR. There is no brighter valid segment left. */
+				LOG_INF("atten cal bridge probe all below snr. impossible unless noise conspires with sweep end. physical=%s",
+					physical_name(cal.physical_index));
+				auto_finish_physical_locked();
 				return;
-			// }
+			}
+
+			if (fabsf(search_floor - cal.other_mv) < ATTEN_CAL_SEARCH_MIN_STEP_MV) {
+				LOG_INF("atten cal bridge probe no viable new point. impossible. physical=%s",
+					physical_name(cal.physical_index));
+				auto_error_locked(-ERANGE);
+				return;
+			}
+
+			companion_search_begin_locked(search_floor, cal.other_mv);
+			auto_schedule_measure_locked(ATTEN_CAL_MEASURE_BRIDGE_PROBE, cal.sweep_mv, search_midpoint_locked());
+
+			return;
 		}
 
 		float ratio = cal.records[cal.physical_index][bridge_index].signal_mv /
 			cal.records[cal.physical_index][cal.bridge_before_index].signal_mv;
-		bool bad_bridge = (ratio  <= 1.0f) || !isfinite(ratio);
+		bool bad_bridge = (ratio <= 1.0f) || !isfinite(ratio);
 
 		if (bad_bridge) {
-			/* This shouldn't be possible, but its handling is the same as ATTEN_CAL_CLASSIFICATION_BELOW_SNR */
 			LOG_INF("atten cal bridge probe selected a <1= ratio. impossible. physical=%s",
-					physical_name(cal.physical_index));
+				physical_name(cal.physical_index));
 			auto_error_locked(-ERANGE);
 			return;
 		}
@@ -1045,15 +1011,15 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 }
 
 /**
- * Accept bridge normalization, update scale variance, and resume DUT sweeping.
+ * Accept bridge normalization and resume DUT sweeping.
  *
- * Failed confirmations are retained as bridge probes and folded back into the
- * companion bracket. Only an accepted point is retained as `bridge_after`;
-* it defines the new segment scale but it is not a fit candidate because it is correlated with the scale it defines.
-*/
-static void auto_close_bridge_locked(uint8_t index) {
+ * The accepted bridge probe is retained only as a measured bridge-probe record.
+ * Its role as the after side of the bridge is stored in the bridge table.
+ */
+static void auto_close_bridge_locked(uint8_t index)
+{
 
-	/** Adopt and Save the bridge */
+	/* Adopt the accepted bridge probe as the after side of this segment boundary. */
 	cal.other_mv = cal.records[cal.physical_index][index].other_mv;
 	if (cal.bridge_before_index_valid && cal.bridge_count[cal.physical_index] < ATTENUATOR_CAL_RECORD_COUNT) {
 		struct atten_cal_bridge *bridge =
@@ -1063,11 +1029,11 @@ static void auto_close_bridge_locked(uint8_t index) {
 		bridge->after_record_index = index;
 	}
 
-	/** Reset bridging */
+	/* Reset transient bridge state. */
 	cal.bridge_before_index = 0U;
 	cal.bridge_before_index_valid = false;
 
-	/** Continue sweeping */
+	/* Continue the linear DUT sweep from the held anchor voltage. */
 	if (cal.sweep_mv >= ATTENUATOR_DRIVE_MAX_MV) {
 		auto_finish_physical_locked();
 		return;
@@ -1154,8 +1120,8 @@ static int build_segment_scales_locked(uint8_t physical,
  * Derive dB-space fit points from raw records and the bridge table.
  *
  * Each returned point has a measured attenuation and propagated uncertainty.
- * Bridge-after records are intentionally not fit candidates: they define the
- * next segment scale and are correlated with that scale by construction.
+ * Bridge probes are not fit candidates. Accepted bridge probes define segment
+ * scale through the bridge table and remain raw diagnostic measurements.
  */
 static int build_fit_points_locked(uint8_t physical,
 				   struct atten_cal_fit_point *points,
@@ -1175,7 +1141,7 @@ static int build_fit_points_locked(uint8_t physical,
 	if (!cal.reference_record_index_valid[physical]) {
 		return -ERANGE;
 	}
-	reference = &cal.records[physical][cal.reference_record_index[physical]]; //reference_record_locked(physical);
+	reference = &cal.records[physical][cal.reference_record_index[physical]];
 
 	open_signal = (double)reference->signal_mv;
 	open_err = (double)reference->signal_err_mv;
@@ -1866,35 +1832,32 @@ static void write_record_wire(uint8_t *dst, const struct atten_cal_record *recor
 	dst[26] = record->segment;
 }
 
-/** Copy retained calibration records into the host binary chunk format. */
-int attenuator_calibration_write_data_chunk(void *payload,
-					    size_t payload_len,
-					    uint8_t physical_index,
-					    uint8_t start_index,
-					    size_t *written)
+/** Copy calibration dataset role metadata into the host binary format. */
+int attenuator_calibration_write_data_metadata(void *payload,
+					       size_t payload_len,
+					       uint8_t physical_index,
+					       size_t *written)
 {
 	uint8_t *bytes = payload;
-	uint8_t count;
 	uint8_t total;
-	uint8_t next;
+	uint8_t bridge_count;
+	uint8_t chunk_count;
 	size_t byte_count;
 
 	if (payload == NULL || written == NULL ||
-	    payload_len < ATTEN_CAL_DATA_CHUNK_HEADER_SIZE ||
-	    physical_index >= ATTENUATOR_PHYSICAL_COUNT ||
-	    start_index >= ATTENUATOR_CAL_RECORD_COUNT) {
+	    payload_len < ATTEN_CAL_DATA_METADATA_HEADER_SIZE ||
+	    physical_index >= ATTENUATOR_PHYSICAL_COUNT) {
 		return -EINVAL;
 	}
 	*written = 0U;
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	total = cal.record_count[physical_index];
-	count = start_index < total ?
-		MIN((uint8_t)ATTEN_CAL_DATA_CHUNK_RECORDS,
-		    (uint8_t)(total - start_index)) : 0U;
-	next = (start_index + count < total) ? (uint8_t)(start_index + count) : UINT8_MAX;
-	byte_count = ATTEN_CAL_DATA_CHUNK_HEADER_SIZE +
-		     ((size_t)count * ATTEN_CAL_DATA_CHUNK_RECORD_SIZE);
+	bridge_count = cal.bridge_count[physical_index];
+	chunk_count = (uint8_t)(((uint16_t)total + ATTEN_CAL_DATA_RECORDS_PER_CHUNK - 1U) /
+				ATTEN_CAL_DATA_RECORDS_PER_CHUNK);
+	byte_count = ATTEN_CAL_DATA_METADATA_HEADER_SIZE +
+		     ((size_t)bridge_count * ATTEN_CAL_DATA_BRIDGE_ENTRY_SIZE);
 	if (byte_count > payload_len) {
 		k_mutex_unlock(&cal_lock);
 		return -ENOSPC;
@@ -1906,20 +1869,72 @@ int attenuator_calibration_write_data_chunk(void *payload,
 	bytes[2] = ATTEN_CAL_DATA_CHUNK_MAGIC2;
 	bytes[3] = ATTEN_CAL_DATA_CHUNK_MAGIC3;
 	bytes[4] = ATTEN_CAL_DATA_CHUNK_VERSION;
-	bytes[5] = physical_index;
-	bytes[6] = start_index;
-	bytes[7] = count;
-	bytes[8] = total;
-	bytes[9] = next;
-	bytes[10] = (uint8_t)cal.state;
-	bytes[11] = (uint8_t)cal.mode;
-	bytes[12] = cal.fit[physical_index].valid ? 1U : 0U;
-	bytes[13] = cal.fit[physical_index].accepted ? 1U : 0U;
-	bytes[14] = cal.record_overflow[physical_index] ? 1U : 0U;
-	bytes[15] = ATTEN_CAL_DATA_CHUNK_RECORD_SIZE;
+	bytes[5] = ATTEN_CAL_DATA_KIND_METADATA;
+	bytes[6] = physical_index;
+	bytes[7] = (uint8_t)cal.state;
+	bytes[8] = (uint8_t)cal.mode;
+	bytes[9] = cal.fit[physical_index].valid ? 1U : 0U;
+	bytes[10] = cal.fit[physical_index].accepted ? 1U : 0U;
+	bytes[11] = cal.record_overflow[physical_index] ? 1U : 0U;
+	bytes[12] = ATTEN_CAL_DATA_CHUNK_RECORD_SIZE;
+	bytes[13] = (uint8_t)ATTEN_CAL_DATA_RECORDS_PER_CHUNK;
+	bytes[14] = total;
+	bytes[15] = chunk_count;
+	bytes[16] = cal.reference_record_index_valid[physical_index] ? 1U : 0U;
+	bytes[17] = cal.reference_record_index[physical_index];
+	bytes[18] = bridge_count;
+	for (uint8_t i = 0U; i < bridge_count; ++i) {
+		const struct atten_cal_bridge *bridge = &cal.bridges[physical_index][i];
+		size_t off = ATTEN_CAL_DATA_METADATA_HEADER_SIZE +
+			     ((size_t)i * ATTEN_CAL_DATA_BRIDGE_ENTRY_SIZE);
+
+		bytes[off] = bridge->before_record_index;
+		bytes[off + 1U] = bridge->after_record_index;
+	}
+	*written = byte_count;
+	k_mutex_unlock(&cal_lock);
+	return 0;
+}
+
+/** Copy retained calibration records into one fixed host binary chunk. */
+int attenuator_calibration_write_record_chunk(void *payload,
+					      size_t payload_len,
+					      uint8_t physical_index,
+					      uint8_t chunk_index,
+					      size_t *written)
+{
+	uint8_t *bytes = payload;
+	uint8_t total;
+	uint8_t start_index;
+	uint8_t count;
+	uint8_t chunk_count;
+	size_t byte_count;
+
+	if (payload == NULL || written == NULL ||
+	    physical_index >= ATTENUATOR_PHYSICAL_COUNT) {
+		return -EINVAL;
+	}
+	*written = 0U;
+
+	k_mutex_lock(&cal_lock, K_FOREVER);
+	total = cal.record_count[physical_index];
+	chunk_count = (uint8_t)(((uint16_t)total + ATTEN_CAL_DATA_RECORDS_PER_CHUNK - 1U) /
+				ATTEN_CAL_DATA_RECORDS_PER_CHUNK);
+	if (chunk_index >= chunk_count) {
+		k_mutex_unlock(&cal_lock);
+		return -ERANGE;
+	}
+	start_index = (uint8_t)(chunk_index * ATTEN_CAL_DATA_RECORDS_PER_CHUNK);
+	count = (uint8_t)MIN((uint16_t)ATTEN_CAL_DATA_RECORDS_PER_CHUNK,
+			     (uint16_t)total - start_index);
+	byte_count = (size_t)count * ATTEN_CAL_DATA_CHUNK_RECORD_SIZE;
+	if (byte_count > payload_len) {
+		k_mutex_unlock(&cal_lock);
+		return -ENOSPC;
+	}
+
 	for (uint8_t i = 0U; i < count; ++i) {
-		write_record_wire(bytes + ATTEN_CAL_DATA_CHUNK_HEADER_SIZE +
-				  ((size_t)i * ATTEN_CAL_DATA_CHUNK_RECORD_SIZE),
+		write_record_wire(bytes + ((size_t)i * ATTEN_CAL_DATA_CHUNK_RECORD_SIZE),
 				  &cal.records[physical_index][start_index + i]);
 	}
 	*written = byte_count;

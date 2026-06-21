@@ -17,7 +17,8 @@ records that are valid for the current attenuator model.
 flowchart TD
   Cmd[atten/calibrate command] --> Start[attenuator_calibration_start_auto]
   StatusReq[atten/calibrate query] --> Status[attenuator_calibration_format_status]
-  RecordsReq[atten/calibrate/records query] --> Chunk[attenuator_calibration_write_data_chunk]
+  RecordsMetaReq[atten/calibrate/records/<physical>] --> Meta[attenuator_calibration_write_data_metadata]
+  RecordsChunkReq[atten/calibrate/records/<physical>/<chunk>] --> Chunk[attenuator_calibration_write_record_chunk]
 
   PDThread[photodiode sampler thread] --> PDStatus[photodiode_status snapshot]
   PDThread --> ConfigWindow[channel internal configurable window]
@@ -31,6 +32,7 @@ flowchart TD
 
   CalState --> Telemetry[dt/device/atten best-effort telemetry]
   CalState --> Status
+  CalState --> Meta
   CalState --> Chunk
   Fit[accepted fit] --> Runtime[attenuator runtime coefficients]
   Fit --> Persist{persist requested}
@@ -144,10 +146,8 @@ flowchart TD
   LowerLaser -- yes --> Initial
   LowerLaser -- no --> Error[calibration error]
   SaturatedAtMax -- no --> CompanionSearch[binary search companion FVOA]
-  CompanionSearch --> Reference[record open reference]
-  Reference --> ReferenceOK{reference usable}
-  ReferenceOK -- no --> Error
-  ReferenceOK -- yes --> Sweep[binary sweep DUT toward attenuation]
+  CompanionSearch --> Reference[select usable initial-probe record as open reference]
+  Reference --> Sweep[linear DUT sweep from 0 to max]
   Sweep --> Band{photodiode band}
   Band -- saturated --> Bright[retain diagnostic; sweep toward more DUT attenuation]
   Bright --> MoreRange{DUT near max drive}
@@ -169,13 +169,21 @@ at maximum attenuation. If even that clips the ADC, firmware retries with lower
 laser output levels. The companion binary search then finds the most open
 companion setting that is still non-saturated.
 
-The DUT sweep is binary and classification-aware. A usable point updates the latest
-bridge anchor and extends the lower side of the useful sweep. A saturated point
-is too bright, so it also advances the search toward more DUT attenuation but is
-not a fit candidate and does not become a bridge trigger. A below-SNR point narrows
-the dim side of the sweep. When that dim edge is bracketed before the DUT
-reaches full drive, firmware performs bridge normalization instead of discarding
-the remaining dynamic range.
+The selected open reference is a measured `initial_probe` record named by
+metadata. Firmware does not append a separate reference copy and does not
+repeat the measurement solely to confirm it. If the initial companion search
+cannot find a usable candidate, the acquisition errors because no valid
+normalization point exists for that physical FVOA.
+
+The DUT sweep is linear and classification-aware. It starts at 0 mV and advances
+by `ATTEN_CAL_SWEEP_STEP_MV` until full DAC drive. A usable point updates the
+latest bridge anchor. A saturated point is too bright, so it also advances to
+the next linear DUT step but is not a fit candidate and does not become a bridge
+trigger. A below-SNR point marks the dim edge of the current segment. When that
+dim edge appears before the DUT reaches full drive, firmware performs bridge
+normalization instead of discarding the remaining dynamic range. The similarly
+named `ATTEN_CAL_SEARCH_MIN_STEP_MV` is only the minimum bracket width for
+companion-FVOA binary searches.
 
 ## Bridge Normalization
 
@@ -185,31 +193,34 @@ sequenceDiagram
   participant Other as Companion FVOA
   participant PD as Photodiode configurable window
   participant Cal as Calibration
+  participant Rec as Retained records
 
-  Cal->>DUT: hold last usable DUT drive
-  Cal->>Other: keep current companion drive
-  PD-->>Cal: bridge_before signal
+  Cal->>Rec: find latest usable DUT point in current segment
+  Cal->>DUT: hold that DUT drive
   Cal->>Other: search lower companion DAC for lowest usable point
   PD-->>Cal: bridge_probe records
-  Cal->>Other: confirm usable companion candidate
-  PD-->>Cal: bridge_after signal if accepted
-  Cal->>Cal: ratio = after / before
+  Cal->>Rec: store before/after record indices in bridge table
+  Cal->>Cal: ratio = accepted bridge_probe / retained DUT anchor
   Cal->>Cal: segment_scale *= ratio
   Cal->>Cal: add bridge variance to scale variance
   Cal->>DUT: resume DUT sweep in new segment
 ```
 
 Because the DUT FVOA does not move during the bridge, the before/after
-photodiode ratio measures only the change in companion transmission. Later DUT
-measurements are divided by the cumulative segment scale so all segments share
-the open-reference normalization.
+photodiode ratio measures only the change in companion transmission. The
+before side is the latest usable retained `point` in the segment being closed.
+The after side is the accepted retained `bridge_probe` in the new segment.
+Those record indices are stored in the bridge table rather than copied into
+synthetic records. Later DUT measurements are divided by the cumulative segment
+scale so all segments share the open-reference normalization.
 
-If a bridge confirmation is saturated or below-SNR, that result is folded back
-into the companion bracket and retained as a `bridge_probe`; it is not by itself
-evidence that the swept-DUT anchor is bad. Swept-DUT backoff is reserved for
-cases where `bridge_before` is unusable, the companion search cannot find a
-useful candidate with real headroom, or bridge ratio validation remains
-impossible after bounded probing.
+If a bridge search cannot find a usable companion point, firmware either
+tightens the saturated-side search floor and keeps probing or finishes the
+physical when the search demonstrates that the current bridge would add no more
+useful attenuation range. A missing bridge anchor means the current segment has
+no usable sweep point; after a bridge, a single immediately below-SNR point is
+treated as the natural end of the physical sweep rather than an acquisition
+error.
 
 ## Tick State
 
@@ -254,20 +265,21 @@ flowchart TD
   Store --> CompleteOK
 ```
 
-Every retained record is available through
-`atten/calibrate/records/<dac1|dac2>[/<start>]` as a bounded binary HAC4 chunk.
+Every retained dataset is available through
+`atten/calibrate/records/<dac1|dac2>` followed by numbered
+`atten/calibrate/records/<dac1|dac2>/<chunk>` record chunks. The first response
+contains HAC4 metadata: state, fit flags, record size, records per chunk,
+record count, record chunk count, selected open-reference record, and bridge
+before/after record indices. Each numbered chunk contains only raw records.
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
 
 Saturation classification is based on the photodiode window mean reaching the
 ADC rail. Window extrema are diagnostic only, since electrical and optical noise
-can produce isolated rail excursions without pinning the diode. If a bridge
-cannot be completed from the held DUT anchor after bounded companion probing,
-the acquisition backs off to an earlier usable sweep point in the current
-segment and overwrites the marginal retained records. The backoff is bounded by
-the firmware constants for ADC-range fraction and by at most half of the current
-segment's usable sweep points; each backoff emits live telemetry/logging so the
-operator can see the discarded boundary attempts.
+can produce isolated rail excursions without pinning the diode. Saturated sweep
+records are retained but are not fit candidates and do not trigger bridge
+normalization. Below-SNR sweep records trigger a bridge unless the DUT is
+already at the end of the firmware drive range.
 
 Retained records store raw acquisition facts only: `sweep_mv`, `other_mv`,
 `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`, `event`,
@@ -284,10 +296,11 @@ The retained record events are:
 | --- | --- |
 | `point` | ordinary DUT sweep point |
 | `initial_probe` | companion-search point before the open reference |
-| `reference` | open reference that normalizes relative transmission |
-| `bridge_before` | boundary repeat before opening the companion |
-| `bridge_probe` | companion search point or failed bridge confirmation |
-| `bridge_after` | accepted post-bridge normalization point |
+| `bridge_probe` | companion-search point during bridge normalization |
+
+The open reference, bridge-before, and bridge-after roles are metadata indices
+into these retained records. They are plotted as roles by host tools but are
+not separate firmware event values.
 
 The derived relative transmission for a fit point is:
 

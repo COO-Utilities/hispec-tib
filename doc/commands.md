@@ -1086,24 +1086,33 @@ ownership are documented in `attenuator_calibration.md`.
   }
   ```
 - **Record data query:** retained calibration acquisition records are available
-  as bounded binary MQTT chunks, independent of best-effort telemetry:
+  as metadata plus fixed binary MQTT record chunks, independent of best-effort
+  telemetry:
   ```
-  atten/calibrate/records/<dac1|dac2>[/<start>]
+  atten/calibrate/records/<dac1|dac2>
+  atten/calibrate/records/<dac1|dac2>/<chunk>
   ```
-  `start` is optional and defaults to `0`. The response is not JSON and is
-  MQTT-only because the serial response printer is string-oriented. The first
-  16 bytes are `<4s 12B>`: magic `HAC4`, version, physical index, start,
-  count, total, next, state, mode, fit-valid, fit-accepted, overflow, and
-  record-size. `next=255` means the chunk is complete. Version 3 chunks use
-  record size 27 bytes. Each following record has little-endian layout
-  `<6f 3B>`: `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`,
-  `signal_err_mv`, `max_mv`, `event`, `classification`, and `segment`.
-  Event codes are `0=point`, `1=initial_probe`, `2=reference`,
-  `3=bridge_before`, `4=bridge_probe`, `5=bridge_after`; classification codes
-  are `0=ok`, `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
+  The metadata query has no chunk suffix. The response is not JSON and is
+  MQTT-only because the serial response printer is string-oriented. The
+  metadata response starts with `<4s 15B>`: magic `HAC4`, version, kind
+  (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
+  overflow, record-size, records-per-chunk, record-count, record-chunk-count,
+  reference-valid, reference-record, and bridge-count. It is followed by
+  `bridge-count` little-endian `<2B>` bridge entries containing
+  `before_record` and `after_record` indices. The reference and bridge entries
+  name roles for retained raw records; they are not separate copied records.
+
+  Each numbered chunk response contains only raw records and no header. Chunk
+  `0` starts at record `0`; subsequent chunks use the fixed
+  `records-per-chunk` value reported by metadata. Version 3 uses record size
+  27 bytes, and each raw record has little-endian layout `<6f 3B>`:
+  `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
+  `event`, `classification`, and `segment`. Event codes are `0=point`,
+  `1=initial_probe`, and `2=bridge_probe`; classification codes are `0=ok`,
+  `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
   `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
-  `0=none`, `1=tib_auto`. The Python tool decodes chunks directly into a NumPy
-  raw record array with those firmware names. It also adds convenience
+  `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
+  NumPy raw record array with those firmware names. It also adds convenience
   `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
   default FVOA drive gain; those columns are host-side coordinates, not
   additional firmware measurements. Bridge scale, scaled signal, transmission,
@@ -1152,12 +1161,11 @@ ownership are documented in `attenuator_calibration.md`.
   }
   ```
   Other `event` values include `start`, `physical_start`, `initial_probe_set`,
-  `point_set`, `bridge_before_set`, `bridge_probe_set`, `bridge_after_set`,
-  `initial_probe`, `reference`, `bridge_before`, `bridge_probe`, `bridge_after`,
-  `bridge_backoff`, `fit`, `complete`, `stop`, and `error`. Fit input and
-  residual diagnostics are
-  retained in calibration state and queried through `atten/calibrate/records`
-  instead of being emitted as an end-of-run telemetry burst.
+  `point_set`, `bridge_probe_set`, `initial_probe`, `point`, `bridge_probe`,
+  `fit`, `complete`, `stop`, and `error`. Fit input and residual diagnostics
+  are retained in calibration state and queried through
+  `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
+  burst.
 
 - **Notes:**
   - State names are `inactive`, `running`, `complete`, and `error`.
@@ -1189,11 +1197,17 @@ ownership are documented in `attenuator_calibration.md`.
     fit inputs.
   - Automatic calibration does not use a voltage schedule or datasheet limits
     to choose calibration points. For each physical FVOA it binary-searches the
-    companion FVOA to find the lowest usable companion DAC, binary-sweeps the
-    DUT toward attenuation, skips saturated bright-side sweep records as
-    diagnostics, and bridge-normalizes when the sweep reaches the below-SNR dim
-    edge. Bridge normalization holds the DUT and opens the companion FVOA; the
-    bridge before/after ratio updates the segment scale and its uncertainty.
+    companion FVOA to find the lowest usable companion DAC, selects that
+    measured initial-probe record as the open reference, linearly sweeps the
+    DUT from 0 mV to maximum drive in
+    `ATTEN_CAL_SWEEP_STEP_MV` increments, skips saturated bright-side sweep
+    records as diagnostics, and bridge-normalizes when the sweep reaches the
+    below-SNR dim edge. `ATTEN_CAL_SEARCH_MIN_STEP_MV` is the companion binary
+    search resolution, not the DUT sweep step. Bridge normalization holds the
+    DUT, selects the latest usable DUT point as the bridge-before record,
+    searches the companion FVOA, and records the accepted bridge probe as the
+    bridge-after record in the bridge table. The bridge ratio updates the
+    segment scale and its uncertainty.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
     derived as fit candidates by classification and transmission-domain rules. External analysis can

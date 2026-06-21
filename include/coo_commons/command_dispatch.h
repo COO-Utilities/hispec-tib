@@ -50,7 +50,7 @@ struct nvs_fs;
 #if defined(CONFIG_COO_CMD_PAYLOAD_SIZE)
 #define COO_CMD_PAYLOAD_MAX CONFIG_COO_CMD_PAYLOAD_SIZE
 #else
-#define COO_CMD_PAYLOAD_MAX 256
+#define COO_CMD_PAYLOAD_MAX 1024
 #endif
 
 /**

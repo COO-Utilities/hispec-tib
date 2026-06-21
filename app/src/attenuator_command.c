@@ -541,20 +541,24 @@ static int atten_calibration_status_reply(
 
 static int parse_calibration_records_suffix(const char *key,
 					    uint8_t *physical_index,
-					    uint8_t *start_index)
+					    bool *chunk_requested,
+					    uint8_t *chunk_index)
 {
 	const char *suffix;
 	const char *slash;
 	char physical[8] = {0};
-	char start_text[8] = "0";
+	char chunk_text[8] = {0};
 	size_t physical_len;
-	size_t start_len;
+	size_t chunk_len;
 	char *end = NULL;
 	unsigned long parsed;
 
-	if (key == NULL || physical_index == NULL || start_index == NULL) {
+	if (key == NULL || physical_index == NULL ||
+	    chunk_requested == NULL || chunk_index == NULL) {
 		return -EINVAL;
 	}
+	*chunk_requested = false;
+	*chunk_index = 0U;
 
 	suffix = coo_cmd_key_suffix_after(key, "atten/calibrate/records");
 	if (suffix[0] == '\0') {
@@ -569,12 +573,13 @@ static int parse_calibration_records_suffix(const char *key,
 	physical[physical_len] = '\0';
 
 	if (slash != NULL) {
-		start_len = strlen(slash + 1U);
-		if (start_len == 0U || start_len >= sizeof(start_text) ||
+		chunk_len = strlen(slash + 1U);
+		if (chunk_len == 0U || chunk_len >= sizeof(chunk_text) ||
 		    strchr(slash + 1U, '/') != NULL) {
 			return -EINVAL;
 		}
-		memcpy(start_text, slash + 1U, start_len + 1U);
+		memcpy(chunk_text, slash + 1U, chunk_len + 1U);
+		*chunk_requested = true;
 	}
 
 	if (strcmp(physical, "dac1") == 0) {
@@ -585,13 +590,15 @@ static int parse_calibration_records_suffix(const char *key,
 		return -EINVAL;
 	}
 
-	errno = 0;
-	parsed = strtoul(start_text, &end, 10);
-	if (errno != 0 || end == NULL || *end != '\0' ||
-	    parsed >= ATTENUATOR_CAL_RECORD_COUNT) {
-		return -EINVAL;
+	if (*chunk_requested) {
+		errno = 0;
+		parsed = strtoul(chunk_text, &end, 10);
+		if (errno != 0 || end == NULL || *end != '\0' ||
+		    parsed > UINT8_MAX) {
+			return -EINVAL;
+		}
+		*chunk_index = (uint8_t)parsed;
 	}
-	*start_index = (uint8_t)parsed;
 	return 0;
 }
 
@@ -599,7 +606,8 @@ int atten_calibration_records_get(const struct coo_cmd_request *cmd,
 				  struct coo_cmd_response *out)
 {
 	uint8_t physical_index;
-	uint8_t start_index;
+	bool chunk_requested;
+	uint8_t chunk_index;
 	size_t written = 0U;
 	int rc;
 
@@ -609,10 +617,11 @@ int atten_calibration_records_get(const struct coo_cmd_request *cmd,
 	}
 
 	rc = parse_calibration_records_suffix(cmd != NULL ? cmd->key : NULL,
-					      &physical_index, &start_index);
+					      &physical_index,
+					      &chunk_requested, &chunk_index);
 	if (rc != 0) {
 		return coo_cmd_error(out, cmd,
-				     "use atten/calibrate/records/<dac1|dac2>[/<start>]");
+				     "use atten/calibrate/records/<dac1|dac2>[/<chunk>]");
 	}
 
 	rc = coo_cmd_make_response(out, cmd, COO_CMD_RESP_OK, NULL, NULL, NULL);
@@ -620,9 +629,15 @@ int atten_calibration_records_get(const struct coo_cmd_request *cmd,
 		return rc;
 	}
 
-	rc = attenuator_calibration_write_data_chunk(out->payload, sizeof(out->payload),
-						     physical_index, start_index,
-						     &written);
+	if (chunk_requested) {
+		rc = attenuator_calibration_write_record_chunk(
+			out->payload, sizeof(out->payload),
+			physical_index, chunk_index, &written);
+	} else {
+		rc = attenuator_calibration_write_data_metadata(
+			out->payload, sizeof(out->payload),
+			physical_index, &written);
+	}
 	if (rc != 0) {
 		return coo_cmd_error(out, cmd, "calibration records unavailable");
 	}
