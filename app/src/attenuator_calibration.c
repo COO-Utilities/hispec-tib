@@ -59,7 +59,7 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-/* One ADC cycle is just under 3 ms; the pad prevents reading a partial window. */
+/* One ADC cycle is  under 3 ms; the pad prevents reading a partial window. */
 #define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
 #define ATTEN_CAL_ADC_LSB_MV 0.1875f
 #define ATTEN_CAL_ADC_CLIP_MV 5000.0f
@@ -717,7 +717,7 @@ static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 	}
 	atten_cal_emit_set(event);
 	cal.wait_until_ms = k_uptime_get() + cal.dwell_ms;
-	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;
+	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;  // From here execution resumes at auto_tick_locked()
 }
 
 /** Initialize acquisition state for the current physical FVOA and schedule its first probe. */
@@ -790,7 +790,9 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 	if (record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED &&
 		cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV - ATTEN_CAL_SEARCH_MIN_STEP_MV) {
 
+		/* Decrease laser level & try again */
 		if (cal.laser_level_index + 1U >= ARRAY_SIZE(initial_laser_levels_pct)) {
+			// Can't go fainter, still too bright :(
 			auto_error_locked(-ERANGE);
 			return;
 		}
@@ -814,7 +816,7 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 		if (!cal.search_candidate_valid) {
 			LOG_INF("atten cal initial probe no viable initial reference. impossible. physical=%s",
 				physical_name(cal.physical_index));
-			auto_error_locked(-ERANGE);
+			auto_error_locked(-ERANGE);  // Can't go fainter, still too bright
 			return;
 		}
 
@@ -917,6 +919,7 @@ static void auto_begin_bridge_locked(void)
 			auto_finish_physical_locked();
 			return;
 		}
+		/** all sweep points in previous segment were saturated or below sn limit (and yet not at max drive) */
 		LOG_ERR("No usable bridge anchor found in segment %u, should be impossible", cal.segment_id);
 		auto_error_locked(-ERANGE);
 		return;
@@ -956,6 +959,8 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 
 		uint8_t bridge_index = cal.search_candidate_record_index;
 		if (!cal.search_candidate_valid) {
+			// Search again with a floor > cal.search_candidate_mv
+
 			float search_floor = 0;
 			for (uint8_t i = 1; i <= cal.point_index; ++i) {
 				const struct atten_cal_record *candidate_record =
@@ -963,8 +968,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 
 				if (candidate_record->event == ATTEN_CAL_EVENT_BRIDGE_PROBE &&
 				    candidate_record->segment == cal.segment_id) {
-					if (candidate_record->classification ==
-					    ATTEN_CAL_CLASSIFICATION_SATURATED) {
+					if (candidate_record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED) {
 						search_floor = fmaxf(search_floor, candidate_record->other_mv);
 						break;
 					}
@@ -980,6 +984,8 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 			}
 
 			if (fabsf(search_floor - cal.other_mv) < ATTEN_CAL_SEARCH_MIN_STEP_MV) {
+				// somehow no good bridge probe as all were saturated, try again with a higher attenuation floor.
+				// If we are here, I think we should ALWAYS be here (and we should never get here)
 				LOG_INF("atten cal bridge probe no viable new point. impossible. physical=%s",
 					physical_name(cal.physical_index));
 				auto_error_locked(-ERANGE);
@@ -997,6 +1003,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 		bool bad_bridge = (ratio <= 1.0f) || !isfinite(ratio);
 
 		if (bad_bridge) {
+			/* This shouldn't be possible, but handling it is the same as ATTEN_CAL_CLASSIFICATION_BELOW_SNR */
 			LOG_INF("atten cal bridge probe selected a <1= ratio. impossible. physical=%s",
 				physical_name(cal.physical_index));
 			auto_error_locked(-ERANGE);
