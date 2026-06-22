@@ -26,6 +26,8 @@ struct attenuator_calibration_fit_metrics {
 	uint8_t points;
 	double fvoa_50pct_mv;
 	double slope_inv_fvoa_mv;
+	double max_atten_db;
+	double max_atten_sigma_db;
 	double correlation;
 	double rms_db;
 	double max_abs_db;

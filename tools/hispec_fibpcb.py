@@ -51,7 +51,7 @@ PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 ATTENUATOR_DRIVE_MAX_MV = 3300.0
 ATTENUATOR_DEFAULT_GAIN = 1.533
 ATTENUATOR_MODEL_ERF_SCALE = 4.0
-ATTENUATOR_DEFAULT_MAX_ATTEN_DB = 120.0
+FVOA_DEFAULT_MAX_ATTEN_DB = 55.0
 ATTENUATOR_ADC_CLIP_MV = 5000.0
 ATTENUATOR_CAL_SNR_USABLE = 5.0
 ATTEN_CAL_MIN_TX = 1.0e-10
@@ -546,6 +546,7 @@ class AttenuatorState(ResponseRepr):
 class AttenuatorPhysicalCoeff(ResponseRepr):
     fvoa_50pct_mv: float
     slope_inv_fvoa_mv: float
+    max_atten_db: float
     gain: float
 
 
@@ -563,6 +564,7 @@ class AttenuatorFitMetrics(ResponseRepr):
     fvoa_50pct_mv: float | None = None
     slope_inv_fvoa_mv: float | None = None
     max_atten_db: float | None = None
+    max_atten_sigma_db: float | None = None
     corr: float | None = None
     rms_db: float | None = None
     max_abs_db: float | None = None
@@ -579,6 +581,7 @@ class AttenuatorFitMetrics(ResponseRepr):
             f"fvoa_50pct_mv={_format_repr(self.fvoa_50pct_mv)}, "
             f"slope_inv_fvoa_mv={_format_repr(self.slope_inv_fvoa_mv)}, "
             f"max_atten_db={_format_repr(self.max_atten_db)}, "
+            f"max_atten_sigma_db={_format_repr(self.max_atten_sigma_db)}, "
             f"corr={_format_repr(self.corr)}, "
             f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
             f"fvoa_span_mv={_format_repr(self.fvoa_span_mv)})"
@@ -805,29 +808,25 @@ def _atten_coeff_tuple(
     if isinstance(coeff, AttenuatorPhysicalCoeff):
         fvoa_50pct_mv = coeff.fvoa_50pct_mv
         slope_inv_fvoa_mv = coeff.slope_inv_fvoa_mv
-        max_atten_db = ATTENUATOR_DEFAULT_MAX_ATTEN_DB
+        max_atten_db = coeff.max_atten_db
         gain = coeff.gain
     elif isinstance(coeff, Mapping):
         try:
             fvoa_50pct_mv = float(coeff["fvoa_50pct_mv"])
             slope_inv_fvoa_mv = float(coeff["slope_inv_fvoa_mv"])
-            max_atten_db = float(coeff.get("max_atten_db", ATTENUATOR_DEFAULT_MAX_ATTEN_DB))
+            max_atten_db = float(coeff["max_atten_db"])
             gain = float(coeff.get("gain", ATTENUATOR_DEFAULT_GAIN))
         except (KeyError, TypeError, ValueError) as exc:
             raise HispecFibError(f"{name} coefficient is malformed") from exc
     else:
         values = tuple(float(value) for value in coeff)
-        if len(values) == 2:
-            fvoa_50pct_mv, slope_inv_fvoa_mv = values
-            max_atten_db = ATTENUATOR_DEFAULT_MAX_ATTEN_DB
-            gain = ATTENUATOR_DEFAULT_GAIN
-        elif len(values) == 3:
+        if len(values) == 3:
             fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values
             gain = ATTENUATOR_DEFAULT_GAIN
         elif len(values) == 4:
             fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values
         else:
-            raise HispecFibError(f"{name} coefficient must have 2, 3, or 4 values")
+            raise HispecFibError(f"{name} coefficient must have 3 or 4 values")
 
     if not (
         np.isfinite(fvoa_50pct_mv)
@@ -2323,7 +2322,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if fit.fvoa_50pct_mv is None or fit.slope_inv_fvoa_mv is None:
                 continue
             max_atten_db = (
-                ATTENUATOR_DEFAULT_MAX_ATTEN_DB
+                FVOA_DEFAULT_MAX_ATTEN_DB
                 if fit.max_atten_db is None
                 else float(fit.max_atten_db)
             )
@@ -3043,6 +3042,7 @@ def _decode_atten_physical_coeff(data: Mapping[str, Any], name: str) -> Attenuat
         return AttenuatorPhysicalCoeff(
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
+            max_atten_db=float(data["max_atten_db"]),
             gain=float(data["gain"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -3058,30 +3058,40 @@ def _atten_physical_coeff_payload(
     if isinstance(value, AttenuatorPhysicalCoeff):
         fvoa_50pct_mv = value.fvoa_50pct_mv
         slope_inv_fvoa_mv = value.slope_inv_fvoa_mv
+        max_atten_db = value.max_atten_db
         gain = value.gain
     elif isinstance(value, Mapping):
         try:
             fvoa_50pct_mv = value["fvoa_50pct_mv"]
             slope_inv_fvoa_mv = value["slope_inv_fvoa_mv"]
+            max_atten_db = value["max_atten_db"]
             gain = value.get("gain", default_gain)
         except KeyError as exc:
             raise HispecFibError(
-                f"{name} must contain fvoa_50pct_mv and slope_inv_fvoa_mv"
+                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
             ) from exc
     else:
-        if len(value) != 2:
+        if len(value) == 3:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = default_gain
+        elif len(value) == 4:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = value[3]
+        else:
             raise HispecFibError(
-                f"{name} must contain fvoa_50pct_mv and slope_inv_fvoa_mv"
+                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
             )
-        fvoa_50pct_mv = value[0]
-        slope_inv_fvoa_mv = value[1]
-        gain = default_gain
 
     return {
         "fvoa_50pct_mv": _require_float(f"{name}.fvoa_50pct_mv", fvoa_50pct_mv, 1e-12, 1e12),
         "slope_inv_fvoa_mv": _require_float(
             f"{name}.slope_inv_fvoa_mv", slope_inv_fvoa_mv, 1e-12, 1e12
         ),
+        "max_atten_db": _require_float(f"{name}.max_atten_db", max_atten_db, 1e-12, 1e12),
         "gain": _require_float(f"{name}.gain", gain, 1e-12, 1e12),
     }
 
@@ -3181,7 +3191,8 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
             points=int(data.get("points", 0)),
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
-            max_atten_db=float(data["max_atten_db"]) if "max_atten_db" in data else None,
+            max_atten_db=float(data["max_atten_db"]),
+            max_atten_sigma_db=float(data["max_atten_sigma_db"]),
             corr=float(data["corr"]),
             rms_db=float(data["rms_db"]),
             max_abs_db=float(data["max_abs_db"]),

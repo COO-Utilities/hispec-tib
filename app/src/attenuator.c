@@ -18,7 +18,6 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define DAC_RESOLUTION_BITS 12
 #define DAC_MAX_CODE        ((1 << DAC_RESOLUTION_BITS) - 1)
 #define MODEL_ERF_SCALE     4.0
-#define MODEL_MAX_DB        120.0
 #define MODEL_MIN_TX        1.0e-300
 #define ATTENUATOR_DB_EPSILON 1.0e-6
 #define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5f
@@ -58,18 +57,56 @@ static double attenuator_model_open_linear(const struct attenuator_model_coeffs 
     return attenuator_model_raw_linear(coeffs, 0.0f);
 }
 
-static double attenuator_model_relative_linear(const struct attenuator_model_coeffs *coeffs,
-                                               float voltage)
+static double attenuator_model_floor_linear(const struct attenuator_model_coeffs *coeffs)
+{
+    double floor_tx;
+
+    if (coeffs == NULL || !isfinite(coeffs->max_atten_db) ||
+        coeffs->max_atten_db <= 0.0) {
+        return 0.0;
+    }
+
+    floor_tx = pow(10.0, -coeffs->max_atten_db / 10.0);
+    if (!isfinite(floor_tx) || floor_tx <= 0.0 || floor_tx >= 1.0) {
+        return 0.0;
+    }
+    return floor_tx;
+}
+
+static double attenuator_model_ideal_relative_linear(const struct attenuator_model_coeffs *coeffs,
+                                                     float voltage)
 {
     double open_tx = attenuator_model_open_linear(coeffs);
     double tx = attenuator_model_raw_linear(coeffs, voltage);
     double relative;
 
     if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
-        return 0.0;
+        return NAN;
     }
 
     relative = tx / open_tx;
+    if (!isfinite(relative) || relative <= 0.0) {
+        return 0.0;
+    }
+    if (relative > 1.0) {
+        return 1.0;
+    }
+    return relative;
+}
+
+static double attenuator_model_relative_linear(const struct attenuator_model_coeffs *coeffs,
+                                               float voltage)
+{
+    double floor_tx = attenuator_model_floor_linear(coeffs);
+    double ideal_tx = attenuator_model_ideal_relative_linear(coeffs, voltage);
+    double relative;
+
+    if (!(floor_tx > 0.0) || !isfinite(ideal_tx)) {
+        return 0.0;
+    }
+
+    ideal_tx = CLAMP(ideal_tx, 0.0, 1.0);
+    relative = floor_tx + (1.0 - floor_tx) * ideal_tx;
     if (!isfinite(relative) || relative <= 0.0) {
         return 0.0;
     }
@@ -148,9 +185,11 @@ bool attenuator_init(struct attenuator *drv,
     attenuator_cfg_init(&drv->dac_cfg2, dac2, channel2);
     drv->coeff1.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
     drv->coeff1.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff1.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
     drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->coeff2.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
     drv->coeff2.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff2.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
     drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->attenuation_db = 0.0;
 
@@ -170,7 +209,8 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
     transmission = attenuator_model_relative_linear(coeffs, voltage);
 
     if (transmission <= 0.0) {
-        return MODEL_MAX_DB;
+        return isfinite(coeffs->max_atten_db) && coeffs->max_atten_db > 0.0 ?
+               coeffs->max_atten_db : FVOA_DEFAULT_MAX_ATTEN_DB;
     }
     if (transmission >= 1.0) {
         return 0.0;
@@ -183,7 +223,10 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
                                     double attenuation_db, float *voltage)
 {
     const double erf_scale = ZSL_ERF(MODEL_ERF_SCALE);
+    double floor_tx;
     double open_tx;
+    double target_relative;
+    double target_ideal;
     double target_tx;
     double erf_arg;
     double delta;
@@ -204,7 +247,28 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
         return false;
     }
 
-    target_tx = open_tx * pow(10.0, -attenuation_db / 10.0);
+    floor_tx = attenuator_model_floor_linear(coeffs);
+    if (!(floor_tx > 0.0)) {
+        return false;
+    }
+    target_relative = pow(10.0, -attenuation_db / 10.0);
+    if (!isfinite(target_relative) || target_relative <= floor_tx) {
+        return false;
+    }
+    if (target_relative >= 1.0) {
+        *voltage = 0.0f;
+        return true;
+    }
+
+    target_ideal = (target_relative - floor_tx) / (1.0 - floor_tx);
+    if (!isfinite(target_ideal) || target_ideal <= 0.0) {
+        return false;
+    }
+    if (target_ideal > 1.0) {
+        target_ideal = 1.0;
+    }
+
+    target_tx = open_tx * target_ideal;
     if (!(target_tx > MODEL_MIN_TX) || !isfinite(target_tx)) {
         return false;
     }
@@ -228,8 +292,12 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
     double max_db;
 
     if (coeffs == NULL || !isfinite(coeffs->fvoa_50pct_mv) ||
-        !isfinite(coeffs->slope_inv_fvoa_mv) || !isfinite(coeffs->gain) ||
+        !isfinite(coeffs->slope_inv_fvoa_mv) ||
+        !isfinite(coeffs->max_atten_db) || !isfinite(coeffs->gain) ||
         coeffs->slope_inv_fvoa_mv <= 0.0 || coeffs->gain <= 0.0) {
+        return false;
+    }
+    if (!(attenuator_model_floor_linear(coeffs) > 0.0)) {
         return false;
     }
 
@@ -591,6 +659,10 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
     double tx2;
     double open_tx1;
     double open_tx2;
+    double floor_tx1;
+    double floor_tx2;
+    double ideal_tx1;
+    double ideal_tx2;
     double dtx1_db;
     double dtx2_db;
     double var;
@@ -610,17 +682,18 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
     if (!(open_tx1 > MODEL_MIN_TX) || !(open_tx2 > MODEL_MIN_TX)) {
         return false;
     }
+    floor_tx1 = attenuator_model_floor_linear(&drv->coeff1);
+    floor_tx2 = attenuator_model_floor_linear(&drv->coeff2);
+    if (!(floor_tx1 > 0.0) || !(floor_tx2 > 0.0)) {
+        return false;
+    }
 
-    tx1 = attenuator_model_b_to_linear(b1) / open_tx1;
-    tx2 = attenuator_model_b_to_linear(b2) / open_tx2;
-    if (tx1 > 1.0) {
-        tx1 = 1.0;
-    }
-    if (tx2 > 1.0) {
-        tx2 = 1.0;
-    }
-    dtx1_db = attenuator_model_dlinear_db(b1) / open_tx1;
-    dtx2_db = attenuator_model_dlinear_db(b2) / open_tx2;
+    ideal_tx1 = CLAMP(attenuator_model_b_to_linear(b1) / open_tx1, 0.0, 1.0);
+    ideal_tx2 = CLAMP(attenuator_model_b_to_linear(b2) / open_tx2, 0.0, 1.0);
+    tx1 = floor_tx1 + (1.0 - floor_tx1) * ideal_tx1;
+    tx2 = floor_tx2 + (1.0 - floor_tx2) * ideal_tx2;
+    dtx1_db = (1.0 - floor_tx1) * attenuator_model_dlinear_db(b1) / open_tx1;
+    dtx2_db = (1.0 - floor_tx2) * attenuator_model_dlinear_db(b2) / open_tx2;
     var = (tx2 * dtx1_db * sigma_b1) * (tx2 * dtx1_db * sigma_b1) +
           (tx1 * dtx2_db * sigma_b2) * (tx1 * dtx2_db * sigma_b2);
 

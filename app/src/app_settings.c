@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 8U
+#define APP_NVS_SCHEMA_VERSION 9U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -224,9 +224,13 @@ static void settings_defaults(struct app_settings_snapshot *s)
 				 * are stored.
 				 */
 				s->attenuator.channel[ch].physical[physical].fvoa_50pct_mv =
-					0.5 * ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+					0.5 * (double)ATTENUATOR_DRIVE_MAX_MV *
+					ATTENUATOR_DEFAULT_GAIN;
 				s->attenuator.channel[ch].physical[physical].slope_inv_fvoa_mv =
-					8.0 / (ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+					8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV *
+					       ATTENUATOR_DEFAULT_GAIN);
+				s->attenuator.channel[ch].physical[physical].max_atten_db =
+					FVOA_DEFAULT_MAX_ATTEN_DB;
 				s->attenuator.channel[ch].physical[physical].gain =
 					ATTENUATOR_DEFAULT_GAIN;
 		}
@@ -581,6 +585,7 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 
 		physical[i].fvoa_50pct_mv = p->fvoa_50pct_mv;
 		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
+		physical[i].max_atten_db = p->max_atten_db;
 		physical[i].gain = p->gain;
 	}
 

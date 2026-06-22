@@ -196,14 +196,18 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	case ATTENUATOR_SETTING_COEFF:
 		snprintk(payload, sizeof(payload),
 			 "{\"dac1\":{\"fvoa_50pct_mv\":%.12g,"
-			 "\"slope_inv_fvoa_mv\":%.12g,\"gain\":%.12g},"
+			 "\"slope_inv_fvoa_mv\":%.12g,\"max_atten_db\":%.12g,"
+			 "\"gain\":%.12g},"
 			 "\"dac2\":{\"fvoa_50pct_mv\":%.12g,"
-			 "\"slope_inv_fvoa_mv\":%.12g,\"gain\":%.12g}}",
+			 "\"slope_inv_fvoa_mv\":%.12g,\"max_atten_db\":%.12g,"
+			 "\"gain\":%.12g}}",
 			 attenuators[attenuator_index].coeff1.fvoa_50pct_mv,
 			 attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv,
+			 attenuators[attenuator_index].coeff1.max_atten_db,
 			 attenuators[attenuator_index].coeff1.gain,
 			 attenuators[attenuator_index].coeff2.fvoa_50pct_mv,
 			 attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv,
+			 attenuators[attenuator_index].coeff2.max_atten_db,
 			 attenuators[attenuator_index].coeff2.gain);
 		break;
 	case ATTENUATOR_SETTING_COMPACT:
@@ -234,22 +238,14 @@ static int parse_attenuator_coeff_object(const char *json,
 				    &out->fvoa_50pct_mv) != COO_JSON_EXTRACT_OK ||
 	    coo_json_extract_double(object_json, "slope_inv_fvoa_mv",
 				    &out->slope_inv_fvoa_mv) != COO_JSON_EXTRACT_OK ||
+	    coo_json_extract_double(object_json, "max_atten_db",
+				    &out->max_atten_db) != COO_JSON_EXTRACT_OK ||
 	    coo_json_extract_double(object_json, "gain",
 				    &out->gain) != COO_JSON_EXTRACT_OK) {
 		return -EINVAL;
 	}
 
-	return attenuator_model_coefficients_valid(
-		       (struct attenuator_model_coeffs[ATTENUATOR_PHYSICAL_COUNT]){
-			       *out,
-			       {
-				       .fvoa_50pct_mv = 0.5 * ATTENUATOR_DRIVE_MAX_MV *
-							 ATTENUATOR_DEFAULT_GAIN,
-				       .slope_inv_fvoa_mv = 8.0 / (ATTENUATOR_DRIVE_MAX_MV *
-								   ATTENUATOR_DEFAULT_GAIN),
-				       .gain = ATTENUATOR_DEFAULT_GAIN,
-			       },
-		       }) ? 0 : -EINVAL;
+	return 0;
 }
 
 enum attenuator_physical_value_mode {
@@ -490,9 +486,11 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 
 		stored_coeffs.physical[0].fvoa_50pct_mv = physical[0].fvoa_50pct_mv;
 		stored_coeffs.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
+		stored_coeffs.physical[0].max_atten_db = physical[0].max_atten_db;
 		stored_coeffs.physical[0].gain = physical[0].gain;
 		stored_coeffs.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 		stored_coeffs.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
+		stored_coeffs.physical[1].max_atten_db = physical[1].max_atten_db;
 		stored_coeffs.physical[1].gain = physical[1].gain;
 
 		if (attenuator_apply_coefficients_preserve_db(

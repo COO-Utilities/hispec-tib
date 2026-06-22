@@ -65,6 +65,8 @@ enum app_pd_power_mode {
 struct app_attenuator_physical_settings {
 	double fvoa_50pct_mv;
 	double slope_inv_fvoa_mv;
+	/* Maximum attenuation of one physical FVOA from residual leakage. */
+	double max_atten_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
 };

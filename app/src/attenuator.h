@@ -22,10 +22,13 @@
 /* Firmware command/model span for DAC output before the FVOA-drive op amp. */
 #define ATTENUATOR_DRIVE_MAX_MV 3300.0f
 #define ATTENUATOR_DEFAULT_GAIN 1.533
+/* Default maximum attenuation of one physical FVOA, set by residual leakage. */
+#define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
 
 struct attenuator_model_coeffs {
     double fvoa_50pct_mv;
     double slope_inv_fvoa_mv;
+    double max_atten_db;
     double gain;
 };
 
@@ -79,10 +82,11 @@ int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index);
 /**
  * @brief Convert a physical attenuator voltage to modeled attenuation in dB.
  *
- * The model is transmission = (erf(4) - erf(delta)) / (2 * erf(4)), where
- * delta = slope_inv_fvoa_mv * (gain * voltage - fvoa_50pct_mv). The voltage is
- * DAC output millivolts before the external FVOA-drive op amp. This helper does
- * not perform DAC I/O.
+ * The ideal model is transmission = (erf(4) - erf(delta)) / (2 * erf(4)),
+ * where delta = slope_inv_fvoa_mv * (gain * voltage - fvoa_50pct_mv).
+ * max_atten_db adds a physical leakage floor in normalized transmission space.
+ * The voltage is DAC output millivolts before the external FVOA-drive op amp.
+ * This helper does not perform DAC I/O.
  */
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       float voltage);
@@ -115,10 +119,10 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
 /**
  * @brief Validate both physical attenuator model coefficient records.
  *
- * Coefficients must be finite, have positive slope, positive drive gain, and
- * produce a positive modeled attenuation change over the fixed DAC drive span.
- * This performs no DAC I/O and is used before applying or restoring persisted
- * coefficients.
+ * Coefficients must be finite, have positive slope, positive physical maximum
+ * attenuation, positive drive gain, and produce a positive modeled attenuation
+ * change over the fixed DAC drive span. This performs no DAC I/O and is used
+ * before applying or restoring persisted coefficients.
  */
 bool attenuator_model_coefficients_valid(
     const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT]);

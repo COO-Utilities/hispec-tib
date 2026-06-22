@@ -73,6 +73,8 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_MAX_TX 0.999999
 #define ATTEN_CAL_MIN_FIT_CORR 0.85
 #define ATTEN_CAL_MIN_DB_ERR 1.0e-6
+#define ATTENUATOR_FIT_MIN_SIGMA_DB 0.5
+#define ATTEN_CAL_TAIL_FLOOR_POINTS 3U
 #define ATTEN_CAL_SNR_USABLE 5.0f
 #define ATTEN_CAL_DAC_SIGMA_MV 3.0f
 #define ATTEN_CAL_FIT_MAX_ITER 30U
@@ -424,6 +426,8 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    "\"accepted\":%s,\"points\":%u,"
 			    "\"fvoa_50pct_mv\":%.12g,"
 			    "\"slope_inv_fvoa_mv\":%.12g,"
+			    "\"max_atten_db\":%.12g,"
+			    "\"max_atten_sigma_db\":%.12g,"
 			    "\"corr\":%.12g,\"rms_db\":%.12g,"
 			    "\"max_abs_db\":%.12g,\"min_tx\":%.12g,"
 			    "\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
@@ -433,6 +437,8 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    fit != NULL ? fit->points : 0U,
 			    fit != NULL ? (double)fit->fvoa_50pct_mv : (double)NAN,
 			    fit != NULL ? (double)fit->slope_inv_fvoa_mv : (double)NAN,
+			    fit != NULL ? (double)fit->max_atten_db : (double)NAN,
+			    fit != NULL ? (double)fit->max_atten_sigma_db : (double)NAN,
 			    fit != NULL ? (double)fit->correlation : (double)NAN,
 			    fit != NULL ? (double)fit->rms_db : (double)NAN,
 			    fit != NULL ? (double)fit->max_abs_db : (double)NAN,
@@ -1208,13 +1214,63 @@ static int build_fit_points_locked(uint8_t physical,
 	return 0;
 }
 
+/**
+ * Estimate the physical FVOA leakage floor from the final retained fit points.
+ *
+ * Acquisition sweeps monotonically toward higher DUT attenuation. The final
+ * usable points therefore describe the finite transmission floor that remains
+ * when the FVOA is effectively shut. This is not optimized as a third
+ * Gauss-Newton parameter; it is fixed before the two-shape-parameter fit so the
+ * embedded optimizer stays small and reproducible.
+ */
+static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
+				 uint8_t point_count,
+				 double *max_atten_db,
+				 double *max_atten_sigma_db)
+{
+	const uint8_t count = ATTEN_CAL_TAIL_FLOOR_POINTS;
+	double sum = 0.0;
+	double mean;
+	double sum_sq = 0.0;
+	double sigma;
+
+	if (points == NULL || max_atten_db == NULL || max_atten_sigma_db == NULL ||
+	    point_count < count) {
+		return -EINVAL;
+	}
+
+	for (uint8_t i = point_count - count; i < point_count; ++i) {
+		if (!isfinite(points[i].measured_db)) {
+			return -ERANGE;
+		}
+		sum += points[i].measured_db;
+	}
+	mean = sum / (double)count;
+	for (uint8_t i = point_count - count; i < point_count; ++i) {
+		double delta = points[i].measured_db - mean;
+
+		sum_sq += delta * delta;
+	}
+
+	sigma = sqrt(sum_sq / (double)(count - 1U)) / sqrt((double)count);
+	sigma = MAX(sigma, ATTENUATOR_FIT_MIN_SIGMA_DB / sqrt((double)count));
+	if (!isfinite(mean) || mean <= 0.0 || !isfinite(sigma) || !(sigma > 0.0)) {
+		return -ERANGE;
+	}
+
+	*max_atten_db = mean;
+	*max_atten_sigma_db = sigma;
+	return 0;
+}
+
 /** Evaluate the physical attenuator model in relative-attenuation dB. */
 static double fit_model_db(double fvoa_50pct_mv, double slope_inv_fvoa_mv,
-			   double gain, double dac_mv)
+			   double max_atten_db, double gain, double dac_mv)
 {
 	const struct attenuator_model_coeffs coeffs = {
 		.fvoa_50pct_mv = fvoa_50pct_mv,
 		.slope_inv_fvoa_mv = slope_inv_fvoa_mv,
+		.max_atten_db = max_atten_db,
 		.gain = gain,
 	};
 
@@ -1223,7 +1279,7 @@ static double fit_model_db(double fvoa_50pct_mv, double slope_inv_fvoa_mv,
 
 /** Estimate model dB sensitivity to DAC voltage for x-error propagation. */
 static double fit_model_d_db_d_dac(double fvoa_50pct_mv, double slope_inv_fvoa_mv,
-				   double gain, double dac_mv)
+				   double max_atten_db, double gain, double dac_mv)
 {
 	double step = MAX((double)ATTEN_CAL_DAC_SIGMA_MV, 0.5);
 	double lo = MAX(0.0, dac_mv - step);
@@ -1234,8 +1290,32 @@ static double fit_model_d_db_d_dac(double fvoa_50pct_mv, double slope_inv_fvoa_m
 	if (!(hi > lo)) {
 		return 0.0;
 	}
-	db_lo = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, gain, lo);
-	db_hi = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, gain, hi);
+	db_lo = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, lo);
+	db_hi = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, hi);
+	if (!isfinite(db_lo) || !isfinite(db_hi)) {
+		return 0.0;
+	}
+	return (db_hi - db_lo) / (hi - lo);
+}
+
+/** Estimate dB sensitivity to the fixed leakage-floor estimate. */
+static double fit_model_d_db_d_max_atten(double fvoa_50pct_mv,
+					 double slope_inv_fvoa_mv,
+					 double max_atten_db,
+					 double gain,
+					 double dac_mv)
+{
+	double step = MAX(fabs(max_atten_db) * 1.0e-5, 0.01);
+	double lo = MAX(ATTEN_CAL_MIN_DB_ERR, max_atten_db - step);
+	double hi = max_atten_db + step;
+	double db_lo;
+	double db_hi;
+
+	if (!(hi > lo)) {
+		return 0.0;
+	}
+	db_lo = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, lo, gain, dac_mv);
+	db_hi = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, hi, gain, dac_mv);
 	if (!isfinite(db_lo) || !isfinite(db_hi)) {
 		return 0.0;
 	}
@@ -1246,38 +1326,50 @@ static double fit_model_d_db_d_dac(double fvoa_50pct_mv, double slope_inv_fvoa_m
 static double fit_point_residual(const struct atten_cal_fit_point *point,
 				 double fvoa_50pct_mv,
 				 double slope_inv_fvoa_mv,
+				 double max_atten_db,
+				 double max_atten_sigma_db,
 				 double gain)
 {
 	double model_db;
 	double d_db_d_dac;
+	double d_db_d_max;
 	double sigma_db;
 
 	if (point == NULL) {
 		return NAN;
 	}
 	model_db = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv,
-				gain, point->dac_mv);
+				max_atten_db, gain, point->dac_mv);
 	d_db_d_dac = fit_model_d_db_d_dac(fvoa_50pct_mv, slope_inv_fvoa_mv,
-					  gain, point->dac_mv);
+					  max_atten_db, gain, point->dac_mv);
+	d_db_d_max = fit_model_d_db_d_max_atten(fvoa_50pct_mv, slope_inv_fvoa_mv,
+						max_atten_db, gain, point->dac_mv);
 	sigma_db = sqrt(point->measured_db_err * point->measured_db_err +
 			(d_db_d_dac * (double)ATTEN_CAL_DAC_SIGMA_MV) *
-			(d_db_d_dac * (double)ATTEN_CAL_DAC_SIGMA_MV));
+			(d_db_d_dac * (double)ATTEN_CAL_DAC_SIGMA_MV) +
+			(d_db_d_max * max_atten_sigma_db) *
+			(d_db_d_max * max_atten_sigma_db));
 	if (!isfinite(model_db) || !(sigma_db > 0.0) || !isfinite(sigma_db)) {
 		return NAN;
 	}
-	return (model_db - point->measured_db) / MAX(sigma_db, ATTEN_CAL_MIN_DB_ERR);
+	return (model_db - point->measured_db) /
+	       MAX(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB);
 }
 
 /** Sum weighted squared residuals for a complete fit candidate. */
 static double fit_cost(const struct atten_cal_fit_point *points, uint8_t point_count,
 		       double fvoa_50pct_mv, double slope_inv_fvoa_mv,
+		       double max_atten_db, double max_atten_sigma_db,
 		       double gain)
 {
 	double cost = 0.0;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		double residual = fit_point_residual(&points[i], fvoa_50pct_mv,
-						     slope_inv_fvoa_mv, gain);
+						     slope_inv_fvoa_mv,
+						     max_atten_db,
+						     max_atten_sigma_db,
+						     gain);
 
 		if (!isfinite(residual)) {
 			return INFINITY;
@@ -1331,6 +1423,7 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
  */
 static int fit_optimize_db(const struct atten_cal_fit_point *points,
 			   uint8_t point_count, double gain,
+			   double max_atten_db, double max_atten_sigma_db,
 			   double *fvoa_50pct_mv,
 			   double *slope_inv_fvoa_mv)
 {
@@ -1344,7 +1437,8 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 		return -EINVAL;
 	}
 	fit_initial_guess(points, point_count, gain, &f50, &slope);
-	cost = fit_cost(points, point_count, f50, slope, gain);
+	cost = fit_cost(points, point_count, f50, slope,
+			max_atten_db, max_atten_sigma_db, gain);
 	if (!isfinite(cost)) {
 		return -ERANGE;
 	}
@@ -1365,12 +1459,20 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 		double trial_cost;
 
 		for (uint8_t i = 0U; i < point_count; ++i) {
-			double r = fit_point_residual(&points[i], f50, slope, gain);
+			double r = fit_point_residual(&points[i], f50, slope,
+						      max_atten_db,
+						      max_atten_sigma_db,
+						      gain);
 			double r_f50 = fit_point_residual(&points[i],
 							  f50 + step_f50,
-							  slope, gain);
+							  slope,
+							  max_atten_db,
+							  max_atten_sigma_db,
+							  gain);
 			double r_slope = fit_point_residual(&points[i], f50,
 							    slope + step_slope,
+							    max_atten_db,
+							    max_atten_sigma_db,
 							    gain);
 			double j0;
 			double j1;
@@ -1400,7 +1502,8 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 				    ATTEN_CAL_FIT_MIN_SLOPE,
 				    ATTEN_CAL_FIT_MAX_SLOPE);
 		trial_cost = fit_cost(points, point_count, trial_f50,
-				      trial_slope, gain);
+				      trial_slope, max_atten_db,
+				      max_atten_sigma_db, gain);
 		if (isfinite(trial_cost) && trial_cost < cost) {
 			if (fabs(trial_f50 - f50) < 1.0e-6 &&
 			    fabs(trial_slope - slope) < 1.0e-12) {
@@ -1431,6 +1534,8 @@ static int fit_one_physical_locked(uint8_t physical,
 	double gain = physical == 0U ? atten->coeff1.gain : atten->coeff2.gain;
 	double fvoa_50pct_mv = 0.0;
 	double slope_inv_fvoa_mv = 0.0;
+	double max_atten_db = 0.0;
+	double max_atten_sigma_db = 0.0;
 	double min_tx = 1.0;
 	double max_tx = 0.0;
 	double min_x = (double)ATTENUATOR_DRIVE_MAX_MV * gain;
@@ -1454,7 +1559,13 @@ static int fit_one_physical_locked(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
+	rc = estimate_max_atten_db(cal_fit_points, point_count,
+				   &max_atten_db, &max_atten_sigma_db);
+	if (rc != 0) {
+		return rc;
+	}
 	rc = fit_optimize_db(cal_fit_points, point_count, gain,
+			     max_atten_db, max_atten_sigma_db,
 			     &fvoa_50pct_mv, &slope_inv_fvoa_mv);
 	if (rc != 0) {
 		return rc;
@@ -1462,7 +1573,8 @@ static int fit_one_physical_locked(uint8_t physical,
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		double model_db = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv,
-					       gain, cal_fit_points[i].dac_mv);
+					       max_atten_db, gain,
+					       cal_fit_points[i].dac_mv);
 		double residual_db = model_db - cal_fit_points[i].measured_db;
 		double x = cal_fit_points[i].dac_mv * gain;
 
@@ -1504,6 +1616,8 @@ static int fit_one_physical_locked(uint8_t physical,
 	out->points = point_count;
 	out->fvoa_50pct_mv = fvoa_50pct_mv;
 	out->slope_inv_fvoa_mv = slope_inv_fvoa_mv;
+	out->max_atten_db = max_atten_db;
+	out->max_atten_sigma_db = max_atten_sigma_db;
 	out->rms_db = sqrt(sum_sq_db / (double)point_count);
 	out->max_abs_db = max_abs_db;
 	out->min_tx = min_tx;
@@ -1513,7 +1627,9 @@ static int fit_one_physical_locked(uint8_t physical,
 			out->correlation >= ATTEN_CAL_MIN_FIT_CORR &&
 			isfinite(out->fvoa_50pct_mv) &&
 			out->fvoa_50pct_mv > 0.0 &&
-			out->slope_inv_fvoa_mv > 0.0;
+			out->slope_inv_fvoa_mv > 0.0 &&
+			isfinite(out->max_atten_db) &&
+			out->max_atten_db > 0.0;
 	return out->accepted ? 0 : -ERANGE;
 }
 
@@ -1526,11 +1642,13 @@ static int apply_fit_to_settings_locked(void)
 		{
 			.fvoa_50pct_mv = cal.fit[0].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[0].slope_inv_fvoa_mv,
+			.max_atten_db = cal.fit[0].max_atten_db,
 			.gain = atten->coeff1.gain,
 		},
 		{
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[1].slope_inv_fvoa_mv,
+			.max_atten_db = cal.fit[1].max_atten_db,
 			.gain = atten->coeff2.gain,
 		},
 	};
@@ -1545,9 +1663,11 @@ static int apply_fit_to_settings_locked(void)
 
 	stored.physical[0].fvoa_50pct_mv = physical[0].fvoa_50pct_mv;
 	stored.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
+	stored.physical[0].max_atten_db = physical[0].max_atten_db;
 	stored.physical[0].gain = physical[0].gain;
 	stored.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 	stored.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
+	stored.physical[1].max_atten_db = physical[1].max_atten_db;
 	stored.physical[1].gain = physical[1].gain;
 	app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);
 	return 0;
@@ -1771,10 +1891,12 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 	return coo_json_append(payload, payload_len, off,
 		"\"valid\":true,\"accepted\":%s,\"points\":%u,"
 		"\"fvoa_50pct_mv\":%.12g,\"slope_inv_fvoa_mv\":%.12g,"
+		"\"max_atten_db\":%.12g,\"max_atten_sigma_db\":%.12g,"
 		"\"corr\":%.12g,\"rms_db\":%.12g,\"max_abs_db\":%.12g,"
 		"\"min_tx\":%.12g,\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
 		fit->accepted ? "true" : "false", fit->points,
 		fit->fvoa_50pct_mv, fit->slope_inv_fvoa_mv,
+		fit->max_atten_db, fit->max_atten_sigma_db,
 		fit->correlation, fit->rms_db, fit->max_abs_db,
 		fit->min_tx, fit->max_tx, fit->fvoa_span_mv);
 }

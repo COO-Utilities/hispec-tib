@@ -989,11 +989,13 @@ command wait budget, this command returns `{"error":"busy"}`.
     "dac1": {
       "fvoa_50pct_mv": 2529.45,
       "slope_inv_fvoa_mv": 0.00158137,
+      "max_atten_db": 55.0,
       "gain": 1.533
     },
     "dac2": {
       "fvoa_50pct_mv": 2529.45,
       "slope_inv_fvoa_mv": 0.00158137,
+      "max_atten_db": 55.0,
       "gain": 1.533
     }
   }
@@ -1006,11 +1008,13 @@ command wait budget, this command returns `{"error":"busy"}`.
     "dac1": {
       "fvoa_50pct_mv": 3144.95,
       "slope_inv_fvoa_mv": 0.00303104,
+      "max_atten_db": 48.36,
       "gain": 1.533
     },
     "dac2": {
       "fvoa_50pct_mv": 3456.12,
       "slope_inv_fvoa_mv": 0.00247498,
+      "max_atten_db": 61.95,
       "gain": 1.533
     },
     "persist": true
@@ -1021,7 +1025,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"gain":1.533},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"gain":1.533},"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533},"persist":true}
   ```
 
 - **Notes:**
@@ -1043,8 +1047,10 @@ command wait budget, this command returns `{"error":"busy"}`.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define the erf coordinate
     `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
-    `transmission = (erf(4) - erf(delta)) / (2 * erf(4))`. Runtime dB/linear
-    set commands normalize against the modeled open transmission at DAC 0.
+    ideal transmission `ideal_tx = (erf(4) - erf(delta)) / (2 * erf(4))`.
+    Runtime dB/linear set commands normalize against the modeled open
+    transmission at DAC 0, then apply the physical FVOA leakage floor
+    `floor_tx = 10^(-max_atten_db / 10)`.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
@@ -1075,6 +1081,8 @@ ownership are documented in `attenuator_calibration.md`.
       "points": 12,
       "fvoa_50pct_mv": 3144.95,
       "slope_inv_fvoa_mv": 0.00303104,
+      "max_atten_db": 48.36,
+      "max_atten_sigma_db": 0.29,
       "corr": 0.999,
       "rms_db": 0.1,
       "max_abs_db": 0.2,
@@ -1220,8 +1228,10 @@ ownership are documented in `attenuator_calibration.md`.
     acquisition. It divides each retained signal by the open reference and the
     cumulative bridge segment scale, converts that relative transmission to dB,
     and optimizes the attenuator model directly in dB output space while
-    keeping the coefficient names and meanings `fvoa_50pct_mv` and
-    `slope_inv_fvoa_mv`. The y uncertainty comes from photodiode mean
+    keeping the coefficient names and meanings `fvoa_50pct_mv`,
+    `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
+    `max_atten_db` from the final three usable fit points and holds it fixed
+    while optimizing the two shape parameters. The y uncertainty comes from photodiode mean
     uncertainty, bridge/segment-scale propagation, and the open-reference
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
     3 mV. Fit details include point count, correlation, residual RMS/max in dB,

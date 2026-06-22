@@ -58,9 +58,10 @@ silently reused on another.
 - Last known UTC defaults to unset. Once SNTP or a `time` command sets the
   realtime clock, the value is persisted and restored on later boots until a
   fresher time source updates it.
-- Attenuator coefficients default to
-  `b = gain * (slope * dac_mv + offset)`, with DAC output millivolts in the
-  0-3300 mV span and default gain 1.533, until calibrated/stored.
+- Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
+  1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
+  `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical
+  two-FVOA attenuator limit.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
 - Laser expected serials default to the initial known driver/diode association.

@@ -322,9 +322,18 @@ space:
 
 ```text
 measured_db = -10 * log10(tx)
-residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv, gain)
+max_atten_db = mean(measured_db for final three fit points)
+floor_tx = 10^(-max_atten_db / 10)
+model_tx = floor_tx + (1 - floor_tx) * ideal_model_tx
+residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv,
+                    max_atten_db, gain)
          - measured_db
 ```
+
+`max_atten_db` is the physical FVOA leakage floor, not the sum available from a
+logical two-FVOA attenuator. Firmware estimates it from the final three usable
+fit points, propagates that uncertainty into the weighted dB residuals, and
+then optimizes only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
 ## Notebook Inspection
 
@@ -349,6 +358,7 @@ An accepted coefficient object contains:
 {
   "fvoa_50pct_mv": 3144.95,
   "slope_inv_fvoa_mv": 0.00303104,
+  "max_atten_db": 48.36,
   "gain": 1.533
 }
 ```

@@ -227,9 +227,14 @@ The fitted model parameters for each physical FVOA are:
 ```text
 fvoa_50pct_mv
 slope_inv_fvoa_mv
+max_atten_db
 ```
 
-where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage and `slope_inv_fvoa_mv` captures the steepness of the shutter transition.
+where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage,
+`slope_inv_fvoa_mv` captures the steepness of the shutter transition, and
+`max_atten_db` captures the physical leakage floor of one FVOA at maximum
+attenuation. The firmware estimates `max_atten_db` from the final three usable
+fit points and then fits the two shape parameters with that floor held fixed.
 
 The procedure is then repeated for the second FVOA in the logical attenuator pair.
 
