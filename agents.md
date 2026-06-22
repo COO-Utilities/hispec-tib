@@ -54,7 +54,7 @@ If a request is ambiguous between review and implementation, choose review.
 
 ## 2. Mandatory Project Exploration Before Code Changes
 
-For any non-trivial implementation, simplification, or bug fix, first build a local picture of the relevant code.
+For any implementation, simplification, or bug fix, first build a local picture of the relevant code.
 
 Before editing, inspect:
 
@@ -63,9 +63,9 @@ Before editing, inspect:
 * relevant headers,
 * relevant command handlers,
 * relevant docs under `doc/`,
-* relevant Python host-tool code if command/API behavior changes,
+* relevant Python host-tool support code if command/API behavior changes,
 * relevant settings/persistence code if values are stored or restored,
-* relevant TODOs and `doc/human_review_required.md`.
+* relevant TODOs in code and `doc/human_review_required.md`.
 
 The response before a substantial patch must include a short scout report:
 
@@ -162,7 +162,7 @@ When unsure, produce a short investigation patch or no patch.
 
 ## 5. Unreleased-Code Rule: No Backward Compatibility Unless Requested
 
-Assume this firmware and Python tooling are unreleased desk/lab code unless the human owner explicitly says a behavior is deployed.
+Assume this firmware and Python tooling are unreleased personal desk/lab code.
 
 Therefore:
 
@@ -173,10 +173,11 @@ Therefore:
 * Do not maintain old binary payload layouts.
 * Do not add migration code for old settings unless explicitly requested.
 * Do not support multiple names for one operation.
+* Do not support settings persistence or migration.
 
 When replacing an unreleased interface, delete the old interface and update the firmware, docs, and Python host helper together.
 
-One canonical behavior is preferred over compatibility.
+One canonical behavior is preferred. "Compatibility" creates confusion.
 
 ---
 
@@ -640,7 +641,7 @@ Documentation should explain:
 * what owns persistence or calibration state,
 * what values are source-of-truth versus estimates/defaults.
 
-Place documentation near the code that needs it.
+Always place documentation near the code that needs it.
 
 Briefly document Zephyr API calls when flags or behavior are easy to misread, especially:
 
@@ -657,9 +658,35 @@ Briefly document Zephyr API calls when flags or behavior are easy to misread, es
 
 Keep comments short and factual.
 
-Prefer a local “why” comment over an extra helper when the code itself is simple but the policy, hardware constraint, timing constraint, or Zephyr behavior is easy to forget.
+Prefer a local “why” comment over an extra helper when the code itself is simple but the policy, hardware 
+constraint, timing constraint, or Zephyr behavior is easy to forget.
 
-Do not write comments that merely narrate C syntax.
+### Explanatory Comment Creation and Preservation
+
+Explanatory comments are vital, especially in algorithms, hardware behavior, calibration flows, physical models,
+and command schemas.
+
+Explanatory text outranks generic code-style preferences. A terse implementation is not better if it erases 
+physical reasoning, lab context, failure-mode rationale, or intended operator interpretation.
+
+Do not remove or shorten explanatory comments merely because the code appears self-explanatory, production-style,
+or cleaner without them.
+
+When a comment is stale:
+1. preserve the underlying intent if still relevant,
+2. rewrite it to match current behavior,
+3. explicitly call out the rewrite in the response.
+
+Only delete explanatory comments when:
+- the described behavior no longer exists,
+- the comment is actively misleading,
+- and the lost rationale is either obsolete or replaced nearby.
+
+For calibration, photodiode, MEMS routing, laser control, settings/persistence,
+and command schema work, pre-commit/final summaries must state:
+- explanatory comments removed: yes/no
+- explanatory comments rewritten: yes/no
+- why any removal was necessary
 
 ---
 

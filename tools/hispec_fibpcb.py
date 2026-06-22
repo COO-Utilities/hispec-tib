@@ -51,6 +51,7 @@ PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 ATTENUATOR_DRIVE_MAX_MV = 3300.0
 ATTENUATOR_DEFAULT_GAIN = 1.533
 ATTENUATOR_MODEL_ERF_SCALE = 4.0
+ATTENUATOR_DEFAULT_MAX_ATTEN_DB = 120.0
 ATTENUATOR_ADC_CLIP_MV = 5000.0
 ATTENUATOR_CAL_SNR_USABLE = 5.0
 ATTEN_CAL_MIN_TX = 1.0e-10
@@ -561,6 +562,7 @@ class AttenuatorFitMetrics(ResponseRepr):
     points: int = 0
     fvoa_50pct_mv: float | None = None
     slope_inv_fvoa_mv: float | None = None
+    max_atten_db: float | None = None
     corr: float | None = None
     rms_db: float | None = None
     max_abs_db: float | None = None
@@ -576,6 +578,7 @@ class AttenuatorFitMetrics(ResponseRepr):
             f"accepted={self.accepted}, points={self.points}, "
             f"fvoa_50pct_mv={_format_repr(self.fvoa_50pct_mv)}, "
             f"slope_inv_fvoa_mv={_format_repr(self.slope_inv_fvoa_mv)}, "
+            f"max_atten_db={_format_repr(self.max_atten_db)}, "
             f"corr={_format_repr(self.corr)}, "
             f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
             f"fvoa_span_mv={_format_repr(self.fvoa_span_mv)})"
@@ -691,7 +694,7 @@ def _atten_db_with_sigma(
     db = _atten_db_from_tx(tx)
     frac_sigma = np.sqrt((sigma_y / np.maximum(np.abs(y), 1.0e-12)) ** 2 +
                          (ref_sigma / reference_mv) ** 2)
-    sigma_db = (10.0 / math.log(10.0)) * frac_sigma
+    sigma_db = (10.0 / np.log(10.0)) * frac_sigma
     sigma_db = np.where(np.isfinite(sigma_db), np.maximum(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB), np.nan)
     return db, sigma_db
 
@@ -798,15 +801,17 @@ def _atten_cal_record_row(
 def _atten_coeff_tuple(
     name: str,
     coeff: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     if isinstance(coeff, AttenuatorPhysicalCoeff):
         fvoa_50pct_mv = coeff.fvoa_50pct_mv
         slope_inv_fvoa_mv = coeff.slope_inv_fvoa_mv
+        max_atten_db = ATTENUATOR_DEFAULT_MAX_ATTEN_DB
         gain = coeff.gain
     elif isinstance(coeff, Mapping):
         try:
             fvoa_50pct_mv = float(coeff["fvoa_50pct_mv"])
             slope_inv_fvoa_mv = float(coeff["slope_inv_fvoa_mv"])
+            max_atten_db = float(coeff.get("max_atten_db", ATTENUATOR_DEFAULT_MAX_ATTEN_DB))
             gain = float(coeff.get("gain", ATTENUATOR_DEFAULT_GAIN))
         except (KeyError, TypeError, ValueError) as exc:
             raise HispecFibError(f"{name} coefficient is malformed") from exc
@@ -814,60 +819,68 @@ def _atten_coeff_tuple(
         values = tuple(float(value) for value in coeff)
         if len(values) == 2:
             fvoa_50pct_mv, slope_inv_fvoa_mv = values
+            max_atten_db = ATTENUATOR_DEFAULT_MAX_ATTEN_DB
             gain = ATTENUATOR_DEFAULT_GAIN
         elif len(values) == 3:
-            fvoa_50pct_mv, slope_inv_fvoa_mv, gain = values
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values
+            gain = ATTENUATOR_DEFAULT_GAIN
+        elif len(values) == 4:
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values
         else:
-            raise HispecFibError(f"{name} coefficient must have 2 or 3 values")
+            raise HispecFibError(f"{name} coefficient must have 2, 3, or 4 values")
 
     if not (
         np.isfinite(fvoa_50pct_mv)
         and np.isfinite(slope_inv_fvoa_mv)
+        and np.isfinite(max_atten_db)
         and np.isfinite(gain)
         and slope_inv_fvoa_mv > 0.0
+        and max_atten_db > 0.0
         and gain > 0.0
     ):
-        raise HispecFibError(f"{name} coefficient values must be finite with positive slope and gain")
-    return (float(fvoa_50pct_mv), float(slope_inv_fvoa_mv), float(gain))
+        raise HispecFibError(f"{name} coefficient values must be finite with positive slope, max attenuation, and gain")
+    return (float(fvoa_50pct_mv), float(slope_inv_fvoa_mv), float(max_atten_db), float(gain))
 
 
 def _atten_b_from_coeff(
-    coeff: tuple[float, float, float],
+    coeff: tuple[float, float, float, float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
-    fvoa_50pct_mv, slope_inv_fvoa_mv, gain = coeff
+    fvoa_50pct_mv, slope_inv_fvoa_mv, _max_atten_db, gain = coeff
     dac = np.asarray(dac_mv, dtype=float)
     return slope_inv_fvoa_mv * ((gain * dac) - fvoa_50pct_mv)
 
 
 def _atten_tx_from_coeff(
-    coeff: tuple[float, float, float],
+    coeff: tuple[float, float, float, float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     return _atten_model_tx_from_b(_atten_b_from_coeff(coeff, dac_mv))
 
 
 def _atten_relative_tx_from_coeff(
-    coeff: tuple[float, float, float],
+    coeff: tuple[float, float, float, float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     open_tx = float(_atten_tx_from_coeff(coeff, [0.0])[0])
     tx = _atten_tx_from_coeff(coeff, dac_mv)
     if not np.isfinite(open_tx) or open_tx <= 0.0:
         return np.full_like(np.asarray(tx, dtype=float), np.nan, dtype=float)
-    return np.clip(tx / open_tx, 1.0e-300, 1.0)
+    ideal_tx = np.clip(tx / open_tx, 0.0, 1.0)
+    floor_tx = 10.0 ** (-coeff[2] / 10.0)
+    return np.clip(floor_tx + (1.0 - floor_tx) * ideal_tx, 1.0e-300, 1.0)
 
 
 def _atten_db_from_coeff(
-    coeff: tuple[float, float, float],
+    coeff: tuple[float, float, float, float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     return _atten_db_from_tx(_atten_relative_tx_from_coeff(coeff, dac_mv))
 
 
 def _atten_pair_db_from_coeffs(
-    dac1_coeff: tuple[float, float, float],
-    dac2_coeff: tuple[float, float, float],
+    dac1_coeff: tuple[float, float, float, float],
+    dac2_coeff: tuple[float, float, float, float],
     dac1_mv: np.ndarray | Sequence[float],
     dac2_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
@@ -885,8 +898,8 @@ def _atten_cal_pair_dac(records: np.recarray) -> tuple[np.ndarray, np.ndarray]:
 
 def _atten_cal_pair_sample_db(
     records: np.recarray,
-    dac1_coeff: tuple[float, float, float],
-    dac2_coeff: tuple[float, float, float],
+    dac1_coeff: tuple[float, float, float, float],
+    dac2_coeff: tuple[float, float, float, float],
 ) -> np.ndarray:
     physical = np.asarray(records.physical).astype(str)
     _, dac2 = _atten_cal_pair_dac(records)
@@ -2299,7 +2312,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         records = self.records[np.asarray(self.records.physical).astype(str) == physical]
         return AttenuatorCalibrationDataset(records=records.view(np.recarray), meta=self.meta)
 
-    def _fit_coeff_for_physical(self, physical: str) -> tuple[float, float, float] | None:
+    def _fit_coeff_for_physical(self, physical: str) -> tuple[float, float, float, float] | None:
         for item in self.meta:
             fits = item.get("fits") if isinstance(item, Mapping) else None
             if not isinstance(fits, Mapping):
@@ -2309,7 +2322,12 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 continue
             if fit.fvoa_50pct_mv is None or fit.slope_inv_fvoa_mv is None:
                 continue
-            return (float(fit.fvoa_50pct_mv), float(fit.slope_inv_fvoa_mv), ATTENUATOR_DEFAULT_GAIN)
+            max_atten_db = (
+                ATTENUATOR_DEFAULT_MAX_ATTEN_DB
+                if fit.max_atten_db is None
+                else float(fit.max_atten_db)
+            )
+            return (float(fit.fvoa_50pct_mv), float(fit.slope_inv_fvoa_mv), max_atten_db, ATTENUATOR_DEFAULT_GAIN)
         return None
 
     @staticmethod
@@ -2452,12 +2470,12 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 scale_rel_var = segment_rel_var[segment]
                 scaled_signal = float(row.signal_mv) / scale
                 scaled_rel_var = (float(row.signal_err_mv) / float(row.signal_mv)) ** 2 + scale_rel_var
-                scaled_err = abs(scaled_signal) * math.sqrt(max(scaled_rel_var, 0.0))
+                scaled_err = abs(scaled_signal) * np.sqrt(max(scaled_rel_var, 0.0))
                 tx = scaled_signal / open_signal
                 tx_rel_var = scaled_rel_var + open_rel_var
-                tx_err = abs(tx) * math.sqrt(max(tx_rel_var, 0.0))
+                tx_err = abs(tx) * np.sqrt(max(tx_rel_var, 0.0))
                 db = float(_atten_db_from_tx([tx])[0])
-                db_err = (10.0 / math.log(10.0)) * math.sqrt(max(tx_rel_var, 0.0))
+                db_err = (10.0 / np.log(10.0)) * np.sqrt(max(tx_rel_var, 0.0))
                 rec.segment_scale[i] = scale
                 rec.segment_scale_rel_var[i] = scale_rel_var
                 rec.scaled_signal_mv[i] = scaled_signal
@@ -2735,11 +2753,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         max_db = _require_float("max_db", max_db, 1.0, 300.0)
 
         if axis == "fvoa_mv":
-            x_max = ATTENUATOR_DRIVE_MAX_MV * dac1_coeff[2]
-            y_max = ATTENUATOR_DRIVE_MAX_MV * dac2_coeff[2]
+            x_max = ATTENUATOR_DRIVE_MAX_MV * dac1_coeff[3]
+            y_max = ATTENUATOR_DRIVE_MAX_MV * dac2_coeff[3]
             x_label = "FVOA1 drive (mV)"
             y_label = "FVOA2 drive (mV)"
-            x_to_dac = lambda value, coeff: np.asarray(value, dtype=float) / coeff[2]
+            x_to_dac = lambda value, coeff: np.asarray(value, dtype=float) / coeff[3]
         else:
             x_max = ATTENUATOR_DRIVE_MAX_MV
             y_max = ATTENUATOR_DRIVE_MAX_MV
@@ -2770,8 +2788,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         if overlay_records and len(self.records):
             rec = self.derived(dac1=dac1_coeff, dac2=dac2_coeff)
             sample_dac1, sample_dac2 = _atten_cal_pair_dac(rec)
-            sample_x = sample_dac1 * dac1_coeff[2] if axis == "fvoa_mv" else sample_dac1
-            sample_y = sample_dac2 * dac2_coeff[2] if axis == "fvoa_mv" else sample_dac2
+            sample_x = sample_dac1 * dac1_coeff[3] if axis == "fvoa_mv" else sample_dac1
+            sample_y = sample_dac2 * dac2_coeff[3] if axis == "fvoa_mv" else sample_dac2
             sample_db = _atten_cal_pair_sample_db(rec, dac1_coeff, dac2_coeff)
             sample_sigma_db = np.asarray(rec.db_err, dtype=float)
             sizes = np.clip(24.0 + 5.0 * np.nan_to_num(sample_sigma_db, nan=0.0, posinf=20.0), 24.0, 130.0)
@@ -3163,6 +3181,7 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
             points=int(data.get("points", 0)),
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
+            max_atten_db=float(data["max_atten_db"]) if "max_atten_db" in data else None,
             corr=float(data["corr"]),
             rms_db=float(data["rms_db"]),
             max_abs_db=float(data["max_abs_db"]),
