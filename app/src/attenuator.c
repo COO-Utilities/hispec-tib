@@ -21,9 +21,43 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define MODEL_MIN_TX        1.0e-300
 #define ATTENUATOR_DB_EPSILON 1.0e-6
 #define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5f
+#define ATTENUATOR_DB_PER_NEPER (10.0 / log(10.0))
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+/* Convert erf-model delta to raw transmission before open normalization. */
+static double attenuator_model_delta_to_raw_linear(double delta,
+                                                   double *d_raw_d_delta)
+{
+    const double erf_scale = (double)ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
+    double transmission;
+    double derivative = 0.0;
+
+    if (d_raw_d_delta != NULL) {
+        *d_raw_d_delta = 0.0;
+    }
+
+    transmission = (double)((erf_scale - ZSL_ERF((zsl_real_t)delta)) /
+                            (2.0 * erf_scale));
+    if (!isfinite(transmission)) {
+        return (isfinite(delta) && delta < 0.0) ? 1.0 : 0.0;
+    }
+
+    if (transmission <= 0.0) {
+        return 0.0;
+    }
+    if (transmission >= 1.0) {
+        return 1.0;
+    }
+
+    derivative = -ZSL_EXP((zsl_real_t)(-delta * delta)) /
+                 (sqrt(M_PI) * erf_scale);
+    if (d_raw_d_delta != NULL && isfinite(derivative)) {
+        *d_raw_d_delta = derivative;
+    }
+    return transmission;
+}
 
 static double attenuator_model_voltage_to_delta(const struct attenuator_model_coeffs *coeffs,
                                                 float voltage)
@@ -42,7 +76,7 @@ static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *
         return 0.0;
     }
 
-    transmission = attenuator_model_b_to_linear(attenuator_model_voltage_to_delta(coeffs, voltage));
+    transmission = attenuator_model_delta_to_raw_linear(attenuator_model_voltage_to_delta(coeffs, voltage), NULL);
     if (!isfinite(transmission) || transmission <= 0.0) {
         return 0.0;
     }
@@ -71,49 +105,6 @@ static double attenuator_model_floor_linear(const struct attenuator_model_coeffs
         return 0.0;
     }
     return floor_tx;
-}
-
-static double attenuator_model_ideal_relative_linear(const struct attenuator_model_coeffs *coeffs,
-                                                     float voltage)
-{
-    double open_tx = attenuator_model_open_linear(coeffs);
-    double tx = attenuator_model_raw_linear(coeffs, voltage);
-    double relative;
-
-    if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
-        return NAN;
-    }
-
-    relative = tx / open_tx;
-    if (!isfinite(relative) || relative <= 0.0) {
-        return 0.0;
-    }
-    if (relative > 1.0) {
-        return 1.0;
-    }
-    return relative;
-}
-
-static double attenuator_model_relative_linear(const struct attenuator_model_coeffs *coeffs,
-                                               float voltage)
-{
-    double floor_tx = attenuator_model_floor_linear(coeffs);
-    double ideal_tx = attenuator_model_ideal_relative_linear(coeffs, voltage);
-    double relative;
-
-    if (!(floor_tx > 0.0) || !isfinite(ideal_tx)) {
-        return 0.0;
-    }
-
-    ideal_tx = CLAMP(ideal_tx, 0.0, 1.0);
-    relative = floor_tx + (1.0 - floor_tx) * ideal_tx;
-    if (!isfinite(relative) || relative <= 0.0) {
-        return 0.0;
-    }
-    if (relative > 1.0) {
-        return 1.0;
-    }
-    return relative;
 }
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
@@ -200,23 +191,148 @@ bool attenuator_init(struct attenuator *drv,
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       float voltage)
 {
-    double transmission;
+    struct atten_model_eval eval;
 
     if (coeffs == NULL) {
         return 0.0;
     }
 
-    transmission = attenuator_model_relative_linear(coeffs, voltage);
-
-    if (transmission <= 0.0) {
-        return isfinite(coeffs->max_atten_db) && coeffs->max_atten_db > 0.0 ?
-               coeffs->max_atten_db : FVOA_DEFAULT_MAX_ATTEN_DB;
-    }
-    if (transmission >= 1.0) {
-        return 0.0;
+    if (atten_model_eval(coeffs, voltage, &eval)) {
+        return eval.db;
     }
 
-    return -10.0 * ZSL_LOG10(transmission);
+    return isfinite(coeffs->max_atten_db) && coeffs->max_atten_db > 0.0 ?
+           coeffs->max_atten_db : FVOA_DEFAULT_MAX_ATTEN_DB;
+}
+
+bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
+                      float voltage,
+                      struct atten_model_eval *out)
+{
+    double floor_tx;
+    double raw;
+    double raw0;
+    double d_raw_d_delta;
+    double d_raw0_d_delta;
+    double delta;
+    double delta0;
+    double ideal;
+    double ideal_clamped;
+    double tx;
+    double d_ideal_d_voltage = 0.0;
+    double d_ideal_d_f50 = 0.0;
+    double d_ideal_d_slope = 0.0;
+    double d_tx_scale;
+    double raw0_sq;
+
+    if (coeffs == NULL || out == NULL ||
+        !isfinite(coeffs->fvoa_50pct_mv) ||
+        !isfinite(coeffs->slope_inv_fvoa_mv) ||
+        !isfinite(coeffs->max_atten_db) ||
+        !isfinite(coeffs->gain) ||
+        !isfinite((double)voltage) ||
+        coeffs->gain <= 0.0) {
+        return false;
+    }
+
+    floor_tx = attenuator_model_floor_linear(coeffs);
+    if (!(floor_tx > 0.0)) {
+        return false;
+    }
+
+    delta = attenuator_model_voltage_to_delta(coeffs, voltage);
+    delta0 = attenuator_model_voltage_to_delta(coeffs, 0.0f);
+    if (!isfinite(delta) || !isfinite(delta0)) {
+        return false;
+    }
+
+    raw = attenuator_model_delta_to_raw_linear(delta, &d_raw_d_delta);
+    raw0 = attenuator_model_delta_to_raw_linear(delta0, &d_raw0_d_delta);
+    if (!(raw0 > MODEL_MIN_TX) || !isfinite(raw0)) {
+        return false;
+    }
+
+    ideal = raw / raw0;
+    if (!isfinite(ideal)) {
+        return false;
+    }
+
+    ideal_clamped = CLAMP(ideal, 0.0, 1.0);
+    if (ideal > 0.0 && ideal < 1.0) {
+        double d_raw_d_voltage =
+            d_raw_d_delta * coeffs->slope_inv_fvoa_mv * coeffs->gain;
+        double d_raw_d_f50 =
+            d_raw_d_delta * -coeffs->slope_inv_fvoa_mv;
+        double d_raw0_d_f50 =
+            d_raw0_d_delta * -coeffs->slope_inv_fvoa_mv;
+        double d_raw_d_slope =
+            d_raw_d_delta *
+            (coeffs->gain * (double)voltage - coeffs->fvoa_50pct_mv);
+        double d_raw0_d_slope =
+            d_raw0_d_delta * -coeffs->fvoa_50pct_mv;
+
+        raw0_sq = raw0 * raw0;
+        d_ideal_d_voltage = d_raw_d_voltage / raw0;
+        d_ideal_d_f50 = (d_raw_d_f50 * raw0 - raw * d_raw0_d_f50) / raw0_sq;
+        d_ideal_d_slope =
+            (d_raw_d_slope * raw0 - raw * d_raw0_d_slope) / raw0_sq;
+    }
+
+    tx = floor_tx + (1.0 - floor_tx) * ideal_clamped;
+    if (!isfinite(tx) || tx <= 0.0) {
+        return false;
+    }
+
+    *out = (struct atten_model_eval){0};
+    if (tx >= 1.0) {
+        out->tx = 1.0;
+        out->db = 0.0;
+        return true;
+    }
+
+    d_tx_scale = -ATTENUATOR_DB_PER_NEPER * (1.0 - floor_tx) / tx;
+    out->tx = tx;
+    out->db = -10.0 * ZSL_LOG10((zsl_real_t)tx);
+    out->d_db_d_voltage_mv = d_tx_scale * d_ideal_d_voltage;
+    out->d_db_d_fvoa_50pct_mv = d_tx_scale * d_ideal_d_f50;
+    out->d_db_d_slope_inv_fvoa_mv = d_tx_scale * d_ideal_d_slope;
+    out->d_db_d_max_atten_db = floor_tx * (1.0 - ideal_clamped) / tx;
+    if (!isfinite(out->db) ||
+        !isfinite(out->d_db_d_voltage_mv) ||
+        !isfinite(out->d_db_d_fvoa_50pct_mv) ||
+        !isfinite(out->d_db_d_slope_inv_fvoa_mv) ||
+        !isfinite(out->d_db_d_max_atten_db)) {
+        return false;
+    }
+    return true;
+}
+
+bool atten_model_db_sigma(const struct atten_model_eval *eval,
+                          double measured_db_sigma,
+                          double voltage_sigma_mv,
+                          double max_atten_sigma_db,
+                          double *sigma_db)
+{
+    double sigma_sq;
+
+    if (eval == NULL || sigma_db == NULL ||
+        !isfinite(measured_db_sigma) || measured_db_sigma < 0.0 ||
+        !isfinite(voltage_sigma_mv) || voltage_sigma_mv < 0.0 ||
+        !isfinite(max_atten_sigma_db) || max_atten_sigma_db < 0.0) {
+        return false;
+    }
+
+    sigma_sq = measured_db_sigma * measured_db_sigma +
+               (eval->d_db_d_voltage_mv * voltage_sigma_mv) *
+               (eval->d_db_d_voltage_mv * voltage_sigma_mv) +
+               (eval->d_db_d_max_atten_db * max_atten_sigma_db) *
+               (eval->d_db_d_max_atten_db * max_atten_sigma_db);
+    if (!isfinite(sigma_sq) || sigma_sq < 0.0) {
+        return false;
+    }
+
+    *sigma_db = sqrt(sigma_sq);
+    return isfinite(*sigma_db);
 }
 
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
@@ -601,45 +717,6 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
     return true;
 }
 
-double attenuator_model_b_to_linear(double b)
-{
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    double transmission = (double)((erf_scale - ZSL_ERF((zsl_real_t)b)) /
-                                   ((zsl_real_t)2.0 * erf_scale));
-
-    if (!isfinite(transmission)) {
-        return (isfinite(b) && b < 0.0) ? 1.0 : 0.0;
-    }
-    if (transmission < 0.0) {
-        return 0.0;
-    }
-    if (transmission > 1.0) {
-        return 1.0;
-    }
-
-    return transmission;
-}
-
-bool attenuator_model_linear_to_b(double linear, double *b)
-{
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    zsl_real_t erf_arg;
-    zsl_real_t inv;
-
-    if (b == NULL || linear <= 0.0 || linear >= 1.0) {
-        return false;
-    }
-
-    erf_arg = erf_scale - ((zsl_real_t)2.0 * erf_scale * (zsl_real_t)linear);
-    if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
-        return false;
-    }
-
-    inv = zsl_prob_erf_inv(&erf_arg);
-    *b = (double)inv;
-    return true;
-}
-
 static double attenuator_model_dlinear_db(double b)
 {
     const double erf_scale = erf(MODEL_ERF_SCALE);
@@ -688,8 +765,8 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
         return false;
     }
 
-    ideal_tx1 = CLAMP(attenuator_model_b_to_linear(b1) / open_tx1, 0.0, 1.0);
-    ideal_tx2 = CLAMP(attenuator_model_b_to_linear(b2) / open_tx2, 0.0, 1.0);
+    ideal_tx1 = CLAMP(attenuator_model_delta_to_raw_linear(b1, NULL) / open_tx1, 0.0, 1.0);
+    ideal_tx2 = CLAMP(attenuator_model_delta_to_raw_linear(b2, NULL) / open_tx2, 0.0, 1.0);
     tx1 = floor_tx1 + (1.0 - floor_tx1) * ideal_tx1;
     tx2 = floor_tx2 + (1.0 - floor_tx2) * ideal_tx2;
     dtx1_db = (1.0 - floor_tx1) * attenuator_model_dlinear_db(b1) / open_tx1;

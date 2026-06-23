@@ -32,6 +32,16 @@ struct attenuator_model_coeffs {
     double gain;
 };
 
+/** Forward model result and local dB sensitivities for one physical FVOA. */
+struct atten_model_eval {
+    double tx;
+    double db;
+    double d_db_d_voltage_mv;
+    double d_db_d_fvoa_50pct_mv;
+    double d_db_d_slope_inv_fvoa_mv;
+    double d_db_d_max_atten_db;
+};
+
 struct attenuator_dac_cfg {
     const struct device *dev;
     struct dac_channel_cfg cfg;
@@ -92,19 +102,29 @@ double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coef
                                       float voltage);
 
 /**
- * @brief Convert the model erf-delta coordinate to linear transmission.
+ * @brief Evaluate the physical attenuator model and its local dB derivatives.
  *
- * This helper performs no I/O. It is used by fit/residual code that needs the
- * same physical model as normal attenuator control.
+ * The voltage is DAC output millivolts before the external FVOA-drive op amp.
+ * Derivatives are local sensitivities of modeled attenuation in dB to the
+ * voltage argument and to each fitted physical-model coefficient. This helper
+ * performs no DAC I/O and owns the analytic model math used by calibration.
  */
-double attenuator_model_b_to_linear(double b);
+bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
+                      float voltage,
+                      struct atten_model_eval *out);
 
 /**
- * @brief Convert linear transmission to the model erf-delta coordinate.
+ * @brief Propagate independent model/input uncertainties into dB uncertainty.
  *
- * Returns false when @p linear is outside the invertible open interval.
+ * The calibration fitter owns any minimum sigma floor. This helper only
+ * combines the supplied measured dB uncertainty with voltage and finite-floor
+ * model sensitivities from atten_model_eval().
  */
-bool attenuator_model_linear_to_b(double linear, double *b);
+bool atten_model_db_sigma(const struct atten_model_eval *eval,
+                          double measured_db_sigma,
+                          double voltage_sigma_mv,
+                          double max_atten_sigma_db,
+                          double *sigma_db);
 
 /**
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.

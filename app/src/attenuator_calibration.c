@@ -162,10 +162,8 @@ struct atten_cal_bridge {
 
 struct atten_cal_fit_point {
 	uint8_t record_index;
-	double dac_mv;
-	double measured_db;
-	double measured_db_err;
-	double tx;
+	float measured_db;
+	float measured_db_err;
 };
 
 struct atten_cal_state_data {
@@ -1200,10 +1198,9 @@ static int build_fit_points_locked(uint8_t physical,
 		}
 
 		points[point_count].record_index = i;
-		points[point_count].dac_mv = (double)record->sweep_mv;
-		points[point_count].measured_db = db;
-		points[point_count].measured_db_err = MAX(db_err, ATTEN_CAL_MIN_DB_ERR);
-		points[point_count].tx = tx;
+		points[point_count].measured_db = (float)db;
+		points[point_count].measured_db_err =
+			(float)MAX(db_err, ATTEN_CAL_MIN_DB_ERR);
 		point_count++;
 	}
 
@@ -1243,11 +1240,11 @@ static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
 		if (!isfinite(points[i].measured_db)) {
 			return -ERANGE;
 		}
-		sum += points[i].measured_db;
+		sum += (double)points[i].measured_db;
 	}
 	mean = sum / (double)count;
 	for (uint8_t i = point_count - count; i < point_count; ++i) {
-		double delta = points[i].measured_db - mean;
+		double delta = (double)points[i].measured_db - mean;
 
 		sum_sq += delta * delta;
 	}
@@ -1263,115 +1260,57 @@ static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
 	return 0;
 }
 
-/** Evaluate the physical attenuator model in relative-attenuation dB. */
-static double fit_model_db(double fvoa_50pct_mv, double slope_inv_fvoa_mv,
-			   double max_atten_db, double gain, double dac_mv)
+/** Return one weighted residual, and optionally its analytic fit Jacobian. */
+static int fit_point_weighted_eval(const struct atten_cal_fit_point *point,
+				   const struct atten_cal_record *records,
+				   const struct attenuator_model_coeffs *coeffs,
+				   double max_atten_sigma_db,
+				   double *residual,
+				   double *j_f50,
+				   double *j_slope)
 {
-	const struct attenuator_model_coeffs coeffs = {
-		.fvoa_50pct_mv = fvoa_50pct_mv,
-		.slope_inv_fvoa_mv = slope_inv_fvoa_mv,
-		.max_atten_db = max_atten_db,
-		.gain = gain,
-	};
-
-	return attenuator_model_voltage_to_db(&coeffs, (float)dac_mv);
-}
-
-/** Estimate model dB sensitivity to DAC voltage for x-error propagation. */
-static double fit_model_d_db_d_dac(double fvoa_50pct_mv, double slope_inv_fvoa_mv,
-				   double max_atten_db, double gain, double dac_mv)
-{
-	double step = MAX((double)ATTEN_CAL_DAC_SIGMA_MV, 0.5);
-	double lo = MAX(0.0, dac_mv - step);
-	double hi = MIN((double)ATTENUATOR_DRIVE_MAX_MV, dac_mv + step);
-	double db_lo;
-	double db_hi;
-
-	if (!(hi > lo)) {
-		return 0.0;
-	}
-	db_lo = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, lo);
-	db_hi = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, hi);
-	if (!isfinite(db_lo) || !isfinite(db_hi)) {
-		return 0.0;
-	}
-	return (db_hi - db_lo) / (hi - lo);
-}
-
-/** Estimate dB sensitivity to the fixed leakage-floor estimate. */
-static double fit_model_d_db_d_max_atten(double fvoa_50pct_mv,
-					 double slope_inv_fvoa_mv,
-					 double max_atten_db,
-					 double gain,
-					 double dac_mv)
-{
-	double step = MAX(fabs(max_atten_db) * 1.0e-5, 0.01);
-	double lo = MAX(ATTEN_CAL_MIN_DB_ERR, max_atten_db - step);
-	double hi = max_atten_db + step;
-	double db_lo;
-	double db_hi;
-
-	if (!(hi > lo)) {
-		return 0.0;
-	}
-	db_lo = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, lo, gain, dac_mv);
-	db_hi = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv, hi, gain, dac_mv);
-	if (!isfinite(db_lo) || !isfinite(db_hi)) {
-		return 0.0;
-	}
-	return (db_hi - db_lo) / (hi - lo);
-}
-
-/** Return one weighted dB residual for the current fit parameters. */
-static double fit_point_residual(const struct atten_cal_fit_point *point,
-				 double fvoa_50pct_mv,
-				 double slope_inv_fvoa_mv,
-				 double max_atten_db,
-				 double max_atten_sigma_db,
-				 double gain)
-{
-	double model_db;
-	double d_db_d_dac;
-	double d_db_d_max;
+	struct atten_model_eval eval;
 	double sigma_db;
 
-	if (point == NULL) {
-		return NAN;
+	if (point == NULL || records == NULL || coeffs == NULL || residual == NULL) {
+		return -EINVAL;
 	}
-	model_db = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv,
-				max_atten_db, gain, point->dac_mv);
-	d_db_d_dac = fit_model_d_db_d_dac(fvoa_50pct_mv, slope_inv_fvoa_mv,
-					  max_atten_db, gain, point->dac_mv);
-	d_db_d_max = fit_model_d_db_d_max_atten(fvoa_50pct_mv, slope_inv_fvoa_mv,
-						max_atten_db, gain, point->dac_mv);
-	sigma_db = sqrt(point->measured_db_err * point->measured_db_err +
-			(d_db_d_dac * (double)ATTEN_CAL_DAC_SIGMA_MV) *
-			(d_db_d_dac * (double)ATTEN_CAL_DAC_SIGMA_MV) +
-			(d_db_d_max * max_atten_sigma_db) *
-			(d_db_d_max * max_atten_sigma_db));
-	if (!isfinite(model_db) || !(sigma_db > 0.0) || !isfinite(sigma_db)) {
-		return NAN;
+	if (!atten_model_eval(coeffs, records[point->record_index].sweep_mv, &eval) ||
+	    !atten_model_db_sigma(&eval, (double)point->measured_db_err,
+				  (double)ATTEN_CAL_DAC_SIGMA_MV,
+				  max_atten_sigma_db, &sigma_db)) {
+		return -ERANGE;
 	}
-	return (model_db - point->measured_db) /
-	       MAX(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB);
+
+	sigma_db = MAX(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB);
+	*residual = (eval.db - (double)point->measured_db) / sigma_db;
+	if (!isfinite(*residual)) {
+		return -ERANGE;
+	}
+	if (j_f50 != NULL) {
+		*j_f50 = eval.d_db_d_fvoa_50pct_mv / sigma_db;
+	}
+	if (j_slope != NULL) {
+		*j_slope = eval.d_db_d_slope_inv_fvoa_mv / sigma_db;
+	}
+	return 0;
 }
 
 /** Sum weighted squared residuals for a complete fit candidate. */
-static double fit_cost(const struct atten_cal_fit_point *points, uint8_t point_count,
-		       double fvoa_50pct_mv, double slope_inv_fvoa_mv,
-		       double max_atten_db, double max_atten_sigma_db,
-		       double gain)
+static double fit_cost(const struct atten_cal_fit_point *points,
+		       const struct atten_cal_record *records,
+		       uint8_t point_count,
+		       const struct attenuator_model_coeffs *coeffs,
+		       double max_atten_sigma_db)
 {
 	double cost = 0.0;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
-		double residual = fit_point_residual(&points[i], fvoa_50pct_mv,
-						     slope_inv_fvoa_mv,
-						     max_atten_db,
-						     max_atten_sigma_db,
-						     gain);
+		double residual;
 
-		if (!isfinite(residual)) {
+		if (fit_point_weighted_eval(&points[i], records, coeffs,
+					    max_atten_sigma_db, &residual,
+					    NULL, NULL) != 0) {
 			return INFINITY;
 		}
 		cost += residual * residual;
@@ -1381,6 +1320,7 @@ static double fit_cost(const struct atten_cal_fit_point *points, uint8_t point_c
 
 /** Choose a data-derived initial coefficient guess for the dB-space optimizer. */
 static void fit_initial_guess(const struct atten_cal_fit_point *points,
+			      const struct atten_cal_record *records,
 			      uint8_t point_count, double gain,
 			      double *fvoa_50pct_mv,
 			      double *slope_inv_fvoa_mv)
@@ -1393,8 +1333,8 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 	double slope;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
-		double x = points[i].dac_mv * gain;
-		double err = fabs(points[i].measured_db - 3.01029995664);
+		double x = (double)records[points[i].record_index].sweep_mv * gain;
+		double err = fabs((double)points[i].measured_db - 3.01029995664);
 
 		min_x = MIN(min_x, x);
 		max_x = MAX(max_x, x);
@@ -1415,13 +1355,15 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 }
 
 /**
- * Optimize two model coefficients with damped finite-difference Gauss-Newton.
+ * Optimize two model coefficients with damped analytic-Jacobian Gauss-Newton.
  *
  * The objective is measured/model attenuation residual in dB divided by the
- * propagated dB uncertainty. The implementation is intentionally local and
- * deterministic so the notebook can reproduce it without SciPy.
+ * propagated dB uncertainty. The propagated uncertainty is recomputed for each
+ * candidate coefficient set, but the Jacobian treats that uncertainty as the
+ * current point weight rather than differentiating through the weight itself.
  */
 static int fit_optimize_db(const struct atten_cal_fit_point *points,
+			   const struct atten_cal_record *records,
 			   uint8_t point_count, double gain,
 			   double max_atten_db, double max_atten_sigma_db,
 			   double *fvoa_50pct_mv,
@@ -1432,20 +1374,27 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 	double slope;
 	double lambda = ATTEN_CAL_FIT_INITIAL_LAMBDA;
 	double cost;
+	struct attenuator_model_coeffs coeffs;
 
-	if (fvoa_50pct_mv == NULL || slope_inv_fvoa_mv == NULL || point_count < ATTEN_CAL_MIN_FIT_POINTS) {
+	if (points == NULL || records == NULL || fvoa_50pct_mv == NULL ||
+	    slope_inv_fvoa_mv == NULL ||
+	    point_count < ATTEN_CAL_MIN_FIT_POINTS) {
 		return -EINVAL;
 	}
-	fit_initial_guess(points, point_count, gain, &f50, &slope);
-	cost = fit_cost(points, point_count, f50, slope,
-			max_atten_db, max_atten_sigma_db, gain);
+	fit_initial_guess(points, records, point_count, gain, &f50, &slope);
+	coeffs = (struct attenuator_model_coeffs) {
+		.fvoa_50pct_mv = f50,
+		.slope_inv_fvoa_mv = slope,
+		.max_atten_db = max_atten_db,
+		.gain = gain,
+	};
+	cost = fit_cost(points, records, point_count, &coeffs,
+			max_atten_sigma_db);
 	if (!isfinite(cost)) {
 		return -ERANGE;
 	}
 
 	for (uint8_t iter = 0U; iter < ATTEN_CAL_FIT_MAX_ITER; ++iter) {
-		double step_f50 = MAX(fabs(f50) * 1.0e-5, 0.1);
-		double step_slope = MAX(fabs(slope) * 1.0e-5, 1.0e-8);
 		double h00 = 0.0;
 		double h01 = 0.0;
 		double h11 = 0.0;
@@ -1457,31 +1406,20 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 		double trial_f50;
 		double trial_slope;
 		double trial_cost;
+		struct attenuator_model_coeffs trial_coeffs;
 
+		coeffs.fvoa_50pct_mv = f50;
+		coeffs.slope_inv_fvoa_mv = slope;
 		for (uint8_t i = 0U; i < point_count; ++i) {
-			double r = fit_point_residual(&points[i], f50, slope,
-						      max_atten_db,
-						      max_atten_sigma_db,
-						      gain);
-			double r_f50 = fit_point_residual(&points[i],
-							  f50 + step_f50,
-							  slope,
-							  max_atten_db,
-							  max_atten_sigma_db,
-							  gain);
-			double r_slope = fit_point_residual(&points[i], f50,
-							    slope + step_slope,
-							    max_atten_db,
-							    max_atten_sigma_db,
-							    gain);
+			double r;
 			double j0;
 			double j1;
 
-			if (!isfinite(r) || !isfinite(r_f50) || !isfinite(r_slope)) {
+			if (fit_point_weighted_eval(&points[i], records, &coeffs,
+						    max_atten_sigma_db, &r,
+						    &j0, &j1) != 0) {
 				return -ERANGE;
 			}
-			j0 = (r_f50 - r) / step_f50;
-			j1 = (r_slope - r) / step_slope;
 			h00 += j0 * j0;
 			h01 += j0 * j1;
 			h11 += j1 * j1;
@@ -1501,9 +1439,14 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 		trial_slope = CLAMP(slope + d_slope,
 				    ATTEN_CAL_FIT_MIN_SLOPE,
 				    ATTEN_CAL_FIT_MAX_SLOPE);
-		trial_cost = fit_cost(points, point_count, trial_f50,
-				      trial_slope, max_atten_db,
-				      max_atten_sigma_db, gain);
+		trial_coeffs = (struct attenuator_model_coeffs) {
+			.fvoa_50pct_mv = trial_f50,
+			.slope_inv_fvoa_mv = trial_slope,
+			.max_atten_db = max_atten_db,
+			.gain = gain,
+		};
+		trial_cost = fit_cost(points, records, point_count,
+				      &trial_coeffs, max_atten_sigma_db);
 		if (isfinite(trial_cost) && trial_cost < cost) {
 			if (fabs(trial_f50 - f50) < 1.0e-6 &&
 			    fabs(trial_slope - slope) < 1.0e-12) {
@@ -1531,6 +1474,7 @@ static int fit_one_physical_locked(uint8_t physical,
 				   struct attenuator_calibration_fit_metrics *out)
 {
 	struct attenuator *atten = &attenuators[cal.attenuator_index];
+	const struct atten_cal_record *records = cal.records[physical];
 	double gain = physical == 0U ? atten->coeff1.gain : atten->coeff2.gain;
 	double fvoa_50pct_mv = 0.0;
 	double slope_inv_fvoa_mv = 0.0;
@@ -1548,6 +1492,7 @@ static int fit_one_physical_locked(uint8_t physical,
 	double sum_measured_measured = 0.0;
 	double sum_model_measured = 0.0;
 	uint8_t point_count = 0U;
+	struct attenuator_model_coeffs coeffs;
 	int rc;
 
 	if (out == NULL || physical >= ATTENUATOR_PHYSICAL_COUNT || !(gain > 0.0)) {
@@ -1564,35 +1509,47 @@ static int fit_one_physical_locked(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
-	rc = fit_optimize_db(cal_fit_points, point_count, gain,
+	rc = fit_optimize_db(cal_fit_points, records, point_count, gain,
 			     max_atten_db, max_atten_sigma_db,
 			     &fvoa_50pct_mv, &slope_inv_fvoa_mv);
 	if (rc != 0) {
 		return rc;
 	}
 
+	coeffs = (struct attenuator_model_coeffs) {
+		.fvoa_50pct_mv = fvoa_50pct_mv,
+		.slope_inv_fvoa_mv = slope_inv_fvoa_mv,
+		.max_atten_db = max_atten_db,
+		.gain = gain,
+	};
 	for (uint8_t i = 0U; i < point_count; ++i) {
-		double model_db = fit_model_db(fvoa_50pct_mv, slope_inv_fvoa_mv,
-					       max_atten_db, gain,
-					       cal_fit_points[i].dac_mv);
-		double residual_db = model_db - cal_fit_points[i].measured_db;
-		double x = cal_fit_points[i].dac_mv * gain;
+		const struct atten_cal_fit_point *point = &cal_fit_points[i];
+		const struct atten_cal_record *record = &records[point->record_index];
+		struct atten_model_eval eval;
+		double measured_db = (double)point->measured_db;
+		double residual_db;
+		double x = (double)record->sweep_mv * gain;
+		double tx = pow(10.0, -measured_db / 10.0);
 
-		if (!isfinite(model_db) || !isfinite(residual_db)) {
+		if (!atten_model_eval(&coeffs, record->sweep_mv, &eval)) {
+			return -ERANGE;
+		}
+		residual_db = eval.db - measured_db;
+		if (!isfinite(eval.db) || !isfinite(residual_db) ||
+		    !isfinite(tx) || !(tx > 0.0)) {
 			return -ERANGE;
 		}
 		sum_sq_db += residual_db * residual_db;
 		max_abs_db = MAX(max_abs_db, fabs(residual_db));
-		min_tx = MIN(min_tx, cal_fit_points[i].tx);
-		max_tx = MAX(max_tx, cal_fit_points[i].tx);
+		min_tx = MIN(min_tx, tx);
+		max_tx = MAX(max_tx, tx);
 		min_x = MIN(min_x, x);
 		max_x = MAX(max_x, x);
-		sum_model += model_db;
-		sum_measured += cal_fit_points[i].measured_db;
-		sum_model_model += model_db * model_db;
-		sum_measured_measured += cal_fit_points[i].measured_db *
-					 cal_fit_points[i].measured_db;
-		sum_model_measured += model_db * cal_fit_points[i].measured_db;
+		sum_model += eval.db;
+		sum_measured += measured_db;
+		sum_model_model += eval.db * eval.db;
+		sum_measured_measured += measured_db * measured_db;
+		sum_model_measured += eval.db * measured_db;
 	}
 
 	if (point_count < ATTEN_CAL_MIN_FIT_POINTS || !(max_x > min_x)) {
