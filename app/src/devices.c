@@ -678,13 +678,9 @@ int devices_detect_board_type(void)
 		return -EIO;
 	}
 
-	//TODO remove this bringup patch when finished.
-	// LOG_ERR("No board type strap is active; refusing board-specific setup");
-	// set_current_profile(&unknown_profile, true);
-	// return -ENODEV;
-	LOG_ERR("No board type strap is active; defaulting to TIB");
-	set_current_profile(&tib_profile, true);
-	return 0;
+	LOG_ERR("No board type strap is active; refusing board-specific setup");
+	set_current_profile(&unknown_profile, true);
+	return -ENODEV;
 
 }
 
