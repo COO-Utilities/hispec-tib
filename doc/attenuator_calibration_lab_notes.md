@@ -228,6 +228,7 @@ The fitted model parameters for each physical FVOA are:
 fvoa_50pct_mv
 slope_inv_fvoa_mv
 max_atten_db
+correction_coeff[4]
 ```
 
 where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage,
@@ -235,6 +236,22 @@ where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage,
 `max_atten_db` captures the physical leakage floor of one FVOA at maximum
 attenuation. The firmware estimates `max_atten_db` from the final three usable
 fit points and then fits the two shape parameters with that floor held fixed.
+After that base physical fit, firmware can fit a four-term Chebyshev residual
+correction in model dB space:
+
+```text
+base_db = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db)
+t = clamp((base_db - start_db) / (max_atten_db - start_db), 0, 1)
+x = 2 t - 1
+correction_db = t (1 - t) * sum(c_i T_i(x))
+db = base_db + correction_db
+```
+
+where `start_db = -10 log10(0.99)`. The envelope keeps the correction zero near
+the open state and at the finite-attenuation floor, so the physical coefficient
+semantics remain intact. The correction is accepted only if it is well
+conditioned and monotonic on the actual sweep-point grid; otherwise the
+coefficients remain zero and the base fit is retained.
 
 The procedure is then repeated for the second FVOA in the logical attenuator pair.
 

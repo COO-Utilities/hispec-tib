@@ -97,6 +97,32 @@ static int attenuator_index_from_name(const char *name, uint8_t *attenuator_inde
 	return devices_attenuator_channel_available(*attenuator_index) ? 0 : -ENODEV;
 }
 
+static int append_attenuator_physical_coeff_json(char *payload,
+						 size_t payload_len,
+						 size_t *off,
+						 const char *name,
+						 const struct attenuator_model_coeffs *coeffs)
+{
+	if (payload == NULL || off == NULL || name == NULL || coeffs == NULL) {
+		return -EINVAL;
+	}
+
+	return coo_json_append(payload, payload_len, off,
+			       "\"%s\":{\"fvoa_50pct_mv\":%.12g,"
+			       "\"slope_inv_fvoa_mv\":%.12g,"
+			       "\"max_atten_db\":%.12g,\"gain\":%.12g,"
+			       "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g]}",
+			       name,
+			       coeffs->fvoa_50pct_mv,
+			       coeffs->slope_inv_fvoa_mv,
+			       coeffs->max_atten_db,
+			       coeffs->gain,
+			       (double)coeffs->correction_coeff[0],
+			       (double)coeffs->correction_coeff[1],
+			       (double)coeffs->correction_coeff[2],
+			       (double)coeffs->correction_coeff[3]);
+}
+
 static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 					 enum attenuator_setting *setting,
 					 uint8_t *attenuator_index)
@@ -132,6 +158,10 @@ static int attenuator_index_from_command(const struct coo_cmd_request *cmd,
 		if (rc != 0) {
 			return rc;
 		}
+	}
+	if (attenuators[*attenuator_index].dac_cfg1.dev == NULL ||
+	    attenuators[*attenuator_index].dac_cfg2.dev == NULL) {
+		return -ENODEV;
 	}
 	return 0;
 }
@@ -194,22 +224,23 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 
 	switch (setting) {
 	case ATTENUATOR_SETTING_COEFF:
-		snprintk(payload, sizeof(payload),
-			 "{\"dac1\":{\"fvoa_50pct_mv\":%.12g,"
-			 "\"slope_inv_fvoa_mv\":%.12g,\"max_atten_db\":%.12g,"
-			 "\"gain\":%.12g},"
-			 "\"dac2\":{\"fvoa_50pct_mv\":%.12g,"
-			 "\"slope_inv_fvoa_mv\":%.12g,\"max_atten_db\":%.12g,"
-			 "\"gain\":%.12g}}",
-			 attenuators[attenuator_index].coeff1.fvoa_50pct_mv,
-			 attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv,
-			 attenuators[attenuator_index].coeff1.max_atten_db,
-			 attenuators[attenuator_index].coeff1.gain,
-			 attenuators[attenuator_index].coeff2.fvoa_50pct_mv,
-			 attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv,
-			 attenuators[attenuator_index].coeff2.max_atten_db,
-			 attenuators[attenuator_index].coeff2.gain);
+	{
+		size_t off = 0U;
+
+		if (coo_json_append(payload, sizeof(payload), &off, "{") != 0 ||
+		    append_attenuator_physical_coeff_json(payload, sizeof(payload), &off,
+							 "dac1",
+							 &attenuators[attenuator_index].coeff1) != 0 ||
+		    coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
+		    append_attenuator_physical_coeff_json(payload, sizeof(payload), &off,
+							 "dac2",
+							 &attenuators[attenuator_index].coeff2) != 0 ||
+		    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
+					     "{\"error\":\"Coefficient response too large\"}");
+		}
 		break;
+	}
 	case ATTENUATOR_SETTING_COMPACT:
 		return attenuator_status_reply(cmd, out, attenuator_index);
 	default:
@@ -243,6 +274,29 @@ static int parse_attenuator_coeff_object(const char *json,
 	    coo_json_extract_double(object_json, "gain",
 				    &out->gain) != COO_JSON_EXTRACT_OK) {
 		return -EINVAL;
+	}
+
+	{
+		double correction[ATTENUATOR_MODEL_CORRECTION_TERMS];
+		size_t parsed_len = 0U;
+
+		rc = coo_json_extract_double_array(object_json, "correction_coeff",
+						   correction, ARRAY_SIZE(correction),
+						   &parsed_len);
+		if (rc == COO_JSON_EXTRACT_ERR) {
+			return -EINVAL;
+		}
+		if (rc == COO_JSON_EXTRACT_OK) {
+			if (parsed_len != ATTENUATOR_MODEL_CORRECTION_TERMS) {
+				return -EINVAL;
+			}
+			for (uint8_t i = 0U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+				if (!isfinite(correction[i])) {
+					return -EINVAL;
+				}
+				out->correction_coeff[i] = (float)correction[i];
+			}
+		}
 	}
 
 	return 0;
@@ -477,6 +531,8 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 						  "{\"error\":\"Invalid persist flag\"}");
 		}
 
+		physical[0] = attenuators[attenuator_index].coeff1;
+		physical[1] = attenuators[attenuator_index].coeff2;
 		if (parse_attenuator_coeff_object(cmd->payload, "dac1", &physical[0]) != 0 ||
 		    parse_attenuator_coeff_object(cmd->payload, "dac2", &physical[1]) != 0 ||
 		    !attenuator_model_coefficients_valid(physical)) {
@@ -488,10 +544,16 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		stored_coeffs.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 		stored_coeffs.physical[0].max_atten_db = physical[0].max_atten_db;
 		stored_coeffs.physical[0].gain = physical[0].gain;
+		memcpy(stored_coeffs.physical[0].correction_coeff,
+		       physical[0].correction_coeff,
+		       sizeof(stored_coeffs.physical[0].correction_coeff));
 		stored_coeffs.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 		stored_coeffs.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 		stored_coeffs.physical[1].max_atten_db = physical[1].max_atten_db;
 		stored_coeffs.physical[1].gain = physical[1].gain;
+		memcpy(stored_coeffs.physical[1].correction_coeff,
+		       physical[1].correction_coeff,
+		       sizeof(stored_coeffs.physical[1].correction_coeff));
 
 		if (attenuator_apply_coefficients_preserve_db(
 			    &attenuators[attenuator_index], physical) != 0) {

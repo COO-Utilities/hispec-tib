@@ -81,6 +81,8 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_FIT_INITIAL_LAMBDA 1.0e-3
 #define ATTEN_CAL_FIT_MIN_SLOPE 1.0e-12
 #define ATTEN_CAL_FIT_MAX_SLOPE 1.0
+#define ATTEN_CAL_CORRECTION_PIVOT_EPS 1.0e-12
+#define ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB 1.0e-4
 #define ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX "atten"
 #define ATTEN_CAL_DATA_CHUNK_RECORD_SIZE 27U
 #define ATTEN_CAL_DATA_METADATA_HEADER_SIZE 19U
@@ -426,6 +428,7 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    "\"slope_inv_fvoa_mv\":%.12g,"
 			    "\"max_atten_db\":%.12g,"
 			    "\"max_atten_sigma_db\":%.12g,"
+			    "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g],"
 			    "\"corr\":%.12g,\"rms_db\":%.12g,"
 			    "\"max_abs_db\":%.12g,\"min_tx\":%.12g,"
 			    "\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
@@ -437,6 +440,10 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    fit != NULL ? (double)fit->slope_inv_fvoa_mv : (double)NAN,
 			    fit != NULL ? (double)fit->max_atten_db : (double)NAN,
 			    fit != NULL ? (double)fit->max_atten_sigma_db : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[0] : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[1] : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[2] : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[3] : (double)NAN,
 			    fit != NULL ? (double)fit->correlation : (double)NAN,
 			    fit != NULL ? (double)fit->rms_db : (double)NAN,
 			    fit != NULL ? (double)fit->max_abs_db : (double)NAN,
@@ -1469,6 +1476,142 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 	return 0;
 }
 
+/** Solve the small dense normal equation used for residual-correction terms. */
+static int solve_correction_normal_equation(
+	double normal[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS],
+	double rhs[ATTENUATOR_MODEL_CORRECTION_TERMS],
+	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS])
+{
+	double matrix[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS + 1U];
+
+	for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+		for (uint8_t col = 0U; col < ATTENUATOR_MODEL_CORRECTION_TERMS; ++col) {
+			matrix[row][col] = normal[row][col];
+		}
+		matrix[row][ATTENUATOR_MODEL_CORRECTION_TERMS] = rhs[row];
+	}
+
+	for (uint8_t col = 0U; col < ATTENUATOR_MODEL_CORRECTION_TERMS; ++col) {
+		uint8_t pivot = col;
+		double pivot_abs = fabs(matrix[col][col]);
+
+		for (uint8_t row = col + 1U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+			double value_abs = fabs(matrix[row][col]);
+
+			if (value_abs > pivot_abs) {
+				pivot = row;
+				pivot_abs = value_abs;
+			}
+		}
+		if (!(pivot_abs > ATTEN_CAL_CORRECTION_PIVOT_EPS) || !isfinite(pivot_abs)) {
+			return -ERANGE;
+		}
+		if (pivot != col) {
+			for (uint8_t k = col; k <= ATTENUATOR_MODEL_CORRECTION_TERMS; ++k) {
+				double tmp = matrix[col][k];
+
+				matrix[col][k] = matrix[pivot][k];
+				matrix[pivot][k] = tmp;
+			}
+		}
+		for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+			double scale;
+
+			if (row == col) {
+				continue;
+			}
+			scale = matrix[row][col] / matrix[col][col];
+			for (uint8_t k = col; k <= ATTENUATOR_MODEL_CORRECTION_TERMS; ++k) {
+				matrix[row][k] -= scale * matrix[col][k];
+			}
+		}
+	}
+
+	for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+		double value = matrix[row][ATTENUATOR_MODEL_CORRECTION_TERMS] / matrix[row][row];
+
+		if (!isfinite(value)) {
+			return -ERANGE;
+		}
+		correction_coeff[row] = (float)value;
+	}
+	return 0;
+}
+
+/**
+ * Fit the optional empirical residual correction after the base model fit.
+ *
+ * The correction is deliberately subordinate to the physical model. If the
+ * small linear solve is ill-conditioned or the corrected model is not monotonic
+ * on the actual sweep-point grid, the coefficients remain zero and the base fit
+ * is kept.
+ */
+static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points,
+					const struct atten_cal_record *records,
+					uint8_t point_count,
+					double max_atten_sigma_db,
+					struct attenuator_model_coeffs *coeffs)
+{
+	double normal[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
+	double rhs[ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
+	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
+	uint8_t used = 0U;
+
+	if (points == NULL || records == NULL || coeffs == NULL) {
+		return;
+	}
+	memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
+
+	for (uint8_t i = 0U; i < point_count; ++i) {
+		const struct atten_cal_fit_point *point = &points[i];
+		const struct atten_cal_record *record = &records[point->record_index];
+		struct atten_model_eval eval;
+		double sigma_db;
+		double basis[ATTENUATOR_MODEL_CORRECTION_TERMS];
+		double residual_db;
+		double weight;
+
+		if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
+		    !atten_model_db_sigma(&eval, (double)point->measured_db_err,
+					  (double)ATTEN_CAL_DAC_SIGMA_MV,
+					  max_atten_sigma_db, &sigma_db) ||
+		    !atten_model_correction_basis(eval.db, coeffs->max_atten_db, basis)) {
+			continue;
+		}
+		sigma_db = MAX(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB);
+		residual_db = (double)point->measured_db - eval.db;
+		weight = 1.0 / (sigma_db * sigma_db);
+		for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+			rhs[row] += basis[row] * residual_db * weight;
+			for (uint8_t col = 0U; col < ATTENUATOR_MODEL_CORRECTION_TERMS; ++col) {
+				normal[row][col] += basis[row] * basis[col] * weight;
+			}
+		}
+		used++;
+	}
+	if (used < ATTENUATOR_MODEL_CORRECTION_TERMS ||
+	    solve_correction_normal_equation(normal, rhs, correction_coeff) != 0) {
+		return;
+	}
+	memcpy(coeffs->correction_coeff, correction_coeff, sizeof(coeffs->correction_coeff));
+
+	{
+		double previous_db = -INFINITY;
+
+		for (uint8_t i = 0U; i < point_count; ++i) {
+			const struct atten_cal_record *record = &records[points[i].record_index];
+			struct atten_model_eval eval;
+
+			if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
+			    eval.db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db) {
+				memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
+				return;
+			}
+			previous_db = eval.db;
+		}
+	}
+}
+
 /** Fit one physical FVOA's retained records to the firmware attenuator model. */
 static int fit_one_physical_locked(uint8_t physical,
 				   struct attenuator_calibration_fit_metrics *out)
@@ -1522,6 +1665,8 @@ static int fit_one_physical_locked(uint8_t physical,
 		.max_atten_db = max_atten_db,
 		.gain = gain,
 	};
+	fit_correction_coeff_locked(cal_fit_points, records, point_count,
+				    max_atten_sigma_db, &coeffs);
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		const struct atten_cal_fit_point *point = &cal_fit_points[i];
 		const struct atten_cal_record *record = &records[point->record_index];
@@ -1580,6 +1725,8 @@ static int fit_one_physical_locked(uint8_t physical,
 	out->min_tx = min_tx;
 	out->max_tx = max_tx;
 	out->fvoa_span_mv = max_x - min_x;
+	memcpy(out->correction_coeff, coeffs.correction_coeff,
+	       sizeof(out->correction_coeff));
 	out->accepted = isfinite(out->correlation) &&
 			out->correlation >= ATTEN_CAL_MIN_FIT_CORR &&
 			isfinite(out->fvoa_50pct_mv) &&
@@ -1601,12 +1748,24 @@ static int apply_fit_to_settings_locked(void)
 			.slope_inv_fvoa_mv = cal.fit[0].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[0].max_atten_db,
 			.gain = atten->coeff1.gain,
+			.correction_coeff = {
+				cal.fit[0].correction_coeff[0],
+				cal.fit[0].correction_coeff[1],
+				cal.fit[0].correction_coeff[2],
+				cal.fit[0].correction_coeff[3],
+			},
 		},
 		{
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[1].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[1].max_atten_db,
 			.gain = atten->coeff2.gain,
+			.correction_coeff = {
+				cal.fit[1].correction_coeff[0],
+				cal.fit[1].correction_coeff[1],
+				cal.fit[1].correction_coeff[2],
+				cal.fit[1].correction_coeff[3],
+			},
 		},
 	};
 
@@ -1622,10 +1781,14 @@ static int apply_fit_to_settings_locked(void)
 	stored.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 	stored.physical[0].max_atten_db = physical[0].max_atten_db;
 	stored.physical[0].gain = physical[0].gain;
+	memcpy(stored.physical[0].correction_coeff, physical[0].correction_coeff,
+	       sizeof(stored.physical[0].correction_coeff));
 	stored.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 	stored.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 	stored.physical[1].max_atten_db = physical[1].max_atten_db;
 	stored.physical[1].gain = physical[1].gain;
+	memcpy(stored.physical[1].correction_coeff, physical[1].correction_coeff,
+	       sizeof(stored.physical[1].correction_coeff));
 	app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);
 	return 0;
 }
@@ -1849,11 +2012,16 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 		"\"valid\":true,\"accepted\":%s,\"points\":%u,"
 		"\"fvoa_50pct_mv\":%.12g,\"slope_inv_fvoa_mv\":%.12g,"
 		"\"max_atten_db\":%.12g,\"max_atten_sigma_db\":%.12g,"
+		"\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g],"
 		"\"corr\":%.12g,\"rms_db\":%.12g,\"max_abs_db\":%.12g,"
 		"\"min_tx\":%.12g,\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
 		fit->accepted ? "true" : "false", fit->points,
 		fit->fvoa_50pct_mv, fit->slope_inv_fvoa_mv,
 		fit->max_atten_db, fit->max_atten_sigma_db,
+		(double)fit->correction_coeff[0],
+		(double)fit->correction_coeff[1],
+		(double)fit->correction_coeff[2],
+		(double)fit->correction_coeff[3],
 		fit->correlation, fit->rms_db, fit->max_abs_db,
 		fit->min_tx, fit->max_tx, fit->fvoa_span_mv);
 }

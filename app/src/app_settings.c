@@ -587,6 +587,8 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
 		physical[i].max_atten_db = p->max_atten_db;
 		physical[i].gain = p->gain;
+		memcpy(physical[i].correction_coeff, p->correction_coeff,
+		       sizeof(physical[i].correction_coeff));
 	}
 
 	return attenuator_model_coefficients_valid(physical);

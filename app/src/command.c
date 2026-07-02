@@ -306,7 +306,7 @@ static const struct coo_cmd_spec command_specs[] = {
                   "sets or queries total or per-physical attenuator transmission",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/coeff", NULL,
-	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,gain} dac2={...} persist=<bool>]",
+	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,gain,correction_coeff} dac2={...} persist=<bool>]",
 	                  "dac1 and dac2 coefficient objects are required for effect",
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
                   "send JSON for coeff updates; key=value shorthand cannot express arrays",

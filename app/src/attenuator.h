@@ -24,12 +24,15 @@
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
+/* Low-order empirical correction in modeled dB space, fitted after base coeffs. */
+#define ATTENUATOR_MODEL_CORRECTION_TERMS 6U
 
 struct attenuator_model_coeffs {
     double fvoa_50pct_mv;
     double slope_inv_fvoa_mv;
     double max_atten_db;
     double gain;
+    float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
 /** Forward model result and local dB sensitivities for one physical FVOA. */
@@ -125,6 +128,18 @@ bool atten_model_db_sigma(const struct atten_model_eval *eval,
                           double voltage_sigma_mv,
                           double max_atten_sigma_db,
                           double *sigma_db);
+
+/**
+ * @brief Return the empirical correction basis for one base-model dB point.
+ *
+ * Calibration fits coefficients against this basis; atten_model_eval() owns
+ * applying those coefficients to the forward model. Returns false when
+ * @p base_db is outside the correction envelope, where the correction is
+ * constrained to zero.
+ */
+bool atten_model_correction_basis(double base_db,
+                                  double max_atten_db,
+                                  double basis[ATTENUATOR_MODEL_CORRECTION_TERMS]);
 
 /**
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.

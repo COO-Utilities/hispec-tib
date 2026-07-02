@@ -335,6 +335,24 @@ logical two-FVOA attenuator. Firmware estimates it from the final three usable
 fit points, propagates that uncertainty into the weighted dB residuals, and
 then optimizes only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
+After the base fit, firmware fits an optional four-term Chebyshev correction to
+the remaining dB residuals:
+
+```text
+start_db = -10 * log10(0.99)
+t = clamp((base_db - start_db) / (max_atten_db - start_db), 0, 1)
+x = 2 * t - 1
+correction_db = t * (1 - t) * sum(c_i * T_i(x))
+model_db = base_db + correction_db
+```
+
+This correction is intentionally ringfenced from the three physical
+coefficients. It is zero near open transmission and at the modeled leakage
+floor, and it is accepted only if the corrected model remains monotonic on the
+actual sweep-point grid. If the residual solve is ill-conditioned or fails that
+monotonicity check, firmware leaves `correction_coeff` as all zeros and keeps
+the base fit.
+
 ## Notebook Inspection
 
 `tools/attenuator_calibration_lab.ipynb` is the lab-side inspection script for
@@ -359,6 +377,7 @@ An accepted coefficient object contains:
   "fvoa_50pct_mv": 3144.95,
   "slope_inv_fvoa_mv": 0.00303104,
   "max_atten_db": 48.36,
-  "gain": 1.533
+  "gain": 1.533,
+  "correction_coeff": [0.12, -0.03, 0.01, 0.0]
 }
 ```

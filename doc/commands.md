@@ -990,13 +990,15 @@ command wait budget, this command returns `{"error":"busy"}`.
       "fvoa_50pct_mv": 2529.45,
       "slope_inv_fvoa_mv": 0.00158137,
       "max_atten_db": 55.0,
-      "gain": 1.533
+      "gain": 1.533,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     },
     "dac2": {
       "fvoa_50pct_mv": 2529.45,
       "slope_inv_fvoa_mv": 0.00158137,
       "max_atten_db": 55.0,
-      "gain": 1.533
+      "gain": 1.533,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     }
   }
   ```
@@ -1009,13 +1011,15 @@ command wait budget, this command returns `{"error":"busy"}`.
       "fvoa_50pct_mv": 3144.95,
       "slope_inv_fvoa_mv": 0.00303104,
       "max_atten_db": 48.36,
-      "gain": 1.533
+      "gain": 1.533,
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0]
     },
     "dac2": {
       "fvoa_50pct_mv": 3456.12,
       "slope_inv_fvoa_mv": 0.00247498,
       "max_atten_db": 61.95,
-      "gain": 1.533
+      "gain": 1.533,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     },
     "persist": true
   }
@@ -1025,7 +1029,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533},"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"correction_coeff":[0.12,-0.03,0.01,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"correction_coeff":[0.0,0.0,0.0,0.0]},"persist":true}
   ```
 
 - **Notes:**
@@ -1050,7 +1054,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     ideal transmission `ideal_tx = (erf(4) - erf(delta)) / (2 * erf(4))`.
     Runtime dB/linear set commands normalize against the modeled open
     transmission at DAC 0, then apply the physical FVOA leakage floor
-    `floor_tx = 10^(-max_atten_db / 10)`.
+    `floor_tx = 10^(-max_atten_db / 10)`. `correction_coeff` is an optional
+    four-term Chebyshev residual correction in model dB space. Query responses
+    always include it. In set payloads, omitting `correction_coeff` leaves the
+    currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0]` to
+    clear it intentionally.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - There is no separate `attensettings` command; calibration coefficients live
@@ -1231,11 +1239,15 @@ ownership are documented in `attenuator_calibration.md`.
     keeping the coefficient names and meanings `fvoa_50pct_mv`,
     `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
     `max_atten_db` from the final three usable fit points and holds it fixed
-    while optimizing the two shape parameters. The y uncertainty comes from photodiode mean
+    while optimizing the two shape parameters. It then fits the optional
+    `correction_coeff` residual layer in dB space against the same sweep-point
+    grid. If that correction is ill-conditioned or breaks monotonicity on the
+    sweep points, firmware leaves the correction coefficients at zero and keeps
+    the base fit. The y uncertainty comes from photodiode mean
     uncertainty, bridge/segment-scale propagation, and the open-reference
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
     3 mV. Fit details include point count, correlation, residual RMS/max in dB,
-    fitted transmission span, and FVOA-drive span.
+    fitted transmission span, FVOA-drive span, and correction coefficients.
 
 (pd)=
 ### `pd`

@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <zephyr/net/net_ip.h>
 
+#include "attenuator.h"
 #include "laser_properties.h"
 #include "laserbank_tempcontrol.h"
 
@@ -69,6 +70,8 @@ struct app_attenuator_physical_settings {
 	double max_atten_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
+	/* Optional empirical dB residual correction; all zeros means disabled. */
+	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */

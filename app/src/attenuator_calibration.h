@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "attenuator.h"
 #include "lasers.h"
 #include "photodiode.h"
 
@@ -34,6 +35,7 @@ struct attenuator_calibration_fit_metrics {
 	double min_tx;
 	double max_tx;
 	double fvoa_span_mv;
+	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
 struct attenuator_calibration_status {
