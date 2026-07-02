@@ -903,9 +903,14 @@ static bool setup_attenuator_dac_power_states(const struct board_profile *profil
 	for (uint8_t i = 0U; i < ARRAY_SIZE(attenuator_dac_devices); ++i) {
 		const struct device *dev = attenuator_dac_devices[i];
 		uint8_t used_mask = attenuator_dac_used_mask(profile, dev);
-		uint8_t unused_mask =
-			(uint8_t)(BIT_MASK(DAC7X78_CHANNEL_COUNT) & ~used_mask);
+		uint8_t unused_mask;
 		int rc;
+
+		if (used_mask == 0U) {
+			continue;
+		}
+
+		unused_mask = (uint8_t)(BIT_MASK(DAC7X78_CHANNEL_COUNT) & ~used_mask);
 
 		if (dev == NULL || !device_is_ready(dev)) {
 			LOG_ERR("Attenuator DAC unavailable for power-state setup");
@@ -966,11 +971,17 @@ void setup_attenuators(void)
 		attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[0].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff1.max_atten_db = atten_settings.channel[attenuator_index].physical[0].max_atten_db;
 		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
+		memcpy(attenuators[attenuator_index].coeff1.correction_coeff,
+		       atten_settings.channel[attenuator_index].physical[0].correction_coeff,
+		       sizeof(attenuators[attenuator_index].coeff1.correction_coeff));
 
 		attenuators[attenuator_index].coeff2.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[1].fvoa_50pct_mv;
 		attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[1].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff2.max_atten_db = atten_settings.channel[attenuator_index].physical[1].max_atten_db;
 		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
+		memcpy(attenuators[attenuator_index].coeff2.correction_coeff,
+		       atten_settings.channel[attenuator_index].physical[1].correction_coeff,
+		       sizeof(attenuators[attenuator_index].coeff2.correction_coeff));
 	}
 }
 
