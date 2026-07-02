@@ -205,9 +205,14 @@ static void maybe_emit_override_warning(enum laserbank_heater_mode mode,
 		return;
 	}
 
-	coo_cmd_runtime_warning_emit(command_runtime_get(), "laserbank_heater_override",
-			 "laser bank heater override is active; automatic warmup is disabled",
-			 laserbank_heater_mode_name(mode));
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				     .code = "laserbank_heater_override",
+				     .msg = "laser bank heater override is active; automatic warmup is disabled",
+				     .context = laserbank_heater_mode_name(mode),
+			     });
 	control.last_override_warning_ms = now_ms;
 }
 

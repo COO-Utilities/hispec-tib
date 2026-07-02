@@ -370,9 +370,9 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
         return coo_cmd_error(out, cmd, "missing or invalid route");
     }
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "persistent", &persist);
+    parse_rc = coo_json_extract_bool(cmd->payload, "persist", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "invalid persistent");
+        return coo_cmd_error(out, cmd, "invalid persist");
     }
 
     split_rc = route_loss_extract_split_tuple(cmd, split_tx);
@@ -566,9 +566,14 @@ static void split_emit_quantization_warning(uint8_t channel_index,
              (double)state->output[0],
              (double)state->output[1],
              (double)state->output[2]);
-    coo_cmd_runtime_warning_emit(command_runtime_get(), "split_ratio_quantized",
-                     "requested split ratio was quantized to MEMS ticks",
-                     context);
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				     .code = "split_ratio_quantized",
+				     .msg = "requested split ratio was quantized to MEMS ticks",
+				     .context = context,
+			     });
 }
 
 static int split_channel_index_from_key(const char *key, uint8_t *index)
@@ -710,9 +715,14 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                  "channel=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                  channel_name == NULL ? "?" : channel_name,
                  cycle_ms, state.cycle_ms);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                         "requested MEMS cycle was quantized",
-                         context);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "mems_timing_quantized",
+					     .msg = "requested MEMS cycle was quantized",
+					     .context = context,
+				     });
     }
     return split_channel_response(cmd, &state, channel_index, out);
 }
@@ -941,10 +951,9 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     double duty_cycle = 0.0;
-    double off_in_s = 0.0;
     double removed_rate = 0.0;
     uint32_t cycle_ms = 0U;
-    uint32_t off_in_s_u32 = 0U;
+    uint32_t off_in_s = 0U;
     bool has_duty_cycle = false;
     bool has_off_in_s = false;
     bool has_cycle_ms = false;
@@ -984,16 +993,14 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "duty_cycle must be a number from 0.0 to 1.0");
     }
 
-    parse_rc = coo_json_extract_double(cmd->payload, "off_in_s", &off_in_s);
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
-        return coo_cmd_error(out, cmd, "Invalid off_in_s");
-    }
-    has_off_in_s = (parse_rc == COO_JSON_EXTRACT_OK);
-
     if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
                                       &cycle_ms, &has_cycle_ms) != 0 ||
         (has_cycle_ms && cycle_ms == 0U)) {
         return coo_cmd_error(out, cmd, "invalid cycle_ms");
+    }
+    if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
+                                      &off_in_s, &has_off_in_s) != 0) {
+        return coo_cmd_error(out, cmd, "Invalid off_in_s");
     }
     if (coo_json_extract_optional_bool(cmd->payload, "force", &force, NULL) != 0) {
         return coo_cmd_error(out, cmd, "invalid force");
@@ -1014,12 +1021,10 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "force only valid for static state");
     }
     if (has_off_in_s) {
-        if (off_in_s < 0.0 ||
-            off_in_s > (double)MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        if (off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
             return coo_cmd_error(out, cmd, "off_in_s out of range");
         }
-        off_in_s_u32 = (uint32_t)(off_in_s + 0.5);
-        if (off_in_s_u32 == 0U && duty_cycle > 0.0 && duty_cycle < 1.0) {
+        if (off_in_s == 0U && duty_cycle > 0.0 && duty_cycle < 1.0) {
             return coo_cmd_error(out, cmd, "off_in_s must be > 0 for toggling");
         }
     }
@@ -1032,7 +1037,7 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     if (has_duty_cycle) {
         rc = mems_switch_set_state(sw, requested_state[0], duty_cycle,
-                                   off_in_s_u32,
+                                   off_in_s,
                                    has_cycle_ms ? (double)cycle_ms : 0.0,
                                    force);
     } else {
@@ -1056,11 +1061,16 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             snprintk(context, sizeof(context),
                      "switch=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                      sw->name, cycle_ms, status.cycle_ms);
-            coo_cmd_runtime_warning_emit(command_runtime_get(), "mems_timing_quantized",
-                             "requested MEMS cycle was quantized",
-                             context);
-        }
-    }
+			coo_cmd_runtime_emit(command_runtime_get(),
+					     &(const struct coo_cmd_runtime_emit_args){
+						     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+						     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+						     .code = "mems_timing_quantized",
+						     .msg = "requested MEMS cycle was quantized",
+						     .context = context,
+					     });
+		}
+	}
 
     return mems_response_for_switch(cmd, sw, out);
 }

@@ -25,6 +25,7 @@
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 #define SERIAL_POLL_CHAR_BUDGET 64
+#define COO_CMD_SERIAL_LINE_END "\n"
 #define COO_CMD_LASTCOMMAND_MAGIC 0x434c4344U /* "CLCD" */
 #define COO_CMD_LASTCOMMAND_VERSION 1U
 #define COO_CMD_REBOOT_DEFAULT_DELAY_MS 3000U
@@ -1140,11 +1141,19 @@ static int append_json_string(char *buf, size_t buf_len, size_t *off,
 	return 0;
 }
 
-int coo_cmd_build_warning(struct coo_cmd_response *out,
-			  const char *topic,
-			  const char *code,
-			  const char *msg,
-			  const char *context)
+static enum coo_cmd_out_target runtime_emit_target(
+	enum coo_cmd_runtime_emit_delivery delivery)
+{
+	return delivery == COO_CMD_RUNTIME_EMIT_REQUIRED ?
+	       COO_CMD_OUT_MQTT : COO_CMD_OUT_MQTT_BEST_EFFORT;
+}
+
+static int runtime_build_warning(struct coo_cmd_response *out,
+				 const char *topic,
+				 enum coo_cmd_runtime_emit_delivery delivery,
+				 const char *code,
+				 const char *msg,
+				 const char *context)
 {
 	size_t off;
 	int written;
@@ -1156,7 +1165,7 @@ int coo_cmd_build_warning(struct coo_cmd_response *out,
 
 	memset(out, 0, sizeof(*out));
 	out->msg_type = COO_CMD_RESP_OK;
-	out->target = COO_CMD_OUT_MQTT_BEST_EFFORT;
+	out->target = runtime_emit_target(delivery);
 	out->qos = 0U;
 	strncpy(out->topic, topic, sizeof(out->topic) - 1U);
 
@@ -1204,87 +1213,118 @@ int coo_cmd_build_warning(struct coo_cmd_response *out,
 	return 0;
 }
 
-int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
-			 const char *topic,
-			 const char *code,
-			 const char *msg,
-			 const char *context)
+static bool runtime_emit_scratch_take(struct coo_cmd_runtime *runtime)
 {
-	struct coo_cmd_response out;
-	int rc;
+	return runtime != NULL && atomic_cas(&runtime->emit_scratch_busy, 0, 1);
+}
 
-	LOG_WRN("%s: %s%s%s",
-		code != NULL ? code : "warning",
-		msg != NULL ? msg : "",
-		context != NULL && context[0] != '\0' ? " context=" : "",
-		context != NULL ? context : "");
-
-	rc = coo_cmd_build_warning(&out, topic, code, msg, context);
-	if (rc != 0) {
-		LOG_WRN("warning payload too large; MQTT warning dropped");
-		return rc;
+static void runtime_emit_scratch_release(struct coo_cmd_runtime *runtime)
+{
+	if (runtime != NULL) {
+		(void)atomic_clear(&runtime->emit_scratch_busy);
 	}
+}
 
-	if (outbound_queue == NULL || k_msgq_put(outbound_queue, &out, K_NO_WAIT) != 0) {
-		LOG_WRN("warning MQTT queue full; warning was only logged locally");
+static int runtime_emit_queue(struct coo_cmd_runtime *runtime,
+			      const struct coo_cmd_response *out)
+{
+	if (runtime == NULL || runtime->outbound_queue == NULL || out == NULL) {
+		return -EINVAL;
+	}
+	if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
 		return -ENOSPC;
 	}
-
 	return 0;
 }
 
-static bool runtime_warning_scratch_take(struct coo_cmd_runtime *runtime)
-{
-	return runtime != NULL && atomic_cas(&runtime->warning_scratch_busy, 0, 1);
-}
-
-static void runtime_warning_scratch_release(struct coo_cmd_runtime *runtime)
-{
-	if (runtime != NULL) {
-		(void)atomic_clear(&runtime->warning_scratch_busy);
-	}
-}
-
-int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
-				 const char *code,
-				 const char *msg,
-				 const char *context)
+static int runtime_emit_data(struct coo_cmd_runtime *runtime,
+			     const struct coo_cmd_runtime_emit_args *args)
 {
 	struct coo_cmd_response *out;
 	int rc;
 
-	if (runtime == NULL || runtime->warning_topic[0] == '\0') {
+	if (runtime == NULL || args == NULL || args->suffix == NULL ||
+	    args->out == NULL) {
+		return -EINVAL;
+	}
+
+	out = args->out;
+	if (out->payload_len > sizeof(out->payload)) {
+		return -ENOSPC;
+	}
+	out->msg_type = COO_CMD_RESP_OK;
+	out->target = runtime_emit_target(args->delivery);
+	out->qos = 0U;
+	out->corr_len = 0U;
+	rc = coo_cmd_format_data_topic(runtime->device_id, args->suffix,
+				       out->topic, sizeof(out->topic));
+	if (rc != 0) {
+		return rc;
+	}
+
+	return runtime_emit_queue(runtime, out);
+}
+
+static int runtime_emit_warning(struct coo_cmd_runtime *runtime,
+				const struct coo_cmd_runtime_emit_args *args)
+{
+	struct coo_cmd_response *out;
+	bool scratch = false;
+	int rc;
+
+	if (runtime == NULL || args == NULL || runtime->warning_topic[0] == '\0') {
 		return -EINVAL;
 	}
 
 	LOG_WRN("%s: %s%s%s",
-		code != NULL ? code : "warning",
-		msg != NULL ? msg : "",
-		context != NULL && context[0] != '\0' ? " context=" : "",
-		context != NULL ? context : "");
+		args->code != NULL ? args->code : "warning",
+		args->msg != NULL ? args->msg : "",
+		args->context != NULL && args->context[0] != '\0' ? " context=" : "",
+		args->context != NULL ? args->context : "");
 
-	if (!runtime_warning_scratch_take(runtime)) {
+	if (args->out != NULL) {
+		out = args->out;
+	} else if (runtime_emit_scratch_take(runtime)) {
+		out = &runtime->emit_scratch;
+		scratch = true;
+	} else {
 		LOG_WRN("warning scratch busy; warning was only logged locally");
 		return -EAGAIN;
 	}
 
-	out = &runtime->warning_scratch;
-	rc = coo_cmd_build_warning(out, runtime->warning_topic, code, msg, context);
+	rc = runtime_build_warning(out, runtime->warning_topic, args->delivery,
+				   args->code, args->msg, args->context);
 	if (rc != 0) {
 		LOG_WRN("warning payload too large; MQTT warning dropped");
-		runtime_warning_scratch_release(runtime);
-		return rc;
+		goto out;
 	}
 
-	if (runtime->outbound_queue == NULL ||
-	    k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+	rc = runtime_emit_queue(runtime, out);
+	if (rc != 0) {
 		LOG_WRN("warning MQTT queue full; warning was only logged locally");
-		runtime_warning_scratch_release(runtime);
-		return -ENOSPC;
 	}
 
-	runtime_warning_scratch_release(runtime);
-	return 0;
+out:
+	if (scratch) {
+		runtime_emit_scratch_release(runtime);
+	}
+	return rc;
+}
+
+int coo_cmd_runtime_emit(struct coo_cmd_runtime *runtime,
+			 const struct coo_cmd_runtime_emit_args *args)
+{
+	if (args == NULL) {
+		return -EINVAL;
+	}
+	switch (args->type) {
+	case COO_CMD_RUNTIME_EMIT_DATA:
+		return runtime_emit_data(runtime, args);
+	case COO_CMD_RUNTIME_EMIT_WARNING:
+		return runtime_emit_warning(runtime, args);
+	default:
+		return -EINVAL;
+	}
 }
 
 static bool payload_has_text(const char *payload)
@@ -1353,7 +1393,7 @@ static bool runtime_key_is_reboot(const char *key)
 
 static void serial_line_end(void)
 {
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }
 
 static uint16_t serial_print_prefix(const char *prefix)
@@ -1616,6 +1656,7 @@ static int runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
 				    struct coo_cmd_response *out)
 {
 	int64_t remaining_ms = 0;
+	int64_t remaining_s = 0;
 	k_ticks_t remaining_ticks;
 
 	if (runtime == NULL || out == NULL) {
@@ -1624,11 +1665,15 @@ static int runtime_serial_guard_get(struct coo_cmd_runtime *runtime,
 
 	remaining_ticks = k_work_delayable_remaining_get(&runtime->serial_guard_work);
 	remaining_ms = k_ticks_to_ms_floor64(remaining_ticks);
+	if (remaining_ms > 0) {
+		remaining_s = (remaining_ms + (int64_t)MSEC_PER_SEC - 1LL) /
+			      (int64_t)MSEC_PER_SEC;
+	}
 	snprintk(out->payload, sizeof(out->payload),
-		 "{\"serialguard_s\":%u,\"active\":%s,\"remaining_ms\":%lld}",
+		 "{\"serialguard_s\":%u,\"active\":%s,\"remaining_s\":%lld}",
 		 runtime->serial_guard_seconds,
 		 runtime_serial_guard_active(runtime) ? "true" : "false",
-		 (long long)remaining_ms);
+		 (long long)remaining_s);
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
 
@@ -1638,10 +1683,10 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 {
 	uint32_t holdoff_s = 0U;
 	bool was_active;
-	bool persistent = false;
+	bool persist = false;
 	int parse_rc_seconds;
 	int parse_rc_value;
-	int parse_rc_persistent;
+	int parse_rc_persist;
 
 	if (runtime == NULL || cmd == NULL) {
 		return coo_cmd_error(out, cmd, "serial guard unavailable");
@@ -1658,11 +1703,8 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 		return coo_cmd_error(out, cmd, "missing seconds");
 	}
 
-	parse_rc_persistent = coo_json_extract_bool(cmd->payload, "persistent", &persistent);
-	if (parse_rc_persistent == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(out, cmd, "invalid persistent");
-	}
-	if (parse_rc_persistent == COO_JSON_EXTRACT_OK) {
+	parse_rc_persist = coo_json_extract_bool(cmd->payload, "persist", &persist);
+	if (parse_rc_persist != COO_JSON_EXTRACT_MISSING) {
 		return coo_cmd_error(out, cmd, "serialguard persistence unsupported");
 	}
 
@@ -1768,12 +1810,12 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	runtime_record_lastcommand(runtime, cmd);
 	if (erase_non_ip_settings) {
 		snprintk(out->payload, sizeof(out->payload),
-			 "{\"status\":\"ok\",\"reboot_ms\":%u,"
+			 "{\"status\":\"ok\",\"rebooting_in_ms\":%u,"
 			 "\"erase_non_ip_settings\":true}",
 			 runtime->reboot_delay_ms);
 	} else {
 		snprintk(out->payload, sizeof(out->payload),
-			 "{\"status\":\"ok\",\"reboot_ms\":%u}",
+			 "{\"status\":\"ok\",\"rebooting_in_ms\":%u}",
 			 runtime->reboot_delay_ms);
 	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
@@ -2265,11 +2307,15 @@ void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 			(void)coo_cmd_serial_active_response(out, cmd);
 			LOG_WRN("Rejecting MQTT command '%s': local serial control is active", cmd->key);
 			runtime_enqueue_response(runtime, out);
-			(void)coo_cmd_runtime_warning_emit(
-			runtime,
-			"serial_guard_active",
-			"MQTT command rejected while serial command guard is active",
-			cmd->key);
+			(void)coo_cmd_runtime_emit(
+				runtime,
+				&(const struct coo_cmd_runtime_emit_args){
+					.type = COO_CMD_RUNTIME_EMIT_WARNING,
+					.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					.code = "serial_guard_active",
+					.msg = "MQTT command rejected while serial command guard is active",
+					.context = cmd->key,
+				});
 		return;
 	}
 #endif
@@ -2286,40 +2332,6 @@ void coo_cmd_runtime_mqtt_callback(const struct mqtt_publish_param *pub,
 				   void *user_data)
 {
 	coo_cmd_runtime_handle_mqtt_publish(user_data, pub);
-}
-
-static void publish_outbound_queue_full_warning(struct coo_cmd_runtime *runtime,
-						struct mqtt_client *client,
-						bool mqtt_available)
-{
-	struct coo_cmd_response *warning;
-	uint16_t wrap_column = runtime != NULL && runtime->serial_wrap_column != 0U ?
-		runtime->serial_wrap_column : COO_CMD_SERIAL_WRAP_COLUMN;
-
-	if (runtime == NULL) {
-		return;
-	}
-	if (!runtime_warning_scratch_take(runtime)) {
-		return;
-	}
-
-	warning = &runtime->warning_scratch;
-	if (runtime == NULL || runtime->warning_topic[0] == '\0' ||
-	    coo_cmd_build_warning(warning, runtime->warning_topic,
-				  "outbound_queue_full",
-				  "outbound queue reached capacity",
-				  "command_drain") != 0) {
-		runtime_warning_scratch_release(runtime);
-		return;
-	}
-
-	coo_cmd_print_serial_response_pretty(warning, wrap_column);
-
-	if (mqtt_available &&
-	    coo_cmd_publish_mqtt(client, warning, runtime->mqtt_msg_id) != 0) {
-		LOG_WRN("Failed to publish outbound_queue_full warning");
-	}
-	runtime_warning_scratch_release(runtime);
 }
 
 void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
@@ -2341,17 +2353,12 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 
 	outbound_full = (k_msgq_num_free_get(runtime->outbound_queue) == 0U);
 	if (outbound_full) {
-		if (!runtime->outbound_full_warning_seen ||
-		    (mqtt_available && !runtime->outbound_full_warning_mqtt_seen)) {
-			publish_outbound_queue_full_warning(runtime, client, mqtt_available);
+		if (!runtime->outbound_full_warning_seen) {
+			LOG_WRN("outbound_queue_full: outbound queue reached capacity context=command_drain");
 			runtime->outbound_full_warning_seen = true;
-			if (mqtt_available) {
-				runtime->outbound_full_warning_mqtt_seen = true;
-			}
 		}
 	} else {
 		runtime->outbound_full_warning_seen = false;
-		runtime->outbound_full_warning_mqtt_seen = false;
 	}
 
 	while (budget-- > 0 &&
@@ -2398,7 +2405,8 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		return;
 	}
 
-	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s" COO_CMD_SERIAL_LINE_END "        ",
+	       out->topic[0] != '\0' ? out->topic : "serial");
 	col = 8U;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
 
@@ -2410,7 +2418,7 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		}
 
 		if (ch == '\n' || (wrap_column != 0U && col >= wrap_column)) {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			col = 8U;
 			if (ch == '\n') {
 				continue;
@@ -2423,12 +2431,12 @@ void coo_cmd_print_serial_response(const struct coo_cmd_response *out,
 		if (wrap_column != 0U &&
 		    (ch == ',' || ch == '}') && col >= (wrap_column - 8U) &&
 		    i + 1U < len) {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			col = 8U;
 		}
 	}
 
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }
 
 static const char *serial_payload_start(const char *payload)
@@ -2442,7 +2450,7 @@ static const char *serial_payload_start(const char *payload)
 
 static void serial_response_newline_indent(uint8_t indent, uint16_t *col)
 {
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 	*col = 8U;
 	for (uint8_t i = 0U; i < 8U; ++i) {
 		printk(" ");
@@ -2680,14 +2688,16 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 
 	payload = out->payload;
 	len = out->payload_len > 0U ? out->payload_len : strlen(out->payload);
-	printk("%s\r\n        ", out->topic[0] != '\0' ? out->topic : "serial");
+	printk("%s" COO_CMD_SERIAL_LINE_END "        ",
+	       out->topic[0] != '\0' ? out->topic : "serial");
 
 	payload = serial_payload_start(payload);
 	if (payload != NULL && (*payload == '{' || *payload == '[')) {
 		if (!serial_print_json_payload(payload, len - (size_t)(payload - out->payload))) {
 			uint16_t col = 13U;
 
-			printk("{\"error\":\"serial JSON render failed\"}\r\n        raw: ");
+			printk("{\"error\":\"serial JSON render failed\"}"
+			       COO_CMD_SERIAL_LINE_END "        raw: ");
 			for (size_t i = 0U; i < len && out->payload[i] != '\0'; ++i) {
 				const char ch = out->payload[i];
 
@@ -2696,7 +2706,7 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 				}
 				if (ch == '\n' ||
 				    (wrap_column != 0U && col >= wrap_column)) {
-					printk("\r\n        ");
+					printk(COO_CMD_SERIAL_LINE_END "        ");
 					col = 8U;
 					if (ch == '\n') {
 						continue;
@@ -2705,10 +2715,10 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 				printk("%c", ch);
 				col++;
 			}
-			printk("\r\n");
+			printk(COO_CMD_SERIAL_LINE_END);
 			return;
 		}
-		printk("\r\n");
+		printk(COO_CMD_SERIAL_LINE_END);
 		return;
 	}
 
@@ -2719,10 +2729,10 @@ void coo_cmd_print_serial_response_pretty(const struct coo_cmd_response *out,
 			continue;
 		}
 		if (ch == '\n') {
-			printk("\r\n        ");
+			printk(COO_CMD_SERIAL_LINE_END "        ");
 			continue;
 		}
 		printk("%c", ch);
 	}
-	printk("\r\n");
+	printk(COO_CMD_SERIAL_LINE_END);
 }

@@ -5,9 +5,9 @@ source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
+## Locked-down code
+
 ## PCB Validation
-- [x] Verify boot MEMS switch state behavior.
-  - .15ms pulse A+B simultaneously at reboot then pulses A on all simultaneously about 6s later. is this ok?
 - [x] sort out FVOA ripple, is ok?
   - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns
@@ -15,147 +15,58 @@ LLMs Agents: Do NOT change heading names in this file.
     pattern in follow-up lab testing; keep open for continued monitoring of
     real active-toggle `late_rise`/`skipped_rise` warnings or ADC overruns.
   - debug build see `timinglog`
-  - non-debug build:
-    - [00:00:35.747,000] <inf> sntp_sync: SNTP sync complete (manual: 132.163.96.4)
-      [00:01:12.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:01:52.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20046 min_margin_us=-46 worst_non_adc_us=81 adc_floor_us=4340 adc_us=4571/15394 adc_over_us=231/11054 errors=0/0
-      [00:02:12.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20312 min_margin_us=-312 worst_non_adc_us=80 adc_floor_us=4340 adc_us=15708/4524 adc_over_us=11368/184 errors=0/0
-      [00:02:42.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:03:42.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:05:12.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:06:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:06:52.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20146 min_margin_us=-146 worst_non_adc_us=80 adc_floor_us=4340 adc_us=4570/15496 adc_over_us=230/11156 errors=0/0
-      [00:07:12.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20115 min_margin_us=-115 worst_non_adc_us=79 adc_floor_us=4340 adc_us=15508/4528 adc_over_us=11168/188 errors=0/0
-      [00:07:42.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:08:32.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:10:12.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:11:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:11:42.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20045 min_margin_us=-45 worst_non_adc_us=81 adc_floor_us=4340 adc_us=4568/15396 adc_over_us=228/11056 errors=0/0
-      [00:12:02.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20115 min_margin_us=-115 worst_non_adc_us=79 adc_floor_us=4340 adc_us=15509/4527 adc_over_us=11169/187 errors=0/0
-      [00:12:42.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:13:22.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20416 min_margin_us=-416 worst_non_adc_us=79 adc_floor_us=4340 adc_us=4570/15767 adc_over_us=230/11427 errors=0/0
-      [00:13:32.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:14:12.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:15:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:16:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:16:42.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20079 min_margin_us=-79 worst_non_adc_us=81 adc_floor_us=4340 adc_us=4570/15428 adc_over_us=230/11088 errors=0/0
-      [00:17:02.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20311 min_margin_us=-311 worst_non_adc_us=81 adc_floor_us=4340 adc_us=15706/4524 adc_over_us=11366/184 errors=0/0
-      [00:17:32.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:18:22.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:19:12.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:20:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:22:32.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:23:12.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20146 min_margin_us=-146 worst_non_adc_us=81 adc_floor_us=4340 adc_us=4570/15495 adc_over_us=230/11155 errors=0/0
-      [00:23:32.619,000] <wrn> photodiode: ADC timing: samples=500 missed=0 overruns=1 settings_busy=0 worst_loop_us=20312 min_margin_us=-312 worst_non_adc_us=80 adc_floor_us=4340 adc_us=15708/4524 adc_over_us=11368/184 errors=0/0
-      [00:24:02.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
-      [00:24:52.617,000] <wrn> mems_switching: MEMS timing: events=1000 missed_base=1 late_service=0 late_pulse=0 stale_skips=0 cleanup_late=0 worst_base_miss=1 worst_late_cycles=0 worst_cleanup_ms=0
 
 
 ## Command/API Mismatches
 
 ### LLM Resolved; Human Review Requested
-
-- [ ] Verify MEMS and split non-constant duty responses now report actual
-  `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` timing fields.
-- [ ] Verify `laserbank/heater` now reports compact algorithm-facing status
-  without the old wordy `all_tecs_enabled` / `any_disabled_below_15c` fields.
-- [ ] Verify heater `auto` mode turns the heater off when all laser temperatures
-  are stale and ambient is invalid or at least 15 C.
-- [ ] Verify `pcb.set_serialguard(seconds)` no longer sends `persistent:false`
-  and can update expiry while serial guard is active.
-- [ ] Verify `laser/settings` temporarily powers the bank for driver-backed
-  updates and documents that `default_operating_temp_c` is the TEC start
-  setpoint.
-- [ ] Verify `pdsettings` reports `dark_duration_ms`, `dark_noise_rms_mv`, and
-  `lowest_stored_dark_mv` without exposing `lowest_dark_valid`.
 - [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
   correction coefficient table; all coefficients are intentionally `1.0` until
   lab values are installed.
-- [ ] Verify command dispatch now rejects unknown top-level payload keys and
-  malformed non-parameterized endpoint keys such as `laser/angstatus`.
-- [ ] Verify `laser name=1028y value=50` now reports an unknown `value`
-  argument, and `laser ... level=...` reports `override_off` when bank power is
-  explicitly disabled.
-- [ ] Verify compact laser status reports `ready`/`blocked_reason` and uses
-  integer-or-null active time fields instead of inactive `0.0` values.
-- [ ] Verify the duplicate laser-bank fault-clear timeout define was removed
-  from `laser_command.c`; broader redundant-setting cleanup remains open.
+- [ ] Verify Maiman driver serial mismatches report
+  `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
+  programming, and can be resolved only by operator-updating
+  `laser/settings.expected_serial`.
 
 
 ## Decisions To Make
 
-- Decide intended persistence for MEMS switch state, AS split requested/actual state and last-command metadata.
-  - This involves looking at optical stability of repeated pulses to the same state
-
-- Static attens:
-  - # ### Anticipated Static Attenuation Chains
-    # - 1028: -90.0 to -73.0 dB, range 17.0 dB, **static -73.0 dB**
-    # - 1270:  -70.0 to -40.0 dB, range 30.0 dB, **static -40.0 dB**
-    # - 1430: range 0.0 dB, **static -100.0 dB**
-    # - 1510: -80.0 to -33.0 dB, range 47.0 dB, **static -33.0 dB**
-    # - 2330: -73.0 to -3.0 dB, range 70.0 dB, **static -3.0 dB**
-
-- "blocked_reason": "not_emitting", should ne "N/A (not_emittting" or some such
-
 ## TODOs
+- start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.
+  - go through all commands and verify that invaid arguments are rejected with an informative error message. a minimum of "bad argument" and, where simple, low-code, and general a "<arg> invalid, see catalog" 
+- go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
+- when the noise "resets" to 0 it makes it look like the noise has randomly gone away. This is actually MORE concerning than the discontinuities that the reset may be attempting to address. It should be allowed to briefly grow and those changes reverted or replaced with a temporarary nan until data to make a new reading is avaialble.
 
-- yj_rms_mv_0p5s is reporting 0.0 yet "yj_noise_rms_mv": 0.041  when there is a real photodiode connected, I suspect a bug.
-- TODO: test dark settings and persistence, especially `dark_duration_ms`,  `dark_noise_rms_mv`, and `lowest_stored_dark_mv` over reboot.
+- algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
+
+- investigate additionaly complexity of making "ok" only responses give get responses over serial this probably adds too much code as some might need waits/delays that come naturally if a user is at a serial console. but would be a quality of life user improvement
+- test `pd/dark/<channel>` measurement, forced dark with optional `rms_mv`,
+  lowest-dark reset, and dark-window persistence over reboot.
 - Status needs to gain things we actually want.
-- Laser needs some thought around serial its unsettability and serial ok, maybe going ok on the first boot after a serial change (cause it gets saved?)
-- Laserbank query's now work for all lasers, sometimes.
-  - temps now has the idle tec temps in it, so they are sucessfully being polled
-  - but I sill see regular timeouts on specific registers:
-   [00:16:01.941,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.941,000] <err> maiman: Modbus read node=5 reg=0x0075 failed: -116
-    [00:16:01.951,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.951,000] <err> maiman: Modbus read node=5 reg=0x007a failed: -116
-    [00:16:01.961,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.961,000] <err> maiman: Modbus read node=6 reg=0x0075 failed: -116
-    [00:16:01.971,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.971,000] <err> maiman: Modbus read node=6 reg=0x007a failed: -116
-    [00:16:01.981,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.981,000] <err> maiman: Modbus read node=4 reg=0x0075 failed: -116
-    [00:16:01.991,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:01.991,000] <err> maiman: Modbus read node=4 reg=0x007a failed: -116
-    [00:16:02.001,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.001,000] <err> maiman: Modbus read node=3 reg=0x0075 failed: -116
-    [00:16:02.011,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.011,000] <err> maiman: Modbus read node=3 reg=0x007a failed: -116
-    [00:16:02.021,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.021,000] <err> maiman: Modbus read node=1 reg=0x0075 failed: -116
-    [00:16:02.031,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.031,000] <err> maiman: Modbus read node=1 reg=0x007a failed: -116
-    [00:16:02.042,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.042,000] <err> maiman: Modbus read node=2 reg=0x0075 failed: -116
-    [00:16:02.052,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:02.052,000] <err> maiman: Modbus read node=2 reg=0x007a failed: -116
-    [00:16:12.500,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.500,000] <err> maiman: Modbus read node=5 reg=0x0075 failed: -116
-    [00:16:12.510,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.510,000] <err> maiman: Modbus read node=5 reg=0x007a failed: -116
-    [00:16:12.520,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.520,000] <err> maiman: Modbus read node=6 reg=0x0075 failed: -116
-    [00:16:12.530,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.530,000] <err> maiman: Modbus read node=6 reg=0x007a failed: -116
-    [00:16:12.540,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.540,000] <err> maiman: Modbus read node=4 reg=0x0075 failed: -116
-    [00:16:12.550,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.550,000] <err> maiman: Modbus read node=4 reg=0x007a failed: -116
-    [00:16:12.560,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.560,000] <err> maiman: Modbus read node=3 reg=0x0075 failed: -116
-    [00:16:12.571,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.571,000] <err> maiman: Modbus read node=3 reg=0x007a failed: -116
-    [00:16:12.581,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.581,000] <err> maiman: Modbus read node=1 reg=0x0075 failed: -116
-    [00:16:12.591,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.591,000] <err> maiman: Modbus read node=1 reg=0x007a failed: -116
-    [00:16:12.601,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.601,000] <err> maiman: Modbus read node=2 reg=0x0075 failed: -116
-    [00:16:12.611,000] <wrn> modbus: Client wait-for-RX timeout
-    [00:16:12.611,000] <err> maiman: Modbus read node=2 reg=0x007a failed: -116
-
 
 - `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
+
+- houskeeping laserbank and lasers ALL have several checks for a non-null work_q. This is just paranoia. The q is static and started by main and the 
+  program cant exist without it. Centralize and elimiinate this so that future readers to not wonder if it could be null. The app SHOULD break (though safely) if it is.
+- <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there.
+
+- should  yj_residual_rms_mv/hk_residual_rms_mv be renamed to *_smoothed_rms_mv
+
+- FIX (check ALL python helpers for comand drift):
+  - pcb.laserbank_heaster(mode='override_on')
+    Traceback (most recent call last):
+    File "/Users/jibailey/src/hispec-zephyr-mlang/.venv/lib/python3.13/site-packages/IPython/core/interactiveshell.py", line 3748, in run_code
+    exec(code_obj, self.user_global_ns, self.user_ns)
+      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "<ipython-input-28-6f0710221e92>", line 1, in <module>
+      pcb.laserbank_heater(mode='override_on')
+      ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 2493, in laserbank_heater
+      return _dataclass_from(LaserBankHeater, self._request_json("laserbank/heater"))
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 1568, in _dataclass_from
+      values = {name: mapping.get(name) for name in names if name in mapping}
+             ^^^^^^^^^^^^^
+TypeError: LaserBankHeater.__init__() missing 3 required positional arguments: 'ambient_valid', 'valid_temps', and 'stale_temps'
 
 ## Deferred Owner-Specified Capabilities

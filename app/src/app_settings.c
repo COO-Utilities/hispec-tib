@@ -30,7 +30,7 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 5U
+#define APP_NVS_SCHEMA_VERSION 9U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -88,10 +88,8 @@ struct app_nvs_ip_settings {
 };
 
 struct app_nvs_pd_channel {
-	double dark_mv;
-	double lowest_dark_mv;
-	uint32_t dark_duration_ms;
-	double dark_noise_rms_mv;
+	struct app_pd_dark_result dark;
+	struct app_pd_dark_result lowest_dark;
 	uint8_t lowest_dark_valid;
 	uint8_t power;
 	uint8_t reserved[2];
@@ -120,6 +118,8 @@ struct app_nvs_laser_policy {
 	double dlambda_dA_nm_per_ma;
 	uint32_t autooff_s;
 	double tune_delta_nm;
+	uint16_t expected_serial;
+	uint16_t reserved2;
 };
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
@@ -129,6 +129,15 @@ static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = 
 	&LASER_1430,
 	&LASER_1510,
 	&LASER_2330,
+};
+
+static const uint16_t default_laser_expected_serial[APP_LASER_CHANNEL_COUNT] = {
+	8229U,
+	8228U,
+	8222U,
+	8227U,
+	8225U,
+	8226U,
 };
 
 struct app_settings_state {
@@ -210,20 +219,36 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-			/* Default maps the full 0-5000 mV attenuator drive span
-			 * onto b=0..8 until lab-measured coefficients are stored.
-			 */
-			s->attenuator.channel[ch].physical[physical].slope = 8.0 / 5000.0;
-			s->attenuator.channel[ch].physical[physical].offset = 0.0;
+				/* Default centers the nominal 0-3300 mV DAC span near the
+				 * FVOA half-shutter point until lab-measured coefficients
+				 * are stored.
+				 */
+				s->attenuator.channel[ch].physical[physical].fvoa_50pct_mv =
+					0.5 * (double)ATTENUATOR_DRIVE_MAX_MV *
+					ATTENUATOR_DEFAULT_GAIN;
+				s->attenuator.channel[ch].physical[physical].slope_inv_fvoa_mv =
+					8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV *
+					       ATTENUATOR_DEFAULT_GAIN);
+				s->attenuator.channel[ch].physical[physical].max_atten_db =
+					FVOA_DEFAULT_MAX_ATTEN_DB;
+				s->attenuator.channel[ch].physical[physical].gain =
+					ATTENUATOR_DEFAULT_GAIN;
 		}
 	}
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_duration_ms =
-		APP_PD_DARK_DURATION_USER;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark_noise_rms_mv =
-		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_mv =
-		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_DARK_MV,
+		};
+	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+		};
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].lowest_dark_valid = false;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].noise_warn_rms_mv =
 		PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV;
@@ -233,13 +258,20 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].power = APP_PD_POWER_AUTO;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].autooff_s = APP_PD_DEFAULT_AUTOOFF_S;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_mv = PHOTODIODE_DEFAULT_DARK_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_duration_ms =
-		APP_PD_DARK_DURATION_USER;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark_noise_rms_mv =
-		PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV;
-	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_mv =
-		PHOTODIODE_DEFAULT_LOWEST_DARK_MV;
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_DARK_MV,
+		};
+	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark =
+		(struct app_pd_dark_result){
+			.mean_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.rms_mv = PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV,
+			.min_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+			.max_mv = PHOTODIODE_DEFAULT_LOWEST_DARK_MV,
+		};
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].lowest_dark_valid = false;
 	s->photodiode.channel[PHOTODIODE_CHANNEL_HK].noise_warn_rms_mv =
 		PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV;
@@ -253,6 +285,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
 		s->laser.channel[i].current_set_calibration_pct = 100.0;
+		s->laser.channel[i].expected_serial = default_laser_expected_serial[i];
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
 		s->laser.channel[i].tune_delta_nm = 0.0;
@@ -442,10 +475,8 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 		return;
 	}
 
-	stored.dark_mv = pd->dark_mv;
-	stored.lowest_dark_mv = pd->lowest_dark_mv;
-	stored.dark_duration_ms = pd->dark_duration_ms;
-	stored.dark_noise_rms_mv = pd->dark_noise_rms_mv;
+	stored.dark = pd->dark;
+	stored.lowest_dark = pd->lowest_dark;
 	stored.lowest_dark_valid = pd->lowest_dark_valid ? 1U : 0U;
 	stored.noise_warn_rms_mv = pd->noise_warn_rms_mv;
 	stored.responsivity_a_per_w = pd->responsivity_a_per_w;
@@ -475,6 +506,7 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->tec_pid_p = laser->properties.tec_pid.kp;
 	stored->tec_pid_i = laser->properties.tec_pid.ki;
 	stored->tec_pid_d = laser->properties.tec_pid.kd;
+	stored->expected_serial = laser->expected_serial;
 	stored->disable_tec_at_autooff = laser->disable_tec_at_autooff ? 1U : 0U;
 	stored->dlambda_dT_nm_per_k = laser->properties.dlambda_dT_nm_per_k;
 	stored->dlambda_dA_nm_per_ma = laser->properties.dlambda_dA_nm_per_ma;
@@ -551,8 +583,12 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 	for (uint8_t i = 0U; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
 		const struct app_attenuator_physical_settings *p = &atten->physical[i];
 
-		physical[i].slope = p->slope;
-		physical[i].offset = p->offset;
+		physical[i].fvoa_50pct_mv = p->fvoa_50pct_mv;
+		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
+		physical[i].max_atten_db = p->max_atten_db;
+		physical[i].gain = p->gain;
+		memcpy(physical[i].correction_coeff, p->correction_coeff,
+		       sizeof(physical[i].correction_coeff));
 	}
 
 	return attenuator_model_coefficients_valid(physical);
@@ -565,10 +601,8 @@ static void pd_settings_from_nvs(struct app_pd_channel_settings *pd,
 		return;
 	}
 
-	pd->dark_mv = stored->dark_mv;
-	pd->lowest_dark_mv = stored->lowest_dark_mv;
-	pd->dark_duration_ms = stored->dark_duration_ms;
-	pd->dark_noise_rms_mv = stored->dark_noise_rms_mv;
+	pd->dark = stored->dark;
+	pd->lowest_dark = stored->lowest_dark;
 	pd->lowest_dark_valid = stored->lowest_dark_valid != 0U;
 	pd->noise_warn_rms_mv = stored->noise_warn_rms_mv;
 	pd->responsivity_a_per_w = stored->responsivity_a_per_w;
@@ -763,6 +797,7 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.tec_pid.kp = stored->tec_pid_p;
 	laser->properties.tec_pid.ki = stored->tec_pid_i;
 	laser->properties.tec_pid.kd = stored->tec_pid_d;
+	laser->expected_serial = stored->expected_serial;
 	laser->disable_tec_at_autooff = stored->disable_tec_at_autooff != 0U;
 	laser->properties.dlambda_dT_nm_per_k = stored->dlambda_dT_nm_per_k;
 	laser->properties.dlambda_dA_nm_per_ma = stored->dlambda_dA_nm_per_ma;

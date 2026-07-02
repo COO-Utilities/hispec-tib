@@ -217,7 +217,9 @@
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "internal-static";
+		ti,reference = "internal-flexible";
+		ti,avdd-microvolt = <3300000>;
+		ti,vref-microvolt = <2500000>;
 	};
 
 	dac7678_b: dac7678@4a {
@@ -226,7 +228,9 @@
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "internal-static";
+		ti,reference = "internal-flexible";
+		ti,avdd-microvolt = <3300000>;
+		ti,vref-microvolt = <2500000>;
 	};
 
 	pcal6416a: pcal6416a@21 {

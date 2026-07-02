@@ -12,7 +12,6 @@
 #include <time.h>
 
 #include "app_settings.h"
-#include "app_identity.h"
 #include "attenuator.h"
 #include "attenuator_calibration.h"
 #include "command.h"
@@ -73,6 +72,13 @@ static const struct laser_pd_channel laser_pd_channels[] = {
 
 static struct throughput_state monitors[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(monitors_lock);
+/* The throughput thread is the only user of these scratch objects. Keeping the
+ * large snapshots and publish buffer in BSS leaves stack headroom for
+ * calibration, autolevel, and formatting calls made from that thread.
+ */
+static struct photodiode_status throughput_pd_status;
+static struct throughput_state throughput_local[PHOTODIODE_CHANNEL_COUNT];
+static struct coo_cmd_response throughput_sample_msg;
 
 static enum housekeeping_power_output pd_power_output(enum photodiode_channel channel)
 {
@@ -171,7 +177,9 @@ static int autolevel_adjust(struct throughput_state *state,
 			    const struct photodiode_channel_status *pd,
 			    const struct attenuator_transmission_estimate *atten)
 {
-	double mean_net_mv = (double)pd->mean_mv_1s - (double)pd->dark_mv;
+	double mean_net_mv = pd->fixed_window.valid ?
+			     (double)pd->fixed_window.mean_net_mv :
+			     (double)pd->net_mv;
 	bool low = mean_net_mv < (TP_ADC_USABLE_MV * TP_LOW_FRACTION);
 	bool high = mean_net_mv > (TP_ADC_USABLE_MV * TP_HIGH_FRACTION);
 	struct hispec_laser_flux_estimate laser_flux = {0};
@@ -283,11 +291,13 @@ static void publish_sample(const struct throughput_state *state,
 		.attenuation_db = NAN,
 	};
 	struct hispec_laser_flux_estimate laser_flux = {0};
-	struct coo_cmd_response msg = {0};
+	struct coo_cmd_response *msg = &throughput_sample_msg;
 	size_t off = 0U;
 	char pd_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 	char laser_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
 	const char *laser_name = state->has_laser ? hispec_laser_name(state->laser) : "none";
+	const char *topic_suffix = state->channel == PHOTODIODE_CHANNEL_YJ ?
+				   "yj_tput" : "hk_tput";
 	char channel_fiber[8] = {0};
 	double pd_route_tx = 1.0;
 	double laser_route_tx = 1.0;
@@ -298,20 +308,28 @@ static void publish_sample(const struct throughput_state *state,
 	double tp = NAN;
 	double tp_err = NAN;
 	double tp_rms_err = NAN;
-	double pd_ontime_s;
-	double laser_current_ontime_s;
+	uint64_t pd_ontime_s;
+	uint64_t laser_current_ontime_s;
+	double pd_mean_net_mv;
+	double pd_mean_net_err_mv;
 
 	if (laser_name == NULL) {
 		return;
 	}
+	memset(msg, 0, sizeof(*msg));
 	app_settings_get_photodiode(&pd_settings);
 
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
-	pd_ontime_s = housekeeping_power_on_time_s(pd_power_output(state->channel));
+	pd_ontime_s = (uint64_t)housekeeping_power_on_time_s(pd_power_output(state->channel));
 	laser_current_ontime_s = state->has_laser ?
-				  (double)hispec_laser_current_on_time_s(state->laser) : 0.0;
+				  (uint64_t)hispec_laser_current_on_time_s(state->laser) : 0U;
+	pd_mean_net_mv = pd->fixed_window.valid ?
+			 (double)pd->fixed_window.mean_net_mv : (double)pd->net_mv;
+	pd_mean_net_err_mv = pd->fixed_window.valid ?
+			     (double)pd->fixed_window.mean_net_err_mv :
+			     (double)pd->net_err_mv;
 	route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
-	if (state->has_laser &&
+	if (isfinite((double)pd->mv) && state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &atten) &&
 	    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0) {
@@ -320,10 +338,10 @@ static void publish_sample(const struct throughput_state *state,
 		(void)app_settings_get_route_loss(laser_route, laser_name, &laser_route_tx);
 
 		pd_flux = photodiode_photon_flux_from_mv(
-			pd->net_mv, laser_flux.wavelength_nm,
+			pd_mean_net_mv, laser_flux.wavelength_nm,
 			&pd_settings.channel[state->channel]) / pd_route_tx;
 		pd_flux_err = photodiode_photon_flux_from_mv(
-			pd->rms_mv_0p5s, laser_flux.wavelength_nm,
+			pd_mean_net_err_mv, laser_flux.wavelength_nm,
 			&pd_settings.channel[state->channel]) / pd_route_tx;
 		emitted_flux = laser_flux.flux_ph_s * atten.linear * laser_route_tx;
 		emitted_flux_err = sqrt((laser_flux.flux_err_ph_s * atten.linear * laser_route_tx) *
@@ -343,93 +361,102 @@ static void publish_sample(const struct throughput_state *state,
 		}
 	}
 
-	msg.target = COO_CMD_OUT_MQTT_BEST_EFFORT;
-	msg.qos = 0;
-	(void)coo_cmd_format_data_topic(app_mqtt_device_id(),
-					state->channel == PHOTODIODE_CHANNEL_YJ ?
-					"yj_tput" : "hk_tput",
-					msg.topic, sizeof(msg.topic));
-
 	if (state->binary) {
-		put_bytes((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_bytes((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			  channel_fiber, sizeof(channel_fiber));
-		put_u64((uint8_t *)msg.payload, sizeof(msg.payload), &off, time_ms);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, tp);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, tp_err);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, tp_rms_err);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd_flux);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd_flux_err);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, emitted_flux);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, emitted_flux_err);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd_route_tx);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, laser_route_tx);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, atten.linear);
-		put_i16((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->raw);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mv);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->net_mv);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->mean_mv_1s);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off, pd->rms_mv_0p5s);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_u64((uint8_t *)msg->payload, sizeof(msg->payload), &off, time_ms);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, tp);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, tp_err);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, tp_rms_err);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_flux);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_flux_err);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, emitted_flux);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, emitted_flux_err);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_route_tx);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, laser_route_tx);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, atten.linear);
+		put_i16((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->raw);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->mv);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd->net_mv);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off, pd_mean_net_mv);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
+			pd_mean_net_err_mv);
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_flux.current_ma);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			atten.attenuation_db);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_f64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_flux.wavelength_nm);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_u64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			pd_ontime_s);
-		put_f64((uint8_t *)msg.payload, sizeof(msg.payload), &off,
+		put_u64((uint8_t *)msg->payload, sizeof(msg->payload), &off,
 			laser_current_ontime_s);
-		msg.payload_len = off;
-		(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
+		msg->payload_len = off;
+		(void)coo_cmd_runtime_emit(
+			command_runtime_get(),
+			&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_DATA,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.suffix = topic_suffix,
+				.out = msg,
+			});
 		return;
 	}
 
-	if (coo_json_append(msg.payload, sizeof(msg.payload), &off,
+	if (coo_json_append(msg->payload, sizeof(msg->payload), &off,
 			"{\"channel\":\"%s\",\"laser\":\"%s\","
 			"\"autolevel\":%s,\"t_ms\":%llu,\"tp\":",
 			channel_fiber, laser_name, state->autolevel ? "true" : "false",
 			(unsigned long long)time_ms) != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, tp, 6) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"tp_err\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, tp_err, 6) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"tp_rms_err\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, tp_rms_err, 6) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"pd_flux_ph_s\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, pd_flux, 9) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"pd_flux_err_ph_s\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, pd_flux_err, 9) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"laser_flux_ph_s\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, emitted_flux, 9) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"laser_flux_err_ph_s\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off, emitted_flux_err, 9) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, tp, 6) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"tp_err\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, tp_err, 6) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"tp_rms_err\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, tp_rms_err, 6) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"pd_flux_ph_s\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, pd_flux, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"pd_flux_err_ph_s\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, pd_flux_err, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"laser_flux_ph_s\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, emitted_flux, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"laser_flux_err_ph_s\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off, emitted_flux_err, 9) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
 			",\"pd_route_tx\":%.9g,\"laser_route_tx\":%.9g,"
 			"\"atten_tx\":%.12g,\"pd_raw\":%d",
 			pd_route_tx, laser_route_tx, atten.linear, pd->raw) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
 			",\"pd_mv\":%.4f,\"pd_net_mv\":%.4f,"
-			"\"pd_mean_mv_1s\":%.4f,\"pd_rms_mv_0p5s\":%.4f",
+			"\"pd_mean_net_mv\":%.4f,\"pd_mean_net_err_mv\":%.4f",
 			(double)pd->mv, (double)pd->net_mv,
-			(double)pd->mean_mv_1s, (double)pd->rms_mv_0p5s) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"laser_current_ma\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off,
+			pd_mean_net_mv, pd_mean_net_err_mv) != 0 ||
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"laser_current_ma\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  laser_flux.current_ma, 4) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"atten_db\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off,
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"atten_db\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  atten.attenuation_db, 6) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off, ",\"wavelength_nm\":") != 0 ||
-	    coo_json_append_float_or_null(msg.payload, sizeof(msg.payload), &off,
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off, ",\"wavelength_nm\":") != 0 ||
+	    coo_json_append_float_or_null(msg->payload, sizeof(msg->payload), &off,
 					  laser_flux.wavelength_nm, 4) != 0 ||
-	    coo_json_append(msg.payload, sizeof(msg.payload), &off,
-			",\"pd_ontime_s\":%.3f,\"laser_current_ontime_s\":%.3f,"
+	    coo_json_append(msg->payload, sizeof(msg->payload), &off,
+			",\"pd_ontime_s\":%llu,\"laser_current_ontime_s\":%llu,"
 			"\"flags\":[]}",
-			pd_ontime_s, laser_current_ontime_s) != 0) {
+			(unsigned long long)pd_ontime_s,
+			(unsigned long long)laser_current_ontime_s) != 0) {
 		LOG_WRN("throughput telemetry payload too large");
 		return;
 	}
-	msg.payload_len = strlen(msg.payload);
+	msg->payload_len = strlen(msg->payload);
 
-	(void)k_msgq_put(&outbound_queue, &msg, K_NO_WAIT);
+	(void)coo_cmd_runtime_emit(
+		command_runtime_get(),
+		&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_DATA,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.suffix = topic_suffix,
+			.out = msg,
+		});
 }
 
 void throughput_monitor_thread(void *p1, void *p2, void *p3)
@@ -439,16 +466,16 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	while (1) {
-		struct photodiode_status pd_status;
-		struct throughput_state local[PHOTODIODE_CHANNEL_COUNT];
+		struct photodiode_status *pd_status = &throughput_pd_status;
+		struct throughput_state *local = throughput_local;
 		int64_t now = k_uptime_get();
 		uint64_t time_ms = realtime_ms();
 
-		photodiode_get_status(&pd_status);
-		attenuator_calibration_tick(&pd_status, now);
+		photodiode_get_status(pd_status);
+		attenuator_calibration_tick(pd_status, now);
 
 		k_mutex_lock(&monitors_lock, K_FOREVER);
-		memcpy(local, monitors, sizeof(local));
+		memcpy(local, monitors, sizeof(throughput_local));
 		k_mutex_unlock(&monitors_lock);
 
 		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
@@ -475,10 +502,11 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				continue;
 			}
 
-			if (local[i].has_laser && local[i].autolevel &&
+			if (isfinite((double)pd_status->channel[i].mv) &&
+			    local[i].has_laser && local[i].autolevel &&
 			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
 							     0.0, 0.0, &atten)) {
-				(void)autolevel_adjust(&local[i], &pd_status.channel[i],
+				(void)autolevel_adjust(&local[i], &pd_status->channel[i],
 						       &atten);
 				k_mutex_lock(&monitors_lock, K_FOREVER);
 				if (monitors[i].active && monitors[i].laser == local[i].laser) {
@@ -489,7 +517,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				k_mutex_unlock(&monitors_lock);
 			}
 
-			publish_sample(&local[i], &pd_status.channel[i], time_ms);
+			publish_sample(&local[i], &pd_status->channel[i], time_ms);
 		}
 
 		k_sleep(K_MSEC(TP_INTERVAL_MS));
@@ -513,6 +541,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	if (request->fiber != 'M' && request->fiber != 'S') {
 		return -EINVAL;
+	}
+	if (request->autolevel && attenuator_calibration_active()) {
+		return -EBUSY;
 	}
 	if (request->has_laser) {
 		if (photodiode_channel_for_laser(request->laser, &channel) != 0) {

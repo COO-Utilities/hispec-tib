@@ -9,6 +9,8 @@
 
 #include <errno.h>
 #include <math.h>
+#include <string.h>
+#include <zephyr/sys/util.h>
 #include <zsl/probability.h>
 #include <zsl/zsl.h>
 
@@ -17,12 +19,214 @@ LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 #define DAC_RESOLUTION_BITS 12
 #define DAC_MAX_CODE        ((1 << DAC_RESOLUTION_BITS) - 1)
 #define MODEL_ERF_SCALE     4.0
-#define MODEL_MAX_DB        120.0
+#define MODEL_MIN_TX        1.0e-300
+#define MODEL_CORRECTION_START_TX 0.99
+#define MODEL_CORRECTION_START_DB (-10.0 * log10(MODEL_CORRECTION_START_TX))
 #define ATTENUATOR_DB_EPSILON 1.0e-6
-#define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5
+#define ATTENUATOR_VOLTAGE_WARN_EPS_MV 0.5f
+#define ATTENUATOR_MODEL_INVERSE_STEPS 24U
+#define ATTENUATOR_DB_PER_NEPER (10.0 / log(10.0))
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+/* Convert erf-model delta to raw transmission before open normalization. */
+static double attenuator_model_delta_to_raw_linear(double delta,
+                                                   double *d_raw_d_delta)
+{
+    const double erf_scale = (double)ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
+    double transmission;
+    double derivative = 0.0;
+
+    if (d_raw_d_delta != NULL) {
+        *d_raw_d_delta = 0.0;
+    }
+
+    transmission = (double)((erf_scale - ZSL_ERF((zsl_real_t)delta)) /
+                            (2.0 * erf_scale));
+    if (!isfinite(transmission)) {
+        return (isfinite(delta) && delta < 0.0) ? 1.0 : 0.0;
+    }
+
+    if (transmission <= 0.0) {
+        return 0.0;
+    }
+    if (transmission >= 1.0) {
+        return 1.0;
+    }
+
+    derivative = -ZSL_EXP((zsl_real_t)(-delta * delta)) /
+                 (sqrt(M_PI) * erf_scale);
+    if (d_raw_d_delta != NULL && isfinite(derivative)) {
+        *d_raw_d_delta = derivative;
+    }
+    return transmission;
+}
+
+static double attenuator_model_voltage_to_delta(const struct attenuator_model_coeffs *coeffs,
+                                                float voltage)
+{
+    double fvoa_drive_mv = coeffs->gain * (double) voltage;
+
+    return coeffs->slope_inv_fvoa_mv * (fvoa_drive_mv - coeffs->fvoa_50pct_mv);
+}
+
+static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *coeffs,
+                                          float voltage)
+{
+    double transmission;
+
+    if (coeffs == NULL) {
+        return 0.0;
+    }
+
+    transmission = attenuator_model_delta_to_raw_linear(attenuator_model_voltage_to_delta(coeffs, voltage), NULL);
+    if (!isfinite(transmission) || transmission <= 0.0) {
+        return 0.0;
+    }
+    if (transmission > 1.0) {
+        return 1.0;
+    }
+    return transmission;
+}
+
+static double attenuator_model_open_linear(const struct attenuator_model_coeffs *coeffs)
+{
+    return attenuator_model_raw_linear(coeffs, 0.0f);
+}
+
+static double attenuator_model_floor_linear(const struct attenuator_model_coeffs *coeffs)
+{
+    double floor_tx;
+
+    if (coeffs == NULL || !isfinite(coeffs->max_atten_db) ||
+        coeffs->max_atten_db <= 0.0) {
+        return 0.0;
+    }
+
+    floor_tx = pow(10.0, -coeffs->max_atten_db / 10.0);
+    if (!isfinite(floor_tx) || floor_tx <= 0.0 || floor_tx >= 1.0) {
+        return 0.0;
+    }
+    return floor_tx;
+}
+
+static bool attenuator_model_correction_active(const struct attenuator_model_coeffs *coeffs)
+{
+    if (coeffs == NULL) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        if (!isfinite((double)coeffs->correction_coeff[i])) {
+            return false;
+        }
+        if (coeffs->correction_coeff[i] != 0.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool atten_model_correction_basis(double base_db,
+                                  double max_atten_db,
+                                  double basis[ATTENUATOR_MODEL_CORRECTION_TERMS])
+{
+    double span;
+    double t;
+    double x;
+    double envelope;
+
+    if (basis == NULL || !isfinite(base_db) ||
+        !isfinite(max_atten_db) ||
+        !(max_atten_db > MODEL_CORRECTION_START_DB)) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        basis[i] = 0.0;
+    }
+
+    span = max_atten_db - MODEL_CORRECTION_START_DB;
+    t = (base_db - MODEL_CORRECTION_START_DB) / span;
+    if (!(t > 0.0) || !(t < 1.0)) {
+        return false;
+    }
+
+    x = 2.0 * t - 1.0;
+    envelope = t * (1.0 - t);
+    basis[0] = envelope;
+    basis[1] = envelope * x;
+    basis[2] = envelope * (2.0 * x * x - 1.0);
+    basis[3] = envelope * (4.0 * x * x * x - 3.0 * x);
+    return true;
+}
+
+/**
+ * Return the empirical dB-space residual correction for the base model.
+ *
+ * The fitted physical coefficients keep their meaning: fvoa_50pct_mv,
+ * slope_inv_fvoa_mv, and max_atten_db still define the erf shutter model plus
+ * leakage floor. This ringfenced correction only models the smooth residual
+ * left after that fit. Its envelope is zero near open transmission and at the
+ * modeled leakage floor so clearing the four coefficients recovers the base
+ * model exactly.
+ */
+static double attenuator_model_correction_db(const struct attenuator_model_coeffs *coeffs,
+                                             double base_db,
+                                             double *d_corr_d_base_db,
+                                             double *d_corr_d_max_atten_db)
+{
+    double span;
+    double t;
+    double x;
+    double shape;
+    double d_shape_dt;
+    double d_corr_dt;
+    double basis[ATTENUATOR_MODEL_CORRECTION_TERMS];
+
+    if (d_corr_d_base_db != NULL) {
+        *d_corr_d_base_db = 0.0;
+    }
+    if (d_corr_d_max_atten_db != NULL) {
+        *d_corr_d_max_atten_db = 0.0;
+    }
+    if (coeffs == NULL || !attenuator_model_correction_active(coeffs) ||
+        !isfinite(base_db) ||
+        !(coeffs->max_atten_db > MODEL_CORRECTION_START_DB)) {
+        return 0.0;
+    }
+
+    span = coeffs->max_atten_db - MODEL_CORRECTION_START_DB;
+    t = (base_db - MODEL_CORRECTION_START_DB) / span;
+    if (!(t > 0.0) || !(t < 1.0)) {
+        return 0.0;
+    }
+
+    x = 2.0 * t - 1.0;
+    if (!atten_model_correction_basis(base_db, coeffs->max_atten_db, basis)) {
+        return 0.0;
+    }
+    shape = (double)coeffs->correction_coeff[0] +
+            (double)coeffs->correction_coeff[1] * x +
+            (double)coeffs->correction_coeff[2] * (2.0 * x * x - 1.0) +
+            (double)coeffs->correction_coeff[3] * (4.0 * x * x * x - 3.0 * x);
+
+    d_shape_dt = 2.0 * (double)coeffs->correction_coeff[1] +
+                 8.0 * x * (double)coeffs->correction_coeff[2] +
+                 (24.0 * x * x - 6.0) * (double)coeffs->correction_coeff[3];
+    d_corr_dt = (1.0 - 2.0 * t) * shape + t * (1.0 - t) * d_shape_dt;
+    if (d_corr_d_base_db != NULL) {
+        *d_corr_d_base_db = d_corr_dt / span;
+    }
+    if (d_corr_d_max_atten_db != NULL) {
+        *d_corr_d_max_atten_db = -d_corr_dt * t / span;
+    }
+    return (double)coeffs->correction_coeff[0] * basis[0] +
+           (double)coeffs->correction_coeff[1] * basis[1] +
+           (double)coeffs->correction_coeff[2] * basis[2] +
+           (double)coeffs->correction_coeff[3] * basis[3];
+}
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
 {
@@ -38,7 +242,9 @@ static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
                                 const struct device *dev, uint8_t channel)
 {
     dac_cfg->dev = dev;
-    dac_cfg->voltage = 0.0;
+    dac_cfg->ideal_full_scale_mv = ATTENUATOR_DRIVE_MAX_MV;
+    dac_cfg->drive_limit_mv = ATTENUATOR_DRIVE_MAX_MV;
+    dac_cfg->voltage = 0.0f;
     dac_cfg->attenuation_db = 0.0;
     dac_cfg->cfg.channel_id = channel;
     dac_cfg->cfg.resolution = DAC_RESOLUTION_BITS;
@@ -51,13 +257,21 @@ static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
 
 static bool attenuator_channel_setup(struct attenuator_dac_cfg *dac_cfg)
 {
+    struct dac7x78_transfer transfer;
     int err;
 
     if (dac_cfg->dev == NULL || !device_is_ready(dac_cfg->dev)) {
-        LOG_ERR("DAC device unavailable for channel %u",
-                dac_cfg->cfg.channel_id);
+        LOG_ERR("DAC device unavailable for channel %u", dac_cfg->cfg.channel_id);
         return false;
     }
+
+    err = dac7x78_get_transfer(dac_cfg->dev, &transfer);
+    if (err != 0 || transfer.ideal_full_scale_uv == 0U || transfer.output_limit_uv == 0U) {
+        LOG_ERR("DAC transfer setup failed for channel %u: %d", dac_cfg->cfg.channel_id, err);
+        return false;
+    }
+    dac_cfg->ideal_full_scale_mv = (float) transfer.ideal_full_scale_uv / 1000.0f;
+    dac_cfg->drive_limit_mv = MIN(ATTENUATOR_DRIVE_MAX_MV, (float) transfer.output_limit_uv / 1000.0f);
 
     /* dac_channel_setup() prepares the selected channel in the DAC driver and
      * may perform I2C transactions depending on the underlying implementation.
@@ -81,6 +295,16 @@ bool attenuator_init(struct attenuator *drv,
 
     attenuator_cfg_init(&drv->dac_cfg1, dac1, channel1);
     attenuator_cfg_init(&drv->dac_cfg2, dac2, channel2);
+    drv->coeff1.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff1.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff1.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
+    drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
+    memset(drv->coeff1.correction_coeff, 0, sizeof(drv->coeff1.correction_coeff));
+    drv->coeff2.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff2.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
+    drv->coeff2.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
+    drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
+    memset(drv->coeff2.correction_coeff, 0, sizeof(drv->coeff2.correction_coeff));
     drv->attenuation_db = 0.0;
 
     return attenuator_channel_setup(&drv->dac_cfg1) &&
@@ -88,57 +312,272 @@ bool attenuator_init(struct attenuator *drv,
 }
 
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
-                                      double voltage)
+                                      float voltage)
 {
-    double b;
-    double transmission;
+    struct atten_model_eval eval;
 
     if (coeffs == NULL) {
         return 0.0;
     }
 
-    b = coeffs->slope * voltage + coeffs->offset;
-    transmission = attenuator_model_b_to_linear(b);
-
-    if (transmission <= 0.0) {
-        return MODEL_MAX_DB;
-    }
-    if (transmission >= 1.0) {
-        return 0.0;
+    if (atten_model_eval(coeffs, voltage, &eval)) {
+        return eval.db;
     }
 
-    return -10.0 * (double)ZSL_LOG10((zsl_real_t)transmission);
+    return isfinite(coeffs->max_atten_db) && coeffs->max_atten_db > 0.0 ?
+           coeffs->max_atten_db : FVOA_DEFAULT_MAX_ATTEN_DB;
+}
+
+bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
+                      float voltage,
+                      struct atten_model_eval *out)
+{
+    double floor_tx;
+    double raw;
+    double raw0;
+    double d_raw_d_delta;
+    double d_raw0_d_delta;
+    double delta;
+    double delta0;
+    double ideal;
+    double ideal_clamped;
+    double tx;
+    double base_db;
+    double correction_db;
+    double d_corr_d_base_db;
+    double d_corr_d_max_atten_db;
+    double derivative_scale;
+    double d_ideal_d_voltage = 0.0;
+    double d_ideal_d_f50 = 0.0;
+    double d_ideal_d_slope = 0.0;
+    double d_tx_scale;
+    double raw0_sq;
+
+    if (coeffs == NULL || out == NULL ||
+        !isfinite(coeffs->fvoa_50pct_mv) ||
+        !isfinite(coeffs->slope_inv_fvoa_mv) ||
+        !isfinite(coeffs->max_atten_db) ||
+        !isfinite(coeffs->gain) ||
+        !isfinite((double)voltage) ||
+        coeffs->gain <= 0.0) {
+        return false;
+    }
+
+    floor_tx = attenuator_model_floor_linear(coeffs);
+    if (!(floor_tx > 0.0)) {
+        return false;
+    }
+
+    delta = attenuator_model_voltage_to_delta(coeffs, voltage);
+    delta0 = attenuator_model_voltage_to_delta(coeffs, 0.0f);
+    if (!isfinite(delta) || !isfinite(delta0)) {
+        return false;
+    }
+
+    raw = attenuator_model_delta_to_raw_linear(delta, &d_raw_d_delta);
+    raw0 = attenuator_model_delta_to_raw_linear(delta0, &d_raw0_d_delta);
+    if (!(raw0 > MODEL_MIN_TX) || !isfinite(raw0)) {
+        return false;
+    }
+
+    ideal = raw / raw0;
+    if (!isfinite(ideal)) {
+        return false;
+    }
+
+    ideal_clamped = CLAMP(ideal, 0.0, 1.0);
+    if (ideal > 0.0 && ideal < 1.0) {
+        double d_raw_d_voltage =
+            d_raw_d_delta * coeffs->slope_inv_fvoa_mv * coeffs->gain;
+        double d_raw_d_f50 =
+            d_raw_d_delta * -coeffs->slope_inv_fvoa_mv;
+        double d_raw0_d_f50 =
+            d_raw0_d_delta * -coeffs->slope_inv_fvoa_mv;
+        double d_raw_d_slope =
+            d_raw_d_delta *
+            (coeffs->gain * (double)voltage - coeffs->fvoa_50pct_mv);
+        double d_raw0_d_slope =
+            d_raw0_d_delta * -coeffs->fvoa_50pct_mv;
+
+        raw0_sq = raw0 * raw0;
+        d_ideal_d_voltage = d_raw_d_voltage / raw0;
+        d_ideal_d_f50 = (d_raw_d_f50 * raw0 - raw * d_raw0_d_f50) / raw0_sq;
+        d_ideal_d_slope =
+            (d_raw_d_slope * raw0 - raw * d_raw0_d_slope) / raw0_sq;
+    }
+
+    tx = floor_tx + (1.0 - floor_tx) * ideal_clamped;
+    if (!isfinite(tx) || tx <= 0.0) {
+        return false;
+    }
+
+    *out = (struct atten_model_eval){0};
+    if (tx >= 1.0) {
+        out->tx = 1.0;
+        out->db = 0.0;
+        return true;
+    }
+
+    d_tx_scale = -ATTENUATOR_DB_PER_NEPER * (1.0 - floor_tx) / tx;
+    out->tx = tx;
+    base_db = -10.0 * ZSL_LOG10((zsl_real_t)tx);
+    correction_db = attenuator_model_correction_db(coeffs, base_db,
+                                                   &d_corr_d_base_db,
+                                                   &d_corr_d_max_atten_db);
+    out->db = base_db + correction_db;
+    if (!isfinite(out->db) || out->db < 0.0) {
+        return false;
+    }
+    out->tx = pow(10.0, -out->db / 10.0);
+    derivative_scale = 1.0 + d_corr_d_base_db;
+    out->d_db_d_voltage_mv = derivative_scale * d_tx_scale * d_ideal_d_voltage;
+    out->d_db_d_fvoa_50pct_mv = derivative_scale * d_tx_scale * d_ideal_d_f50;
+    out->d_db_d_slope_inv_fvoa_mv = derivative_scale * d_tx_scale * d_ideal_d_slope;
+    out->d_db_d_max_atten_db =
+        derivative_scale * floor_tx * (1.0 - ideal_clamped) / tx +
+        d_corr_d_max_atten_db;
+    if (!isfinite(out->db) ||
+        !isfinite(out->tx) ||
+        !isfinite(out->d_db_d_voltage_mv) ||
+        !isfinite(out->d_db_d_fvoa_50pct_mv) ||
+        !isfinite(out->d_db_d_slope_inv_fvoa_mv) ||
+        !isfinite(out->d_db_d_max_atten_db)) {
+        return false;
+    }
+    return true;
+}
+
+bool atten_model_db_sigma(const struct atten_model_eval *eval,
+                          double measured_db_sigma,
+                          double voltage_sigma_mv,
+                          double max_atten_sigma_db,
+                          double *sigma_db)
+{
+    double sigma_sq;
+
+    if (eval == NULL || sigma_db == NULL ||
+        !isfinite(measured_db_sigma) || measured_db_sigma < 0.0 ||
+        !isfinite(voltage_sigma_mv) || voltage_sigma_mv < 0.0 ||
+        !isfinite(max_atten_sigma_db) || max_atten_sigma_db < 0.0) {
+        return false;
+    }
+
+    sigma_sq = measured_db_sigma * measured_db_sigma +
+               (eval->d_db_d_voltage_mv * voltage_sigma_mv) *
+               (eval->d_db_d_voltage_mv * voltage_sigma_mv) +
+               (eval->d_db_d_max_atten_db * max_atten_sigma_db) *
+               (eval->d_db_d_max_atten_db * max_atten_sigma_db);
+    if (!isfinite(sigma_sq) || sigma_sq < 0.0) {
+        return false;
+    }
+
+    *sigma_db = sqrt(sigma_sq);
+    return isfinite(*sigma_db);
 }
 
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
-                                    double attenuation_db, double *voltage)
+                                    double attenuation_db, float *voltage)
 {
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    zsl_real_t transmission;
-    zsl_real_t erf_arg;
-    zsl_real_t inv;
-    double b;
+    const double erf_scale = ZSL_ERF(MODEL_ERF_SCALE);
+    double floor_tx;
+    double open_tx;
+    double target_relative;
+    double target_ideal;
+    double target_tx;
+    double erf_arg;
+    double delta;
 
-    if (coeffs == NULL || voltage == NULL || coeffs->slope == 0.0 ||
+    if (coeffs == NULL || voltage == NULL || coeffs->slope_inv_fvoa_mv == 0.0 ||
+        coeffs->gain <= 0.0 ||
         attenuation_db < 0.0) {
         return false;
     }
 
     if (attenuation_db <= ATTENUATOR_DB_EPSILON) {
-        *voltage = 0.0;
+        *voltage = 0.0f;
         return true;
     }
 
-    transmission = ZSL_POW((zsl_real_t)10.0,
-                           (zsl_real_t)(-attenuation_db / 10.0));
-    erf_arg = ((zsl_real_t)2.0 * erf_scale * transmission) - erf_scale;
-    if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
+    if (attenuator_model_correction_active(coeffs)) {
+        float lo_mv = 0.0f;
+        float hi_mv = ATTENUATOR_DRIVE_MAX_MV;
+        double lo_db = attenuator_model_voltage_to_db(coeffs, lo_mv);
+        double hi_db = attenuator_model_voltage_to_db(coeffs, hi_mv);
+
+        if (!isfinite(lo_db) || !isfinite(hi_db) || !(hi_db > lo_db)) {
+            return false;
+        }
+        if (attenuation_db < lo_db - ATTENUATOR_DB_EPSILON ||
+            attenuation_db > hi_db + ATTENUATOR_DB_EPSILON) {
+            return false;
+        }
+        if (attenuation_db <= lo_db + ATTENUATOR_DB_EPSILON) {
+            *voltage = lo_mv;
+            return true;
+        }
+        if (attenuation_db >= hi_db - ATTENUATOR_DB_EPSILON) {
+            *voltage = hi_mv;
+            return true;
+        }
+
+        for (uint8_t i = 0U; i < ATTENUATOR_MODEL_INVERSE_STEPS; ++i) {
+            float mid_mv = 0.5f * (lo_mv + hi_mv);
+            double mid_db = attenuator_model_voltage_to_db(coeffs, mid_mv);
+
+            if (!isfinite(mid_db)) {
+                return false;
+            }
+            if (mid_db < attenuation_db) {
+                lo_mv = mid_mv;
+            } else {
+                hi_mv = mid_mv;
+            }
+        }
+        *voltage = 0.5f * (lo_mv + hi_mv);
+        return true;
+    }
+
+    open_tx = attenuator_model_open_linear(coeffs);
+    if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
         return false;
     }
 
-    inv = zsl_prob_erf_inv(&erf_arg);
-    b = MODEL_ERF_SCALE - (double)inv;
-    *voltage = (b - coeffs->offset) / coeffs->slope;
+    floor_tx = attenuator_model_floor_linear(coeffs);
+    if (!(floor_tx > 0.0)) {
+        return false;
+    }
+    target_relative = pow(10.0, -attenuation_db / 10.0);
+    if (!isfinite(target_relative) || target_relative <= floor_tx) {
+        return false;
+    }
+    if (target_relative >= 1.0) {
+        *voltage = 0.0f;
+        return true;
+    }
+
+    target_ideal = (target_relative - floor_tx) / (1.0 - floor_tx);
+    if (!isfinite(target_ideal) || target_ideal <= 0.0) {
+        return false;
+    }
+    if (target_ideal > 1.0) {
+        target_ideal = 1.0;
+    }
+
+    target_tx = open_tx * target_ideal;
+    if (!(target_tx > MODEL_MIN_TX) || !isfinite(target_tx)) {
+        return false;
+    }
+    if (target_tx > 1.0) {
+        target_tx = 1.0;
+    }
+
+    erf_arg = erf_scale - 2.0 * erf_scale * target_tx;
+    if (erf_arg <= -1.0 || erf_arg >= 1.0) {
+        return false;
+    }
+
+    delta = zsl_prob_erf_inv(&erf_arg);
+    *voltage = (float) ((delta / coeffs->slope_inv_fvoa_mv + coeffs->fvoa_50pct_mv) / coeffs->gain);
 
     return true;
 }
@@ -147,8 +586,18 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
 {
     double max_db;
 
-    if (coeffs == NULL || !isfinite(coeffs->slope) ||
-        !isfinite(coeffs->offset) || coeffs->slope <= 0.0) {
+    if (coeffs == NULL || !isfinite(coeffs->fvoa_50pct_mv) ||
+        !isfinite(coeffs->slope_inv_fvoa_mv) ||
+        !isfinite(coeffs->max_atten_db) || !isfinite(coeffs->gain) ||
+        coeffs->slope_inv_fvoa_mv <= 0.0 || coeffs->gain <= 0.0) {
+        return false;
+    }
+    for (uint8_t i = 0U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        if (!isfinite((double)coeffs->correction_coeff[i])) {
+            return false;
+        }
+    }
+    if (!(attenuator_model_floor_linear(coeffs) > 0.0)) {
         return false;
     }
 
@@ -172,15 +621,47 @@ bool attenuator_model_coefficients_valid(
     return true;
 }
 
-static double attenuator_code_to_voltage(uint32_t code)
+static float attenuator_drive_limit_mv(const struct attenuator_dac_cfg *dac_cfg)
 {
-    return (ATTENUATOR_DRIVE_MAX_MV / (double)DAC_MAX_CODE) * (double)code;
+    if (dac_cfg == NULL || dac_cfg->drive_limit_mv <= 0.0f) {
+        return ATTENUATOR_DRIVE_MAX_MV;
+    }
+
+    return dac_cfg->drive_limit_mv;
 }
 
-static uint32_t attenuator_voltage_to_code(double voltage)
+static float attenuator_code_to_voltage(const struct attenuator_dac_cfg *dac_cfg,
+                                         uint32_t code)
 {
-    uint32_t code = (uint32_t)(((voltage / ATTENUATOR_DRIVE_MAX_MV) *
-                                (double)DAC_MAX_CODE) + 0.5);
+    float voltage;
+    float drive_limit = attenuator_drive_limit_mv(dac_cfg);
+
+    if (dac_cfg == NULL || dac_cfg->ideal_full_scale_mv <= 0.0f) {
+        return 0.0f;
+    }
+
+    voltage = (dac_cfg->ideal_full_scale_mv /
+               (float)(1 << DAC_RESOLUTION_BITS)) * (float)code;
+    if (voltage > drive_limit) {
+        return drive_limit;
+    }
+
+    return voltage;
+}
+
+static uint32_t attenuator_voltage_to_code(const struct attenuator_dac_cfg *dac_cfg,
+                                           float voltage)
+{
+    float ideal_full_scale_mv;
+    uint32_t code;
+
+    if (dac_cfg->ideal_full_scale_mv <= 0.0f) {
+        return 0U;
+    }
+
+    ideal_full_scale_mv = dac_cfg->ideal_full_scale_mv;
+    code = (uint32_t)(((voltage / ideal_full_scale_mv) *
+                       (float)(1 << DAC_RESOLUTION_BITS)) + 0.5f);
 
     if (code > DAC_MAX_CODE) {
         return DAC_MAX_CODE;
@@ -191,12 +672,13 @@ static uint32_t attenuator_voltage_to_code(double voltage)
 
 static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
                                      const struct attenuator_model_coeffs *coeffs,
-                                     double voltage)
+                                     float voltage)
 {
-    double unclamped_voltage = voltage;
+    float unclamped_voltage = voltage;
     bool report_clamp = false;
     uint32_t code;
-    double applied_voltage;
+    float applied_voltage;
+    float drive_limit;
     int err;
     char context[64];
 
@@ -204,27 +686,33 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
         return false;
     }
 
-    if (voltage < 0.0) {
+    drive_limit = attenuator_drive_limit_mv(dac_cfg);
+    if (voltage < 0.0f) {
         report_clamp = voltage < -ATTENUATOR_VOLTAGE_WARN_EPS_MV;
-        voltage = 0.0;
-    } else if (voltage > ATTENUATOR_DRIVE_MAX_MV) {
-        report_clamp = voltage > ATTENUATOR_DRIVE_MAX_MV + ATTENUATOR_VOLTAGE_WARN_EPS_MV;
-        voltage = ATTENUATOR_DRIVE_MAX_MV;
+        voltage = 0.0f;
+    } else if (voltage > drive_limit) {
+        report_clamp = voltage > drive_limit + ATTENUATOR_VOLTAGE_WARN_EPS_MV;
+        voltage = drive_limit;
     }
 
-    if (report_clamp) {
-        snprintk(context, sizeof(context),
-                 "channel=%u requested=%.3f clamped=%.3f",
-                 dac_cfg->cfg.channel_id, unclamped_voltage, voltage);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
-                         "attenuator command exceeded drive range and was clamped",
-                         context);
-    }
+	if (report_clamp) {
+		snprintk(context, sizeof(context),
+			 "channel=%u requested=%.3f clamped=%.3f",
+			 dac_cfg->cfg.channel_id, (double)unclamped_voltage, (double)voltage);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "attenuator_clamped",
+					     .msg = "attenuator command exceeded drive range and was clamped",
+					     .context = context,
+				     });
+	}
 
-    code = attenuator_voltage_to_code(voltage);
-    applied_voltage = attenuator_code_to_voltage(code);
+    code = attenuator_voltage_to_code(dac_cfg, voltage);
+    applied_voltage = attenuator_code_to_voltage(dac_cfg, code);
     /* dac_write_value() is the hardware side effect: it can block on I2C and
-     * changes the analog attenuation control voltage.
+     * changes the DAC output voltage that feeds the FVOA-drive op amp.
      */
     err = dac_write_value(dac_cfg->dev, dac_cfg->cfg.channel_id, code);
     if (err != 0) {
@@ -238,23 +726,42 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
     return true;
 }
 
-static bool attenuator_set_physical_db(struct attenuator_dac_cfg *dac_cfg,
-                                       const struct attenuator_model_coeffs *coeffs,
-                                       double attenuation_db)
+bool attenuator_set_physical_db(struct attenuator *drv,
+                                uint8_t physical_index,
+                                double attenuation_db)
 {
-    double voltage;
+    float voltage;
     double max_db;
+    struct attenuator_model_coeffs *coeffs;
+    struct attenuator_dac_cfg *dac_cfg;
+
+    if (drv == NULL) {
+        return false;
+    }
+
+    switch (physical_index) {
+        case 0:
+            dac_cfg = &drv->dac_cfg1;
+            coeffs = &drv->coeff1;
+            break;
+        case 1:
+            dac_cfg = &drv->dac_cfg2;
+            coeffs = &drv->coeff2;
+            break;
+        default:
+            return false;
+    }
 
     if (dac_cfg == NULL || coeffs == NULL || attenuation_db < 0.0) {
         return false;
     }
 
-    max_db = attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
+    max_db = attenuator_model_voltage_to_db(coeffs, attenuator_drive_limit_mv(dac_cfg));
     if (attenuation_db <= ATTENUATOR_DB_EPSILON) {
-        return attenuator_write_voltage(dac_cfg, coeffs, 0.0);
+        return attenuator_write_voltage(dac_cfg, coeffs, 0.0f);
     }
     if (max_db > 0.0 && attenuation_db >= max_db - ATTENUATOR_DB_EPSILON) {
-        return attenuator_write_voltage(dac_cfg, coeffs, ATTENUATOR_DRIVE_MAX_MV);
+        return attenuator_write_voltage(dac_cfg, coeffs, attenuator_drive_limit_mv(dac_cfg));
     }
 
     if (!attenuator_model_db_to_voltage(coeffs, attenuation_db, &voltage)) {
@@ -264,35 +771,9 @@ static bool attenuator_set_physical_db(struct attenuator_dac_cfg *dac_cfg,
     return attenuator_write_voltage(dac_cfg, coeffs, voltage);
 }
 
-bool attenuator_set_dac1_db(struct attenuator *drv, double attenuation_db)
-{
-    return drv != NULL &&
-           attenuator_set_physical_db(&drv->dac_cfg1, &drv->coeff1,
-                                      attenuation_db);
-}
-
-bool attenuator_set_dac2_db(struct attenuator *drv, double attenuation_db)
-{
-    return drv != NULL &&
-           attenuator_set_physical_db(&drv->dac_cfg2, &drv->coeff2,
-                                      attenuation_db);
-}
-
-bool attenuator_set_dac1_voltage(struct attenuator *drv, double voltage)
-{
-    return drv != NULL &&
-           attenuator_write_voltage(&drv->dac_cfg1, &drv->coeff1, voltage);
-}
-
-bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage)
-{
-    return drv != NULL &&
-           attenuator_write_voltage(&drv->dac_cfg2, &drv->coeff2, voltage);
-}
-
 bool attenuator_set_physical_voltage(struct attenuator *drv,
                                      uint8_t physical_index,
-                                     double voltage)
+                                     float voltage)
 {
     if (drv == NULL) {
         return false;
@@ -300,17 +781,18 @@ bool attenuator_set_physical_voltage(struct attenuator *drv,
 
     switch (physical_index) {
     case 0:
-        return attenuator_set_dac1_voltage(drv, voltage);
+        return attenuator_write_voltage(&drv->dac_cfg1, &drv->coeff1, voltage);
     case 1:
-        return attenuator_set_dac2_voltage(drv, voltage);
+        return attenuator_write_voltage(&drv->dac_cfg2, &drv->coeff2, voltage);
     default:
         return false;
     }
 }
 
-static double attenuator_physical_max_db(const struct attenuator_model_coeffs *coeffs)
+static double attenuator_physical_max_db(const struct attenuator_dac_cfg *dac_cfg,
+                                         const struct attenuator_model_coeffs *coeffs)
 {
-    return attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
+    return attenuator_model_voltage_to_db(coeffs,attenuator_drive_limit_mv(dac_cfg));
 }
 
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
@@ -325,17 +807,22 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
         return false;
     }
 
-    max_db1 = attenuator_physical_max_db(&drv->coeff1);
-    max_total_db = max_db1 + attenuator_physical_max_db(&drv->coeff2);
+    max_db1 = attenuator_physical_max_db(&drv->dac_cfg1, &drv->coeff1);
+    max_total_db = max_db1 + attenuator_physical_max_db(&drv->dac_cfg2, &drv->coeff2);
 
-    if (attenuation_db > max_total_db) {
-        snprintk(context, sizeof(context),
-                 "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
-        coo_cmd_runtime_warning_emit(command_runtime_get(), "attenuator_clamped",
-                         "attenuator command exceeded modeled range and was clamped",
-                         context);
-        attenuation_db = max_total_db;
-    }
+	if (attenuation_db > max_total_db) {
+		snprintk(context, sizeof(context),
+			 "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
+		coo_cmd_runtime_emit(command_runtime_get(),
+				     &(const struct coo_cmd_runtime_emit_args){
+					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					     .code = "attenuator_clamped",
+					     .msg = "attenuator command exceeded modeled range and was clamped",
+					     .context = context,
+				     });
+		attenuation_db = max_total_db;
+	}
 
     db1 = attenuation_db < max_db1 ? attenuation_db : max_db1;
     db2 = attenuation_db - db1;
@@ -343,10 +830,10 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
         db2 = 0.0;
     }
 
-    if (!attenuator_set_dac1_db(drv, db1)) {
+    if (!attenuator_set_physical_db(drv, 0, db1)) {
         return false;
     }
-    if (!attenuator_set_dac2_db(drv, db2)) {
+    if (!attenuator_set_physical_db(drv, 1, db2)) {
         return false;
     }
 
@@ -380,7 +867,7 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
         return false;
     }
 
-    dac_cfg->voltage = attenuator_code_to_voltage(code);
+    dac_cfg->voltage = attenuator_code_to_voltage(dac_cfg, code);
     dac_cfg->attenuation_db =
         attenuator_model_voltage_to_db(coeffs, dac_cfg->voltage);
 
@@ -414,61 +901,17 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
     return true;
 }
 
-double attenuator_model_b_to_linear(double b)
-{
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    double transmission = (double)((erf_scale +
-                                    ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE -
-                                            (zsl_real_t)b)) /
-                                   ((zsl_real_t)2.0 * erf_scale));
-
-    if (transmission < 0.0) {
-        return 0.0;
-    }
-    if (transmission > 1.0) {
-        return 1.0;
-    }
-
-    return transmission;
-}
-
-bool attenuator_model_linear_to_b(double linear, double *b)
-{
-    const zsl_real_t erf_scale = ZSL_ERF((zsl_real_t)MODEL_ERF_SCALE);
-    zsl_real_t erf_arg;
-    zsl_real_t inv;
-
-    if (b == NULL || linear <= 0.0 || linear >= 1.0) {
-        return false;
-    }
-
-    erf_arg = ((zsl_real_t)2.0 * erf_scale * (zsl_real_t)linear) - erf_scale;
-    if (erf_arg <= (zsl_real_t)-1.0 || erf_arg >= (zsl_real_t)1.0) {
-        return false;
-    }
-
-    inv = zsl_prob_erf_inv(&erf_arg);
-    *b = MODEL_ERF_SCALE - (double)inv;
-    return true;
-}
-
-static double attenuator_model_dlinear_db(double b)
-{
-    const double erf_scale = erf(MODEL_ERF_SCALE);
-
-    return -exp(-((MODEL_ERF_SCALE - b) * (MODEL_ERF_SCALE - b))) /
-           (sqrt(M_PI) * erf_scale);
-}
-
 bool attenuator_estimate_transmission(struct attenuator *drv,
                                       double sigma_b1, double sigma_b2,
                                       struct attenuator_transmission_estimate *out)
 {
     struct attenuator_status status;
-    double b1;
-    double b2;
+    struct atten_model_eval eval1;
+    struct atten_model_eval eval2;
     double tx1;
     double tx2;
+    double db1_per_b;
+    double db2_per_b;
     double dtx1_db;
     double dtx2_db;
     double var;
@@ -481,12 +924,21 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
         return false;
     }
 
-    b1 = drv->coeff1.slope * status.voltage1 + drv->coeff1.offset;
-    b2 = drv->coeff2.slope * status.voltage2 + drv->coeff2.offset;
-    tx1 = attenuator_model_b_to_linear(b1);
-    tx2 = attenuator_model_b_to_linear(b2);
-    dtx1_db = attenuator_model_dlinear_db(b1);
-    dtx2_db = attenuator_model_dlinear_db(b2);
+    if (!atten_model_eval(&drv->coeff1, status.voltage1, &eval1) ||
+        !atten_model_eval(&drv->coeff2, status.voltage2, &eval2)) {
+        return false;
+    }
+    if (drv->coeff1.slope_inv_fvoa_mv == 0.0 || drv->coeff2.slope_inv_fvoa_mv == 0.0 ||
+        drv->coeff1.gain <= 0.0 || drv->coeff2.gain <= 0.0) {
+        return false;
+    }
+
+    tx1 = eval1.tx;
+    tx2 = eval2.tx;
+    db1_per_b = eval1.d_db_d_voltage_mv / (drv->coeff1.slope_inv_fvoa_mv * drv->coeff1.gain);
+    db2_per_b = eval2.d_db_d_voltage_mv / (drv->coeff2.slope_inv_fvoa_mv * drv->coeff2.gain);
+    dtx1_db = tx1 * (-log(10.0) / 10.0) * db1_per_b;
+    dtx2_db = tx2 * (-log(10.0) / 10.0) * db2_per_b;
     var = (tx2 * dtx1_db * sigma_b1) * (tx2 * dtx1_db * sigma_b1) +
           (tx1 * dtx2_db * sigma_b2) * (tx1 * dtx2_db * sigma_b2);
 

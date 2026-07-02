@@ -12,9 +12,9 @@
 #define __DEVICE_C__
 
 #include "devices.h"
-#include "app_identity.h"
 #include "app_settings.h"
 #include "command.h"
+#include "drivers/dac/dac7x78.h"
 #include "maiman.h"
 #include "mems_switching.h"
 
@@ -149,6 +149,11 @@ static const struct attenuator_dac_pair attenuator_dac_pairs[NUM_ATTENUATORS] = 
 };
 BUILD_ASSERT(ARRAY_SIZE(attenuator_dac_pairs) == NUM_ATTENUATORS,
 	     "DAC pair table must match logical attenuator count");
+
+static const struct device *const attenuator_dac_devices[] = {
+	DEVICE_DT_GET(DT_NODELABEL(dac7678)),
+	DEVICE_DT_GET(DT_NODELABEL(dac7678_b)),
+};
 
 struct board_profile {
 	enum hispec_board_type board;
@@ -337,6 +342,7 @@ void devices_queue_boot_reset_telemetry(void)
 {
 	struct coo_cmd_response msg = {0};
 	char cause_text[128];
+	int written;
 	int rc;
 
 	if (!boot_reset_cause_valid || (boot_reset_cause & RESET_WATCHDOG) == 0U) {
@@ -344,25 +350,24 @@ void devices_queue_boot_reset_telemetry(void)
 	}
 
 	format_reset_cause_list(boot_reset_cause, cause_text, sizeof(cause_text));
-	msg.target = COO_CMD_OUT_MQTT;
-	msg.qos = 0;
-	rc = coo_cmd_format_data_topic(app_mqtt_device_id(), "boot",
-				       msg.topic, sizeof(msg.topic));
-	if (rc != 0) {
-		LOG_WRN("Failed to format boot telemetry topic (%d)", rc);
-		return;
-	}
-
-	msg.payload_len = snprintk(msg.payload, sizeof(msg.payload),
-				   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
-				   "\"watchdog\":true,\"raw_reset_cause\":%u}",
-				   cause_text, boot_reset_cause);
-	if (msg.payload_len >= sizeof(msg.payload)) {
+	written = snprintk(msg.payload, sizeof(msg.payload),
+			   "{\"event\":\"boot\",\"reset_cause\":\"%s\","
+			   "\"watchdog\":true,\"raw_reset_cause\":%u}",
+			   cause_text, boot_reset_cause);
+	if (written < 0 || written >= (int)sizeof(msg.payload)) {
 		LOG_WRN("Boot telemetry payload too large");
 		return;
 	}
+	msg.payload_len = (size_t)written;
 
-	if (k_msgq_put(&outbound_queue, &msg, K_FOREVER) != 0) {
+	rc = coo_cmd_runtime_emit(command_runtime_get(),
+				  &(const struct coo_cmd_runtime_emit_args){
+					  .type = COO_CMD_RUNTIME_EMIT_DATA,
+					  .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+					  .suffix = "boot",
+					  .out = &msg,
+				  });
+	if (rc != 0) {
 		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
 	}
 }
@@ -782,9 +787,9 @@ int devices_relay_gpio_last_error(void)
 	return error;
 }
 
-//TODO change coo_cmd_runtime_warning_emit so can emit as required not best effort
 static void emit_relay_gpio_offline_warning_once(int error)
 {
+	struct coo_cmd_response msg;
 	char context[24];
 
 	k_mutex_lock(&relay_gpio_lock, K_FOREVER);
@@ -796,9 +801,15 @@ static void emit_relay_gpio_offline_warning_once(int error)
 	k_mutex_unlock(&relay_gpio_lock);
 
 	snprintf(context, sizeof(context), "rc=%d", error);
-	coo_cmd_runtime_warning_emit(command_runtime_get(), "relay_gpio_offline",
-			 "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
-			 context);
+	coo_cmd_runtime_emit(command_runtime_get(),
+			     &(const struct coo_cmd_runtime_emit_args){
+				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
+				     .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+				     .out = &msg,
+				     .code = "relay_gpio_offline",
+				     .msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+				     .context = context,
+			     });
 }
 
 static bool configure_relay_gpio_outputs(void)
@@ -864,6 +875,64 @@ attenuator_dac_pair_for_index(uint8_t attenuator_index)
 	return &attenuator_dac_pairs[attenuator_index];
 }
 
+static uint8_t attenuator_dac_used_mask(const struct board_profile *profile,
+					const struct device *dev)
+{
+	uint8_t mask = 0U;
+
+	for (uint8_t i = 0U; i < profile->attenuator_count; ++i) {
+		uint8_t attenuator_index = profile->attenuator_first + i;
+		const struct attenuator_dac_pair *dac_pair =
+			attenuator_dac_pair_for_index(attenuator_index);
+
+		if (dac_pair->dev != dev) {
+			continue;
+		}
+
+		mask |= BIT(dac_pair->channel1);
+		mask |= BIT(dac_pair->channel2);
+	}
+
+	return mask;
+}
+
+static bool setup_attenuator_dac_power_states(const struct board_profile *profile)
+{
+	bool ok = true;
+
+	for (uint8_t i = 0U; i < ARRAY_SIZE(attenuator_dac_devices); ++i) {
+		const struct device *dev = attenuator_dac_devices[i];
+		uint8_t used_mask = attenuator_dac_used_mask(profile, dev);
+		uint8_t unused_mask =
+			(uint8_t)(BIT_MASK(DAC7X78_CHANNEL_COUNT) & ~used_mask);
+		int rc;
+
+		if (dev == NULL || !device_is_ready(dev)) {
+			LOG_ERR("Attenuator DAC unavailable for power-state setup");
+			ok = false;
+			continue;
+		}
+
+		rc = dac7x78_set_power_state(dev, used_mask, DAC7X78_POWER_NORMAL);
+		if (rc != 0) {
+			LOG_ERR("Failed to power up used DAC channels on %s: %d",
+				dev->name, rc);
+			ok = false;
+			continue;
+		}
+
+		rc = dac7x78_set_power_state(dev, unused_mask,
+					     DAC7X78_POWER_DOWN_HIGH_Z);
+		if (rc != 0) {
+			LOG_ERR("Failed to high-Z unused DAC channels on %s: %d",
+				dev->name, rc);
+			ok = false;
+		}
+	}
+
+	return ok;
+}
+
 void setup_attenuators(void)
 {
 	const struct board_profile *profile = current_profile();
@@ -876,6 +945,12 @@ void setup_attenuators(void)
 
 	app_settings_get_attenuator(&atten_settings);
 
+	if (!setup_attenuator_dac_power_states(profile)) {
+		LOG_ERR("Attenuator DAC power-state setup failed for %s",
+			profile->name);
+		return;
+	}
+
 	for (uint8_t i = 0; i < profile->attenuator_count; ++i) {
 		uint8_t attenuator_index = profile->attenuator_first + i;
 		const struct attenuator_dac_pair *dac_pair =
@@ -887,11 +962,15 @@ void setup_attenuators(void)
 			continue;
 		}
 
-		attenuators[attenuator_index].coeff1.slope = atten_settings.channel[attenuator_index].physical[0].slope;
-		attenuators[attenuator_index].coeff1.offset = atten_settings.channel[attenuator_index].physical[0].offset;
+		attenuators[attenuator_index].coeff1.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[0].fvoa_50pct_mv;
+		attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[0].slope_inv_fvoa_mv;
+		attenuators[attenuator_index].coeff1.max_atten_db = atten_settings.channel[attenuator_index].physical[0].max_atten_db;
+		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
 
-		attenuators[attenuator_index].coeff2.slope = atten_settings.channel[attenuator_index].physical[1].slope;
-		attenuators[attenuator_index].coeff2.offset = atten_settings.channel[attenuator_index].physical[1].offset;
+		attenuators[attenuator_index].coeff2.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[1].fvoa_50pct_mv;
+		attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[1].slope_inv_fvoa_mv;
+		attenuators[attenuator_index].coeff2.max_atten_db = atten_settings.channel[attenuator_index].physical[1].max_atten_db;
+		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
 	}
 }
 

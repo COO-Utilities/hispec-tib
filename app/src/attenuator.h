@@ -19,27 +19,46 @@
 #include "lasers.h"
 
 #define ATTENUATOR_PHYSICAL_COUNT 2
-#define ATTENUATOR_COEFF_COUNT 2
-/* Post-op-amp attenuator drive span. The DAC itself is 12-bit, 0..3.3 V. */
-#define ATTENUATOR_DRIVE_MAX_MV 5000.0
+/* Firmware command/model span for DAC output before the FVOA-drive op amp. */
+#define ATTENUATOR_DRIVE_MAX_MV 3300.0f
+#define ATTENUATOR_DEFAULT_GAIN 1.533
+/* Default maximum attenuation of one physical FVOA, set by residual leakage. */
+#define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
+/* Low-order empirical correction in modeled dB space, fitted after base coeffs. */
+#define ATTENUATOR_MODEL_CORRECTION_TERMS 6U
 
 struct attenuator_model_coeffs {
-    double slope;
-    double offset;
+    double fvoa_50pct_mv;
+    double slope_inv_fvoa_mv;
+    double max_atten_db;
+    double gain;
+    float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
+};
+
+/** Forward model result and local dB sensitivities for one physical FVOA. */
+struct atten_model_eval {
+    double tx;
+    double db;
+    double d_db_d_voltage_mv;
+    double d_db_d_fvoa_50pct_mv;
+    double d_db_d_slope_inv_fvoa_mv;
+    double d_db_d_max_atten_db;
 };
 
 struct attenuator_dac_cfg {
     const struct device *dev;
     struct dac_channel_cfg cfg;
-    double voltage;
+    float ideal_full_scale_mv;
+    float drive_limit_mv;
+    float voltage;
     double attenuation_db;
 };
 
 struct attenuator_status {
     double attenuation_db;
     double linear;
-    double voltage1;
-    double voltage2;
+    float voltage1;
+    float voltage2;
     double attenuation_db1;
     double attenuation_db2;
 };
@@ -50,8 +69,8 @@ struct attenuator_transmission_estimate {
     double attenuation_db;
     double attenuation_db1;
     double attenuation_db2;
-    double voltage1;
-    double voltage2;
+    float voltage1;
+    float voltage2;
 };
 
 /**
@@ -76,68 +95,88 @@ int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index);
 /**
  * @brief Convert a physical attenuator voltage to modeled attenuation in dB.
  *
- * The model is transmission = (erf(4) + erf(4 - b)) / (2 * erf(4)), where
- * b = slope * voltage + offset. This helper does not perform DAC I/O.
+ * The ideal model is transmission = (erf(4) - erf(delta)) / (2 * erf(4)),
+ * where delta = slope_inv_fvoa_mv * (gain * voltage - fvoa_50pct_mv).
+ * max_atten_db adds a physical leakage floor in normalized transmission space.
+ * The voltage is DAC output millivolts before the external FVOA-drive op amp.
+ * This helper does not perform DAC I/O.
  */
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
-                                      double voltage);
+                                      float voltage);
 
 /**
- * @brief Convert the model coordinate b to linear transmission.
+ * @brief Evaluate the physical attenuator model and its local dB derivatives.
  *
- * This helper performs no I/O. It is used by fit/residual code that needs the
- * same physical model as normal attenuator control.
+ * The voltage is DAC output millivolts before the external FVOA-drive op amp.
+ * Derivatives are local sensitivities of modeled attenuation in dB to the
+ * voltage argument and to each fitted physical-model coefficient. This helper
+ * performs no DAC I/O and owns the analytic model math used by calibration.
  */
-double attenuator_model_b_to_linear(double b);
+bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
+                      float voltage,
+                      struct atten_model_eval *out);
 
 /**
- * @brief Convert linear transmission to the model coordinate b.
+ * @brief Propagate independent model/input uncertainties into dB uncertainty.
  *
- * Returns false when @p linear is outside the invertible open interval.
+ * The calibration fitter owns any minimum sigma floor. This helper only
+ * combines the supplied measured dB uncertainty with voltage and finite-floor
+ * model sensitivities from atten_model_eval().
  */
-bool attenuator_model_linear_to_b(double linear, double *b);
+bool atten_model_db_sigma(const struct atten_model_eval *eval,
+                          double measured_db_sigma,
+                          double voltage_sigma_mv,
+                          double max_atten_sigma_db,
+                          double *sigma_db);
+
+/**
+ * @brief Return the empirical correction basis for one base-model dB point.
+ *
+ * Calibration fits coefficients against this basis; atten_model_eval() owns
+ * applying those coefficients to the forward model. Returns false when
+ * @p base_db is outside the correction envelope, where the correction is
+ * constrained to zero.
+ */
+bool atten_model_correction_basis(double base_db,
+                                  double max_atten_db,
+                                  double basis[ATTENUATOR_MODEL_CORRECTION_TERMS]);
 
 /**
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.
  *
  * This is the inverse of attenuator_model_voltage_to_db(). Returns false when
- * the coefficient slope is zero or the requested attenuation is outside the
- * model domain.
+ * the inverse slope is zero or the requested attenuation is outside the model
+ * domain.
  */
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
-                                    double attenuation_db, double *voltage);
+                                    double attenuation_db, float *voltage);
 
 /**
  * @brief Validate both physical attenuator model coefficient records.
  *
- * Coefficients must be finite, have positive slope, and produce a positive
- * modeled attenuation change over the fixed attenuator drive span. This performs
- * no DAC I/O and is used before applying or restoring persisted coefficients.
+ * Coefficients must be finite, have positive slope, positive physical maximum
+ * attenuation, positive drive gain, and produce a positive modeled attenuation
+ * change over the fixed DAC drive span. This performs no DAC I/O and is used
+ * before applying or restoring persisted coefficients.
  */
 bool attenuator_model_coefficients_valid(
     const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT]);
 
-/** Set physical attenuator 1 by modeled dB. May block on I2C. */
-bool attenuator_set_dac1_db(struct attenuator *drv, double attenuation_db);
+/**
+ * @brief Set one physical attenuator by modeled dB. May block on I2C.
+ *
+ * @p physical_index is zero for dac1 and one for dac2.
+ */
+bool attenuator_set_physical_db(struct attenuator *drv, uint8_t physical_index, double attenuation_db);
 
-/** Set physical attenuator 2 by modeled dB. May block on I2C. */
-bool attenuator_set_dac2_db(struct attenuator *drv, double attenuation_db);
-
-/** Set physical attenuator 1 by raw attenuator-drive millivolts. May block on I2C. */
-bool attenuator_set_dac1_voltage(struct attenuator *drv, double voltage);
-
-/** Set physical attenuator 2 by raw attenuator-drive millivolts. May block on I2C. */
-bool attenuator_set_dac2_voltage(struct attenuator *drv, double voltage);
 
 /**
- * @brief Set one physical attenuator by raw attenuator-drive millivolts. May block on I2C.
+ * @brief Set one physical attenuator by raw DAC-output millivolts. May block on I2C.
  *
  * @p physical_index is zero for dac1 and one for dac2. This bypasses the
  * calibration model and is intended for calibration sweeps.
  */
-bool attenuator_set_physical_voltage(struct attenuator *drv,
-                                     uint8_t physical_index,
-                                     double voltage);
+bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_index, float voltage);
 
 /**
  * @brief Set total logical attenuation in dB.

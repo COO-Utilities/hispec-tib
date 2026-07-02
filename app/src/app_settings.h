@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <zephyr/net/net_ip.h>
 
+#include "attenuator.h"
 #include "laser_properties.h"
 #include "laserbank_tempcontrol.h"
 
@@ -43,8 +44,6 @@ struct app_mqtt_settings {
 
 /** Number of logical attenuator channels whose calibration may be persisted. */
 #define APP_ATTENUATOR_CHANNEL_COUNT 6
-/** Number of model coefficients per physical attenuator: b = slope * voltage + offset. */
-#define APP_ATTENUATOR_COEFF_COUNT 2
 #define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
@@ -55,7 +54,6 @@ struct app_mqtt_settings {
 #define APP_MEMS_SWITCH_COUNT 8
 #define APP_MEMS_SPLIT_CHANNEL_COUNT 2
 #define APP_MEMS_SPLIT_OUTPUT_COUNT 3
-#define APP_PD_DARK_DURATION_USER UINT32_MAX
 #define APP_PD_DARK_DURATION_MAX_MS 2000U
 #define APP_PD_DEFAULT_AUTOOFF_S 300U
 
@@ -66,8 +64,14 @@ enum app_pd_power_mode {
 };
 
 struct app_attenuator_physical_settings {
-	double slope;
-	double offset;
+	double fvoa_50pct_mv;
+	double slope_inv_fvoa_mv;
+	/* Maximum attenuation of one physical FVOA from residual leakage. */
+	double max_atten_db;
+	/* External op-amp gain applied before the FVOA drive-voltage model. */
+	double gain;
+	/* Optional empirical dB residual correction; all zeros means disabled. */
+	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */
@@ -80,14 +84,21 @@ struct app_attenuator_settings {
 	struct app_attenuator_channel_settings channel[APP_ATTENUATOR_CHANNEL_COUNT];
 };
 
+/** Persisted/runtime photodiode dark measurement metadata. */
+struct app_pd_dark_result {
+	uint32_t duration_ms;
+	uint16_t failed_samples;
+	double mean_mv;
+	double rms_mv;
+	double min_mv;
+	double max_mv;
+	int16_t max_raw;
+};
+
 /** Photodiode calibration, response, and warning thresholds owned by app settings. */
 struct app_pd_channel_settings {
-	double dark_mv;
-	/* APP_PD_DARK_DURATION_USER means dark_mv was set directly, not measured. */
-	uint32_t dark_duration_ms;
-	/* Last dark-measurement RMS, kept even if dark_mv is later set directly. */
-	double dark_noise_rms_mv;
-	double lowest_dark_mv;
+	struct app_pd_dark_result dark;
+	struct app_pd_dark_result lowest_dark;
 	bool lowest_dark_valid;
 	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
@@ -108,6 +119,10 @@ struct app_laserbank_settings {
 struct app_laser_channel_settings {
 	laserprops_t properties;
 	double current_set_calibration_pct;
+	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
+	 * as an operator-settable laser calibration value.
+	 */
+	uint16_t expected_serial;
 	bool disable_tec_at_autooff;
 	uint32_t autooff_s;
 	double tune_delta_nm;

@@ -457,7 +457,8 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 
 	written = snprintk(payload, payload_len,
 		"{\"name\":\"%s\",\"settings\":{"
-		"\"model\":\"%s\",\"nominal_current_ma\":%.3f,"
+		"\"model\":\"%s\",\"expected_serial\":%u,"
+		"\"nominal_current_ma\":%.3f,"
 		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
@@ -469,8 +470,9 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"dlambda_dT_nm_per_k\":%.6f,"
 		"\"dlambda_dA_nm_per_ma\":%.6f,"
 		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
-		"\"emit_total_s\":%.1f}}",
+		"\"emit_total_s\":%llu}}",
 		hispec_laser_name(id), p->model_number,
+		settings->expected_serial,
 		(double)p->nominal_current_ma,
 		(double)p->max_current_ma,
 		(double)settings->current_set_calibration_pct,
@@ -490,7 +492,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->dlambda_dA_nm_per_ma,
 		settings->autooff_s,
 		(double)settings->tune_delta_nm,
-		settings->total_emitting_s);
+		(unsigned long long)settings->total_emitting_s);
 
 	return written >= 0 && written < (int)payload_len ? 0 : -ENOSPC;
 }
@@ -523,6 +525,8 @@ static int laser_parse_settings_update(const char *json,
 	double range[2] = {0};
 	size_t range_len = 0U;
 	char pid_json[128] = {0};
+	uint16_t parsed_serial;
+	bool serial_changed = false;
 	int rc;
 
 	if (json == NULL || settings == NULL || changed == NULL) {
@@ -595,6 +599,19 @@ static int laser_parse_settings_update(const char *json,
 		return -EINVAL;
 	}
 
+	parsed_serial = settings->expected_serial;
+	if (coo_json_extract_optional_u16(json, "expected_serial",
+					  &parsed_serial, &serial_changed) != 0) {
+		return -EINVAL;
+	}
+	if (serial_changed) {
+		if (parsed_serial == 0U) {
+			return -ERANGE;
+		}
+		settings->expected_serial = parsed_serial;
+		*changed = true;
+	}
+
 	return 0;
 }
 
@@ -606,6 +623,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	char settings_json[MAX_PAYLOAD_LEN] = {0};
 	const char *json;
 	bool changed = false;
+	bool persist = false;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
@@ -621,6 +639,10 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "invalid settings object");
 	}
 	json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
+	if (coo_json_extract_optional_bool(cmd->payload, "persist",
+					   &persist, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid persist");
+	}
 
 	rc = laser_parse_settings_update(json, &settings, &changed);
 	if (rc != 0) {
@@ -631,7 +653,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 
 	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_update_channel_settings(id, &settings, true);
+	rc = hispec_laser_update_channel_settings(id, &settings, persist);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
 	}
@@ -649,7 +671,7 @@ static int json_append_named_float(char *payload, size_t payload_len,
 					     value, precision);
 }
 
-int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum hispec_laser_id id;
 	struct hispec_laser_status s = {0};
@@ -668,11 +690,12 @@ int laser_engstatus_get(const struct coo_cmd_request *cmd, struct coo_cmd_respon
 	}
 	if (coo_json_append(payload, sizeof(payload), &off,
 			    "{\"name\":\"%s\",\"read_rc\":%d,\"powered\":%s,"
-			    "\"dev_id\":%u,\"serial\":%u,\"serial_ok\":%s,"
+			    "\"dev_id\":%u,\"serial\":%u,\"expected_serial\":%u,"
+			    "\"serial_ok\":%s,"
 			    "\"raw_state\":%u,\"raw_lock\":%u,\"raw_tec\":%u,"
 			    "\"blocking_lock\":%u,\"blocked_reason\":",
 			    s.name, rc, s.bank_powered ? "true" : "false",
-			    s.device_id, s.serial_number,
+			    s.device_id, s.serial_number, s.expected_serial,
 			    s.serial_matches ? "true" : "false",
 			    s.device_state, s.lock_status, s.tec_state,
 			    s.blocking_lock_status) != 0 ||

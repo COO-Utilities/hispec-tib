@@ -28,7 +28,7 @@ flowchart TD
   Exec --> TP
   Exec --> OutQ[outbound_queue]
   TP --> OutQ
-  Warnings[coo_cmd_runtime_warning_emit] --> OutQ
+  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
   MainLoop --> Console[serial print]
@@ -151,7 +151,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
-  Warning[coo_cmd_runtime_warning_emit] --> OutQ
+  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
   Throughput[throughput_monitor_thread] --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
@@ -201,20 +201,33 @@ flowchart TD
   Adc -- no --> Sleep[k_sleep retry]
   Adc -- yes --> Sample[read ADS1115 YJ and HK]
   Sample --> Convert[counts to mV and power estimate]
-  Convert --> Average{short average active}
-  Average -- yes --> Accumulate[accumulate average stats]
-  Accumulate --> Complete{target samples reached}
-  Complete -- yes --> Store{dark store requested}
-  Store -- yes --> Persist[update photodiode settings]
-  Store -- no --> Status[update average status]
-  Complete -- no --> Status
-  Average -- no --> Noise[update residual noise]
-  Status --> SleepPeriod[sleep to 20 ms period]
-  Persist --> SleepPeriod
-  Noise --> Warn{noise above threshold}
-  Warn -- yes --> Emit[coo_cmd_runtime_warning_emit photodiode_noise]
+  Convert --> Step{sharp sample step}
+  Step -- yes --> Snapshot[snapshot current windows to last]
+  Step -- no --> Windows
+  Snapshot --> Windows[append sample to configurable and fixed windows]
+  Windows --> Status[update latest sample and window results]
+  Status --> PendingDark{dark capture pending and window complete}
+  PendingDark -- yes --> DarkCommit[commit configurable window as dark]
+  PendingDark -- no --> Warn
+  Status --> Warn{fixed-window RMS above threshold}
+  Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
+  SleepPeriod[sleep to 20 ms period]
+
+  DarkCmd[pd/dark/yj or pd/dark/hk] --> DarkMode{duration_ms or dark_mv}
+  DarkMode -- duration_ms --> Arm[set configurable window and arm pending dark]
+  Arm --> Query[command returns pending status]
+  DarkMode -- dark_mv --> Force[force dark with optional rms_mv]
+  Force --> Commit[update active dark]
+  DarkCommit --> Commit
+  Commit --> Lowest{reset or lower than stored lowest}
+  Lowest -- yes --> LowestStore[update lowest dark]
+  Lowest -- no --> Persist
+  LowestStore --> Persist
+  Commit --> Persist{persist requested}
+  Persist -- yes --> NVS[write NVS]
+  Persist -- no --> Runtime[update runtime settings only]
 ```
 
 ## 11. Throughput Monitor Flow
@@ -303,7 +316,7 @@ flowchart TD
   Load --> Runtime[runtime settings snapshot]
   Command[effect request] --> Parse[validate JSON fields]
   Parse --> Update[update runtime snapshot]
-  Update --> Persist{persistent true}
+  Update --> Persist{persist true}
   Persist -- yes --> Save[write numeric NVS record]
   Persist -- no --> Volatile[runtime only]
   BoardChange[board type changed] --> BoardClear[delete non-board app records]

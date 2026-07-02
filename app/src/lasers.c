@@ -51,6 +51,8 @@ struct laser_output_estimate_state {
 	bool valid;
 };
 
+// TODO remove all "hispec_" fromm this file, identify and carry out consolidation with overlapping non underscore names
+
 static struct on_time_runtime laser_current_runtime[HISPEC_LASER_COUNT];
 static struct on_time_runtime laser_tec_runtime[HISPEC_LASER_COUNT];
 static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
@@ -69,7 +71,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1028",
 		.node_id = 5U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8229U,
 		.properties = &LASER_1028,
 	},
 	[HISPEC_LASER_1270_J] = {
@@ -78,7 +79,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1270",
 		.node_id = 6U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8228U,
 		.properties = &LASER_1270,
 	},
 	[HISPEC_LASER_1430_YJ] = {
@@ -87,7 +87,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "yj1430",
 		.node_id = 4U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8222U,
 		.properties = &LASER_1430,
 	},
 	[HISPEC_LASER_1430_HK] = {
@@ -96,7 +95,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "hk1430",
 		.node_id = 3U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8227U,
 		.properties = &LASER_1430,
 	},
 	[HISPEC_LASER_1510_H] = {
@@ -105,7 +103,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "1510",
 		.node_id = 1U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8225U,
 		.properties = &LASER_1510,
 	},
 	[HISPEC_LASER_2330_K] = {
@@ -114,7 +111,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "2330",
 		.node_id = 2U,
 		.expected_device_id = 0x1113,
-		.expected_serial = 8226U,
 		.properties = &LASER_2330,
 	},
 };
@@ -740,6 +736,28 @@ int hispec_laser_bank_poll_temperatures(
 	return 0;
 }
 
+static int check_driver_serial_locked(const struct hispec_laser_driver_profile *profile,
+				      uint16_t serial)
+{
+	uint16_t expected;
+
+	if (profile == NULL || profile->id < 0 || profile->id >= HISPEC_LASER_COUNT ||
+	    serial == 0U) {
+		return -EINVAL;
+	}
+
+	ensure_laser_runtime_settings_locked();
+	expected = laser_settings[profile->id].expected_serial;
+	if (serial == expected) {
+		return 0;
+	}
+
+	LOG_ERR("Laser %s node %u serial mismatch: expected %u got %u",
+		profile->name, profile->node_id, expected, serial);
+
+	return -EADDRNOTAVAIL;
+}
+
 static int verify_driver_locked(const struct hispec_laser_driver_profile *profile,
 				maiman_driver_t *drv,
 				uint16_t *serial_out)
@@ -769,14 +787,8 @@ static int verify_driver_locked(const struct hispec_laser_driver_profile *profil
 	if (serial_out != NULL) {
 		*serial_out = serial;
 	}
-	if (profile->expected_serial != 0U && serial != profile->expected_serial) {
-		LOG_ERR("Laser %s node %u serial mismatch: expected %u got %u",
-			profile->name, profile->node_id,
-			profile->expected_serial, serial);
-		return -EADDRNOTAVAIL;
-	}
 
-	return 0;
+	return check_driver_serial_locked(profile, serial);
 }
 
 int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out)
@@ -874,9 +886,6 @@ static const char *laser_blocked_reason(bool bank_powered,
 	if ((blocking_lock_status & LOCK_STATE_INTERLOCK) != 0U) {
 		return "interlock";
 	}
-	if ((device_state & OPERATION_STATE_STARTED) == 0U) {
-		return "not_emitting";
-	}
 
 	return NULL;
 }
@@ -917,6 +926,7 @@ static k_timeout_t laser_autooff_wait_timeout(void)
 	return wait_ms <= 0 ? K_NO_WAIT : K_MSEC(wait_ms);
 }
 
+
 static void laser_autooff_reschedule(void)
 {
 	const k_timeout_t timeout = laser_autooff_wait_timeout();
@@ -924,6 +934,8 @@ static void laser_autooff_reschedule(void)
 	/* Auto-off can run Modbus stop commands, so it uses the app blocking
 	 * workqueue instead of Zephyr's Modbus-RX system workqueue.
 	 */
+
+	//TODO
 	if (laser_autooff_work_q == NULL) {
 		return;
 	}
@@ -1117,8 +1129,10 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	}
 
 	/* Driver preparation always writes the app-owned default operating
-	 * temperature before any TEC start. A bad default can make TEC startup fail
-	 * here and surface as an immediate laser fault.
+	 * temperature before any TEC start. Tune application may replace this with
+	 * a live setpoint later, but the stored default remains the startup
+	 * baseline. A bad default can make TEC startup fail here and surface as an
+	 * immediate laser fault.
 	 */
 	if (verbose) {
 		LOG_INF("Laser %s prepare: apply runtime profile temp=%.3fC max_current=%.3fmA tec_limit=%.3fA",
@@ -1160,8 +1174,8 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 		return -EIO;
 	}
 	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
-		/* Keep TEC startup tied to default_operating_temp_c. A later direct
-		 * setpoint command may change the setpoint only after this succeeds.
+		/* Keep TEC startup tied to default_operating_temp_c. Later live
+		 * setpoint writes may change the driver only after this succeeds.
 		 */
 		if (verbose) {
 			LOG_INF("Laser %s prepare: start TEC at %.3fC",
@@ -1217,7 +1231,6 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->name = profile->name;
 	out->properties = profile->properties;
 	out->expected_device_id = profile->expected_device_id;
-	out->expected_serial = profile->expected_serial;
 	out->current_set_ma = LASERPROP_NA;
 	out->level_percent = LASERPROP_NA;
 	out->current_measured_ma = LASERPROP_NA;
@@ -1267,7 +1280,9 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 	if (rc != 0) {
 		return rc;
 	}
+	ensure_laser_runtime_settings_locked();
 	out->properties = runtime_props_locked(id);
+	out->expected_serial = laser_settings[id].expected_serial;
 	out->current_on_time_s =
 		on_time_runtime_seconds_locked(laser_current_runtime,
 					       ARRAY_SIZE(laser_current_runtime), id);
@@ -1304,13 +1319,22 @@ int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status 
 		rc = -EIO;
 		goto out_unlock;
 	}
+	if (profile->expected_device_id != 0U &&
+	    out->device_id != profile->expected_device_id) {
+		LOG_ERR("Laser %s node %u device-id mismatch: expected 0x%04x got 0x%04x",
+			profile->name, profile->node_id,
+			profile->expected_device_id, out->device_id);
+		rc = -EADDRNOTAVAIL;
+		goto out_unlock;
+	}
 	out->serial_number = maiman_get_serial_number(&drv);
-	out->serial_matches = (profile->expected_serial == 0U ||
-			       out->serial_number == profile->expected_serial);
 	if (out->serial_number == 0U) {
 		rc = -EIO;
 		goto out_unlock;
 	}
+	out->expected_serial = laser_settings[id].expected_serial;
+	out->serial_matches = out->expected_serial != 0U &&
+			      out->serial_number == out->expected_serial;
 
 	out->device_state = maiman_get_raw_status(&drv);
 	out->tec_state = maiman_get_raw_tec_status(&drv);
@@ -1568,6 +1592,10 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	k_mutex_unlock(&laser_lock);
 
 	if (percent > 0.0 && settings.tune_delta_nm != 0.0) {
+		/* Positive level commands apply the stored tune request. Setting
+		 * level 0 stops emission but intentionally leaves tune_delta_nm
+		 * stored for the next start.
+		 */
 		struct hispec_laser_tune_request request = {
 			.desired_power_percent = percent,
 			.wavelength_nm = props->wavelength_nm + settings.tune_delta_nm,
@@ -1702,7 +1730,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    props->dlambda_dT_nm_per_k < -10.0 ||
 	    props->dlambda_dT_nm_per_k > 10.0 ||
 	    props->dlambda_dA_nm_per_ma < -10.0 ||
-	    props->dlambda_dA_nm_per_ma > 10.0) {
+	    props->dlambda_dA_nm_per_ma > 10.0 ||
+	    settings->expected_serial == 0U) {
 		return -ERANGE;
 	}
 
@@ -1774,6 +1803,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 	struct app_laser_channel_settings previous;
 	maiman_driver_t drv;
 	bool apply_driver;
+	bool settings_applied = false;
 	bool was_powered = false;
 	int rc;
 	int power_restore_rc = 0;
@@ -1822,6 +1852,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		}
 		if (rc != 0) {
 			laser_settings[id] = previous;
+		} else {
+			settings_applied = true;
 		}
 
 restore_power:
@@ -1833,12 +1865,16 @@ restore_power:
 		}
 	} else {
 		laser_settings[id] = *settings;
+		settings_applied = true;
 	}
 
 out_unlock:
 	k_mutex_unlock(&laser_lock);
 
-	if (rc == 0) {
+	if (settings_applied) {
+		/* A failed restore-to-off is reported because the bank state needs
+		 * attention, but it does not undo successfully programmed settings.
+		 */
 		(void)app_settings_update_laser_channel((uint8_t)id, settings, persist);
 	}
 	return rc;
@@ -1857,6 +1893,9 @@ int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 	if (rc != 0) {
 		return rc;
 	}
+	/* Store the tuning request. It is applied later by positive laser-level
+	 * commands, not immediately written to TEC/current registers here.
+	 */
 	settings.tune_delta_nm = delta_nm;
 	return hispec_laser_update_channel_settings(id, &settings, persist);
 }

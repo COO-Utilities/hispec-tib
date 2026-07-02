@@ -29,11 +29,12 @@ Current app NVS records include:
 - Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel.
 - One photodiode settings record per photodiode channel, including active dark
-  mV, whether that dark was user-set or measured, measured-dark averaging
-  duration when applicable, last measured dark RMS, lowest stored dark mV, noise
-  threshold, responsivity, and transimpedance.
+  window result, lowest stored dark window result, noise threshold,
+  responsivity, transimpedance, relay power intent, and auto-off delay.
 - Laser-bank heater policy.
-- One laser policy record per laser channel.
+- One laser policy record per laser channel, including laser calibration/user
+  intent and the operator-confirmed Maiman driver serial used as a physical
+  association check.
 - One laser total-emitting counter record per laser channel.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
@@ -57,11 +58,15 @@ silently reused on another.
 - Last known UTC defaults to unset. Once SNTP or a `time` command sets the
   realtime clock, the value is persisted and restored on later boots until a
   fresher time source updates it.
-- Attenuator coefficients default to a linear `b = slope * voltage + offset`
-  model that maps the 0-5000 mV attenuator drive span onto `b = 0..8` until
-  calibrated/stored.
-- Photodiode dark and dark-noise RMS default to 0 mV. YJ and HK have different
-  default gain/noise warning values.
+- Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
+  1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
+  `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical
+  two-FVOA attenuator limit.
+- Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
+  different default gain/noise warning values.
+- Laser expected serials default to the initial known driver/diode association.
+  Operators may update the value through `laser/settings` after confirming a
+  replacement driver is physically associated with the intended diode.
 - Route-loss records default to absent. Missing route-loss settings are treated
   as loss-free transmission, `1.0`.
 - MEMS switch intent defaults to absent. A switch with no stored intent defaults
@@ -70,12 +75,16 @@ silently reused on another.
 ## Persistence Side Effects
 
 NVS writes happen synchronously through Zephyr NVS and may block the caller.
-Command handlers that set `persistent:true` can therefore block in the executor
+Command handlers that set `persist:true` can therefore block in the executor
 thread.
 
-Photodiode dark-noise RMS updates happen in the sampler thread when any dark
-measurement completes. Active dark, lowest-dark, and persisted dark updates
-happen only when a user-started dark measurement completes with `store:true`.
+Photodiode active dark windows, forced dark values, lowest-dark records, and
+persisted dark updates happen only through `pd/dark/<channel>`. Duration-based
+dark captures are armed by the command and committed later by the photodiode
+sampler thread.
+`pdsettings/<channel>` owns photodiode response settings and relay power intent;
+it does not update or report dark summaries. `persist:true` on `pd/dark` writes
+that dark settings snapshot to NVS.
 
 MEMS static state requests and route applications update the persisted
 per-switch intent once per command. Toggle and split commands persist the
@@ -89,6 +98,10 @@ treat it as a human-intervention fault. At minimum, inspect logs and
 reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
+
+Schema v6 adds the per-laser `expected_serial` association field. Older schema
+markers are not migrated; firmware clears the old app settings layout, writes
+the v6 marker, and uses defaults.
 
 ## Intentionally Not Persisted
 

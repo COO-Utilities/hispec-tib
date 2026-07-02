@@ -13,6 +13,7 @@ import argparse
 import itertools
 import json
 import logging
+import math
 import queue
 import re
 import struct
@@ -47,7 +48,25 @@ PD_RESPONSIVITY_MIN_A_PER_W = 0.000001
 PD_RESPONSIVITY_MAX_A_PER_W = 10.0
 PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
 PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
-
+ATTENUATOR_DRIVE_MAX_MV = 3300.0
+ATTENUATOR_DEFAULT_GAIN = 1.533
+ATTENUATOR_MODEL_ERF_SCALE = 4.0
+ATTENUATOR_MODEL_CORRECTION_TERMS = 4
+ATTENUATOR_MODEL_CORRECTION_START_DB = -10.0 * math.log10(0.99)
+FVOA_DEFAULT_MAX_ATTEN_DB = 55.0
+ATTENUATOR_ADC_CLIP_MV = 5000.0
+ATTENUATOR_CAL_SNR_USABLE = 5.0
+ATTEN_CAL_MIN_TX = 1.0e-10
+ATTEN_CAL_MAX_TX = 0.999999
+ATTEN_CAL_MIN_DB_ERR = 1.0e-6
+ATTENUATOR_FIT_MIN_SIGMA_DB = 0.5
+ATTENUATOR_CENSORED_SIGMA_DB = 3.0
+ATTENUATOR_UPPER_RANGE_MIN_ERROR_MV = 200.0
+ATTENUATOR_RAIL_FRACTION = 0.995
+ATTENUATOR_FVOA_DATASHEET_V = np.array(
+    (0.00, 1.89, 2.23, 2.32, 2.41, 2.47, 2.55, 2.60, 2.64, 2.69, 2.74, 2.79, 2.84, 2.89, 2.94, 2.99, 3.04, 3.12, 3.18))
+ATTENUATOR_FVOA_DATASHEET_DB = np.array(
+    (0.5,1.0,5.0,8.0,11.0,14.0,17.5,22.0,26.0,30.0,33.0,37.0,41.0,44.0,48.5,51.0,55.5,58.0,59.0))
 _LASER_TO_PD_CHANNEL = {
     "1028y": "yj",
     "1270j": "yj",
@@ -57,7 +76,16 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh9d")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
+_ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
+_ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
+_ATTEN_CAL_BRIDGE_BINARY = struct.Struct("<2B")
+_ATTEN_CAL_CHUNK_MAGIC = b"HAC4"
+_ATTEN_CAL_METADATA_KIND = 0
+_ATTEN_CAL_EVENTS = ("point", "initial_probe", "bridge_probe")
+_ATTEN_CAL_CLASSIFICATIONS = ("ok", "saturated", "below_snr", "adc_error")
+_ATTEN_CAL_STATES = ("inactive", "running", "complete", "error")
+_ATTEN_CAL_MODES = ("none", "tib_auto")
 THROUGHPUT_DTYPE = np.dtype(
     [
         ("channel", "U8"),
@@ -77,16 +105,133 @@ THROUGHPUT_DTYPE = np.dtype(
         ("pd_raw", "i2"),
         ("pd_mv", "f8"),
         ("pd_net_mv", "f8"),
-        ("pd_mean_mv_1s", "f8"),
-        ("pd_rms_mv_0p5s", "f8"),
+        ("pd_mean_net_mv", "f8"),
+        ("pd_mean_net_err_mv", "f8"),
         ("laser_current_ma", "f8"),
         ("atten_db", "f8"),
         ("wavelength_nm", "f8"),
-        ("pd_ontime_s", "f8"),
-        ("laser_current_ontime_s", "f8"),
+        ("pd_ontime_s", "u8"),
+        ("laser_current_ontime_s", "u8"),
         ("flags", "O"),
     ]
 )
+ATTEN_CAL_DTYPE = np.dtype(
+    [
+        ("physical", "U8"),
+        ("record", "u2"),
+        ("event", "U16"),
+        ("classification", "U16"),
+        ("segment", "u1"),
+        ("sweep_mv", "f8"),
+        ("fvoa_mv", "f8"),
+        ("other_mv", "f8"),
+        ("other_fvoa_mv", "f8"),
+        ("laser_pct", "f8"),
+        ("signal_mv", "f8"),
+        ("signal_err_mv", "f8"),
+        ("max_mv", "f8"),
+    ]
+)
+ATTEN_CAL_DERIVED_DTYPE = np.dtype(
+    ATTEN_CAL_DTYPE.descr
+    + [
+        ("acq_snr", "f8"),
+        ("bridge_index", "i2"),
+        ("segment_scale", "f8"),
+        ("segment_scale_rel_var", "f8"),
+        ("scaled_signal_mv", "f8"),
+        ("scaled_signal_err_mv", "f8"),
+        ("tx", "f8"),
+        ("tx_err", "f8"),
+        ("db", "f8"),
+        ("db_err", "f8"),
+        ("fit_candidate", "?"),
+        ("included", "?"),
+        ("residual_db", "f8"),
+    ]
+)
+ATTEN_GRID_DTYPE = np.dtype(
+    [
+        ("record", "u4"),
+        ("elapsed_s", "f8"),
+        ("laser", "U16"),
+        ("laser_pct", "f8"),
+        ("dac1_mv", "f8"),
+        ("dac2_mv", "f8"),
+        ("fvoa1_v", "f8"),
+        ("fvoa2_v", "f8"),
+        ("pd_mv", "f8"),
+        ("pd_raw_mv", "f8"),
+        ("pd_rms_mv", "f8"),
+        ("pd_mean_net_err_mv", "f8"),
+        ("pd_dark_mv", "f8"),
+        ("gain1", "f8"),
+        ("gain2", "f8"),
+    ]
+)
+ATTEN_GRID_DEFAULT_FILE = "attenuator_grid_dataset.npz"
+_ATTEN_GRID_OLD_NAMES = (
+    "record",
+    "elapsed_s",
+    "laser",
+    "laser_pct",
+    "dac1_mv",
+    "dac2_mv",
+    "fvoa1_v",
+    "fvoa2_v",
+    "pd_mv",
+    "pd_raw_mv",
+    "pd_residual_rms_mv",
+    "pd_0p5s_rms_mv",
+    "pd_dark_mv",
+    "gain1",
+    "gain2",
+)
+
+
+def _format_scalar(value: Any) -> str:
+    if isinstance(value, float):
+        if np.isnan(value):
+            return "nan"
+        return f"{value:.6g}"
+    return repr(value)
+
+
+def _format_sequence(value: Sequence[Any]) -> str:
+    items = tuple(value)
+    if not items:
+        return "()"
+    if len(items) <= 8:
+        return "(" + ", ".join(_format_repr(item) for item in items) + ("," if len(items) == 1 else "") + ")"
+
+    head = ", ".join(_format_repr(item) for item in items[:3])
+    tail = ", ".join(_format_repr(item) for item in items[-3:])
+    return f"({head}, ..., {tail}; n={len(items)})"
+
+
+def _format_repr(value: Any) -> str:
+    if isinstance(value, tuple):
+        return _format_sequence(value)
+    if isinstance(value, list):
+        return "[" + _format_sequence(tuple(value))[1:-1] + "]"
+    return _format_scalar(value)
+
+
+class ResponseRepr:
+    """Readable repr for notebook command response objects."""
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        return tuple((f.name, getattr(self, f.name)) for f in fields(self))
+
+    def __repr__(self) -> str:
+        parts = [f"{name}={_format_repr(value)}" for name, value in self._repr_items()]
+        inline = f"{type(self).__name__}(" + ", ".join(parts) + ")"
+        if len(inline) <= 100 and "\n" not in inline:
+            return inline
+        body = ",\n  ".join(parts)
+        return f"{type(self).__name__}(\n  {body}\n)"
+
+    __str__ = __repr__
 
 
 class HispecFibError(RuntimeError):
@@ -102,24 +247,24 @@ class HispecFibPCBError(HispecFibError):
         self.response = response
 
 
-@dataclass(frozen=True)
-class NamedValue:
+@dataclass(frozen=True, repr=False)
+class NamedValue(ResponseRepr):
     name: str
     value: Any
 
 
-@dataclass(frozen=True)
-class CommandOk:
+@dataclass(frozen=True, repr=False)
+class CommandOk(ResponseRepr):
     status: str = "ok"
 
 
-@dataclass(frozen=True)
-class HelpSummary:
+@dataclass(frozen=True, repr=False)
+class HelpSummary(ResponseRepr):
     help: str
 
 
-@dataclass(frozen=True)
-class Catalog:
+@dataclass(frozen=True, repr=False)
+class Catalog(ResponseRepr):
     board: str
     lasers: tuple[str, ...]
     route_inputs: tuple[str, ...]
@@ -127,14 +272,14 @@ class Catalog:
     routes: tuple[tuple[str, str], ...]
 
 
-@dataclass(frozen=True)
-class MqttConfig:
+@dataclass(frozen=True, repr=False)
+class MqttConfig(ResponseRepr):
     broker: str
     dns_supported: bool
 
 
-@dataclass(frozen=True)
-class IpManualConfig:
+@dataclass(frozen=True, repr=False)
+class IpManualConfig(ResponseRepr):
     ip: str
     subnet: str
     gateway: str
@@ -142,20 +287,20 @@ class IpManualConfig:
     ntp: str
 
 
-@dataclass(frozen=True)
-class IpActiveConfig:
+@dataclass(frozen=True, repr=False)
+class IpActiveConfig(ResponseRepr):
     ready: bool
     ip: str
 
 
-@dataclass(frozen=True)
-class NtpConfig:
+@dataclass(frozen=True, repr=False)
+class NtpConfig(ResponseRepr):
     src: str
     server: str
 
 
-@dataclass(frozen=True)
-class IpConfig:
+@dataclass(frozen=True, repr=False)
+class IpConfig(ResponseRepr):
     src: str
     trydhcpfirst: bool
     preferdhcpdns: bool
@@ -165,47 +310,47 @@ class IpConfig:
     ntp: NtpConfig
 
 
-@dataclass(frozen=True)
-class PartialSupport:
+@dataclass(frozen=True, repr=False)
+class PartialSupport(ResponseRepr):
     dhcp: str = "ok"
     dns: str = "ok"
     ntp: str = "ok"
 
 
-@dataclass(frozen=True)
-class TimeStatus:
+@dataclass(frozen=True, repr=False)
+class TimeStatus(ResponseRepr):
     utc: int
     uptime_s: int
 
 
-@dataclass(frozen=True)
-class SerialGuardStatus:
+@dataclass(frozen=True, repr=False)
+class SerialGuardStatus(ResponseRepr):
     serialguard_s: int
     active: bool
-    remaining_ms: int
+    remaining_s: int
 
 
-@dataclass(frozen=True)
-class LastCommand:
+@dataclass(frozen=True, repr=False)
+class LastCommand(ResponseRepr):
     name: str
     src: str
     t_ms: int
 
 
-@dataclass(frozen=True)
-class StatusLaserSummary:
+@dataclass(frozen=True, repr=False)
+class StatusLaserSummary(ResponseRepr):
     power_mw: float | None = None
-    tec_on_s: float = 0.0
+    tec_on_s: int | None = None
     off_in_s: int = 0
 
 
-@dataclass(frozen=True)
-class StatusAttenSummary:
+@dataclass(frozen=True, repr=False)
+class StatusAttenSummary(ResponseRepr):
     level_percent: float | None = None
 
 
-@dataclass(frozen=True)
-class Status:
+@dataclass(frozen=True, repr=False)
+class Status(ResponseRepr):
     fw: str
     boots: int
     board: str
@@ -213,7 +358,7 @@ class Status:
     mems_switches: int
     relay_err: int
     amb_c: float | None
-    pd_on_s: float
+    pd_on_s: int
     laserbank_on_s: int
     lastcmd: LastCommand
     ip: IpConfig | None = None
@@ -221,22 +366,22 @@ class Status:
     attens: tuple[NamedValue, ...] = ()
 
 
-@dataclass(frozen=True)
-class TempStatus:
+@dataclass(frozen=True, repr=False)
+class TempStatus(ResponseRepr):
     ambient_c: float | None
     laserbank_c: float | None
     laser: tuple[NamedValue, ...]
 
 
-@dataclass(frozen=True)
-class MemsSwitchState:
+@dataclass(frozen=True, repr=False)
+class MemsSwitchState(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
 
 
-@dataclass(frozen=True)
-class MemsSwitchDetail:
+@dataclass(frozen=True, repr=False)
+class MemsSwitchDetail(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
@@ -246,25 +391,25 @@ class MemsSwitchDetail:
     stop_in_s: int = 0
 
 
-@dataclass(frozen=True)
-class MemsRoutes:
+@dataclass(frozen=True, repr=False)
+class MemsRoutes(ResponseRepr):
     active_routes: tuple[NamedValue, ...]
 
 
-@dataclass(frozen=True)
-class RouteLoss:
+@dataclass(frozen=True, repr=False)
+class RouteLoss(ResponseRepr):
     route: str
     lasers: tuple[NamedValue, ...] = ()
     split: tuple[float, float, float] | None = None
 
 
-@dataclass(frozen=True)
-class LaserStatus:
+@dataclass(frozen=True, repr=False)
+class LaserStatus(ResponseRepr):
     name: str
     powered: bool
-    tec_on_s: float
-    emit_on_s: float
-    emit_total_s: float
+    tec_on_s: int | None
+    emit_on_s: int | None
+    emit_total_s: int | None
     temp_c: float | None
     i_mA: float | None
     level: float | None
@@ -275,27 +420,28 @@ class LaserStatus:
     tec_ma: float | None
     diode_v: float | None
     tec_v: float | None
-    off_in_s: int
+    off_in_s: int | None
     oc_fault: bool
 
 
-@dataclass(frozen=True)
-class LaserTune:
+@dataclass(frozen=True, repr=False)
+class LaserTune(ResponseRepr):
     name: str
     tune_nm: float
 
 
-@dataclass(frozen=True)
-class TecPid:
+@dataclass(frozen=True, repr=False)
+class TecPid(ResponseRepr):
     p: int
     i: int
     d: int
 
 
-@dataclass(frozen=True)
-class LaserSettings:
+@dataclass(frozen=True, repr=False)
+class LaserSettings(ResponseRepr):
     name: str
     model: str
+    expected_serial: int
     nominal_current_ma: float
     max_current_ma: float
     current_set_calibration_pct: float
@@ -314,16 +460,17 @@ class LaserSettings:
     dlambda_dA_nm_per_ma: float
     autooff_s: int
     tune_nm: float
-    emit_total_s: float
+    emit_total_s: int
 
 
-@dataclass(frozen=True)
-class LaserEngStatus:
+@dataclass(frozen=True, repr=False)
+class LaserEngineeringStatus(ResponseRepr):
     name: str
     read_rc: int
     powered: bool
     dev_id: int
     serial: int
+    expected_serial: int
     serial_ok: bool
     raw_state: int
     raw_lock: int
@@ -361,69 +508,94 @@ class LaserEngStatus:
     ntc_t_coeff: float | None
 
 
-@dataclass(frozen=True)
-class LaserBankPower:
+@dataclass(frozen=True, repr=False)
+class LaserBankPower(ResponseRepr):
     mode: str
     powered: bool
 
 
-@dataclass(frozen=True)
-class LaserBankClearFaults:
+@dataclass(frozen=True, repr=False)
+class LaserBankClearFaults(ResponseRepr):
     off_ms: int
 
 
-@dataclass(frozen=True)
-class LaserBankHeater:
+@dataclass(frozen=True, repr=False)
+class LaserBankHeater(ResponseRepr):
     mode: str
     auto_state: str
     heater_on: bool
     bank_power: bool
-    ambient_valid: bool
     ambient_c: float
-    valid_temps: int
-    stale_temps: int
+    idle_tec_temps: int
+    idle_tec_avg_c: int
     last_error: int
-    poll_age_s: float
+    poll_age_s: int | None
 
 
-@dataclass(frozen=True)
-class AttenuatorState:
+@dataclass(frozen=True, repr=False)
+class AttenuatorState(ResponseRepr):
     db: float
     linear: float
     v1_mv: float
     v2_mv: float
     db1: float
     db2: float
+    linear1: float
+    linear2: float
 
 
-@dataclass(frozen=True)
-class AttenuatorCoeff:
-    dac1: tuple[float, float]
-    dac2: tuple[float, float]
+@dataclass(frozen=True, repr=False)
+class AttenuatorPhysicalCoeff(ResponseRepr):
+    fvoa_50pct_mv: float
+    slope_inv_fvoa_mv: float
+    max_atten_db: float
+    gain: float
+    correction_coeff: tuple[float, float, float, float]
 
 
-@dataclass(frozen=True)
-class AttenuatorFitMetrics:
+@dataclass(frozen=True, repr=False)
+class AttenuatorCoeff(ResponseRepr):
+    dac1: AttenuatorPhysicalCoeff
+    dac2: AttenuatorPhysicalCoeff
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorFitMetrics(ResponseRepr):
     valid: bool
+    accepted: bool = False
     points: int = 0
-    slope: float | None = None
-    offset: float | None = None
+    fvoa_50pct_mv: float | None = None
+    slope_inv_fvoa_mv: float | None = None
+    max_atten_db: float | None = None
+    max_atten_sigma_db: float | None = None
     corr: float | None = None
     rms_db: float | None = None
     max_abs_db: float | None = None
     min_tx: float | None = None
     max_tx: float | None = None
-    voltage_span_mv: float | None = None
+    fvoa_span_mv: float | None = None
+    correction_coeff: tuple[float, float, float, float] | None = None
 
+    def __repr__(self) -> str:
+        if not self.valid:
+            return "AttenuatorFitMetrics(valid=False)"
+        return (
+            "AttenuatorFitMetrics("
+            f"accepted={self.accepted}, points={self.points}, "
+            f"fvoa_50pct_mv={_format_repr(self.fvoa_50pct_mv)}, "
+            f"slope_inv_fvoa_mv={_format_repr(self.slope_inv_fvoa_mv)}, "
+            f"max_atten_db={_format_repr(self.max_atten_db)}, "
+            f"max_atten_sigma_db={_format_repr(self.max_atten_sigma_db)}, "
+            f"corr={_format_repr(self.corr)}, "
+            f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
+            f"correction_coeff={_format_repr(self.correction_coeff)}, "
+            f"fvoa_span_mv={_format_repr(self.fvoa_span_mv)})"
+        )
 
-@dataclass(frozen=True)
-class AttenuatorCalibrationBatch:
-    v_mV: tuple[float, ...]
-    flux: tuple[float, ...]
+    __str__ = __repr__
 
-
-@dataclass(frozen=True)
-class AttenuatorCalibrationStatus:
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationStatus(ResponseRepr):
     state: str
     mode: str
     physical: str
@@ -437,58 +609,2369 @@ class AttenuatorCalibrationStatus:
     error: int
     dac1: AttenuatorFitMetrics
     dac2: AttenuatorFitMetrics
-    v_mV: tuple[float, ...] = ()
+
+    def __repr__(self) -> str:
+        return (
+            "AttenuatorCalibrationStatus(\n"
+            f"  state={self.state!r}, mode={self.mode!r}, physical={self.physical!r}, "
+            f"point={self.point!r}, complete_pct={self.complete_pct},\n"
+            f"  mv={_format_repr(self.mv)}, other_mv={_format_repr(self.other_mv)}, "
+            f"t_ms={self.t_ms}, error={self.error}, fit={self.fit!r},\n"
+            f"  dac1={self.dac1},\n"
+            f"  dac2={self.dac2}\n"
+            ")"
+        )
+
+    __str__ = __repr__
 
 
-@dataclass(frozen=True)
-class PhotodiodeValues:
-    yjvalue: float
-    yjvalue_err: float
-    hkvalue: float
-    hkvalue_err: float
-    yj_raw: int
-    hk_raw: int
-    yj_mv: float
-    hk_mv: float
-    yj_noise_rms_mv: float
-    hk_noise_rms_mv: float
-    yj_mean_mv_1s: float
-    hk_mean_mv_1s: float
-    yj_rms_mv_0p5s: float
-    hk_rms_mv_0p5s: float
-    yj_ontime_s: float
-    hk_ontime_s: float
-    yj_pd_is_off: bool = False
-    hk_pd_is_off: bool = False
+_ATTEN_CAL_CLASSIFICATION_COLORS = {
+    "ok": "tab:blue",
+    "saturated": "tab:red",
+    "below_snr": "tab:orange",
+    "adc_error": "tab:purple",
+}
+_ATTEN_CAL_EVENT_COLORS = {
+    "point": "tab:blue",
+    "initial_probe": "0.55",
+    "bridge_probe": "tab:green",
+}
+_ATTEN_CAL_EVENT_MARKERS = {
+    "point": "o",
+    "initial_probe": "s",
+    "bridge_probe": "P",
+}
+_ATTEN_CAL_ROLE_COLORS = {
+    "reference": "tab:cyan",
+    "bridge_before": "tab:orange",
+    "bridge_after": "tab:red",
+}
+_ATTEN_CAL_ROLE_MARKERS = {
+    "reference": "*",
+    "bridge_before": "^",
+    "bridge_after": "v",
+}
 
 
-@dataclass(frozen=True)
-class DarkStatus:
-    state: str
+def _atten_model_tx_from_b(b: np.ndarray | Sequence[float]) -> np.ndarray:
+    b_arr = np.asarray(b, dtype=float)
+    erf = np.vectorize(math.erf, otypes=[float])
+    erf_scale = math.erf(ATTENUATOR_MODEL_ERF_SCALE)
+    tx = (erf_scale - erf(b_arr)) / (2.0 * erf_scale)
+    return np.clip(tx, 0.0, 1.0)
+
+
+def _atten_model_db_from_b(b: np.ndarray | Sequence[float]) -> np.ndarray:
+    tx = _atten_model_tx_from_b(b)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return -10.0 * np.log10(np.clip(tx, 1.0e-12, 1.0))
+
+
+def _atten_model_b_from_tx(tx: np.ndarray | Sequence[float]) -> np.ndarray:
+    from scipy.special import erfinv
+
+    tx_arr = np.asarray(tx, dtype=float)
+    erf_scale = math.erf(ATTENUATOR_MODEL_ERF_SCALE)
+    arg = erf_scale - (2.0 * erf_scale * np.clip(tx_arr, 1.0e-300, 1.0))
+    arg = np.clip(arg, -erf_scale, erf_scale)
+    return erfinv(arg)
+
+
+def _atten_model_b_from_db(db: np.ndarray | Sequence[float]) -> np.ndarray:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return _atten_model_b_from_tx(np.power(10.0, -np.asarray(db, dtype=float) / 10.0))
+
+
+def _atten_db_from_tx(tx: np.ndarray | Sequence[float]) -> np.ndarray:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return -10.0 * np.log10(np.clip(np.asarray(tx, dtype=float), 1.0e-300, 1.0))
+
+
+def _atten_correction_tuple(name: str, value: Sequence[float]) -> tuple[float, float, float, float]:
+    coeff = tuple(float(item) for item in value)
+    if len(coeff) != ATTENUATOR_MODEL_CORRECTION_TERMS or not np.all(np.isfinite(coeff)):
+        raise HispecFibError(f"{name}.correction_coeff must contain four finite values")
+    return coeff  # type: ignore[return-value]
+
+
+def _atten_correction_db(
+    base_db: np.ndarray | Sequence[float],
+    max_atten_db: float,
+    correction_coeff: Sequence[float],
+) -> np.ndarray:
+    db = np.asarray(base_db, dtype=float)
+    coeff = np.asarray(correction_coeff, dtype=float)
+    if coeff.size != ATTENUATOR_MODEL_CORRECTION_TERMS or not np.any(coeff):
+        return np.zeros_like(db, dtype=float)
+
+    span = float(max_atten_db) - ATTENUATOR_MODEL_CORRECTION_START_DB
+    if not np.isfinite(span) or span <= 0.0:
+        return np.zeros_like(db, dtype=float)
+
+    t = (db - ATTENUATOR_MODEL_CORRECTION_START_DB) / span
+    active = (t > 0.0) & (t < 1.0)
+    x = 2.0 * np.clip(t, 0.0, 1.0) - 1.0
+    envelope = np.clip(t, 0.0, 1.0) * (1.0 - np.clip(t, 0.0, 1.0))
+    cheb = (
+        coeff[0]
+        + coeff[1] * x
+        + coeff[2] * (2.0 * x * x - 1.0)
+        + coeff[3] * (4.0 * x * x * x - 3.0 * x)
+    )
+    return np.where(active, envelope * cheb, 0.0)
+
+
+def _atten_db_with_sigma(
+    y_mv: np.ndarray | Sequence[float],
+    sigma_mv: np.ndarray | Sequence[float],
+    *,
+    reference_mv: float,
+    reference_sigma_mv: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    y = np.asarray(y_mv, dtype=float)
+    sigma_y = np.broadcast_to(np.asarray(sigma_mv, dtype=float), y.shape)
+    sigma_y = np.where(np.isfinite(sigma_y) & (sigma_y > 0.0), sigma_y, np.nan)
+    ref_sigma = max(float(reference_sigma_mv), 0.0)
+    tx = np.clip(y / reference_mv, 1.0e-300, 1.0)
+    db = _atten_db_from_tx(tx)
+    frac_sigma = np.sqrt((sigma_y / np.maximum(np.abs(y), 1.0e-12)) ** 2 +
+                         (ref_sigma / reference_mv) ** 2)
+    sigma_db = (10.0 / np.log(10.0)) * frac_sigma
+    sigma_db = np.where(np.isfinite(sigma_db), np.maximum(sigma_db, ATTENUATOR_FIT_MIN_SIGMA_DB), np.nan)
+    return db, sigma_db
+
+
+def _atten_reference_sigma_mv(y_mv: np.ndarray, sigma_mv: np.ndarray, reference_mv: float) -> float:
+    finite = np.isfinite(y_mv) & np.isfinite(sigma_mv) & (sigma_mv > 0.0)
+    if not np.any(finite):
+        return 0.0
+    idx = np.argmin(np.abs(y_mv[finite] - reference_mv))
+    return float(sigma_mv[finite][idx])
+
+
+def _atten_grid_rail_mv(reference_mv: float) -> float:
+    return float(reference_mv) * ATTENUATOR_RAIL_FRACTION
+
+
+def _atten_grid_pd_error_mv(
+    y_mv: np.ndarray | Sequence[float],
+    sigma_mv: np.ndarray | Sequence[float],
+    *,
+    reference_mv: float,
+    max_mv: float,
+    hard_rail: bool = False,
+    rail_mv: float | None = None,
+) -> np.ndarray:
+    y = np.asarray(y_mv, dtype=float)
+    sigma = np.broadcast_to(np.asarray(sigma_mv, dtype=float), y.shape).astype(float, copy=True)
+    sigma = np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, np.nan)
+    high = np.isfinite(y) & (y >= max_mv)
+    sigma = np.where(high, np.maximum(sigma, ATTENUATOR_UPPER_RANGE_MIN_ERROR_MV), sigma)
+    if hard_rail:
+        rail_limit = _atten_grid_rail_mv(reference_mv) if rail_mv is None else float(rail_mv)
+        sigma = np.where(np.isfinite(y) & (y >= rail_limit), np.nan, sigma)
+    return sigma
+
+
+def _coerce_atten_grid_records(records: np.ndarray) -> np.recarray:
+    arr = np.asarray(records)
+    names = tuple(arr.dtype.names or ())
+    if names == ATTEN_GRID_DTYPE.names:
+        return arr.astype(ATTEN_GRID_DTYPE, copy=False).view(np.recarray)
+    if names != _ATTEN_GRID_OLD_NAMES:
+        raise HispecFibError("attenuator grid dataset format changed; regenerate the grid dataset")
+
+    converted = np.empty(arr.shape, dtype=ATTEN_GRID_DTYPE)
+    for name in ATTEN_GRID_DTYPE.names:
+        if name == "pd_rms_mv":
+            converted[name] = arr["pd_residual_rms_mv"]
+        elif name == "pd_mean_net_err_mv":
+            converted[name] = arr["pd_0p5s_rms_mv"]
+        else:
+            converted[name] = arr[name]
+    return converted.view(np.recarray)
+
+
+def _atten_datasheet_region_anchors() -> tuple[float, float, float, float]:
+    voltage = ATTENUATOR_FVOA_DATASHEET_V[1:]
+    db = ATTENUATOR_FVOA_DATASHEET_DB[1:]
+    lo_db = float(np.nanmin(db) + 0.10 * (np.nanmax(db) - np.nanmin(db)))
+    hi_db = float(np.nanmin(db) + 0.90 * (np.nanmax(db) - np.nanmin(db)))
+    lo_b, hi_b = _atten_model_b_from_db((lo_db, hi_db))
+    return lo_db, hi_db, float(lo_b), float(hi_b)
+
+
+def _atten_fvoa_v_for_b(dac: tuple[float, float], gain: float, b: float) -> float:
+    del gain
+    fvoa_50pct_mv, slope_inv_fvoa_mv = dac
+    if slope_inv_fvoa_mv == 0.0:
+        return np.nan
+    return float(((b / slope_inv_fvoa_mv) + fvoa_50pct_mv) / 1000.0)
+
+
+def _atten_cal_record_row(
+    *,
+    physical: str,
+    record: int,
+    event: str,
+    classification: str,
+    segment: int,
+    sweep_mv: float,
+    other_mv: float,
+    laser_pct: float,
+    signal_mv: float,
+    signal_err_mv: float,
+    max_mv: float,
+) -> tuple[Any, ...]:
+    return (
+        physical,
+        int(record),
+        event,
+        classification,
+        int(segment),
+        float(sweep_mv),
+        float(sweep_mv) * ATTENUATOR_DEFAULT_GAIN,
+        float(other_mv),
+        float(other_mv) * ATTENUATOR_DEFAULT_GAIN,
+        float(laser_pct),
+        float(signal_mv),
+        float(signal_err_mv),
+        float(max_mv),
+    )
+
+
+def _atten_coeff_tuple(
+    name: str,
+    coeff: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+) -> tuple[float, float, float, float, tuple[float, float, float, float]]:
+    if isinstance(coeff, AttenuatorPhysicalCoeff):
+        fvoa_50pct_mv = coeff.fvoa_50pct_mv
+        slope_inv_fvoa_mv = coeff.slope_inv_fvoa_mv
+        max_atten_db = coeff.max_atten_db
+        gain = coeff.gain
+        correction_coeff = coeff.correction_coeff
+    elif isinstance(coeff, Mapping):
+        try:
+            fvoa_50pct_mv = float(coeff["fvoa_50pct_mv"])
+            slope_inv_fvoa_mv = float(coeff["slope_inv_fvoa_mv"])
+            max_atten_db = float(coeff["max_atten_db"])
+            gain = float(coeff.get("gain", ATTENUATOR_DEFAULT_GAIN))
+            correction_coeff = _atten_correction_tuple(
+                name, coeff.get("correction_coeff", (0.0, 0.0, 0.0, 0.0))
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HispecFibError(f"{name} coefficient is malformed") from exc
+    else:
+        values = tuple(float(value) for value in coeff)
+        if len(values) == 3:
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values
+            gain = ATTENUATOR_DEFAULT_GAIN
+            correction_coeff = (0.0, 0.0, 0.0, 0.0)
+        elif len(values) == 4:
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values
+            correction_coeff = (0.0, 0.0, 0.0, 0.0)
+        elif len(values) == 7:
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values[:3]
+            gain = ATTENUATOR_DEFAULT_GAIN
+            correction_coeff = _atten_correction_tuple(name, values[3:])
+        elif len(values) == 8:
+            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values[:4]
+            correction_coeff = _atten_correction_tuple(name, values[4:])
+        else:
+            raise HispecFibError(f"{name} coefficient must have 3, 4, 7, or 8 values")
+
+    if not (
+        np.isfinite(fvoa_50pct_mv)
+        and np.isfinite(slope_inv_fvoa_mv)
+        and np.isfinite(max_atten_db)
+        and np.isfinite(gain)
+        and slope_inv_fvoa_mv > 0.0
+        and max_atten_db > 0.0
+        and gain > 0.0
+    ):
+        raise HispecFibError(f"{name} coefficient values must be finite with positive slope, max attenuation, and gain")
+    return (
+        float(fvoa_50pct_mv),
+        float(slope_inv_fvoa_mv),
+        float(max_atten_db),
+        float(gain),
+        correction_coeff,
+    )
+
+
+def _atten_b_from_coeff(
+    coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    fvoa_50pct_mv, slope_inv_fvoa_mv, _max_atten_db, gain, _correction_coeff = coeff
+    dac = np.asarray(dac_mv, dtype=float)
+    return slope_inv_fvoa_mv * ((gain * dac) - fvoa_50pct_mv)
+
+
+def _atten_tx_from_coeff(
+    coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    return _atten_model_tx_from_b(_atten_b_from_coeff(coeff, dac_mv))
+
+
+def _atten_relative_tx_from_coeff(
+    coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    open_tx = float(_atten_tx_from_coeff(coeff, [0.0])[0])
+    tx = _atten_tx_from_coeff(coeff, dac_mv)
+    if not np.isfinite(open_tx) or open_tx <= 0.0:
+        return np.full_like(np.asarray(tx, dtype=float), np.nan, dtype=float)
+    ideal_tx = np.clip(tx / open_tx, 0.0, 1.0)
+    floor_tx = 10.0 ** (-coeff[2] / 10.0)
+    return np.clip(floor_tx + (1.0 - floor_tx) * ideal_tx, 1.0e-300, 1.0)
+
+
+def _atten_db_from_coeff(
+    coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    base_db = _atten_db_from_tx(_atten_relative_tx_from_coeff(coeff, dac_mv))
+    return base_db + _atten_correction_db(base_db, coeff[2], coeff[4])
+
+
+def _atten_pair_db_from_coeffs(
+    dac1_coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac2_coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac1_mv: np.ndarray | Sequence[float],
+    dac2_mv: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    return _atten_db_from_coeff(dac1_coeff, dac1_mv) + _atten_db_from_coeff(dac2_coeff, dac2_mv)
+
+
+def _atten_cal_pair_dac(records: np.recarray) -> tuple[np.ndarray, np.ndarray]:
+    physical = np.asarray(records.physical).astype(str)
+    sweep = np.asarray(records.sweep_mv, dtype=float)
+    other = np.asarray(records.other_mv, dtype=float)
+    dac1 = np.where(physical == "dac1", sweep, other)
+    dac2 = np.where(physical == "dac1", other, sweep)
+    return dac1, dac2
+
+
+def _atten_cal_pair_sample_db(
+    records: np.recarray,
+    dac1_coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+    dac2_coeff: tuple[float, float, float, float, tuple[float, float, float, float]],
+) -> np.ndarray:
+    physical = np.asarray(records.physical).astype(str)
+    _, dac2 = _atten_cal_pair_dac(records)
+    dac1, _ = _atten_cal_pair_dac(records)
+    companion_db = np.where(
+        physical == "dac1",
+        _atten_db_from_coeff(dac2_coeff, dac2),
+        _atten_db_from_coeff(dac1_coeff, dac1),
+    )
+    return np.asarray(records.db, dtype=float) + companion_db
+
+
+def _atten_grid_datasheet_b_line() -> tuple[float, float]:
+    datasheet_b = _atten_model_b_from_db(ATTENUATOR_FVOA_DATASHEET_DB)
+    finite = np.isfinite(ATTENUATOR_FVOA_DATASHEET_V) & np.isfinite(datasheet_b)
+    slope_b_per_v, offset_b = np.polyfit(ATTENUATOR_FVOA_DATASHEET_V[finite], datasheet_b[finite], 1)
+    return float(slope_b_per_v), float(offset_b)
+
+
+def _atten_grid_reference_mv(
+    y_mv: np.ndarray,
+    reference_mv: float | None,
+    *,
+    name: str = "pd_reference_mv",
+) -> float:
+    if reference_mv is not None:
+        return _require_float(name, reference_mv, 1.0e-12, 1.0e12)
+    finite = y_mv[np.isfinite(y_mv) & (y_mv > 0.0)]
+    if len(finite) == 0:
+        raise HispecFibError("attenuator grid has no positive photodiode values")
+    return float(np.nanmax(finite))
+
+
+def _atten_grid_thresholds(
+    *,
+    min_mv: float,
+    max_mv: float,
+    reference_mv: float,
+) -> tuple[float, float]:
+    del reference_mv
+    floor_mv = _require_float("min_mv", min_mv, 1.0e-12, 1.0e12)
+    ceiling_mv = _require_float("max_mv", max_mv, floor_mv, 1.0e12)
+    return floor_mv, ceiling_mv
+
+
+def _atten_grid_sample_masks(
+    y_mv: np.ndarray,
+    *,
+    min_mv: float,
+    max_mv: float,
+    reference_mv: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+    floor_mv, ceiling_mv = _atten_grid_thresholds(
+        min_mv=min_mv,
+        max_mv=max_mv,
+        reference_mv=reference_mv,
+    )
+    finite = np.isfinite(y_mv)
+    value = finite & (y_mv > floor_mv) & (y_mv < ceiling_mv)
+    floor = finite & (y_mv <= floor_mv)
+    ceiling = finite & (y_mv >= ceiling_mv)
+    return finite, value, floor, ceiling, floor_mv, ceiling_mv
+
+
+def _atten_grid_b(
+    params: np.ndarray,
+    dac1_mv: np.ndarray | Sequence[float],
+    dac2_mv: np.ndarray | Sequence[float],
+    *,
+    gain1: float,
+    gain2: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    dac1 = np.asarray(dac1_mv, dtype=float)
+    dac2 = np.asarray(dac2_mv, dtype=float)
+    b1 = params[1] * ((gain1 * dac1) - params[0])
+    b2 = params[3] * ((gain2 * dac2) - params[2])
+    return b1, b2
+
+
+def _atten_grid_model_mv(
+    params: np.ndarray,
+    dac1_mv: np.ndarray | Sequence[float],
+    dac2_mv: np.ndarray | Sequence[float],
+    *,
+    reference_mv: float,
+    gain1: float,
+    gain2: float,
+) -> np.ndarray:
+    b1, b2 = _atten_grid_b(params, dac1_mv, dac2_mv, gain1=gain1, gain2=gain2)
+    tx = _atten_model_tx_from_b(b1) * _atten_model_tx_from_b(b2)
+    return reference_mv * tx
+
+
+def _atten_grid_residual_db(measured_mv: np.ndarray, modeled_mv: np.ndarray) -> np.ndarray:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 10.0 * np.log10(
+            np.clip(measured_mv, 1.0e-300, np.inf) /
+            np.clip(modeled_mv, 1.0e-300, np.inf)
+        )
+
+
+def _atten_slice_initial_params(
+    x_dac_mv: np.ndarray,
+    y_mv: np.ndarray,
+    *,
+    reference_mv: float,
+    gain: float,
+    min_mv: float,
+    max_mv: float,
+) -> np.ndarray:
+    _, value, _, _, _, _ = _atten_grid_sample_masks(
+        y_mv,
+        min_mv=min_mv,
+        max_mv=max_mv,
+        reference_mv=reference_mv,
+    )
+    if np.count_nonzero(value) >= 2:
+        tx = np.clip(y_mv[value] / reference_mv, 1.0e-300, 1.0)
+        b = _atten_model_b_from_tx(tx)
+        usable = np.isfinite(x_dac_mv[value]) & np.isfinite(b)
+        if np.count_nonzero(usable) >= 2:
+            slope, intercept = np.polyfit(gain * x_dac_mv[value][usable], b[usable], 1)
+            if np.isfinite(slope) and slope > 0.0 and np.isfinite(intercept):
+                return np.array((-intercept / slope, slope), dtype=float)
+
+    slope_b_per_v, offset_b = _atten_grid_datasheet_b_line()
+    datasheet_center = float(np.nanmedian(ATTENUATOR_FVOA_DATASHEET_V))
+    observed_center = float(np.nanmedian(x_dac_mv * gain / 1000.0))
+    shifted_offset_b = offset_b - slope_b_per_v * (observed_center - datasheet_center)
+    slope_inv_fvoa_mv = slope_b_per_v / 1000.0
+    return np.array((-shifted_offset_b / slope_inv_fvoa_mv, slope_inv_fvoa_mv), dtype=float)
+
+
+def _atten_slice_model_mv(
+    params: np.ndarray,
+    x_dac_mv: np.ndarray,
+    *,
+    reference_mv: float,
+    gain: float,
+) -> np.ndarray:
+    return reference_mv * _atten_model_tx_from_b(params[1] * ((gain * x_dac_mv) - params[0]))
+
+
+def _atten_slice_least_squares_residual(
+    params: np.ndarray,
+    x_dac_mv: np.ndarray,
+    y_mv: np.ndarray,
+    sigma_mv: np.ndarray,
+    *,
+    reference_mv: float,
+    reference_sigma_mv: float,
+    gain: float,
+    min_mv: float,
+    max_mv: float,
+    rail_mv: float,
+) -> np.ndarray:
+    _, value, floor, ceiling, floor_mv, ceiling_mv = _atten_grid_sample_masks(
+        y_mv,
+        min_mv=min_mv,
+        max_mv=max_mv,
+        reference_mv=reference_mv,
+    )
+    model_db = _atten_model_db_from_b(params[1] * ((gain * x_dac_mv) - params[0]))
+    parts: list[np.ndarray] = []
+    finite_sigma = np.isfinite(sigma_mv) & (sigma_mv > 0.0)
+    value = value & finite_sigma
+    floor = floor & finite_sigma
+    ceiling = ceiling & finite_sigma
+    if np.any(value):
+        measured_db, sigma_db = _atten_db_with_sigma(
+            y_mv[value],
+            sigma_mv[value],
+            reference_mv=reference_mv,
+            reference_sigma_mv=reference_sigma_mv,
+        )
+        parts.append((model_db[value] - measured_db) / sigma_db)
+    if np.any(floor):
+        floor_db, floor_sigma_db = _atten_db_with_sigma(
+            np.full(np.count_nonzero(floor), floor_mv),
+            sigma_mv[floor],
+            reference_mv=reference_mv,
+            reference_sigma_mv=reference_sigma_mv,
+        )
+        floor_sigma_db = np.maximum(floor_sigma_db, ATTENUATOR_CENSORED_SIGMA_DB)
+        parts.append(np.maximum(0.0, floor_db - model_db[floor]) / floor_sigma_db)
+    if np.any(ceiling):
+        rail = y_mv[ceiling] >= rail_mv
+        ceiling_signal_mv = np.where(rail, reference_mv, np.maximum(y_mv[ceiling], ceiling_mv))
+        ceiling_db, ceiling_sigma_db = _atten_db_with_sigma(
+            ceiling_signal_mv,
+            sigma_mv[ceiling],
+            reference_mv=reference_mv,
+            reference_sigma_mv=reference_sigma_mv,
+        )
+        ceiling_sigma_db = np.where(
+            rail,
+            ATTENUATOR_FIT_MIN_SIGMA_DB,
+            np.maximum(ceiling_sigma_db, ATTENUATOR_CENSORED_SIGMA_DB),
+        )
+        parts.append(np.maximum(0.0, model_db[ceiling] - ceiling_db) / ceiling_sigma_db)
+    if not parts:
+        return np.array((1.0e6,), dtype=float)
+    return np.concatenate(parts)
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorGridFit(ResponseRepr):
     channel: str
+    points: int
+    estimated_unsaturated_unattenuated_pd_mv: float
+    dac1: tuple[float, float]
+    dac2: tuple[float, float]
+    dac1_other_fvoa_v: float
+    dac2_other_fvoa_v: float
+    dac1_sweep_plateau_pd_mv: float
+    dac2_sweep_plateau_pd_mv: float
+    gain1: float
+    gain2: float
+    rms_db: float
+    worst_absdB_resid: float
+    dac1_slices: int
+    dac2_slices: int
+    iterations: int
+    converged: bool
+    accepted: bool
+
+    def coeff_args(self) -> dict[str, Any]:
+        return {
+            "dac1": {
+                "fvoa_50pct_mv": self.dac1[0],
+                "slope_inv_fvoa_mv": self.dac1[1],
+                "gain": self.gain1,
+            },
+            "dac2": {
+                "fvoa_50pct_mv": self.dac2[0],
+                "slope_inv_fvoa_mv": self.dac2[1],
+                "gain": self.gain2,
+            },
+        }
+
+    def b1(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        dac = np.asarray(dac_mv, dtype=float)
+        return self.dac1[1] * ((self.gain1 * dac) - self.dac1[0])
+
+    def b2(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        dac = np.asarray(dac_mv, dtype=float)
+        return self.dac2[1] * ((self.gain2 * dac) - self.dac2[0])
+
+    def b1_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        return self.b1(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain1)
+
+    def b2_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        return self.b2(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain2)
+
+    def model_mv(
+        self,
+        dac1_mv: np.ndarray | Sequence[float],
+        dac2_mv: np.ndarray | Sequence[float],
+    ) -> np.ndarray:
+        tx = _atten_model_tx_from_b(self.b1(dac1_mv)) * _atten_model_tx_from_b(self.b2(dac2_mv))
+        return self.estimated_unsaturated_unattenuated_pd_mv * tx
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorSliceFit(ResponseRepr):
+    channel: str
+    sweep: str
+    requested_other_fvoa_v: float
+    actual_other_fvoa_v: float
+    actual_other_dac_mv: float
+    points: int
+    sweep_plateau_pd_mv: float
+    dac: tuple[float, float]
+    gain: float
+    rms_db: float
+    worst_absdB_resid: float
+    accepted: bool
+
+    def b(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        dac = np.asarray(dac_mv, dtype=float)
+        return self.dac[1] * ((self.gain * dac) - self.dac[0])
+
+    def b_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        return self.b(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain)
+
+    def model_mv(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        return self.sweep_plateau_pd_mv * _atten_model_tx_from_b(self.b(dac_mv))
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorGridDataset(ResponseRepr):
+    records: np.recarray
+    channel: str = "yj"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "records",
+            _coerce_atten_grid_records(np.asarray(self.records)),
+        )
+        object.__setattr__(self, "channel", _require_choice("channel", self.channel, PD_CHANNELS))
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        if len(self.records) == 0:
+            return (("records", 0), ("channel", self.channel))
+        return (
+            ("records", len(self.records)),
+            ("channel", self.channel),
+            ("laser", tuple(dict.fromkeys(str(value) for value in self.records.laser))),
+            ("dac1_mv", (float(np.nanmin(self.records.dac1_mv)), float(np.nanmax(self.records.dac1_mv)))),
+            ("dac2_mv", (float(np.nanmin(self.records.dac2_mv)), float(np.nanmax(self.records.dac2_mv)))),
+        )
+
+    def to_recarray(self, *, copy: bool = False) -> np.recarray:
+        return self.records.copy().view(np.recarray) if copy else self.records
+
+    def to_dataframe(self):
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise HispecFibError("pandas is not installed") from exc
+        return pd.DataFrame.from_records(self.records, columns=ATTEN_GRID_DTYPE.names)
+
+    def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        missing = [name for name in names if name not in self.records.dtype.names]
+        if missing:
+            raise HispecFibError(f"unknown attenuator grid field(s): {', '.join(missing)}")
+        arrays = tuple(self.records[name] for name in names)
+        return arrays[0] if len(arrays) == 1 else arrays
+
+    def save(self, path: str = ATTEN_GRID_DEFAULT_FILE) -> str:
+        np.savez_compressed(
+            path,
+            records=np.asarray(self.records, dtype=ATTEN_GRID_DTYPE),
+            channel=np.asarray(self.channel),
+        )
+        return path
+
+    @classmethod
+    def load(cls, path: str = ATTEN_GRID_DEFAULT_FILE) -> "AttenuatorGridDataset":
+        with np.load(path, allow_pickle=False) as data:
+            records = _coerce_atten_grid_records(np.asarray(data["records"]))
+            channel = str(np.asarray(data["channel"]).item())
+        return cls(records=records, channel=channel)
+
+    def _slice_fits(
+        self,
+        *,
+        sweep: Literal["dac1", "dac2"],
+        min_mv: float,
+        max_mv: float,
+    ) -> tuple[AttenuatorSliceFit, ...]:
+        sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
+        fixed_field = "fvoa2_v" if sweep == "dac1" else "fvoa1_v"
+        fixed = np.asarray(self.records[fixed_field], dtype=float)
+        fits: list[AttenuatorSliceFit] = []
+        for other in np.unique(fixed[np.isfinite(fixed)]):
+            try:
+                fit = self.fit_slice(
+                    sweep=sweep,
+                    other_fvoa_v=float(other),
+                    min_mv=min_mv,
+                    max_mv=max_mv,
+                )
+            except (HispecFibError, ValueError):
+                continue
+            if (
+                fit.accepted
+                and np.isfinite(fit.dac[0])
+                and fit.dac[0] > 0.0
+                and np.isfinite(fit.dac[1])
+                and fit.dac[1] > 0.0
+            ):
+                fits.append(fit)
+        return tuple(fits)
+
+    def fit(
+        self,
+        *,
+        dac1_other_fvoa_v: float,
+        dac2_other_fvoa_v: float,
+        min_mv: float = 10.0,
+        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        estimated_unsaturated_unattenuated_pd_mv: float | None = None,
+    ) -> AttenuatorGridFit:
+        rec = self.records
+        y = np.asarray(rec.pd_mv, dtype=float)
+        gain1 = float(np.nanmedian(rec.gain1))
+        gain2 = float(np.nanmedian(rec.gain2))
+        observed_pd_max_mv = _atten_grid_reference_mv(y, None)
+        coord = (
+            np.isfinite(rec.fvoa1_v)
+            & np.isfinite(rec.fvoa2_v)
+            & np.isfinite(rec.dac1_mv)
+            & np.isfinite(rec.dac2_mv)
+            & np.isfinite(y)
+        )
+        _, value, floor, ceiling, _, _ = _atten_grid_sample_masks(
+            y,
+            min_mv=min_mv,
+            max_mv=max_mv,
+            reference_mv=observed_pd_max_mv,
+        )
+        mask = coord & (value | floor | ceiling)
+        if np.count_nonzero(mask) < 4:
+            raise HispecFibError("not enough finite grid points to fit attenuator surface")
+
+        dac1_slice = self.fit_slice(
+            sweep="dac1",
+            other_fvoa_v=dac1_other_fvoa_v,
+            min_mv=min_mv,
+            max_mv=max_mv,
+        )
+        dac2_slice = self.fit_slice(
+            sweep="dac2",
+            other_fvoa_v=dac2_other_fvoa_v,
+            min_mv=min_mv,
+            max_mv=max_mv,
+        )
+        if not dac1_slice.accepted or not dac2_slice.accepted:
+            raise HispecFibError("selected attenuator slice fit was not accepted")
+        dac1 = dac1_slice.dac
+        dac2 = dac2_slice.dac
+        gain1 = dac1_slice.gain
+        gain2 = dac2_slice.gain
+        fvoa2_tx_at_dac1_slice = float(_atten_model_tx_from_b(dac2_slice.b([dac1_slice.actual_other_dac_mv]))[0])
+        fvoa1_tx_at_dac2_slice = float(_atten_model_tx_from_b(dac1_slice.b([dac2_slice.actual_other_dac_mv]))[0])
+        pd_estimates = []
+        if np.isfinite(fvoa2_tx_at_dac1_slice) and fvoa2_tx_at_dac1_slice > 0.0:
+            pd_estimates.append(dac1_slice.sweep_plateau_pd_mv / fvoa2_tx_at_dac1_slice)
+        if np.isfinite(fvoa1_tx_at_dac2_slice) and fvoa1_tx_at_dac2_slice > 0.0:
+            pd_estimates.append(dac2_slice.sweep_plateau_pd_mv / fvoa1_tx_at_dac2_slice)
+        pd_estimates_arr = np.array(pd_estimates, dtype=float)
+        pd_estimates_arr = pd_estimates_arr[np.isfinite(pd_estimates_arr) & (pd_estimates_arr > 0.0)]
+        if estimated_unsaturated_unattenuated_pd_mv is None:
+            if len(pd_estimates_arr) == 0:
+                raise HispecFibError("selected slices did not yield a finite unattenuated PD estimate")
+            pd_reference_mv = float(np.exp(np.nanmean(np.log(pd_estimates_arr))))
+        else:
+            pd_reference_mv = _require_float(
+                "estimated_unsaturated_unattenuated_pd_mv",
+                estimated_unsaturated_unattenuated_pd_mv,
+                1.0e-12,
+                1.0e12,
+            )
+
+        fit_value = mask & value
+        model_fit = _atten_grid_model_mv(
+            np.array((dac1[0], dac1[1], dac2[0], dac2[1]), dtype=float),
+            np.asarray(rec.dac1_mv[fit_value], dtype=float),
+            np.asarray(rec.dac2_mv[fit_value], dtype=float),
+            reference_mv=pd_reference_mv,
+            gain1=gain1,
+            gain2=gain2,
+        )
+        residual_db = _atten_grid_residual_db(y[fit_value], model_fit)
+        if len(residual_db) == 0:
+            rms_db = np.nan
+            worst_abs = np.nan
+        else:
+            rms_db = float(np.sqrt(np.nanmean(residual_db * residual_db)))
+            worst_abs = float(np.nanmax(np.abs(residual_db)))
+        accepted = bool(
+            np.isfinite(dac1[0]) and dac1[0] > 0.0 and np.isfinite(dac1[1]) and dac1[1] > 0.0 and
+            np.isfinite(dac2[0]) and dac2[0] > 0.0 and np.isfinite(dac2[1]) and dac2[1] > 0.0
+        )
+        return AttenuatorGridFit(
+            channel=self.channel,
+            points=int(np.count_nonzero(mask)),
+            estimated_unsaturated_unattenuated_pd_mv=pd_reference_mv,
+            dac1=dac1,
+            dac2=dac2,
+            dac1_other_fvoa_v=dac1_slice.actual_other_fvoa_v,
+            dac2_other_fvoa_v=dac2_slice.actual_other_fvoa_v,
+            dac1_sweep_plateau_pd_mv=dac1_slice.sweep_plateau_pd_mv,
+            dac2_sweep_plateau_pd_mv=dac2_slice.sweep_plateau_pd_mv,
+            gain1=gain1,
+            gain2=gain2,
+            rms_db=rms_db,
+            worst_absdB_resid=worst_abs,
+            dac1_slices=1,
+            dac2_slices=1,
+            iterations=0,
+            converged=accepted,
+            accepted=accepted,
+        )
+
+    def _slice_records(
+        self,
+        *,
+        sweep: Literal["dac1", "dac2"],
+        other_fvoa_v: float,
+    ) -> np.recarray:
+        sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
+        other_fvoa_v = _require_float("other_fvoa_v", other_fvoa_v, 0.0, 20.0)
+        rec = self.records
+        fixed_field = "fvoa2_v" if sweep == "dac1" else "fvoa1_v"
+        order_field = "dac1_mv" if sweep == "dac1" else "dac2_mv"
+        fixed = np.asarray(rec[fixed_field], dtype=float)
+        finite = np.isfinite(fixed)
+        if not np.any(finite):
+            raise HispecFibError("attenuator grid has no finite slice coordinates")
+        nearest = float(fixed[finite][np.argmin(np.abs(fixed[finite] - other_fvoa_v))])
+        mask = np.isclose(fixed, nearest, rtol=0.0, atol=1.0e-9)
+        order = np.argsort(np.asarray(rec[order_field][mask], dtype=float))
+        return rec[mask][order].view(np.recarray)
+
+    def fit_slice(
+        self,
+        *,
+        sweep: Literal["dac1", "dac2"] = "dac1",
+        other_fvoa_v: float,
+        min_mv: float = 10.0,
+        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        sweep_plateau_pd_mv: float | None = None,
+    ) -> AttenuatorSliceFit:
+        try:
+            from scipy.optimize import least_squares
+        except ImportError as exc:
+            raise HispecFibError("scipy is required for attenuator slice fitting") from exc
+
+        sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
+        sub = self._slice_records(sweep=sweep, other_fvoa_v=other_fvoa_v)
+        sweep_dac_field = "dac1_mv" if sweep == "dac1" else "dac2_mv"
+        fixed_dac_field = "dac2_mv" if sweep == "dac1" else "dac1_mv"
+        fixed_fvoa_field = "fvoa2_v" if sweep == "dac1" else "fvoa1_v"
+        gain_field = "gain1" if sweep == "dac1" else "gain2"
+        gain = float(np.nanmedian(sub[gain_field]))
+        x_dac = np.asarray(sub[sweep_dac_field], dtype=float)
+        y = np.asarray(sub.pd_mv, dtype=float)
+        reference = _atten_grid_reference_mv(y, sweep_plateau_pd_mv, name="sweep_plateau_pd_mv")
+        rail_mv = _atten_grid_rail_mv(_atten_grid_reference_mv(np.asarray(self.records.pd_mv, dtype=float), None))
+        sigma = _atten_grid_pd_error_mv(
+            y,
+            sub.pd_mean_net_err_mv,
+            reference_mv=reference,
+            max_mv=max_mv,
+        )
+        reference_sigma = _atten_reference_sigma_mv(y, sigma, reference)
+        coord = np.isfinite(x_dac) & np.isfinite(y)
+        _, value, floor, ceiling, _, _ = _atten_grid_sample_masks(
+            y,
+            min_mv=min_mv,
+            max_mv=max_mv,
+            reference_mv=reference,
+        )
+        mask = coord & np.isfinite(sigma) & (value | floor | ceiling)
+        if np.count_nonzero(mask) < 3:
+            raise HispecFibError("not enough finite slice points to fit attenuator curve")
+        x_fit = x_dac[mask]
+        y_fit = y[mask]
+        sigma_fit = sigma[mask]
+        initial = _atten_slice_initial_params(
+            x_fit,
+            y_fit,
+            reference_mv=reference,
+            gain=gain,
+            min_mv=min_mv,
+            max_mv=max_mv,
+        )
+        result = least_squares(
+            _atten_slice_least_squares_residual,
+            initial,
+            args=(x_fit, y_fit, sigma_fit),
+            kwargs={
+                "reference_mv": reference,
+                "reference_sigma_mv": reference_sigma,
+                "gain": gain,
+                "min_mv": min_mv,
+                "max_mv": max_mv,
+                "rail_mv": rail_mv,
+            },
+            bounds=([0.0, 0.0], [np.inf, np.inf]),
+            loss="soft_l1",
+            max_nfev=5000,
+        )
+        fvoa_50pct_mv, slope_inv_fvoa_mv = result.x
+        _, value_fit, _, _, _, _ = _atten_grid_sample_masks(
+            y_fit,
+            min_mv=min_mv,
+            max_mv=max_mv,
+            reference_mv=reference,
+        )
+        model = _atten_slice_model_mv(
+            result.x,
+            x_fit[value_fit],
+            reference_mv=reference,
+            gain=gain,
+        )
+        residual_db = _atten_grid_residual_db(y_fit[value_fit], model)
+        if len(residual_db) == 0:
+            rms_db = np.nan
+            worst_abs = np.nan
+        else:
+            rms_db = float(np.sqrt(np.nanmean(residual_db * residual_db)))
+            worst_abs = float(np.nanmax(np.abs(residual_db)))
+        accepted = bool(
+            result.success and
+            fvoa_50pct_mv > 0.0 and
+            np.isfinite(fvoa_50pct_mv) and
+            slope_inv_fvoa_mv > 0.0
+        )
+        return AttenuatorSliceFit(
+            channel=self.channel,
+            sweep=sweep,
+            requested_other_fvoa_v=float(other_fvoa_v),
+            actual_other_fvoa_v=float(np.nanmedian(sub[fixed_fvoa_field])),
+            actual_other_dac_mv=float(np.nanmedian(sub[fixed_dac_field])),
+            points=len(x_fit),
+            sweep_plateau_pd_mv=reference,
+            dac=(float(fvoa_50pct_mv), float(slope_inv_fvoa_mv)),
+            gain=gain,
+            rms_db=rms_db,
+            worst_absdB_resid=worst_abs,
+            accepted=accepted,
+        )
+
+    def plot(
+        self,
+        *,
+        fit: AttenuatorGridFit | None = None,
+        dac1_other_fvoa_v: float | None = None,
+        dac2_other_fvoa_v: float | None = None,
+        levels_mv: Sequence[float] = (0.0, 10.0, 50.0, 500.0, 2500.0, 5000.0),
+        min_mv: float = 10.0,
+        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        model_clip_mv: float | None = None,
+        residual_clip_db: float = 12.0,
+        figsize: tuple[float, float] = (12.0, 9.0),
+    ):
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+
+        if fit is None:
+            if dac1_other_fvoa_v is None or dac2_other_fvoa_v is None:
+                raise HispecFibError("plot requires fit=... or dac1_other_fvoa_v/dac2_other_fvoa_v")
+            fit = self.fit(
+                dac1_other_fvoa_v=dac1_other_fvoa_v,
+                dac2_other_fvoa_v=dac2_other_fvoa_v,
+                min_mv=min_mv,
+                max_mv=max_mv,
+            )
+        dac1_slice_fits = self._slice_fits(sweep="dac1", min_mv=min_mv, max_mv=max_mv)
+        dac2_slice_fits = self._slice_fits(sweep="dac2", min_mv=min_mv, max_mv=max_mv)
+        rec = self.records
+        if len(rec) == 0:
+            raise HispecFibError("attenuator grid dataset is empty")
+
+        x = np.asarray(rec.fvoa1_v, dtype=float)
+        y_axis = np.asarray(rec.fvoa2_v, dtype=float)
+        z = np.asarray(rec.pd_mv, dtype=float)
+        dac1 = np.asarray(rec.dac1_mv, dtype=float)
+        dac2 = np.asarray(rec.dac2_mv, dtype=float)
+        dark_mv = float(np.nanmedian(rec.pd_dark_mv))
+        coord = np.isfinite(x) & np.isfinite(y_axis) & np.isfinite(dac1) & np.isfinite(dac2)
+        finite_y, value_y, floor_y, ceiling_y, _, _ = _atten_grid_sample_masks(
+            z,
+            min_mv=min_mv,
+            max_mv=max_mv,
+            reference_mv=fit.estimated_unsaturated_unattenuated_pd_mv,
+        )
+        finite = coord & finite_y
+        value = coord & value_y
+        floor = coord & floor_y
+        ceiling = coord & ceiling_y
+        invalid = coord & ~finite_y
+        if np.count_nonzero(finite) < 3:
+            raise HispecFibError("not enough finite grid points to plot")
+
+        xmin, xmax = float(np.nanmin(x[finite])), float(np.nanmax(x[finite]))
+        ymin, ymax = float(np.nanmin(y_axis[finite])), float(np.nanmax(y_axis[finite]))
+        grid_x, grid_y = np.meshgrid(np.linspace(xmin, xmax, 120), np.linspace(ymin, ymax, 120))
+        grid_dac1 = grid_x * 1000.0 / fit.gain1
+        grid_dac2 = grid_y * 1000.0 / fit.gain2
+        model_grid = fit.model_mv(grid_dac1, grid_dac2)
+        model_points = fit.model_mv(dac1, dac2)
+        residual_db = _atten_grid_residual_db(z, model_points)
+        if model_clip_mv is None:
+            model_vmax = float(np.nanmax(z[finite]))
+        else:
+            model_vmax = _require_float("model_clip_mv", model_clip_mv, 1.0e-12, 1.0e12)
+        display_vmin = float(np.nanmin(z[finite]))
+        if model_vmax <= display_vmin:
+            model_vmax = display_vmin + 1.0
+        display_levels = np.linspace(display_vmin, model_vmax, 65)
+        display_norm = Normalize(vmin=display_vmin, vmax=model_vmax)
+        residual_clip_db = _require_float("residual_clip_db", residual_clip_db, 0.1, 1.0e6)
+
+        fig, axes = plt.subplots(2, 2, figsize=figsize, constrained_layout=True)
+        fig.suptitle("Attenuator grid probe; photodiode values are net mV, not optical units")
+
+        def measured_levels(values: np.ndarray) -> list[float]:
+            zmin = float(np.nanmin(values[finite]))
+            zmax = float(np.nanmax(values[finite]))
+            return [float(level) for level in levels_mv if zmin <= float(level) <= zmax]
+
+        def add_mv_contours(ax: Any, values: np.ndarray, *, dark: bool = False) -> None:
+            levels = measured_levels(values)
+            if dark:
+                levels = [level for level in levels if abs(level) > 1.0e-12]
+            if levels:
+                contours = ax.tricontour(
+                    x[finite],
+                    y_axis[finite],
+                    values[finite],
+                    levels=levels,
+                    colors="white",
+                    linewidths=0.65,
+                )
+                ax.clabel(contours, fmt=lambda value: f"{value:g}", fontsize=8)
+            if dark and float(np.nanmin(values[finite])) <= 0.0 <= float(np.nanmax(values[finite])):
+                dark_contour = ax.tricontour(
+                    x[finite],
+                    y_axis[finite],
+                    values[finite],
+                    levels=[0.0],
+                    colors="black",
+                    linewidths=1.0,
+                    linestyles="--",
+                )
+                ax.clabel(dark_contour, fmt={0.0: "dark/net 0"}, fontsize=8)
+
+        def add_sample_markers(ax: Any, *, include_labels: bool = False) -> None:
+            if np.any(value):
+                ax.scatter(
+                    x[value],
+                    y_axis[value],
+                    s=8,
+                    color="white",
+                    alpha=0.65,
+                    label="value fit sample" if include_labels else None,
+                )
+            if np.any(floor):
+                ax.scatter(
+                    x[floor],
+                    y_axis[floor],
+                    marker="v",
+                    s=18,
+                    linewidths=0.55,
+                    color="tab:cyan",
+                    label="floor constraint" if include_labels else None,
+                )
+            if np.any(ceiling):
+                ax.scatter(
+                    x[ceiling],
+                    y_axis[ceiling],
+                    marker="^",
+                    s=18,
+                    linewidths=0.55,
+                    color="tab:orange",
+                    label="ceiling constraint" if include_labels else None,
+                )
+            if np.any(invalid):
+                ax.scatter(
+                    x[invalid],
+                    y_axis[invalid],
+                    marker="x",
+                    s=16,
+                    linewidths=0.5,
+                    color="tab:red",
+                    label="invalid" if include_labels else None,
+                )
+
+        ax = axes[0, 0]
+        mesh = ax.tricontourf(
+            x[finite],
+            y_axis[finite],
+            z[finite],
+            levels=display_levels,
+            cmap="viridis",
+            norm=display_norm,
+        )
+        add_mv_contours(ax, z, dark=True)
+        add_sample_markers(ax, include_labels=True)
+        fig.colorbar(mesh, ax=ax, label=f"{self.channel}_mv net (mV)")
+        ax.set_title(f"measured surface; configured raw dark={dark_mv:.3g} mV")
+        ax.legend(loc="best", fontsize="x-small")
+
+        ax = axes[0, 1]
+        model_display = np.clip(model_grid, display_vmin, model_vmax)
+        mesh = ax.contourf(
+            grid_x,
+            grid_y,
+            model_display,
+            levels=display_levels,
+            cmap="viridis",
+            norm=display_norm,
+            extend="max",
+        )
+        add_mv_contours(ax, model_points)
+        add_sample_markers(ax)
+        fig.colorbar(mesh, ax=ax, label=f"{self.channel}_mv model (mV)")
+        ax.set_title(f"composed from selected 1D slice fits; display clipped at {model_vmax:.3g} mV")
+
+        ax = axes[1, 0]
+        finite_res = value & np.isfinite(residual_db)
+        if np.count_nonzero(finite_res) >= 3:
+            residual_display = np.clip(residual_db, -residual_clip_db, residual_clip_db)
+            mesh = ax.tricontourf(
+                x[finite_res],
+                y_axis[finite_res],
+                residual_display[finite_res],
+                levels=np.linspace(-residual_clip_db, residual_clip_db, 41),
+                cmap="coolwarm",
+                extend="both",
+            )
+            fig.colorbar(mesh, ax=ax, label="measured/model residual (dB)")
+        else:
+            ax.text(0.5, 0.5, "not enough value samples for residual heatmap", ha="center", va="center")
+        add_sample_markers(ax)
+        ax.set_title(f"value-sample residual heatmap; display clipped at +/-{residual_clip_db:g} dB")
+
+        ax = axes[1, 1]
+        x_grid = np.linspace(0.0, 5.0, 300)
+        anchor10_db, anchor90_db, anchor10_b, anchor90_b = _atten_datasheet_region_anchors()
+        for i, slice_fit in enumerate(dac1_slice_fits):
+            ax.plot(
+                x_grid,
+                _atten_model_db_from_b(slice_fit.b_from_fvoa(x_grid)),
+                color="tab:blue",
+                alpha=0.14,
+                linewidth=0.55,
+                label="dac1 individual slice fits" if i == 0 else None,
+            )
+        for i, slice_fit in enumerate(dac2_slice_fits):
+            ax.plot(
+                x_grid,
+                _atten_model_db_from_b(slice_fit.b_from_fvoa(x_grid)),
+                color="tab:green",
+                alpha=0.14,
+                linewidth=0.55,
+                label="dac2 individual slice fits" if i == 0 else None,
+            )
+        ax.plot(
+            x_grid,
+            _atten_model_db_from_b(fit.b1_from_fvoa(x_grid)),
+            color="tab:blue",
+            linewidth=1.3,
+            label=f"dac1 selected fit (other={fit.dac1_other_fvoa_v:.3g} V)",
+        )
+        ax.plot(
+            x_grid,
+            _atten_model_db_from_b(fit.b2_from_fvoa(x_grid)),
+            color="tab:green",
+            linewidth=1.3,
+            label=f"dac2 selected fit (other={fit.dac2_other_fvoa_v:.3g} V)",
+        )
+        ax.axhline(
+            anchor10_db,
+            color="0.30",
+            linestyle="--",
+            linewidth=0.7,
+            label=f"10% datasheet linear-region anchor ({anchor10_db:.1f} dB)",
+        )
+        ax.axhline(
+            anchor90_db,
+            color="0.45",
+            linestyle=":",
+            linewidth=0.7,
+            label=f"90% datasheet linear-region anchor ({anchor90_db:.1f} dB)",
+        )
+        if np.any(value):
+            ax.scatter(
+                x[value],
+                _atten_model_db_from_b(fit.b1(dac1[value])),
+                s=8,
+                color="tab:blue",
+                alpha=0.35,
+                label="dac1 value-sample projection",
+            )
+            ax.scatter(
+                y_axis[value],
+                _atten_model_db_from_b(fit.b2(dac2[value])),
+                s=8,
+                color="tab:green",
+                alpha=0.35,
+                label="dac2 value-sample projection",
+            )
+        ax.scatter(
+            ATTENUATOR_FVOA_DATASHEET_V,
+            ATTENUATOR_FVOA_DATASHEET_DB,
+            s=18,
+            marker="D",
+            facecolors="none",
+            edgecolors="tab:purple",
+            linewidths=0.8,
+            label="digitized datasheet attenuation",
+        )
+        ax.plot(ATTENUATOR_FVOA_DATASHEET_V, ATTENUATOR_FVOA_DATASHEET_DB, color="tab:purple", linewidth=0.55)
+        for dac, gain, color in ((fit.dac1, fit.gain1, "tab:blue"), (fit.dac2, fit.gain2, "tab:green")):
+            anchor_v = np.array(
+                (
+                    _atten_fvoa_v_for_b(dac, gain, anchor10_b),
+                    _atten_fvoa_v_for_b(dac, gain, anchor90_b),
+                )
+            )
+            anchor_db = np.array((anchor10_db, anchor90_db))
+            keep = np.isfinite(anchor_v) & (anchor_v >= 0.0) & (anchor_v <= 5.0)
+            if np.any(keep):
+                ax.scatter(anchor_v[keep], anchor_db[keep], marker="|", s=80, color=color)
+        ax.set_title(
+            f"control law from selected 1D slices; constrained records={fit.points}; "
+            f"estimated unattenuated PD={fit.estimated_unsaturated_unattenuated_pd_mv:.3g} mV; "
+            f"gain1={fit.gain1:.4g} gain2={fit.gain2:.4g}"
+        )
+        ax.set_ylabel("single-FVOA attenuation (dB)")
+        sec = ax.secondary_yaxis("right", functions=(_atten_model_b_from_db, _atten_model_db_from_b))
+        sec.set_ylabel("erf delta coordinate")
+        ax.legend(loc="best", fontsize="x-small")
+
+        for ax in axes.flat:
+            ax.set_xlabel("FVOA1 drive (V)")
+            ax.set_ylabel("FVOA2 drive (V)" if ax is not axes[1, 1] else "single-FVOA attenuation (dB)")
+            ax.set_xlim(xmin if ax is not axes[1, 1] else 0.0, xmax if ax is not axes[1, 1] else 5.0)
+            if ax is not axes[1, 1]:
+                ax.set_ylim(ymin, ymax)
+        axes[1, 1].set_xlabel("FVOA drive (V)")
+        return fig
+
+    def _plot_all_slices(
+        self,
+        *,
+        sweep: Literal["dac1", "dac2"] = "dac1",
+        min_mv: float = 10.0,
+        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        figsize: tuple[float, float] = (11.0, 8.0),
+    ):
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+
+        sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
+        fits = self._slice_fits(sweep=sweep, min_mv=min_mv, max_mv=max_mv)
+        if not fits:
+            raise HispecFibError("no accepted attenuator slice fits to plot")
+
+        sweep_fvoa_field = "fvoa1_v" if sweep == "dac1" else "fvoa2_v"
+        other_label = "FVOA2" if sweep == "dac1" else "FVOA1"
+        fixed = np.array([fit.actual_other_fvoa_v for fit in fits], dtype=float)
+        f50 = np.array([fit.dac[0] for fit in fits], dtype=float)
+        slope_inv = np.array([fit.dac[1] for fit in fits], dtype=float)
+        rms = np.array([fit.rms_db for fit in fits], dtype=float)
+        worst = np.array([fit.worst_absdB_resid for fit in fits], dtype=float)
+        order = np.argsort(fixed)
+        norm = Normalize(vmin=float(np.nanmin(fixed)), vmax=float(np.nanmax(fixed)))
+        cmap = plt.get_cmap("viridis")
+        x_grid = np.linspace(0.0, 5.0, 300)
+        anchor10_db, anchor90_db, _, _ = _atten_datasheet_region_anchors()
+        display_max_db = max(70.0, anchor90_db * 1.2)
+
+        fig, axes = plt.subplots(2, 2, figsize=figsize, constrained_layout=True)
+        fig.suptitle(f"{sweep} all slice fits; color is fixed {other_label} drive")
+
+        value_counts: list[int] = []
+        floor_counts: list[int] = []
+        ceiling_counts: list[int] = []
+        for slice_fit in fits:
+            color = cmap(norm(slice_fit.actual_other_fvoa_v))
+            sub = self._slice_records(sweep=sweep, other_fvoa_v=slice_fit.actual_other_fvoa_v)
+            x_fvoa = np.asarray(sub[sweep_fvoa_field], dtype=float)
+            y = np.asarray(sub.pd_mv, dtype=float)
+            finite_y, value_y, floor_y, ceiling_y, _, _ = _atten_grid_sample_masks(
+                y,
+                min_mv=min_mv,
+                max_mv=max_mv,
+                reference_mv=slice_fit.sweep_plateau_pd_mv,
+            )
+            coord = np.isfinite(x_fvoa) & finite_y
+            value = coord & value_y
+            value_counts.append(int(np.count_nonzero(value_y)))
+            floor_counts.append(int(np.count_nonzero(floor_y)))
+            ceiling_counts.append(int(np.count_nonzero(ceiling_y)))
+
+            dac_grid = x_grid * 1000.0 / slice_fit.gain
+            axes[0, 0].scatter(x_fvoa[coord], y[coord], s=6, color=color, alpha=0.18)
+            axes[0, 0].plot(x_grid, slice_fit.model_mv(dac_grid), color=color, alpha=0.22, linewidth=0.55)
+
+            if np.any(value):
+                db_measured = _atten_db_from_tx(y[value] / slice_fit.sweep_plateau_pd_mv)
+                axes[0, 1].scatter(x_fvoa[value], db_measured, s=6, color=color, alpha=0.18)
+            axes[0, 1].plot(
+                x_grid,
+                np.clip(
+                    _atten_db_from_tx(slice_fit.model_mv(dac_grid) / slice_fit.sweep_plateau_pd_mv),
+                    -5.0,
+                    display_max_db,
+                ),
+                color=color,
+                alpha=0.22,
+                linewidth=0.55,
+            )
+
+        axes[0, 0].axhline(0.0, color="0.25", linestyle=":", linewidth=0.8)
+        axes[0, 0].set_title("all slice point collections and local fits; mV space")
+        axes[0, 0].set_xlabel(f"{sweep} FVOA drive (V)")
+        axes[0, 0].set_ylabel(f"{self.channel}_mv net (mV)")
+
+        axes[0, 1].scatter(
+            ATTENUATOR_FVOA_DATASHEET_V,
+            ATTENUATOR_FVOA_DATASHEET_DB,
+            s=18,
+            marker="D",
+            facecolors="none",
+            edgecolors="tab:purple",
+            linewidths=0.8,
+            label="digitized datasheet",
+        )
+        axes[0, 1].plot(ATTENUATOR_FVOA_DATASHEET_V, ATTENUATOR_FVOA_DATASHEET_DB, color="tab:purple", linewidth=0.55)
+        axes[0, 1].axhline(anchor10_db, color="0.30", linestyle="--", linewidth=0.7)
+        axes[0, 1].axhline(anchor90_db, color="0.45", linestyle=":", linewidth=0.7)
+        axes[0, 1].set_title("all slice point collections and local fits; attenuation space")
+        axes[0, 1].set_xlabel(f"{sweep} FVOA drive (V)")
+        axes[0, 1].set_ylabel("relative attenuation (dB)")
+        axes[0, 1].set_ylim(-5.0, display_max_db)
+        axes[0, 1].legend(loc="best", fontsize="x-small")
+
+        ax = axes[1, 0]
+        ax.plot(fixed[order], f50[order], marker="o", markersize=3, linewidth=0.9, color="tab:blue", label="fvoa_50pct_mv")
+        ax.set_xlabel(f"fixed {other_label} drive (V)")
+        ax.set_ylabel("50% transmission drive (mV)", color="tab:blue")
+        ax.tick_params(axis="y", labelcolor="tab:blue")
+        ax2 = ax.twinx()
+        ax2.plot(fixed[order], slope_inv[order], marker="o", markersize=3, linewidth=0.9, color="tab:orange", label="slope_inv_fvoa_mv")
+        ax2.set_ylabel("inverse slope (1/mV)", color="tab:orange")
+        ax2.tick_params(axis="y", labelcolor="tab:orange")
+        ax.set_title("slice model parameters vs fixed-other-FVOA")
+
+        ax = axes[1, 1]
+        value_counts_arr = np.array(value_counts, dtype=float)
+        floor_counts_arr = np.array(floor_counts, dtype=float)
+        ceiling_counts_arr = np.array(ceiling_counts, dtype=float)
+        ax.plot(fixed[order], rms[order], marker="o", markersize=3, linewidth=0.9, color="tab:blue", label="rms dB")
+        ax.plot(fixed[order], worst[order], marker="o", markersize=3, linewidth=0.9, color="tab:red", label="worst abs dB")
+        ax.set_xlabel(f"fixed {other_label} drive (V)")
+        ax.set_ylabel("fit residual (dB)")
+        ax2 = ax.twinx()
+        ax2.plot(fixed[order], value_counts_arr[order], color="0.25", linewidth=0.8, label="value")
+        ax2.plot(fixed[order], floor_counts_arr[order], color="tab:cyan", linewidth=0.8, label="floor")
+        ax2.plot(fixed[order], ceiling_counts_arr[order], color="tab:orange", linewidth=0.8, label="ceiling")
+        ax2.set_ylabel("sample count")
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc="best", fontsize="x-small")
+        ax.set_title("slice residuals and sample classes")
+
+        mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        fig.colorbar(
+            mappable,
+            ax=axes.ravel().tolist(),
+            shrink=0.85,
+            pad=0.02,
+            label=f"fixed {other_label} drive (V)",
+        )
+        return fig
+
+    def plot_slice(
+        self,
+        sweep: Literal["dac1", "dac2"] = "dac1",
+        other_fvoa_v: float | Literal["all"] = "all",
+        *,
+        fit: AttenuatorGridFit | None = None,
+        slice_fit: AttenuatorSliceFit | None = None,
+        min_mv: float = 10.0,
+        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        figsize: tuple[float, float] = (11.0, 8.0),
+    ):
+        import matplotlib.pyplot as plt
+
+        sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
+        if other_fvoa_v == "all":
+            return self._plot_all_slices(sweep=sweep, min_mv=min_mv, max_mv=max_mv, figsize=figsize)
+        other_fvoa_v = _require_float("other_fvoa_v", other_fvoa_v, 0.0, 20.0)
+        sub = self._slice_records(sweep=sweep, other_fvoa_v=other_fvoa_v)
+        if slice_fit is None:
+            slice_fit = self.fit_slice(
+                sweep=sweep,
+                other_fvoa_v=other_fvoa_v,
+                min_mv=min_mv,
+                max_mv=max_mv,
+            )
+
+        sweep_dac_field = "dac1_mv" if sweep == "dac1" else "dac2_mv"
+        sweep_fvoa_field = "fvoa1_v" if sweep == "dac1" else "fvoa2_v"
+        fixed_dac_field = "dac2_mv" if sweep == "dac1" else "dac1_mv"
+        x_dac = np.asarray(sub[sweep_dac_field], dtype=float)
+        x_fvoa = np.asarray(sub[sweep_fvoa_field], dtype=float)
+        fixed_dac = float(np.nanmedian(sub[fixed_dac_field]))
+        y = np.asarray(sub.pd_mv, dtype=float)
+        observed_pd_max_mv = _atten_grid_reference_mv(np.asarray(self.records.pd_mv, dtype=float), None)
+        rail_mv = _atten_grid_rail_mv(observed_pd_max_mv)
+        rms = _atten_grid_pd_error_mv(
+            y,
+            sub.pd_mean_net_err_mv,
+            reference_mv=slice_fit.sweep_plateau_pd_mv,
+            max_mv=max_mv,
+        )
+        rms_plot = _atten_grid_pd_error_mv(
+            y,
+            sub.pd_mean_net_err_mv,
+            reference_mv=slice_fit.sweep_plateau_pd_mv,
+            max_mv=max_mv,
+            hard_rail=True,
+            rail_mv=rail_mv,
+        )
+        reference_sigma = _atten_reference_sigma_mv(y, rms, slice_fit.sweep_plateau_pd_mv)
+        finite_y, value_y, floor_y, ceiling_y, floor_mv, ceiling_mv = _atten_grid_sample_masks(
+            y,
+            min_mv=min_mv,
+            max_mv=max_mv,
+            reference_mv=slice_fit.sweep_plateau_pd_mv,
+        )
+        coord = np.isfinite(x_dac) & np.isfinite(x_fvoa)
+        value = coord & value_y
+        floor = coord & floor_y
+        ceiling = coord & ceiling_y
+        rail = ceiling & (y >= rail_mv)
+        ceiling_soft = ceiling & ~rail
+        invalid = coord & ~finite_y
+        x_grid = np.linspace(float(np.nanmin(x_fvoa)), float(np.nanmax(x_fvoa)), 300)
+        dac_grid = x_grid * 1000.0 / slice_fit.gain
+        model_2d = None
+        fit_db = None
+        if fit is not None:
+            if sweep == "dac1":
+                model_2d = fit.model_mv(dac_grid, np.full_like(dac_grid, fixed_dac))
+            else:
+                model_2d = fit.model_mv(np.full_like(dac_grid, fixed_dac), dac_grid)
+            fit_db = _atten_db_from_tx(model_2d / slice_fit.sweep_plateau_pd_mv)
+        model_1d = slice_fit.model_mv(dac_grid)
+
+        fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
+        fig.suptitle(
+            f"{sweep} slice; other FVOA requested {other_fvoa_v:.3g} V, "
+            f"actual {slice_fit.actual_other_fvoa_v:.3g} V"
+        )
+
+        ax = axes[0]
+        mv_error = coord & (value | floor) & np.isfinite(rms_plot)
+        if np.any(mv_error):
+            ax.errorbar(
+                x_fvoa[mv_error],
+                y[mv_error],
+                yerr=rms_plot[mv_error],
+                fmt=".",
+                linestyle="none",
+                markersize=4,
+                color="0.18",
+                ecolor="0.45",
+                elinewidth=0.45,
+                capsize=0,
+                label=f"{self.channel}_mv net",
+            )
+        mv_upper = ceiling_soft & np.isfinite(rms)
+        if np.any(mv_upper):
+            ax.errorbar(
+                x_fvoa[mv_upper],
+                y[mv_upper],
+                yerr=rms[mv_upper],
+                fmt=".",
+                linestyle="none",
+                markersize=4,
+                color="tab:orange",
+                ecolor="tab:orange",
+                elinewidth=0.45,
+                capsize=0,
+                lolims=True,
+                label=f"{self.channel}_mv upper-range lower limit",
+            )
+        if np.any(rail):
+            ax.scatter(
+                x_fvoa[rail],
+                y[rail],
+                marker="_",
+                s=48,
+                linewidths=0.9,
+                color="tab:red",
+                label="ADC rail hard limit",
+            )
+        if np.any(floor):
+            ax.scatter(
+                x_fvoa[floor],
+                y[floor],
+                marker="v",
+                s=22,
+                linewidths=0.6,
+                color="tab:cyan",
+                label="floor constraint",
+            )
+        if np.any(ceiling_soft):
+            ax.scatter(
+                x_fvoa[ceiling_soft],
+                y[ceiling_soft],
+                marker="^",
+                s=22,
+                linewidths=0.6,
+                color="tab:orange",
+                label="upper-range constraint",
+            )
+        if np.any(invalid):
+            ax.scatter(
+                x_fvoa[invalid],
+                y[invalid],
+                marker="x",
+                s=18,
+                linewidths=0.55,
+                color="tab:red",
+                label="invalid",
+            )
+        if model_2d is not None:
+            ax.plot(x_grid, model_2d, color="tab:blue", linewidth=0.9, label="selected-slice composed model")
+        ax.plot(x_grid, model_1d, color="tab:orange", linewidth=0.9, label="1D slice fit")
+        ax.axhline(0.0, color="0.25", linestyle=":", linewidth=0.8, label="dark/net 0")
+        ax.set_ylabel(f"{self.channel}_mv net (mV)")
+        ax.set_title(
+            f"1D slice fit; value/floor/ceiling={np.count_nonzero(value)}/"
+            f"{np.count_nonzero(floor)}/{np.count_nonzero(ceiling)}; gain={slice_fit.gain:.4g}"
+        )
+        ax.legend(loc="best", fontsize="x-small")
+
+        ax = axes[1]
+        anchor10_db, anchor90_db, anchor10_b, anchor90_b = _atten_datasheet_region_anchors()
+        display_max_db = max(70.0, anchor90_db * 1.2)
+        if fit_db is not None:
+            ax.plot(
+                x_grid,
+                np.clip(fit_db, -5.0, display_max_db),
+                color="tab:blue",
+                linewidth=0.9,
+                label="selected-slice composed model",
+            )
+        ax.plot(
+            x_grid,
+            np.clip(_atten_db_from_tx(model_1d / slice_fit.sweep_plateau_pd_mv), -5.0, display_max_db),
+            color="tab:orange",
+            linewidth=0.9,
+            label="1D slice fit",
+        )
+        ax.axhline(
+            anchor10_db,
+            color="0.30",
+            linestyle="--",
+            linewidth=0.7,
+            label=f"10% datasheet linear-region anchor ({anchor10_db:.1f} dB)",
+        )
+        ax.axhline(
+            anchor90_db,
+            color="0.45",
+            linestyle=":",
+            linewidth=0.7,
+            label=f"90% datasheet linear-region anchor ({anchor90_db:.1f} dB)",
+        )
+        db_measured, db_sigma = _atten_db_with_sigma(
+            y,
+            rms,
+            reference_mv=slice_fit.sweep_plateau_pd_mv,
+            reference_sigma_mv=reference_sigma,
+        )
+        measured_db_mask = value & np.isfinite(db_measured) & np.isfinite(db_sigma)
+        if np.any(measured_db_mask):
+            ax.errorbar(
+                x_fvoa[measured_db_mask],
+                db_measured[measured_db_mask],
+                yerr=db_sigma[measured_db_mask],
+                fmt=".",
+                linestyle="none",
+                markersize=4,
+                color="0.20",
+                ecolor="0.45",
+                elinewidth=0.45,
+                capsize=0,
+                label="slice samples converted to attenuation",
+            )
+        if np.any(floor):
+            floor_db, floor_sigma_db = _atten_db_with_sigma(
+                np.full(np.count_nonzero(floor), floor_mv),
+                rms[floor],
+                reference_mv=slice_fit.sweep_plateau_pd_mv,
+                reference_sigma_mv=reference_sigma,
+            )
+            floor_sigma_db = np.maximum(floor_sigma_db, ATTENUATOR_CENSORED_SIGMA_DB)
+            ax.errorbar(
+                x_fvoa[floor],
+                floor_db,
+                yerr=floor_sigma_db,
+                fmt="^",
+                linestyle="none",
+                markersize=4,
+                color="tab:cyan",
+                ecolor="tab:cyan",
+                elinewidth=0.45,
+                capsize=0,
+                lolims=True,
+                label="floor constraint: attenuation must be above",
+            )
+        if np.any(ceiling):
+            ceiling_signal_mv = np.maximum(y[ceiling_soft], ceiling_mv)
+            ceiling_db, ceiling_sigma_db = _atten_db_with_sigma(
+                ceiling_signal_mv,
+                rms[ceiling_soft],
+                reference_mv=slice_fit.sweep_plateau_pd_mv,
+                reference_sigma_mv=reference_sigma,
+            )
+            ceiling_sigma_db = np.maximum(ceiling_sigma_db, ATTENUATOR_CENSORED_SIGMA_DB)
+            if np.any(ceiling_soft):
+                ax.errorbar(
+                    x_fvoa[ceiling_soft],
+                    ceiling_db,
+                    yerr=ceiling_sigma_db,
+                    fmt="v",
+                    linestyle="none",
+                    markersize=4,
+                    color="tab:orange",
+                    ecolor="tab:orange",
+                    elinewidth=0.45,
+                    capsize=0,
+                    uplims=True,
+                    label="upper-range constraint: attenuation must be below",
+                )
+            if np.any(rail):
+                ax.errorbar(
+                    x_fvoa[rail],
+                    np.zeros(np.count_nonzero(rail)),
+                    yerr=np.zeros(np.count_nonzero(rail)),
+                    fmt="v",
+                    linestyle="none",
+                    markersize=4,
+                    color="tab:red",
+                    ecolor="tab:red",
+                    elinewidth=0.45,
+                    capsize=0,
+                    uplims=True,
+                    label="ADC rail hard limit: attenuation <= 0 dB",
+                )
+        ax.scatter(
+            ATTENUATOR_FVOA_DATASHEET_V,
+            ATTENUATOR_FVOA_DATASHEET_DB,
+            s=18,
+            marker="D",
+            facecolors="none",
+            edgecolors="tab:purple",
+            linewidths=0.8,
+            label="digitized datasheet attenuation",
+        )
+        ax.plot(ATTENUATOR_FVOA_DATASHEET_V, ATTENUATOR_FVOA_DATASHEET_DB, color="tab:purple", linewidth=0.55)
+        anchor_sources = [(slice_fit.dac, slice_fit.gain, "tab:orange")]
+        if fit is not None:
+            fit_dac = fit.dac1 if sweep == "dac1" else fit.dac2
+            fit_gain = fit.gain1 if sweep == "dac1" else fit.gain2
+            anchor_sources.insert(0, (fit_dac, fit_gain, "tab:blue"))
+        for dac, gain, color in anchor_sources:
+            anchor_v = np.array(
+                (
+                    _atten_fvoa_v_for_b(dac, gain, anchor10_b),
+                    _atten_fvoa_v_for_b(dac, gain, anchor90_b),
+                )
+            )
+            anchor_db = np.array((anchor10_db, anchor90_db))
+            keep = np.isfinite(anchor_v) & (anchor_v >= 0.0) & (anchor_v <= 5.0)
+            if np.any(keep):
+                ax.scatter(anchor_v[keep], anchor_db[keep], marker="|", s=80, color=color)
+        ax.set_xlabel(f"{sweep} FVOA drive (V)")
+        ax.set_ylabel("relative attenuation (dB)")
+        ax.set_ylim(-5.0, display_max_db)
+        sec = ax.secondary_yaxis("right", functions=(_atten_model_b_from_db, _atten_model_db_from_b))
+        sec.set_ylabel("erf delta coordinate")
+        ax.legend(loc="best", fontsize="x-small")
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+        return fig
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorCalibrationDataset(ResponseRepr):
+    records: np.recarray
+    meta: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "records",
+            np.array(self.records, dtype=ATTEN_CAL_DTYPE, copy=False).view(np.recarray),
+        )
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        physicals = tuple(dict.fromkeys(str(value) for value in self.records.physical))
+        counts = tuple((name, int(np.sum(self.records.physical == name))) for name in physicals)
+        return (
+            ("records", len(self.records)),
+            ("physicals", physicals),
+            ("counts", counts),
+        )
+
+    def to_recarray(self, *, copy: bool = False) -> np.recarray:
+        return self.records.copy().view(np.recarray) if copy else self.records
+
+    def to_dataframe(self):
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise HispecFibError("pandas is not installed") from exc
+        return pd.DataFrame.from_records(self.records, columns=ATTEN_CAL_DTYPE.names)
+
+    def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        missing = [name for name in names if name not in self.records.dtype.names]
+        if missing:
+            raise HispecFibError(f"unknown attenuator calibration field(s): {', '.join(missing)}")
+        arrays = tuple(self.records[name] for name in names)
+        return arrays[0] if len(arrays) == 1 else arrays
+
+    def physical(self, physical: Literal["dac1", "dac2"]) -> "AttenuatorCalibrationDataset":
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        records = self.records[np.asarray(self.records.physical).astype(str) == physical]
+        return AttenuatorCalibrationDataset(records=records.view(np.recarray), meta=self.meta)
+
+    def _fit_coeff_for_physical(
+        self, physical: str
+    ) -> tuple[float, float, float, float, tuple[float, float, float, float]] | None:
+        for item in self.meta:
+            fits = item.get("fits") if isinstance(item, Mapping) else None
+            if not isinstance(fits, Mapping):
+                continue
+            fit = fits.get(physical)
+            if not isinstance(fit, AttenuatorFitMetrics) or not fit.valid:
+                continue
+            if fit.fvoa_50pct_mv is None or fit.slope_inv_fvoa_mv is None:
+                continue
+            max_atten_db = (
+                FVOA_DEFAULT_MAX_ATTEN_DB
+                if fit.max_atten_db is None
+                else float(fit.max_atten_db)
+            )
+            correction_coeff = (
+                (0.0, 0.0, 0.0, 0.0)
+                if fit.correction_coeff is None
+                else fit.correction_coeff
+            )
+            return (
+                float(fit.fvoa_50pct_mv),
+                float(fit.slope_inv_fvoa_mv),
+                max_atten_db,
+                ATTENUATOR_DEFAULT_GAIN,
+                correction_coeff,
+            )
+        return None
+
+    @staticmethod
+    def _record_by_index(rec: np.recarray, record_index: int) -> Any | None:
+        matches = np.flatnonzero(np.asarray(rec.record, dtype=int) == int(record_index))
+        if len(matches) == 0:
+            return None
+        return rec[int(matches[0])]
+
+    def _physical_meta(self, physical: str) -> Mapping[str, Any] | None:
+        for item in self.meta:
+            if (
+                isinstance(item, Mapping)
+                and item.get("physical") == physical
+                and "record_chunk_count" in item
+            ):
+                return item
+        return None
+
+    def _role_record_indices(self, physical: str) -> dict[str, list[int]]:
+        meta = self._physical_meta(physical)
+        roles = {"reference": [], "bridge_before": [], "bridge_after": []}
+        if meta is None:
+            return roles
+        if meta.get("reference_valid"):
+            roles["reference"].append(int(meta["reference_record"]))
+        for bridge in meta.get("bridges", ()):
+            roles["bridge_before"].append(int(bridge["before_record"]))
+            roles["bridge_after"].append(int(bridge["after_record"]))
+        return roles
+
+    def _accepted_bridges(self, physical: str, rec: np.recarray) -> list[dict[str, Any]]:
+        meta = self._physical_meta(physical)
+        if meta is None:
+            return []
+        bridges: list[dict[str, Any]] = []
+        for bridge in meta.get("bridges", ()):
+            before = self._record_by_index(rec, int(bridge["before_record"]))
+            after = self._record_by_index(rec, int(bridge["after_record"]))
+            if before is None or after is None:
+                continue
+            if before.signal_mv <= 0.0 or after.signal_mv <= 0.0:
+                continue
+            if before.signal_err_mv <= 0.0 or after.signal_err_mv <= 0.0:
+                continue
+            ratio = float(after.signal_mv / before.signal_mv)
+            rel_var = float(
+                (before.signal_err_mv / before.signal_mv) ** 2
+                + (after.signal_err_mv / after.signal_mv) ** 2
+            )
+            bridges.append(
+                {
+                    "bridge_index": len(bridges),
+                    "boundary_index": int(after.record),
+                    "before_record": int(before.record),
+                    "after_record": int(after.record),
+                    "from_segment": int(before.segment),
+                    "to_segment": int(after.segment),
+                    "sweep_mv": float(after.sweep_mv),
+                    "other_before_mv": float(before.other_mv),
+                    "other_after_mv": float(after.other_mv),
+                    "signal_before_mv": float(before.signal_mv),
+                    "signal_after_mv": float(after.signal_mv),
+                    "ratio": ratio,
+                    "ratio_rel_var": rel_var,
+                }
+            )
+        return bridges
+
+    def derived(
+        self,
+        *,
+        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+    ) -> np.recarray:
+        out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
+        for name in ATTEN_CAL_DTYPE.names:
+            out[name] = self.records[name]
+        for name in ATTEN_CAL_DERIVED_DTYPE.names:
+            if name in ATTEN_CAL_DTYPE.names:
+                continue
+            if out.dtype[name].kind == "b":
+                out[name] = False
+            elif out.dtype[name].kind in "iu":
+                out[name] = -1
+            else:
+                out[name] = np.nan
+
+        coeffs = {
+            "dac1": _atten_coeff_tuple("dac1", dac1) if dac1 is not None else self._fit_coeff_for_physical("dac1"),
+            "dac2": _atten_coeff_tuple("dac2", dac2) if dac2 is not None else self._fit_coeff_for_physical("dac2"),
+        }
+
+        for physical in ("dac1", "dac2"):
+            mask = np.asarray(out["physical"]).astype(str) == physical
+            if not np.any(mask):
+                continue
+            rec = out[mask].view(np.recarray)
+            signal = np.asarray(rec.signal_mv, dtype=float)
+            signal_err = np.asarray(rec.signal_err_mv, dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rec.acq_snr[:] = signal / signal_err
+
+            meta = self._physical_meta(physical)
+            if meta is None or not meta.get("reference_valid"):
+                out[mask] = rec
+                continue
+            ref = self._record_by_index(rec, int(meta["reference_record"]))
+            if ref is None:
+                out[mask] = rec
+                continue
+            if not (
+                str(ref.classification) == "ok"
+                and ref.signal_mv > 0.0
+                and ref.signal_err_mv > 0.0
+            ):
+                out[mask] = rec
+                continue
+            open_signal = float(ref.signal_mv)
+            open_err = float(ref.signal_err_mv)
+            open_rel_var = (open_err / open_signal) ** 2
+            segment_scale: dict[int, float] = {0: 1.0}
+            segment_rel_var: dict[int, float] = {0: 0.0}
+            for bridge in self._accepted_bridges(physical, rec):
+                from_segment = int(bridge["from_segment"])
+                to_segment = int(bridge["to_segment"])
+                if from_segment not in segment_scale:
+                    continue
+                segment_scale[to_segment] = segment_scale[from_segment] * float(bridge["ratio"])
+                segment_rel_var[to_segment] = segment_rel_var[from_segment] + float(bridge["ratio_rel_var"])
+                rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
+
+            for i, row in enumerate(rec):
+                segment = int(row.segment)
+                if str(row.classification) != "ok" or segment not in segment_scale:
+                    continue
+                if not (row.signal_mv > 0.0 and row.signal_err_mv > 0.0):
+                    continue
+                scale = segment_scale[segment]
+                scale_rel_var = segment_rel_var[segment]
+                scaled_signal = float(row.signal_mv) / scale
+                scaled_rel_var = (float(row.signal_err_mv) / float(row.signal_mv)) ** 2 + scale_rel_var
+                scaled_err = abs(scaled_signal) * np.sqrt(max(scaled_rel_var, 0.0))
+                tx = scaled_signal / open_signal
+                tx_rel_var = scaled_rel_var + open_rel_var
+                tx_err = abs(tx) * np.sqrt(max(tx_rel_var, 0.0))
+                db = float(_atten_db_from_tx([tx])[0])
+                db_err = (10.0 / np.log(10.0)) * np.sqrt(max(tx_rel_var, 0.0))
+                rec.segment_scale[i] = scale
+                rec.segment_scale_rel_var[i] = scale_rel_var
+                rec.scaled_signal_mv[i] = scaled_signal
+                rec.scaled_signal_err_mv[i] = scaled_err
+                rec.tx[i] = tx
+                rec.tx_err[i] = tx_err
+                rec.db[i] = db
+                rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
+                rec.fit_candidate[i] = (
+                    str(row.event) == "point"
+                    and ATTEN_CAL_MIN_TX < tx < ATTEN_CAL_MAX_TX
+                )
+            coeff = coeffs[physical]
+            if coeff is not None:
+                model_db = _atten_db_from_coeff(coeff, rec.sweep_mv)
+                rec.residual_db[:] = model_db - rec.db
+                rec.included[:] = rec.fit_candidate & np.isfinite(rec.residual_db)
+            out[mask] = rec
+        return out.view(np.recarray)
+
+    def bridge_table(self):
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise HispecFibError("pandas is not installed") from exc
+        rows: list[dict[str, Any]] = []
+        for physical in ("dac1", "dac2"):
+            rec = self.physical(physical).records
+            for row in self._accepted_bridges(physical, rec):
+                item = dict(row)
+                item["physical"] = physical
+                rows.append(item)
+        columns = (
+            "physical",
+            "bridge_index",
+            "boundary_index",
+            "before_record",
+            "after_record",
+            "from_segment",
+            "to_segment",
+            "sweep_mv",
+            "other_before_mv",
+            "other_after_mv",
+            "signal_before_mv",
+            "signal_after_mv",
+            "ratio",
+            "ratio_rel_var",
+        )
+        return pd.DataFrame(rows, columns=columns)
+
+    def plot_physical(
+        self,
+        physical: Literal["dac1", "dac2"] = "dac1",
+        *,
+        x_axis: Literal["fvoa_mv", "sweep_mv"] = "fvoa_mv",
+        figsize: tuple[float, float] = (10.0, 10.0),
+    ):
+        import matplotlib.pyplot as plt
+
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        x_axis = _require_choice("x_axis", x_axis, ("fvoa_mv", "sweep_mv"))  # type: ignore[assignment]
+        rec = self.physical(physical).derived()
+        if len(rec) == 0:
+            raise HispecFibError(f"no retained records for {physical}")
+
+        x = np.asarray(rec[x_axis], dtype=float)
+        signal = np.asarray(rec.signal_mv, dtype=float)
+        signal_err = np.asarray(rec.signal_err_mv, dtype=float)
+        scaled_signal = np.asarray(rec.scaled_signal_mv, dtype=float)
+        scaled_signal_err = np.asarray(rec.scaled_signal_err_mv, dtype=float)
+        attenuation_db = np.asarray(rec.db, dtype=float)
+        attenuation_sigma_db = np.asarray(rec.db_err, dtype=float)
+        residual_db = np.asarray(rec.residual_db, dtype=float)
+        finite_signal_err = np.isfinite(x) & np.isfinite(signal) & np.isfinite(signal_err) & (signal_err > 0.0)
+        finite_scaled_err = np.isfinite(x) & np.isfinite(scaled_signal) & np.isfinite(scaled_signal_err) & (scaled_signal_err > 0.0)
+        finite_atten_err = np.isfinite(x) & np.isfinite(attenuation_db) & np.isfinite(attenuation_sigma_db) & (attenuation_sigma_db > 0.0)
+
+        fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=True, constrained_layout=True)
+        fig.suptitle(f"{physical} retained attenuator calibration records")
+
+        axes[0].set_title("raw dark-subtracted photodiode signal")
+        if np.any(finite_signal_err):
+            axes[0].errorbar(
+                x[finite_signal_err],
+                signal[finite_signal_err],
+                yerr=signal_err[finite_signal_err],
+                fmt="none",
+                ecolor="0.60",
+                elinewidth=0.55,
+                capsize=0,
+                zorder=1,
+            )
+        axes[0].set_ylabel("signal_mv")
+
+        axes[1].set_title("bridge-scaled signal")
+        if np.any(finite_scaled_err):
+            axes[1].errorbar(
+                x[finite_scaled_err],
+                scaled_signal[finite_scaled_err],
+                yerr=scaled_signal_err[finite_scaled_err],
+                fmt="none",
+                ecolor="0.60",
+                elinewidth=0.55,
+                capsize=0,
+                zorder=1,
+            )
+        axes[1].set_ylabel("scaled_signal_mv")
+
+        axes[2].set_title("attenuation from derived normalized transmission")
+        if np.any(finite_atten_err):
+            axes[2].errorbar(
+                x[finite_atten_err],
+                attenuation_db[finite_atten_err],
+                yerr=attenuation_sigma_db[finite_atten_err],
+                fmt="none",
+                ecolor="0.60",
+                elinewidth=0.55,
+                capsize=0,
+                zorder=1,
+            )
+        axes[2].set_ylabel("attenuation_db")
+
+        axes[3].set_title("fit residuals for derived fit candidates")
+        axes[3].axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
+        axes[3].set_ylabel("residual_db")
+        axes[3].set_xlabel("FVOA drive (mV)" if x_axis == "fvoa_mv" else "DAC drive (mV)")
+
+        event_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.event).astype(str)))
+        classification_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.classification).astype(str)))
+        for event in event_values:
+            marker = _ATTEN_CAL_EVENT_MARKERS.get(event, "o")
+            event_mask = np.asarray(rec.event).astype(str) == event
+            for classification in classification_values:
+                mask = event_mask & (np.asarray(rec.classification).astype(str) == classification)
+                if not np.any(mask):
+                    continue
+                color = _ATTEN_CAL_EVENT_COLORS.get(
+                    event, _ATTEN_CAL_CLASSIFICATION_COLORS.get(classification, "0.35")
+                )
+                alpha = 0.85 if classification == "ok" else 0.62
+                included = mask & np.asarray(rec.included, dtype=bool)
+                other = mask & ~np.asarray(rec.included, dtype=bool)
+                if np.any(other):
+                    axes[0].scatter(
+                        x[other],
+                        signal[other],
+                        marker=marker,
+                        s=28,
+                        color=color,
+                        alpha=alpha,
+                        label=f"{event}/{classification}",
+                        zorder=2,
+                    )
+                    axes[1].scatter(
+                        x[other],
+                        scaled_signal[other],
+                        marker=marker,
+                        s=28,
+                        color=color,
+                        alpha=alpha,
+                        zorder=2,
+                    )
+                    axes[2].scatter(
+                        x[other],
+                        attenuation_db[other],
+                        marker=marker,
+                        s=28,
+                        color=color,
+                        alpha=alpha,
+                        zorder=2,
+                    )
+                if np.any(included):
+                    axes[0].scatter(
+                        x[included],
+                        signal[included],
+                        marker=marker,
+                        s=48,
+                        facecolors=color,
+                        edgecolors="black",
+                        linewidths=0.8,
+                        label=f"{event}/{classification} included",
+                        zorder=3,
+                    )
+                    axes[1].scatter(
+                        x[included],
+                        scaled_signal[included],
+                        marker=marker,
+                        s=48,
+                        facecolors=color,
+                        edgecolors="black",
+                        linewidths=0.8,
+                        zorder=3,
+                    )
+                    axes[2].scatter(
+                        x[included],
+                        attenuation_db[included],
+                        marker=marker,
+                        s=48,
+                        facecolors=color,
+                        edgecolors="black",
+                        linewidths=0.8,
+                        zorder=3,
+                    )
+
+        roles = self._role_record_indices(physical)
+        role_y = (signal, scaled_signal, attenuation_db)
+        for role, indices in roles.items():
+            if not indices:
+                continue
+            role_mask = np.isin(np.asarray(rec.record, dtype=int), np.asarray(indices, dtype=int)) & np.isfinite(x)
+            if not np.any(role_mask):
+                continue
+            for ax, y in zip(axes[:3], role_y, strict=False):
+                finite_role = role_mask & np.isfinite(y)
+                if not np.any(finite_role):
+                    continue
+                ax.scatter(
+                    x[finite_role],
+                    y[finite_role],
+                    marker=_ATTEN_CAL_ROLE_MARKERS[role],
+                    s=92,
+                    facecolors="none",
+                    edgecolors=_ATTEN_CAL_ROLE_COLORS[role],
+                    linewidths=1.3,
+                    label=role,
+                    zorder=4,
+                )
+
+        included = np.asarray(rec.included, dtype=bool) & np.isfinite(x) & np.isfinite(residual_db)
+        if np.any(included):
+            axes[3].scatter(
+                x[included],
+                residual_db[included],
+                s=38,
+                color="black",
+                alpha=0.85,
+                label="fit included",
+            )
+        for segment in np.unique(np.asarray(rec.segment, dtype=int)):
+            mask = np.asarray(rec.segment, dtype=int) == segment
+            if np.any(mask):
+                axes[3].text(
+                    float(np.nanmedian(x[mask])),
+                    0.95,
+                    f"seg {segment}",
+                    transform=axes[3].get_xaxis_transform(),
+                    ha="center",
+                    va="top",
+                    fontsize=8,
+                    color="0.35",
+                )
+        axes[0].legend(loc="best", fontsize="x-small", ncol=2)
+        return fig
+
+    def plot_surface(
+        self,
+        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+        *,
+        axis: Literal["fvoa_mv", "dac_mv"] = "fvoa_mv",
+        overlay_records: bool = True,
+        grid_points: int = 160,
+        max_db: float = 80.0,
+        figsize: tuple[float, float] = (9.0, 7.0),
+    ):
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+
+        axis = _require_choice("axis", axis, ("fvoa_mv", "dac_mv"))  # type: ignore[assignment]
+        dac1_coeff = _atten_coeff_tuple("dac1", dac1)
+        dac2_coeff = _atten_coeff_tuple("dac2", dac2)
+        grid_points = int(grid_points)
+        if grid_points < 8:
+            raise HispecFibError("grid_points must be at least 8")
+        max_db = _require_float("max_db", max_db, 1.0, 300.0)
+
+        if axis == "fvoa_mv":
+            x_max = ATTENUATOR_DRIVE_MAX_MV * dac1_coeff[3]
+            y_max = ATTENUATOR_DRIVE_MAX_MV * dac2_coeff[3]
+            x_label = "FVOA1 drive (mV)"
+            y_label = "FVOA2 drive (mV)"
+            x_to_dac = lambda value, coeff: np.asarray(value, dtype=float) / coeff[3]
+        else:
+            x_max = ATTENUATOR_DRIVE_MAX_MV
+            y_max = ATTENUATOR_DRIVE_MAX_MV
+            x_label = "DAC1 drive (mV)"
+            y_label = "DAC2 drive (mV)"
+            x_to_dac = lambda value, _coeff: np.asarray(value, dtype=float)
+
+        grid_x, grid_y = np.meshgrid(
+            np.linspace(0.0, x_max, grid_points),
+            np.linspace(0.0, y_max, grid_points),
+        )
+        grid_dac1 = x_to_dac(grid_x, dac1_coeff)
+        grid_dac2 = x_to_dac(grid_y, dac2_coeff)
+        surface_db = np.clip(
+            _atten_pair_db_from_coeffs(dac1_coeff, dac2_coeff, grid_dac1, grid_dac2),
+            0.0,
+            max_db,
+        )
+        norm = Normalize(vmin=0.0, vmax=max_db)
+        levels = np.linspace(0.0, max_db, 81)
+
+        fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+        mesh = ax.contourf(grid_x, grid_y, surface_db, levels=levels, cmap="viridis", norm=norm, extend="max")
+        contours = ax.contour(grid_x, grid_y, surface_db, levels=np.linspace(0.0, max_db, 9), colors="white", linewidths=0.55)
+        ax.clabel(contours, fmt=lambda value: f"{value:.0f} dB", fontsize=8)
+        fig.colorbar(mesh, ax=ax, label="pair attenuation (dB)")
+
+        if overlay_records and len(self.records):
+            rec = self.derived(dac1=dac1_coeff, dac2=dac2_coeff)
+            sample_dac1, sample_dac2 = _atten_cal_pair_dac(rec)
+            sample_x = sample_dac1 * dac1_coeff[3] if axis == "fvoa_mv" else sample_dac1
+            sample_y = sample_dac2 * dac2_coeff[3] if axis == "fvoa_mv" else sample_dac2
+            sample_db = _atten_cal_pair_sample_db(rec, dac1_coeff, dac2_coeff)
+            sample_sigma_db = np.asarray(rec.db_err, dtype=float)
+            sizes = np.clip(24.0 + 5.0 * np.nan_to_num(sample_sigma_db, nan=0.0, posinf=20.0), 24.0, 130.0)
+            finite = (
+                np.isfinite(sample_x)
+                & np.isfinite(sample_y)
+                & np.isfinite(sample_db)
+                & np.isfinite(sample_sigma_db)
+                & (np.asarray(rec.classification).astype(str) == "ok")
+                & (np.asarray(rec.tx, dtype=float) > 0.0)
+                & (sample_x >= 0.0)
+                & (sample_x <= x_max)
+                & (sample_y >= 0.0)
+                & (sample_y <= y_max)
+            )
+            event_values = tuple(dict.fromkeys(str(value) for value in np.asarray(rec.event).astype(str)))
+            for event in event_values:
+                marker = _ATTEN_CAL_EVENT_MARKERS.get(event, "o")
+                mask = finite & (np.asarray(rec.event).astype(str) == event)
+                if not np.any(mask):
+                    continue
+                included = mask & np.asarray(rec.included, dtype=bool)
+                other = mask & ~np.asarray(rec.included, dtype=bool)
+                if np.any(other):
+                    ax.scatter(
+                        sample_x[other],
+                        sample_y[other],
+                        c=np.clip(sample_db[other], 0.0, max_db),
+                        cmap="viridis",
+                        norm=norm,
+                        marker=marker,
+                        s=sizes[other],
+                        edgecolors="white",
+                        linewidths=0.45,
+                        alpha=0.78,
+                        label=event,
+                    )
+                if np.any(included):
+                    ax.scatter(
+                        sample_x[included],
+                        sample_y[included],
+                        c=np.clip(sample_db[included], 0.0, max_db),
+                        cmap="viridis",
+                        norm=norm,
+                        marker=marker,
+                        s=sizes[included],
+                        edgecolors="black",
+                        linewidths=0.85,
+                        alpha=0.95,
+                        label=f"{event} included",
+                    )
+            ax.legend(loc="best", fontsize="x-small", ncol=2)
+            ax.set_title("coefficient surface with auto-calibration records; marker area follows dB uncertainty")
+        else:
+            ax.set_title("coefficient-only attenuation surface")
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_xlim(0.0, x_max)
+        ax.set_ylim(0.0, y_max)
+        return fig
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeWindow(ResponseRepr):
     duration_ms: int
-    samples: int
-    target_samples: int
-    stored_on_complete: bool | None = None
-    stored: bool | None = None
-    mean_dark_mv: float | None = None
-    rms_mv: float | None = None
-    dark_noise_rms_mv: float = np.nan
-    min_mv: float | None = None
-    max_mv: float | None = None
-    previous_dark_mv: float | None = None
-    configured_dark_mv: float | None = None
-    lowest_stored_dark_mv: float = np.nan
+    failed_samples: int
+    mean_mv: float = np.nan
+    mean_net_mv: float = np.nan
+    rms_mv: float = np.nan
+    mean_net_err_mv: float = np.nan
+    min_mv: float = np.nan
+    max_mv: float = np.nan
+    power_uw: float = np.nan
+    power_err_uw: float = np.nan
 
 
-@dataclass(frozen=True)
-class PhotodiodeSettings:
-    channel: str
+@dataclass(frozen=True, repr=False)
+class PhotodiodeChannelValues(ResponseRepr):
+    raw: int
+    mv: float
+    net_mv: float
+    net_err_mv: float
+    power_uw: float
+    power_err_uw: float
     dark_mv: float
-    dark_duration_ms: int | Literal["user"]
-    dark_noise_rms_mv: float
-    lowest_stored_dark_mv: float
-    noise_rms_mV: float
+    dark_err_mv: float
+    window: PhotodiodeWindow
+    pd_is_off: bool
+    ontime_s: int
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeValues(ResponseRepr):
+    yj: PhotodiodeChannelValues | None = None
+    hk: PhotodiodeChannelValues | None = None
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeDark(ResponseRepr):
+    channel: str
+    pending: bool
+    duration_ms: int
+    dark: PhotodiodeWindow
+    lowest_dark: PhotodiodeWindow
+
+
+@dataclass(frozen=True, repr=False)
+class PhotodiodeSettings(ResponseRepr):
+    channel: str
+    noise_rms_mv: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
     power: str
@@ -496,8 +2979,8 @@ class PhotodiodeSettings:
     off_in_s: int | None
 
 
-@dataclass(frozen=True)
-class SplitSwitchState:
+@dataclass(frozen=True, repr=False)
+class SplitSwitchState(ResponseRepr):
     name: str
     state: str
     duty_cycle: float
@@ -505,8 +2988,8 @@ class SplitSwitchState:
     b_ms: int
 
 
-@dataclass(frozen=True)
-class SplitState:
+@dataclass(frozen=True, repr=False)
+class SplitState(ResponseRepr):
     channel: str
     ratio_ask: tuple[float, float, float]
     ratio_actual: tuple[float, float, float]
@@ -517,17 +3000,17 @@ class SplitState:
     stop_in_s: int
 
 
-@dataclass(frozen=True)
-class WarningEvent:
+@dataclass(frozen=True, repr=False)
+class WarningEvent(ResponseRepr):
     severity: str
     code: str
     msg: str
     context: str
-    uptime_ms: int
+    uptime_s: int
 
 
-@dataclass(frozen=True)
-class ThroughputSample:
+@dataclass(frozen=True, repr=False)
+class ThroughputSample(ResponseRepr):
     channel: str
     laser: str
     autolevel: bool
@@ -545,13 +3028,13 @@ class ThroughputSample:
     pd_raw: int
     pd_mv: float
     pd_net_mv: float
-    pd_mean_mv_1s: float
-    pd_rms_mv_0p5s: float
+    pd_mean_net_mv: float
+    pd_mean_net_err_mv: float
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
-    pd_ontime_s: float
-    laser_current_ontime_s: float
+    pd_ontime_s: int
+    laser_current_ontime_s: int
     flags: tuple[str, ...] = ()
 
     def as_tuple(self) -> tuple[Any, ...]:
@@ -597,6 +3080,10 @@ def _float_or_nan(value: Any) -> float:
 
 
 def _require_nonnegative_u32(name: str, value: int) -> int:
+    if isinstance(value, bool):
+        raise HispecFibError(f"{name} must be a non-negative uint32")
+    if isinstance(value, (float, np.floating)) and not float(value).is_integer():
+        raise HispecFibError(f"{name} must be a non-negative uint32")
     value = int(value)
     if value < 0 or value > 0xFFFFFFFF:
         raise HispecFibError(f"{name} must be a non-negative uint32")
@@ -622,6 +3109,96 @@ def _as_tuple3(value: Sequence[float], name: str) -> tuple[float, float, float]:
     return (float(value[0]), float(value[1]), float(value[2]))
 
 
+def _decode_atten_physical_coeff(data: Mapping[str, Any], name: str) -> AttenuatorPhysicalCoeff:
+    try:
+        return AttenuatorPhysicalCoeff(
+            fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
+            slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
+            max_atten_db=float(data["max_atten_db"]),
+            gain=float(data["gain"]),
+            correction_coeff=_atten_correction_tuple(name, data["correction_coeff"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HispecFibError(f"{name} coefficient response is malformed") from exc
+
+
+def _atten_physical_coeff_payload(
+    name: str,
+    value: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+    *,
+    default_gain: float = ATTENUATOR_DEFAULT_GAIN,
+) -> dict[str, float]:
+    if isinstance(value, AttenuatorPhysicalCoeff):
+        fvoa_50pct_mv = value.fvoa_50pct_mv
+        slope_inv_fvoa_mv = value.slope_inv_fvoa_mv
+        max_atten_db = value.max_atten_db
+        gain = value.gain
+        correction_coeff = value.correction_coeff
+        include_correction = True
+    elif isinstance(value, Mapping):
+        try:
+            fvoa_50pct_mv = value["fvoa_50pct_mv"]
+            slope_inv_fvoa_mv = value["slope_inv_fvoa_mv"]
+            max_atten_db = value["max_atten_db"]
+            gain = value.get("gain", default_gain)
+            include_correction = "correction_coeff" in value
+            correction_coeff = (
+                _atten_correction_tuple(name, value["correction_coeff"])
+                if include_correction
+                else None
+            )
+        except KeyError as exc:
+            raise HispecFibError(
+                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
+            ) from exc
+    else:
+        if len(value) == 3:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = default_gain
+            correction_coeff = None
+            include_correction = False
+        elif len(value) == 4:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = value[3]
+            correction_coeff = None
+            include_correction = False
+        elif len(value) == 7:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = default_gain
+            correction_coeff = _atten_correction_tuple(name, value[3:])
+            include_correction = True
+        elif len(value) == 8:
+            fvoa_50pct_mv = value[0]
+            slope_inv_fvoa_mv = value[1]
+            max_atten_db = value[2]
+            gain = value[3]
+            correction_coeff = _atten_correction_tuple(name, value[4:])
+            include_correction = True
+        else:
+            raise HispecFibError(
+                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
+            )
+
+    payload = {
+        "fvoa_50pct_mv": _require_float(f"{name}.fvoa_50pct_mv", fvoa_50pct_mv, 1e-12, 1e12),
+        "slope_inv_fvoa_mv": _require_float(
+            f"{name}.slope_inv_fvoa_mv", slope_inv_fvoa_mv, 1e-12, 1e12
+        ),
+        "max_atten_db": _require_float(f"{name}.max_atten_db", max_atten_db, 1e-12, 1e12),
+        "gain": _require_float(f"{name}.gain", gain, 1e-12, 1e12),
+    }
+    if include_correction:
+        assert correction_coeff is not None
+        payload["correction_coeff"] = list(correction_coeff)
+    return payload
+
+
 def _dataclass_from(cls: type[Any], mapping: Mapping[str, Any], **overrides: Any) -> Any:
     names = {f.name for f in fields(cls)}
     values = {name: mapping.get(name) for name in names if name in mapping}
@@ -643,29 +3220,33 @@ def _to_object(value: Any) -> Any:
     return value
 
 
+def _is_atten_cal_status(data: Any) -> bool:
+    return isinstance(data, Mapping) and all(
+        key in data
+        for key in (
+            "state",
+            "mode",
+            "physical",
+            "fit",
+            "n",
+            "t_ms",
+            "complete_pct",
+            "point",
+            "mv",
+            "other_mv",
+        )
+    )
+
+
 def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
     if not payload:
         return CommandOk()
     data = _loads(payload)
-    if isinstance(data, Mapping) and "error" in data:
+    if isinstance(data, Mapping) and "error" in data and not _is_atten_cal_status(data):
         raise HispecFibPCBError(str(data["error"]), topic=topic, response=_to_object(data))
     if data == {"status": "ok"}:
         return CommandOk()
     return data
-
-
-def _decode_help(data: Mapping[str, Any]) -> HelpSummary:
-    return HelpSummary(help=str(data.get("help", "")))
-
-
-def _decode_catalog(data: Mapping[str, Any]) -> Catalog:
-    return Catalog(
-        board=str(data["board"]),
-        lasers=tuple(str(name) for name in data.get("lasers", ())),
-        route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
-        route_outputs=tuple(str(name) for name in data.get("route_outputs", ())),
-        routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
-    )
 
 
 def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
@@ -680,44 +3261,6 @@ def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
     )
 
 
-def _decode_status(data: Mapping[str, Any]) -> Status:
-    lasers = _named_values(
-        data.get("lasers", {}),
-        lambda _name, value: StatusLaserSummary(
-            power_mw=value.get("power_mw"),
-            tec_on_s=float(value.get("tec_on_s", 0.0)),
-            off_in_s=int(value.get("off_in_s", 0)),
-        ),
-    )
-    attens = _named_values(
-        data.get("attens", {}),
-        lambda _name, value: StatusAttenSummary(level_percent=value.get("level_%")),
-    )
-    return Status(
-        fw=str(data["fw"]),
-        boots=int(data["boots"]),
-        board=str(data["board"]),
-        board_ok=bool(data["board_ok"]),
-        mems_switches=int(data["mems_switches"]),
-        relay_err=int(data["relay_err"]),
-        amb_c=data.get("amb_c"),
-        pd_on_s=float(data["pd_on_s"]),
-        laserbank_on_s=int(data["laserbank_on_s"]),
-        lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
-        ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
-        lasers=lasers,
-        attens=attens,
-    )
-
-
-def _decode_temp(data: Mapping[str, Any]) -> TempStatus:
-    return TempStatus(
-        ambient_c=data.get("ambient_c"),
-        laserbank_c=data.get("laserbank_c"),
-        laser=_named_values(data.get("laser", {}), lambda _name, value: value),
-    )
-
-
 def _default_mems_duty_cycle(state: str) -> float:
     state = state.upper()
     if state.startswith("A"):
@@ -725,19 +3268,6 @@ def _default_mems_duty_cycle(state: str) -> float:
     if state.startswith("B"):
         return 0.0
     return 0.0
-
-
-def _decode_mems(data: Mapping[str, Any]) -> tuple[MemsSwitchState, ...]:
-    return tuple(
-        MemsSwitchState(
-            name=name,
-            state=str(value["state"]),
-            duty_cycle=float(
-                value.get("duty_cycle", _default_mems_duty_cycle(str(value["state"])))
-            ),
-        )
-        for name, value in data.items()
-    )
 
 
 def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
@@ -754,78 +3284,27 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
     )
 
 
-def _decode_mems_routes(data: Mapping[str, Any]) -> MemsRoutes:
-    active = data.get("active_routes", {})
-    return MemsRoutes(
-        active_routes=tuple(NamedValue(str(name), tuple(value)) for name, value in active.items())
-    )
-
-
-def _decode_route_loss(data: Mapping[str, Any]) -> RouteLoss:
-    return RouteLoss(
-        route=str(data["route"]),
-        lasers=_named_values(data.get("lasers", {}), lambda _name, value: float(value)),
-        split=_as_tuple3(data["split"], "split") if "split" in data else None,
-    )
-
-
-def _decode_laser_settings(data: Mapping[str, Any]) -> LaserSettings:
-    settings = data["settings"]
-    pid = settings["tec_pid"]
-    return LaserSettings(
-        name=str(data["name"]),
-        model=str(settings["model"]),
-        nominal_current_ma=float(settings["nominal_current_ma"]),
-        max_current_ma=float(settings["max_current_ma"]),
-        current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
-        threshold_current_ma=float(settings["threshold_current_ma"]),
-        efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
-        wavelength_nm=float(settings["wavelength_nm"]),
-        operating_temp_range_c=(float(settings["operating_temp_range_c"][0]), float(settings["operating_temp_range_c"][1])),
-        default_operating_temp_c=float(settings["default_operating_temp_c"]),
-        thermistor_kohm=float(settings["thermistor_kohm"]),
-        isolation_db=float(settings["isolation_db"]),
-        tec_max_current_a=float(settings["tec_max_current_a"]),
-        tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
-        disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
-        ntc_t_coefficient_per_c=float(settings["ntc_t_coefficient_per_c"]),
-        dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
-        dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
-        autooff_s=int(settings["autooff_s"]),
-        tune_nm=float(settings["tune_nm"]),
-        emit_total_s=float(settings["emit_total_s"]),
-    )
-
-
-def _decode_laser_eng(data: Mapping[str, Any]) -> LaserEngStatus:
-    return _dataclass_from(LaserEngStatus, data, pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))))
-
-
-def _decode_atten_coeff(data: Mapping[str, Any]) -> AttenuatorCoeff:
-    return AttenuatorCoeff(
-        dac1=(float(data["dac1"][0]), float(data["dac1"][1])),
-        dac2=(float(data["dac2"][0]), float(data["dac2"][1])),
-    )
-
-
-def _decode_atten_fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
-    if not bool(data.get("valid", False)):
-        return AttenuatorFitMetrics(valid=False)
-    return AttenuatorFitMetrics(
-        valid=True,
-        points=int(data.get("points", 0)),
-        slope=float(data["slope"]),
-        offset=float(data["offset"]),
-        corr=float(data["corr"]),
-        rms_db=float(data["rms_db"]),
-        max_abs_db=float(data["max_abs_db"]),
-        min_tx=float(data["min_tx"]),
-        max_tx=float(data["max_tx"]),
-        voltage_span_mv=float(data["voltage_span_mv"]),
-    )
-
-
 def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationStatus:
+    def fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
+        if not bool(data.get("valid", False)):
+            return AttenuatorFitMetrics(valid=False)
+        return AttenuatorFitMetrics(
+            valid=True,
+            accepted=bool(data.get("accepted", False)),
+            points=int(data.get("points", 0)),
+            fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
+            slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
+            max_atten_db=float(data["max_atten_db"]),
+            max_atten_sigma_db=float(data["max_atten_sigma_db"]),
+            corr=float(data["corr"]),
+            rms_db=float(data["rms_db"]),
+            max_abs_db=float(data["max_abs_db"]),
+            min_tx=float(data["min_tx"]),
+            max_tx=float(data["max_tx"]),
+            fvoa_span_mv=float(data["fvoa_span_mv"]),
+            correction_coeff=_atten_correction_tuple("fit", data["correction_coeff"]),
+        )
+
     return AttenuatorCalibrationStatus(
         state=str(data["state"]),
         mode=str(data["mode"]),
@@ -838,61 +3317,56 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
         mv=float(data["mv"]),
         other_mv=float(data["other_mv"]),
         error=int(data["error"]),
-        dac1=_decode_atten_fit(data.get("dac1", {"valid": False})),
-        dac2=_decode_atten_fit(data.get("dac2", {"valid": False})),
-        v_mV=tuple(float(v) for v in data.get("v_mV", ())),
+        dac1=fit(data.get("dac1", {"valid": False})),
+        dac2=fit(data.get("dac2", {"valid": False})),
     )
 
 
-def _atten_cal_batch_payload(name: str, batch: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any]) -> dict[str, list[float]]:
-    if isinstance(batch, AttenuatorCalibrationBatch):
-        voltage_mv = batch.v_mV
-        flux = batch.flux
-    elif isinstance(batch, Mapping):
-        voltage_mv = batch.get("v_mV", ())
-        flux = batch.get("flux", ())
-    else:
-        if len(batch) != 2:
-            raise HispecFibError(f"{name} must be AttenuatorCalibrationBatch or (v_mV, flux)")
-        voltage_mv = batch[0]
-        flux = batch[1]
-
-    voltage_values = tuple(float(v) for v in voltage_mv)
-    flux_values = tuple(float(v) for v in flux)
-    if len(voltage_values) != len(flux_values):
-        raise HispecFibError(f"{name} v_mV and flux lengths differ")
-    if len(voltage_values) < 6 or len(voltage_values) > 20:
-        raise HispecFibError(f"{name} must contain 6 to 20 points")
-    if any(not np.isfinite(v) for v in voltage_values):
-        raise HispecFibError(f"{name} v_mV contains non-finite values")
-    if any((not np.isfinite(v)) or v <= 0.0 for v in flux_values):
-        raise HispecFibError(f"{name} flux values must be positive and finite")
-    return {"v_mV": list(voltage_values), "flux": list(flux_values)}
-
-
-def _decode_dark_status(data: Mapping[str, Any]) -> DarkStatus:
-    return _dataclass_from(
-        DarkStatus,
-        data,
-        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
-        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
+def _decode_pd_window(data: Mapping[str, Any]) -> PhotodiodeWindow:
+    return PhotodiodeWindow(
+        duration_ms=int(data.get("duration_ms", 0)),
+        failed_samples=int(data.get("failed_samples", 0)),
+        mean_mv=_float_or_nan(data.get("mean_mv", np.nan)),
+        mean_net_mv=_float_or_nan(data.get("mean_net_mv", np.nan)),
+        rms_mv=_float_or_nan(data.get("rms_mv", np.nan)),
+        mean_net_err_mv=_float_or_nan(data.get("mean_net_err_mv", np.nan)),
+        min_mv=_float_or_nan(data.get("min_mv", np.nan)),
+        max_mv=_float_or_nan(data.get("max_mv", np.nan)),
+        power_uw=_float_or_nan(data.get("power_uw", np.nan)),
+        power_err_uw=_float_or_nan(data.get("power_err_uw", np.nan)),
     )
 
 
-def _decode_pdsettings(data: Mapping[str, Any]) -> PhotodiodeSettings:
-    duration = data.get("dark_duration_ms", "user")
-    return PhotodiodeSettings(
+def _decode_pd_channel(data: Mapping[str, Any]) -> PhotodiodeChannelValues:
+    return PhotodiodeChannelValues(
+        raw=int(data.get("raw", 0)),
+        mv=_float_or_nan(data.get("mv", np.nan)),
+        net_mv=_float_or_nan(data.get("net_mv", np.nan)),
+        net_err_mv=_float_or_nan(data.get("net_err_mv", np.nan)),
+        power_uw=_float_or_nan(data.get("power_uw", np.nan)),
+        power_err_uw=_float_or_nan(data.get("power_err_uw", np.nan)),
+        dark_mv=_float_or_nan(data.get("dark_mv", np.nan)),
+        dark_err_mv=_float_or_nan(data.get("dark_err_mv", np.nan)),
+        window=_decode_pd_window(data.get("window", {})),
+        pd_is_off=bool(data.get("pd_is_off", False)),
+        ontime_s=int(data.get("ontime_s", 0)),
+    )
+
+
+def _decode_pd(data: Mapping[str, Any]) -> PhotodiodeValues:
+    return PhotodiodeValues(
+        yj=_decode_pd_channel(data["yj"]) if "yj" in data else None,
+        hk=_decode_pd_channel(data["hk"]) if "hk" in data else None,
+    )
+
+
+def _decode_pd_dark(data: Mapping[str, Any]) -> PhotodiodeDark:
+    return PhotodiodeDark(
         channel=str(data["channel"]),
-        dark_mv=float(data["dark_mv"]),
-        dark_duration_ms="user" if duration == "user" else int(duration),
-        dark_noise_rms_mv=_float_or_nan(data.get("dark_noise_rms_mv")),
-        lowest_stored_dark_mv=_float_or_nan(data.get("lowest_stored_dark_mv")),
-        noise_rms_mV=float(data["noise_rms_mV"]),
-        responsivity_a_per_w=float(data["responsivity_a_per_w"]),
-        transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
-        power=str(data["power"]),
-        autooff_s=int(data["autooff_s"]),
-        off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
+        pending=bool(data.get("pending", False)),
+        duration_ms=int(data.get("duration_ms", 0)),
+        dark=_decode_pd_window(data.get("dark", {})),
+        lowest_dark=_decode_pd_window(data.get("lowest_dark", {})),
     )
 
 
@@ -918,7 +3392,7 @@ def decode_warning(payload: bytes | str) -> WarningEvent:
         code=str(data.get("code", "")),
         msg=str(data.get("msg", "")),
         context=str(data.get("context", "")),
-        uptime_ms=int(data.get("uptime_ms", 0)),
+        uptime_s=int(data.get("uptime_s", 0)),
     )
 
 
@@ -945,13 +3419,13 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             pd_raw=int(data.get("pd_raw", 0)),
             pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
             pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
-            pd_mean_mv_1s=_float_or_nan(data.get("pd_mean_mv_1s", np.nan)),
-            pd_rms_mv_0p5s=_float_or_nan(data.get("pd_rms_mv_0p5s", np.nan)),
+            pd_mean_net_mv=_float_or_nan(data.get("pd_mean_net_mv", np.nan)),
+            pd_mean_net_err_mv=_float_or_nan(data.get("pd_mean_net_err_mv", np.nan)),
             laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
             atten_db=_float_or_nan(data.get("atten_db", np.nan)),
             wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
-            pd_ontime_s=_float_or_nan(data.get("pd_ontime_s", np.nan)),
-            laser_current_ontime_s=_float_or_nan(data.get("laser_current_ontime_s", np.nan)),
+            pd_ontime_s=int(data.get("pd_ontime_s", 0)),
+            laser_current_ontime_s=int(data.get("laser_current_ontime_s", 0)),
             flags=tuple(str(flag) for flag in (data.get("flags") or ())),
         )
 
@@ -963,7 +3437,7 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     channel = values[0].split(b"\0", 1)[0].decode("ascii", "replace")
     f64 = values[2:12]
     pd_raw = values[12]
-    extra = values[13:22]
+    extra = values[13:20]
     return ThroughputSample(
         channel=channel,
         laser="",
@@ -982,13 +3456,13 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         pd_raw=int(pd_raw),
         pd_mv=float(extra[0]),
         pd_net_mv=float(extra[1]),
-        pd_mean_mv_1s=float(extra[2]),
-        pd_rms_mv_0p5s=float(extra[3]),
+        pd_mean_net_mv=float(extra[2]),
+        pd_mean_net_err_mv=float(extra[3]),
         laser_current_ma=float(extra[4]),
         atten_db=float(extra[5]),
         wavelength_nm=float(extra[6]),
-        pd_ontime_s=float(extra[7]),
-        laser_current_ontime_s=float(extra[8]),
+        pd_ontime_s=int(values[20]),
+        laser_current_ontime_s=int(values[21]),
         flags=(),
     )
 
@@ -1098,6 +3572,52 @@ class ThroughputMonitor:
                 self._samples.append(sample.as_tuple())
 
 
+class AttenuatorGridProbe:
+    """Background grid-probe runner for IPython/Jupyter lab work."""
+
+    def __init__(self, client: HispecFibPcb, args: tuple[Any, ...], kwargs: dict[str, Any]):
+        self.client = client
+        self._args = args
+        self._kwargs = dict(kwargs)
+        self._done = threading.Event()
+        self._dataset: AttenuatorGridDataset | None = None
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="hispec-atten-grid", daemon=True)
+
+    def start(self) -> AttenuatorGridProbe:
+        self._thread.start()
+        return self
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    @property
+    def error(self) -> BaseException | None:
+        return self._error
+
+    def wait(self, timeout_s: float | None = None) -> AttenuatorGridDataset:
+        self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            raise TimeoutError("attenuator grid probe is still running")
+        if self._error is not None:
+            raise self._error
+        if self._dataset is None:
+            raise HispecFibError("attenuator grid probe did not produce a dataset")
+        return self._dataset
+
+    def save(self, path: str = ATTEN_GRID_DEFAULT_FILE) -> str:
+        return self.wait().save(path)
+
+    def _run(self) -> None:
+        try:
+            self._dataset = self.client.attenuator_grid_probe(*self._args, **self._kwargs)
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            self._done.set()
+
+
 class HispecFibPcb:
     """MQTT client for a HISPEC FIB PCB.
 
@@ -1189,14 +3709,47 @@ class HispecFibPcb:
         self._connected.clear()
 
     def help(self) -> HelpSummary:
-        return _decode_help(self._request_json("help"))
+        data = self._request_json("help")
+        return HelpSummary(help=str(data.get("help", "")))
 
     def catalog(self) -> Catalog:
-        return _decode_catalog(self._request_json("catalog"))
+        data = self._request_json("catalog")
+        return Catalog(
+            board=str(data["board"]),
+            lasers=tuple(str(name) for name in data.get("lasers", ())),
+            route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
+            route_outputs=tuple(str(name) for name in data.get("route_outputs", ())),
+            routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
+        )
 
     def status(self, *, ip: bool = False, lasers: bool = False, attens: bool = False) -> Status:
         payload = _optional_payload(ip=ip or None, lasers=lasers or None, attens=attens or None)
-        return _decode_status(self._request_json("status", payload))
+        data = self._request_json("status", payload)
+        return Status(
+            fw=str(data["fw"]),
+            boots=int(data["boots"]),
+            board=str(data["board"]),
+            board_ok=bool(data["board_ok"]),
+            mems_switches=int(data["mems_switches"]),
+            relay_err=int(data["relay_err"]),
+            amb_c=data.get("amb_c"),
+            pd_on_s=int(data["pd_on_s"]),
+            laserbank_on_s=int(data["laserbank_on_s"]),
+            lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
+            ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
+            lasers=_named_values(
+                data.get("lasers", {}),
+                lambda _name, value: StatusLaserSummary(
+                    power_mw=value.get("power_mw"),
+                    tec_on_s=None if value.get("tec_on_s") is None else int(value.get("tec_on_s")),
+                    off_in_s=int(value.get("off_in_s", 0)),
+                ),
+            ),
+            attens=_named_values(
+                data.get("attens", {}),
+                lambda _name, value: StatusAttenSummary(level_percent=value.get("level_%")),
+            ),
+        )
 
     def ip_config(self) -> IpConfig:
         return _decode_ip_config(self._request_json("ip"))
@@ -1212,7 +3765,7 @@ class HispecFibPcb:
         trydhcpfirst: bool | None = None,
         preferdhcpntp: bool | None = None,
         preferdhcpdns: bool | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk | PartialSupport:
         payload = _optional_payload(
             ip=ip,
@@ -1223,9 +3776,9 @@ class HispecFibPcb:
             trydhcpfirst=trydhcpfirst,
             preferdhcpntp=preferdhcpntp,
             preferdhcpdns=preferdhcpdns,
-            persistent=persistent,
+            persist=persist,
         )
-        if payload is None or set(payload) == {"persistent"}:
+        if payload is None or set(payload) == {"persist"}:
             raise HispecFibError("at least one IP field must be supplied")
         result = self._request_json("ip", payload)
         if isinstance(result, Mapping) and "status" not in result:
@@ -1235,8 +3788,8 @@ class HispecFibPcb:
     def mqtt_config(self) -> MqttConfig:
         return _dataclass_from(MqttConfig, self._request_json("mqtt"))
 
-    def set_mqtt_config(self, broker: str, *, persistent: bool = False) -> CommandOk:
-        return self._request_ok("mqtt", {"broker": broker, "persistent": persistent})
+    def set_mqtt_config(self, broker: str, *, persist: bool = False) -> CommandOk:
+        return self._request_ok("mqtt", {"broker": broker, "persist": persist})
 
     def time(self) -> TimeStatus:
         return _dataclass_from(TimeStatus, self._request_json("time"))
@@ -1247,7 +3800,12 @@ class HispecFibPcb:
         return self._request_ok("time", {"unix_ms": int(unix_ms)})
 
     def temp(self) -> TempStatus:
-        return _decode_temp(self._request_json("temp"))
+        data = self._request_json("temp")
+        return TempStatus(
+            ambient_c=data.get("ambient_c"),
+            laserbank_c=data.get("laserbank_c"),
+            laser=_named_values(data.get("laser", {}), lambda _name, value: value),
+        )
 
     def reboot(self) -> CommandOk:
         return self._request_ok("reboot")
@@ -1262,7 +3820,16 @@ class HispecFibPcb:
         )
 
     def mems(self) -> tuple[MemsSwitchState, ...]:
-        return _decode_mems(self._request_json("mems"))
+        return tuple(
+            MemsSwitchState(
+                name=name,
+                state=str(value["state"]),
+                duty_cycle=float(
+                    value.get("duty_cycle", _default_mems_duty_cycle(str(value["state"])))
+                ),
+            )
+            for name, value in self._request_json("mems").items()
+        )
 
     def mems_switch(
         self,
@@ -1271,7 +3838,7 @@ class HispecFibPcb:
         state: Literal["A", "B", "a", "b"] | None = None,
         duty_cycle: float | None = None,
         cycle_ms: int | None = None,
-        off_in_s: float | None = None,
+        off_in_s: int | None = None,
         force: bool = False,
     ) -> MemsSwitchDetail:
         key = f"mems/{name}"
@@ -1289,13 +3856,16 @@ class HispecFibPcb:
             if payload["cycle_ms"] == 0:
                 raise HispecFibError("cycle_ms must be > 0")
         if off_in_s is not None:
-            payload["off_in_s"] = _require_float(
-                "off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S
-            )
+            payload["off_in_s"] = _require_nonnegative_u32("off_in_s", off_in_s)
+            if payload["off_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
+                raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         return _decode_mems_detail(name, self._request_json(key, payload))
 
     def memsroute(self) -> MemsRoutes:
-        return _decode_mems_routes(self._request_json("memsroute"))
+        active = self._request_json("memsroute").get("active_routes", {})
+        return MemsRoutes(
+            active_routes=tuple(NamedValue(str(name), tuple(value)) for name, value in active.items())
+        )
 
     def set_memsroute(self, input: str, output: str, *, force: bool = False) -> CommandOk:
         payload: dict[str, Any] = {"input": input, "output": output}
@@ -1304,7 +3874,12 @@ class HispecFibPcb:
         return self._request_ok("memsroute", payload)
 
     def route_loss(self, route: str) -> RouteLoss:
-        return _decode_route_loss(self._request_json("memsroute/route_loss", {"route": route}))
+        data = self._request_json("memsroute/route_loss", {"route": route})
+        return RouteLoss(
+            route=str(data["route"]),
+            lasers=_named_values(data.get("lasers", {}), lambda _name, value: float(value)),
+            split=_as_tuple3(data["split"], "split") if "split" in data else None,
+        )
 
     def set_route_loss(
         self,
@@ -1314,9 +3889,9 @@ class HispecFibPcb:
         transmission: float | None = None,
         loss_db: float | None = None,
         split: Sequence[float | str] | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
-        payload: dict[str, Any] = {"route": route, "persistent": persistent}
+        payload: dict[str, Any] = {"route": route, "persist": persist}
         if split is not None:
             if laser is not None or transmission is not None or loss_db is not None:
                 raise HispecFibError("route loss uses either split or a laser value")
@@ -1338,10 +3913,6 @@ class HispecFibPcb:
             else:
                 raise HispecFibError("transmission or loss_db is required")
         return self._request_ok("memsroute/route_loss", payload)
-
-    def laser_status(self, name: str) -> LaserStatus:
-        _require_choice("name", name, LASER_NAMES)
-        return _dataclass_from(LaserStatus, self._request_json("laser/status", {"name": name}))
 
     def laser(self, name: str) -> LaserStatus:
         _require_choice("name", name, LASER_NAMES)
@@ -1375,7 +3946,36 @@ class HispecFibPcb:
 
     def laser_settings(self, name: str) -> LaserSettings:
         _require_choice("name", name, LASER_NAMES)
-        return _decode_laser_settings(self._request_json("laser/settings", {"name": name}))
+        data = self._request_json("laser/settings", {"name": name})
+        settings = data["settings"]
+        pid = settings["tec_pid"]
+        return LaserSettings(
+            name=str(data["name"]),
+            model=str(settings["model"]),
+            expected_serial=int(settings["expected_serial"]),
+            nominal_current_ma=float(settings["nominal_current_ma"]),
+            max_current_ma=float(settings["max_current_ma"]),
+            current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
+            threshold_current_ma=float(settings["threshold_current_ma"]),
+            efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
+            wavelength_nm=float(settings["wavelength_nm"]),
+            operating_temp_range_c=(
+                float(settings["operating_temp_range_c"][0]),
+                float(settings["operating_temp_range_c"][1]),
+            ),
+            default_operating_temp_c=float(settings["default_operating_temp_c"]),
+            thermistor_kohm=float(settings["thermistor_kohm"]),
+            isolation_db=float(settings["isolation_db"]),
+            tec_max_current_a=float(settings["tec_max_current_a"]),
+            tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
+            disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
+            ntc_t_coefficient_per_c=float(settings["ntc_t_coefficient_per_c"]),
+            dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
+            dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
+            autooff_s=int(settings["autooff_s"]),
+            tune_nm=float(settings["tune_nm"]),
+            emit_total_s=int(settings["emit_total_s"]),
+        )
 
     def set_laser_settings(
         self,
@@ -1395,6 +3995,8 @@ class HispecFibPcb:
         dlambda_dT_nm_per_k: float | None = None,
         dlambda_dA_nm_per_ma: float | None = None,
         autooff_s: int | None = None,
+        expected_serial: int | None = None,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
@@ -1411,6 +4013,7 @@ class HispecFibPcb:
             dlambda_dT_nm_per_k=dlambda_dT_nm_per_k,
             dlambda_dA_nm_per_ma=dlambda_dA_nm_per_ma,
             autooff_s=autooff_s,
+            expected_serial=expected_serial,
         )
         settings = settings or {}
         if tec_pid is not None:
@@ -1422,11 +4025,16 @@ class HispecFibPcb:
                 settings["tec_pid"] = {"p": int(tec_pid[0]), "i": int(tec_pid[1]), "d": int(tec_pid[2])}
         if not settings:
             raise HispecFibError("at least one laser settings field must be supplied")
-        return self._request_ok("laser/settings", {"name": name, "settings": settings})
+        return self._request_ok("laser/settings", {"name": name, "settings": settings, "persist": persist})
 
-    def laser_engstatus(self, name: str) -> LaserEngStatus:
+    def laser_status(self, name: str) -> LaserEngineeringStatus:
         _require_choice("name", name, LASER_NAMES)
-        return _decode_laser_eng(self._request_json("laser/engstatus", {"name": name}))
+        data = self._request_json("laser/status", {"name": name})
+        return _dataclass_from(
+            LaserEngineeringStatus,
+            data,
+            pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))),
+        )
 
     def laserbank_power(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
         if mode is None:
@@ -1443,44 +4051,354 @@ class HispecFibPcb:
     def laserbank_clearfaults(self) -> LaserBankClearFaults:
         return _dataclass_from(LaserBankClearFaults, self._request_json("laserbank/clearfaults"))
 
-    def atten_value(self, laser: str) -> AttenuatorState:
+    def atten(
+        self,
+        laser: str,
+        *,
+        value: float | None = None,
+        value_db: float | None = None,
+        value1: float | None = None,
+        value2: float | None = None,
+        value1_db: float | None = None,
+        value2_db: float | None = None,
+        value1_mv: float | None = None,
+        value2_mv: float | None = None,
+    ) -> AttenuatorState:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return _dataclass_from(AttenuatorState, self._request_json(f"atten/{laser}/value"))
+        payload: dict[str, float] = {}
+        if value is not None:
+            payload["value"] = _require_float("value", value, 1e-300, 1.0)
+        if value_db is not None:
+            payload["value_db"] = _require_float("value_db", value_db, 0.0, 1e9)
+        if value1 is not None:
+            payload["value1"] = _require_float("value1", value1, 1e-300, 1.0)
+        if value2 is not None:
+            payload["value2"] = _require_float("value2", value2, 1e-300, 1.0)
+        if value1_db is not None:
+            payload["value1_db"] = _require_float("value1_db", value1_db, 0.0, 1e9)
+        if value2_db is not None:
+            payload["value2_db"] = _require_float("value2_db", value2_db, 0.0, 1e9)
+        if value1_mv is not None:
+            payload["value1_mv"] = _require_float(
+                "value1_mv", value1_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV
+            )
+        if value2_mv is not None:
+            payload["value2_mv"] = _require_float(
+                "value2_mv", value2_mv, 0.0, ATTENUATOR_DRIVE_MAX_MV
+            )
 
-    def set_atten_value(self, laser: str, value: float) -> CommandOk:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return self._request_ok(f"atten/{laser}/value", {"value": _require_float("value", value, 1e-300, 1.0)})
+        request_payload = payload if payload else None
+        return _dataclass_from(
+            AttenuatorState,
+            self._request_json(f"atten/{laser}", request_payload),
+        )
 
-    def atten_db(self, laser: str) -> AttenuatorState:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return _dataclass_from(AttenuatorState, self._request_json(f"atten/{laser}/valuedb"))
+    def attenuator_grid_probe(
+        self,
+        laser: str,
+        *,
+        dac1_mv: Sequence[float] | None = None,
+        dac2_mv: Sequence[float] | None = None,
+        laser_pct: float = 100.0,
+        dwell_s: float = 1.0,
+        drive_gain: float = ATTENUATOR_DEFAULT_GAIN,
+        channel: Literal["yj", "hk"] | None = None,
+    ) -> AttenuatorGridDataset:
+        _require_choice("laser", laser, LASER_NAMES)
+        if channel is None:
+            channel = _LASER_TO_PD_CHANNEL[laser]  # type: ignore[assignment]
+        channel = _require_choice("channel", channel, PD_CHANNELS)  # type: ignore[assignment]
+        laser_pct = _require_float("laser_pct", laser_pct, 0.0, 100.0)
+        dwell_s = float(dwell_s)
+        if not math.isfinite(dwell_s) or dwell_s < 0.0:
+            raise HispecFibError("dwell_s must be finite and nonnegative")
+        drive_gain = _require_float("drive_gain", drive_gain, 1.0e-12, 1.0e12)
 
-    def set_atten_db(self, laser: str, value_db: float) -> CommandOk:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return self._request_ok(f"atten/{laser}/valuedb", {"value": _require_float("value_db", value_db, 0.0, 1e9)})
+        if dac1_mv is None and dac2_mv is None:
+            coarse_low = np.array((0.0, 300.0, 600.0, 900.0), dtype=float)
+            knee = np.arange(1300.0, ATTENUATOR_DRIVE_MAX_MV + 0.5, 100.0)
+            dac1_values = np.concatenate((coarse_low, knee))
+            dac2_values = dac1_values.copy()
+        else:
+            source1 = dac2_mv if dac1_mv is None else dac1_mv
+            source2 = dac1_mv if dac2_mv is None else dac2_mv
+            dac1_values = np.asarray(tuple(float(value) for value in source1), dtype=float)
+            dac2_values = np.asarray(tuple(float(value) for value in source2), dtype=float)
+        if len(dac1_values) == 0 or len(dac2_values) == 0:
+            raise HispecFibError("dac1_mv and dac2_mv must not be empty")
+        if (
+            np.any(~np.isfinite(dac1_values))
+            or np.any(~np.isfinite(dac2_values))
+            or np.any(dac1_values < 0.0)
+            or np.any(dac2_values < 0.0)
+            or np.any(dac1_values > ATTENUATOR_DRIVE_MAX_MV)
+            or np.any(dac2_values > ATTENUATOR_DRIVE_MAX_MV)
+        ):
+            raise HispecFibError(
+                f"dac1_mv and dac2_mv values must be in [0.0, {ATTENUATOR_DRIVE_MAX_MV:.1f}]"
+            )
+
+        pd_dark_mv = self.pd_dark(channel).dark.mean_mv
+        self.set_laser_level(laser, laser_pct)
+
+        rows: list[tuple[Any, ...]] = []
+        started = time.monotonic()
+        record = 0
+        for value1_mv in dac1_values:
+            for value2_mv in dac2_values:
+                self.atten(laser, value1_mv=float(value1_mv), value2_mv=float(value2_mv))
+                if dwell_s > 0.0:
+                    time.sleep(dwell_s)
+                pd = self.pd(channel)
+                pd_channel = getattr(pd, channel)
+                if pd_channel is None:
+                    raise HispecFibError(f"pd/{channel} response did not include {channel}")
+                pd_window = pd_channel.window
+                rows.append(
+                    (
+                        record,
+                        time.monotonic() - started,
+                        laser,
+                        laser_pct,
+                        float(value1_mv),
+                        float(value2_mv),
+                        float(value1_mv) * drive_gain / 1000.0,
+                        float(value2_mv) * drive_gain / 1000.0,
+                        float(pd_window.mean_net_mv),
+                        float(pd_window.mean_mv),
+                        float(pd_window.rms_mv),
+                        float(pd_window.mean_net_err_mv),
+                        pd_dark_mv,
+                        drive_gain,
+                        drive_gain,
+                    )
+                )
+                record += 1
+        return AttenuatorGridDataset(
+            records=np.array(rows, dtype=ATTEN_GRID_DTYPE).view(np.recarray),
+            channel=channel,
+        )
+
+    def attenuator_grid_probe_async(self, laser: str, **kwargs: Any) -> AttenuatorGridProbe:
+        return AttenuatorGridProbe(self, (laser,), kwargs).start()
 
     def atten_coeff(self, laser: str) -> AttenuatorCoeff:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
-        return _decode_atten_coeff(self._request_json(f"atten/{laser}/coeff"))
+        data = self._request_json(f"atten/{laser}/coeff")
+        return AttenuatorCoeff(
+            dac1=_decode_atten_physical_coeff(data["dac1"], "dac1"),
+            dac2=_decode_atten_physical_coeff(data["dac2"], "dac2"),
+        )
 
     def set_atten_coeff(
         self,
         laser: str,
-        dac1: tuple[float, float],
-        dac2: tuple[float, float],
+        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
         *,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("laser", laser, ATTENUATOR_NAMES)
-        if len(dac1) != 2 or len(dac2) != 2:
-            raise HispecFibError("dac1 and dac2 must each contain slope and offset")
         return self._request_ok(
             f"atten/{laser}/coeff",
-            {"dac1": [float(dac1[0]), float(dac1[1])], "dac2": [float(dac2[0]), float(dac2[1])], "persistent": persistent},
+            {
+                "dac1": _atten_physical_coeff_payload("dac1", dac1),
+                "dac2": _atten_physical_coeff_payload("dac2", dac2),
+                "persist": persist,
+            },
         )
 
     def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate"))
+
+    def _atten_calibration_metadata(
+        self,
+        physical: Literal["dac1", "dac2"],
+    ) -> Mapping[str, Any]:
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        payload = self._request_payload(f"atten/calibrate/records/{physical}")
+        if not isinstance(payload, (bytes, bytearray)):
+            raise HispecFibError("attenuator calibration metadata must be binary")
+        if len(payload) < _ATTEN_CAL_METADATA_HEADER.size:
+            raise HispecFibError("attenuator calibration metadata is too short")
+
+        (
+            magic,
+            version,
+            kind,
+            physical_index,
+            state_id,
+            mode_id,
+            fit_valid,
+            fit_accepted,
+            overflow,
+            record_size,
+            records_per_chunk,
+            record_count,
+            record_chunk_count,
+            reference_valid,
+            reference_record,
+            bridge_count,
+        ) = _ATTEN_CAL_METADATA_HEADER.unpack_from(payload)
+        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 3 or kind != _ATTEN_CAL_METADATA_KIND:
+            raise HispecFibError("unsupported attenuator calibration metadata")
+        if physical_index >= 2:
+            raise HispecFibError("invalid physical attenuator in metadata")
+        if record_size != _ATTEN_CAL_RECORD_BINARY.size:
+            raise HispecFibError(
+                f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
+            )
+        expected_len = _ATTEN_CAL_METADATA_HEADER.size + bridge_count * _ATTEN_CAL_BRIDGE_BINARY.size
+        if len(payload) < expected_len:
+            raise HispecFibError("attenuator calibration metadata length mismatch")
+
+        bridges: list[dict[str, int]] = []
+        for i in range(bridge_count):
+            before_record, after_record = _ATTEN_CAL_BRIDGE_BINARY.unpack_from(
+                payload,
+                _ATTEN_CAL_METADATA_HEADER.size + i * _ATTEN_CAL_BRIDGE_BINARY.size,
+            )
+            bridges.append(
+                {
+                    "bridge_index": i,
+                    "before_record": int(before_record),
+                    "after_record": int(after_record),
+                }
+            )
+
+        physical_name = ("dac1", "dac2")[physical_index]
+        if physical_name != physical:
+            raise HispecFibError("attenuator calibration metadata physical mismatch")
+        return {
+            "state": _ATTEN_CAL_STATES[state_id] if state_id < len(_ATTEN_CAL_STATES) else "unknown",
+            "mode": _ATTEN_CAL_MODES[mode_id] if mode_id < len(_ATTEN_CAL_MODES) else "unknown",
+            "physical": physical_name,
+            "fit_valid": bool(fit_valid),
+            "fit_accepted": bool(fit_accepted),
+            "record_overflow": bool(overflow),
+            "record_size": int(record_size),
+            "records_per_chunk": int(records_per_chunk),
+            "record_count": int(record_count),
+            "record_chunk_count": int(record_chunk_count),
+            "reference_valid": bool(reference_valid),
+            "reference_record": int(reference_record),
+            "bridge_count": int(bridge_count),
+            "bridges": tuple(bridges),
+        }
+
+    def _atten_calibration_record_chunk(
+        self,
+        physical: Literal["dac1", "dac2"],
+        metadata: Mapping[str, Any],
+        chunk: int,
+    ) -> np.recarray:
+        physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
+        if chunk < 0:
+            raise HispecFibError("chunk must be non-negative")
+        if int(metadata["record_chunk_count"]) <= chunk:
+            raise HispecFibError("attenuator calibration record chunk is out of range")
+        payload = self._request_payload(f"atten/calibrate/records/{physical}/{int(chunk)}")
+        if not isinstance(payload, (bytes, bytearray)):
+            raise HispecFibError("attenuator calibration records must be binary")
+        record_size = int(metadata["record_size"])
+        if record_size != _ATTEN_CAL_RECORD_BINARY.size:
+            raise HispecFibError(
+                f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
+            )
+        if len(payload) % record_size != 0:
+            raise HispecFibError("attenuator calibration record chunk length mismatch")
+
+        physical_name = str(metadata["physical"])
+        records_per_chunk = int(metadata["records_per_chunk"])
+        start_index = int(chunk) * records_per_chunk
+        count = len(payload) // record_size
+        rows: list[tuple[Any, ...]] = []
+        for i in range(count):
+            values = _ATTEN_CAL_RECORD_BINARY.unpack_from(payload, i * record_size)
+            event_id = int(values[6])
+            classification_id = int(values[7])
+            rows.append(
+                _atten_cal_record_row(
+                    physical=physical_name,
+                    record=start_index + i,
+                    event=_ATTEN_CAL_EVENTS[event_id] if event_id < len(_ATTEN_CAL_EVENTS) else "unknown",
+                    classification=(
+                        _ATTEN_CAL_CLASSIFICATIONS[classification_id]
+                        if classification_id < len(_ATTEN_CAL_CLASSIFICATIONS)
+                        else "unknown"
+                    ),
+                    segment=int(values[8]),
+                    sweep_mv=float(values[0]),
+                    other_mv=float(values[1]),
+                    laser_pct=float(values[2]),
+                    signal_mv=float(values[3]),
+                    signal_err_mv=float(values[4]),
+                    max_mv=float(values[5]),
+                )
+            )
+
+        return np.array(rows, dtype=ATTEN_CAL_DTYPE).view(np.recarray)
+
+    def _atten_calibration_record_chunks(
+        self,
+        physical: Literal["dac1", "dac2"],
+    ) -> tuple[Mapping[str, Any], np.recarray]:
+        meta = self._atten_calibration_metadata(physical)
+        chunks: list[np.recarray] = []
+        for chunk in range(int(meta["record_chunk_count"])):
+            records = self._atten_calibration_record_chunk(physical, meta, chunk)
+            if len(records):
+                chunks.append(records)
+        if not chunks:
+            return meta, np.array([], dtype=ATTEN_CAL_DTYPE).view(np.recarray)
+        records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
+        if len(records) != int(meta["record_count"]):
+            raise HispecFibError("attenuator calibration record count does not match metadata")
+        return meta, records
+
+    def atten_calibration_data(
+        self,
+        physical: Literal["dac1", "dac2", "all"] = "all",
+        *,
+        chunk: int | None = None,
+    ) -> AttenuatorCalibrationDataset:
+        physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
+        if chunk is not None:
+            if physical == "all":
+                raise HispecFibError("chunk can only be used with physical='dac1' or 'dac2'")
+            status = self.atten_calibration_status()
+            meta = self._atten_calibration_metadata(physical)
+            records = self._atten_calibration_record_chunk(physical, meta, int(chunk))
+            return AttenuatorCalibrationDataset(
+                records=records,
+                meta=(
+                    {
+                        "status": status,
+                        "fits": {"dac1": status.dac1, "dac2": status.dac2},
+                    },
+                    meta,
+                ),
+            )
+
+        status = self.atten_calibration_status()
+        selected = ("dac1", "dac2") if physical == "all" else (physical,)
+        metas: list[Mapping[str, Any]] = [
+            {
+                "status": status,
+                "fits": {"dac1": status.dac1, "dac2": status.dac2},
+            }
+        ]
+        chunks: list[np.recarray] = []
+        for name in selected:
+            physical_meta, records = self._atten_calibration_record_chunks(name)  # type: ignore[arg-type]
+            metas.append(physical_meta)
+            if len(records):
+                chunks.append(records)
+        if not chunks:
+            records = np.array([], dtype=ATTEN_CAL_DTYPE).view(np.recarray)
+        else:
+            records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
+        return AttenuatorCalibrationDataset(records=records, meta=tuple(metas))
 
     def atten_calibrate_auto(
         self,
@@ -1489,7 +4407,7 @@ class HispecFibPcb:
         output: str,
         fiber: Literal["M", "S"] = "M",
         dwell_ms: int = 300,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
         _require_choice("laser", laser, LASER_NAMES)
         fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
@@ -1498,110 +4416,85 @@ class HispecFibPcb:
             "output": str(output),
             "fiber": fiber,
             "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
-            "persistent": bool(persistent),
+            "persist": bool(persist),
         }
-        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
-
-    def atten_calibrate_manual(
-        self,
-        attenuator: str = "lfc",
-        *,
-        dwell_ms: int = 300,
-        persistent: bool = False,
-    ) -> AttenuatorCalibrationStatus:
-        _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
-        payload = {
-            "mode": "manual",
-            "attenuator": attenuator,
-            "dwell_ms": _require_nonnegative_u32("dwell_ms", dwell_ms),
-            "persistent": bool(persistent),
-        }
-        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
-
-    def atten_calibration_continue(self, *, other_mv: float | None = None) -> AttenuatorCalibrationStatus:
-        payload: dict[str, Any] = {"continue": True}
-        if other_mv is not None:
-            payload["other_mv"] = _require_float("other_mv", other_mv, 0.0, 4096.0)
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
     def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate", {"stop": True}))
 
-    def atten_calibrate_manual_fit(
+    def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
+        if channel is None:
+            return _decode_pd(self._request_json("pd"))
+        channel = _require_choice("channel", channel, PD_CHANNELS)
+        return _decode_pd(self._request_json(f"pd/{channel}"))
+
+    def pd_dark(
         self,
-        attenuator: str = "lfc",
+        channel: Literal["yj", "hk"],
         *,
-        dac1: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
-        dac2: AttenuatorCalibrationBatch | Mapping[str, Any] | Sequence[Any],
-        persistent: bool = False,
-    ) -> AttenuatorCalibrationStatus:
-        _require_choice("attenuator", attenuator, ATTENUATOR_NAMES)
-        payload = {
-            "mode": "manual",
-            "attenuator": attenuator,
-            "persistent": bool(persistent),
-            "dac1": _atten_cal_batch_payload("dac1", dac1),
-            "dac2": _atten_cal_batch_payload("dac2", dac2),
-        }
-        return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
-
-    def pd(self) -> PhotodiodeValues:
-        return _dataclass_from(PhotodiodeValues, self._request_json("pd"))
-
-    def measure_dark(self, channel: Literal["yj", "hk"], *, duration_ms: int = 0, store: bool = False) -> DarkStatus:
+        duration_ms: int | None = None,
+        dark_mv: float | None = None,
+        rms_mv: float | None = None,
+        reset_lowest: bool | None = None,
+        persist: bool = False,
+    ) -> PhotodiodeDark:
         _require_choice("channel", channel, PD_CHANNELS)
-        payload = {
-            "action": "measure_dark",
-            "channel": channel,
-            "duration_ms": _require_nonnegative_u32("duration_ms", duration_ms),
-            "store": bool(store),
-        }
-        return _decode_dark_status(self._request_json("pd", payload))
-
-    def dark_status(self, channel: Literal["yj", "hk"]) -> DarkStatus:
-        _require_choice("channel", channel, PD_CHANNELS)
-        return _decode_dark_status(self._request_json("pd", {"action": "dark_status", "channel": channel}))
-
-    def reset_lowest_dark(self, channel: Literal["yj", "hk"], *, persistent: bool = True) -> CommandOk:
-        _require_choice("channel", channel, PD_CHANNELS)
-        return self._request_ok(
-            "pd",
-            {"action": "reset_lowest_dark", "channel": channel, "persistent": persistent},
+        payload = _optional_payload(
+            duration_ms=duration_ms,
+            dark_mv=dark_mv,
+            rms_mv=rms_mv,
+            reset_lowest=reset_lowest,
+            persist=persist,
         )
+        if payload is None or set(payload) == {"persist"}:
+            return _decode_pd_dark(self._request_json(f"pd/dark/{channel}"))
+        if duration_ms is not None:
+            payload["duration_ms"] = _require_nonnegative_u32("duration_ms", duration_ms)
+        if dark_mv is not None:
+            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
+        if rms_mv is not None:
+            payload["rms_mv"] = _require_float("rms_mv", rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV)
+        return _decode_pd_dark(self._request_json(f"pd/dark/{channel}", payload))
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
         _require_choice("channel", channel, PD_CHANNELS)
-        return _decode_pdsettings(self._request_json(f"pdsettings/{channel}"))
+        data = self._request_json(f"pdsettings/{channel}")
+        return PhotodiodeSettings(
+            channel=str(data["channel"]),
+            noise_rms_mv=float(data["noise_rms_mv"]),
+            responsivity_a_per_w=float(data["responsivity_a_per_w"]),
+            transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
+            power=str(data["power"]),
+            autooff_s=int(data["autooff_s"]),
+            off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
+        )
 
     def set_pdsettings(
         self,
         channel: Literal["yj", "hk"],
         *,
-        dark_mv: float | None = None,
-        noise_rms_mV: float | None = None,
+        noise_rms_mv: float | None = None,
         responsivity_a_per_w: float | None = None,
         transimpedance_v_per_a: float | None = None,
         power: Literal["auto", "override_on", "override_off"] | None = None,
         autooff_s: int | None = None,
-        persistent: bool = False,
+        persist: bool = False,
     ) -> CommandOk:
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
-            dark_mv=dark_mv,
-            noise_rms_mV=noise_rms_mV,
+            noise_rms_mv=noise_rms_mv,
             responsivity_a_per_w=responsivity_a_per_w,
             transimpedance_v_per_a=transimpedance_v_per_a,
             power=power,
             autooff_s=autooff_s,
-            persistent=persistent,
+            persist=persist,
         )
-        if payload is None or set(payload) == {"persistent"}:
+        if payload is None or set(payload) == {"persist"}:
             raise HispecFibError("at least one photodiode setting must be supplied")
-        if dark_mv is not None:
-            payload["dark_mv"] = _require_float("dark_mv", dark_mv, PD_DARK_MIN_MV, PD_DARK_MAX_MV)
-        if noise_rms_mV is not None:
-            payload["noise_rms_mV"] = _require_float(
-                "noise_rms_mV", noise_rms_mV, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
+        if noise_rms_mv is not None:
+            payload["noise_rms_mv"] = _require_float(
+                "noise_rms_mv", noise_rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
             )
         if responsivity_a_per_w is not None:
             payload["responsivity_a_per_w"] = _require_float(
@@ -1645,10 +4538,10 @@ class HispecFibPcb:
             "channel": channel,
             "ratio1": ratio1,
             "ratio2": ratio2,
-            "off_in_s": int(
-                _require_float("off_in_s", off_in_s, 0.0, MEMS_MAX_TOGGLE_DURATION_S)
-            ),
+            "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
         }
+        if payload["off_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
+            raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         if cycle_ms is not None:
             payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
             if payload["cycle_ms"] == 0:
@@ -1752,9 +4645,36 @@ class HispecFibPcb:
 
     def _request_json(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         result = self._request(key, payload)
-        if isinstance(result, Mapping) and "error" in result:
+        if isinstance(result, Mapping) and "error" in result and not _is_atten_cal_status(result):
             raise HispecFibPCBError(str(result["error"]), response=_to_object(result))
         return result
+
+    def _request_payload(self, key: str, payload: Mapping[str, Any] | None = None) -> bytes:
+        self._ensure_connected()
+        topic = f"cmd/{self.device}/req/{key}"
+        response_topic = f"cmd/{self.device}/resp/{key}"
+        corr = next(self._corr_counter).to_bytes(8, "little", signed=False)
+        pending = _PendingRequest(topic=response_topic)
+        with self._pending_lock:
+            self._pending[corr] = pending
+        props = Properties(PacketTypes.PUBLISH)
+        props.ResponseTopic = response_topic
+        props.CorrelationData = corr
+        data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        try:
+            info = self._client.publish(topic, payload=data, qos=0, properties=props)
+            if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                raise HispecFibError(f"MQTT publish failed with rc={info.rc}")
+            if not pending.event.wait(self.timeout_s):
+                raise HispecFibError(f"timed out waiting for {response_topic}")
+            assert pending.payload is not None
+            raw = pending.payload
+            if raw.lstrip().startswith(b"{"):
+                _decode_ok_or_raise(response_topic, raw)
+            return raw
+        finally:
+            with self._pending_lock:
+                self._pending.pop(corr, None)
 
     def _request(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         self._ensure_connected()
@@ -1797,9 +4717,7 @@ class HispecFibPcb:
     def _subscribe_control_topics(self) -> None:
         topics = (
             f"cmd/{self.device}/resp/#",
-            f"dt/{self.device}/warning",
-            f"dt/{self.device}/yj_tput",
-            f"dt/{self.device}/hk_tput",
+            f"dt/{self.device}/#",
         )
         for topic in topics:
             rc, _mid = self._client.subscribe(topic, qos=0)
@@ -1853,9 +4771,40 @@ class HispecFibPcb:
             channel = "yj" if topic.endswith("/yj_tput") else "hk"
             with self._throughput_lock:
                 monitors = tuple(self._throughput_monitors)
+            matched = False
             for monitor in monitors:
                 if monitor.channel in ("all", channel):
+                    matched = True
                     monitor.enqueue_payload(bytes(msg.payload))
+            if not matched:
+                self.logger.debug("throughput telemetry on %s with no active monitor", topic)
+            return
+
+        if topic.startswith(f"dt/{self.device}/"):
+            self._log_telemetry_message(topic, msg.payload)
+            return
+
+        self.logger.debug("unhandled MQTT message on %s", topic)
+
+    def _log_telemetry_message(self, topic: str, payload: bytes) -> None:
+        suffix = topic[len(f"dt/{self.device}/") :]
+        text = payload.decode("utf-8", errors="replace")
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = text
+        level = logging.INFO
+        if suffix in ("err", "error") or (
+            isinstance(decoded, Mapping)
+            and str(decoded.get("severity", "")).lower() in ("err", "error", "fatal")
+        ):
+            level = logging.ERROR
+        elif suffix == "warning" or (
+            isinstance(decoded, Mapping)
+            and str(decoded.get("severity", "")).lower() == "warning"
+        ):
+            level = logging.WARNING
+        self.logger.log(level, "PCB telemetry %s: %r", topic, decoded)
 
     def _handle_warning(self, payload: bytes) -> None:
         try:
@@ -1866,11 +4815,11 @@ class HispecFibPcb:
         with self._warning_lock:
             self._warnings.append(event)
         self.logger.warning(
-            "PCB warning %s: %s context=%s uptime_ms=%s",
+            "PCB warning %s: %s context=%s uptime_s=%s",
             event.code,
             event.msg,
             event.context,
-            event.uptime_ms,
+            event.uptime_s,
         )
 
 

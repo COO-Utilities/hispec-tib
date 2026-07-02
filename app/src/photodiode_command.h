@@ -21,14 +21,11 @@
  */
 int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
-/**
- * @brief Apply photodiode actions such as dark measurement and reset.
- *
- * Validates the command payload and calls the photodiode domain API. Starting a
- * dark measurement arms work in the sampler thread and returns immediately; it
- * does not wait for the full measurement duration.
- */
-int pd_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** @brief Return the active and lowest dark windows for one channel. */
+int pd_dark_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+
+/** @brief Measure, force, or reset photodiode dark state for one channel. */
+int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Return app-owned photodiode calibration settings for one channel.
@@ -42,7 +39,7 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
  * @brief Update app-owned photodiode calibration settings for one channel.
  *
  * Validates numeric ranges and updates the app settings cache. Persistence is
- * controlled by the command payload's documented `persistent` field.
+ * controlled by the command payload's documented `persist` field.
  */
 int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 

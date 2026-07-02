@@ -64,9 +64,8 @@ comparison artifact, not a replacement for `commands.md`.
 | `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser <payload>` |
 | `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune <payload>` |
 | `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status <payload>` |
-| `laser/engstatus` | `cmd/<device>/req/laser/engstatus` | `cmd/<device>/resp/laser/engstatus` | `laser/engstatus <payload>` |
 | `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings <payload>` |
-| `atten/<laser>/<setting>` | `cmd/<device>/req/atten/<laser>/<setting>` | `cmd/<device>/resp/atten/<laser>/<setting>` | `atten/<laser>/<setting> [payload]` |
+| `atten/<laser>` / `atten/<laser>/coeff` | `cmd/<device>/req/atten/<laser>[/coeff]` | `cmd/<device>/resp/atten/<laser>[/coeff]` | `atten/<laser> [payload]`; `atten/<laser>/coeff [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
 | `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
 | `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
@@ -219,42 +218,58 @@ which slow resources it can touch, and known implementation-specific caveats.
   auto-off handled by laser-owned delayable work.
 - Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
-### `laser/tune`, `laser/status`, `laser/engstatus`, `laser/settings`
+### `laser/tune`, `laser/status`, `laser/settings`
 
 - Owner: `laser_command.c` handlers with hardware work in `lasers.c` and
   app-owned persisted settings in `app_settings.c`.
-- Notes: `laser/status` is the compact `laser` query alias; `laser/engstatus`
-  reads raw Maiman engineering state; tune/settings can update app-owned values.
+- Notes: `laser` is the compact status/set command; `laser/status` reads raw
+  Maiman engineering state; tune/settings can update app-owned values.
+- Notes: Maiman device ID is the hard driver identity check. The expected
+  driver serial is persisted operator intent reported by `laser/settings` and
+  `laser/status`; serial mismatches block driver-backed settings until the
+  operator updates `expected_serial`.
 - Side effects: driver-backed settings updates temporarily power the bank if
   needed unless bank power is `override_off`.
 
-### `atten/<laser>/value`, `atten/<laser>/valuedb`, and `atten/<laser>/coeff`
+### `atten/<laser>` and `atten/<laser>/coeff`
 
 - Owner: `atten_setting_get()`, `atten_setting_set()` in
   `app/src/attenuator_command.c`; DAC behavior in `app/src/attenuator.c`.
 - Board restriction: TIB supports all configured logical attenuators; CAL
   profiles support only their configured logical channel.
-- Side effects: value changes block on DAC I2C; coefficient changes update
-  runtime coefficients, reapply current attenuation, and can persist to NVS.
+- Side effects: value changes on `atten/<laser>` block on DAC I2C and return
+  applied DAC-readback state; coefficient changes update runtime FVOA center,
+  slope, maximum physical attenuation, and per-physical op-amp gain, reapply
+  current attenuation, and can persist to NVS.
 - Enqueue: value changes can emit `attenuator_clamped`.
 
 ### `pd`
 
-- Owner: `pd_get()`, `pd_set()` in `app/src/photodiode_command.c`; sampling,
-  short averages, and dark persistence in `app/src/photodiode.c`.
+- Owner: `pd_get()` in `app/src/photodiode_command.c`; sampling, moving
+  windows, and dark snapshots in `app/src/photodiode.c`.
 - Board restriction: TIB only.
-- Side effects: dark measurement starts the sampler-owned short-average
-  accumulator; persistence is delegated to photodiode/settings code.
-- Query note: dark-status action is classified as a pure query and does not
-  update `lastcommand`.
+- Side effects: query-only. `pd` queries both channels; `pd/yj` and `pd/hk`
+  query one channel. Queries auto-enable selected photodiodes only when that
+  channel's power mode is `auto`.
+
+### `pd/dark/<yj|hk>`
+
+- Owner: `pd_dark_get()`, `pd_dark_set()` in `app/src/photodiode_command.c`;
+  configurable dark windows in `app/src/photodiode.c`; persistent dark records
+  in `app/src/app_settings.c`.
+- Board restriction: TIB only.
+- Side effects: arms a sampler-owned dark capture with `duration_ms`, forces
+  dark with `dark_mv` and optional `rms_mv`, resets lowest-dark tracking with
+  `reset_lowest`, and optionally persists the selected channel's dark settings.
 
 ### `pdsettings/<yj|hk>`
 
 - Owner: `pd_settings_get()`, `pd_settings_set()` in
   `app/src/photodiode_command.c`.
 - Board restriction: TIB only.
-- Side effects: updates runtime photodiode calibration/settings and optional
-  NVS persistence.
+- Side effects: updates runtime photodiode response settings, relay power
+  intent, auto-off duration, and optional NVS persistence. Dark values are not
+  accepted or reported by `pdsettings`.
 
 ### `temp`
 

@@ -48,7 +48,6 @@ struct hispec_laser_driver_profile {
 	const char *modbus_name;
 	uint8_t node_id;
 	uint16_t expected_device_id;
-	uint16_t expected_serial;
 	const laserprops_t *properties;
 };
 
@@ -252,8 +251,8 @@ int hispec_laser_bank_poll_temperatures(
 /**
  * @brief Verify that the expected Maiman driver is at a channel's Modbus address.
  *
- * This checks both device ID and serial number so a bad NH8 hub address map
- * fails before current or TEC settings are written.
+ * This checks the device ID and configured expected serial before driver-backed
+ * settings are written.
  */
 int hispec_laser_verify_driver(enum hispec_laser_id id, uint16_t *serial_out);
 
@@ -329,6 +328,7 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);
+/** @brief Store the wavelength tune offset applied by future positive laser starts. */
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist);
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);

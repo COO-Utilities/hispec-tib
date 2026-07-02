@@ -2,17 +2,19 @@
 
 ## Warning Flow
 
-Warnings are emitted with `coo_cmd_runtime_warning_emit(command_runtime_get(), code, msg, context)`.
+Warnings are emitted with `coo_cmd_runtime_emit(command_runtime_get(), &args)`
+using `COO_CMD_RUNTIME_EMIT_WARNING`.
 
 Behavior:
 
 - Logs locally with `LOG_WRN`.
-- Uses the command-dispatch warning helper to build JSON with severity, code,
-  message, context, and uptime.
-- Enqueues one `OUT_TARGET_MQTT_BEST_EFFORT` message to `outbound_queue` with
-  `K_NO_WAIT`.
-- Drops the MQTT warning if the queue is full, MQTT is unavailable, or publish
-  fails.
+- Uses the command-dispatch runtime emit helper to build JSON with severity,
+  code, message, context, and uptime.
+- Enqueues either a best-effort or required MQTT message to `outbound_queue`
+  with `K_NO_WAIT`, according to the caller's explicit delivery argument.
+- Drops best-effort MQTT warnings if the queue is full, MQTT is unavailable, or
+  publish fails. Required warnings are retried by the outbound drain after
+  successful enqueue, but enqueue can still fail if the bounded queue is full.
 - Warnings are intentionally not mirrored into sticky status fields. Operators
   can inspect logs or retry/query state after a warning.
 
@@ -32,8 +34,11 @@ Current warning codes seen in code:
 - `photodiode_noise`
 - `mems_timing_quantized`
 - `split_ratio_quantized`
-- `outbound_queue_full`
 - `laserbank_heater_override`
+
+`outbound_queue_full` is logged locally by the outbound drain when the queue is
+already at capacity. It is intentionally not emitted as MQTT/serial warning
+telemetry because doing so would add more output pressure during overload.
 
 ## Throughput Telemetry
 
@@ -48,9 +53,10 @@ dt/<device>/hk_tput
 Payload format is selected by the command request and is specified in
 `commands.md`.
 
-Telemetry is best-effort. It is queued directly to `outbound_queue` with
-`K_NO_WAIT`. If the outbound queue is full, the current sample is dropped. If
-MQTT is unavailable or publish fails after transfer, the sample is dropped.
+Throughput telemetry is best-effort. It is queued through the command runtime
+emit helper with `K_NO_WAIT`. If the outbound queue is full, the current sample
+is dropped. If MQTT is unavailable or publish fails after transfer, the sample
+is dropped.
 
 ## Command Responses
 

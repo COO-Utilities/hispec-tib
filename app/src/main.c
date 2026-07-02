@@ -39,26 +39,35 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
-#define EXECUTOR_STACK_SIZE 8192
-#define EXECUTOR_PRIORITY 6
-#define PHOTODIODE_STACK_SIZE 2048 //1400
-#define PHOTODIODE_PRIORITY 2
-#define THROUGHPUT_MONITOR_STACK_SIZE 4096
-/* Throughput/autolevel should run promptly when active, but it can write DACs
+/* TODO Enumerate and describe thread priorities across the whole app, and what their responsibilities are here
+ *
+ * Throughput/autolevel should run promptly when active, but it can write DACs
  * and lasers, so keep MEMS and photodiode sampling ahead of it.
- */
-#define THROUGHPUT_MONITOR_PRIORITY 3
-#define APP_BLOCKING_WORKQ_STACK_SIZE 3072
-/* Zephyr Modbus parses client RX frames on the system workqueue. App-owned
+
+
+ * Zephyr Modbus parses client RX frames on the system workqueue. App-owned
  * background work that can block on Modbus, 1-Wire, or slow GPIO must run below
  * command execution on a separate queue so it cannot starve Modbus RX parsing.
- */
+
+* Network setup returns after starting DHCP/static policy; DHCP fallback is a
+ * later system-work item, not part of the boot watchdog budget.
+*/
+
+#define EXECUTOR_STACK_SIZE 8192
+#define EXECUTOR_PRIORITY 6
+
+#define PHOTODIODE_STACK_SIZE 2048 //1400
+#define PHOTODIODE_PRIORITY 2
+
+#define THROUGHPUT_MONITOR_STACK_SIZE 4096
+#define THROUGHPUT_MONITOR_PRIORITY 3
+
+#define APP_BLOCKING_WORKQ_STACK_SIZE 3072
 #define APP_BLOCKING_WORKQ_PRIORITY 7
+
+//Set to 1 to get periodic timing summaries in more detail, may  (will) mess with timing
 #define APP_TIMING_SUMMARY_LOGS 0
 
-/* Network setup returns after starting DHCP/static policy; DHCP fallback is a
- * later system-work item, not part of the boot watchdog budget.
- */
 #define WDT_TIMEOUT_MS 15000U
 #define MQTT_CONNECT_RETRY_MS 5000
 
@@ -123,6 +132,7 @@ static void load_network_config(struct network_config *cfg)
 #endif
 }
 
+//TODO I think this should be part of coo mqtt  or coo command dispatch
 static void load_mqtt_config(struct coo_mqtt_broker_config *cfg)
 {
 	struct app_mqtt_settings mqtt_cfg = {0};
@@ -138,6 +148,7 @@ static void load_mqtt_config(struct coo_mqtt_broker_config *cfg)
 	cfg->port = mqtt_cfg.broker_port;
 }
 
+//TODO I think this should be part of coo mqtt  or coo command dispatch
 static bool mqtt_config_equal(const struct coo_mqtt_broker_config *a,
 			      const struct coo_mqtt_broker_config *b)
 {
@@ -146,6 +157,7 @@ static bool mqtt_config_equal(const struct coo_mqtt_broker_config *a,
 	       strcmp(a->host, b->host) == 0;
 }
 
+//TODO I think this should be part of coo mqtt  or coo command dispatch
 static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
 {
 	struct app_mqtt_settings mqtt_cfg = {0};
@@ -162,6 +174,7 @@ static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
 	 */
 	app_settings_update_mqtt(&mqtt_cfg, true);
 }
+
 
 /**
  * @brief Configure the hardware watchdog used by the main network/MQTT loop.
@@ -205,6 +218,7 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
+//TODO needs documentation
 static void apply_last_known_time(void)
 {
 	struct timespec ts = {0};
@@ -227,12 +241,27 @@ static void apply_last_known_time(void)
 		(unsigned long long)utc_ms);
 }
 
+// TODO, why isn't also triggering a mqtt reconnect here?
 static void network_event_handler(bool connected)
 {
 	LOG_INF("Network event: %s", connected ? "connected" : "disconnected");
 	if (connected)
 		sntp_sync_schedule_now();
 }
+
+
+//TODO I want to refashion things such that all log messages are able to be emitted as console telemetry by mqtt
+// This needs a configurable call that controls whether the message is best effort or not and if it does go out over
+// mqtt and then an app level config for the level that is transmitted (debug/info/warn+err) that is configurable over mqtt
+// early boot messages clearly may not get out and only go to serial, if there is a q for them then I think that the
+// earlier messages in a burst would be sent and later dropped.
+// I'm not adamant about this though as if I do it I want to commit and replace ALL LOG_INF/LOG_ERR/etc with a COO_LOG
+// or COO_TELEM or some such
+// Telemetry needs both uptime and unixtime
+// there are warings like LOG_WRN("Outbound queue full; boot watchdog telemetry not queued"); that serve no purpose.
+// All console messages need to be evaluated for the assumption that the console is UNMONITORED. so for example if boot telem isn't making it out cause the
+// queue is full it either wasn't needed in the first place or there is now a problem that vitally needs to be debugged. So careful thout about what actually CAN happen and design of flow and sizes based on that is appropriate
+
 
 int main(void)
 {
@@ -281,8 +310,11 @@ int main(void)
 		}
 	}
 
+	//TODO move to right after app settings. this needs to ensure that loading does not depend on detecting board type.
+
 	apply_last_known_time();
 	app_settings_increment_boot_count();
+
 	rc = command_runtime_init();
 	if (rc != 0) {
 		LOG_ERR("Command runtime init failed (%d)", rc);
@@ -295,14 +327,20 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
+	//TODO the zephyr api specifies that k_work_queue_init must be called first and it is not, check this for all work
+	// queueus
 	k_work_queue_start(&app_blocking_workq,
 			   app_blocking_workq_stack,
 			   K_THREAD_STACK_SIZEOF(app_blocking_workq_stack),
 			   APP_BLOCKING_WORKQ_PRIORITY,
 			   &app_blocking_workq_config);
+
+
 	hispec_laser_autooff_start(&app_blocking_workq);
 	housekeeping_start(&app_blocking_workq);
+
 	if (devices_board_type() == HISPEC_BOARD_TIB) {
+		//TODO if the board devices are not ready then we can't continue (or rather we continue but are going to throw LOTS of errors)
 		if (board_devices_ready) {
 			k_thread_create(&photodiode_thread_data,
 					photodiode_stack,
@@ -331,17 +369,16 @@ int main(void)
 
 	load_network_config(&net_cfg);
 	(void)network_init(&net_cfg, network_event_handler);
-	// wdt_feed(wdt, wdt_channel);
 
 	rc = coo_mqtt_init(&client_ctx, app_mqtt_device_id());
 	if (rc != 0) {
-		LOG_ERR("MQTT init failed (%d)", rc);
+		LOG_ERR("MQTT init failed (%d)", rc); //TODO move this log to coo_mqtt_init
 		return rc;
 	}
 	load_mqtt_config(&mqtt_cfg);
 	rc = coo_mqtt_set_broker_config(&mqtt_cfg);
 	if (rc != 0) {
-		LOG_ERR("MQTT broker config invalid (%d)", rc);
+		LOG_ERR("MQTT broker config invalid (%d)", rc); //TODO move this log to coo_mqtt_set_broker_config
 		return rc;
 	}
 	mqtt_cfg_revision = app_settings_get_mqtt_revision();
@@ -365,7 +402,6 @@ int main(void)
 		// }
 		(void)coo_mqtt_add_subscription(mqtt_cmd_subscription, MQTT_QOS_2_EXACTLY_ONCE);
 	}
-	// wdt_feed(wdt, wdt_channel);
 
 	while (1) {
 		/* MQTT stays connected whenever the network is ready. Serial override
@@ -377,6 +413,8 @@ int main(void)
 
 		coo_cmd_runtime_serial_poll(cmd_runtime);
 
+
+		//TODO From here to ***** below looks like code that should be consolidated into 1-3 functions and shifted to coo_mqtt or coo_command
 		if (current_mqtt_revision != mqtt_cfg_revision) {
 			struct coo_mqtt_broker_config new_mqtt_cfg;
 
@@ -411,17 +449,23 @@ int main(void)
 			if (rc == 0) {
 				mqtt_subscribed = false;
 				mqtt_revert_on_connect_failure = false;
-			} else if (mqtt_revert_on_connect_failure) {
-				char context[160];
+				} else if (mqtt_revert_on_connect_failure) {
+					char context[160];
 
-				snprintk(context, sizeof(context),
-					 "host=%s port=%u rc=%d",
-					 mqtt_cfg.host, mqtt_cfg.port, rc);
-				coo_cmd_runtime_warning_emit(command_runtime_get(), "mqtt_broker_revert",
-						 "MQTT broker connection failed; reverting to prior broker",
-						 context);
-				LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
-					rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
+					snprintk(context, sizeof(context),
+						 "host=%s port=%u rc=%d",
+						 mqtt_cfg.host, mqtt_cfg.port, rc);
+					coo_cmd_runtime_emit(
+						command_runtime_get(),
+						&(const struct coo_cmd_runtime_emit_args){
+							.type = COO_CMD_RUNTIME_EMIT_WARNING,
+							.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+							.code = "mqtt_broker_revert",
+							.msg = "MQTT broker connection failed; reverting to prior broker",
+							.context = context,
+						});
+					LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
+						rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
 				mqtt_cfg = prior_mqtt_cfg;
 				(void)coo_mqtt_set_broker_config(&mqtt_cfg);
 				restore_mqtt_config(&mqtt_cfg);
@@ -439,6 +483,7 @@ int main(void)
 				mqtt_subscribed = true;
 			}
 		}
+		// TODO *****
 
 		coo_cmd_runtime_drain_outbound(cmd_runtime, &client_ctx,
 					       coo_mqtt_is_connected() && mqtt_can_run);

@@ -11,7 +11,6 @@
 #include "command.h"
 #include <errno.h>
 #include <math.h>
-#include <strings.h>
 #include <string.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
@@ -81,9 +80,6 @@ static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *c
 static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
                                                      const struct coo_cmd_spec *spec,
                                                      void *user_data);
-static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
-                                         const struct coo_cmd_spec *spec,
-                                         void *user_data);
 static int catalog_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out);
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
@@ -148,19 +144,19 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
  */
 static const struct coo_cmd_spec command_specs[] = {
     CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true,
-             "trydhcpfirst,preferdhcpdns,preferdhcpntp,ip,subnet,gateway,dns,ntp,persistent",
-             "ip [trydhcpfirst=<bool> preferdhcpdns=<bool> preferdhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persistent=<bool>]",
+             "trydhcpfirst,preferdhcpdns,preferdhcpntp,ip,subnet,gateway,dns,ntp,persist",
+             "ip [trydhcpfirst=<bool> preferdhcpdns=<bool> preferdhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persist=<bool>]",
              "query with no payload; effect when any listed field is supplied",
              "bool: true|false|on|off|yes|no",
-             "reconfigures IPv4 immediately; persistent=true stores app-owned IP settings",
+             "reconfigures IPv4 immediately; persist=true stores app-owned IP settings",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     { .key = "mqtt", .query_handler = mqtt_get, .effect_handler = mqtt_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
-      .serial_positional = { .field = { "broker", "persistent" }, .required_count = 1U },
-      .allowed_payload_keys = "broker,persistent",
+      .serial_positional = { .field = { "broker", "persist" }, .required_count = 1U },
+      .allowed_payload_keys = "broker,persist",
       .mqtt_query_allowed_during_serial_guard = true,
-      CMD_HELP("mqtt [broker=<host-or-ip:port> persistent=<bool>]",
-               "broker is required for effect; persistent is optional",
+      CMD_HELP("mqtt [broker=<host-or-ip:port> persist=<bool>]",
+               "broker is required for effect; persist is optional",
                "broker examples: 192.168.1.5:1883, hispec.caltech.edu:1883",
                "runtime broker changes cause the main loop to reconnect",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
@@ -193,8 +189,8 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_CUSTOM("memsroute/route_loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
-                    "route,1028y,1270j,1430yj,1430hk,1510h,2330k,split,persistent",
-                    "memsroute/route_loss route=<route> [<laser>=<transmission> ... persistent=<bool>]",
+                    "route,1028y,1270j,1430yj,1430hk,1510h,2330k,split,persist",
+                    "memsroute/route_loss route=<route> [<laser>=<transmission> ... persist=<bool>]",
                     "route required for effect; laser fields optional by query/effect mode",
                     "laser fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,split",
                     "stores user route-loss estimates used by optical calculations",
@@ -248,23 +244,16 @@ static const struct coo_cmd_spec command_specs[] = {
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only stored tune request",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB("laser/status", laser_get, NULL,
+    CMD_SPEC_TIB("laser/status", laser_status_get, NULL,
                  COO_CMD_CLASS_ALWAYS_QUERY, true, "name",
                  "laser/status name=<laser>",
                  "name required",
                  "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
-                 "TIB-only compact operational status",
-                 COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB("laser/engstatus", laser_engstatus_get, NULL,
-                 COO_CMD_CLASS_ALWAYS_QUERY, true, "name",
-                 "laser/engstatus name=<laser>",
-                 "name required",
-                 "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
-                 "TIB-only engineering status; may perform slow Modbus reads",
+                 "TIB-only detailed engineering status; may perform slow Modbus reads",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/settings", laser_settings_get, laser_settings_set,
-                        classify_laser_settings, true, "name,settings,persistent",
-                        "laser/settings name=<laser> [settings={...} persistent=<bool>]",
+                        classify_laser_settings, true, "name,settings,persist",
+                        "laser/settings name=<laser> [settings={...} persist=<bool>]",
                         "name required; settings object required for effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only app-owned laser policy/settings wrapper",
@@ -289,61 +278,74 @@ static const struct coo_cmd_spec command_specs[] = {
                  "mode: auto,override_on,override_off",
                  "TIB-only laser-bank heater relay mode",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC("atten/calibrate", atten_calibration_get, atten_calibration_set,
-             COO_CMD_CLASS_DEFAULT, true,
-             "action,mode,stop,continue,other_mv,dac1,dac2,attenuator,laser,output,fiber,dwell_ms,persistent",
-             "atten/calibrate action=<auto|manual|continue|fit|stop> [attenuator=<name> fiber=<dac1|dac2> other_mv=<mV> dwell_ms=<ms> persistent=<bool>]",
-             "action required for effect; no payload queries calibration state",
-             "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
-             "calibration actions are mode-specific and may run across commands",
-             COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    CMD_SPEC_TIB_PREFIX("atten/calibrate/records", atten_calibration_records_get, NULL,
+             COO_CMD_CLASS_ALWAYS_QUERY, true, "",
+             "atten/calibrate/records/<dac1|dac2>[/<chunk>]",
+             "query binary calibration metadata or a fixed raw-record chunk",
+             "physical: dac1,dac2",
+             "MQTT-only binary dataset exposes retained records and bridge roles",
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+	    CMD_SPEC_TIB("atten/calibrate", atten_calibration_get, atten_calibration_set,
+	             COO_CMD_CLASS_DEFAULT, true,
+	             "stop,laser,output,fiber,dwell_ms,persist",
+	             "atten/calibrate [laser=<name> output=<route> fiber=<M|S> dwell_ms=<ms> persist=<bool>|stop=<bool>]",
+	             "laser and output required for start; stop=true cancels; no payload queries calibration state",
+	             "name: 1028y,1270j,1430yj,1430hk,1510h,2330k",
+	             "automatic TIB attenuator calibration retains binary acquisition records",
+	             COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     { .key = "atten", .query_handler = atten_setting_get,
       .effect_handler = atten_setting_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .key_prefix_match = true,
-      .allowed_payload_keys = "value,dac1,dac2,persistent",
+	      .allowed_payload_keys = "value,value_db,value1,value2,value1_db,value2_db,value1_mv,value2_mv,dac1,dac2,persist",
       .mqtt_query_allowed_during_serial_guard = true },
-    CMD_HELP_ONLY("atten/<name>/value", NULL,
-                  "atten/<name>/value [value=<linear>]",
-                  "value required for effect",
+    CMD_HELP_ONLY("atten/<name>", NULL,
+                  "atten/<name> [value=<linear>|value_db=<dB>|value1=<linear>|value1_db=<dB>|value1_mv=<mV>|value2=<linear>|value2_db=<dB>|value2_mv=<mV>]",
+                  "no payload queries; total value fields cannot mix with value1/value2 fields",
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
-                  "sets or queries total logical transmission",
-                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_HELP_ONLY("atten/<name>/valuedb", NULL,
-                  "atten/<name>/valuedb [value=<dB>]",
-                  "value required for effect",
-                  "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
-                  "serial shorthand wraps a single numeric value field",
+                  "sets or queries total or per-physical attenuator transmission",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/coeff", NULL,
-                  "atten/<name>/coeff [dac1=[slope,offset] dac2=[slope,offset] persistent=<bool>]",
-                  "dac1 and dac2 arrays required for effect",
+	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,gain,correction_coeff} dac2={...} persist=<bool>]",
+	                  "dac1 and dac2 coefficient objects are required for effect",
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
                   "send JSON for coeff updates; key=value shorthand cannot express arrays",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    { .key = "pd", .query_handler = pd_get, .effect_handler = pd_set,
-      .class_policy = COO_CMD_CLASS_CUSTOM,
-      .custom_classify = classify_pd,
+    { .key = "pd/dark", .query_handler = pd_dark_get, .effect_handler = pd_dark_set,
+      .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
-      .allowed_payload_keys = "channel,action,duration_ms,store,persistent",
+      .key_prefix_match = true,
+      .allowed_payload_keys = "duration_ms,dark_mv,rms_mv,reset_lowest,persist",
+      .mqtt_query_allowed_during_serial_guard = true },
+    CMD_HELP_ONLY("pd/dark/<channel>", command_tib_supported,
+                  "pd/dark/<channel> [duration_ms=<ms>|dark_mv=<mV> rms_mv=<mV> reset_lowest=<bool> persist=<bool>]",
+                  "channel required in key; duration_ms arms dark capture, dark_mv forces dark; persist defaults false",
+                  "channel: yj,hk",
+                  "TIB-only photodiode dark measurement and forced dark update",
+                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    { .key = "pd", .query_handler = pd_get, .effect_handler = NULL,
+      .class_policy = COO_CMD_CLASS_DEFAULT,
+      .supported = command_tib_supported,
+      .key_prefix_match = true,
+      .allowed_payload_keys = "",
       .mqtt_query_allowed_during_serial_guard = true,
-      CMD_HELP("pd [channel=<yj|hk> action=<measure_dark|dark_status|reset_lowest_dark> duration_ms=<ms> store=<bool> persistent=<bool>]",
-               "channel and action required for effects; no payload queries live values",
-               "channel: yj,hk; action: measure_dark,dark_status,reset_lowest_dark",
-               "TIB-only photodiode status and dark-calibration actions",
-               COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
+      CMD_HELP("pd[/<channel>]",
+               "query only; no payload",
+               "channel: yj,hk",
+               "TIB-only photodiode latest-sample and monitoring-window status",
+               COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
     { .key = "pdsettings", .query_handler = pd_settings_get,
       .effect_handler = pd_settings_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
       .key_prefix_match = true,
-      .allowed_payload_keys = "dark_mv,noise_rms_mV,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persistent",
+      .allowed_payload_keys = "noise_rms_mv,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persist",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pdsettings/<channel>", command_tib_supported,
-                  "pdsettings/<channel> [dark_mv=<mV> noise_rms_mV=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persistent=<bool>]",
+                  "pdsettings/<channel> [noise_rms_mv=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persist=<bool>]",
                   "channel required in key; listed fields optional for effect",
                   "channel: yj,hk",
-                  "TIB-only app-owned photodiode calibration/settings and relay power intent",
+                  "TIB-only app-owned photodiode response settings and relay power intent",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
 };
 
@@ -445,27 +447,7 @@ static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_reques
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
-static enum coo_cmd_msg_type classify_pd(const struct coo_cmd_request *cmd,
-                                         const struct coo_cmd_spec *spec,
-                                         void *user_data)
-{
-    char action[20] = {0};
-
-    ARG_UNUSED(spec);
-    ARG_UNUSED(user_data);
-
-    if (cmd == NULL || coo_cmd_payload_empty(cmd)) {
-        return COO_CMD_QUERY;
-    }
-    if (coo_json_extract_string(cmd->payload, "action",
-                                action, sizeof(action)) == COO_JSON_EXTRACT_OK &&
-        strcasecmp(action, "dark_status") == 0) {
-        return COO_CMD_QUERY;
-    }
-
-    return COO_CMD_EFFECT;
-}
-
+// TODO serial_read_three_tokens and serial_single_value_payload are coo_command scope, not app command.c scope, refactor
 static int serial_read_three_tokens(const char *payload,
                                     char *t0, size_t t0_len,
                                     char *t1, size_t t1_len,
@@ -613,7 +595,7 @@ struct coo_cmd_runtime *command_runtime_get(void)
 
 
 /* COMMAND HANDLERS */
-
+//TODO evaluate moving mqtt, ip, and time commands to coo_command as builtins
 
 static int ip_status_payload(char *payload, size_t payload_len)
 {
@@ -843,9 +825,9 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
     }
 
-    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+    if (coo_json_extract_optional_bool(cmd->payload, "persist",
                                        &persist, NULL) != 0) {
-        return coo_cmd_error(out, cmd, "invalid persistent");
+        return coo_cmd_error(out, cmd, "invalid persist");
     }
 
     if (!changed && !(unsupported_dhcp || unsupported_dns || unsupported_ntp)) {
@@ -941,9 +923,9 @@ int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     mqtt_cfg.broker_host[sizeof(mqtt_cfg.broker_host) - 1U] = '\0';
     mqtt_cfg.broker_port = broker_cfg.port;
 
-    if (coo_json_extract_optional_bool(cmd->payload, "persistent",
+    if (coo_json_extract_optional_bool(cmd->payload, "persist",
                                        &persist, NULL) != 0) {
-        return coo_cmd_error(out, cmd, "invalid persistent");
+        return coo_cmd_error(out, cmd, "invalid persist");
     }
 
     app_settings_update_mqtt(&mqtt_cfg, persist);
@@ -1114,6 +1096,7 @@ static int catalog_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
+//TODO <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there. here and at least laser_coomand.c
 static int command_append_seconds_or_null(char *payload, size_t payload_len,
                                           size_t *off, bool active, double seconds)
 {
@@ -1142,6 +1125,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     bool has_lastcommand;
     char payload[MAX_PAYLOAD_LEN] = {0};
     size_t off = 0U;
+    uint64_t pd_on_s;
 
     if (coo_json_extract_optional_bool(cmd->payload, "ip",
                                        &include_ip, NULL) != 0) {
@@ -1158,6 +1142,8 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     housekeeping_get_temperature_status(&ts);
     has_lastcommand = coo_cmd_runtime_get_lastcommand(&command_runtime, &lastcommand);
+    pd_on_s = (uint64_t)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
+                            housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE));
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"fw\":\"%s\",\"boots\":%u,"
                         "\"board\":\"%s\",\"board_ok\":%s,"
@@ -1172,10 +1158,9 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"pd_on_s\":%.1f,"
+                        ",\"pd_on_s\":%llu,"
                         "\"laserbank_on_s\":%u",
-                        (double)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
-                                    housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE)),
+                        (unsigned long long)pd_on_s,
                         hispec_laser_bank_power_on_duration_s()) != 0) {
         return coo_cmd_error(out, cmd, "status response too large");
     }

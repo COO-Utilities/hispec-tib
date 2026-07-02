@@ -50,7 +50,7 @@ struct nvs_fs;
 #if defined(CONFIG_COO_CMD_PAYLOAD_SIZE)
 #define COO_CMD_PAYLOAD_MAX CONFIG_COO_CMD_PAYLOAD_SIZE
 #else
-#define COO_CMD_PAYLOAD_MAX 256
+#define COO_CMD_PAYLOAD_MAX 1024
 #endif
 
 /**
@@ -80,6 +80,16 @@ enum coo_cmd_out_target {
 	COO_CMD_OUT_MQTT = 0,
 	COO_CMD_OUT_SERIAL = 1,
 	COO_CMD_OUT_MQTT_BEST_EFFORT = 2,
+};
+
+enum coo_cmd_runtime_emit_type {
+	COO_CMD_RUNTIME_EMIT_DATA = 0,
+	COO_CMD_RUNTIME_EMIT_WARNING,
+};
+
+enum coo_cmd_runtime_emit_delivery {
+	COO_CMD_RUNTIME_EMIT_BEST_EFFORT = 0,
+	COO_CMD_RUNTIME_EMIT_REQUIRED,
 };
 
 enum coo_cmd_class_policy {
@@ -116,6 +126,16 @@ struct coo_cmd_response {
 struct coo_cmd_work {
 	struct k_work work;
 	struct coo_cmd_request cmd;
+};
+
+struct coo_cmd_runtime_emit_args {
+	enum coo_cmd_runtime_emit_type type;
+	enum coo_cmd_runtime_emit_delivery delivery;
+	const char *suffix;
+	struct coo_cmd_response *out;
+	const char *code;
+	const char *msg;
+	const char *context;
 };
 
 struct coo_cmd_spec;
@@ -231,7 +251,6 @@ struct coo_cmd_runtime {
 	uint32_t serial_guard_seconds;
 #endif
 	bool outbound_full_warning_seen;
-	bool outbound_full_warning_mqtt_seen;
 	bool serial_initialized;
 	bool serial_line_overflow;
 	size_t serial_line_len;
@@ -243,11 +262,12 @@ struct coo_cmd_runtime {
 	struct coo_cmd_request executor_cmd;
 	struct coo_cmd_response executor_out;
 	struct coo_cmd_response outbound_scratch;
-	/* Warning builders share one runtime buffer; if it is busy, warnings stay
-	 * local rather than blocking or allocating another full response.
+	/* Runtime warning builders can share one buffer; if it is busy,
+	 * best-effort warnings stay local rather than allocating another full
+	 * response on a producer thread stack.
 	 */
-	atomic_t warning_scratch_busy;
-	struct coo_cmd_response warning_scratch;
+	atomic_t emit_scratch_busy;
+	struct coo_cmd_response emit_scratch;
 };
 
 struct coo_cmd_runtime_config {
@@ -328,7 +348,7 @@ int coo_cmd_key_suffix_segment_copy(const char *key,
 /**
  * Copy two slash-delimited suffix segments after a command-key prefix.
  *
- * Returns 0 for keys like `atten/1028y/value` with prefix `atten`. Exact
+ * Returns 0 for keys like `atten/1028y/coeff` with prefix `atten`. Exact
  * matches, missing segments, extra nested segments, missing inputs, and
  * too-small output buffers fail with a negative errno value.
  */
@@ -459,32 +479,6 @@ int coo_cmd_busy_response(struct coo_cmd_response *out,
 int coo_cmd_serial_active_response(struct coo_cmd_response *out,
 				   const struct coo_cmd_request *cmd);
 
-/**
- * @brief Build a best-effort warning publication.
- *
- * The caller supplies the already formatted warning topic, usually a telemetry
- * topic such as `dt/<device>/warning`. The response target is
- * COO_CMD_OUT_MQTT_BEST_EFFORT and the payload is a compact warning JSON
- * object with severity, code, msg, context, and uptime_ms.
- */
-int coo_cmd_build_warning(struct coo_cmd_response *out,
-			  const char *topic,
-			  const char *code,
-			  const char *msg,
-			  const char *context);
-
-/**
- * @brief Log and enqueue one best-effort warning without blocking.
- *
- * Warnings are lossy by design. This helper never publishes MQTT directly and
- * returns an error if the payload cannot be built or the queue is full.
- */
-int coo_cmd_warning_emit(struct k_msgq *outbound_queue,
-			 const char *topic,
-			 const char *code,
-			 const char *msg,
-			 const char *context);
-
 /** Publish a formatted MQTT response/publication. May block in the socket layer. */
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 const struct coo_cmd_response *out,
@@ -513,11 +507,19 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 				    struct mqtt_client *client,
 				    bool mqtt_available);
 
-/** Emit a best-effort warning using runtime identity and outbound queue. */
-int coo_cmd_runtime_warning_emit(struct coo_cmd_runtime *runtime,
-				 const char *code,
-				 const char *msg,
-				 const char *context);
+/**
+ * Queue one runtime data or warning publication.
+ *
+ * DATA requires args->suffix and args->out with payload/payload_len already
+ * populated. WARNING builds the compact warning JSON into args->out, or into a
+ * guarded runtime scratch response when args->out is NULL. The helper owns
+ * topic formatting, delivery target, QoS, and outbound queue insertion; it
+ * never publishes MQTT directly and never allocates a full response on its
+ * stack. REQUIRED delivery means the outbound drain will retry after successful
+ * enqueue; enqueue can still fail if the bounded queue is full.
+ */
+int coo_cmd_runtime_emit(struct coo_cmd_runtime *runtime,
+			 const struct coo_cmd_runtime_emit_args *args);
 
 /** Print a serial response as topic then space-indented wrapped payload. */
 void coo_cmd_print_serial_response(const struct coo_cmd_response *out,

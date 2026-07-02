@@ -2,9 +2,9 @@
  * @file photodiode.h
  * @brief TIB photodiode sampling, rolling status windows, and dark-calibration state.
  *
- * The sampler thread owns ADC reads and short averaging. Command handlers can
- * start/reset/query dark calibration but do not read the ADC or wait for an
- * entire measurement interval.
+ * The sampler thread owns ADC reads, per-channel moving windows, and dark
+ * calibration snapshots. Command handlers can request internal configurable
+ * window changes or dark captures; they do not read the ADC.
  */
 
 #ifndef PHOTODIODE_H
@@ -29,12 +29,15 @@
 #define PHOTODIODE_RESPONSIVITY_MAX_A_PER_W 10.0
 #define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0
 #define PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A 1.0e12
-#define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 3.0
-#define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 1.0
+#define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 10.0
+#define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 10.0
 #define PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W 0.93
 #define PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W 0.60971
 #define PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A 5.0e10
 #define PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A 2.375e9
+#define PHOTODIODE_FIXED_WINDOW_MS 500U
+#define PHOTODIODE_INSTANT_ERR_MV 0.1875
+#define PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV 1.5
 
 struct app_pd_channel_settings;
 
@@ -43,58 +46,42 @@ enum photodiode_channel {
 	PHOTODIODE_CHANNEL_HK = 1
 };
 
-enum photodiode_average_state {
-	PHOTODIODE_AVERAGE_INACTIVE = 0,
-	PHOTODIODE_AVERAGE_MEASURING,
-	PHOTODIODE_AVERAGE_COMPLETE,
-	PHOTODIODE_AVERAGE_ERROR
+struct photodiode_window_result {
+	bool valid;
+	uint16_t sample_length;
+	uint16_t failed_samples;
+	int64_t end_ms;
+	double mean_mv;
+	double mean_net_mv;
+	double rms_mv;
+	double mean_net_err_mv;
+	double min_mv;
+	double max_mv;
+	double power_uw;
+	double power_err_uw;
+	int16_t max_raw;
 };
 
 struct photodiode_channel_status {
-	bool valid;
-	int last_error;
 	int16_t raw;
 	double mv;
 	double net_mv;
+	double net_err_mv;
 	double power_uw;
-	double noise_rms_mv;
-	double mean_mv_1s;
-	double rms_mv_0p5s;
-	double dark_mv;
-	double lowest_dark_mv;
-	bool lowest_dark_valid;
-	enum photodiode_average_state average_state;
-	uint32_t average_duration_ms;
-	uint32_t average_samples;
-	uint32_t average_target_samples;
-	int average_last_error;
+	double power_err_uw;
 	uint32_t age_ms;
-	uint32_t sample_count;
+	struct photodiode_window_result configurable_window;
+	struct photodiode_window_result last_configurable_window;
+	struct photodiode_window_result fixed_window;
+	struct photodiode_window_result last_fixed_window;
+	struct photodiode_window_result dark_window;
+	struct photodiode_window_result lowest_dark_window;
+	bool dark_pending;
+	uint32_t dark_duration_ms;
 };
 
 struct photodiode_status {
 	struct photodiode_channel_status channel[PHOTODIODE_CHANNEL_COUNT];
-};
-
-struct photodiode_average_result {
-	enum photodiode_channel channel;
-	uint32_t duration_ms;
-	uint32_t samples;
-	uint32_t target_samples;
-	double mean_mv;
-	double mean_net_mv;
-	double rms_mv;
-	double min_mv;
-	double max_mv;
-	int16_t max_raw;
-};
-
-struct photodiode_average_status {
-	enum photodiode_channel channel;
-	enum photodiode_average_state state;
-	bool store_dark;
-	int last_error;
-	struct photodiode_average_result result;
 };
 
 /** Channel labels used in command replies and telemetry JSON. */
@@ -102,11 +89,8 @@ extern const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT];
 /** @brief Background sampler thread; blocks on ADC reads and periodic sleeps. */
 void photodiode_thread(void *p1, void *p2, void *p3);
 
-/** @brief Copy latest sample, calibration, and short-average progress. */
+/** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
-
-/** @brief Convert an average-measurement state enum to command JSON text. */
-const char *photodiode_average_state_name(enum photodiode_average_state state);
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.
@@ -146,47 +130,37 @@ double photodiode_photon_flux_from_mv(double net_mv,
 bool photodiode_settings_valid(const struct app_pd_channel_settings *settings);
 
 /**
- * @brief Start or restart a dark measurement on the sampling thread.
+ * @brief Set the per-channel internal configurable moving-window duration.
  *
- * @param channel Photodiode channel to measure.
- * @param duration_ms Requested measurement window in milliseconds. Zero uses
- * the firmware default. The implementation rounds to the nearest whole sample
- * and clamps to the short-average maximum duration.
- * @param store If true, update stored dark and lowest-dark when complete.
- * @param out Optional status populated immediately after the request is armed.
- *
- * This is a short average tagged to update dark calibration on completion when
- * @p store is true. A repeated dark request for the same channel discards the
- * previous in-progress accumulator and starts a fresh window. This call does
- * not wait for the measurement interval.
- *
- * @retval 0 Measurement was started.
- * @retval -EINVAL Bad channel.
- * @retval -ENODEV Photodiodes are unavailable or ADC is not ready.
+ * Zero requests the shortest supported one-sample window. The implementation
+ * rounds to the nearest whole sample and clamps to the maximum dark/window
+ * duration. Changing duration closes the current configurable window into
+ * last_configurable_window and starts a fresh current window.
  */
-int photodiode_start_dark_measurement(enum photodiode_channel channel,
-				      uint32_t duration_ms,
-				      bool store,
-				      struct photodiode_average_status *out);
+int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
+						uint32_t duration_ms);
+
 /**
- * @brief Start a short non-persistent average on the sampling thread.
+ * @brief Start a sampler-owned dark capture using the configurable window.
  *
- * The accumulator samples the same ADC snapshots as normal photodiode status
- * and reports raw and dark-subtracted means. It performs no persistence and
- * does not block for the requested window.
+ * The command returns immediately after arming the capture. The sampler commits
+ * the completed configurable window as dark when the requested sample count is
+ * reached. No laser, route, or attenuator policy is checked here.
  */
-int photodiode_start_average(enum photodiode_channel channel,
-			     uint32_t duration_ms,
-			     struct photodiode_average_status *out);
-/** @brief Copy current or last short-average state for one channel. */
-int photodiode_get_average_status(enum photodiode_channel channel,
-				  struct photodiode_average_status *out);
-/**
- * @brief Clear lowest-dark tracking for one channel.
- *
- * The current configured dark level is left unchanged. If @p persist is true,
- * only the selected channel's photodiode settings are saved.
- */
-int photodiode_reset_lowest_dark(enum photodiode_channel channel, bool persist);
+int photodiode_start_dark_capture(enum photodiode_channel channel,
+				  uint32_t duration_ms,
+				  bool persist,
+				  bool reset_lowest);
+
+/** @brief Force one channel's dark result to a user-supplied value. */
+int photodiode_force_dark(enum photodiode_channel channel,
+			  double mean_mv,
+			  double rms_mv,
+			  bool persist,
+			  bool reset_lowest);
+
+/** @brief Reset the lowest-dark record to the active dark for one channel. */
+int photodiode_reset_lowest_dark(enum photodiode_channel channel,
+				 bool persist);
 
 #endif //PHOTODIODE_H
