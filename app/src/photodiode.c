@@ -135,6 +135,7 @@ struct photodiode_runtime_channel {
 	double power_uw;
 	double power_err_uw;
 	int64_t updated_ms;
+	int64_t next_adc_warning_ms;
 	int64_t next_noise_warning_ms;
 	struct pd_window_runtime configurable_window;
 	struct pd_window_runtime fixed_window;
@@ -856,6 +857,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	double net_err_mv = NAN;
 	double noise_rms = 0.0;
 	bool emit_noise_warning = false;
+	bool emit_adc_warning = false;
 	bool commit_dark = false;
 	bool dark_failed = false;
 	bool dark_persist = false;
@@ -898,6 +900,14 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 						     &dark_reset_lowest,
 						     &dark_failed);
 
+	/* Window accounting records every failure above; only the operator warning
+	 * is throttled so a missing ADC cannot saturate the outbound queue.
+	 */
+	if (rc != 0 && now >= runtime->next_adc_warning_ms) {
+		runtime->next_adc_warning_ms = now + PD_HARDWARE_LOG_RATELIMIT_MS;
+		emit_adc_warning = true;
+	}
+
 	if (rc == 0 && runtime->fixed_window.current.valid) {
 		noise_rms = runtime->fixed_window.current.rms_mv;
 		if (settings->noise_warn_rms_mv > 0.0 &&
@@ -917,7 +927,9 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	}
 
 	if (rc != 0) {
-		pd_emit_adc_error_warning(channel, rc);
+		if (emit_adc_warning) {
+			pd_emit_adc_error_warning(channel, rc);
+		}
 		return;
 	}
 

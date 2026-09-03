@@ -506,10 +506,11 @@ dark tracking. The throughput monitor owns streaming output, autolevel
 decisions, and throughput math.
 
 Transient ADC read/write errors are treated as missing photodiode samples:
-firmware emits a `photodiode_adc_error` warning, leaves the last good rolling
-value intact for streaming consumers, and counts the failed sample in the
-active photodiode windows. A window becomes unusable only when all attempted
-samples in that window fail.
+firmware leaves the last good rolling value intact for streaming consumers and
+counts every failed sample in the active photodiode windows. It emits at most
+one `photodiode_adc_error` warning per channel every 10 seconds while failures
+continue. A window becomes unusable only when all attempted samples in that
+window fail.
 
 **Telemetry topics (published):**
 - `dt/<device>/yj_tput`

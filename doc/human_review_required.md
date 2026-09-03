@@ -12,6 +12,10 @@ LLMs Agents: Do NOT change heading names in this file.
   - Confirm both REF3333-fed DAC references, all populated DAC/op-amp paths,
     both 0-2 V ADC paths, the 20 Hz filters, ADC noise/stability, and sampler
     timing before persisting new attenuator calibrations.
+  - The first Rev. 2 boot reached the ADS1115 configuration-register write,
+    where the STM32 I2C driver reported NACK (not timeout, arbitration loss, or
+    bus error). Check ADC VDD, ADDR-to-GND, PB8/PB9 continuity, pull-ups, and an
+    acknowledged `0x48` address before changing firmware address or bus speed.
 - [x] sort out FVOA ripple, is ok?
   - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns

@@ -31,6 +31,8 @@ Current warning codes seen in code:
 
 - `serial_guard_active`
 - `attenuator_clamped`
+- `photodiode_adc_error` (at most once per channel every 10 seconds; every
+  failed sample is still counted in photodiode windows)
 - `photodiode_noise`
 - `mems_timing_quantized`
 - `split_ratio_quantized`
