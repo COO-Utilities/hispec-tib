@@ -61,8 +61,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
 /* One ADC cycle is  under 3 ms; the pad prevents reading a partial window. */
 #define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
-#define ATTEN_CAL_ADC_LSB_MV 0.1875f
-#define ATTEN_CAL_ADC_CLIP_MV 5000.0f
 /* Minimum bracket width for companion-FVOA binary searches. */
 #define ATTEN_CAL_SEARCH_MIN_STEP_MV 5.0f
 /* Fixed DUT-FVOA sweep spacing after the initial open-reference point. */
@@ -484,13 +482,14 @@ static void build_measurement_from_pd_window(const struct photodiode_window_resu
 	/**
 	 * Decide whether a photodiode window is pinned against the ADC rail.
 	 *
-	 * Saturation is based on the mean, not the max excursion: a noisy rail sample is
-	 * diagnostic, but a saturated diode has the whole averaging window at the wall.
+	 * Saturation uses the voltage before dark subtraction and is based on the
+	 * mean, not the max excursion: a noisy rail sample is diagnostic, but a
+	 * saturated input has the whole averaging window at the wall.
 	 */
-	saturated = (float) window->mean_net_mv >= ATTEN_CAL_ADC_CLIP_MV;
+	saturated = window->mean_mv >= PHOTODIODE_ADC_MAX_MV;
 
 	if (!(measurement->signal_err_mv > 0.0f) || !isfinite(measurement->signal_err_mv)) {
-		measurement->signal_err_mv = ATTEN_CAL_ADC_LSB_MV;
+		measurement->signal_err_mv = (float)PHOTODIODE_ADC_LSB_MV;
 	}
 
 	if (saturated) {

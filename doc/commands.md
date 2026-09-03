@@ -1207,7 +1207,8 @@ ownership are documented in `attenuator_calibration.md`.
     measurement is usable when it is not ADC/electrical clipped and its
     dark-subtracted signal is at least 5 sigma above the sample mean
     uncertainty. Saturation here means actual ADC clipping near
-    5 V, not a merely high photodiode voltage with electrical headroom.
+    2.048 V, not a merely high photodiode voltage within the intended 0-2 V
+    operating range.
     Low-but-clean points are retained and may be fit inputs. Saturated,
     below-SNR, and ADC-error measurements are retained as records but are not
     fit inputs.

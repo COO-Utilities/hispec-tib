@@ -26,7 +26,6 @@
 LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 
 #define TP_INTERVAL_MS 100U
-#define TP_ADC_USABLE_MV 5000.0
 #define TP_LOW_FRACTION 0.20
 #define TP_HIGH_FRACTION 0.80
 #define TP_INSTANT_BAD_SAMPLES 5U
@@ -180,8 +179,8 @@ static int autolevel_adjust(struct throughput_state *state,
 	double mean_net_mv = pd->fixed_window.valid ?
 			     (double)pd->fixed_window.mean_net_mv :
 			     (double)pd->net_mv;
-	bool low = mean_net_mv < (TP_ADC_USABLE_MV * TP_LOW_FRACTION);
-	bool high = mean_net_mv > (TP_ADC_USABLE_MV * TP_HIGH_FRACTION);
+	bool low = mean_net_mv < (PHOTODIODE_ADC_USABLE_MV * TP_LOW_FRACTION);
+	bool high = mean_net_mv > (PHOTODIODE_ADC_USABLE_MV * TP_HIGH_FRACTION);
 	struct hispec_laser_flux_estimate laser_flux = {0};
 	double emitted_flux = 0.0;
 	double max_tx = 1.0;

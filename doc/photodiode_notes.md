@@ -71,12 +71,12 @@ class Photodiode(Detector):
                  noise = 7.5 * u.femtowatt / u.Hz ** 0.5,
                  gain = 1e11 * u.V/u.A,
                  saturation = 110 * u.picowatt,
-                 adc_noise=0.187 * u.uV,
+                 adc_noise=62.5 * u.uV,
                  saturation_wavelength = 1550 * u.nm,
                  resp_wavelength_nm: "np.ndarray | None" = None,
                  noise_bandwidth:float=20*u.Hz,
                  sample_rate:float = 50 * u.Hz,
-                 adc_gain:float = (2**16-1)/(2*6.144)/u.V,
+                 adc_gain:float = (2**15)/2.048/u.V,
                  resp_values: "np.ndarray | None" = None) -> None:
         super().__init__(name)
         self.in_p = self.add_port("in", PortDirection.IN)
@@ -125,8 +125,8 @@ class Photodiode(Detector):
         device_noise_volts = self.noise*np.sqrt(self.noise_bandwidth) * self._resp_a_per_w(self.saturation_wavelength)  * self.gain
 
         # ((7.5e-15 * np.sqrt(20) * .95e11 * 1e3 / 2))
-        # (2 * 6.144 / (2 ** 16 - 1) * 1e3)
-        # adc_noise = ((7.5e-15*sqrt(20)*.95e11*1e3/2))/(2*6.144/(2**16-1)*1e3)
+        # (2.048 / (2 ** 15) * 1e3)
+        # adc_noise = ((7.5e-15*sqrt(20)*.95e11*1e3/2))/(2.048/(2**15)*1e3)
 
         total_noise = np.sqrt(device_noise_volts**2 + shot_noise_volts**2 + self.adc_noise**2).to(u.V)
 

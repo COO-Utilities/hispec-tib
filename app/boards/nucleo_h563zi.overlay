@@ -158,7 +158,7 @@
 
 		channel@2 {
 			reg = <2>;
-			zephyr,gain = "ADC_GAIN_1"; // convert to ADS1X1X_CONFIG_PGA_2048  ADC_GAIN_1??
+			zephyr,gain = "ADC_GAIN_1";
 			zephyr,reference = "ADC_REF_INTERNAL";
 			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 5)>;
 			zephyr,resolution = <16>;

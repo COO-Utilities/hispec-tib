@@ -43,12 +43,17 @@ static const struct adc_channel_cfg *const pd_adc_cfg[PHOTODIODE_CHANNEL_COUNT] 
 #define PD_HK_ADC_CHANNEL_NODE DT_CHILD(DT_NODELABEL(adc1115), channel_2)
 #define ADS1115_DT_RESOLUTION DT_PROP(PD_YJ_ADC_CHANNEL_NODE, zephyr_resolution)
 #define ADS1115_DT_ACQ_TIME DT_PROP(PD_YJ_ADC_CHANNEL_NODE, zephyr_acquisition_time)
+#define ADS1115_DT_GAIN DT_STRING_TOKEN(PD_YJ_ADC_CHANNEL_NODE, zephyr_gain)
 #define ADS1115_I2C_HZ DT_PROP(DT_PARENT(DT_NODELABEL(adc1115)), clock_frequency)
 
 BUILD_ASSERT(DT_PROP(PD_HK_ADC_CHANNEL_NODE, zephyr_resolution) == ADS1115_DT_RESOLUTION,
              "photodiode ADS1115 channels must use the same resolution");
 BUILD_ASSERT(DT_PROP(PD_HK_ADC_CHANNEL_NODE, zephyr_acquisition_time) == ADS1115_DT_ACQ_TIME,
              "photodiode ADS1115 channels must use the same data rate");
+BUILD_ASSERT(DT_STRING_TOKEN(PD_HK_ADC_CHANNEL_NODE, zephyr_gain) == ADS1115_DT_GAIN,
+             "photodiode ADS1115 channels must use the same gain");
+BUILD_ASSERT(ADS1115_DT_GAIN == ADC_GAIN_1,
+             "photodiode scaling requires the ADS1115 +/-2.048 V range");
 
 /* Zephyr's ADS1115 driver exposes the muxed device as ADC channel 0 only.
  * The physical ADS input is selected by input_positive from devicetree.
@@ -65,11 +70,9 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 
 static K_TIMER_DEFINE(pd_sample_timer, NULL, NULL);
 
-/* Hardware docs specify ADS1115 +/-6.144 V full scale at ADC_GAIN_1_3, which
- * gives 187.5 uV per signed 16-bit count.
+/* ADC_GAIN_1 gives the ADS1115 a +/-2.048 V bipolar range. Single-ended
+ * measurements use its positive 15-bit half, or exactly 62.5 uV per count.
  */
-#define PD_ADC_UV_PER_COUNT_NUM 1875
-#define PD_ADC_UV_PER_COUNT_DEN 10
 #define PD_HARDWARE_LOG_RATELIMIT_MS 10000U
 #define PD_TIMING_STATS_INTERVAL_MS 10000U
 #define PD_ADS1115_WAKE_US 25U
@@ -90,9 +93,6 @@ static K_TIMER_DEFINE(pd_sample_timer, NULL, NULL);
 BUILD_ASSERT(PD_WINDOW_MAX_SAMPLES > 0U &&
 	     PD_WINDOW_MAX_SAMPLES <= UINT16_MAX,
 	     "photodiode windows must fit in uint16_t sample counters");
-BUILD_ASSERT(PD_STEP_MIN_UV > (PD_ADC_UV_PER_COUNT_NUM / PD_ADC_UV_PER_COUNT_DEN),
-	     "photodiode step threshold must exceed one ADC LSB");
-
 struct photodiode_wavelength_coefficient {
     double wavelength_nm;
     double coefficient;
@@ -863,11 +863,10 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	int64_t now = k_uptime_get();
 
 	if (rc == 0) {
-		mv = ((double)raw * (double)PD_ADC_UV_PER_COUNT_NUM) /
-		     ((double)PD_ADC_UV_PER_COUNT_DEN * 1000.0);
+		mv = (double)raw * PHOTODIODE_ADC_LSB_MV;
 		net_mv = mv - settings->dark.mean_mv;
-		net_err_mv = sqrt((PHOTODIODE_INSTANT_ERR_MV *
-				   PHOTODIODE_INSTANT_ERR_MV) +
+		net_err_mv = sqrt((PHOTODIODE_ADC_LSB_MV *
+				   PHOTODIODE_ADC_LSB_MV) +
 				  (settings->dark.rms_mv *
 				   settings->dark.rms_mv));
 	}

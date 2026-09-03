@@ -28,9 +28,9 @@ Because of the need to probe the knee well, and because of manufacturing variati
 
 Each FVOA is driven from approximately 0-5 V by an op-amp with a gain of about 1.51x. The op-amp is driven by a precision 12-bit DAC7678 with an output range of 0 to approximately 3.3 V and roughly 4096 codes.
 
-The photodiodes in the system output an approximately 0-10 V signal that is mapped onto a portion of the ADC range: 0-5 V in PCB Rev. 1 lab testing, and 0-2 V in PCB Rev. 2, which has not yet been fabricated. The photodiode is monitored steadily by its own portion of the codebase, which corrects for and maintains a record of the dark level by turning off all light paths to the photodiode and taking a reading. It also maintains the RMS noise of the samples.
+The photodiodes in the system output an approximately 0-10 V signal. PCB Rev. 1 mapped that signal to 0-5 V; PCB Rev. 2 maps it to 0-2 V and filters it to 20 Hz before the ADC. The photodiode is monitored steadily by its own portion of the codebase, which corrects for and maintains a record of the dark level by turning off all light paths to the photodiode and taking a reading. It also maintains the RMS noise of the samples.
 
-Photodiode saturation occurs somewhat above 10 V; lab testing shows saturation around 10.3-11.4 V. At these levels, the ADC readings no longer meaningfully represent the diode voltage other than as a strict lower bound on the optical signal. This means values above 5 V in Rev. 1, and above 2 V in Rev. 2, must be treated statistically in fits as lower bounds on the photodiode millivolt reading that would have been expected in the absence of saturation.
+Photodiode saturation occurs somewhat above 10 V; lab testing shows saturation around 10.3-11.4 V. On PCB Rev. 2, the ADS1115's 2.048 V numerical rail corresponds to about 10.24 V upstream, so the ADC clips before the photodiode itself saturates. The intended 0-2 V ADC input remains valid; a window pinned at the 2.048 V rail is retained only as a lower bound on the optical signal that would have been measured without clipping.
 
 The attenuator is commanded by setting either model linear transmission, model dB attenuation, or DAC output millivolts.
 
@@ -86,7 +86,7 @@ measured_pd_signal_mv =
     - dark_mv
 ```
 
-where `pd_saturation_mv` depends on the diode, ADC, temperature, and specific device. It is somewhere slightly above the nominal ADC saturation limit.
+where `pd_saturation_mv` depends on the diode, ADC, temperature, and specific device. On PCB Rev. 2 the ADC's 2.048 V input rail is the first measurement limit.
 
 As a whole, a single sweep cannot observe both the open plateau and the deep attenuation floor of one FVOA on an absolute scale. The calibration therefore uses overlapping sweep segments, with the companion FVOA adjusted between segments to keep the photodiode within its useful, non-saturated measurement range.
 

@@ -117,9 +117,8 @@ PCAL assignments:
 ## TIB & CAL Attenuator Drive
 A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
 - DAC codes are 0 - 4095; ideal output transfer uses `code / 4096`.
-- DAC reference mode is board-configured. With the DAC7678 external 3.3V (REF3333AIDBZR) reference,
-  `Vout = code / 4096 * 2 * 2.5V`, clipped by AVDD. With an external
-  reference, `Vout = code / 4096 * VREFIN`.
+- Both DAC7678 devices use an external 3.3 V REF3333AIDBZR reference, so
+  `Vout = code / 4096 * VREFIN`, clipped by AVDD.
 - Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
   toward the FVOA 0 - 5V command range; op-amp gain is firmware-calibrated.
 - Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
@@ -147,9 +146,11 @@ For board files:
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 250 SPS, ±2.048 range, 62.5 uV LSB
-- PD 50 Ohm coax fed to ADC as singled-ended input
-- input circuitry using filtering and precision divider to take 0-10V PDs to 0-2V range with 20Hz bandwidth.
+- Run device at 250 SPS, ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
+  input range leaves 48 mV of headroom below the ADC's numerical rail.
+- PD 50 Ohm coax is fed to the ADC as a single-ended input.
+- Input circuitry uses filtering and a precision divider to map 0-10 V PD
+  output to 0-2 V with 20 Hz bandwidth.
 - Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
   preserves timing margin for the two-channel 20 ms sampler, at the cost of
   less converter-side averaging than 128 SPS.
