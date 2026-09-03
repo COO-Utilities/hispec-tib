@@ -117,7 +117,7 @@ PCAL assignments:
 ## TIB & CAL Attenuator Drive
 A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
 - DAC codes are 0 - 4095; ideal output transfer uses `code / 4096`.
-- DAC reference mode is board-configured. With the DAC7678 internal reference,
+- DAC reference mode is board-configured. With the DAC7678 external 3.3V (REF3333AIDBZR) reference,
   `Vout = code / 4096 * 2 * 2.5V`, clipped by AVDD. With an external
   reference, `Vout = code / 4096 * VREFIN`.
 - Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
@@ -144,21 +144,17 @@ For board files:
     - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
     - CN9 21 D68 I2C_B_SDA PF0 I2C2_SDA
 
-Breadboard considerations:
-- Kit board has 10K pullups, do we need to get rid of as have pullups on 3.3v side of LL translation?
-- FVOA (resistive, typ~3.5V 80mA @ full atten)
-- MSOA (resistive, typ~0.5-3.25V, DNE 4.5V, something like 24-38 mA, datasheet unclear)
-
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 250 SPS, ±6.144 range, 187.5 uV LSB
+- Run device at 250 SPS, ±2.048 range, 62.5 uV LSB
+- PD 50 Ohm coax fed to ADC as singled-ended input
+- input circuitry using filtering and precision divider to take 0-10V PDs to 0-2V range with 20Hz bandwidth.
 - Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
   preserves timing margin for the two-channel 20 ms sampler, at the cost of
   less converter-side averaging than 128 SPS.
-- PD coax terminated with 50 Ohm and fed to ADC as singled-ended input (gives 0-5V range from 0-10V PDs)
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
-- Uses 2-channels of LL shifting for i2c 3.3-5V
+- ADC runs at 3.3v
 - Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
 - See photodiode_notes.md for additional details
 
@@ -166,10 +162,6 @@ For board files:
 - Nucleo:
     - CN7 2 D15 I2C_A_SCL PB8 I2C1_SCL
     - CN7 4 D14 I2C_A_SDA PB9 I2C1_SDA
-
-Breadboard Considerations:
-- AF prototype board has 10K pullups, may need to get rid of as LL shifter boards also have pullups
-
 
 Static attenuation anticipated required:
   - 1028: -90.0 to -73.0 dB, range 17.0 dB, **static -73.0 dB**
@@ -181,7 +173,7 @@ Static attenuation anticipated required:
 ## Laser Diode Control
 MODBUS
 - Use a UART with 485 driver chip (THVD1429DT)
-- 50Ohm termination resistor on PCB per NH8 hub documentation
+- 50 Ohm termination resistor on PCB per NH8 hub documentation
 - 5V and ground to the NH8 from the LD bank
 
 For board files:
