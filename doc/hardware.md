@@ -185,11 +185,10 @@ For board files:
     - CN9 8 D54 USART_B_RTS PD4 USART2
 
 ## Laser Bank Power Enable
-- 3.3V, GPIO to enable of power driver,
-- pull into 1-5v range against a 10k pulldown to ground to enable
-- Firmware policy is off after reboot. The Nucleo devicetree hog drives the
-  on-board laser-bank power enable low before app setup, and app setup repeats
-  the inactive configuration.
+- 3.3V, GPIO to enable power driver
+- Switches gate of a BSS138 that connects the not inhibit of the power IC to ground
+- Default is to be off after reboot. The Nucleo devicetree hog drives to this state.
+- At the nucleo it is ACTIVE_LOW with a pull up GPIO_PULL_UP
 
 For board files:
 - Nucleo: CN9 13 D72 IO PB2 -
