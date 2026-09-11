@@ -2878,7 +2878,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         fig.colorbar(mesh, ax=ax, label="pair attenuation (dB)")
 
         if overlay_records and len(self.records):
-            rec = self.derived(dac1=dac1_coeff, dac2=dac2_coeff)
+            rec = self.derived(dac1=dac1, dac2=dac2)
             sample_dac1, sample_dac2 = _atten_cal_pair_dac(rec)
             sample_x = sample_dac1 * dac1_coeff[3] if axis == "fvoa_mv" else sample_dac1
             sample_y = sample_dac2 * dac2_coeff[3] if axis == "fvoa_mv" else sample_dac2
