@@ -1,3 +1,40 @@
+## Sampling review
+
+Both ADC inputs have a capacitor after the 0-10 V to 0-2 V divider. Treating
+the divider's source resistance and capacitor as a nominal 20 Hz single-pole
+RC gives a 7.96 ms time constant and about 55 ms settling to 0.1% of a step.
+
+- Firmware samples **each channel at 50 Hz**; the ADS1115 uses **250 SPS**
+  conversions, about 4 ms each, sequentially within the 20 ms loop.
+- Atten auto-calibration waits its configurable averaging duration plus 4 ms after
+  each DAC change. Its rolling window can include the RC transient; the pad
+  also does not cover a complete sampling period or window-duration rounding.
+- `pd/<channel>.window` is the fixed 500 ms window. The manual notebook's
+  550 ms wait leaves roughly 50 ms nominal settling margin; the grid notebook's
+  1.1 s wait leaves substantially more. Sampling phase and conversion latency
+  affect the margins. The Python grid helper accepts shorter waits without
+  checking whether the window contains only settled measurements.
+- Window mean uncertainty uses `RMS / sqrt(N)` and then adds the stored dark
+  RMS in quadrature. Independence is approximate: ideal white noise through
+  this RC has adjacent-sample correlation `exp(-2*pi*20*0.020) = 0.081`.
+  For 25 samples, correlation increases the ideal mean standard error by about
+  8% relative to independent samples. This is not a validated correction factor
+  for the actual detector/ADC chain; dark RMS is also not dark-mean uncertainty.
+- A single-pole 20 Hz cutoff has equivalent noise bandwidth about 31.4 Hz,
+  and only 4.1 dB attenuation at the 25 Hz Nyquist frequency of the recorded
+  samples. It is not a sharp anti-alias filter. Keep the existing rates until
+  measured noise and timing justify changing them.
+- The 10 mV warning compares fixed-window scatter, so optical steps and drift
+  can trigger it as well as electronics noise.
+
+## Historical exploratory noise model
+
+The example below retains its original assumptions for review. Its `/2`
+detector gains and HK `500 Hz` noise bandwidth do not describe the present ADC
+input chain. The `noise_bandwidth` parameter is used as equivalent noise
+bandwidth, which must not be confused with the RC cutoff. Reconcile the full
+noise model before using it for predictions.
+
 ```python
 import astropy.units as u
 from astropy import constants as const

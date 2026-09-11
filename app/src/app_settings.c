@@ -30,7 +30,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 9U
+/* Rev. 2 analog defaults invalidate stored photodiode and calibration values. */
+#define APP_NVS_SCHEMA_VERSION 10U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,

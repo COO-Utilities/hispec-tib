@@ -102,6 +102,7 @@ struct app_pd_channel_settings {
 	bool lowest_dark_valid;
 	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
+	/* ADC-input V/A, combining detector transimpedance and the analog divider/gain. */
 	double transimpedance_v_per_a;
 	enum app_pd_power_mode power;
 	uint32_t autooff_s;

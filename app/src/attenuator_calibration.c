@@ -59,7 +59,10 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-/* One ADC cycle is  under 3 ms; the pad prevents reading a partial window. */
+/* Existing conversion-sized pad: 250 SPS takes about 4 ms per conversion.
+ * This is not an RC-settling allowance or a full 20 ms sampler-period guard;
+ * see the Rev. 2 sampling review in doc/photodiode_notes.md.
+ */
 #define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
 /* Minimum bracket width for companion-FVOA binary searches. */
 #define ATTEN_CAL_SEARCH_MIN_STEP_MV 5.0f

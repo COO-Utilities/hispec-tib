@@ -38,6 +38,10 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Decisions To Make
+- Decide settling allowances and validate filtered-noise
+  uncertainty before changing acquisition timing or statistics. See
+  `photodiode_notes.md` for the firmware/notebook window analysis and historical
+  noise-model discrepancies.
 
 ## TODOs
 - start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.

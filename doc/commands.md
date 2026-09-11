@@ -1362,7 +1362,7 @@ ownership are documented in `attenuator_calibration.md`.
     "channel": "yj",
     "noise_rms_mv": 3.0,
     "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 5.0e10,
+    "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
     "autooff_s": 300,
     "off_in_s": null
@@ -1373,7 +1373,7 @@ ownership are documented in `attenuator_calibration.md`.
   {
     "noise_rms_mv": 3.0,
     "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 5.0e10,
+    "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
     "autooff_s": 300,
     "persist": true
@@ -1396,6 +1396,15 @@ ownership are documented in `attenuator_calibration.md`.
   relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
   Dark and lowest-dark values are queried and updated through
   `pd/dark/<channel>`.
+
+  `transimpedance_v_per_a` is the effective gain at the ADC input, combining
+  detector datasheet transimpedance with the divider and intervening analog gain.
+  Its allowed range is `1e7` to `1e12` V/A. Defaults are `2.0e10` V/A
+  for YJ and `9.5e8` V/A for HK; do not apply the divider again in power conversion.
+  `noise_rms_mv` is ADC-input RMS scatter in the fixed 500 ms window, including
+  real optical changes. The 10 mV default warning level corresponds nominally to 0.538 pW RMS
+  for YJ and 17.3 pW RMS for HK using the default responsivities.
+  Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
 
 (ip)=
 ### `ip`

@@ -40,13 +40,17 @@ FIBERS = ("M", "S")
 OVERRIDE_MODES = ("auto", "override_on", "override_off")
 MEMS_STATES = ("A", "B", "a", "b")
 MEMS_MAX_TOGGLE_DURATION_S = 4 * 60 * 60
-PD_DARK_MIN_MV = -5000.0
-PD_DARK_MAX_MV = 5000.0
+# Rev. 2 ADS1115 input: +/-2.048 V, with a nominal 0-2 V signal range.
+PD_ADC_FULL_SCALE_MV = 2048.0
+PD_ADC_LSB_MV = 0.0625
+PD_ADC_USABLE_MV = 2000.0
+PD_DARK_MIN_MV = -PD_ADC_FULL_SCALE_MV
+PD_DARK_MAX_MV = PD_ADC_FULL_SCALE_MV
 PD_NOISE_RMS_MIN_MV = 0.0
-PD_NOISE_RMS_MAX_MV = 5000.0
+PD_NOISE_RMS_MAX_MV = PD_ADC_FULL_SCALE_MV
 PD_RESPONSIVITY_MIN_A_PER_W = 0.000001
 PD_RESPONSIVITY_MAX_A_PER_W = 10.0
-PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0
+PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0e7
 PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 ATTENUATOR_DRIVE_MAX_MV = 3300.0
 ATTENUATOR_DEFAULT_GAIN = 1.533
@@ -54,7 +58,7 @@ ATTENUATOR_MODEL_ERF_SCALE = 4.0
 ATTENUATOR_MODEL_CORRECTION_TERMS = 4
 ATTENUATOR_MODEL_CORRECTION_START_DB = -10.0 * math.log10(0.99)
 FVOA_DEFAULT_MAX_ATTEN_DB = 55.0
-ATTENUATOR_ADC_CLIP_MV = 5000.0
+ATTENUATOR_ADC_CLIP_MV = PD_ADC_FULL_SCALE_MV - PD_ADC_LSB_MV
 ATTENUATOR_CAL_SNR_USABLE = 5.0
 ATTEN_CAL_MIN_TX = 1.0e-10
 ATTEN_CAL_MAX_TX = 0.999999
@@ -756,6 +760,7 @@ def _atten_grid_rail_mv(reference_mv: float) -> float:
 def _atten_grid_pd_error_mv(
     y_mv: np.ndarray | Sequence[float],
     sigma_mv: np.ndarray | Sequence[float],
+    adc_mv: np.ndarray,
     *,
     reference_mv: float,
     max_mv: float,
@@ -765,11 +770,12 @@ def _atten_grid_pd_error_mv(
     y = np.asarray(y_mv, dtype=float)
     sigma = np.broadcast_to(np.asarray(sigma_mv, dtype=float), y.shape).astype(float, copy=True)
     sigma = np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, np.nan)
-    high = np.isfinite(y) & (y >= max_mv)
+    clipped = np.asarray(adc_mv) >= ATTENUATOR_ADC_CLIP_MV
+    high = np.isfinite(y) & ((y >= max_mv) | clipped)
     sigma = np.where(high, np.maximum(sigma, ATTENUATOR_UPPER_RANGE_MIN_ERROR_MV), sigma)
     if hard_rail:
         rail_limit = _atten_grid_rail_mv(reference_mv) if rail_mv is None else float(rail_mv)
-        sigma = np.where(np.isfinite(y) & (y >= rail_limit), np.nan, sigma)
+        sigma = np.where(np.isfinite(y) & ((y >= rail_limit) | clipped), np.nan, sigma)
     return sigma
 
 
@@ -1005,6 +1011,7 @@ def _atten_grid_thresholds(
 
 def _atten_grid_sample_masks(
     y_mv: np.ndarray,
+    adc_mv: np.ndarray,
     *,
     min_mv: float,
     max_mv: float,
@@ -1015,10 +1022,13 @@ def _atten_grid_sample_masks(
         max_mv=max_mv,
         reference_mv=reference_mv,
     )
-    finite = np.isfinite(y_mv)
-    value = finite & (y_mv > floor_mv) & (y_mv < ceiling_mv)
-    floor = finite & (y_mv <= floor_mv)
-    ceiling = finite & (y_mv >= ceiling_mv)
+    # Fit thresholds are net mV. Hardware clipping uses the mean before dark
+    # subtraction, so even a large dark offset cannot turn a rail into a value.
+    finite = np.isfinite(y_mv) & np.isfinite(adc_mv)
+    clipped = np.asarray(adc_mv) >= ATTENUATOR_ADC_CLIP_MV
+    ceiling = finite & ((y_mv >= ceiling_mv) | clipped)
+    value = finite & ~ceiling & (y_mv > floor_mv)
+    floor = finite & ~ceiling & (y_mv <= floor_mv)
     return finite, value, floor, ceiling, floor_mv, ceiling_mv
 
 
@@ -1062,6 +1072,7 @@ def _atten_grid_residual_db(measured_mv: np.ndarray, modeled_mv: np.ndarray) -> 
 def _atten_slice_initial_params(
     x_dac_mv: np.ndarray,
     y_mv: np.ndarray,
+    adc_mv: np.ndarray,
     *,
     reference_mv: float,
     gain: float,
@@ -1069,7 +1080,7 @@ def _atten_slice_initial_params(
     max_mv: float,
 ) -> np.ndarray:
     _, value, _, _, _, _ = _atten_grid_sample_masks(
-        y_mv,
+        y_mv, adc_mv,
         min_mv=min_mv,
         max_mv=max_mv,
         reference_mv=reference_mv,
@@ -1106,6 +1117,7 @@ def _atten_slice_least_squares_residual(
     x_dac_mv: np.ndarray,
     y_mv: np.ndarray,
     sigma_mv: np.ndarray,
+    adc_mv: np.ndarray,
     *,
     reference_mv: float,
     reference_sigma_mv: float,
@@ -1115,7 +1127,7 @@ def _atten_slice_least_squares_residual(
     rail_mv: float,
 ) -> np.ndarray:
     _, value, floor, ceiling, floor_mv, ceiling_mv = _atten_grid_sample_masks(
-        y_mv,
+        y_mv, adc_mv,
         min_mv=min_mv,
         max_mv=max_mv,
         reference_mv=reference_mv,
@@ -1144,7 +1156,7 @@ def _atten_slice_least_squares_residual(
         floor_sigma_db = np.maximum(floor_sigma_db, ATTENUATOR_CENSORED_SIGMA_DB)
         parts.append(np.maximum(0.0, floor_db - model_db[floor]) / floor_sigma_db)
     if np.any(ceiling):
-        rail = y_mv[ceiling] >= rail_mv
+        rail = (y_mv[ceiling] >= rail_mv) | (adc_mv[ceiling] >= ATTENUATOR_ADC_CLIP_MV)
         ceiling_signal_mv = np.where(rail, reference_mv, np.maximum(y_mv[ceiling], ceiling_mv))
         ceiling_db, ceiling_sigma_db = _atten_db_with_sigma(
             ceiling_signal_mv,
@@ -1249,6 +1261,13 @@ class AttenuatorSliceFit(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorGridDataset(ResponseRepr):
+    """Grid records and fits in net ADC mV.
+
+    min_mv/max_mv bound ordinary fit values; max_mv defaults to 2000 mV.
+    The pre-dark mean pd_raw_mv independently identifies Rev. 2 ADC clipping,
+    which remains censored even when an explicit net-mV fit threshold is higher.
+    """
+
     records: np.recarray
     channel: str = "yj"
 
@@ -1340,7 +1359,7 @@ class AttenuatorGridDataset(ResponseRepr):
         dac1_other_fvoa_v: float,
         dac2_other_fvoa_v: float,
         min_mv: float = 10.0,
-        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        max_mv: float = PD_ADC_USABLE_MV,
         estimated_unsaturated_unattenuated_pd_mv: float | None = None,
     ) -> AttenuatorGridFit:
         rec = self.records
@@ -1356,7 +1375,7 @@ class AttenuatorGridDataset(ResponseRepr):
             & np.isfinite(y)
         )
         _, value, floor, ceiling, _, _ = _atten_grid_sample_masks(
-            y,
+            y, rec.pd_raw_mv,
             min_mv=min_mv,
             max_mv=max_mv,
             reference_mv=observed_pd_max_mv,
@@ -1471,7 +1490,7 @@ class AttenuatorGridDataset(ResponseRepr):
         sweep: Literal["dac1", "dac2"] = "dac1",
         other_fvoa_v: float,
         min_mv: float = 10.0,
-        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        max_mv: float = PD_ADC_USABLE_MV,
         sweep_plateau_pd_mv: float | None = None,
     ) -> AttenuatorSliceFit:
         try:
@@ -1488,18 +1507,19 @@ class AttenuatorGridDataset(ResponseRepr):
         gain = float(np.nanmedian(sub[gain_field]))
         x_dac = np.asarray(sub[sweep_dac_field], dtype=float)
         y = np.asarray(sub.pd_mv, dtype=float)
+        adc_mv = np.asarray(sub.pd_raw_mv, dtype=float)
         reference = _atten_grid_reference_mv(y, sweep_plateau_pd_mv, name="sweep_plateau_pd_mv")
         rail_mv = _atten_grid_rail_mv(_atten_grid_reference_mv(np.asarray(self.records.pd_mv, dtype=float), None))
         sigma = _atten_grid_pd_error_mv(
             y,
-            sub.pd_mean_net_err_mv,
+            sub.pd_mean_net_err_mv, adc_mv,
             reference_mv=reference,
             max_mv=max_mv,
         )
         reference_sigma = _atten_reference_sigma_mv(y, sigma, reference)
         coord = np.isfinite(x_dac) & np.isfinite(y)
         _, value, floor, ceiling, _, _ = _atten_grid_sample_masks(
-            y,
+            y, adc_mv,
             min_mv=min_mv,
             max_mv=max_mv,
             reference_mv=reference,
@@ -1509,10 +1529,11 @@ class AttenuatorGridDataset(ResponseRepr):
             raise HispecFibError("not enough finite slice points to fit attenuator curve")
         x_fit = x_dac[mask]
         y_fit = y[mask]
+        adc_fit = adc_mv[mask]
         sigma_fit = sigma[mask]
         initial = _atten_slice_initial_params(
             x_fit,
-            y_fit,
+            y_fit, adc_fit,
             reference_mv=reference,
             gain=gain,
             min_mv=min_mv,
@@ -1521,7 +1542,7 @@ class AttenuatorGridDataset(ResponseRepr):
         result = least_squares(
             _atten_slice_least_squares_residual,
             initial,
-            args=(x_fit, y_fit, sigma_fit),
+            args=(x_fit, y_fit, sigma_fit, adc_fit),
             kwargs={
                 "reference_mv": reference,
                 "reference_sigma_mv": reference_sigma,
@@ -1536,7 +1557,7 @@ class AttenuatorGridDataset(ResponseRepr):
         )
         fvoa_50pct_mv, slope_inv_fvoa_mv = result.x
         _, value_fit, _, _, _, _ = _atten_grid_sample_masks(
-            y_fit,
+            y_fit, adc_fit,
             min_mv=min_mv,
             max_mv=max_mv,
             reference_mv=reference,
@@ -1581,9 +1602,9 @@ class AttenuatorGridDataset(ResponseRepr):
         fit: AttenuatorGridFit | None = None,
         dac1_other_fvoa_v: float | None = None,
         dac2_other_fvoa_v: float | None = None,
-        levels_mv: Sequence[float] = (0.0, 10.0, 50.0, 500.0, 2500.0, 5000.0),
+        levels_mv: Sequence[float] = (0.0, 10.0, 50.0, 500.0, 1000.0, 2000.0),
         min_mv: float = 10.0,
-        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        max_mv: float = PD_ADC_USABLE_MV,
         model_clip_mv: float | None = None,
         residual_clip_db: float = 12.0,
         figsize: tuple[float, float] = (12.0, 9.0),
@@ -1614,7 +1635,7 @@ class AttenuatorGridDataset(ResponseRepr):
         dark_mv = float(np.nanmedian(rec.pd_dark_mv))
         coord = np.isfinite(x) & np.isfinite(y_axis) & np.isfinite(dac1) & np.isfinite(dac2)
         finite_y, value_y, floor_y, ceiling_y, _, _ = _atten_grid_sample_masks(
-            z,
+            z, rec.pd_raw_mv,
             min_mv=min_mv,
             max_mv=max_mv,
             reference_mv=fit.estimated_unsaturated_unattenuated_pd_mv,
@@ -1882,7 +1903,7 @@ class AttenuatorGridDataset(ResponseRepr):
         *,
         sweep: Literal["dac1", "dac2"] = "dac1",
         min_mv: float = 10.0,
-        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        max_mv: float = PD_ADC_USABLE_MV,
         figsize: tuple[float, float] = (11.0, 8.0),
     ):
         import matplotlib.pyplot as plt
@@ -1919,7 +1940,7 @@ class AttenuatorGridDataset(ResponseRepr):
             x_fvoa = np.asarray(sub[sweep_fvoa_field], dtype=float)
             y = np.asarray(sub.pd_mv, dtype=float)
             finite_y, value_y, floor_y, ceiling_y, _, _ = _atten_grid_sample_masks(
-                y,
+                y, sub.pd_raw_mv,
                 min_mv=min_mv,
                 max_mv=max_mv,
                 reference_mv=slice_fit.sweep_plateau_pd_mv,
@@ -2020,7 +2041,7 @@ class AttenuatorGridDataset(ResponseRepr):
         fit: AttenuatorGridFit | None = None,
         slice_fit: AttenuatorSliceFit | None = None,
         min_mv: float = 10.0,
-        max_mv: float = ATTENUATOR_ADC_CLIP_MV * 0.98,
+        max_mv: float = PD_ADC_USABLE_MV,
         figsize: tuple[float, float] = (11.0, 8.0),
     ):
         import matplotlib.pyplot as plt
@@ -2049,13 +2070,13 @@ class AttenuatorGridDataset(ResponseRepr):
         rail_mv = _atten_grid_rail_mv(observed_pd_max_mv)
         rms = _atten_grid_pd_error_mv(
             y,
-            sub.pd_mean_net_err_mv,
+            sub.pd_mean_net_err_mv, sub.pd_raw_mv,
             reference_mv=slice_fit.sweep_plateau_pd_mv,
             max_mv=max_mv,
         )
         rms_plot = _atten_grid_pd_error_mv(
             y,
-            sub.pd_mean_net_err_mv,
+            sub.pd_mean_net_err_mv, sub.pd_raw_mv,
             reference_mv=slice_fit.sweep_plateau_pd_mv,
             max_mv=max_mv,
             hard_rail=True,
@@ -2063,7 +2084,7 @@ class AttenuatorGridDataset(ResponseRepr):
         )
         reference_sigma = _atten_reference_sigma_mv(y, rms, slice_fit.sweep_plateau_pd_mv)
         finite_y, value_y, floor_y, ceiling_y, floor_mv, ceiling_mv = _atten_grid_sample_masks(
-            y,
+            y, sub.pd_raw_mv,
             min_mv=min_mv,
             max_mv=max_mv,
             reference_mv=slice_fit.sweep_plateau_pd_mv,
@@ -2072,7 +2093,7 @@ class AttenuatorGridDataset(ResponseRepr):
         value = coord & value_y
         floor = coord & floor_y
         ceiling = coord & ceiling_y
-        rail = ceiling & (y >= rail_mv)
+        rail = ceiling & ((y >= rail_mv) | (sub.pd_raw_mv >= ATTENUATOR_ADC_CLIP_MV))
         ceiling_soft = ceiling & ~rail
         invalid = coord & ~finite_y
         x_grid = np.linspace(float(np.nanmin(x_fvoa)), float(np.nanmax(x_fvoa)), 300)
@@ -2970,6 +2991,8 @@ class PhotodiodeDark(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class PhotodiodeSettings(ResponseRepr):
+    """Response settings; transimpedance is ADC-input V/A including divider/gain."""
+
     channel: str
     noise_rms_mv: float
     responsivity_a_per_w: float
@@ -4458,6 +4481,7 @@ class HispecFibPcb:
         return _decode_pd_dark(self._request_json(f"pd/dark/{channel}", payload))
 
     def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
+        """Read effective ADC-input transimpedance and other photodiode settings."""
         _require_choice("channel", channel, PD_CHANNELS)
         data = self._request_json(f"pdsettings/{channel}")
         return PhotodiodeSettings(
@@ -4481,6 +4505,12 @@ class HispecFibPcb:
         autooff_s: int | None = None,
         persist: bool = False,
     ) -> CommandOk:
+        """Set response settings, optionally persisting them on the board.
+
+        transimpedance_v_per_a combines detector datasheet transimpedance with
+        the divider and intervening analog gain. noise_rms_mv is ADC-input RMS
+        scatter in the fixed window, including any changing optical signal.
+        """
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
             noise_rms_mv=noise_rms_mv,
