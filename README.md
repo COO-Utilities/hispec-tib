@@ -121,9 +121,6 @@ hispec-tib/
 
 ## Open items
 
-- Review W5500/Pico references and remove
-- Reconcile DAC7578/twelve-FVOA hardware description with current six logical
-  attenuator channels and single `dac7578` device handle.
 - Resolve command/spec mismatches listed in `doc/human_review_required.md`.
 
 

@@ -19,7 +19,6 @@ manifest:
         name-allowlist:
           - cmsis_6      # required by the ARM port for Cortex-M [TODO is this the true rational? I thoguht this was for flash/debug? -JIB"]
           - hal_stm32    # required by the st32 nucleo board
-          - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
     - name: zscilib
       remote: zephyrproject-rtos
       revision: bf1cbf1a1661521cf3f528db40d842b700ecd826
