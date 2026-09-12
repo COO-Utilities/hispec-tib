@@ -235,35 +235,39 @@ flowchart TD
 ```mermaid
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
-  Stop -- yes --> StopReq[clear selected monitor or both monitors]
+  Stop -- yes --> StopReq[stop selected streams and laser emission under lock]
   Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> PdPower[enable selected photodiode relay]
-  PdPower --> AutoStart{autolevel enabled}
+  Map --> StartLock[lock; stop previous source if replacing]
+  StartLock --> PdPower[enable selected photodiode relay]
+  PdPower --> Arm[store monitor state]
+  Arm --> AutoStart{autolevel enabled}
   AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
-  AutoStart -- no --> Arm[store monitor state under lock]
-  Seed --> Arm
-  Arm --> Ok[return status ok]
-  StopReq --> Ok
+  AutoStart -- no --> Ok[unlock and return status ok]
+  Seed --> Ok
+  StopReq --> Stopped{laser shutdown succeeded}
+  Stopped -- yes --> Ok
+  Stopped -- no --> StopError[disable streaming and autolevel; retain laser for retry; return error]
 
-  Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
-  Snapshot --> Active{channel active}
-  Active -- no --> Sleep[k_sleep 100 ms]
+  Thread[throughput_monitor_thread every 100 ms] --> Lock[lock current channel state]
+  Lock --> Active{channel active}
+  Active -- no --> Unlock[unlock]
   Active -- yes --> Timeout{off_in expired}
-  Timeout -- yes --> Clear[clear monitor]
+  Timeout -- yes --> Clear[stop stream and laser; retain identity and log if shutdown fails]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
   PdOn -- yes --> Auto{autolevel}
   Auto -- yes --> Adjust[adjust attenuator or laser level from PD mean]
-  Auto -- no --> Publish
-  Adjust --> Sync[write updated counters and level]
+  Auto -- no --> Sync
+  Adjust --> Sync[copy state and unlock]
   Sync --> Publish[build JSON or binary telemetry]
   Publish --> OutQ[enqueue outbound_queue best effort]
-  OutQ --> Sleep
-  Clear --> Sleep
+  OutQ --> Sleep[k_sleep 100 ms]
+  Clear --> Unlock
+  Unlock --> Sleep
 
   AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable autolevel]
-  LaserChange[laser command changes same laser] --> StopMonitor[clear monitor]
+  LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
 ```
 
 ## 12. MEMS Router and Toggler Flow

@@ -132,7 +132,8 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 
 		rc = throughput_monitor_stop((uint8_t)choice_value, &status);
 		if (rc != 0) {
-			return coo_cmd_error(out, cmd, "stop failed");
+			return coo_cmd_error(out, cmd,
+					     "stream stopped; laser shutdown failed, retry stop");
 		}
 
 		return coo_cmd_ok(out, cmd);

@@ -1919,7 +1919,10 @@ int attenuator_calibration_start_auto(
 					     .msg = "stopping throughput for attenuator calibration",
 				     });
 	}
-	(void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
+	rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
+	if (rc != 0) {
+		return rc;
+	}
 
 	rc = mems_router_apply_named_route(&router, request->route_input, request->output, false, NULL, NULL);
 	if (rc == 0) {

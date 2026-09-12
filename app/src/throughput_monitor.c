@@ -131,12 +131,36 @@ static uint64_t realtime_ms(void)
 	return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 }
 
-static void stop_locked(enum photodiode_channel channel)
+/* Relinquish ownership without changing a manual command's laser setting. */
+static void release_locked(enum photodiode_channel channel)
 {
 	if (monitors[channel].active) {
 		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
 	memset(&monitors[channel], 0, sizeof(monitors[channel]));
+}
+
+/* May block on Modbus. Retain the laser identity after failure for stop retry. */
+static int stop_locked(enum photodiode_channel channel)
+{
+	struct throughput_state *state = &monitors[channel];
+
+	if (state->active) {
+		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
+	}
+	state->active = false;
+	state->autolevel = false;
+	if (state->has_laser) {
+		int rc = hispec_laser_stop_output(state->laser, false);
+
+		if (rc != 0) {
+			LOG_ERR("Throughput stopped; laser %s shutdown failed (%d), retry stop",
+				hispec_laser_name(state->laser), rc);
+			return rc;
+		}
+	}
+	release_locked(channel);
+	return 0;
 }
 
 static void put_bytes(uint8_t *payload, size_t payload_len, size_t *offset,
@@ -473,48 +497,43 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 		photodiode_get_status(pd_status);
 		attenuator_calibration_tick(pd_status, now);
 
-		k_mutex_lock(&monitors_lock, K_FOREVER);
-		memcpy(local, monitors, sizeof(throughput_local));
-		k_mutex_unlock(&monitors_lock);
-
 		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			bool pd_power = false;
 			struct attenuator_transmission_estimate atten = {0};
+			struct throughput_state *state = &monitors[i];
 
-			if (!local[i].active) {
+			/* Serialize hardware adjustments with start/stop. A copied state
+			 * must never restore laser output after a completed stop.
+			 */
+			k_mutex_lock(&monitors_lock, K_FOREVER);
+			if (!state->active) {
+				k_mutex_unlock(&monitors_lock);
 				continue;
 			}
 
-			if (local[i].off_in_s > 0U &&
-			    now - local[i].started_ms >= (int64_t)local[i].off_in_s * 1000) {
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				stop_locked((enum photodiode_channel)i);
+			if (state->off_in_s > 0U &&
+			    now - state->started_ms >= (int64_t)state->off_in_s * 1000) {
+				(void)stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
 				continue;
 			}
 
 			if (housekeeping_power_get(pd_power_output((enum photodiode_channel)i),
 						   &pd_power) == 0 && !pd_power) {
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				stop_locked((enum photodiode_channel)i);
+				(void)stop_locked((enum photodiode_channel)i);
 				k_mutex_unlock(&monitors_lock);
 				continue;
 			}
 
 			if (isfinite((double)pd_status->channel[i].mv) &&
-			    local[i].has_laser && local[i].autolevel &&
-			    attenuator_estimate_transmission(&attenuators[local[i].attenuator_index],
+			    state->has_laser && state->autolevel &&
+			    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 							     0.0, 0.0, &atten)) {
-				(void)autolevel_adjust(&local[i], &pd_status->channel[i],
+				(void)autolevel_adjust(state, &pd_status->channel[i],
 						       &atten);
-				k_mutex_lock(&monitors_lock, K_FOREVER);
-				if (monitors[i].active && monitors[i].laser == local[i].laser) {
-					monitors[i].level_percent = local[i].level_percent;
-					monitors[i].high_count = local[i].high_count;
-					monitors[i].low_count = local[i].low_count;
-				}
-				k_mutex_unlock(&monitors_lock);
 			}
+			local[i] = *state;
+			k_mutex_unlock(&monitors_lock);
 
 			publish_sample(&local[i], &pd_status->channel[i], time_ms);
 		}
@@ -531,7 +550,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	uint8_t attenuator_index;
 	struct app_photodiode_settings pd_settings;
 	struct throughput_state next = {0};
-	bool was_active;
 	int rc;
 
 	if (request == NULL) {
@@ -566,22 +584,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return -EACCES;
 	}
 
-	pd_power = pd_power_output(channel);
-	rc = housekeeping_power_set(pd_power, true);
-	if (rc != 0) {
-		return rc;
-	}
-
-	k_mutex_lock(&monitors_lock, K_FOREVER);
-	was_active = monitors[channel].active;
-	k_mutex_unlock(&monitors_lock);
-
-	/*
-	 * Throughput owns this stream until stopped. Auto mode may still arm a
-	 * deadline via pd queries, but it must not turn off a running monitor.
-	 */
-	housekeeping_photodiode_autooff_inhibit(pd_power, true);
-
 	next.active = true;
 	next.autolevel = request->autolevel;
 	next.binary = request->binary;
@@ -592,23 +594,47 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.fiber = request->fiber;
 	next.off_in_s = request->off_in_s;
 	next.max_flux_ph_s = request->max_flux_ph_s;
+
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	/* Stop a previous source before replacing it; also retry any failed
+	 * shutdown before accepting new ownership. Same-source monitoring with
+	 * autolevel disabled preserves the current manual output level.
+	 */
+	if (monitors[channel].has_laser &&
+	    (!monitors[channel].active || !request->has_laser ||
+	     monitors[channel].laser != request->laser)) {
+		rc = stop_locked(channel);
+		if (rc != 0) {
+			k_mutex_unlock(&monitors_lock);
+			return rc;
+		}
+	}
+	pd_power = pd_power_output(channel);
+	rc = housekeeping_power_set(pd_power, true);
+	if (rc != 0) {
+		k_mutex_unlock(&monitors_lock);
+		return rc;
+	}
+	/*
+	 * Throughput owns this stream until stopped. Auto mode may still arm a
+	 * deadline via pd queries, but it must not turn off a running monitor.
+	 */
+	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 	next.started_ms = k_uptime_get();
+	monitors[channel] = next;
 
 	if (request->has_laser && request->autolevel) {
-		next.level_percent = 100.0;
+		monitors[channel].level_percent = 100.0;
 		(void)attenuator_set_db(&attenuators[attenuator_index], 120.0);
 		rc = hispec_laser_set_output_percent_autooff(request->laser,
-							     next.level_percent, 0U);
+							     monitors[channel].level_percent, 0U);
 		if (rc != 0) {
-			if (!was_active) {
-				housekeeping_photodiode_autooff_inhibit(pd_power, false);
-			}
+			(void)stop_locked(channel);
+			k_mutex_unlock(&monitors_lock);
 			return rc;
 		}
 	}
 
-	k_mutex_lock(&monitors_lock, K_FOREVER);
-	monitors[channel] = next;
 	if (status != NULL) {
 		status->active = true;
 		status->channel = channel;
@@ -621,22 +647,29 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *status)
 {
+	int rc = 0;
+
 	if (channel > PHOTODIODE_CHANNEL_COUNT) {
 		return -EINVAL;
 	}
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	if (channel == PHOTODIODE_CHANNEL_COUNT) {
-		stop_locked(PHOTODIODE_CHANNEL_YJ);
-		stop_locked(PHOTODIODE_CHANNEL_HK);
+		int hk_rc;
+
+		rc = stop_locked(PHOTODIODE_CHANNEL_YJ);
+		hk_rc = stop_locked(PHOTODIODE_CHANNEL_HK);
+		if (rc == 0) {
+			rc = hk_rc;
+		}
 	} else {
-		stop_locked((enum photodiode_channel)channel);
+		rc = stop_locked((enum photodiode_channel)channel);
 	}
 	if (status != NULL) {
 		memset(status, 0, sizeof(*status));
 	}
 	k_mutex_unlock(&monitors_lock);
-	return 0;
+	return rc;
 }
 
 bool throughput_monitor_any_active(void)
@@ -679,8 +712,8 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-		if (monitors[i].active && monitors[i].has_laser && monitors[i].laser == laser) {
-			stop_locked((enum photodiode_channel)i);
+		if (monitors[i].has_laser && monitors[i].laser == laser) {
+			release_locked((enum photodiode_channel)i);
 		}
 	}
 	k_mutex_unlock(&monitors_lock);

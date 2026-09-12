@@ -3522,6 +3522,18 @@ class ThroughputMonitor:
         return self
 
     def stop(self) -> None:
+        """Stop this channel's firmware measurement and selected laser emission.
+
+        Bank power and TECs remain unchanged. Detach collection even if the
+        command fails; calling stop again retries the firmware shutdown.
+        """
+        try:
+            self.client.stop_throughput(self.channel)
+        finally:
+            self._stop_collection()
+
+    def _stop_collection(self) -> None:
+        """Detach locally without changing hardware (e.g. a rejected start)."""
         self.client._unregister_throughput_monitor(self)
         self._running.clear()
         self._messages.put(None)
@@ -3559,27 +3571,121 @@ class ThroughputMonitor:
     def plot_live(
         self,
         *,
-        x: str = "t_ms",
-        y: str = "tp",
+        channel: Literal["yj", "hk"] | None = None,
         interval_s: float = 0.5,
-        max_points: int | None = None,
-    ) -> None:
-        import matplotlib.pyplot as plt
-        from IPython.display import clear_output, display
+        max_points: int = 600,
+    ):
+        """Return a nonblocking ``(figure, animation)`` throughput dashboard.
 
-        while self._running.is_set():
+        Use ``%matplotlib widget`` in Jupyter and retain the animation reference.
+        An all-channel collector requires a channel selection. Shaded bands show
+        reported uncertainties, not confidence intervals adjusted for filtering.
+        ``animation.pause()/resume()`` and closing the figure affect display
+        only. Toolbar zoom/pan disables autoscaling; enable it on each axis to
+        follow incoming data again. Collection and hardware continue unchanged.
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+
+        if channel is None:
+            if self.channel == "all":
+                raise HispecFibError("select channel='yj' or 'hk' for the dashboard")
+            channel = self.channel
+        _require_choice("channel", channel, PD_CHANNELS)
+        if self.channel not in ("all", channel):
+            raise HispecFibError(f"this collector only receives {self.channel} throughput")
+        interval_s = _require_float("interval_s", interval_s, 0.01, 3600.0)
+        max_points = int(max_points)
+        if max_points <= 0:
+            raise HispecFibError("max_points must be positive")
+
+        fig, axes = plt.subplots(2, 2, sharex=True, figsize=(12, 8), layout="constrained")
+        tp_ax, pd_ax, drive_ax, flux_ax = axes.flat
+        atten_ax = drive_ax.twinx()
+        tp_ax.set(title="Throughput", ylabel="throughput (unitless)")
+        pd_ax.set(title="Photodiode input", ylabel="ADC input (mV)")
+        drive_ax.set(title="Source and attenuation", ylabel="laser current (mA)")
+        atten_ax.set_ylabel("combined attenuation (dB)")
+        flux_ax.set(title="Estimated photon flux", ylabel="photons / s", yscale="log")
+        flux_ax.set_ylim(1.0, 10.0)  # A valid log range before the first sample.
+        flux_ax.set_autoscaley_on(True)
+        for ax in axes.flat:
+            ax.grid(True, alpha=0.25)
+        for ax in axes[1]:
+            ax.set_xlabel("elapsed time (s)")
+
+        series = []
+        for ax, field, error, label, color in (
+            (tp_ax, "tp", "tp_err", "throughput", "C0"),
+            (pd_ax, "pd_mv", None, "raw input", "C1"),
+            (pd_ax, "pd_mean_net_mv", "pd_mean_net_err_mv", "net mean", "C0"),
+            (drive_ax, "laser_current_ma", None, "laser current", "C2"),
+            (atten_ax, "atten_db", None, "combined attenuation", "C3"),
+            (flux_ax, "pd_flux_ph_s", "pd_flux_err_ph_s", "photodiode", "C0"),
+            (flux_ax, "laser_flux_ph_s", "laser_flux_err_ph_s", "emitted", "C1"),
+        ):
+            line, = ax.plot([], [], label=label, color=color)
+            band = ax.fill_between([], [], [], color=color, alpha=0.18) if error else None
+            series.append((ax, field, error, line, band))
+        for ax in (tp_ax, pd_ax, flux_ax):
+            ax.legend(loc="upper left")
+        drive_ax.legend(drive_ax.lines + atten_ax.lines,
+                        [line.get_label() for line in (*drive_ax.lines, *atten_ax.lines)],
+                        loc="upper left")
+        title = fig.suptitle(f"{channel.upper()} — waiting for throughput samples")
+        start_ms = None
+
+        def update(_frame):
+            nonlocal start_ms
             rec = self.to_recarray()
-            if max_points is not None and len(rec) > max_points:
-                rec = rec[-max_points:]
-            fig, ax = plt.subplots()
+            rec = rec[np.char.startswith(rec.channel, f"{channel}_")]
             if len(rec):
-                ax.plot(rec[x], rec[y], marker=".", linestyle="-")
-            ax.set_xlabel(x)
-            ax.set_ylabel(y)
-            clear_output(wait=True)
-            display(fig)
-            plt.close(fig)
-            time.sleep(interval_s)
+                if start_ms is None:
+                    start_ms = int(rec.t_ms[0])
+                rec = rec[-max_points:]
+                wavelength = rec.wavelength_nm[-1]
+                source = f"{wavelength:g} nm" if np.isfinite(wavelength) else "unknown wavelength"
+                # Channel plus wavelength also distinguishes the two 1430 nm lasers.
+                title.set_text(f"{rec.channel[-1]} · {source} — shaded bands: reported ± error")
+            t = (rec.t_ms.astype(float) - (start_ms or 0)) / 1000.0
+            gaps = np.zeros(len(rec), dtype=bool)
+            if len(rec) > 1:
+                gaps[1:] = (rec.channel[1:] != rec.channel[:-1]) | ~np.isclose(
+                    rec.wavelength_nm[1:], rec.wavelength_nm[:-1], equal_nan=True)
+            for ax, field, error, line, band in series:
+                values = np.asarray(rec[field], dtype=float).copy()
+                values[gaps | ~np.isfinite(values)] = np.nan
+                if ax is flux_ax:
+                    values[values <= 0] = np.nan
+                line.set_data(t, values)
+                if band is not None:
+                    err = np.asarray(rec[error], dtype=float)
+                    err = np.where(np.isfinite(err) & (err >= 0), err, np.nan)
+                    low, high = values - err, values + err
+                    if ax is flux_ax:
+                        low[low <= 0] = np.nan
+                    band.set_data(t, low, high)
+            for ax in (*axes.flat, atten_ax):
+                ax.relim()
+            for ax, _, _, _, band in series:
+                if band is not None:
+                    # relim() handles lines, but does not include collections.
+                    for path in band.get_paths():
+                        vertices = path.vertices
+                        ax.update_datalim(vertices[np.all(np.isfinite(vertices), axis=1)])
+            for ax in (*axes.flat, atten_ax):
+                ax.autoscale_view()
+
+        animation = FuncAnimation(fig, update, interval=interval_s * 1000,
+                                  cache_frame_data=False)
+        if hasattr(fig.canvas, "observe"):
+            # ipympl closes its widget comm without emitting an MPL close_event.
+            def stop_on_widget_close(change):
+                if change["new"] is None and animation.event_source is not None:
+                    animation.pause()
+
+            fig.canvas.observe(stop_on_widget_close, names="comm")
+        return fig, animation
 
     def _run(self) -> None:
         while self._running.is_set():
@@ -3721,15 +3827,22 @@ class HispecFibPcb:
         self._subscribe_control_topics()
 
     def close(self) -> None:
+        """Stop collected measurements/lasers, then disconnect, even on failure."""
         with self._throughput_lock:
             monitors = tuple(self._throughput_monitors)
+        errors = []
         for monitor in monitors:
-            monitor.stop()
+            try:
+                monitor.stop()
+            except Exception as exc:
+                errors.append(exc)
         if self._client is not None and self._loop_started:
             self._client.disconnect()
             self._client.loop_stop()
             self._loop_started = False
         self._connected.clear()
+        if errors:
+            raise ExceptionGroup("throughput shutdown failed while closing client", errors)
 
     def help(self) -> HelpSummary:
         data = self._request_json("help")
@@ -4588,11 +4701,16 @@ class HispecFibPcb:
         output: str | None = None,
         max_flux_ph_s: float | None = None,
         off_in_s: int = 300,
-        format: Literal["json", "binary"] = "json",
+        format: Literal["json", "binary"] = "binary",
         collect: bool = False,
         channel: Literal["yj", "hk"] | None = None,
         max_samples: int = 20000,
     ) -> CommandOk | ThroughputMonitor:
+        """Start a measurement, using binary telemetry unless JSON is requested.
+
+        With collect=True, return a background collector whose stop() also stops
+        this channel's measurement and selected laser emission in firmware.
+        """
         if laser != "none":
             _require_choice("laser", laser, LASER_NAMES)
         fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
@@ -4640,11 +4758,13 @@ class HispecFibPcb:
             self._request_ok("measure_throughput", payload)
         except Exception:
             if monitor is not None:
-                monitor.stop()
+                # A rejected start may leave an earlier same-channel run active.
+                monitor._stop_collection()
             raise
         return monitor if monitor is not None else CommandOk()
 
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
+        """Stop firmware measurement and its laser emission; preserve bank/TECs."""
         _require_choice("channel", channel, ("yj", "hk", "all"))
         return self._request_ok("measure_throughput", {"stop": channel})
 
@@ -4780,6 +4900,7 @@ class HispecFibPcb:
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         topic = msg.topic
+        self.logger.debug("RX %s %r", topic, msg.payload)
         if topic.startswith(f"cmd/{self.device}/resp/"):
             corr = getattr(msg.properties, "CorrelationData", None)
             if corr is not None:

@@ -483,7 +483,21 @@ estimate.
 `autolevel:true` lets firmware adjust the selected laser output level percent
 and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
-and derived values without changing laser level or attenuation.
+and derived values without adjusting laser level or attenuation during monitoring.
+Stopping a measurement also stops its selected laser's emission, regardless of
+`autolevel`. Bank power, TECs, and unrelated lasers are left unchanged.
+
+HK and YJ can run concurrently, with one measurement per photodiode channel.
+`stop:"yj"` or `stop:"hk"` stops that channel; `stop:"all"` attempts both even
+if one laser fails to stop. A failed shutdown returns an error, disables
+streaming/autolevel, and retains the laser identity for an explicit stop retry.
+Expiry and loss of photodiode power use the same shutdown path, logging failures.
+
+Both `format:"json"` and `format:"binary"` remain supported. Firmware defaults
+to JSON when `format` is omitted; the Python `measure_throughput()` helper and
+throughput lab notebook default to binary to preserve small uncertainties.
+Binary `channel` and `wavelength_nm` identify the source, including both 1430 nm
+lasers; the binary packet has no laser-name or autolevel-status field.
 
 `output` is optional for normal laser monitoring. When supplied, firmware
 selects the outbound MEMS route before starting the monitor. The route input is
@@ -617,8 +631,9 @@ uint64 laser_current_ontime_s
   `null`. Shutting down the required photodiode power stops that monitor.
 - `off_in_s` is an integer-second monitor auto-stop delay. `0` disables the
   monitor auto-stop.
-- Changing the monitored laser output or its logical attenuator disables
-  autolevel for the affected monitor; run the command again to re-enable it.
+- Changing the monitored laser output/settings manually relinquishes monitoring
+  without overriding the new manual setting. Changing its logical attenuator
+  disables autolevel while streaming continues; run the command again to re-enable it.
 - Starting a monitor with `autolevel:true` while attenuator calibration is
   active is rejected because both paths would own attenuator control.
 - Throughput uses the photodiode sampler windows; it does not own or start

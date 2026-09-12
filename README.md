@@ -83,6 +83,26 @@ GET; a key with payload is a SET. See:
 
 Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 
+## Throughput Lab Notebook
+
+Open `tools/throuput_monitor_lab.ipynb` with the workspace `.venv` kernel.
+For the interactive Matplotlib backend, install into that same environment:
+
+```bash
+./.venv/bin/python -m pip install ipympl
+```
+
+The throughput section provides a fixed, bounded receive-log widget, binary
+acquisition, a nonblocking four-panel dashboard, snapshot export, and explicit
+selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
+referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
+measurement and associated laser; the notebook also explicitly sets the laser
+level to zero. Bank power and TECs remain available. This shutdown behavior
+requires firmware built with the corresponding throughput-monitor change.
+
+Saved outputs are historical observations. Run cells individually; dark,
+calibration, and manual laser tests are separate lab operations.
+
 ## Documentation Build
 
 Documentation is Markdown-first Sphinx with Doxygen XML extraction through

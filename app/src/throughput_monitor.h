@@ -37,11 +37,19 @@ struct throughput_monitor_status {
 /** Background thread; sleeps between best-effort stream publications. */
 void throughput_monitor_thread(void *p1, void *p2, void *p3);
 
-/** Start or replace the monitor associated with the request's photodiode. */
+/** Start or replace the monitor associated with the request's photodiode.
+ * May block on hardware I/O; a different previously monitored laser is stopped.
+ * HK and YJ can run concurrently, with one monitor per photodiode channel.
+ */
 int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status);
 
-/** Stop one channel or both channels. Pass PHOTODIODE_CHANNEL_COUNT for all. */
+/** Stop streaming/autolevel and the associated laser emission, including when
+ * autolevel was disabled. Leaves bank power, TECs, and other lasers unchanged.
+ * May block on Modbus. On failure, streaming/autolevel remain disabled and a
+ * later stop retries laser shutdown. All-channel stop attempts both channels.
+ * Pass PHOTODIODE_CHANNEL_COUNT for all. Returns the first shutdown error.
+ */
 int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *status);
 
 /** Return true if either photodiode monitor is currently active. */
@@ -53,7 +61,9 @@ bool throughput_monitor_autolevel_active(enum photodiode_channel channel);
 /** Disable autolevel when another command changes a monitored attenuator. */
 void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
 
-/** Stop any monitor using a laser whose output/settings changed externally. */
+/** Relinquish monitoring when a manual command changes this laser.
+ * Does not change laser output; the caller owns the new manual setting.
+ */
 void throughput_monitor_note_laser_changed(enum hispec_laser_id laser);
 
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */
