@@ -96,9 +96,14 @@ The throughput section provides a fixed, bounded receive-log widget, binary
 acquisition, a nonblocking four-panel dashboard, snapshot export, and explicit
 selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
 referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
-measurement and associated laser; the notebook also explicitly sets the laser
-level to zero. Bank power and TECs remain available. This shutdown behavior
-requires firmware built with the corresponding throughput-monitor change.
+measurement and the laser used by its autolevel operation; purely passive
+monitoring leaves manual laser output alone. The notebook also explicitly sets
+the selected laser level to zero. Bank power and TECs remain available. This
+shutdown behavior requires firmware built with the corresponding
+throughput-monitor change.
+
+Both photodiodes can stream. Dual autolevel remains available for engineering
+use, but normal instrument light paths overlap and should use only one loop.
 
 Saved outputs are historical observations. Run cells individually; dark,
 calibration, and manual laser tests are separate lab operations.

@@ -58,6 +58,8 @@ struct throughput_state {
 	double max_flux_ph_s;
 	uint8_t high_count;
 	uint8_t low_count;
+	/* Autolevel's laser must still stop after manual attenuation disables adjustments. */
+	bool stop_laser;
 };
 
 static const struct laser_pd_channel laser_pd_channels[] = {
@@ -69,6 +71,9 @@ static const struct laser_pd_channel laser_pd_channels[] = {
 	{HISPEC_LASER_2330_K, PHOTODIODE_CHANNEL_HK},
 };
 
+/* Both loops are available for engineering use. Instrument light paths combine
+ * outside this controller, so normal operation should use only one autolevel loop.
+ */
 static struct throughput_state monitors[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(monitors_lock);
 /* The throughput thread is the only user of these scratch objects. Keeping the
@@ -150,7 +155,7 @@ static int stop_locked(enum photodiode_channel channel)
 	}
 	state->active = false;
 	state->autolevel = false;
-	if (state->has_laser) {
+	if (state->stop_laser) {
 		int rc = hispec_laser_stop_output(state->laser, false);
 
 		if (rc != 0) {
@@ -584,23 +589,12 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return -EACCES;
 	}
 
-	next.active = true;
-	next.autolevel = request->autolevel;
-	next.binary = request->binary;
-	next.has_laser = request->has_laser;
-	next.laser = request->laser;
-	next.channel = channel;
-	next.attenuator_index = attenuator_index;
-	next.fiber = request->fiber;
-	next.off_in_s = request->off_in_s;
-	next.max_flux_ph_s = request->max_flux_ph_s;
-
 	k_mutex_lock(&monitors_lock, K_FOREVER);
-	/* Stop a previous source before replacing it; also retry any failed
-	 * shutdown before accepting new ownership. Same-source monitoring with
-	 * autolevel disabled preserves the current manual output level.
+	/* Finish the previous autolevel operation before replacing its source;
+	 * also retry a failed shutdown before accepting a new operation.
+	 * Passive monitoring never assumes control of a manual laser setting.
 	 */
-	if (monitors[channel].has_laser &&
+	if (monitors[channel].stop_laser &&
 	    (!monitors[channel].active || !request->has_laser ||
 	     monitors[channel].laser != request->laser)) {
 		rc = stop_locked(channel);
@@ -620,7 +614,20 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	 * deadline via pd queries, but it must not turn off a running monitor.
 	 */
 	housekeeping_photodiode_autooff_inhibit(pd_power, true);
+
+	next.active = true;
+	next.autolevel = request->autolevel;
+	next.binary = request->binary;
+	next.has_laser = request->has_laser;
+	next.laser = request->laser;
+	next.channel = channel;
+	next.attenuator_index = attenuator_index;
+	next.fiber = request->fiber;
+	next.off_in_s = request->off_in_s;
+	next.max_flux_ph_s = request->max_flux_ph_s;
 	next.started_ms = k_uptime_get();
+	/* Continuing the same source with adjustments disabled retains its shutdown. */
+	next.stop_laser = request->autolevel || monitors[channel].stop_laser;
 	monitors[channel] = next;
 
 	if (request->has_laser && request->autolevel) {
@@ -654,16 +661,14 @@ int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *s
 	}
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
-	if (channel == PHOTODIODE_CHANNEL_COUNT) {
-		int hk_rc;
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		if (channel == i || channel == PHOTODIODE_CHANNEL_COUNT) {
+			int stop_rc = stop_locked((enum photodiode_channel)i);
 
-		rc = stop_locked(PHOTODIODE_CHANNEL_YJ);
-		hk_rc = stop_locked(PHOTODIODE_CHANNEL_HK);
-		if (rc == 0) {
-			rc = hk_rc;
+			if (rc == 0) {
+				rc = stop_rc;
+			}
 		}
-	} else {
-		rc = stop_locked((enum photodiode_channel)channel);
 	}
 	if (status != NULL) {
 		memset(status, 0, sizeof(*status));

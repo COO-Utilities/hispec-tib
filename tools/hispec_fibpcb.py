@@ -3522,8 +3522,10 @@ class ThroughputMonitor:
         return self
 
     def stop(self) -> None:
-        """Stop this channel's firmware measurement and selected laser emission.
+        """Stop this channel's measurement and the laser used by its autolevel.
 
+        Purely passive measurements leave manual laser output unchanged. Manual
+        attenuation disables adjustments but retains autolevel's laser shutdown.
         Bank power and TECs remain unchanged. Detach collection even if the
         command fails; calling stop again retries the firmware shutdown.
         """
@@ -3827,7 +3829,7 @@ class HispecFibPcb:
         self._subscribe_control_topics()
 
     def close(self) -> None:
-        """Stop collected measurements/lasers, then disconnect, even on failure."""
+        """Stop collected measurements/autolevel lasers, then disconnect, even on failure."""
         with self._throughput_lock:
             monitors = tuple(self._throughput_monitors)
         errors = []
@@ -4709,7 +4711,9 @@ class HispecFibPcb:
         """Start a measurement, using binary telemetry unless JSON is requested.
 
         With collect=True, return a background collector whose stop() also stops
-        this channel's measurement and selected laser emission in firmware.
+        this channel's measurement and any laser used by its autolevel operation.
+        Both channels can stream; overlapping instrument light paths normally
+        require using only one autolevel loop.
         """
         if laser != "none":
             _require_choice("laser", laser, LASER_NAMES)
@@ -4764,7 +4768,10 @@ class HispecFibPcb:
         return monitor if monitor is not None else CommandOk()
 
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
-        """Stop firmware measurement and its laser emission; preserve bank/TECs."""
+        """Stop measurement and its autolevel laser; preserve passive/manual output.
+
+        Bank power and TECs remain unchanged. See ThroughputMonitor.stop().
+        """
         _require_choice("channel", channel, ("yj", "hk", "all"))
         return self._request_ok("measure_throughput", {"stop": channel})
 

@@ -235,10 +235,10 @@ flowchart TD
 ```mermaid
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
-  Stop -- yes --> StopReq[stop selected streams and laser emission under lock]
+  Stop -- yes --> StopReq[stop selected streams and their autolevel lasers under lock]
   Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> StartLock[lock; stop previous source if replacing]
+  Map --> StartLock[lock; stop previous autolevel laser if replacing its source]
   StartLock --> PdPower[enable selected photodiode relay]
   PdPower --> Arm[store monitor state]
   Arm --> AutoStart{autolevel enabled}
@@ -253,7 +253,7 @@ flowchart TD
   Lock --> Active{channel active}
   Active -- no --> Unlock[unlock]
   Active -- yes --> Timeout{off_in expired}
-  Timeout -- yes --> Clear[stop stream and laser; retain identity and log if shutdown fails]
+  Timeout -- yes --> Clear[stop stream and its autolevel laser; retain identity and log if shutdown fails]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
   PdOn -- yes --> Auto{autolevel}
@@ -266,7 +266,7 @@ flowchart TD
   Clear --> Unlock
   Unlock --> Sleep
 
-  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable autolevel]
+  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; retain autolevel laser for shutdown]
   LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
 ```
 

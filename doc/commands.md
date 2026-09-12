@@ -484,10 +484,20 @@ estimate.
 and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without adjusting laser level or attenuation during monitoring.
-Stopping a measurement also stops its selected laser's emission, regardless of
-`autolevel`. Bank power, TECs, and unrelated lasers are left unchanged.
+Stopping an autolevel operation also stops the laser it was using, even if
+manual attenuation has since disabled automatic adjustments. A purely passive
+measurement leaves manual laser output unchanged when stopped. Continuing the
+same source with `autolevel:false` retains an existing operation's laser
+shutdown obligation; replacing its source first stops that autolevel laser.
+Bank power, TECs, and unrelated lasers are left unchanged.
 
-HK and YJ can run concurrently, with one measurement per photodiode channel.
+HK and YJ can both stream, with one measurement per photodiode channel. The
+firmware also supports two autolevel loops for engineering configurations with
+optically isolated paths. Normal instrument light paths combine outside this
+controller and influence both photodiodes, so normal operation should use only
+one autolevel loop. Additional manually enabled lasers can also affect the
+readings and throughput estimates; the firmware does not separate mixed light.
+
 `stop:"yj"` or `stop:"hk"` stops that channel; `stop:"all"` attempts both even
 if one laser fails to stop. A failed shutdown returns an error, disables
 streaming/autolevel, and retains the laser identity for an explicit stop retry.
@@ -633,7 +643,9 @@ uint64 laser_current_ontime_s
   monitor auto-stop.
 - Changing the monitored laser output/settings manually relinquishes monitoring
   without overriding the new manual setting. Changing its logical attenuator
-  disables autolevel while streaming continues; run the command again to re-enable it.
+  disables automatic adjustments while streaming continues; stopping the
+  operation still turns off its autolevel laser. Run the command again to
+  re-enable adjustments.
 - Starting a monitor with `autolevel:true` while attenuator calibration is
   active is rejected because both paths would own attenuator control.
 - Throughput uses the photodiode sampler windows; it does not own or start

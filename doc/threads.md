@@ -55,9 +55,14 @@ photodiode snapshots, route-loss settings, attenuator state, and laser
 estimates, then enqueues best-effort telemetry to `outbound_queue`.
 
 Start, stop, and autolevel hardware writes share the monitor mutex, so an
-in-flight adjustment finishes before stop shuts down the selected laser.
-Expiry and photodiode-power loss also stop that laser's emission. These paths
-can block on Modbus; bank power and TECs remain unchanged.
+in-flight adjustment finishes before stop shuts down the autolevel operation's
+laser. Expiry and photodiode-power loss use the same shutdown path; purely
+passive streams leave manual laser output unchanged. These paths can block on
+Modbus; bank power and TECs remain unchanged.
+
+Both channels can stream and both control loops remain available for engineering
+use. Normal instrument light paths overlap outside this controller, so normal
+operation should enable only one autolevel loop.
 
 The throughput monitor runs promptly when active because autolevel decisions
 should react on the same general timescale as photodiode sampling. It remains

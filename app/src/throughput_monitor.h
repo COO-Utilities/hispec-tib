@@ -38,14 +38,16 @@ struct throughput_monitor_status {
 void throughput_monitor_thread(void *p1, void *p2, void *p3);
 
 /** Start or replace the monitor associated with the request's photodiode.
- * May block on hardware I/O; a different previously monitored laser is stopped.
- * HK and YJ can run concurrently, with one monitor per photodiode channel.
+ * May block on hardware I/O; replacing an autolevel source stops its laser.
+ * Both channels can stream. Dual autolevel is available for engineering use;
+ * normal instrument light paths overlap and should use only one loop.
  */
 int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status);
 
-/** Stop streaming/autolevel and the associated laser emission, including when
- * autolevel was disabled. Leaves bank power, TECs, and other lasers unchanged.
+/** Stop streaming and the laser used by this autolevel operation, including
+ * after manual attenuation disables adjustments. Purely passive streams leave
+ * laser output unchanged. Bank power, TECs, and other lasers remain unchanged.
  * May block on Modbus. On failure, streaming/autolevel remain disabled and a
  * later stop retries laser shutdown. All-channel stop attempts both channels.
  * Pass PHOTODIODE_CHANNEL_COUNT for all. Returns the first shutdown error.
@@ -58,7 +60,9 @@ bool throughput_monitor_any_active(void);
 /** Return true while autolevel owns the selected photodiode stream. */
 bool throughput_monitor_autolevel_active(enum photodiode_channel channel);
 
-/** Disable autolevel when another command changes a monitored attenuator. */
+/** Disable adjustments when another command changes a monitored attenuator.
+ * Streaming continues; stopping the operation still stops its autolevel laser.
+ */
 void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
 
 /** Relinquish monitoring when a manual command changes this laser.
