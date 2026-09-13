@@ -69,9 +69,9 @@ static double written_tx;
 static bool attenuator_set_linear(int *a, double tx) { (void)a; written_tx=tx; return true; }
 static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l, double p, unsigned t)
 { (void)l; (void)p; (void)t; return 0; }
-static int laser_estimate_flux(enum hispec_laser_id l, double a, double b,
+static int laser_estimate_flux(enum hispec_laser_id l,
                               struct hispec_laser_flux_estimate *f)
-{ (void)l; (void)a; (void)b; f->flux_ph_s=100; return 0; }
+{ (void)l; f->flux_ph_s=100; return 0; }
 static double photodiode_power_uw_from_mv(double mv, const struct app_pd_channel_settings *s)
 { (void)s; return mv; }
 static void pd_window_result_clear(struct photodiode_window_result *w) { memset(w,0,sizeof(*w)); }
@@ -148,3 +148,136 @@ with tempfile.TemporaryDirectory() as tmp:
     cfile.write_text(source)
     subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', str(cfile), '-lm', '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+
+# Laser estimator, validation and NVS record round trip; no hardware is involved.
+source = r'''
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include "laser_properties.h"
+#define APP_LASER_CHANNEL_COUNT 6
+#define PLANCK_J_S 6.62607015e-34
+#define LIGHT_M_PER_S 299792458.0
+#define K_FOREVER 0
+#define float_is_valid(x) isfinite(x)
+#define float_is_positive(x) (isfinite(x) && (x)>0)
+static int laser_lock;
+static void k_mutex_lock(int *p,int t) { (void)p; (void)t; }
+static void k_mutex_unlock(int *p) { (void)p; }
+static void ensure_laser_runtime_settings_locked(void) {}
+'''
+for line in (ROOT/'app/src/lasers.h').read_text().splitlines():
+    if line.startswith('#define HISPEC_LASER_DEFAULT_'):
+        source += line + '\n'
+source += block('lasers.h', 'enum hispec_laser_id {') + ';\n'
+for file, names in {
+    'lasers.h': ['hispec_laser_driver_profile', 'hispec_laser_flux_estimate'],
+    'app_settings.h': ['app_laser_channel_settings', 'app_laser_settings'],
+    'app_settings.c': ['app_nvs_laser_policy'],
+}.items():
+    for name in names:
+        source += block(file, 'struct ' + name + ' {')
+for name in ['default_laser_props', 'default_laser_expected_serial']:
+    text = (ROOT/'app/src/app_settings.c').read_text()
+    start = text.rfind('static const ', 0, text.index(name))
+    source += text[start:text.index('};', start)+2]+'\n'
+source += r'''
+static struct app_laser_channel_settings laser_settings[HISPEC_LASER_COUNT];
+static struct { bool valid; double current_ma, tec_temperature_c; } laser_output_estimate[HISPEC_LASER_COUNT];
+struct app_settings_snapshot { struct app_laser_settings laser; };
+static void laser_defaults(struct app_settings_snapshot *s) {
+'''
+source += block('app_settings.c', 'for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i)') + '}\n'
+for marker in ['static int validate_laser_settings(', 'static bool laser_driver_settings_differ(',
+               'double hispec_laser_estimate_power_mw(', 'double hispec_laser_estimate_wavelength_nm(',
+               'int laser_estimate_flux(']:
+    source += block('lasers.c', marker)
+for marker in ['static void laser_policy_from_settings(', 'static void app_nvs_apply_laser_policy(']:
+    source += block('app_settings.c', marker)
+source += r'''
+int main(void) {
+    struct app_settings_snapshot defaults;
+    laser_defaults(&defaults);
+    double expected[] = {0.435675,0.086320,0.086320,0.086320,0.086320,0.029481};
+    for (int i=0;i<HISPEC_LASER_COUNT;++i) {
+        struct app_laser_channel_settings *s=&defaults.laser.channel[i], restored=*s;
+        struct app_nvs_laser_policy stored;
+        struct hispec_laser_driver_profile profile={.properties=default_laser_props[i]};
+        assert(s->fractional_noise == 0.03);
+        assert(fabs(s->constant_noise_mw-expected[i])<1e-12);
+        assert(validate_laser_settings(&profile,s)==0);
+        s->fractional_noise=0.02+i*0.01;
+        s->constant_noise_mw=0.01+i*0.01;
+        assert(!laser_driver_settings_differ(s,&restored));
+        laser_policy_from_settings(&stored,s);
+        app_nvs_apply_laser_policy(&restored,&stored);
+        assert(restored.fractional_noise==s->fractional_noise);
+        assert(restored.constant_noise_mw==s->constant_noise_mw);
+        laser_settings[i]=*s;
+        laser_output_estimate[i].valid=true;
+        laser_output_estimate[i].current_ma=s->properties.max_current_ma;
+        laser_output_estimate[i].tec_temperature_c=s->properties.operating_temp_c;
+        struct hispec_laser_flux_estimate estimate;
+        assert(laser_estimate_flux(i,&estimate)==0);
+        double power=(s->properties.max_current_ma-s->properties.threshold_current_ma)*s->properties.efficiency_mw_per_ma;
+        assert(fabs(estimate.power_mw-power)<1e-12);
+        double nominal_flux=estimate.flux_ph_s;
+        assert(fabs(estimate.power_err_mw-hypot(power*s->fractional_noise,s->constant_noise_mw))<1e-12);
+        laser_settings[i].constant_noise_mw=0;
+        assert(laser_estimate_flux(i,&estimate)==0);
+        assert(fabs(estimate.power_err_mw-power*s->fractional_noise)<1e-12);
+        laser_settings[i].fractional_noise=0;
+        laser_settings[i].constant_noise_mw=s->constant_noise_mw;
+        assert(laser_estimate_flux(i,&estimate)==0);
+        assert(estimate.power_err_mw==s->constant_noise_mw && estimate.flux_ph_s==nominal_flux);
+        restored.fractional_noise=-0.01;
+        assert(validate_laser_settings(&profile,&restored)==-ERANGE);
+        restored.fractional_noise=NAN;
+        assert(validate_laser_settings(&profile,&restored)==-ERANGE);
+        restored.fractional_noise=0;
+        restored.constant_noise_mw=INFINITY;
+        assert(validate_laser_settings(&profile,&restored)==-ERANGE);
+    }
+    puts("laser uncertainty C regressions passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile, exe = Path(tmp)/'laser.c', Path(tmp)/'laser'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'app/src'),str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+# Host command fields and telemetry remain usable in both documented formats.
+import sys
+import json
+import dataclasses
+sys.path.insert(0, str(ROOT/'tools'))
+import hispec_fibpcb as host
+client = object.__new__(host.HispecFibPcb)
+client._request_ok = lambda command, payload: (command, payload)
+for name in host.LASER_NAMES:
+    command, payload = client.set_laser_settings(name, fractional_noise=0.03, constant_noise_mw=0.1, persist=True)
+    assert command == 'laser/settings' and payload['settings'] == {'fractional_noise':0.03, 'constant_noise_mw':0.1}
+    assert payload['persist']
+for key in ('fractional_noise','constant_noise_mw'):
+    for value in (-1, float('nan'), float('inf')):
+        try:
+            client.set_laser_settings(host.LASER_NAMES[0], **{key:value})
+        except host.HispecFibError:
+            pass
+        else:
+            raise AssertionError(f'accepted invalid {key}: {value}')
+settings = {field.name:0 for field in dataclasses.fields(host.LaserSettings)}
+settings.update(model='test',expected_serial=123,tec_pid={'p':0,'i':0,'d':0},
+                operating_temp_range_c=[17,38],fractional_noise=0.03,constant_noise_mw=0.435675)
+client._request_json = lambda command, payload: {'name':payload['name'], 'settings':settings}
+result = client.laser_settings(host.LASER_NAMES[0])
+assert result.fractional_noise == 0.03 and result.constant_noise_mw == 0.435675
+binary = host._THROUGHPUT_BINARY.pack(b'yj_m',123,*[0.01,0.002,0.001,20,1,2000,300,1,1,0.2],12,*[10,9,8,0.1,50,6,1028],1,2)
+sample = host.decode_throughput_payload(binary)
+jsample = host.decode_throughput_payload(json.dumps({'tp':0.01,'tp_err':0.002,'tp_rms_err':0.001}))
+assert (sample.tp,sample.tp_err,sample.tp_rms_err) == (jsample.tp,jsample.tp_err,jsample.tp_rms_err)
+print('Python laser settings and JSON/binary telemetry checks passed')

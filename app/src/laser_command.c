@@ -460,6 +460,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"model\":\"%s\",\"expected_serial\":%u,"
 		"\"nominal_current_ma\":%.3f,"
 		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
+		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
@@ -476,6 +477,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->nominal_current_ma,
 		(double)p->max_current_ma,
 		(double)settings->current_set_calibration_pct,
+		settings->fractional_noise, settings->constant_noise_mw,
 		(double)p->threshold_current_ma,
 		(double)p->efficiency_mw_per_ma,
 		(double)p->wavelength_nm,
@@ -545,6 +547,8 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma);
 	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma);
 	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
+	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
+	LASER_PARSE_FLOAT("constant_noise_mw", settings->constant_noise_mw);
 	LASER_PARSE_FLOAT("current_set_calibration_pct",
 			  settings->current_set_calibration_pct);
 	LASER_PARSE_FLOAT("current_set_calibration_%",

@@ -449,6 +449,8 @@ class LaserSettings(ResponseRepr):
     nominal_current_ma: float
     max_current_ma: float
     current_set_calibration_pct: float
+    fractional_noise: float
+    constant_noise_mw: float
     threshold_current_ma: float
     efficiency_mw_per_ma: float
     wavelength_nm: float
@@ -4101,6 +4103,8 @@ class HispecFibPcb:
             nominal_current_ma=float(settings["nominal_current_ma"]),
             max_current_ma=float(settings["max_current_ma"]),
             current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
+            fractional_noise=float(settings["fractional_noise"]),
+            constant_noise_mw=float(settings["constant_noise_mw"]),
             threshold_current_ma=float(settings["threshold_current_ma"]),
             efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
             wavelength_nm=float(settings["wavelength_nm"]),
@@ -4132,6 +4136,8 @@ class HispecFibPcb:
         efficiency_mw_per_ma: float | None = None,
         wavelength_nm: float | None = None,
         current_set_calibration_pct: float | None = None,
+        fractional_noise: float | None = None,
+        constant_noise_mw: float | None = None,
         default_operating_temp_c: float | None = None,
         operating_temp_range_c: tuple[float, float] | None = None,
         tec_max_current_a: float | None = None,
@@ -4143,6 +4149,13 @@ class HispecFibPcb:
         expected_serial: int | None = None,
         persist: bool = False,
     ) -> CommandOk:
+        """Update per-laser policy, optionally persisting it to app NVS.
+
+        Optical-power sigma is hypot(power_mw * fractional_noise,
+        constant_noise_mw). Both fields are finite and nonnegative and do not
+        program Maiman. Existing settings-command emission/monitor stop behavior
+        still applies; restart measurement after changing calibration.
+        """
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
             nominal_current_ma=nominal_current_ma,
@@ -4151,6 +4164,8 @@ class HispecFibPcb:
             efficiency_mw_per_ma=efficiency_mw_per_ma,
             wavelength_nm=wavelength_nm,
             current_set_calibration_pct=current_set_calibration_pct,
+            fractional_noise=fractional_noise,
+            constant_noise_mw=constant_noise_mw,
             default_operating_temp_c=default_operating_temp_c,
             operating_temp_range_c=operating_temp_range_c,
             tec_max_current_a=tec_max_current_a,
@@ -4161,6 +4176,9 @@ class HispecFibPcb:
             expected_serial=expected_serial,
         )
         settings = settings or {}
+        for key in ("fractional_noise", "constant_noise_mw"):
+            if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
+                raise HispecFibError(f"{key} must be finite and nonnegative")
         if tec_pid is not None:
             if isinstance(tec_pid, TecPid):
                 settings["tec_pid"] = {"p": tec_pid.p, "i": tec_pid.i, "d": tec_pid.d}

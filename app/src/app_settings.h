@@ -120,6 +120,9 @@ struct app_laserbank_settings {
 struct app_laser_channel_settings {
 	laserprops_t properties;
 	double current_set_calibration_pct;
+	/* App-owned optical-power uncertainty; never programmed into Maiman. */
+	double fractional_noise;
+	double constant_noise_mw;
 	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
 	 * as an operator-settable laser calibration value.
 	 */

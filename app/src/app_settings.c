@@ -30,8 +30,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Rev. 2 analog defaults invalidate stored photodiode and calibration values. */
-#define APP_NVS_SCHEMA_VERSION 10U
+/* Laser optical-power uncertainty extends each policy record; reset old layouts. */
+#define APP_NVS_SCHEMA_VERSION 11U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -107,6 +107,8 @@ struct app_nvs_laser_policy {
 	double efficiency_mw_per_ma;
 	double wavelength_nm;
 	double current_set_calibration_pct;
+	double fractional_noise;
+	double constant_noise_mw;
 	double operating_temp_min_c;
 	double operating_temp_max_c;
 	double operating_temp_c;
@@ -286,6 +288,11 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
 		s->laser.channel[i].current_set_calibration_pct = 100.0;
+		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
+		/* Use the immutable diode table, not user settings or current output. */
+		s->laser.channel[i].constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
+			(default_laser_props[i]->max_current_ma - default_laser_props[i]->threshold_current_ma) *
+			default_laser_props[i]->efficiency_mw_per_ma;
 		s->laser.channel[i].expected_serial = default_laser_expected_serial[i];
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
@@ -501,6 +508,8 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
 	stored->wavelength_nm = laser->properties.wavelength_nm;
 	stored->current_set_calibration_pct = laser->current_set_calibration_pct;
+	stored->fractional_noise = laser->fractional_noise;
+	stored->constant_noise_mw = laser->constant_noise_mw;
 	stored->operating_temp_min_c = laser->properties.operating_temp_range_c.min_c;
 	stored->operating_temp_max_c = laser->properties.operating_temp_range_c.max_c;
 	stored->operating_temp_c = laser->properties.operating_temp_c;
@@ -792,6 +801,8 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
 	laser->properties.wavelength_nm = stored->wavelength_nm;
 	laser->current_set_calibration_pct = stored->current_set_calibration_pct;
+	laser->fractional_noise = stored->fractional_noise;
+	laser->constant_noise_mw = stored->constant_noise_mw;
 	laser->properties.operating_temp_range_c.min_c = stored->operating_temp_min_c;
 	laser->properties.operating_temp_range_c.max_c = stored->operating_temp_max_c;
 	laser->properties.operating_temp_c = stored->operating_temp_c;

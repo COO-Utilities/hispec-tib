@@ -787,6 +787,8 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
       "nominal_current_ma": 0.0,
       "max_current_ma": 0.0,
       "current_set_calibration_pct": 0.0,
+      "fractional_noise": 0.03,
+      "constant_noise_mw": 0.435675,
       "threshold_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
@@ -821,6 +823,8 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
       "current_set_calibration_pct": 0.0,
+      "fractional_noise": 0.03,
+      "constant_noise_mw": 0.435675,
       "tec_max_current_a": 0.0,
       "default_operating_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
@@ -839,6 +843,17 @@ reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
   ```
 
 - **Notes:**
+  - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
+    app-owned optical-power uncertainty settings. The estimator reads its
+    existing per-laser cache and computes `hypot(power_mw * fractional_noise,
+    constant_noise_mw)` before converting power and uncertainty to photon flux.
+    These fields do not program Maiman; existing settings-command emission and
+    throughput-stop behavior still applies.
+  - Defaults are 3% fractional plus a constant 1% of each diode's **compiled**
+    maximum modeled power. Constant defaults in mW: 1028 = 0.435675;
+    1270, both 1430 channels, and 1510 = 0.086320; 2330 = 0.029481.
+    The baseline does not change when current output or user property settings
+    change. `persist:true` saves both fields with that laser's policy.
   - It is the user's responsibility to ensure the triple of
     (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
     aligned and in sync because these values form the baseline for wavelength

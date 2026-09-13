@@ -34,7 +34,7 @@ Current app NVS records include:
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical
-  association check.
+  association check, plus `fractional_noise` and `constant_noise_mw`.
 - One laser total-emitting counter record per laser channel.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
@@ -64,6 +64,11 @@ silently reused on another.
   two-FVOA attenuator limit.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
+- Laser optical-power uncertainty defaults to `fractional_noise=0.03` and
+  `constant_noise_mw=0.01 * (max_current_ma - threshold_current_ma) * efficiency_mw_per_ma`,
+  using `default_laser_props` from the compiled table, never mutable settings.
+  The resulting floors are 0.435675 mW (1028), 0.086320 mW (1270, both 1430,
+  1510), and 0.029481 mW (2330). These app-only fields do not program Maiman.
 - Laser expected serials default to the initial known driver/diode association.
   Operators may update the value through `laser/settings` after confirming a
   replacement driver is physically associated with the intended diode.
@@ -99,9 +104,9 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v6 adds the per-laser `expected_serial` association field. Older schema
-markers are not migrated; firmware clears the old app settings layout, writes
-the v6 marker, and uses defaults.
+Schema v11 adds per-laser optical-power uncertainty to the laser policy record.
+Older schema markers are not migrated; firmware clears the old app settings
+layout, writes the v11 marker, and uses defaults.
 
 ## Intentionally Not Persisted
 

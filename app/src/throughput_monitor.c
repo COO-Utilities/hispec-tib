@@ -238,7 +238,7 @@ static void refresh_reference(struct throughput_state *state)
 	if (state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     0.0, 0.0, &state->atten) &&
-	    laser_estimate_flux(state->laser, 0.0, 0.0, &state->laser_flux) == 0) {
+	    laser_estimate_flux(state->laser, &state->laser_flux) == 0) {
 		const char *name = hispec_laser_name(state->laser);
 
 		app_settings_get_photodiode(&pd_settings);
@@ -308,7 +308,7 @@ static bool autolevel_adjust(struct throughput_state *state,
 
 	if (low && !high) {
 		if (state->max_flux_ph_s > 0.0 &&
-		    laser_estimate_flux(state->laser, 0.0, 0.0, &laser_flux) == 0 &&
+		    laser_estimate_flux(state->laser, &laser_flux) == 0 &&
 		    laser_flux.flux_ph_s > 0.0) {
 			emitted_flux = laser_flux.flux_ph_s * atten->linear;
 			max_tx = state->max_flux_ph_s / laser_flux.flux_ph_s;

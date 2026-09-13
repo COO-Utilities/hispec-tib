@@ -512,6 +512,19 @@ flowchart TD
   CurrentOff --> Wait
 ```
 
+```mermaid
+flowchart TD
+  Defaults[compiled diode table] --> Noise[3 percent fractional and 1 percent of compiled maximum power floor]
+  Noise --> Policy[per-laser app policy]
+  NVS[validated NVS policy] --> Policy
+  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; existing stop behavior]
+  Validate --> Policy
+  Policy --> Cache[existing laser module cache under laser lock]
+  Policy --> Persist[save on persist request; no Maiman programming for noise fields]
+  Cache --> Estimate[estimate power and hypot fractional plus constant uncertainty]
+  Estimate --> Reference[throughput acquisition reference and correlated uncertainty]
+```
+
 ## 22. Status Response Assembly Flow
 
 ```mermaid

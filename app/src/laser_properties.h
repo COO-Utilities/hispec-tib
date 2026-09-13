@@ -3,7 +3,8 @@
  * @brief Fixed diode property table used for estimates and safety limits.
  *
  * These values are compile-time defaults. Maiman EEPROM owns driver-side
- * persisted parameters; app settings do not currently persist laser properties.
+ * persisted parameters; app settings persist accepted property overrides and
+ * optical-power uncertainty. Noise-floor defaults always use this fixed table.
  */
 
 #ifndef LASER_PROPERTIES_H
