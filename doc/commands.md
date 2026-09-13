@@ -607,8 +607,19 @@ uint64 laser_current_ontime_s
 ```
 
 **Notes:**
-- `tp` is unitless. `NaN` means offscale or insufficient information; values
-  above unity are reported rather than clamped.
+- `tp` is the unitless mean of individually normalized ADC readings in the
+  fixed monitoring window. Every good ADC reading uses the input reference
+  latched before its acquisition, including readings before an attenuation
+  change. Only starting/stopping a measurement clears normalized history.
+  `NaN` means no usable normalized readings; values are not clamped.
+- `tp_rms_err` is normalized sample scatter divided by sqrt(valid samples),
+  combined with the stored dark RMS floor. `tp_err` additionally includes
+  source calibration uncertainty, treated as correlated across the window.
+  Calibration uncertainty is not reduced by averaging.
+- Diagnostic `pd_flux_ph_s` is still the raw PD-window mean converted to flux;
+  `laser_flux_ph_s`, attenuation, and current describe the captured source
+  before the next control move. During changes, `tp` need not equal the ratio
+  of those diagnostic flux fields.
 - Flux values are photons per second.
 - `pd_mv` is the instantaneous raw ADC millivolt reading and `pd_net_mv` is
   the instantaneous dark-subtracted value. `pd_mean_net_mv` and
@@ -625,10 +636,17 @@ uint64 laser_current_ontime_s
   `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` from `fiber:"M"|"S"` and the outbound laser
   route as `<lasername>_to_<M|S>`. These names are route-loss record keys, not
   MEMS route-table entries.
-- The fixed-window net mean controls autolevel. Below 20% usable range, firmware requests
-  3x flux. Above 80%, it requests 1/3 flux.
-- Five consecutive saturated samples or five consecutive below-dark samples
-  trigger immediate autolevel adjustment.
+- Ordinary autolevel adjustments use the fixed-window net mean and wait for
+  `PHOTODIODE_FIXED_WINDOW_MS` since the last input change, using the sampler's
+  window-end timestamp. Below 20% usable range, request 3x flux; above 80%, 1/3.
+- Startup raises flux at the 100 ms monitor cadence until instantaneous signal
+  first reaches the 20% useful-range threshold. Five consecutive instantaneous
+  monitor observations below/above the useful band also bypass the ordinary
+  gate (near ADC saturation counts as high). Bright backoff takes priority;
+  a lagging low mean cannot request more light while the latest reading is high.
+- There is no additional settling timer or deliberate gap after input changes.
+  External optical response, the 20 Hz analog filters, and clipping still affect
+  measured throughput and require hardware validation.
 - Flux is raised by decreasing logical attenuation first, then raising laser
   output level percent. Flux is decreased by increasing logical attenuation
   first, then lowering laser output level percent.

@@ -147,3 +147,10 @@ handlers. The system workqueue stays ahead of command and app blocking work
 because Zephyr Modbus client RX completion runs there. Command ingress over
 serial and MQTT is treated as equivalent at the command-executor layer. SNTP is
 intentionally lower than deferred logging.
+
+For throughput, the ADC thread also averages individually normalized readings
+in its existing fixed ring. Its reference update uses the runtime mutex and
+performs no laser/DAC I/O. The throughput thread owns source readback/reference
+updates and captures telemetry before selecting the next input. Only ordinary
+adjustments wait for a full `PHOTODIODE_FIXED_WINDOW_MS` since the prior change;
+initial acquisition and high/low-count bypasses retain the monitor cadence.

@@ -243,8 +243,11 @@ flowchart TD
   PdPower --> Arm[store monitor state]
   Arm --> AutoStart{autolevel enabled}
   AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
-  AutoStart -- no --> Ok[unlock and return status ok]
-  Seed --> Ok
+  AutoStart -- no --> Ref[reset normalized history; cache source and supply ADC reference]
+  Seed --> Ref
+  Ref --> Ok[unlock and return status ok]
+  ADC[each 20 ms: latch reference before ADC conversion] --> Ring[store signed net mV and reference at existing fixed-ring index]
+  Ring --> Average[mean normalized readings; PD scatter plus correlated dark and calibration floors]
   StopReq --> Stopped{laser shutdown succeeded}
   Stopped -- yes --> Ok
   Stopped -- no --> StopError[disable streaming and autolevel; retain laser for retry; return error]
@@ -256,17 +259,22 @@ flowchart TD
   Timeout -- yes --> Clear[stop stream and its autolevel laser; retain identity and log if shutdown fails]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
-  PdOn -- yes --> Auto{autolevel}
-  Auto -- yes --> Adjust[adjust attenuator or laser level from PD mean]
+  PdOn -- yes --> Capture[capture PD and source snapshot before next input]
+  Average --> Capture
+  Capture --> Auto{autolevel}
+  Auto -- yes --> Gate{startup or high/low bypass or full process window since input change}
+  Gate -- yes --> Adjust[adjust attenuator or laser; bright backoff first]
+  Gate -- no --> Sync
   Auto -- no --> Sync
-  Adjust --> Sync[copy state and unlock]
-  Sync --> Publish[build JSON or binary telemetry]
+  Adjust --> Update[refresh acquisition reference; retain normalized history]
+  Update --> Sync[unlock]
+  Sync --> Publish[build JSON or binary from captured snapshot]
   Publish --> OutQ[enqueue outbound_queue best effort]
   OutQ --> Sleep[k_sleep 100 ms]
   Clear --> Unlock
   Unlock --> Sleep
 
-  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; retain autolevel laser for shutdown]
+  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; refresh reference; retain autolevel laser for shutdown]
   LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
 ```
 

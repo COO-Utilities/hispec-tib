@@ -78,6 +78,22 @@ struct photodiode_window_result {
 	int16_t max_raw;
 };
 
+/* Internal throughput reference supplied by the monitor, latched before ADC I/O.
+ * scale_per_mv includes detector response, routes, and emitted photon flux.
+ * Zero scale disables normalization; signed net samples are not rectified.
+ */
+struct photodiode_throughput_reference {
+	double scale_per_mv;
+	double source_relative_error;
+};
+
+struct photodiode_throughput_result {
+	uint16_t samples;
+	double mean;
+	double pd_error;
+	double error;
+};
+
 struct photodiode_channel_status {
 	int16_t raw;
 	double mv;
@@ -89,6 +105,7 @@ struct photodiode_channel_status {
 	struct photodiode_window_result configurable_window;
 	struct photodiode_window_result last_configurable_window;
 	struct photodiode_window_result fixed_window;
+	struct photodiode_throughput_result throughput;
 	struct photodiode_window_result last_fixed_window;
 	struct photodiode_window_result dark_window;
 	struct photodiode_window_result lowest_dark_window;
@@ -107,6 +124,16 @@ void photodiode_thread(void *p1, void *p2, void *p3);
 
 /** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
+
+/**
+ * @brief Update the acquisition reference without clearing normalized history.
+ *
+ * Throughput calls this after changing its source. reset starts a new measurement
+ * (also used when stopping), clearing only normalized history. May wait for the
+ * runtime mutex; performs no hardware I/O, persistence, or publication.
+ */
+void photodiode_set_throughput_reference(enum photodiode_channel channel,
+	struct photodiode_throughput_reference reference, bool reset);
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.

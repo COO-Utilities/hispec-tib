@@ -3034,6 +3034,13 @@ class WarningEvent(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class ThroughputSample(ResponseRepr):
+    """Firmware window mean of individually normalized ADC readings.
+
+    ``tp_rms_err`` is PD-only; ``tp_err`` also includes correlated source
+    calibration uncertainty. During source changes, ``tp`` need not equal
+    ``pd_flux_ph_s / laser_flux_ph_s``: those remain diagnostic flux fields.
+    """
+
     channel: str
     laser: str
     autolevel: bool

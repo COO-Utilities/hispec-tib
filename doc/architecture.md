@@ -238,3 +238,11 @@ items are centralized in `human_review_required.md`.
   queued as non-best-effort so it is retried until MQTT is available.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.
+
+Throughput input alignment: `throughput_monitor.c` owns the cached laser,
+attenuator, and route estimate; `photodiode.c` latches the supplied conversion
+reference before each ADC conversion and owns normalized fixed-window means
+and uncertainties. The sampler performs no source hardware I/O. Source changes
+preserve per-reading references; measurement restart clears normalized history
+without resetting raw PD diagnostics. Publication uses the captured source
+snapshot and normalized window, with no post-adjustment estimator rereads.

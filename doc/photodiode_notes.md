@@ -192,3 +192,14 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
     
 
 ```
+
+Throughput normalization belongs to the sampler's fixed window. The monitor
+supplies a cached photons-to-throughput factor after a source change; each ADC
+conversion latches its own reference and stores it beside the existing ring
+slot. No ADC readings are downsampled to the 100 ms telemetry cadence. Signed
+net readings are normalized before averaging, so attenuation changes do not
+mix denominators. Source calibration uncertainty is conservatively correlated
+across the window; the existing dark RMS floor is converted by the mean scale.
+The PD-only scatter retains the existing RMS/sqrt(N) convention. This change
+does not establish that filtered samples are independent, compensate analog
+settling, or correct clipping. Those remain physical validation concerns.
