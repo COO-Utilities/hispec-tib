@@ -299,11 +299,13 @@ bool attenuator_init(struct attenuator *drv,
     drv->coeff1.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff1.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
     drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff1.rms_db = ATTENUATOR_DEFAULT_RMS_DB;
     memset(drv->coeff1.correction_coeff, 0, sizeof(drv->coeff1.correction_coeff));
     drv->coeff2.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
     drv->coeff2.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff2.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
     drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
+    drv->coeff2.rms_db = ATTENUATOR_DEFAULT_RMS_DB;
     memset(drv->coeff2.correction_coeff, 0, sizeof(drv->coeff2.correction_coeff));
     drv->attenuation_db = 0.0;
 
@@ -589,6 +591,7 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
     if (coeffs == NULL || !isfinite(coeffs->fvoa_50pct_mv) ||
         !isfinite(coeffs->slope_inv_fvoa_mv) ||
         !isfinite(coeffs->max_atten_db) || !isfinite(coeffs->gain) ||
+        !isfinite(coeffs->rms_db) || coeffs->rms_db < 0.0 ||
         coeffs->slope_inv_fvoa_mv <= 0.0 || coeffs->gain <= 0.0) {
         return false;
     }
@@ -902,48 +905,20 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
 }
 
 bool attenuator_estimate_transmission(struct attenuator *drv,
-                                      double sigma_b1, double sigma_b2,
                                       struct attenuator_transmission_estimate *out)
 {
     struct attenuator_status status;
-    struct atten_model_eval eval1;
-    struct atten_model_eval eval2;
-    double tx1;
-    double tx2;
-    double db1_per_b;
-    double db2_per_b;
-    double dtx1_db;
-    double dtx2_db;
-    double var;
 
-    if (drv == NULL || out == NULL || sigma_b1 < 0.0 || sigma_b2 < 0.0) {
+    if (drv == NULL || out == NULL || !attenuator_get(drv, &status)) {
         return false;
     }
 
-    if (!attenuator_get(drv, &status)) {
-        return false;
-    }
-
-    if (!atten_model_eval(&drv->coeff1, status.voltage1, &eval1) ||
-        !atten_model_eval(&drv->coeff2, status.voltage2, &eval2)) {
-        return false;
-    }
-    if (drv->coeff1.slope_inv_fvoa_mv == 0.0 || drv->coeff2.slope_inv_fvoa_mv == 0.0 ||
-        drv->coeff1.gain <= 0.0 || drv->coeff2.gain <= 0.0) {
-        return false;
-    }
-
-    tx1 = eval1.tx;
-    tx2 = eval2.tx;
-    db1_per_b = eval1.d_db_d_voltage_mv / (drv->coeff1.slope_inv_fvoa_mv * drv->coeff1.gain);
-    db2_per_b = eval2.d_db_d_voltage_mv / (drv->coeff2.slope_inv_fvoa_mv * drv->coeff2.gain);
-    dtx1_db = tx1 * (-log(10.0) / 10.0) * db1_per_b;
-    dtx2_db = tx2 * (-log(10.0) / 10.0) * db2_per_b;
-    var = (tx2 * dtx1_db * sigma_b1) * (tx2 * dtx1_db * sigma_b1) +
-          (tx1 * dtx2_db * sigma_b2) * (tx1 * dtx2_db * sigma_b2);
-
-    out->linear = tx1 * tx2;
-    out->linear_err = sqrt(var);
+    /* Fit residuals describe model uncertainty in commanded attenuation space.
+     * They are not ADC/drive-voltage sample noise and do not average away.
+     */
+    out->linear = status.linear;
+    out->linear_err = status.linear * (log(10.0) / 10.0) *
+                      hypot(drv->coeff1.rms_db, drv->coeff2.rms_db);
     out->attenuation_db = status.attenuation_db;
     out->attenuation_db1 = status.attenuation_db1;
     out->attenuation_db2 = status.attenuation_db2;

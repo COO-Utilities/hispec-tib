@@ -278,6 +278,22 @@ flowchart TD
   LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
 ```
 
+```mermaid
+flowchart TD
+  AutoFit[existing automatic final fit] --> Accepted{both physical fits accepted}
+  Accepted -- yes --> Install[install coefficients and final residual RMS together]
+  Accepted -- no --> Keep[retain previous model and RMS]
+  Manual[manual coefficient replacement] --> RMS{rms_db supplied}
+  RMS -- yes --> Validate[validate finite nonnegative]
+  RMS -- no --> Default[2 dB default for replacement model]
+  Validate --> Install
+  Default --> Install
+  Install --> Save[save coefficient record including RMS when requested]
+  Install --> Estimate[pair transmission and sigma_T from hypot of physical RMS values]
+  Estimate --> Source[combine with laser flux uncertainty]
+  Source --> ADCRef[acquisition reference; correlated uncertainty across window]
+```
+
 ## 12. MEMS Router and Toggler Flow
 
 ```mermaid

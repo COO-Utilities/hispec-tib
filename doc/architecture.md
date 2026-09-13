@@ -23,7 +23,8 @@ Runtime ownership is:
   app/cross-domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
-- `attenuator.c`: DAC channel setup/read/write and coefficient application.
+- `attenuator.c`: DAC channel setup/read/write, coefficient application, and
+  transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
 - `maiman.c`: raw/scaled Modbus register transactions.
@@ -33,7 +34,7 @@ Runtime ownership is:
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
-  noise warnings.
+  noise warnings, plus throughput normalization and fixed-window statistics.
 - `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,

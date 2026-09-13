@@ -237,7 +237,7 @@ static void refresh_reference(struct throughput_state *state)
 	state->emitted_flux_err = NAN;
 	if (state->has_laser &&
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
-					     0.0, 0.0, &state->atten) &&
+					     &state->atten) &&
 	    laser_estimate_flux(state->laser, &state->laser_flux) == 0) {
 		const char *name = hispec_laser_name(state->laser);
 

@@ -1739,7 +1739,10 @@ static int fit_one_physical_locked(uint8_t physical,
 	return out->accepted ? 0 : -ERANGE;
 }
 
-/** Apply accepted pair fits to runtime control and optionally persist them. */
+/** Apply accepted pair fits and their final residual RMS together.
+ * May block on DAC I/O and optional NVS persistence. Rejected fits leave both
+ * the previous coefficients and their uncertainty untouched; no extra sweep.
+ */
 static int apply_fit_to_settings_locked(void)
 {
 	struct attenuator *atten = &attenuators[cal.attenuator_index];
@@ -1749,6 +1752,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[0].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[0].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[0].max_atten_db,
+			.rms_db = cal.fit[0].rms_db,
 			.gain = atten->coeff1.gain,
 			.correction_coeff = {
 				cal.fit[0].correction_coeff[0],
@@ -1761,6 +1765,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[1].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[1].max_atten_db,
+			.rms_db = cal.fit[1].rms_db,
 			.gain = atten->coeff2.gain,
 			.correction_coeff = {
 				cal.fit[1].correction_coeff[0],
@@ -1783,12 +1788,14 @@ static int apply_fit_to_settings_locked(void)
 	stored.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 	stored.physical[0].max_atten_db = physical[0].max_atten_db;
 	stored.physical[0].gain = physical[0].gain;
+	stored.physical[0].rms_db = physical[0].rms_db;
 	memcpy(stored.physical[0].correction_coeff, physical[0].correction_coeff,
 	       sizeof(stored.physical[0].correction_coeff));
 	stored.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 	stored.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 	stored.physical[1].max_atten_db = physical[1].max_atten_db;
 	stored.physical[1].gain = physical[1].gain;
+	stored.physical[1].rms_db = physical[1].rms_db;
 	memcpy(stored.physical[1].correction_coeff, physical[1].correction_coeff,
 	       sizeof(stored.physical[1].correction_coeff));
 	app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);

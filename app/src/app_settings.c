@@ -30,8 +30,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Laser optical-power uncertainty extends each policy record; reset old layouts. */
-#define APP_NVS_SCHEMA_VERSION 11U
+/* Physical attenuator residual RMS extends coefficient records; reset old layouts. */
+#define APP_NVS_SCHEMA_VERSION 12U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -236,6 +236,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 					FVOA_DEFAULT_MAX_ATTEN_DB;
 				s->attenuator.channel[ch].physical[physical].gain =
 					ATTENUATOR_DEFAULT_GAIN;
+				s->attenuator.channel[ch].physical[physical].rms_db =
+					ATTENUATOR_DEFAULT_RMS_DB;
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark =
@@ -597,6 +599,7 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
 		physical[i].max_atten_db = p->max_atten_db;
 		physical[i].gain = p->gain;
+		physical[i].rms_db = p->rms_db;
 		memcpy(physical[i].correction_coeff, p->correction_coeff,
 		       sizeof(physical[i].correction_coeff));
 	}

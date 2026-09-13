@@ -27,7 +27,8 @@ Current app NVS records include:
 - IP settings as one record.
 - MQTT broker host/port as one record.
 - Last command metadata as one command-dispatch record.
-- One attenuator coefficient record per logical channel.
+- One attenuator coefficient record per logical channel, including `rms_db`
+  for each physical FVOA. Coefficients and RMS are restored as one record.
 - One photodiode settings record per photodiode channel, including active dark
   window result, lowest stored dark window result, noise threshold,
   responsivity, transimpedance, relay power intent, and auto-off delay.
@@ -61,7 +62,9 @@ silently reused on another.
 - Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
   1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
   `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical
-  two-FVOA attenuator limit.
+  two-FVOA attenuator limit. Each physical model defaults to `rms_db=2.0`;
+  accepted autocalibration replaces it with the final fit's existing residual
+  RMS. Manual replacement without RMS returns to that default.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
 - Laser optical-power uncertainty defaults to `fractional_noise=0.03` and
@@ -104,9 +107,10 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v11 adds per-laser optical-power uncertainty to the laser policy record.
-Older schema markers are not migrated; firmware clears the old app settings
-layout, writes the v11 marker, and uses defaults.
+Schema v12 adds physical-attenuator residual RMS to coefficient records,
+following v11's per-laser optical-power uncertainty. Older schema markers are
+not migrated; firmware clears the old app settings layout, writes the v12
+marker, and uses defaults.
 
 ## Intentionally Not Persisted
 

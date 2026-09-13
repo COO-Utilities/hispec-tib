@@ -967,6 +967,7 @@ void setup_attenuators(void)
 		attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[0].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff1.max_atten_db = atten_settings.channel[attenuator_index].physical[0].max_atten_db;
 		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
+		attenuators[attenuator_index].coeff1.rms_db = atten_settings.channel[attenuator_index].physical[0].rms_db;
 		memcpy(attenuators[attenuator_index].coeff1.correction_coeff,
 		       atten_settings.channel[attenuator_index].physical[0].correction_coeff,
 		       sizeof(attenuators[attenuator_index].coeff1.correction_coeff));
@@ -975,6 +976,7 @@ void setup_attenuators(void)
 		attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[1].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff2.max_atten_db = atten_settings.channel[attenuator_index].physical[1].max_atten_db;
 		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
+		attenuators[attenuator_index].coeff2.rms_db = atten_settings.channel[attenuator_index].physical[1].rms_db;
 		memcpy(attenuators[attenuator_index].coeff2.correction_coeff,
 		       atten_settings.channel[attenuator_index].physical[1].correction_coeff,
 		       sizeof(attenuators[attenuator_index].coeff2.correction_coeff));

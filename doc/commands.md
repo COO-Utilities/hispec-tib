@@ -526,8 +526,9 @@ Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
 wavelength estimate. It applies the nearest nominal-laser photodiode
 multiplicative correction coefficient; the current firmware table uses `1.0`
 for every nominal laser wavelength. The photodiode sampler owns ADC reads and
-dark tracking. The throughput monitor owns streaming output, autolevel
-decisions, and throughput math.
+dark tracking and averaging of individually normalized throughput readings.
+The throughput monitor owns source references, streaming output, and autolevel
+decisions.
 
 Transient ADC read/write errors are treated as missing photodiode samples:
 firmware leaves the last good rolling value intact for streaming consumers and
@@ -1052,6 +1053,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "slope_inv_fvoa_mv": 0.00158137,
       "max_atten_db": 55.0,
       "gain": 1.533,
+      "rms_db": 2.0,
       "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     },
     "dac2": {
@@ -1059,6 +1061,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "slope_inv_fvoa_mv": 0.00158137,
       "max_atten_db": 55.0,
       "gain": 1.533,
+      "rms_db": 2.0,
       "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     }
   }
@@ -1073,6 +1076,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "slope_inv_fvoa_mv": 0.00303104,
       "max_atten_db": 48.36,
       "gain": 1.533,
+      "rms_db": 2.0,
       "correction_coeff": [0.12, -0.03, 0.01, 0.0]
     },
     "dac2": {
@@ -1080,6 +1084,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "slope_inv_fvoa_mv": 0.00247498,
       "max_atten_db": 61.95,
       "gain": 1.533,
+      "rms_db": 2.0,
       "correction_coeff": [0.0, 0.0, 0.0, 0.0]
     },
     "persist": true
@@ -1090,7 +1095,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"correction_coeff":[0.12,-0.03,0.01,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"correction_coeff":[0.0,0.0,0.0,0.0]},"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0]},"persist":true}
   ```
 
 - **Notes:**
@@ -1122,6 +1127,20 @@ command wait budget, this command returns `{"error":"busy"}`.
     clear it intentionally.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
+  - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
+    in attenuation dB. It defaults to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
+    A manual model replacement omitting `rms_db` uses that default, rather than
+    inheriting confidence from the previous fit. An explicit zero is allowed.
+  - Accepted autocalibration installs the final model's unweighted residual RMS
+    with its coefficients and saves both when persistence is requested. Rejected
+    fits replace neither. No extra sweep or offline analysis is required.
+  - The pair transmission estimate uses
+    `sigma_db = hypot(dac1.rms_db, dac2.rms_db)` and
+    `sigma_T = T * ln(10)/10 * sigma_db`. This describes model uncertainty,
+    not op-amp voltage noise. Contributions from the two physical devices are
+    independent; repeated samples of the same calibration are correlated.
+    Throughput includes this and laser uncertainty in `tp_err`;
+    `tp_rms_err` remains PD-only. The nominal transmission model is unchanged.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
 
@@ -1310,6 +1329,8 @@ ownership are documented in `attenuator_calibration.md`.
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
     3 mV. Fit details include point count, correlation, residual RMS/max in dB,
     fitted transmission span, FVOA-drive span, and correction coefficients.
+    The final `rms_db` is retained with each accepted physical model for runtime
+    throughput uncertainty and optional NVS persistence.
 
 (pd)=
 ### `pd`

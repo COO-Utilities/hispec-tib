@@ -70,6 +70,8 @@ struct app_attenuator_physical_settings {
 	double max_atten_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
+	/* Residual model RMS, installed/persisted together with these coefficients. */
+	double rms_db;
 	/* Optional empirical dB residual correction; all zeros means disabled. */
 	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };

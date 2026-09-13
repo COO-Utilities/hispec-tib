@@ -54,6 +54,7 @@ PD_TRANSIMPEDANCE_MIN_V_PER_A = 1.0e7
 PD_TRANSIMPEDANCE_MAX_V_PER_A = 1.0e12
 ATTENUATOR_DRIVE_MAX_MV = 3300.0
 ATTENUATOR_DEFAULT_GAIN = 1.533
+ATTENUATOR_DEFAULT_RMS_DB = 2.0
 ATTENUATOR_MODEL_ERF_SCALE = 4.0
 ATTENUATOR_MODEL_CORRECTION_TERMS = 4
 ATTENUATOR_MODEL_CORRECTION_START_DB = -10.0 * math.log10(0.99)
@@ -552,11 +553,14 @@ class AttenuatorState(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorPhysicalCoeff(ResponseRepr):
+    """Physical FVOA model with residual RMS in dB (shared calibration error)."""
+
     fvoa_50pct_mv: float
     slope_inv_fvoa_mv: float
     max_atten_db: float
     gain: float
     correction_coeff: tuple[float, float, float, float]
+    rms_db: float = ATTENUATOR_DEFAULT_RMS_DB
 
 
 @dataclass(frozen=True, repr=False)
@@ -3148,6 +3152,7 @@ def _decode_atten_physical_coeff(data: Mapping[str, Any], name: str) -> Attenuat
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
             max_atten_db=float(data["max_atten_db"]),
             gain=float(data["gain"]),
+            rms_db=float(data["rms_db"]),
             correction_coeff=_atten_correction_tuple(name, data["correction_coeff"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -3159,12 +3164,14 @@ def _atten_physical_coeff_payload(
     value: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
     *,
     default_gain: float = ATTENUATOR_DEFAULT_GAIN,
-) -> dict[str, float]:
+) -> dict[str, Any]:
+    rms_db = None
     if isinstance(value, AttenuatorPhysicalCoeff):
         fvoa_50pct_mv = value.fvoa_50pct_mv
         slope_inv_fvoa_mv = value.slope_inv_fvoa_mv
         max_atten_db = value.max_atten_db
         gain = value.gain
+        rms_db = value.rms_db
         correction_coeff = value.correction_coeff
         include_correction = True
     elif isinstance(value, Mapping):
@@ -3173,6 +3180,7 @@ def _atten_physical_coeff_payload(
             slope_inv_fvoa_mv = value["slope_inv_fvoa_mv"]
             max_atten_db = value["max_atten_db"]
             gain = value.get("gain", default_gain)
+            rms_db = value.get("rms_db")
             include_correction = "correction_coeff" in value
             correction_coeff = (
                 _atten_correction_tuple(name, value["correction_coeff"])
@@ -3225,6 +3233,8 @@ def _atten_physical_coeff_payload(
         "max_atten_db": _require_float(f"{name}.max_atten_db", max_atten_db, 1e-12, 1e12),
         "gain": _require_float(f"{name}.gain", gain, 1e-12, 1e12),
     }
+    if rms_db is not None:
+        payload["rms_db"] = _require_float(f"{name}.rms_db", rms_db, 0.0, math.inf)
     if include_correction:
         assert correction_coeff is not None
         payload["correction_coeff"] = list(correction_coeff)
@@ -4361,6 +4371,13 @@ class HispecFibPcb:
         *,
         persist: bool = False,
     ) -> CommandOk:
+        """Replace both physical models, optionally persisting them together.
+
+        ``rms_db`` in a mapping or AttenuatorPhysicalCoeff is the per-device
+        model uncertainty. Omitting it uses the firmware's 2 dB default rather
+        than the prior fit's RMS. Embedded autocalibration supplies its final
+        accepted RMS automatically; no offline fit is required.
+        """
         _require_choice("laser", laser, ATTENUATOR_NAMES)
         return self._request_ok(
             f"atten/{laser}/coeff",

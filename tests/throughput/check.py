@@ -281,3 +281,141 @@ sample = host.decode_throughput_payload(binary)
 jsample = host.decode_throughput_payload(json.dumps({'tp':0.01,'tp_err':0.002,'tp_rms_err':0.001}))
 assert (sample.tp,sample.tp_err,sample.tp_rms_err) == (jsample.tp,jsample.tp_err,jsample.tp_rms_err)
 print('Python laser settings and JSON/binary telemetry checks passed')
+
+# Physical-model uncertainty and accepted-fit installation. Stub only hardware
+# and flash writes; exercise the production replacement/rollback code.
+source = r'''
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define APP_ATTENUATOR_PHYSICAL_COUNT 2
+#define APP_ATTENUATOR_CHANNEL_COUNT 6
+#define MAX_PAYLOAD_LEN 2048
+#define COO_JSON_EXTRACT_OK 0
+#define COO_JSON_EXTRACT_ERR -1
+#define COO_JSON_EXTRACT_MISSING 1
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define ATTENUATOR_DB_EPSILON 1e-6
+struct dac_channel_cfg {int channel_id;};
+'''
+for line in (ROOT/'app/src/attenuator.h').read_text().splitlines():
+    if line.startswith(('#define ATTENUATOR_', '#define FVOA_DEFAULT_')):
+        source += line+'\n'
+for file, names in {
+    'attenuator.h': ['attenuator_model_coeffs','attenuator_dac_cfg','attenuator_status',
+                    'attenuator_transmission_estimate','attenuator'],
+    'app_settings.h': ['app_attenuator_physical_settings','app_attenuator_channel_settings'],
+    'attenuator_calibration.h': ['attenuator_calibration_fit_metrics'],
+}.items():
+    for name in names:
+        source += block(file,'struct '+name+' {')
+source += r'''
+static struct attenuator attenuators[6];
+static struct {int attenuator_index; bool persistent; struct attenuator_calibration_fit_metrics fit[2];} cal;
+static struct app_attenuator_channel_settings saved;
+static int saves;
+static bool fail_write;
+static double sample_tx=0.001;
+static void app_settings_update_attenuator_channel(int i,const struct app_attenuator_channel_settings *s,bool persist)
+{ (void)i; assert(persist); saved=*s; ++saves; }
+static bool attenuator_get(struct attenuator *a, struct attenuator_status *out)
+{ (void)a; *out=(struct attenuator_status){.linear=sample_tx,.attenuation_db=30,.voltage1=123,.voltage2=456}; return true; }
+static bool attenuator_set_db(struct attenuator *a,double db) { (void)a; (void)db; return !fail_write; }
+static double attenuator_model_floor_linear(const struct attenuator_model_coeffs *c)
+{ return pow(10,-c->max_atten_db/10); }
+static double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *c,float mv)
+{ (void)mv; return c->max_atten_db; }
+/* JSON extraction stubs select absent/explicit RMS; the parser's replacement
+ * semantics and validation, not the shared JSON library, are under test here. */
+static int rms_status=COO_JSON_EXTRACT_MISSING;
+static double parsed_rms;
+static int coo_json_extract_object(const char *j,const char *key,char *out,size_t n)
+{ (void)j; (void)key; (void)n; out[0]=0; return COO_JSON_EXTRACT_OK; }
+static int coo_json_extract_double(const char *j,const char *key,double *out) {
+    (void)j;
+    if (!strcmp(key,"rms_db")) {if (rms_status==0) *out=parsed_rms; return rms_status;}
+    if (!strcmp(key,"fvoa_50pct_mv")) *out=2500;
+    if (!strcmp(key,"slope_inv_fvoa_mv")) *out=0.002;
+    if (!strcmp(key,"max_atten_db")) *out=55;
+    if (!strcmp(key,"gain")) *out=1.533;
+    return COO_JSON_EXTRACT_OK;
+}
+static int coo_json_extract_double_array(const char *j,const char *key,double *out,size_t n,size_t *len)
+{ (void)j;(void)key;(void)out;(void)n;(void)len;return COO_JSON_EXTRACT_MISSING; }
+'''
+for marker in ['static bool attenuator_model_coeff_valid(', 'bool attenuator_model_coefficients_valid(',
+               'bool attenuator_estimate_transmission(', 'int attenuator_apply_coefficients_preserve_db(']:
+    source += block('attenuator.c',marker)
+source += block('app_settings.c','static bool attenuator_channel_valid(')
+source += block('attenuator_calibration.c','static int apply_fit_to_settings_locked(')
+source += block('attenuator_command.c','static int parse_attenuator_coeff_object(')
+source += r'''
+int main(void) {
+    struct attenuator *a=&attenuators[0];
+    a->coeff1=(struct attenuator_model_coeffs){.fvoa_50pct_mv=2500,.slope_inv_fvoa_mv=0.002,
+        .max_atten_db=55,.gain=1.533,.rms_db=ATTENUATOR_DEFAULT_RMS_DB};
+    a->coeff2=a->coeff1;
+    struct attenuator_transmission_estimate out;
+    for(int i=0;i<3;++i) {
+        sample_tx=pow(10,-i*3);
+        assert(attenuator_estimate_transmission(a,&out));
+        assert(out.linear==sample_tx && out.attenuation_db==30 && out.voltage1==123);
+        assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(2,2))<1e-12);
+    }
+    cal.persistent=true;
+    for(int i=0;i<2;++i) cal.fit[i]=(struct attenuator_calibration_fit_metrics){
+        .accepted=true,.fvoa_50pct_mv=2600+i,.slope_inv_fvoa_mv=0.003,.max_atten_db=50,
+        .rms_db=0.75+i};
+    assert(apply_fit_to_settings_locked()==0 && saves==1);
+    assert(saved.physical[0].rms_db==0.75 && saved.physical[1].rms_db==1.75);
+    assert(a->coeff1.rms_db==0.75 && a->coeff2.rms_db==1.75);
+    assert(attenuator_channel_valid(&saved));
+    assert(attenuator_estimate_transmission(a,&out));
+    assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(0.75,1.75))<1e-12);
+    cal.fit[0].accepted=false; cal.fit[0].rms_db=99;
+    assert(apply_fit_to_settings_locked()==-EINVAL && saves==1 && a->coeff1.rms_db==0.75);
+    cal.fit[0].accepted=true; fail_write=true;
+    assert(apply_fit_to_settings_locked()==-EIO && saves==1 && a->coeff1.rms_db==0.75);
+    fail_write=false;
+    assert(parse_attenuator_coeff_object("{}","dac1",&a->coeff1)==0);
+    assert(a->coeff1.rms_db==2); /* Do not inherit the previous 0.75 dB fit. */
+    rms_status=COO_JSON_EXTRACT_OK; parsed_rms=0;
+    assert(parse_attenuator_coeff_object("{}","dac1",&a->coeff1)==0 && a->coeff1.rms_db==0);
+    parsed_rms=-1;
+    assert(parse_attenuator_coeff_object("{}","dac1",&a->coeff1)==-EINVAL);
+    parsed_rms=NAN;
+    assert(parse_attenuator_coeff_object("{}","dac1",&a->coeff1)==-EINVAL);
+    saved.physical[0].rms_db=INFINITY;
+    assert(!attenuator_channel_valid(&saved));
+    puts("attenuator uncertainty C regressions passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile, exe = Path(tmp)/'atten.c', Path(tmp)/'atten'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+coeff = {'fvoa_50pct_mv':2500,'slope_inv_fvoa_mv':0.002,'max_atten_db':55,
+         'gain':1.533,'correction_coeff':[0,0,0,0],'rms_db':0.75}
+parsed = host._decode_atten_physical_coeff(coeff,'dac1')
+assert parsed.rms_db == 0.75
+assert host._atten_physical_coeff_payload('dac1',parsed)['rms_db'] == 0.75
+assert host._atten_coeff_tuple('dac1',parsed) == host._atten_coeff_tuple('dac1',{**coeff,'rms_db':2})
+for value in (0,2,0.75):
+    assert host._atten_physical_coeff_payload('dac1',{**coeff,'rms_db':value})['rms_db'] == value
+for value in (-1,float('nan'),float('inf')):
+    try:
+        host._atten_physical_coeff_payload('dac1',{**coeff,'rms_db':value})
+    except host.HispecFibError:
+        pass
+    else:
+        raise AssertionError('accepted invalid attenuator RMS')
+without_rms = {key:value for key,value in coeff.items() if key != 'rms_db'}
+assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',without_rms)
+assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',(2500,0.002,55))
+print('Python attenuator RMS checks passed')
