@@ -515,3 +515,120 @@ for reply in replies:
     assert eval(repr(result),vars(host)) == result
     assert str(result) == repr(result)
 print('Route defaults, overrides, NVS restore, and C/Python precision checks passed')
+
+# Protocol routing, bounded plotting, and notebook widget lifecycle without a broker.
+import asyncio
+import contextlib
+import io
+import logging
+import os
+import time
+from types import SimpleNamespace
+import numpy as np
+os.environ.setdefault('MPLCONFIGDIR', str(Path(tempfile.gettempdir())/'hispec-test-matplotlib'))
+os.environ.setdefault('XDG_CACHE_HOME', str(Path(tempfile.gettempdir())/'hispec-test-cache'))
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+client = host.HispecFibPcb('localhost', connect=False)
+client._connected.set()  # Local delivery only; no MQTT socket is opened.
+client.logger = logging.Logger('throughput-test',level=logging.DEBUG)
+logs = []
+log_handler = logging.Handler()
+log_handler.emit = logs.append
+client.logger.addHandler(log_handler)
+monitor = host.ThroughputMonitor(client,channel='all').start()
+json_payload = json.dumps(dataclasses.asdict(sample)).encode()
+for _ in range(100):
+    for payload in (binary,json_payload):
+        client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/yj_tput',payload=payload))
+deadline=time.monotonic()+3
+while len(monitor.to_recarray())<200 and time.monotonic()<deadline:
+    time.sleep(.01)
+assert len(monitor.to_recarray())==200 and not logs
+monitor._stop_collection()
+for channel in ('yj','hk'):
+    client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/{channel}_tput',payload=b'not logged'))
+assert not logs
+client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/warning',
+    payload=b'{"code":"test","msg":"visible warning","uptime_s":1}'))
+client._on_message(None,None,SimpleNamespace(topic=f'cmd/{client.device}/resp/laser',
+    payload=b'{"status":"ok"}',properties=None))
+assert any('visible warning' in record.getMessage() for record in logs)
+assert any('resp/laser' in record.getMessage() for record in logs)
+
+with plt.ioff():
+    empty = host.ThroughputMonitor(client,channel='yj')
+    fig,anim=empty.plot_live(max_points=10)
+    anim._func(0); fig.canvas.draw(); plt.close(fig)
+    rec=monitor.to_recarray()[:5].copy()
+    rec.t_ms=np.arange(5)*100+1000
+    rec.tp=[.01,0,-1,np.nan,2]
+    rec.tp_err=[.002,0,.1,np.nan,.5]
+    rec.pd_mean_net_mv=[100,0,-5,100,100]
+    rec.pd_mean_net_err_mv=[1,0,1,np.nan,2]
+    monitor._samples.clear()
+    monitor._samples.extend(rec.tolist())
+    # Interleave the other channel; selecting YJ must still preserve its time base.
+    monitor._samples.extend([dataclasses.replace(sample,channel='hk_m').as_tuple()]*3)
+    fig,anim=monitor.plot_live(channel='yj',max_points=5)
+    anim._func(0); fig.canvas.draw()
+    tp,pd,snr,drive,flux,atten=fig.axes
+    np.testing.assert_allclose(tp.lines[0].get_ydata(),[.01,np.nan,np.nan,np.nan,2],equal_nan=True)
+    np.testing.assert_allclose(tp.lines[0].get_xdata(),np.arange(5)*.1)
+    np.testing.assert_allclose(snr.lines[0].get_ydata(),[100,np.nan,np.nan,np.nan,50],equal_nan=True)
+    np.testing.assert_allclose(snr.lines[1].get_ydata(),[5,np.nan,np.nan,np.nan,4],equal_nan=True)
+    assert pd.patches[0].get_y()==400 and pd.patches[0].get_height()==1200
+    assert pd.lines[0].get_ydata()==[2000,2000]
+    loss_axis=tp.child_axes[0]
+    np.testing.assert_allclose(loss_axis._functions[0]([.01,1,10]),[20,0,-10])
+    np.testing.assert_allclose(loss_axis._functions[1]([20,0,-10]),[.01,1,10])
+    # Verify screen alignment, including negative dB and an inverted zoomed axis.
+    for limits in ((.001,10),(10,.001)):
+        tp.set_ylim(*limits); fig.canvas.draw()
+        np.testing.assert_allclose(
+            tp.transData.transform([(0,.01),(0,1),(0,10)])[:,1],
+            loss_axis.transData.transform([(0,20),(0,0),(0,-10)])[:,1])
+    tp.set_ylim(.001,10)
+    for ax in fig.axes: ax.set_autoscale_on(False)
+    tp.set_xlim(.1,.3); old=tp.get_xlim(); anim._func(1); assert tp.get_xlim()==old
+    anim.pause(); anim.resume()
+    for ax in fig.axes: ax.set_autoscale_on(True)
+    anim._func(2); fig.canvas.draw(); plt.close(fig)
+    np.testing.assert_allclose(monitor.to_recarray().tp[:5],rec.tp,equal_nan=True)
+    monitor._samples.extend([sample.as_tuple()]*20000)
+    # The dashboard must not convert the collector's whole array each frame.
+    monitor.to_recarray=lambda: (_ for _ in ()).throw(AssertionError('full history conversion'))
+    fig,anim=monitor.plot_live(channel='yj',max_points=10)
+    anim._func(0); fig.canvas.draw()
+    assert len(fig.axes[0].lines[0].get_ydata())==10
+    plt.close(fig)
+
+notebook=json.loads((ROOT/'tools/throuput_monitor_lab.ipynb').read_text())
+pane_code=next(''.join(c['source']) for c in notebook['cells'] if 'class MessagePaneHandler' in ''.join(c.get('source',[])))
+cleanup_code=next(''.join(c['source']) for c in notebook['cells'] if ''.join(c.get('source',[])).startswith('# Optional display/log cleanup.'))
+async def check_message_pane():
+    previous=client.logger
+    ns={'pcb':client}
+    with contextlib.redirect_stdout(io.StringIO()): exec(pane_code,ns)
+    widget=ns['message_output']; renders=[]
+    widget.observe(lambda change:renders.append(time.monotonic()),names='outputs')
+    for i in range(550): client.logger.info('message %d',i)
+    for _ in range(100):
+        client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/yj_tput',payload=b'no raw bytes'))
+    assert not renders  # The MQTT/logging thread never writes the widget.
+    await asyncio.sleep(.55)
+    text=widget.outputs[0]['text']
+    assert len(renders)==1 and len(text.splitlines())==500
+    assert 'message 49\n' not in text and 'message 50\n' in text and 'message 549\n' in text
+    await asyncio.sleep(.55); assert len(renders)==1  # No refresh of unchanged output.
+    old_task=ns['message_task']; old_handler=ns['message_handler']
+    with contextlib.redirect_stdout(io.StringIO()): exec(pane_code,ns)
+    await asyncio.sleep(0)
+    assert old_task.cancelled() and old_handler._closed
+    task=ns['message_task']
+    exec(cleanup_code,ns); await asyncio.sleep(0)
+    assert task.cancelled() and client.logger is previous
+asyncio.run(check_message_pane())
+print('Protocol filtering, dashboard math/rendering, and notebook lifecycle checks passed')

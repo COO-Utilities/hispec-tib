@@ -27,6 +27,25 @@ RC gives a 7.96 ms time constant and about 55 ms settling to 0.1% of a step.
 - The 10 mV warning compares fixed-window scatter, so optical steps and drift
   can trigger it as well as electronics noise.
 
+## Future 20 Hz measurements (not implemented)
+
+Rev. 2 lab observations suggest substantially lower PD noise and reliable ADC
+communication after removing the level shifters. A future candidate is one
+fresh ADC result per channel every 50 ms, used directly for throughput with an
+error appropriate to that measurement. The 500 ms rolling window would remain
+available for diagnostics and other callers. This could remove throughput's
+per-reading normalization history; the external contract is measurements with
+errors at a defined interval, independently of internal averaging choices.
+
+The current implementation remains at 250 SPS conversion, 50 Hz per-channel
+acquisition, nominal 10 Hz throughput, and a 500 ms monitoring window. A possible
+64 SPS converter setting needs about 31.3 ms for two sequential conversions
+before I2C and scheduling overhead, so it requires evaluation with a 50 ms loop,
+not a change to the converter rate alone. Use the existing ADC timing logs
+(`worst_loop_us`, `min_margin_us`, missed intervals, and overruns) plus throughput
+timing under representative load before selecting rates. Validate the resulting
+noise, filtering/aliasing, and per-measurement errors as part of that decision.
+
 ## Historical exploratory noise model
 
 The example below retains its original assumptions for review. Its `/2`

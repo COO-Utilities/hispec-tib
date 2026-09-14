@@ -92,8 +92,9 @@ For the interactive Matplotlib backend, install into that same environment:
 ./.venv/bin/python -m pip install ipympl
 ```
 
-The throughput section provides a fixed, bounded receive-log widget, binary
-acquisition, a nonblocking four-panel dashboard, snapshot export, and explicit
+The throughput section provides a fixed receive-log widget (500 records,
+updated at most twice per second), binary acquisition, a nonblocking five-panel
+dashboard, snapshot export, and explicit
 selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
 referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
 measurement and the laser used by its autolevel operation; purely passive
@@ -101,6 +102,14 @@ monitoring leaves manual laser output alone. The notebook also explicitly sets
 the selected laser level to zero. Bank power and TECs remain available. This
 shutdown behavior requires firmware built with the corresponding
 throughput-monitor change.
+
+Throughput packets feed collection directly and are excluded from logging.
+The dashboard shows logarithmic throughput with a linked dB-loss axis, PD input
+with the 400–1600 mV control band, detector and total-throughput S/N, source
+current/attenuation, and estimated photon flux. Calibration uncertainty can
+limit total S/N even when detector S/N is high. Only the displayed record tail
+is converted per frame. Display gaps for nonpositive log values or undefined
+S/N do not change the underlying records or CSV exports.
 
 Both photodiodes can stream. Dual autolevel remains available for engineering
 use, but normal instrument light paths overlap and should use only one loop.

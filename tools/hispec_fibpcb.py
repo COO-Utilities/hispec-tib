@@ -3614,12 +3614,19 @@ class ThroughputMonitor:
         Use ``%matplotlib widget`` in Jupyter and retain the animation reference.
         An all-channel collector requires a channel selection. Shaded bands show
         reported uncertainties, not confidence intervals adjusted for filtering.
+        Throughput uses a log scale with a linked dB-loss axis. Detector S/N uses
+        the PD-window mean/error; total throughput S/N includes calibration error.
+        The PD guides show the current firmware's 20-80% usable-input band.
+        Nonpositive log values and undefined S/N are display gaps, never changes
+        to the collected records. Only the latest max_points rows are converted.
         ``animation.pause()/resume()`` and closing the figure affect display
         only. Toolbar zoom/pan disables autoscaling; enable it on each axis to
         follow incoming data again. Collection and hardware continue unchanged.
         """
         import matplotlib.pyplot as plt
         from matplotlib.animation import FuncAnimation
+        from matplotlib.ticker import MaxNLocator, StrMethodFormatter
+        from itertools import islice
 
         if channel is None:
             if self.channel == "all":
@@ -3633,20 +3640,65 @@ class ThroughputMonitor:
         if max_points <= 0:
             raise HispecFibError("max_points must be positive")
 
-        fig, axes = plt.subplots(2, 2, sharex=True, figsize=(12, 8), layout="constrained")
-        tp_ax, pd_ax, drive_ax, flux_ax = axes.flat
+        fig = plt.figure(figsize=(13, 10), layout="constrained")
+        grid = fig.add_gridspec(3, 2)
+        tp_ax = fig.add_subplot(grid[0, :])
+        pd_ax = fig.add_subplot(grid[1, 0], sharex=tp_ax)
+        snr_ax = fig.add_subplot(grid[1, 1], sharex=tp_ax)
+        drive_ax = fig.add_subplot(grid[2, 0], sharex=tp_ax)
+        flux_ax = fig.add_subplot(grid[2, 1], sharex=tp_ax)
+        axes = (tp_ax, pd_ax, snr_ax, drive_ax, flux_ax)
         atten_ax = drive_ax.twinx()
-        tp_ax.set(title="Throughput", ylabel="throughput (unitless)")
+        tp_ax.set(title="Throughput", ylabel="throughput (unitless)", yscale="log")
         pd_ax.set(title="Photodiode input", ylabel="ADC input (mV)")
+        snr_ax.set(title="Signal / reported error", ylabel="S/N", yscale="log")
         drive_ax.set(title="Source and attenuation", ylabel="laser current (mA)")
         atten_ax.set_ylabel("combined attenuation (dB)")
         flux_ax.set(title="Estimated photon flux", ylabel="photons / s", yscale="log")
-        flux_ax.set_ylim(1.0, 10.0)  # A valid log range before the first sample.
-        flux_ax.set_autoscaley_on(True)
-        for ax in axes.flat:
+        log_axes = (tp_ax, snr_ax, flux_ax)
+        for ax in log_axes:
+            ax.set_ylim(1.0, 10.0)  # Valid log ranges before positive samples arrive.
+            ax.set_autoscaley_on(True)
+        for ax in axes:
             ax.grid(True, alpha=0.25)
-        for ax in axes[1]:
+        for ax in (drive_ax, flux_ax):
             ax.set_xlabel("elapsed time (s)")
+        for ax in (tp_ax, pd_ax, snr_ax):
+            ax.tick_params(labelbottom=False)
+
+        def transmission_to_loss(values):
+            # Matplotlib also probes zero/out-of-domain coordinates during layout.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return -10.0 * np.log10(values)
+
+        def loss_to_transmission(values):
+            with np.errstate(over="ignore", invalid="ignore"):
+                return np.power(10.0, -np.asarray(values) / 10.0)
+
+        loss_ax = tp_ax.secondary_yaxis("right", functions=(transmission_to_loss, loss_to_transmission))
+        # dB is already logarithmic: avoid the inherited log scale, which clamps
+        # zero/negative dB. Reflect the linear dB coordinate so larger loss stays
+        # aligned with smaller throughput, including toolbar zoom and inversion.
+        loss_ax.set_yscale("function", functions=(np.negative, np.negative))
+        loss_ax.set_ylabel("path loss (dB)")
+        loss_ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        loss_ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        loss_ax.minorticks_off()
+
+        # Match TP_LOW/HIGH_FRACTION in throughput_monitor.c; ADC mV include
+        # the board divider. The band is a net-signal control target, while
+        # the 2000 mV ceiling applies to the instantaneous raw input.
+        pd_ax.axhspan(0.2 * PD_ADC_USABLE_MV, 0.8 * PD_ADC_USABLE_MV,
+                      color="green", alpha=0.08, label="net control band (20-80%)")
+        pd_ax.axhline(PD_ADC_USABLE_MV, color="C3", ls=":", label="raw input ceiling")
+        snr_series = []
+        for numerator, denominator, label, color in (
+            ("pd_mean_net_mv", "pd_mean_net_err_mv", "PD mean / PD error", "C0"),
+            ("tp", "tp_err", "throughput / total error", "C1"),
+        ):
+            line, = snr_ax.plot([], [], label=label, color=color)
+            snr_series.append((numerator, denominator, line))
+        snr_ax.legend(loc="upper left")
 
         series = []
         for ax, field, error, label, color in (
@@ -3668,15 +3720,21 @@ class ThroughputMonitor:
                         loc="upper left")
         title = fig.suptitle(f"{channel.upper()} — waiting for throughput samples")
         start_ms = None
+        time_index = THROUGHPUT_DTYPE.names.index("t_ms")
+        prefix = f"{channel}_"
 
         def update(_frame):
             nonlocal start_ms
-            rec = self.to_recarray()
-            rec = rec[np.char.startswith(rec.channel, f"{channel}_")]
-            if len(rec):
+            # Copy only the displayed tail under the collector lock; array
+            # conversion and plotting must not hold up incoming records.
+            with self._lock:
                 if start_ms is None:
-                    start_ms = int(rec.t_ms[0])
-                rec = rec[-max_points:]
+                    start_ms = next((int(row[time_index]) for row in self._samples
+                                     if row[0].startswith(prefix)), None)
+                rows = list(islice((row for row in reversed(self._samples)
+                                    if row[0].startswith(prefix)), max_points))
+            rec = np.array(rows[::-1], dtype=THROUGHPUT_DTYPE).view(np.recarray)
+            if len(rec):
                 wavelength = rec.wavelength_nm[-1]
                 source = f"{wavelength:g} nm" if np.isfinite(wavelength) else "unknown wavelength"
                 # Channel plus wavelength also distinguishes the two 1430 nm lasers.
@@ -3689,17 +3747,23 @@ class ThroughputMonitor:
             for ax, field, error, line, band in series:
                 values = np.asarray(rec[field], dtype=float).copy()
                 values[gaps | ~np.isfinite(values)] = np.nan
-                if ax is flux_ax:
+                if ax in log_axes:
                     values[values <= 0] = np.nan
                 line.set_data(t, values)
                 if band is not None:
                     err = np.asarray(rec[error], dtype=float)
                     err = np.where(np.isfinite(err) & (err >= 0), err, np.nan)
                     low, high = values - err, values + err
-                    if ax is flux_ax:
+                    if ax in log_axes:
                         low[low <= 0] = np.nan
                     band.set_data(t, low, high)
-            for ax in (*axes.flat, atten_ax):
+            for numerator, denominator, line in snr_series:
+                err = np.asarray(rec[denominator], dtype=float)
+                values = np.full(len(rec), np.nan)
+                np.divide(rec[numerator], err, out=values, where=np.isfinite(err) & (err > 0))
+                values[gaps | ~np.isfinite(values) | (values <= 0)] = np.nan
+                line.set_data(t, values)
+            for ax in (*axes, atten_ax):
                 ax.relim()
             for ax, _, _, _, band in series:
                 if band is not None:
@@ -3707,7 +3771,7 @@ class ThroughputMonitor:
                     for path in band.get_paths():
                         vertices = path.vertices
                         ax.update_datalim(vertices[np.all(np.isfinite(vertices), axis=1)])
-            for ax in (*axes.flat, atten_ax):
+            for ax in (*axes, atten_ax):
                 ax.autoscale_view()
 
         animation = FuncAnimation(fig, update, interval=interval_s * 1000,
@@ -4950,6 +5014,17 @@ class HispecFibPcb:
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         topic = msg.topic
+        # Dense measurement payloads are protocol data, not receive-log entries.
+        # Classify before logging, including when no collector is attached.
+        if topic in (f"dt/{self.device}/yj_tput", f"dt/{self.device}/hk_tput"):
+            channel = "yj" if topic.endswith("/yj_tput") else "hk"
+            with self._throughput_lock:
+                monitors = tuple(self._throughput_monitors)
+            for monitor in monitors:
+                if monitor.channel in ("all", channel):
+                    monitor.enqueue_payload(bytes(msg.payload))
+            return
+
         self.logger.debug("RX %s %r", topic, msg.payload)
         if topic.startswith(f"cmd/{self.device}/resp/"):
             corr = getattr(msg.properties, "CorrelationData", None)
@@ -4966,19 +5041,6 @@ class HispecFibPcb:
 
         if topic == f"dt/{self.device}/warning":
             self._handle_warning(msg.payload)
-            return
-
-        if topic in (f"dt/{self.device}/yj_tput", f"dt/{self.device}/hk_tput"):
-            channel = "yj" if topic.endswith("/yj_tput") else "hk"
-            with self._throughput_lock:
-                monitors = tuple(self._throughput_monitors)
-            matched = False
-            for monitor in monitors:
-                if monitor.channel in ("all", channel):
-                    matched = True
-                    monitor.enqueue_payload(bytes(msg.payload))
-            if not matched:
-                self.logger.debug("throughput telemetry on %s with no active monitor", topic)
             return
 
         if topic.startswith(f"dt/{self.device}/"):

@@ -296,6 +296,23 @@ flowchart TD
   Source --> ADCRef[acquisition reference; correlated uncertainty across window]
 ```
 
+Notebook collection and display:
+
+```mermaid
+flowchart TD
+  MQTT[Python MQTT callback] --> Kind{throughput topic}
+  Kind -- yes --> Collect[enqueue JSON or binary payload; no log entry]
+  Collect --> Decode[collector decodes into bounded record history]
+  Decode --> CSV[snapshot and CSV retain original values]
+  Decode --> Plot[plot timer copies only displayed tail]
+  Plot --> Panels[throughput and dB loss; PD band; S/N; source; flux]
+  Kind -- no --> Logs[dispatch replies, warnings, and log messages]
+  Logs --> Buffer[logging handler buffers latest 500 records]
+  Buffer --> Pane[kernel asyncio task refreshes changed content at most twice per second]
+  Pause[pause or close plot] --> DisplayOnly[stop display updates; acquisition continues]
+  Cleanup[rerun or clean up message pane] --> Cancel[cancel task; restore previous logger]
+```
+
 ## 12. MEMS Router and Toggler Flow
 
 ```mermaid
