@@ -75,8 +75,14 @@ silently reused on another.
 - Laser expected serials default to the initial known driver/diode association.
   Operators may update the value through `laser/settings` after confirming a
   replacement driver is physically associated with the intended diode.
-- Route-loss records default to absent. Missing route-loss settings are treated
-  as loss-free transmission, `1.0`.
+- Route-loss records default to absent. Known TIB laser AO/FEI paths then use
+  the switch products plus planned static attenuation documented in
+  [hardware.md](hardware.md#tib-route-loss-defaults); matching MM/SM return
+  paths use transmission 0.98/0.60. Other route/laser pairs use 1.0. Defaults
+  are constants in flash and occupy no RAM/NVS override slots. Explicit
+  records replace defaults, including transmission 1.0 (API loss 0).
+  Throughput captures effective route losses at start; restart to pick up a
+  changed override. The NVS layout and schema are unchanged.
 - MEMS switch intent defaults to absent. A switch with no stored intent defaults
   to A at boot. Toggle and split restart metadata defaults to dormant/absent.
 

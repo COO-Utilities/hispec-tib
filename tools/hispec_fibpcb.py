@@ -410,6 +410,16 @@ class RouteLoss(ResponseRepr):
     lasers: tuple[NamedValue, ...] = ()
     split: tuple[float, float, float] | None = None
 
+    def __repr__(self) -> str:
+        """Keep fractions lost near one distinguishable from total loss."""
+        lasers = ", ".join(f"NamedValue(name={item.name!r}, value={item.value!r})"
+                           for item in self.lasers)
+        if len(self.lasers) == 1:
+            lasers += ","
+        return f"RouteLoss(route={self.route!r}, lasers=({lasers}), split={self.split!r})"
+
+    __str__ = __repr__
+
 
 @dataclass(frozen=True, repr=False)
 class LaserStatus(ResponseRepr):

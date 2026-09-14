@@ -241,7 +241,7 @@ flowchart TD
   Map --> Route[apply requested input/output route]
   Route --> StartLock[lock; stop previous autolevel laser if replacing its source]
   StartLock --> PdPower[enable selected photodiode relay]
-  PdPower --> Loss[capture source and return route losses]
+  PdPower --> Loss[capture source and return transmission: explicit override, else TIB default, else unity]
   Loss --> Arm[store monitor state]
   Arm --> AutoStart{autolevel enabled}
   AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]

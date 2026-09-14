@@ -171,6 +171,30 @@ Static attenuation anticipated required:
   - 1510: -80.0 to -33.0 dB, range 47.0 dB, **static -33.0 dB**
   - 2330: -73.0 to -3.0 dB, range 70.0 dB, **static -3.0 dB**
 
+### TIB route-loss defaults
+
+Nominal transmission is 0.88 per blue (YJ B1/B2/B3) FFSW and 0.83 per red
+(HK R1/R2/R3) FFSW. Complete FFLS return-path transmission is 0.98 for MM to
+PD and 0.60 for SM to PD on both channels. The return factors are separate
+from the outbound switch losses.
+
+The compiled route defaults combine the planned static laser attenuation above
+with the switches traversed below. AO and FEI use the same switch count.
+
+| Laser | Outbound route input | Switch product | Static loss | Total transmission |
+|---|---|---|---|---|
+| 1028y | yj_laser | B2 × B3 = 0.88² | 73 dB | 3.88119393721e-8 |
+| 1270j | yj_laser | B2 × B3 = 0.88² | 40 dB | 7.744e-5 |
+| 1430yj | yj_1430 | B1 × B2 × B3 = 0.88³ | 100 dB | 6.81472e-11 |
+| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 100 dB | 5.71787e-11 |
+| 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
+| 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
+
+`total_tx = switch_product * 10^(-static_loss_db / 10)`. These are nominal
+assembly defaults, not measurements of the installed path. Explicit
+`mems/route/loss` records replace the whole total. Dynamic FVOA attenuation is
+applied separately, so static attenuation must not also be folded into its fit.
+
 ## Laser Diode Control
 MODBUS
 - Use a UART with 485 driver chip (THVD1429DT)

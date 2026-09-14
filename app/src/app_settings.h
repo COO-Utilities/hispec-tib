@@ -282,10 +282,11 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 					     double total_emitting_s,
 					     bool persist);
 /**
- * @brief Get one route-loss record.
+ * @brief Get effective route transmission, including compiled TIB defaults.
  *
- * Missing records are not errors; @p transmission is returned as 1.0 so
- * optical math can treat unspecified routes as loss-free.
+ * Explicit RAM/NVS records override defaults, including transmission 1.0.
+ * Unspecified route/laser pairs return 1.0. May wait on the settings mutex;
+ * performs no hardware or flash I/O. Throughput captures this value at start.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission);

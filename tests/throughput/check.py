@@ -419,3 +419,99 @@ without_rms = {key:value for key,value in coeff.items() if key != 'rms_db'}
 assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',without_rms)
 assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',(2500,0.002,55))
 print('Python attenuator RMS checks passed')
+
+# Effective route calibration: defaults, overrides, NVS restore, and public loss precision.
+import re
+source = r'''
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define K_FOREVER 0
+#define LOG_WRN(...) ((void)0)
+static void k_mutex_lock(int *p,int t) {(void)p;(void)t;}
+static void k_mutex_unlock(int *p) {(void)p;}
+static void str_set(char *out,size_t n,const char *s) {snprintf(out,n,"%s",s);}
+static int coo_json_append(char *out,size_t n,size_t *off,const char *fmt,...) {
+    va_list args; va_start(args,fmt); int k=vsnprintf(out+*off,n-*off,fmt,args); va_end(args);
+    if(k<0 || (size_t)k>=n-*off) return -ENOSPC;
+    *off+=(size_t)k; return 0;
+}
+'''
+header = (ROOT/'app/src/app_settings.h').read_text()
+source += '\n'.join(re.findall(r'^#define APP_ROUTE_LOSS_.*$', header, re.M)) + '\n'
+source += block('app_settings.h', 'struct app_route_loss_record {')
+source += block('app_settings.h', 'struct app_route_loss_settings {')
+source += r'''
+struct app_settings_snapshot {struct app_route_loss_settings route_loss;};
+static struct {struct app_settings_snapshot snapshot; int lock;} g_settings;
+static struct app_route_loss_record disk[APP_ROUTE_LOSS_RECORD_COUNT];
+static void app_nvs_persist_route_loss_index(uint8_t i,const struct app_route_loss_record *r) {disk[i]=*r;}
+static unsigned route_loss_nvs_id(uint8_t i) {return i;}
+static bool app_nvs_read_exact(unsigned i,void *p,size_t n,const char *name) {
+    (void)name; if(!disk[i].configured) return false; memcpy(p,&disk[i],n); return true;
+}
+'''
+settings_text = (ROOT/'app/src/app_settings.c').read_text()
+start = settings_text.rfind('static const struct {',0,settings_text.index('} default_route_losses[]'))
+source += settings_text[start:settings_text.index('\n};',start)+3] + '\n'
+for marker in ['static bool route_loss_record_valid(', 'static void app_nvs_load_route_loss(',
+               'static int route_loss_record_index_locked(', 'int app_settings_get_route_loss(',
+               'int app_settings_set_route_loss(']:
+    source += block('app_settings.c',marker)
+source += block('mems_command.c','static int route_loss_append_loss(')
+source += r'''
+int main(void) {
+    const char *lasers[]={"1028y","1270j","1430yj","1430hk","1510h","2330k"};
+    const char *inputs[]={"yj_laser","yj_laser","yj_1430","hk_1430","hk_laser","hk_laser"};
+    const double db[]={73,40,100,100,33,3};
+    const unsigned switches[]={2,2,3,3,2,2};
+    double tx; char route[24],json[64]; size_t off;
+    for(unsigned i=0;i<6;i++) {
+        const char *channel=i<3?"yj":"hk";
+        double expected=pow(i<3?.88:.83,switches[i])*pow(10,-db[i]/10);
+        for(unsigned j=0;j<2;j++) {
+            snprintf(route,sizeof(route),"%s_to_%s_%s",inputs[i],channel,j?"fei":"ao");
+            assert(app_settings_get_route_loss(route,lasers[i],&tx)==0);
+            assert(fabs(tx/expected-1)<1e-11);
+            off=0; assert(route_loss_append_loss(json,sizeof(json),&off,tx)==0);
+            double loss=strtod(json,NULL);
+            assert(loss<1 && fabs((1-loss)/tx-1)<2e-6);
+            printf("%s %s %s\n",route,lasers[i],json);
+            snprintf(route,sizeof(route),"%s_%s_to_%s_pd",channel,j?"sm":"mm",channel);
+            assert(app_settings_get_route_loss(route,lasers[i],&tx)==0 && tx==(j?.60:.98));
+        }
+    }
+    /* Defaults occupy no override slots, including after a simulated reboot. */
+    for(unsigned i=0;i<APP_ROUTE_LOSS_RECORD_COUNT;i++) assert(!g_settings.snapshot.route_loss.record[i].configured);
+    assert(app_settings_get_route_loss("1028y_to_M","1028y",&tx)==0 && tx==1);
+    assert(app_settings_get_route_loss("yj_laser_to_yj_ao","1430hk",&tx)==0 && tx==1);
+    assert(app_settings_get_route_loss("yj_calin_to_yj_split","split1",&tx)==0 && tx==1);
+    assert(app_settings_set_route_loss("yj_1430_to_yj_ao","1430yj",1e-11,true)==0);
+    assert(app_settings_set_route_loss("yj_1430_to_yj_ao","1430yj",1,false)==0);
+    assert(app_settings_get_route_loss("yj_1430_to_yj_ao","1430yj",&tx)==0 && tx==1);
+    memset(&g_settings.snapshot,0,sizeof(g_settings.snapshot));
+    app_nvs_load_route_loss(&g_settings.snapshot);
+    assert(app_settings_get_route_loss("yj_1430_to_yj_ao","1430yj",&tx)==0 && tx==1e-11);
+    assert(app_settings_get_route_loss("yj_1430_to_yj_fei","1430yj",&tx)==0 && tx==6.81472e-11);
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile, exe = Path(tmp)/'routes.c', Path(tmp)/'routes'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    replies = subprocess.check_output([str(exe)],text=True).splitlines()
+for reply in replies:
+    route, laser, loss = reply.split()
+    client._request_json = lambda command,payload: {'route':route,'lasers':{laser:float(loss)}}
+    result = client.mems_route_loss(route)
+    assert result.lasers[0].value < 1
+    assert eval(repr(result),vars(host)) == result
+    assert str(result) == repr(result)
+print('Route defaults, overrides, NVS restore, and C/Python precision checks passed')

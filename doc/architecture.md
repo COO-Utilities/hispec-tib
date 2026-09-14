@@ -247,3 +247,10 @@ and uncertainties. The sampler performs no source hardware I/O. Source changes
 preserve per-reading references; measurement restart clears normalized history
 without resetting raw PD diagnostics. Publication uses the captured source
 snapshot and normalized window, with no post-adjustment estimator rereads.
+
+At measurement start, route transmissions resolve from explicit settings first,
+then compiled TIB path defaults (switch products and planned static attenuation),
+then unity for unspecified route/laser pairs. Default totals stay in flash and
+do not consume override slots. The command applies the named input/output route;
+the monitor captures its effective losses for this run. Restart the measurement
+to pick up changed route-loss settings.

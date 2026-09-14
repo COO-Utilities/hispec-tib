@@ -291,7 +291,10 @@ static bool route_loss_route_is_split(const char *route)
 static int route_loss_append_loss(char *payload, size_t payload_len, size_t *offset,
                                 double tx)
 {
-    return coo_json_append(payload, payload_len, offset, "%.6f", 1.0 - tx);
+    /* Planned static losses exceed 100 dB; six decimals would report loss=1
+     * and erase the remaining transmission on readback.
+     */
+    return coo_json_append(payload, payload_len, offset, "%.17g", 1.0 - tx);
 }
 
 static int route_loss_query_response(const struct coo_cmd_request *cmd,

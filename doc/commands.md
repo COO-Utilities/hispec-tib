@@ -315,8 +315,8 @@ while serial guard is active and attenuator DAC-range clamping.
   {
     "route": "yj_sm_to_yj_pd",
     "lasers": {
-      "1028y": 0.0,
-      "1270j": 0.0,
+      "1028y": 0.4,
+      "1270j": 0.4,
       "1430yj": 0.07,
       "1430hk": 0.0,
       "1510h": 0.0,
@@ -335,12 +335,17 @@ while serial guard is active and attenuator DAC-range clamping.
 Route-loss records are app settings keyed by route name and laser name or split.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
-transmission must remain positive. Missing records report zero loss.
+transmission must remain positive. Missing records use the nominal TIB defaults
+in [hardware.md](hardware.md#tib-route-loss-defaults) for known laser AO/FEI and
+matching PD return paths; other route/laser pairs report zero loss. Explicit
+records replace the complete default, including an explicit zero loss.
 
 Strings ending in `dB`, `db`, or `DB` accept nonnegative finite loss in dB in the
 same field. Firmware stores transmission: `tx = 1 - loss` for numeric inputs,
 or `tx = 10^(-loss_db / 10)` for dB strings. The latter must produce a positive
-finite transmission. Queries return `1 - tx`. Prefer dB input when a fractional
+finite transmission. Queries return `1 - tx` with 17 significant digits to
+preserve the planned losses above 100 dB. Python route-loss representations also
+retain float precision. Prefer dB input when a fractional
 value would lose precision near an endpoint. The split value is a three-tuple
 and may mix numeric fractional losses with dB strings.
 
@@ -642,7 +647,9 @@ uint64 laser_current_ontime_s
 - `atten_tx` and `atten_db` are dynamic logical attenuator terms normalized to
   the modeled 0 V FVOA state. Static assembly and route losses belong in
   `mems/route/loss`.
-- Route transmissions default to `1.0` when no route-loss record is stored.
+- Without an explicit record, known TIB routes use the nominal switch/static
+  loss defaults in [hardware.md](hardware.md#tib-route-loss-defaults); unspecified
+  route/laser pairs use transmission `1.0`.
 - Both outbound laser route loss and inbound photodiode route loss are applied
   when estimating throughput.
 - Startup captures the outbound loss under `<input>_to_<output>` and the inbound
