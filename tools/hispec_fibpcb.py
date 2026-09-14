@@ -265,11 +265,14 @@ class CommandOk(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class HelpSummary(ResponseRepr):
-    help: str
+    device: str
+    request_prefix: str
+    response_prefix: str
+    commands: tuple[str, ...]
 
 
 @dataclass(frozen=True, repr=False)
-class Catalog(ResponseRepr):
+class HelpOptions(ResponseRepr):
     board: str
     lasers: tuple[str, ...]
     route_inputs: tuple[str, ...]
@@ -307,9 +310,9 @@ class NtpConfig(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class IpConfig(ResponseRepr):
     src: str
-    trydhcpfirst: bool
-    preferdhcpdns: bool
-    preferdhcpntp: bool
+    try_dhcp_first: bool
+    prefer_dhcpdns: bool
+    prefer_dhcpntp: bool
     manual: IpManualConfig
     active: IpActiveConfig
     ntp: NtpConfig
@@ -351,7 +354,7 @@ class StatusLaserSummary(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class StatusAttenSummary(ResponseRepr):
-    level_percent: float | None = None
+    value_db: float | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -372,10 +375,10 @@ class Status(ResponseRepr):
 
 
 @dataclass(frozen=True, repr=False)
-class TempStatus(ResponseRepr):
+class TempsStatus(ResponseRepr):
     ambient_c: float | None
     laserbank_c: float | None
-    laser: tuple[NamedValue, ...]
+    lasers: tuple[NamedValue, ...]
 
 
 @dataclass(frozen=True, repr=False)
@@ -417,7 +420,7 @@ class LaserStatus(ResponseRepr):
     emit_total_s: int | None
     temp_c: float | None
     i_mA: float | None
-    level: float | None
+    value: float | None
     power_mw: float | None
     nominal_nm: float
     tuned_nm: float | None
@@ -497,7 +500,7 @@ class LaserEngineeringStatus(ResponseRepr):
     tec_enable_internal: bool
     tec_error: bool
     tec_selfheat: bool
-    curr_ma: float | None
+    i_mA: float | None
     curr_meas_ma: float | None
     curr_min_ma: float | None
     curr_max_ma: float | None
@@ -508,7 +511,7 @@ class LaserEngineeringStatus(ResponseRepr):
     tec_temp_set_c: float | None
     tec_temp_c: float | None
     pcb_temp_c: float | None
-    tec_curr_a: float | None
+    tec_ma: float | None
     tec_curr_lim_a: float | None
     tec_v: float | None
     pid: tuple[int, int, int]
@@ -2976,8 +2979,8 @@ class PhotodiodeChannelValues(ResponseRepr):
     dark_mv: float
     dark_err_mv: float
     window: PhotodiodeWindow
-    pd_is_off: bool
-    ontime_s: int
+    pd_powered: bool
+    pd_on_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -3000,7 +3003,7 @@ class PhotodiodeSettings(ResponseRepr):
     """Response settings; transimpedance is ADC-input V/A including divider/gain."""
 
     channel: str
-    noise_rms_mv: float
+    noisewarn_mv: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
     power: str
@@ -3294,9 +3297,9 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
 def _decode_ip_config(data: Mapping[str, Any]) -> IpConfig:
     return IpConfig(
         src=str(data["src"]),
-        trydhcpfirst=bool(data["trydhcpfirst"]),
-        preferdhcpdns=bool(data["preferdhcpdns"]),
-        preferdhcpntp=bool(data["preferdhcpntp"]),
+        try_dhcp_first=bool(data["try_dhcp_first"]),
+        prefer_dhcpdns=bool(data["prefer_dhcpdns"]),
+        prefer_dhcpntp=bool(data["prefer_dhcpntp"]),
         manual=_dataclass_from(IpManualConfig, data["manual"]),
         active=_dataclass_from(IpActiveConfig, data["active"]),
         ntp=_dataclass_from(NtpConfig, data["ntp"]),
@@ -3390,8 +3393,8 @@ def _decode_pd_channel(data: Mapping[str, Any]) -> PhotodiodeChannelValues:
         dark_mv=_float_or_nan(data.get("dark_mv", np.nan)),
         dark_err_mv=_float_or_nan(data.get("dark_err_mv", np.nan)),
         window=_decode_pd_window(data.get("window", {})),
-        pd_is_off=bool(data.get("pd_is_off", False)),
-        ontime_s=int(data.get("ontime_s", 0)),
+        pd_powered=bool(data.get("pd_powered", False)),
+        pd_on_s=int(data.get("pd_on_s", 0)),
     )
 
 
@@ -3867,11 +3870,16 @@ class HispecFibPcb:
 
     def help(self) -> HelpSummary:
         data = self._request_json("help")
-        return HelpSummary(help=str(data.get("help", "")))
+        return HelpSummary(
+            device=str(data["device"]),
+            request_prefix=str(data["request_prefix"]),
+            response_prefix=str(data["response_prefix"]),
+            commands=tuple(str(key) for key in data["commands"]),
+        )
 
-    def catalog(self) -> Catalog:
-        data = self._request_json("catalog")
-        return Catalog(
+    def help_options(self) -> HelpOptions:
+        data = self._request_json("help/options")
+        return HelpOptions(
             board=str(data["board"]),
             lasers=tuple(str(name) for name in data.get("lasers", ())),
             route_inputs=tuple(str(name) for name in data.get("route_inputs", ())),
@@ -3904,14 +3912,11 @@ class HispecFibPcb:
             ),
             attens=_named_values(
                 data.get("attens", {}),
-                lambda _name, value: StatusAttenSummary(level_percent=value.get("level_%")),
+                lambda _name, value: StatusAttenSummary(value_db=value.get("value_db")),
             ),
         )
 
-    def ip_config(self) -> IpConfig:
-        return _decode_ip_config(self._request_json("ip"))
-
-    def set_ip_config(
+    def ip(
         self,
         *,
         ip: str | None = None,
@@ -3919,61 +3924,59 @@ class HispecFibPcb:
         dns: str | None = None,
         subnet: str | None = None,
         gateway: str | None = None,
-        trydhcpfirst: bool | None = None,
-        preferdhcpntp: bool | None = None,
-        preferdhcpdns: bool | None = None,
+        try_dhcp_first: bool | None = None,
+        prefer_dhcpntp: bool | None = None,
+        prefer_dhcpdns: bool | None = None,
         persist: bool = False,
-    ) -> CommandOk | PartialSupport:
+    ) -> IpConfig | CommandOk | PartialSupport:
         payload = _optional_payload(
             ip=ip,
             ntp=ntp,
             dns=dns,
             subnet=subnet,
             gateway=gateway,
-            trydhcpfirst=trydhcpfirst,
-            preferdhcpntp=preferdhcpntp,
-            preferdhcpdns=preferdhcpdns,
+            try_dhcp_first=try_dhcp_first,
+            prefer_dhcpntp=prefer_dhcpntp,
+            prefer_dhcpdns=prefer_dhcpdns,
             persist=persist,
         )
         if payload is None or set(payload) == {"persist"}:
-            raise HispecFibError("at least one IP field must be supplied")
+            if persist:
+                raise HispecFibError("at least one IP field must be supplied")
+            return _decode_ip_config(self._request_json("ip"))
         result = self._request_json("ip", payload)
         if isinstance(result, Mapping) and "status" not in result:
             return _dataclass_from(PartialSupport, result)
         return CommandOk()
 
-    def mqtt_config(self) -> MqttConfig:
-        return _dataclass_from(MqttConfig, self._request_json("mqtt"))
-
-    def set_mqtt_config(self, broker: str, *, persist: bool = False) -> CommandOk:
+    def mqtt(self, broker: str | None = None, *, persist: bool = False) -> MqttConfig | CommandOk:
+        if broker is None:
+            if persist:
+                raise HispecFibError("broker is required when persisting MQTT settings")
+            return _dataclass_from(MqttConfig, self._request_json("mqtt"))
         return self._request_ok("mqtt", {"broker": broker, "persist": persist})
 
-    def time(self) -> TimeStatus:
-        return _dataclass_from(TimeStatus, self._request_json("time"))
-
-    def set_time(self, unix_ms: int | None = None) -> CommandOk:
+    def time(self, unix_ms: int | None = None) -> TimeStatus | CommandOk:
         if unix_ms is None:
-            unix_ms = int(time.time() * 1000)
+            return _dataclass_from(TimeStatus, self._request_json("time"))
         return self._request_ok("time", {"unix_ms": int(unix_ms)})
 
-    def temp(self) -> TempStatus:
-        data = self._request_json("temp")
-        return TempStatus(
+    def temps(self) -> TempsStatus:
+        data = self._request_json("temps")
+        return TempsStatus(
             ambient_c=data.get("ambient_c"),
             laserbank_c=data.get("laserbank_c"),
-            laser=_named_values(data.get("laser", {}), lambda _name, value: value),
+            lasers=_named_values(data.get("lasers", {}), lambda _name, value: value),
         )
 
     def reboot(self) -> CommandOk:
         return self._request_ok("reboot")
 
-    def serialguard(self) -> SerialGuardStatus:
-        return _dataclass_from(SerialGuardStatus, self._request_json("serialguard"))
-
-    def set_serialguard(self, seconds: int) -> CommandOk:
+    def serialguard(self, seconds: int | None = None) -> SerialGuardStatus | CommandOk:
+        if seconds is None:
+            return _dataclass_from(SerialGuardStatus, self._request_json("serialguard"))
         return self._request_ok(
-            "serialguard",
-            {"seconds": _require_nonnegative_u32("seconds", seconds)},
+            "serialguard", {"seconds": _require_nonnegative_u32("seconds", seconds)},
         )
 
     def mems(self) -> tuple[MemsSwitchState, ...]:
@@ -4018,125 +4021,82 @@ class HispecFibPcb:
                 raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         return _decode_mems_detail(name, self._request_json(key, payload))
 
-    def memsroute(self) -> MemsRoutes:
-        active = self._request_json("memsroute").get("active_routes", {})
-        return MemsRoutes(
-            active_routes=tuple(NamedValue(str(name), tuple(value)) for name, value in active.items())
-        )
-
-    def set_memsroute(self, input: str, output: str, *, force: bool = False) -> CommandOk:
+    def mems_route(
+        self, input: str | None = None, output: str | None = None, *, force: bool = False,
+    ) -> MemsRoutes | CommandOk:
+        if input is None and output is None and not force:
+            active = self._request_json("mems/route").get("active_routes", {})
+            return MemsRoutes(
+                active_routes=tuple(NamedValue(str(name), tuple(value)) for name, value in active.items())
+            )
+        if input is None or output is None:
+            raise HispecFibError("input and output are required when applying a route")
         payload: dict[str, Any] = {"input": input, "output": output}
         if force:
             payload["force"] = True
-        return self._request_ok("memsroute", payload)
+        return self._request_ok("mems/route", payload)
 
-    def route_loss(self, route: str) -> RouteLoss:
-        data = self._request_json("memsroute/route_loss", {"route": route})
-        return RouteLoss(
-            route=str(data["route"]),
-            lasers=_named_values(data.get("lasers", {}), lambda _name, value: float(value)),
-            split=_as_tuple3(data["split"], "split") if "split" in data else None,
-        )
-
-    def set_route_loss(
+    def mems_route_loss(
         self,
         route: str,
         *,
         laser: str | None = None,
-        transmission: float | None = None,
-        loss_db: float | None = None,
+        loss: float | str | None = None,
         split: Sequence[float | str] | None = None,
         persist: bool = False,
-    ) -> CommandOk:
+    ) -> RouteLoss | CommandOk:
+        """Query losses, or set a fraction lost (0 <= loss < 1) or a dB string.
+
+        For example, loss=0.5 and loss="3.0103 dB" describe half the light lost.
+        Split tuples use the same representations for each output. Prefer dB
+        strings when a fractional value would lose precision near an endpoint.
+        """
+        if laser is None and loss is None and split is None and not persist:
+            data = self._request_json("mems/route/loss", {"route": route})
+            return RouteLoss(
+                route=str(data["route"]),
+                lasers=_named_values(data.get("lasers", {}), lambda _name, value: float(value)),
+                split=_as_tuple3(data["split"], "split") if "split" in data else None,
+            )
         payload: dict[str, Any] = {"route": route, "persist": persist}
         if split is not None:
-            if laser is not None or transmission is not None or loss_db is not None:
+            if laser is not None or loss is not None:
                 raise HispecFibError("route loss uses either split or a laser value")
             if len(split) != 3:
                 raise HispecFibError("split route loss must contain three values")
             payload["split"] = list(split)
         else:
-            if laser is None:
-                raise HispecFibError("laser is required for non-split route loss")
+            if laser is None or loss is None:
+                raise HispecFibError("laser and loss are required for non-split route loss")
             _require_choice("laser", laser, LASER_NAMES)
-            if transmission is not None and loss_db is not None:
-                raise HispecFibError("use transmission or loss_db, not both")
-            if loss_db is not None:
-                if float(loss_db) < 0.0:
-                    raise HispecFibError("loss_db must be non-negative")
-                payload[laser] = f"{float(loss_db)} dB"
-            elif transmission is not None:
-                payload[laser] = _require_float("transmission", transmission, 1e-300, 1.0)
-            else:
-                raise HispecFibError("transmission or loss_db is required")
-        return self._request_ok("memsroute/route_loss", payload)
+            if not isinstance(loss, str):
+                loss = _require_float("loss", loss, 0.0, 1.0)
+                if loss == 1.0:
+                    raise HispecFibError("loss must be < 1.0")
+            payload[laser] = loss
+        return self._request_ok("mems/route/loss", payload)
 
-    def laser(self, name: str) -> LaserStatus:
+    def laser(
+        self, name: str, value: float | None = None, *, autooff_s: int | None = None,
+    ) -> LaserStatus | CommandOk:
+        """Query laser output, or set its value as a fraction from 0 to 1."""
         _require_choice("name", name, LASER_NAMES)
-        return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
-
-    def set_laser_level(self, name: str, level: float, *, autooff_s: int | None = None) -> CommandOk:
-        _require_choice("name", name, LASER_NAMES)
-        payload: dict[str, Any] = {"name": name, "level": _require_float("level", level, 0.0, 100.0)}
+        if value is None:
+            if autooff_s is not None:
+                raise HispecFibError("value is required when setting laser output")
+            return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
+        payload: dict[str, Any] = {"name": name, "value": _require_float("value", value, 0.0, 1.0)}
         if autooff_s is not None:
             payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
         return self._request_ok("laser", payload)
 
-    def laser_tune(self, name: str) -> LaserTune:
+    def laser_tune(self, name: str, tune_nm: float | None = None) -> LaserTune | CommandOk:
         _require_choice("name", name, LASER_NAMES)
-        return _dataclass_from(LaserTune, self._request_json("laser/tune", {"name": name}))
-
-    def set_laser_tune(
-        self,
-        name: str,
-        tune_nm: float | None = None,
-        *,
-        delta_nm: float | None = None,
-    ) -> CommandOk:
-        _require_choice("name", name, LASER_NAMES)
-        if tune_nm is None and delta_nm is None:
-            raise HispecFibError("tune_nm or delta_nm is required")
-        if tune_nm is not None and delta_nm is not None:
-            raise HispecFibError("use tune_nm or delta_nm, not both")
-        tune_nm = delta_nm if tune_nm is None else tune_nm
+        if tune_nm is None:
+            return _dataclass_from(LaserTune, self._request_json("laser/tune", {"name": name}))
         return self._request_ok("laser/tune", {"name": name, "tune_nm": float(tune_nm)})
 
-    def laser_settings(self, name: str) -> LaserSettings:
-        _require_choice("name", name, LASER_NAMES)
-        data = self._request_json("laser/settings", {"name": name})
-        settings = data["settings"]
-        pid = settings["tec_pid"]
-        return LaserSettings(
-            name=str(data["name"]),
-            model=str(settings["model"]),
-            expected_serial=int(settings["expected_serial"]),
-            nominal_current_ma=float(settings["nominal_current_ma"]),
-            max_current_ma=float(settings["max_current_ma"]),
-            current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
-            fractional_noise=float(settings["fractional_noise"]),
-            constant_noise_mw=float(settings["constant_noise_mw"]),
-            threshold_current_ma=float(settings["threshold_current_ma"]),
-            efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
-            wavelength_nm=float(settings["wavelength_nm"]),
-            operating_temp_range_c=(
-                float(settings["operating_temp_range_c"][0]),
-                float(settings["operating_temp_range_c"][1]),
-            ),
-            default_operating_temp_c=float(settings["default_operating_temp_c"]),
-            thermistor_kohm=float(settings["thermistor_kohm"]),
-            isolation_db=float(settings["isolation_db"]),
-            tec_max_current_a=float(settings["tec_max_current_a"]),
-            tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
-            disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
-            ntc_t_coefficient_per_c=float(settings["ntc_t_coefficient_per_c"]),
-            dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
-            dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
-            autooff_s=int(settings["autooff_s"]),
-            tune_nm=float(settings["tune_nm"]),
-            emit_total_s=int(settings["emit_total_s"]),
-        )
-
-    def set_laser_settings(
+    def laser_settings(
         self,
         name: str,
         *,
@@ -4158,8 +4118,8 @@ class HispecFibPcb:
         autooff_s: int | None = None,
         expected_serial: int | None = None,
         persist: bool = False,
-    ) -> CommandOk:
-        """Update per-laser policy, optionally persisting it to app NVS.
+    ) -> LaserSettings | CommandOk:
+        """Query or update per-laser policy, optionally persisting it to app NVS.
 
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
@@ -4197,7 +4157,40 @@ class HispecFibPcb:
                     raise HispecFibError("tec_pid must contain p, i, d")
                 settings["tec_pid"] = {"p": int(tec_pid[0]), "i": int(tec_pid[1]), "d": int(tec_pid[2])}
         if not settings:
-            raise HispecFibError("at least one laser settings field must be supplied")
+            if persist:
+                raise HispecFibError("at least one laser settings field must be supplied")
+            data = self._request_json("laser/settings", {"name": name})
+            settings = data["settings"]
+            pid = settings["tec_pid"]
+            return LaserSettings(
+                name=str(data["name"]),
+                model=str(settings["model"]),
+                expected_serial=int(settings["expected_serial"]),
+                nominal_current_ma=float(settings["nominal_current_ma"]),
+                max_current_ma=float(settings["max_current_ma"]),
+                current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
+                fractional_noise=float(settings["fractional_noise"]),
+                constant_noise_mw=float(settings["constant_noise_mw"]),
+                threshold_current_ma=float(settings["threshold_current_ma"]),
+                efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
+                wavelength_nm=float(settings["wavelength_nm"]),
+                operating_temp_range_c=(
+                    float(settings["operating_temp_range_c"][0]),
+                    float(settings["operating_temp_range_c"][1]),
+                ),
+                default_operating_temp_c=float(settings["default_operating_temp_c"]),
+                thermistor_kohm=float(settings["thermistor_kohm"]),
+                isolation_db=float(settings["isolation_db"]),
+                tec_max_current_a=float(settings["tec_max_current_a"]),
+                tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
+                disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
+                ntc_t_coefficient_per_c=float(settings["ntc_t_coefficient_per_c"]),
+                dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
+                dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
+                autooff_s=int(settings["autooff_s"]),
+                tune_nm=float(settings["tune_nm"]),
+                emit_total_s=int(settings["emit_total_s"]),
+            )
         return self._request_ok("laser/settings", {"name": name, "settings": settings, "persist": persist})
 
     def laser_status(self, name: str) -> LaserEngineeringStatus:
@@ -4209,20 +4202,20 @@ class HispecFibPcb:
             pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))),
         )
 
-    def laserbank_power(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
+    def laser_bankpower(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
         if mode is None:
-            return _dataclass_from(LaserBankPower, self._request_json("laserbank/power"))
+            return _dataclass_from(LaserBankPower, self._request_json("laser/bankpower"))
         _require_choice("mode", mode, OVERRIDE_MODES)
-        return _dataclass_from(LaserBankPower, self._request_json(f"laserbank/power/{mode}"))
+        return _dataclass_from(LaserBankPower, self._request_json(f"laser/bankpower/{mode}"))
 
-    def laserbank_heater(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankHeater:
+    def laser_bankheater(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankHeater:
         if mode is None:
-            return _dataclass_from(LaserBankHeater, self._request_json("laserbank/heater"))
+            return _dataclass_from(LaserBankHeater, self._request_json("laser/bankheater"))
         _require_choice("mode", mode, OVERRIDE_MODES)
-        return _dataclass_from(LaserBankHeater, self._request_json(f"laserbank/heater/{mode}"))
+        return _dataclass_from(LaserBankHeater, self._request_json(f"laser/bankheater/{mode}"))
 
-    def laserbank_clearfaults(self) -> LaserBankClearFaults:
-        return _dataclass_from(LaserBankClearFaults, self._request_json("laserbank/clearfaults"))
+    def laser_clearfaults(self) -> LaserBankClearFaults:
+        return _dataclass_from(LaserBankClearFaults, self._request_json("laser/clearfaults"))
 
     def atten(
         self,
@@ -4312,7 +4305,7 @@ class HispecFibPcb:
             )
 
         pd_dark_mv = self.pd_dark(channel).dark.mean_mv
-        self.set_laser_level(laser, laser_pct)
+        self.laser(laser, value=laser_pct / 100.0)
 
         rows: list[tuple[Any, ...]] = []
         started = time.monotonic()
@@ -4355,23 +4348,15 @@ class HispecFibPcb:
     def attenuator_grid_probe_async(self, laser: str, **kwargs: Any) -> AttenuatorGridProbe:
         return AttenuatorGridProbe(self, (laser,), kwargs).start()
 
-    def atten_coeff(self, laser: str) -> AttenuatorCoeff:
-        _require_choice("laser", laser, ATTENUATOR_NAMES)
-        data = self._request_json(f"atten/{laser}/coeff")
-        return AttenuatorCoeff(
-            dac1=_decode_atten_physical_coeff(data["dac1"], "dac1"),
-            dac2=_decode_atten_physical_coeff(data["dac2"], "dac2"),
-        )
-
-    def set_atten_coeff(
+    def atten_coeff(
         self,
         laser: str,
-        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
-        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
+        dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+        dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         *,
         persist: bool = False,
-    ) -> CommandOk:
-        """Replace both physical models, optionally persisting them together.
+    ) -> AttenuatorCoeff | CommandOk:
+        """Query or replace both physical models, optionally persisting them together.
 
         ``rms_db`` in a mapping or AttenuatorPhysicalCoeff is the per-device
         model uncertainty. Omitting it uses the firmware's 2 dB default rather
@@ -4379,6 +4364,14 @@ class HispecFibPcb:
         accepted RMS automatically; no offline fit is required.
         """
         _require_choice("laser", laser, ATTENUATOR_NAMES)
+        if dac1 is None and dac2 is None and not persist:
+            data = self._request_json(f"atten/{laser}/coeff")
+            return AttenuatorCoeff(
+                dac1=_decode_atten_physical_coeff(data["dac1"], "dac1"),
+                dac2=_decode_atten_physical_coeff(data["dac2"], "dac2"),
+            )
+        if dac1 is None or dac2 is None:
+            raise HispecFibError("dac1 and dac2 are required when setting coefficients")
         return self._request_ok(
             f"atten/{laser}/coeff",
             {
@@ -4387,9 +4380,6 @@ class HispecFibPcb:
                 "persist": persist,
             },
         )
-
-    def atten_calibration_status(self) -> AttenuatorCalibrationStatus:
-        return _decode_atten_cal_status(self._request_json("atten/calibrate"))
 
     def _atten_calibration_metadata(
         self,
@@ -4546,7 +4536,7 @@ class HispecFibPcb:
         if chunk is not None:
             if physical == "all":
                 raise HispecFibError("chunk can only be used with physical='dac1' or 'dac2'")
-            status = self.atten_calibration_status()
+            status = self.atten_calibrate()
             meta = self._atten_calibration_metadata(physical)
             records = self._atten_calibration_record_chunk(physical, meta, int(chunk))
             return AttenuatorCalibrationDataset(
@@ -4560,7 +4550,7 @@ class HispecFibPcb:
                 ),
             )
 
-        status = self.atten_calibration_status()
+        status = self.atten_calibrate()
         selected = ("dac1", "dac2") if physical == "all" else (physical,)
         metas: list[Mapping[str, Any]] = [
             {
@@ -4580,15 +4570,19 @@ class HispecFibPcb:
             records = np.concatenate(chunks).astype(ATTEN_CAL_DTYPE, copy=False).view(np.recarray)
         return AttenuatorCalibrationDataset(records=records, meta=tuple(metas))
 
-    def atten_calibrate_auto(
+    def atten_calibrate(
         self,
-        laser: str,
+        laser: str | None = None,
         *,
-        output: str,
+        output: str | None = None,
         fiber: Literal["M", "S"] = "M",
         dwell_ms: int = 300,
         persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
+        if laser is None and output is None and fiber == "M" and dwell_ms == 300 and not persist:
+            return _decode_atten_cal_status(self._request_json("atten/calibrate"))
+        if laser is None or output is None:
+            raise HispecFibError("laser and output are required to start calibration")
         _require_choice("laser", laser, LASER_NAMES)
         fiber = _require_choice("fiber", fiber.upper(), FIBERS)  # type: ignore[assignment]
         payload = {
@@ -4600,7 +4594,7 @@ class HispecFibPcb:
         }
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
-    def atten_calibration_stop(self) -> AttenuatorCalibrationStatus:
+    def atten_calibrate_stop(self) -> AttenuatorCalibrationStatus:
         return _decode_atten_cal_status(self._request_json("atten/calibrate", {"stop": True}))
 
     def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
@@ -4637,40 +4631,26 @@ class HispecFibPcb:
             payload["rms_mv"] = _require_float("rms_mv", rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV)
         return _decode_pd_dark(self._request_json(f"pd/dark/{channel}", payload))
 
-    def pdsettings(self, channel: Literal["yj", "hk"]) -> PhotodiodeSettings:
-        """Read effective ADC-input transimpedance and other photodiode settings."""
-        _require_choice("channel", channel, PD_CHANNELS)
-        data = self._request_json(f"pdsettings/{channel}")
-        return PhotodiodeSettings(
-            channel=str(data["channel"]),
-            noise_rms_mv=float(data["noise_rms_mv"]),
-            responsivity_a_per_w=float(data["responsivity_a_per_w"]),
-            transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
-            power=str(data["power"]),
-            autooff_s=int(data["autooff_s"]),
-            off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
-        )
-
-    def set_pdsettings(
+    def pd_settings(
         self,
         channel: Literal["yj", "hk"],
         *,
-        noise_rms_mv: float | None = None,
+        noisewarn_mv: float | None = None,
         responsivity_a_per_w: float | None = None,
         transimpedance_v_per_a: float | None = None,
         power: Literal["auto", "override_on", "override_off"] | None = None,
         autooff_s: int | None = None,
         persist: bool = False,
-    ) -> CommandOk:
-        """Set response settings, optionally persisting them on the board.
+    ) -> PhotodiodeSettings | CommandOk:
+        """Query or set response settings, optionally persisting them on the board.
 
         transimpedance_v_per_a combines detector datasheet transimpedance with
-        the divider and intervening analog gain. noise_rms_mv is ADC-input RMS
+        the divider and intervening analog gain. noisewarn_mv is ADC-input RMS
         scatter in the fixed window, including any changing optical signal.
         """
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
-            noise_rms_mv=noise_rms_mv,
+            noisewarn_mv=noisewarn_mv,
             responsivity_a_per_w=responsivity_a_per_w,
             transimpedance_v_per_a=transimpedance_v_per_a,
             power=power,
@@ -4678,10 +4658,21 @@ class HispecFibPcb:
             persist=persist,
         )
         if payload is None or set(payload) == {"persist"}:
-            raise HispecFibError("at least one photodiode setting must be supplied")
-        if noise_rms_mv is not None:
-            payload["noise_rms_mv"] = _require_float(
-                "noise_rms_mv", noise_rms_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
+            if persist:
+                raise HispecFibError("at least one photodiode setting must be supplied")
+            data = self._request_json(f"pd/settings/{channel}")
+            return PhotodiodeSettings(
+                channel=str(data["channel"]),
+                noisewarn_mv=float(data["noisewarn_mv"]),
+                responsivity_a_per_w=float(data["responsivity_a_per_w"]),
+                transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
+                power=str(data["power"]),
+                autooff_s=int(data["autooff_s"]),
+                off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
+            )
+        if noisewarn_mv is not None:
+            payload["noisewarn_mv"] = _require_float(
+                "noisewarn_mv", noisewarn_mv, PD_NOISE_RMS_MIN_MV, PD_NOISE_RMS_MAX_MV
             )
         if responsivity_a_per_w is not None:
             payload["responsivity_a_per_w"] = _require_float(
@@ -4701,22 +4692,22 @@ class HispecFibPcb:
             payload["power"] = _require_choice("power", power, ("auto", "override_on", "override_off"))
         if autooff_s is not None:
             payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
-        return self._request_ok(f"pdsettings/{channel}", payload)
+        return self._request_ok(f"pd/settings/{channel}", payload)
 
-    def split_status(self, channel: Literal["yj", "hk"]) -> SplitState:
-        _require_choice("channel", channel, PD_CHANNELS)
-        return _decode_split_state(self._request_json(f"split/{channel}"))
-
-    def split(
+    def mems_split(
         self,
         channel: Literal["yj", "hk"],
-        ratio1: float,
-        ratio2: float,
+        ratio1: float | None = None,
+        ratio2: float | None = None,
         *,
         cycle_ms: int | None = None,
-        off_in_s: int = 0,
+        stop_in_s: int = 0,
     ) -> SplitState:
         _require_choice("channel", channel, PD_CHANNELS)
+        if ratio1 is None and ratio2 is None and cycle_ms is None and stop_in_s == 0:
+            return _decode_split_state(self._request_json(f"mems/split/{channel}"))
+        if ratio1 is None or ratio2 is None:
+            raise HispecFibError("ratio1 and ratio2 are required when setting a split")
         ratio1 = _require_float("ratio1", ratio1, 0.0, 1.0)
         ratio2 = _require_float("ratio2", ratio2, 0.0, 1.0)
         if ratio1 + ratio2 > 1.000001:
@@ -4725,15 +4716,15 @@ class HispecFibPcb:
             "channel": channel,
             "ratio1": ratio1,
             "ratio2": ratio2,
-            "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
+            "stop_in_s": _require_nonnegative_u32("stop_in_s", stop_in_s),
         }
-        if payload["off_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
-            raise HispecFibError(f"off_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
+        if payload["stop_in_s"] > MEMS_MAX_TOGGLE_DURATION_S:
+            raise HispecFibError(f"stop_in_s must be <= {MEMS_MAX_TOGGLE_DURATION_S}")
         if cycle_ms is not None:
             payload["cycle_ms"] = _require_nonnegative_u32("cycle_ms", cycle_ms)
             if payload["cycle_ms"] == 0:
                 raise HispecFibError("cycle_ms must be > 0")
-        return _decode_split_state(self._request_json("split", payload))
+        return _decode_split_state(self._request_json("mems/split", payload))
 
     def measure_throughput(
         self,
@@ -4742,7 +4733,7 @@ class HispecFibPcb:
         fiber: Literal["M", "S"] = "M",
         autolevel: bool = True,
         input: str | None = None,
-        output: str | None = None,
+        output: str,
         max_flux_ph_s: float | None = None,
         off_in_s: int = 300,
         format: Literal["json", "binary"] = "binary",
@@ -4752,6 +4743,7 @@ class HispecFibPcb:
     ) -> CommandOk | ThroughputMonitor:
         """Start a measurement, using binary telemetry unless JSON is requested.
 
+        Applies output and captures route losses; call again to refresh them.
         With collect=True, return a background collector whose stop() also stops
         this channel's measurement and any laser used by its autolevel operation.
         Both channels can stream; overlapping instrument light paths normally
@@ -4766,8 +4758,8 @@ class HispecFibPcb:
         if laser == "none":
             if autolevel:
                 raise HispecFibError('laser="none" requires autolevel=False')
-            if input is None or output is None:
-                raise HispecFibError('laser="none" requires input and output routes')
+            if input is None:
+                raise HispecFibError('laser="none" requires an input route')
             if channel is None and collect:
                 if str(input).startswith("yj") or str(output).startswith("yj"):
                     channel = "yj"
@@ -4784,6 +4776,7 @@ class HispecFibPcb:
 
         payload: dict[str, Any] = {
             "laser": laser,
+            "output": str(output),
             "fiber": fiber,
             "autolevel": bool(autolevel),
             "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
@@ -4791,8 +4784,6 @@ class HispecFibPcb:
         }
         if input is not None:
             payload["input"] = str(input)
-        if output is not None:
-            payload["output"] = str(output)
         if max_flux_ph_s is not None:
             payload["max_flux_ph_s"] = _require_float("max_flux_ph_s", max_flux_ph_s, 1e-300, 1e300)
 
@@ -4830,7 +4821,7 @@ class HispecFibPcb:
         return SimpleNamespace(
             status=self.status(),
             time=self.time(),
-            temp=self.temp(),
+            temps=self.temps(),
             mems=self.mems(),
         )
 

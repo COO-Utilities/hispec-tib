@@ -35,7 +35,7 @@ int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
-int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /**
  * @brief Initialize command runtime identity, queues, hooks, and reboot work.

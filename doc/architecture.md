@@ -35,7 +35,7 @@ Runtime ownership is:
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
   noise warnings, plus throughput normalization and fixed-window statistics.
-- `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.
+- `photodiode_command.c`: command-schema validation for `pd` and `pd/settings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
@@ -118,11 +118,11 @@ command spec table for special cases such as always-query commands,
 suffix-triggered actions, and custom payload classifiers.
 
 Empty or no-payload requests are queries except for dispatcher built-ins such as
-`reboot`, app actions such as `laserbank/clearfaults`, and laser-bank topic suffixes such as
-`laserbank/power/override_on`. Non-empty payloads normally mean an effect
+`reboot`, app actions such as `laser/clearfaults`, and laser-bank topic suffixes such as
+`laser/bankpower/override_on`. Non-empty payloads normally mean an effect
 request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
-`memsroute/route_loss` payloads that contain only `route`.
+`mems/route/loss` payloads that contain only `route`.
 
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:
@@ -191,7 +191,7 @@ for ordinary IPv4 profile changes.
 DNS and NTP addresses are profile/settings data. Unsupported DNS/NTP fields are
 reported by command code. Manual DNS is applied to Zephyr's resolver when DNS is
 compiled in and a nonzero DNS server is configured; DHCP DNS is used when DHCP
-provides it and `preferdhcpdns` is true.
+provides it and `prefer_dhcpdns` is true.
 
 MQTT broker hostnames are accepted only when they resolve before settings are
 updated. Numeric IPv4 brokers do not require DNS. After a broker setting change,

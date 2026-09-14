@@ -90,18 +90,11 @@ static int throughput_channel_from_input(const char *input,
 	return -EINVAL;
 }
 
-static int throughput_apply_route_if_requested(const char *input,
+static int throughput_apply_route(const char *input,
 					       const char *output)
 {
 	const char *failed_switch = NULL;
 	char failed_state = '\0';
-
-	if (output == NULL || output[0] == '\0') {
-		return 0;
-	}
-	if (input == NULL || input[0] == '\0') {
-		return -EINVAL;
-	}
 
 	return mems_router_apply_named_route(&router, input, output, false,
 					     &failed_switch, &failed_state);
@@ -209,8 +202,8 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "output", output, sizeof(output));
-	if (parse_rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(out, cmd, "invalid output");
+	if (parse_rc != COO_JSON_EXTRACT_OK) {
+		return coo_cmd_error(out, cmd, "missing or invalid output");
 	}
 
 	if (!request.has_laser) {
@@ -222,11 +215,13 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		return coo_cmd_error(out, cmd, "max_flux_ph_s requires autolevel");
 	}
 
-	rc = throughput_apply_route_if_requested(input, output);
+	rc = throughput_apply_route(input, output);
 	if (rc != 0) {
 		return coo_cmd_error(out, cmd, "failed to apply output route");
 	}
 
+	request.input = input;
+	request.output = output;
 	rc = throughput_monitor_start(&request, &status);
 	if (rc != 0) {
 		LOG_ERR("measure_throughput start failed: %d", rc);

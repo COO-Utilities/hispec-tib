@@ -79,8 +79,8 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
-	     coo_cmd_key_suffix_after(cmd->key, "laserbank/power")[0] != '\0')) {
-		if (!parse_laserbank_mode_request(cmd, "laserbank/power",
+	     coo_cmd_key_suffix_after(cmd->key, "laser/bankpower")[0] != '\0')) {
+		if (!parse_laserbank_mode_request(cmd, "laser/bankpower",
 						  laserbank_power_mode_choices,
 						  ARRAY_SIZE(laserbank_power_mode_choices),
 						  &mode_value)) {
@@ -201,13 +201,13 @@ int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 
 	if (cmd != NULL &&
 	    (cmd->msg_type == COO_CMD_EFFECT ||
-	     coo_cmd_key_suffix_after(cmd->key, "laserbank/heater")[0] != '\0')) {
-		if (!parse_laserbank_mode_request(cmd, "laserbank/heater",
+	     coo_cmd_key_suffix_after(cmd->key, "laser/bankheater")[0] != '\0')) {
+		if (!parse_laserbank_mode_request(cmd, "laser/bankheater",
 						  heater_mode_choices,
 						  ARRAY_SIZE(heater_mode_choices),
 						  &mode_value)) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-					     "{\"error\":\"Use laserbank/heater mode=auto|override_on|override_off\"}");
+					     "{\"error\":\"Use laser/bankheater mode=auto|override_on|override_off\"}");
 		}
 		mode = (enum laserbank_heater_mode)mode_value;
 		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);
@@ -310,9 +310,9 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->current_set_ma, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
-			    ",\"level\":") != 0 ||
+			    ",\"value\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  status->level_percent, 2) != 0 ||
+					  status->level_percent / 100.0, 4) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"power_mw\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
@@ -376,7 +376,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
-	double level = 0.0;
+	double value = 0.0;
 	uint32_t autooff_s;
 	int parse_rc;
 	int rc;
@@ -384,9 +384,9 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
-	parse_rc = coo_json_extract_double(cmd->payload, "level", &level);
-	if (parse_rc != COO_JSON_EXTRACT_OK || level < 0.0 || level > 100.0) {
-		return coo_cmd_error(out, cmd, "level must be 0..100");
+	parse_rc = coo_json_extract_double(cmd->payload, "value", &value);
+	if (parse_rc != COO_JSON_EXTRACT_OK || !(value >= 0.0 && value <= 1.0)) {
+		return coo_cmd_error(out, cmd, "value must be 0..1");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
@@ -399,9 +399,9 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	}
 
 	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_set_output_percent_autooff(id, level, autooff_s);
+	rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser level failed", rc);
+		return laser_cmd_error_rc(out, cmd, "laser value failed", rc);
 	}
 	return coo_cmd_ok(out, cmd);
 }
@@ -434,9 +434,6 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
 	parse_rc = coo_json_extract_double(cmd->payload, "tune_nm", &delta_nm);
-	if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-		parse_rc = coo_json_extract_double(cmd->payload, "delta_nm", &delta_nm);
-	}
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
 		return coo_cmd_error(out, cmd, "missing tune_nm");
 	}
@@ -730,7 +727,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 			    s.lock_tec_error ? "true" : "false",
 			    s.lock_tec_selfheat ? "true" : "false") != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "curr_ma", s.current_set_ma, 3) != 0 ||
+				    "i_mA", s.current_set_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "curr_meas_ma", s.current_measured_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
@@ -752,7 +749,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "pcb_temp_c", s.pcb_temperature_c, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "tec_curr_a", s.tec_current_measured_a, 3) != 0 ||
+				    "tec_ma", (double)s.tec_current_measured_a * 1000.0, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "tec_curr_lim_a", s.tec_current_limit_a, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,

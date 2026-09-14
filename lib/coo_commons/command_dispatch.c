@@ -1685,7 +1685,6 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 	bool was_active;
 	bool persist = false;
 	int parse_rc_seconds;
-	int parse_rc_value;
 	int parse_rc_persist;
 
 	if (runtime == NULL || cmd == NULL) {
@@ -1693,13 +1692,10 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 	}
 
 	parse_rc_seconds = coo_json_extract_u32(cmd->payload, "seconds", &holdoff_s);
-	parse_rc_value = coo_json_extract_u32(cmd->payload, "value", &holdoff_s);
-	if (parse_rc_seconds == COO_JSON_EXTRACT_ERR ||
-	    parse_rc_value == COO_JSON_EXTRACT_ERR) {
+	if (parse_rc_seconds == COO_JSON_EXTRACT_ERR) {
 		return coo_cmd_error(out, cmd, "invalid seconds");
 	}
-	if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING &&
-	    parse_rc_value == COO_JSON_EXTRACT_MISSING) {
+	if (parse_rc_seconds == COO_JSON_EXTRACT_MISSING) {
 		return coo_cmd_error(out, cmd, "missing seconds");
 	}
 
@@ -1748,6 +1744,7 @@ static int runtime_parse_reboot_options(const struct coo_cmd_request *cmd,
 		return 0;
 	}
 
+	/* Generic serial shorthand normalizes reboot erase_non_ip_settings to value. */
 	rc = coo_json_extract_string(cmd->payload, "value", value, sizeof(value));
 	if (rc == COO_JSON_EXTRACT_OK &&
 	    strcasecmp(value, "erase_non_ip_settings") == 0) {

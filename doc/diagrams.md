@@ -236,11 +236,13 @@ flowchart TD
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
   Stop -- yes --> StopReq[stop selected streams and their autolevel lasers under lock]
-  Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
+  Stop -- no --> Validate[validate laser, output, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> StartLock[lock; stop previous autolevel laser if replacing its source]
+  Map --> Route[apply requested input/output route]
+  Route --> StartLock[lock; stop previous autolevel laser if replacing its source]
   StartLock --> PdPower[enable selected photodiode relay]
-  PdPower --> Arm[store monitor state]
+  PdPower --> Loss[capture source and return route losses]
+  Loss --> Arm[store monitor state]
   Arm --> AutoStart{autolevel enabled}
   AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
   AutoStart -- no --> Ref[reset normalized history; cache source and supply ADC reference]
@@ -298,7 +300,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Command[mems or memsroute command] --> Lock[lock router/switch]
+  Command[mems or mems/route command] --> Lock[lock router/switch]
   Lock --> Target[store requested state or tick pattern]
   Target --> Timer[periodic k_timer]
   Timer --> Wake[wake MEMS router thread]
@@ -500,7 +502,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Request[laser level effect request] --> Parse[validate laser name, level, autooff_s]
+  Request[laser value effect request] --> Parse[validate laser name, value, autooff_s]
   Parse --> Settings[read laser channel settings]
   Settings --> StopTP[stop throughput monitor for this laser]
   StopTP --> SetOutput[hispec_laser_set_output_percent_autooff]

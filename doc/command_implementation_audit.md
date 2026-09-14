@@ -40,22 +40,22 @@ slots; the external API is documented as queries, effect requests, and actions.
 | `ip` | yes | yes |
 | `mqtt` | yes | yes |
 | `time` | yes | yes |
-| `memsroute` | yes | yes |
-| `memsroute/route_loss` | yes | yes |
+| `mems/route` | yes | yes |
+| `mems/route/loss` | yes | yes |
 | `mems` | yes | yes |
-| `split` | yes | yes |
+| `mems/split` | yes | yes |
 | `measure_throughput` | no | yes |
-| `laserbank/power` | yes | yes |
-| `laserbank/clearfaults` | no | yes |
-| `laserbank/heater` | yes | yes |
+| `laser/bankpower` | yes | yes |
+| `laser/clearfaults` | no | yes |
+| `laser/bankheater` | yes | yes |
 | `laser/status` | yes | no |
 | `laser/settings` | yes | yes |
 | `laser/tune` | yes | yes |
 | `laser` | yes | yes |
 | `atten` | yes | yes |
-| `pdsettings` | yes | yes |
+| `pd/settings` | yes | yes |
 | `pd` | yes | yes |
-| `temp` | yes | no |
+| `temps` | yes | no |
 | `status` | yes | no |
 
 ## Request Classification
@@ -69,18 +69,18 @@ from command dispatch before entering the inbound queue.
 Empty/no-payload requests are queries except:
 
 - `reboot`
-- `laserbank/clearfaults`
-- topic-suffix `laserbank/power/<mode>`
-- topic-suffix `laserbank/heater/<mode>`
+- `laser/clearfaults`
+- topic-suffix `laser/bankpower/<mode>`
+- topic-suffix `laser/bankheater/<mode>`
 
 Non-empty payload requests are effect/action requests except documented
 payload-query shapes:
 
 - `status`
 - `laser/status`
-- `memsroute/route_loss` when the payload contains only `route`
-- `laser` when `level` is absent
-- `laser/tune` when `tune_nm` and `delta_nm` are absent
+- `mems/route/loss` when the payload contains only `route`
+- `laser` when `value` is absent
+- `laser/tune` when `tune_nm` is absent
 - `laser/settings` when the nested `settings` object is absent
 
 The old MQTT `msg_type` payload convention is not used by command ingress.
@@ -130,8 +130,8 @@ buffer and echoed exactly in responses.
   It now reflects the code paths reviewed in this audit and uses generic support
   predicates to mark unsupported commands, but future command behavior changes
   must update the spec help metadata or help can become stale.
-- `laserbank/clearfaults` occupies both internal dispatch slots for legacy
-  reasons, but ingress classifies no-payload requests as an action.
+- `laser/clearfaults` uses the effect handler and is classified as an action
+  even without a payload.
 
 ## Blocking and Queueing Summary
 

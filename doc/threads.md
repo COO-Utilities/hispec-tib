@@ -118,7 +118,7 @@ firmware work that can sleep or block on hardware I/O:
   only when a laser command arms a timeout and may block on Modbus while
   stopping an expired output.
 - Ambient temperature sampling. This work is owned by `housekeeping.c` and may
-  block briefly on DS18B20 sensor I/O while refreshing the `temp` cache.
+  block briefly on DS18B20 sensor I/O while refreshing the `temps` cache.
 - Laser-bank heater policy. This work is owned by `laserbank_tempcontrol.c` and
   may block on Maiman Modbus polling and slow relay GPIO I/O.
 

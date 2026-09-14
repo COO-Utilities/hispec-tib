@@ -634,7 +634,7 @@ static bool route_loss_record_valid(struct app_route_loss_record *record)
 	record->laser[sizeof(record->laser) - 1U] = '\0';
 	return record->route[0] != '\0' &&
 	       record->laser[0] != '\0' &&
-	       double_in_range(record->transmission, 0.000000001, 1.0);
+	       (record->transmission > 0.0 && record->transmission <= 1.0);
 }
 
 static bool mems_state_valid(char state)

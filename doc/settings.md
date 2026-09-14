@@ -90,7 +90,7 @@ Photodiode active dark windows, forced dark values, lowest-dark records, and
 persisted dark updates happen only through `pd/dark/<channel>`. Duration-based
 dark captures are armed by the command and committed later by the photodiode
 sampler thread.
-`pdsettings/<channel>` owns photodiode response settings and relay power intent;
+`pd/settings/<channel>` owns photodiode response settings and relay power intent;
 it does not update or report dark summaries. `persist:true` on `pd/dark` writes
 that dark settings snapshot to NVS.
 

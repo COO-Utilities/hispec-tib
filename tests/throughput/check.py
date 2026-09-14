@@ -259,13 +259,13 @@ import hispec_fibpcb as host
 client = object.__new__(host.HispecFibPcb)
 client._request_ok = lambda command, payload: (command, payload)
 for name in host.LASER_NAMES:
-    command, payload = client.set_laser_settings(name, fractional_noise=0.03, constant_noise_mw=0.1, persist=True)
+    command, payload = client.laser_settings(name, fractional_noise=0.03, constant_noise_mw=0.1, persist=True)
     assert command == 'laser/settings' and payload['settings'] == {'fractional_noise':0.03, 'constant_noise_mw':0.1}
     assert payload['persist']
 for key in ('fractional_noise','constant_noise_mw'):
     for value in (-1, float('nan'), float('inf')):
         try:
-            client.set_laser_settings(host.LASER_NAMES[0], **{key:value})
+            client.laser_settings(host.LASER_NAMES[0], **{key:value})
         except host.HispecFibError:
             pass
         else:

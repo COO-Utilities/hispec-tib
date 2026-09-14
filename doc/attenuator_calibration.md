@@ -376,7 +376,7 @@ PD-only error; the stream's `tp_rms_err` remains PD-only.
 `tools/attenuator_calibration_lab.ipynb` is the lab-side inspection script for
 this flow. It has two intentionally separate paths:
 
-- the embedded path runs `atten_calibrate_auto`, retrieves
+- the embedded path runs `atten_calibrate`, retrieves
   `atten_calibration_data`, and plots retained records, bridge events,
   residuals, and the coefficient-derived 2D attenuation surface;
 - the manual exploration path directly calls `atten()`, sleeps for the
@@ -386,7 +386,7 @@ this flow. It has two intentionally separate paths:
 The manual path supports both the firmware-style weighted fit and a SciPy
 least-squares exploratory fit. Its plots show propagated photodiode and
 normalization uncertainty; coefficients should be reviewed before any
-`set_atten_coeff(..., persist=True)` command is used.
+`atten_coeff(..., persist=True)` command is used.
 
 An accepted coefficient object contains:
 

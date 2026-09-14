@@ -71,7 +71,7 @@ static bool command_tib_supported(const struct coo_cmd_spec *spec, void *user_da
 static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *cmd,
                                                  const struct coo_cmd_spec *spec,
                                                  void *user_data);
-static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *cmd,
+static enum coo_cmd_msg_type classify_laser_value(const struct coo_cmd_request *cmd,
                                                   const struct coo_cmd_spec *spec,
                                                   void *user_data);
 static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *cmd,
@@ -80,7 +80,7 @@ static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *c
 static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
                                                      const struct coo_cmd_spec *spec,
                                                      void *user_data);
-static int catalog_get(const struct coo_cmd_request *cmd,
+static int help_options_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out);
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         char *out, size_t out_len,
@@ -144,8 +144,8 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
  */
 static const struct coo_cmd_spec command_specs[] = {
     CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true,
-             "trydhcpfirst,preferdhcpdns,preferdhcpntp,ip,subnet,gateway,dns,ntp,persist",
-             "ip [trydhcpfirst=<bool> preferdhcpdns=<bool> preferdhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persist=<bool>]",
+             "try_dhcp_first,prefer_dhcpdns,prefer_dhcpntp,ip,subnet,gateway,dns,ntp,persist",
+             "ip [try_dhcp_first=<bool> prefer_dhcpdns=<bool> prefer_dhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persist=<bool>]",
              "query with no payload; effect when any listed field is supplied",
              "bool: true|false|on|off|yes|no",
              "reconfigures IPv4 immediately; persist=true stores app-owned IP settings",
@@ -171,8 +171,8 @@ static const struct coo_cmd_spec command_specs[] = {
                "unsigned millisecond Unix epoch",
                "sets Zephyr realtime clock and records last known UTC",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
-    CMD_SPEC("temp", temp_get, NULL, COO_CMD_CLASS_DEFAULT, true, "",
-             "temp", "none", NULL, "cached housekeeping temperature status",
+    CMD_SPEC("temps", temps_get, NULL, COO_CMD_CLASS_DEFAULT, true, "",
+             "temps", "none", NULL, "cached housekeeping temperature status",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("status", status_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
              "ip,lasers,attens",
@@ -181,23 +181,23 @@ static const struct coo_cmd_spec command_specs[] = {
              "bool: true|false|on|off|yes|no",
              "query-only firmware and subsystem status",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC("catalog", catalog_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
-             "catalog",
+    CMD_SPEC("help/options", help_options_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
+             "help/options",
              "none",
              NULL,
              "query-only static laser names and selected board route names",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_CUSTOM("memsroute/route_loss", memsroute_get, memsroute_set,
+    CMD_SPEC_CUSTOM("mems/route/loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
                     "route,1028y,1270j,1430yj,1430hk,1510h,2330k,split,persist",
-                    "memsroute/route_loss route=<route> [<laser>=<transmission> ... persist=<bool>]",
+                    "mems/route/loss route=<route> [<laser>=<loss> ... persist=<bool>]",
                     "route required for effect; laser fields optional by query/effect mode",
                     "laser fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,split",
-                    "stores user route-loss estimates used by optical calculations",
+                    "loss: fraction lost 0 <= loss < 1, or a quoted nonnegative dB value",
                     COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC("memsroute", memsroute_get, memsroute_set,
+    CMD_SPEC("mems/route", memsroute_get, memsroute_set,
              COO_CMD_CLASS_DEFAULT, true, "input,output,force",
-             "memsroute input=<input> output=<output> [force=<bool>]",
+             "mems/route input=<input> output=<output> [force=<bool>]",
              "input and output required; force=true re-pulses route steps",
              "route names are board profile input/output route keys",
              "applies a named static MEMS route",
@@ -214,33 +214,33 @@ static const struct coo_cmd_spec command_specs[] = {
                   "switchname is one active board MEMS switch name",
                   "serial shorthand accepts: mems/<switchname> A [duty_cycle] [off_in_s]",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_PREFIX("split", splitting_get, splitting_set,
+    CMD_SPEC_PREFIX("mems/split", splitting_get, splitting_set,
              COO_CMD_CLASS_DEFAULT, true,
-             "channel,ratio1,ratio2,ratio3,cycle_ms,off_in_s,toggle_rate_hz",
-             "split [channel=<yj|hk> ratio1=<0..1> ratio2=<0..1> cycle_ms=<ms> off_in_s=<s>]",
-             "channel, ratio1, and ratio2 are required for effect; cycle_ms and off_in_s optional",
+             "channel,ratio1,ratio2,ratio3,cycle_ms,stop_in_s,toggle_rate_hz",
+             "mems/split [channel=<yj|hk> ratio1=<0..1> ratio2=<0..1> cycle_ms=<ms> stop_in_s=<s>]",
+             "channel, ratio1, and ratio2 are required for effect; cycle_ms and stop_in_s optional",
              "channel: yj,hk",
-             "split/yj and split/hk query current splitter state",
+             "mems/split/yj and mems/split/hk query current splitter state",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COO_CMD_CLASS_DEFAULT, false,
                  "laser,fiber,input,output,autolevel,max_flux_ph_s,off_in_s,format,stop",
-                 "measure_throughput laser=<laser|none> [fiber=<M|S> input=<name> output=<name> autolevel=<bool> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
+                 "measure_throughput laser=<laser|none> output=<name> [fiber=<M|S> input=<name> autolevel=<bool> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
                  "stop with stop=<yj|hk|all>; laser=none requires input, output, and autolevel=false",
                  "format: json,binary",
                  "TIB-only throughput monitor command",
                  COO_CMD_HELP_EFFECT),
-    CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_level,
-                        true, "name,level,autooff_s",
-                        "laser name=<laser> [level=<percent> autooff_s=<s>]",
-                        "name required; level makes it an effect",
+    CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_value,
+                        true, "name,value,autooff_s",
+                        "laser name=<laser> [value=<0..1> autooff_s=<s>]",
+                        "name required; value makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only laser output status/set command",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/tune", laser_tune_get, laser_tune_set,
-                        classify_laser_tune, true, "name,tune_nm,delta_nm",
-                        "laser/tune name=<laser> [tune_nm=<nm>|delta_nm=<nm>]",
-                        "name required; tune_nm or delta_nm makes it an effect",
+                        classify_laser_tune, true, "name,tune_nm",
+                        "laser/tune name=<laser> [tune_nm=<nm>]",
+                        "name required; tune_nm makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only stored tune request",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
@@ -258,23 +258,23 @@ static const struct coo_cmd_spec command_specs[] = {
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only app-owned laser policy/settings wrapper",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB_PREFIX("laserbank/power", laserbank_power, laserbank_power,
+    CMD_SPEC_TIB_PREFIX("laser/bankpower", laserbank_power, laserbank_power,
                  COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
-                 "laserbank/power [mode=<auto|override_on|override_off>]",
-                 "mode required for effect; suffix form laserbank/power/<mode> also works",
+                 "laser/bankpower [mode=<auto|override_on|override_off>]",
+                 "mode required for effect; suffix form laser/bankpower/<mode> also works",
                  "mode: auto,override_on,override_off",
                  "TIB-only laser-bank supply override",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB("laserbank/clearfaults", NULL, laserbank_clearfaults,
+    CMD_SPEC_TIB("laser/clearfaults", NULL, laserbank_clearfaults,
                  COO_CMD_CLASS_ALWAYS_EFFECT, false, "",
-                 "laserbank/clearfaults",
+                 "laser/clearfaults",
                  "none", NULL,
                  "TIB-only power-cycles the laser bank to clear latched faults",
                  COO_CMD_HELP_EFFECT),
-    CMD_SPEC_TIB_PREFIX("laserbank/heater", laserbank_heater, laserbank_heater,
+    CMD_SPEC_TIB_PREFIX("laser/bankheater", laserbank_heater, laserbank_heater,
                  COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
-                 "laserbank/heater [mode=<auto|override_on|override_off>]",
-                 "mode required for effect; suffix form laserbank/heater/<mode> also works",
+                 "laser/bankheater [mode=<auto|override_on|override_off>]",
+                 "mode required for effect; suffix form laser/bankheater/<mode> also works",
                  "mode: auto,override_on,override_off",
                  "TIB-only laser-bank heater relay mode",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
@@ -334,15 +334,15 @@ static const struct coo_cmd_spec command_specs[] = {
                "channel: yj,hk",
                "TIB-only photodiode latest-sample and monitoring-window status",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
-    { .key = "pdsettings", .query_handler = pd_settings_get,
+    { .key = "pd/settings", .query_handler = pd_settings_get,
       .effect_handler = pd_settings_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .supported = command_tib_supported,
       .key_prefix_match = true,
-      .allowed_payload_keys = "noise_rms_mv,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persist",
+      .allowed_payload_keys = "noisewarn_mv,responsivity_a_per_w,transimpedance_v_per_a,power,autooff_s,persist",
       .mqtt_query_allowed_during_serial_guard = true },
-    CMD_HELP_ONLY("pdsettings/<channel>", command_tib_supported,
-                  "pdsettings/<channel> [noise_rms_mv=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persist=<bool>]",
+    CMD_HELP_ONLY("pd/settings/<channel>", command_tib_supported,
+                  "pd/settings/<channel> [noisewarn_mv=<mV> responsivity_a_per_w=<A/W> transimpedance_v_per_a=<V/A> power=<auto|override_on|override_off> autooff_s=<s> persist=<bool>]",
                   "channel required in key; listed fields optional for effect",
                   "channel: yj,hk",
                   "TIB-only app-owned photodiode response settings and relay power intent",
@@ -403,7 +403,7 @@ static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *c
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
-static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *cmd,
+static enum coo_cmd_msg_type classify_laser_value(const struct coo_cmd_request *cmd,
                                                   const struct coo_cmd_spec *spec,
                                                   void *user_data)
 {
@@ -413,7 +413,7 @@ static enum coo_cmd_msg_type classify_laser_level(const struct coo_cmd_request *
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           coo_json_extract_double(cmd->payload, "level", &fval) != COO_JSON_EXTRACT_MISSING ?
+           coo_json_extract_double(cmd->payload, "value", &fval) != COO_JSON_EXTRACT_MISSING ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -427,8 +427,7 @@ static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *c
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           (coo_json_extract_double(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ||
-            coo_json_extract_double(cmd->payload, "delta_nm", &fval) != COO_JSON_EXTRACT_MISSING) ?
+           coo_json_extract_double(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -620,8 +619,8 @@ static int ip_status_payload(char *payload, size_t payload_len)
 #endif
 
     written = snprintk(payload, payload_len,
-                       "{\"src\":\"%s\",\"trydhcpfirst\":%s,"
-                       "\"preferdhcpdns\":%s,\"preferdhcpntp\":%s,"
+                       "{\"src\":\"%s\",\"try_dhcp_first\":%s,"
+                       "\"prefer_dhcpdns\":%s,\"prefer_dhcpntp\":%s,"
                        "\"manual\":{\"ip\":\"%s\",\"subnet\":\"%s\",\"gateway\":\"%s\",\"dns\":\"%s\",\"ntp\":\"%s\"},"
                        "\"active\":{\"ready\":%s,\"ip\":\"%s\"},"
                        "\"ntp\":{\"src\":\"%s\",\"server\":\"%s\"}}",
@@ -721,7 +720,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
     app_settings_get_ip(&ip_cfg);
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "trydhcpfirst", &ip_cfg.try_dhcp_first);
+    parse_rc = coo_json_extract_bool(cmd->payload, "try_dhcp_first", &ip_cfg.try_dhcp_first);
     if (!dhcp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dhcp = true;
@@ -731,11 +730,11 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return coo_cmd_error(out, cmd, "invalid trydhcpfirst");
+            return coo_cmd_error(out, cmd, "invalid try_dhcp_first");
         }
     }
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpdns", &ip_cfg.prefer_dhcp_dns);
+    parse_rc = coo_json_extract_bool(cmd->payload, "prefer_dhcpdns", &ip_cfg.prefer_dhcp_dns);
     if (!dns_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
@@ -745,11 +744,11 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             changed = true;
             network_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return coo_cmd_error(out, cmd, "invalid preferdhcpdns");
+            return coo_cmd_error(out, cmd, "invalid prefer_dhcpdns");
         }
     }
 
-    parse_rc = coo_json_extract_bool(cmd->payload, "preferdhcpntp", &ip_cfg.prefer_dhcp_ntp);
+    parse_rc = coo_json_extract_bool(cmd->payload, "prefer_dhcpntp", &ip_cfg.prefer_dhcp_ntp);
     if (!ntp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
@@ -759,7 +758,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             changed = true;
             ntp_changed = true;
         } else if (parse_rc == COO_JSON_EXTRACT_ERR) {
-            return coo_cmd_error(out, cmd, "invalid preferdhcpntp");
+            return coo_cmd_error(out, cmd, "invalid prefer_dhcpntp");
         }
     }
 
@@ -975,7 +974,7 @@ int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_ok(out, cmd);
 }
 
-static bool catalog_name_seen(const char *const names[], uint8_t count,
+static bool help_options_name_seen(const char *const names[], uint8_t count,
                               const char *name)
 {
     for (uint8_t i = 0U; i < count; ++i) {
@@ -986,7 +985,7 @@ static bool catalog_name_seen(const char *const names[], uint8_t count,
     return false;
 }
 
-static int catalog_append_static_string(char *payload, size_t payload_len,
+static int help_options_append_static_string(char *payload, size_t payload_len,
                                         size_t *off, const char *value)
 {
     /* Catalog names are compile-time route/laser identifiers, not user text. */
@@ -994,7 +993,7 @@ static int catalog_append_static_string(char *payload, size_t payload_len,
                            value != NULL ? value : "");
 }
 
-static int catalog_append_lasers(char *payload, size_t payload_len, size_t *off)
+static int help_options_append_lasers(char *payload, size_t payload_len, size_t *off)
 {
     if (coo_json_append(payload, payload_len, off, "\"lasers\":[") != 0) {
         return -ENOSPC;
@@ -1006,7 +1005,7 @@ static int catalog_append_lasers(char *payload, size_t payload_len, size_t *off)
                 coo_json_append(payload, payload_len, off, ",") != 0) {
                 return -ENOSPC;
             }
-            if (catalog_append_static_string(
+            if (help_options_append_static_string(
                     payload, payload_len, off,
                     hispec_laser_name((enum hispec_laser_id)i)) != 0) {
                 return -ENOSPC;
@@ -1017,7 +1016,7 @@ static int catalog_append_lasers(char *payload, size_t payload_len, size_t *off)
     return coo_json_append(payload, payload_len, off, "]");
 }
 
-static int catalog_append_route_name_array(char *payload, size_t payload_len,
+static int help_options_append_route_name_array(char *payload, size_t payload_len,
                                            size_t *off, const char *field,
                                            bool inputs)
 {
@@ -1028,7 +1027,7 @@ static int catalog_append_route_name_array(char *payload, size_t payload_len,
         const char *name = inputs ? router.routes[i].key.input_name :
                                     router.routes[i].key.output_name;
 
-        if (!catalog_name_seen(names, count, name)) {
+        if (!help_options_name_seen(names, count, name)) {
             names[count++] = name;
         }
     }
@@ -1041,14 +1040,14 @@ static int catalog_append_route_name_array(char *payload, size_t payload_len,
             coo_json_append(payload, payload_len, off, ",") != 0) {
             return -ENOSPC;
         }
-        if (catalog_append_static_string(payload, payload_len, off, names[i]) != 0) {
+        if (help_options_append_static_string(payload, payload_len, off, names[i]) != 0) {
             return -ENOSPC;
         }
     }
     return coo_json_append(payload, payload_len, off, "]");
 }
 
-static int catalog_append_routes(char *payload, size_t payload_len, size_t *off)
+static int help_options_append_routes(char *payload, size_t payload_len, size_t *off)
 {
     if (coo_json_append(payload, payload_len, off, "\"routes\":[") != 0) {
         return -ENOSPC;
@@ -1059,10 +1058,10 @@ static int catalog_append_routes(char *payload, size_t payload_len, size_t *off)
             return -ENOSPC;
         }
         if (coo_json_append(payload, payload_len, off, "[") != 0 ||
-            catalog_append_static_string(payload, payload_len, off,
+            help_options_append_static_string(payload, payload_len, off,
                                          router.routes[i].key.input_name) != 0 ||
             coo_json_append(payload, payload_len, off, ",") != 0 ||
-            catalog_append_static_string(payload, payload_len, off,
+            help_options_append_static_string(payload, payload_len, off,
                                          router.routes[i].key.output_name) != 0 ||
             coo_json_append(payload, payload_len, off, "]") != 0) {
             return -ENOSPC;
@@ -1071,7 +1070,7 @@ static int catalog_append_routes(char *payload, size_t payload_len, size_t *off)
     return coo_json_append(payload, payload_len, off, "]");
 }
 
-static int catalog_get(const struct coo_cmd_request *cmd,
+static int help_options_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out)
 {
     char payload[MAX_PAYLOAD_LEN] = {0};
@@ -1080,17 +1079,17 @@ static int catalog_get(const struct coo_cmd_request *cmd,
     if (coo_json_append(payload, sizeof(payload), &off,
                         "{\"board\":\"%s\",",
                         devices_board_type_name()) != 0 ||
-        catalog_append_lasers(payload, sizeof(payload), &off) != 0 ||
+        help_options_append_lasers(payload, sizeof(payload), &off) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
-        catalog_append_route_name_array(payload, sizeof(payload), &off,
+        help_options_append_route_name_array(payload, sizeof(payload), &off,
                                         "route_inputs", true) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
-        catalog_append_route_name_array(payload, sizeof(payload), &off,
+        help_options_append_route_name_array(payload, sizeof(payload), &off,
                                         "route_outputs", false) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
-        catalog_append_routes(payload, sizeof(payload), &off) != 0 ||
+        help_options_append_routes(payload, sizeof(payload), &off) != 0 ||
         coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
-        return coo_cmd_error(out, cmd, "catalog response too large");
+        return coo_cmd_error(out, cmd, "help/options response too large");
     }
 
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
@@ -1228,11 +1227,11 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             valid = attenuator_get(&attenuators[atten_index], &atten);
 
             if (coo_json_append(payload, sizeof(payload), &off,
-                                "%s\"%s\":{\"level_%%\":",
+                                "%s\"%s\":{\"value_db\":",
                                 first ? "" : ",",
                                 hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
                 coo_json_append_float_or_null(payload, sizeof(payload), &off,
-                                              valid ? atten.linear * 100.0 : (double)NAN, 3) != 0 ||
+                                              valid ? atten.attenuation_db : (double)NAN, 3) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }
@@ -1262,7 +1261,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
     struct hispec_laser_channel_temperature channel_temp[HISPEC_LASER_COUNT] = {0};
@@ -1292,7 +1291,7 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                         "{\"ambient_c\":") != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0) {
-        return coo_cmd_error(out, cmd, "temp response too large");
+        return coo_cmd_error(out, cmd, "temps response too large");
     }
 
     if (coo_json_append(payload, sizeof(payload), &off,
@@ -1301,8 +1300,8 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                                       bank_count > 0U ? bank_sum / (double)bank_count : (double)NAN,
                                       3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
-                        ",\"laser\":{") != 0) {
-        return coo_cmd_error(out, cmd, "temp response too large");
+                        ",\"lasers\":{") != 0) {
+        return coo_cmd_error(out, cmd, "temps response too large");
     }
     for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
         if (coo_json_append(payload, sizeof(payload), &off,
@@ -1313,11 +1312,11 @@ int temp_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                                           laser_rc == 0 && channel_temp[i].valid ?
                                           channel_temp[i].tec_temperature_c : (double)NAN,
                                           3) != 0) {
-            return coo_cmd_error(out, cmd, "temp response too large");
+            return coo_cmd_error(out, cmd, "temps response too large");
         }
     }
     if (coo_json_append(payload, sizeof(payload), &off, "}}") != 0) {
-        return coo_cmd_error(out, cmd, "temp response too large");
+        return coo_cmd_error(out, cmd, "temps response too large");
     }
 
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);

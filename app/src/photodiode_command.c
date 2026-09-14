@@ -162,7 +162,7 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 				  enum photodiode_channel channel,
 				  const struct photodiode_channel_status *status)
 {
-	bool pd_is_off = pd_channel_power_is_off(channel);
+	bool pd_powered = !pd_channel_power_is_off(channel);
 	uint64_t ontime_s = (uint64_t)housekeeping_power_on_time_s(pd_power_output(channel));
 	const struct photodiode_window_result *dark =
 		status == NULL ? NULL : &status->dark_window;
@@ -191,8 +191,8 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 	    coo_json_append(payload, payload_len, off, ",\"window\":") != 0 ||
 	    pd_append_window_json(payload, payload_len, off, &status->fixed_window) != 0 ||
 	    coo_json_append(payload, payload_len, off,
-			    ",\"pd_is_off\":%s,\"ontime_s\":%llu}",
-			    pd_is_off ? "true" : "false",
+			    ",\"pd_powered\":%s,\"pd_on_s\":%llu}",
+			    pd_powered ? "true" : "false",
 			    (unsigned long long)ontime_s) != 0) {
 		return -ENOSPC;
 	}
@@ -428,7 +428,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
 
 	if (coo_json_append(payload, payload_len, &off,
-			    "{\"channel\":\"%s\",\"noise_rms_mv\":%.3f,"
+			    "{\"channel\":\"%s\",\"noisewarn_mv\":%.3f,"
 			    "\"responsivity_a_per_w\":%.9f,"
 				    "\"transimpedance_v_per_a\":%.6e,"
 				    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":",
@@ -464,16 +464,16 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	enum photodiode_channel channel;
 	int rc;
 
-	rc = pd_parse_channel_from_key_base(cmd, "pdsettings", &channel);
+	rc = pd_parse_channel_from_key_base(cmd, "pd/settings", &channel);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(out, cmd, "pd/settings key must be pd/settings/yj or pd/settings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
 	rc = pd_settings_channel_json(payload, sizeof(payload), channel,
 				      &settings.channel[channel]);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "pdsettings response too large");
+		return coo_cmd_error(out, cmd, "pd/settings response too large");
 	}
 
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
@@ -490,9 +490,9 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	int parse_rc;
 	int rc;
 
-	rc = pd_parse_channel_from_key_base(cmd, "pdsettings", &channel);
+	rc = pd_parse_channel_from_key_base(cmd, "pd/settings", &channel);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "pdsettings key must be pdsettings/yj or pdsettings/hk");
+		return coo_cmd_error(out, cmd, "pd/settings key must be pd/settings/yj or pd/settings/hk");
 	}
 
 	app_settings_get_photodiode(&settings);
@@ -502,7 +502,7 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 					   &persist, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid persist");
 	}
-	if (coo_json_extract_optional_double_range(cmd->payload, "noise_rms_mv",
+	if (coo_json_extract_optional_double_range(cmd->payload, "noisewarn_mv",
 						  &channel_settings.noise_warn_rms_mv,
 						  &changed,
 						  PHOTODIODE_NOISE_RMS_MIN_MV,
@@ -517,7 +517,7 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 						   &changed,
 						   PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A,
 						   PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A) != 0) {
-		return coo_cmd_error(out, cmd, "invalid pdsettings value");
+		return coo_cmd_error(out, cmd, "invalid pd/settings value");
 	}
 	parse_rc = coo_json_extract_string_choice(cmd->payload, "power",
 						  pd_power_choices,
@@ -537,7 +537,7 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	}
 
 	if (!changed) {
-		return coo_cmd_error(out, cmd, "no pdsettings fields supplied");
+		return coo_cmd_error(out, cmd, "no pd/settings fields supplied");
 	}
 
 	if (channel_settings.power != settings.channel[channel].power) {

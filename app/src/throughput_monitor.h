@@ -17,6 +17,9 @@
 #include "photodiode.h"
 
 struct throughput_monitor_request {
+	/* Already applied route; strings are consumed synchronously by start. */
+	const char *input;
+	const char *output;
 	enum hispec_laser_id laser;
 	enum photodiode_channel channel;
 	bool has_laser;
@@ -38,6 +41,7 @@ struct throughput_monitor_status {
 void throughput_monitor_thread(void *p1, void *p2, void *p3);
 
 /** Start or replace the monitor associated with the request's photodiode.
+ * Captures route-loss settings for this run; restart to pick up their changes.
  * May block on hardware I/O; replacing an autolevel source stops its laser.
  * Both channels can stream. Dual autolevel is available for engineering use;
  * normal instrument light paths overlap and should use only one loop.

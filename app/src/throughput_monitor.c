@@ -125,12 +125,6 @@ static void route_name_for_pd(char *buf, size_t buf_len,
 	snprintk(buf, buf_len, "%s_%s_to_%s_pd", prefix, kind, prefix);
 }
 
-static void route_name_for_laser(char *buf, size_t buf_len,
-				 const char *laser, char fiber)
-{
-	snprintk(buf, buf_len, "%s_to_%c", laser, fiber);
-}
-
 static void channel_fiber_name(char *buf, size_t buf_len,
 			       enum photodiode_channel channel, char fiber)
 {
@@ -224,14 +218,10 @@ static void refresh_reference(struct throughput_state *state)
 {
 	struct app_photodiode_settings pd_settings;
 	struct photodiode_throughput_reference reference = {0};
-	char pd_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
-	char laser_route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
 
 	state->atten = (struct attenuator_transmission_estimate){
 		.linear = NAN, .linear_err = NAN, .attenuation_db = NAN};
 	state->laser_flux = (struct hispec_laser_flux_estimate){0};
-	state->pd_route_tx = 1.0;
-	state->laser_route_tx = 1.0;
 	state->pd_flux_per_mv = NAN;
 	state->emitted_flux = NAN;
 	state->emitted_flux_err = NAN;
@@ -239,13 +229,7 @@ static void refresh_reference(struct throughput_state *state)
 	    attenuator_estimate_transmission(&attenuators[state->attenuator_index],
 					     &state->atten) &&
 	    laser_estimate_flux(state->laser, &state->laser_flux) == 0) {
-		const char *name = hispec_laser_name(state->laser);
-
 		app_settings_get_photodiode(&pd_settings);
-		route_name_for_pd(pd_route, sizeof(pd_route), state->channel, state->fiber);
-		route_name_for_laser(laser_route, sizeof(laser_route), name, state->fiber);
-		(void)app_settings_get_route_loss(pd_route, name, &state->pd_route_tx);
-		(void)app_settings_get_route_loss(laser_route, name, &state->laser_route_tx);
 		state->pd_flux_per_mv = photodiode_photon_flux_from_mv(1.0,
 			state->laser_flux.wavelength_nm, &pd_settings.channel[state->channel]) /
 			state->pd_route_tx;
@@ -665,6 +649,21 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	 * deadline via pd queries, but it must not turn off a running monitor.
 	 */
 	housekeeping_photodiode_autooff_inhibit(pd_power, true);
+
+	/* The command has applied this route. Capture its calibration once; dynamic
+	 * drive estimates reuse these losses until the next start request.
+	 */
+	next.pd_route_tx = 1.0;
+	next.laser_route_tx = 1.0;
+	if (request->has_laser) {
+		char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
+		const char *name = hispec_laser_name(request->laser);
+
+		route_name_for_pd(route, sizeof(route), channel, request->fiber);
+		(void)app_settings_get_route_loss(route, name, &next.pd_route_tx);
+		snprintk(route, sizeof(route), "%s_to_%s", request->input, request->output);
+		(void)app_settings_get_route_loss(route, name, &next.laser_route_tx);
+	}
 
 	next.active = true;
 	next.autolevel = request->autolevel;
