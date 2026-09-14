@@ -59,10 +59,11 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-/* One ADC cycle is  under 3 ms; the pad prevents reading a partial window. */
+/* Existing conversion-sized pad: 250 SPS takes about 4 ms per conversion.
+ * This is not an RC-settling allowance or a full 20 ms sampler-period guard;
+ * see the Rev. 2 sampling review in doc/photodiode_notes.md.
+ */
 #define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
-#define ATTEN_CAL_ADC_LSB_MV 0.1875f
-#define ATTEN_CAL_ADC_CLIP_MV 5000.0f
 /* Minimum bracket width for companion-FVOA binary searches. */
 #define ATTEN_CAL_SEARCH_MIN_STEP_MV 5.0f
 /* Fixed DUT-FVOA sweep spacing after the initial open-reference point. */
@@ -484,13 +485,14 @@ static void build_measurement_from_pd_window(const struct photodiode_window_resu
 	/**
 	 * Decide whether a photodiode window is pinned against the ADC rail.
 	 *
-	 * Saturation is based on the mean, not the max excursion: a noisy rail sample is
-	 * diagnostic, but a saturated diode has the whole averaging window at the wall.
+	 * Saturation uses the voltage before dark subtraction and is based on the
+	 * mean, not the max excursion: a noisy rail sample is diagnostic, but a
+	 * saturated input has the whole averaging window at the wall.
 	 */
-	saturated = (float) window->mean_net_mv >= ATTEN_CAL_ADC_CLIP_MV;
+	saturated = window->mean_mv >= PHOTODIODE_ADC_MAX_MV;
 
 	if (!(measurement->signal_err_mv > 0.0f) || !isfinite(measurement->signal_err_mv)) {
-		measurement->signal_err_mv = ATTEN_CAL_ADC_LSB_MV;
+		measurement->signal_err_mv = (float)PHOTODIODE_ADC_LSB_MV;
 	}
 
 	if (saturated) {
@@ -1737,7 +1739,10 @@ static int fit_one_physical_locked(uint8_t physical,
 	return out->accepted ? 0 : -ERANGE;
 }
 
-/** Apply accepted pair fits to runtime control and optionally persist them. */
+/** Apply accepted pair fits and their final residual RMS together.
+ * May block on DAC I/O and optional NVS persistence. Rejected fits leave both
+ * the previous coefficients and their uncertainty untouched; no extra sweep.
+ */
 static int apply_fit_to_settings_locked(void)
 {
 	struct attenuator *atten = &attenuators[cal.attenuator_index];
@@ -1747,6 +1752,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[0].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[0].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[0].max_atten_db,
+			.rms_db = cal.fit[0].rms_db,
 			.gain = atten->coeff1.gain,
 			.correction_coeff = {
 				cal.fit[0].correction_coeff[0],
@@ -1759,6 +1765,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[1].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[1].max_atten_db,
+			.rms_db = cal.fit[1].rms_db,
 			.gain = atten->coeff2.gain,
 			.correction_coeff = {
 				cal.fit[1].correction_coeff[0],
@@ -1781,12 +1788,14 @@ static int apply_fit_to_settings_locked(void)
 	stored.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 	stored.physical[0].max_atten_db = physical[0].max_atten_db;
 	stored.physical[0].gain = physical[0].gain;
+	stored.physical[0].rms_db = physical[0].rms_db;
 	memcpy(stored.physical[0].correction_coeff, physical[0].correction_coeff,
 	       sizeof(stored.physical[0].correction_coeff));
 	stored.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 	stored.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 	stored.physical[1].max_atten_db = physical[1].max_atten_db;
 	stored.physical[1].gain = physical[1].gain;
+	stored.physical[1].rms_db = physical[1].rms_db;
 	memcpy(stored.physical[1].correction_coeff, physical[1].correction_coeff,
 	       sizeof(stored.physical[1].correction_coeff));
 	app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);
@@ -1917,7 +1926,10 @@ int attenuator_calibration_start_auto(
 					     .msg = "stopping throughput for attenuator calibration",
 				     });
 	}
-	(void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
+	rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
+	if (rc != 0) {
+		return rc;
+	}
 
 	rc = mems_router_apply_named_route(&router, request->route_input, request->output, false, NULL, NULL);
 	if (rc == 0) {

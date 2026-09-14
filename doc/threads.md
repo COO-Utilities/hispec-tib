@@ -54,6 +54,16 @@ one current sample. Missed ADC sampling periods are not replayed.
 photodiode snapshots, route-loss settings, attenuator state, and laser
 estimates, then enqueues best-effort telemetry to `outbound_queue`.
 
+Start, stop, and autolevel hardware writes share the monitor mutex, so an
+in-flight adjustment finishes before stop shuts down the autolevel operation's
+laser. Expiry and photodiode-power loss use the same shutdown path; purely
+passive streams leave manual laser output unchanged. These paths can block on
+Modbus; bank power and TECs remain unchanged.
+
+Both channels can stream and both control loops remain available for engineering
+use. Normal instrument light paths overlap outside this controller, so normal
+operation should enable only one autolevel loop.
+
 The throughput monitor runs promptly when active because autolevel decisions
 should react on the same general timescale as photodiode sampling. It remains
 below MEMS and photodiode sampling because it can write attenuator DACs and
@@ -108,7 +118,7 @@ firmware work that can sleep or block on hardware I/O:
   only when a laser command arms a timeout and may block on Modbus while
   stopping an expired output.
 - Ambient temperature sampling. This work is owned by `housekeeping.c` and may
-  block briefly on DS18B20 sensor I/O while refreshing the `temp` cache.
+  block briefly on DS18B20 sensor I/O while refreshing the `temps` cache.
 - Laser-bank heater policy. This work is owned by `laserbank_tempcontrol.c` and
   may block on Maiman Modbus polling and slow relay GPIO I/O.
 
@@ -137,3 +147,10 @@ handlers. The system workqueue stays ahead of command and app blocking work
 because Zephyr Modbus client RX completion runs there. Command ingress over
 serial and MQTT is treated as equivalent at the command-executor layer. SNTP is
 intentionally lower than deferred logging.
+
+For throughput, the ADC thread also averages individually normalized readings
+in its existing fixed ring. Its reference update uses the runtime mutex and
+performs no laser/DAC I/O. The throughput thread owns source readback/reference
+updates and captures telemetry before selecting the next input. Only ordinary
+adjustments wait for a full `PHOTODIODE_FIXED_WINDOW_MS` since the prior change;
+initial acquisition and high/low-count bypasses retain the monitor cadence.

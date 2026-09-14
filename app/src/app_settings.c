@@ -30,7 +30,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-#define APP_NVS_SCHEMA_VERSION 9U
+/* Physical attenuator residual RMS extends coefficient records; reset old layouts. */
+#define APP_NVS_SCHEMA_VERSION 12U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -106,6 +107,8 @@ struct app_nvs_laser_policy {
 	double efficiency_mw_per_ma;
 	double wavelength_nm;
 	double current_set_calibration_pct;
+	double fractional_noise;
+	double constant_noise_mw;
 	double operating_temp_min_c;
 	double operating_temp_max_c;
 	double operating_temp_c;
@@ -233,6 +236,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 					FVOA_DEFAULT_MAX_ATTEN_DB;
 				s->attenuator.channel[ch].physical[physical].gain =
 					ATTENUATOR_DEFAULT_GAIN;
+				s->attenuator.channel[ch].physical[physical].rms_db =
+					ATTENUATOR_DEFAULT_RMS_DB;
 		}
 	}
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark =
@@ -285,6 +290,11 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
 		s->laser.channel[i].current_set_calibration_pct = 100.0;
+		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
+		/* Use the immutable diode table, not user settings or current output. */
+		s->laser.channel[i].constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
+			(default_laser_props[i]->max_current_ma - default_laser_props[i]->threshold_current_ma) *
+			default_laser_props[i]->efficiency_mw_per_ma;
 		s->laser.channel[i].expected_serial = default_laser_expected_serial[i];
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
@@ -500,6 +510,8 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
 	stored->wavelength_nm = laser->properties.wavelength_nm;
 	stored->current_set_calibration_pct = laser->current_set_calibration_pct;
+	stored->fractional_noise = laser->fractional_noise;
+	stored->constant_noise_mw = laser->constant_noise_mw;
 	stored->operating_temp_min_c = laser->properties.operating_temp_range_c.min_c;
 	stored->operating_temp_max_c = laser->properties.operating_temp_range_c.max_c;
 	stored->operating_temp_c = laser->properties.operating_temp_c;
@@ -587,6 +599,7 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
 		physical[i].max_atten_db = p->max_atten_db;
 		physical[i].gain = p->gain;
+		physical[i].rms_db = p->rms_db;
 		memcpy(physical[i].correction_coeff, p->correction_coeff,
 		       sizeof(physical[i].correction_coeff));
 	}
@@ -621,7 +634,7 @@ static bool route_loss_record_valid(struct app_route_loss_record *record)
 	record->laser[sizeof(record->laser) - 1U] = '\0';
 	return record->route[0] != '\0' &&
 	       record->laser[0] != '\0' &&
-	       double_in_range(record->transmission, 0.000000001, 1.0);
+	       (record->transmission > 0.0 && record->transmission <= 1.0);
 }
 
 static bool mems_state_valid(char state)
@@ -791,6 +804,8 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
 	laser->properties.wavelength_nm = stored->wavelength_nm;
 	laser->current_set_calibration_pct = stored->current_set_calibration_pct;
+	laser->fractional_noise = stored->fractional_noise;
+	laser->constant_noise_mw = stored->constant_noise_mw;
 	laser->properties.operating_temp_range_c.min_c = stored->operating_temp_min_c;
 	laser->properties.operating_temp_range_c.max_c = stored->operating_temp_max_c;
 	laser->properties.operating_temp_c = stored->operating_temp_c;
@@ -1293,6 +1308,61 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 	return 0;
 }
 
+/* TIB path defaults are transmission, not the API's fraction lost. These
+ * constants stay in flash; only explicit overrides occupy RAM/NVS records.
+ * AO and FEI traverse the same switches, selecting different B3/R3 outputs.
+ * Static laser attenuation is included once here, never in the FVOA model.
+ */
+static const struct {
+	const char *route;
+	const char *laser;
+	double transmission;
+} default_route_losses[] = {
+	/* YJ B2 * B3 = 0.88 * 0.88 = 0.7744; 1028 adds 73 dB static:
+	 * 0.7744 * 10^(-73/10) = 3.88119393721e-8.
+	 */
+	{"yj_laser_to_yj_ao", "1028y", 3.88119393721e-8},
+	{"yj_laser_to_yj_fei", "1028y", 3.88119393721e-8},
+	/* Same B2/B3 path; 1270 adds 40 dB: 0.7744 * 10^(-40/10). */
+	{"yj_laser_to_yj_ao", "1270j", 7.744e-5},
+	{"yj_laser_to_yj_fei", "1270j", 7.744e-5},
+	/* YJ B1 * B2 * B3 = 0.88^3 = 0.681472; 1430 adds 100 dB:
+	 * 0.681472 * 10^(-100/10) = 6.81472e-11.
+	 */
+	{"yj_1430_to_yj_ao", "1430yj", 6.81472e-11},
+	{"yj_1430_to_yj_fei", "1430yj", 6.81472e-11},
+	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 100 dB:
+	 * 0.571787 * 10^(-100/10) = 5.71787e-11.
+	 */
+	{"hk_1430_to_hk_ao", "1430hk", 5.71787e-11},
+	{"hk_1430_to_hk_fei", "1430hk", 5.71787e-11},
+	/* HK R2 * R3 = 0.83 * 0.83 = 0.6889; 1510 adds 33 dB:
+	 * 0.6889 * 10^(-33/10) = 3.45267885246e-4.
+	 */
+	{"hk_laser_to_hk_ao", "1510h", 3.45267885246e-4},
+	{"hk_laser_to_hk_fei", "1510h", 3.45267885246e-4},
+	/* Same R2/R3 path; 2330 adds 3 dB:
+	 * 0.6889 * 10^(-3/10) = 0.345267885246.
+	 */
+	{"hk_laser_to_hk_ao", "2330k", 0.345267885246},
+	{"hk_laser_to_hk_fei", "2330k", 0.345267885246},
+	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
+	 * These do not traverse the outbound blue/red FFSW switches.
+	 */
+	{"yj_mm_to_yj_pd", "1028y", 0.98},
+	{"yj_sm_to_yj_pd", "1028y", 0.60},
+	{"yj_mm_to_yj_pd", "1270j", 0.98},
+	{"yj_sm_to_yj_pd", "1270j", 0.60},
+	{"yj_mm_to_yj_pd", "1430yj", 0.98},
+	{"yj_sm_to_yj_pd", "1430yj", 0.60},
+	{"hk_mm_to_hk_pd", "1430hk", 0.98},
+	{"hk_sm_to_hk_pd", "1430hk", 0.60},
+	{"hk_mm_to_hk_pd", "1510h", 0.98},
+	{"hk_sm_to_hk_pd", "1510h", 0.60},
+	{"hk_mm_to_hk_pd", "2330k", 0.98},
+	{"hk_sm_to_hk_pd", "2330k", 0.60},
+};
+
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission)
 {
@@ -1308,6 +1378,13 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 	}
 
 	*transmission = 1.0;
+	for (size_t i = 0U; i < ARRAY_SIZE(default_route_losses); ++i) {
+		if (strcmp(default_route_losses[i].route, route) == 0 &&
+		    strcmp(default_route_losses[i].laser, laser) == 0) {
+			*transmission = default_route_losses[i].transmission;
+			break;
+		}
+	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);

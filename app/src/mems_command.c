@@ -85,7 +85,7 @@ static const struct coo_json_string_choice mems_switch_state_choices[] = {
 
 static bool memsroute_is_route_loss_key(const char *key)
 {
-    return strcmp(key, "memsroute/route_loss") == 0;
+    return strcmp(key, "mems/route/loss") == 0;
 }
 
 static const char *route_loss_json_value_for_key(const char *json, const char *key)
@@ -138,7 +138,7 @@ static int route_loss_parse_db_string(const char *text, double *transmission)
     if (strcasecmp(end, "db") != 0) {
         return -EINVAL;
     }
-    if (loss_db < 0.0) {
+    if (!isfinite(loss_db) || loss_db < 0.0) {
         return -ERANGE;
     }
 
@@ -151,7 +151,7 @@ static int route_loss_parse_scalar_token(const char *start, const char **end,
 {
     char db_text[24] = {0};
     char *parse_end = NULL;
-    double tx;
+    double loss;
     size_t len;
 
     if (start == NULL || end == NULL || transmission == NULL) {
@@ -171,13 +171,14 @@ static int route_loss_parse_scalar_token(const char *start, const char **end,
         return route_loss_parse_db_string(db_text, transmission);
     }
 
+    /* Numeric API values are fractions lost; settings store transmission. */
     errno = 0;
-    tx = strtod(start, &parse_end);
-    if (errno != 0 || parse_end == start || !(tx > 0.0 && tx <= 1.0)) {
+    loss = strtod(start, &parse_end);
+    if (errno != 0 || parse_end == start || !(loss >= 0.0 && loss < 1.0)) {
         return -ERANGE;
     }
 
-    *transmission = tx;
+    *transmission = 1.0 - loss;
     *end = parse_end;
     return 0;
 }
@@ -187,27 +188,26 @@ static int route_loss_extract_field_transmission(const struct coo_cmd_request *c
                                                  double *transmission)
 {
     char db_text[24] = {0};
-    double tx = 0.0;
+    double loss = 0.0;
     int rc_num;
     int rc_str;
     int parse_rc;
 
-    rc_num = coo_json_extract_double(cmd->payload, field, &tx);
+    rc_num = coo_json_extract_double(cmd->payload, field, &loss);
     if (rc_num == COO_JSON_EXTRACT_OK) {
-        if (!(tx > 0.0 && tx <= 1.0)) {
+        if (!(loss >= 0.0 && loss < 1.0)) {
             return -ERANGE;
         }
-        *transmission = tx;
+        *transmission = 1.0 - loss;
         return 0;
     }
 
     rc_str = coo_json_extract_string(cmd->payload, field, db_text, sizeof(db_text));
     if (rc_str == COO_JSON_EXTRACT_OK) {
-        parse_rc = route_loss_parse_db_string(db_text, &tx);
+        parse_rc = route_loss_parse_db_string(db_text, transmission);
         if (parse_rc != 0) {
             return parse_rc;
         }
-        *transmission = tx;
         return 0;
     }
 
@@ -288,10 +288,13 @@ static bool route_loss_route_is_split(const char *route)
     return false;
 }
 
-static int route_loss_append_tx(char *payload, size_t payload_len, size_t *offset,
+static int route_loss_append_loss(char *payload, size_t payload_len, size_t *offset,
                                 double tx)
 {
-    return coo_json_append(payload, payload_len, offset, "%.6f", tx);
+    /* Planned static losses exceed 100 dB; six decimals would report loss=1
+     * and erase the remaining transmission on readback.
+     */
+    return coo_json_append(payload, payload_len, offset, "%.17g", 1.0 - tx);
 }
 
 static int route_loss_query_response(const struct coo_cmd_request *cmd,
@@ -319,7 +322,7 @@ static int route_loss_query_response(const struct coo_cmd_request *cmd,
                 coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
                 return coo_cmd_error(out, cmd, "route_loss response too large");
             }
-            if (route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
+            if (route_loss_append_loss(payload, sizeof(payload), &offset, tx) != 0) {
                 return coo_cmd_error(out, cmd, "route_loss response too large");
             }
         }
@@ -342,7 +345,7 @@ static int route_loss_query_response(const struct coo_cmd_request *cmd,
         }
         if (coo_json_append(payload, sizeof(payload), &offset, "\"%s\":",
                             route_loss_laser_names[i]) != 0 ||
-            route_loss_append_tx(payload, sizeof(payload), &offset, tx) != 0) {
+            route_loss_append_loss(payload, sizeof(payload), &offset, tx) != 0) {
             return coo_cmd_error(out, cmd, "route_loss response too large");
         }
     }
@@ -580,7 +583,7 @@ static int split_channel_index_from_key(const char *key, uint8_t *index)
 {
     char channel[8] = {0};
 
-    if (coo_cmd_key_suffix_segment_copy(key, "split", channel, sizeof(channel)) != 0) {
+    if (coo_cmd_key_suffix_segment_copy(key, "mems/split", channel, sizeof(channel)) != 0) {
         return -ENOENT;
     }
 
@@ -634,7 +637,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     double requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double ratio3_probe = 0.0;
     uint32_t cycle_ms = 0U;
-    uint32_t off_in_s = 0U;
+    uint32_t stop_in_s = 0U;
     const char *failed_switch = NULL;
     bool has_cycle_ms = false;
     int parse_rc;
@@ -673,10 +676,10 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
     requested[2] = 1.0 - requested[0] - requested[1];
 
-    if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
-                                      &off_in_s, NULL) != 0 ||
-        off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-        return coo_cmd_error(out, cmd, "invalid off_in_s");
+    if (coo_json_extract_optional_u32(cmd->payload, "stop_in_s",
+                                      &stop_in_s, NULL) != 0 ||
+        stop_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return coo_cmd_error(out, cmd, "invalid stop_in_s");
     }
 
     if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
@@ -690,7 +693,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "cycle_ms replaces toggle_rate_hz");
     }
 
-    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, off_in_s,
+    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, stop_in_s,
                                   &state, &failed_switch);
     if (rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "split route references missing switch");

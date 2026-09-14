@@ -110,13 +110,13 @@ static int append_attenuator_physical_coeff_json(char *payload,
 	return coo_json_append(payload, payload_len, off,
 			       "\"%s\":{\"fvoa_50pct_mv\":%.12g,"
 			       "\"slope_inv_fvoa_mv\":%.12g,"
-			       "\"max_atten_db\":%.12g,\"gain\":%.12g,"
+			       "\"max_atten_db\":%.12g,\"gain\":%.12g,\"rms_db\":%.9g,"
 			       "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g]}",
 			       name,
 			       coeffs->fvoa_50pct_mv,
 			       coeffs->slope_inv_fvoa_mv,
 			       coeffs->max_atten_db,
-			       coeffs->gain,
+			       coeffs->gain, coeffs->rms_db,
 			       (double)coeffs->correction_coeff[0],
 			       (double)coeffs->correction_coeff[1],
 			       (double)coeffs->correction_coeff[2],
@@ -273,6 +273,15 @@ static int parse_attenuator_coeff_object(const char *json,
 				    &out->max_atten_db) != COO_JSON_EXTRACT_OK ||
 	    coo_json_extract_double(object_json, "gain",
 				    &out->gain) != COO_JSON_EXTRACT_OK) {
+		return -EINVAL;
+	}
+
+	/* This is a replacement model: omitted RMS must not inherit the old fit's
+	 * confidence. A caller may explicitly supply zero for an exact model.
+	 */
+	out->rms_db = ATTENUATOR_DEFAULT_RMS_DB;
+	rc = coo_json_extract_double(object_json, "rms_db", &out->rms_db);
+	if (rc == COO_JSON_EXTRACT_ERR || !isfinite(out->rms_db) || out->rms_db < 0.0) {
 		return -EINVAL;
 	}
 
@@ -544,6 +553,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		stored_coeffs.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 		stored_coeffs.physical[0].max_atten_db = physical[0].max_atten_db;
 		stored_coeffs.physical[0].gain = physical[0].gain;
+		stored_coeffs.physical[0].rms_db = physical[0].rms_db;
 		memcpy(stored_coeffs.physical[0].correction_coeff,
 		       physical[0].correction_coeff,
 		       sizeof(stored_coeffs.physical[0].correction_coeff));
@@ -551,6 +561,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		stored_coeffs.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 		stored_coeffs.physical[1].max_atten_db = physical[1].max_atten_db;
 		stored_coeffs.physical[1].gain = physical[1].gain;
+		stored_coeffs.physical[1].rms_db = physical[1].rms_db;
 		memcpy(stored_coeffs.physical[1].correction_coeff,
 		       physical[1].correction_coeff,
 		       sizeof(stored_coeffs.physical[1].correction_coeff));

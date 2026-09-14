@@ -235,42 +235,89 @@ flowchart TD
 ```mermaid
 flowchart TD
   Command[measure_throughput request] --> Stop{stop field present}
-  Stop -- yes --> StopReq[clear selected monitor or both monitors]
-  Stop -- no --> Validate[validate laser, fiber, format, autolevel, off_in_s]
+  Stop -- yes --> StopReq[stop selected streams and their autolevel lasers under lock]
+  Stop -- no --> Validate[validate laser, output, fiber, format, autolevel, off_in_s]
   Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> PdPower[enable selected photodiode relay]
-  PdPower --> AutoStart{autolevel enabled}
+  Map --> Route[apply requested input/output route]
+  Route --> StartLock[lock; stop previous autolevel laser if replacing its source]
+  StartLock --> PdPower[enable selected photodiode relay]
+  PdPower --> Loss[capture source and return transmission: explicit override, else TIB default, else unity]
+  Loss --> Arm[store monitor state]
+  Arm --> AutoStart{autolevel enabled}
   AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
-  AutoStart -- no --> Arm[store monitor state under lock]
-  Seed --> Arm
-  Arm --> Ok[return status ok]
-  StopReq --> Ok
+  AutoStart -- no --> Ref[reset normalized history; cache source and supply ADC reference]
+  Seed --> Ref
+  Ref --> Ok[unlock and return status ok]
+  ADC[each 20 ms: latch reference before ADC conversion] --> Ring[store signed net mV and reference at existing fixed-ring index]
+  Ring --> Average[mean normalized readings; PD scatter plus correlated dark and calibration floors]
+  StopReq --> Stopped{laser shutdown succeeded}
+  Stopped -- yes --> Ok
+  Stopped -- no --> StopError[disable streaming and autolevel; retain laser for retry; return error]
 
-  Thread[throughput_monitor_thread every 100 ms] --> Snapshot[copy monitor state]
-  Snapshot --> Active{channel active}
-  Active -- no --> Sleep[k_sleep 100 ms]
+  Thread[throughput_monitor_thread every 100 ms] --> Lock[lock current channel state]
+  Lock --> Active{channel active}
+  Active -- no --> Unlock[unlock]
   Active -- yes --> Timeout{off_in expired}
-  Timeout -- yes --> Clear[clear monitor]
+  Timeout -- yes --> Clear[stop stream and its autolevel laser; retain identity and log if shutdown fails]
   Timeout -- no --> PdOn{photodiode relay still on}
   PdOn -- no --> Clear
-  PdOn -- yes --> Auto{autolevel}
-  Auto -- yes --> Adjust[adjust attenuator or laser level from PD mean]
-  Auto -- no --> Publish
-  Adjust --> Sync[write updated counters and level]
-  Sync --> Publish[build JSON or binary telemetry]
+  PdOn -- yes --> Capture[capture PD and source snapshot before next input]
+  Average --> Capture
+  Capture --> Auto{autolevel}
+  Auto -- yes --> Gate{startup or high/low bypass or full process window since input change}
+  Gate -- yes --> Adjust[adjust attenuator or laser; bright backoff first]
+  Gate -- no --> Sync
+  Auto -- no --> Sync
+  Adjust --> Update[refresh acquisition reference; retain normalized history]
+  Update --> Sync[unlock]
+  Sync --> Publish[build JSON or binary from captured snapshot]
   Publish --> OutQ[enqueue outbound_queue best effort]
-  OutQ --> Sleep
-  Clear --> Sleep
+  OutQ --> Sleep[k_sleep 100 ms]
+  Clear --> Unlock
+  Unlock --> Sleep
 
-  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable autolevel]
-  LaserChange[laser command changes same laser] --> StopMonitor[clear monitor]
+  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; refresh reference; retain autolevel laser for shutdown]
+  LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
+```
+
+```mermaid
+flowchart TD
+  AutoFit[existing automatic final fit] --> Accepted{both physical fits accepted}
+  Accepted -- yes --> Install[install coefficients and final residual RMS together]
+  Accepted -- no --> Keep[retain previous model and RMS]
+  Manual[manual coefficient replacement] --> RMS{rms_db supplied}
+  RMS -- yes --> Validate[validate finite nonnegative]
+  RMS -- no --> Default[2 dB default for replacement model]
+  Validate --> Install
+  Default --> Install
+  Install --> Save[save coefficient record including RMS when requested]
+  Install --> Estimate[pair transmission and sigma_T from hypot of physical RMS values]
+  Estimate --> Source[combine with laser flux uncertainty]
+  Source --> ADCRef[acquisition reference; correlated uncertainty across window]
+```
+
+Notebook collection and display:
+
+```mermaid
+flowchart TD
+  MQTT[Python MQTT callback] --> Kind{throughput topic}
+  Kind -- yes --> Collect[enqueue JSON or binary payload; no log entry]
+  Collect --> Decode[collector decodes into bounded record history]
+  Decode --> CSV[snapshot and CSV retain original values]
+  Decode --> Plot[plot timer copies only displayed tail]
+  Plot --> Panels[throughput and dB loss; PD band; S/N; source; flux]
+  Kind -- no --> Logs[dispatch replies, warnings, and log messages]
+  Logs --> Buffer[logging handler buffers latest 500 records]
+  Buffer --> Pane[kernel asyncio task refreshes changed content at most twice per second]
+  Pause[pause or close plot] --> DisplayOnly[stop display updates; acquisition continues]
+  Cleanup[rerun or clean up message pane] --> Cancel[cancel task; restore previous logger]
 ```
 
 ## 12. MEMS Router and Toggler Flow
 
 ```mermaid
 flowchart TD
-  Command[mems or memsroute command] --> Lock[lock router/switch]
+  Command[mems or mems/route command] --> Lock[lock router/switch]
   Lock --> Target[store requested state or tick pattern]
   Target --> Timer[periodic k_timer]
   Timer --> Wake[wake MEMS router thread]
@@ -472,7 +519,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Request[laser level effect request] --> Parse[validate laser name, level, autooff_s]
+  Request[laser value effect request] --> Parse[validate laser name, value, autooff_s]
   Parse --> Settings[read laser channel settings]
   Settings --> StopTP[stop throughput monitor for this laser]
   StopTP --> SetOutput[hispec_laser_set_output_percent_autooff]
@@ -498,6 +545,19 @@ flowchart TD
   DisableTec -- no --> CurrentOff[stop current only]
   TecOff --> Wait
   CurrentOff --> Wait
+```
+
+```mermaid
+flowchart TD
+  Defaults[compiled diode table] --> Noise[3 percent fractional and 1 percent of compiled maximum power floor]
+  Noise --> Policy[per-laser app policy]
+  NVS[validated NVS policy] --> Policy
+  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; existing stop behavior]
+  Validate --> Policy
+  Policy --> Cache[existing laser module cache under laser lock]
+  Policy --> Persist[save on persist request; no Maiman programming for noise fields]
+  Cache --> Estimate[estimate power and hypot fractional plus constant uncertainty]
+  Estimate --> Reference[throughput acquisition reference and correlated uncertainty]
 ```
 
 ## 22. Status Response Assembly Flow

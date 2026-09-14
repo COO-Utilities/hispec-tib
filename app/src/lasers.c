@@ -1710,6 +1710,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !float_is_valid(props->wavelength_nm) ||
 	    !float_is_valid(settings->current_set_calibration_pct) ||
+	    !float_is_valid(settings->fractional_noise) || settings->fractional_noise < 0.0 ||
+	    !float_is_valid(settings->constant_noise_mw) || settings->constant_noise_mw < 0.0 ||
 	    !float_is_valid(props->tec_max_current_a) ||
 	    !float_is_valid(props->dlambda_dT_nm_per_k) ||
 	    !float_is_valid(props->dlambda_dA_nm_per_ma) ||
@@ -1957,8 +1959,6 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
 }
 
 int laser_estimate_flux(enum hispec_laser_id id,
-			double fractional_noise,
-			double constant_noise_mw,
 			struct hispec_laser_flux_estimate *out)
 {
 	laserprops_t properties;
@@ -1969,6 +1969,8 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	double photon_j;
 	double wavelength_m;
 	double power_err_mw;
+	double fractional_noise;
+	double constant_noise_mw;
 
 	if (out == NULL || id < 0 || id >= HISPEC_LASER_COUNT) {
 		return -EINVAL;
@@ -1981,6 +1983,8 @@ int laser_estimate_flux(enum hispec_laser_id id,
 		return -EAGAIN;
 	}
 	properties = laser_settings[id].properties;
+	fractional_noise = laser_settings[id].fractional_noise;
+	constant_noise_mw = laser_settings[id].constant_noise_mw;
 	current_ma = laser_output_estimate[id].current_ma;
 	tec_temperature_c = laser_output_estimate[id].tec_temperature_c;
 	k_mutex_unlock(&laser_lock);
@@ -2008,9 +2012,7 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	wavelength_m = out->wavelength_nm * 1.0e-9;
 	photon_j = PLANCK_J_S * LIGHT_M_PER_S / wavelength_m;
 	power_w = power_mw * 1.0e-3;
-	power_err_mw = sqrt((power_mw * (double)fractional_noise) *
-			    (power_mw * (double)fractional_noise) +
-			    (double)constant_noise_mw * (double)constant_noise_mw);
+	power_err_mw = hypot(power_mw * fractional_noise, constant_noise_mw);
 
 	out->power_mw = power_mw;
 	out->power_err_mw = power_err_mw;

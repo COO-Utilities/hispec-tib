@@ -18,25 +18,41 @@
 
 #define PHOTODIODE_CHANNEL_COUNT 2
 
+#define PHOTODIODE_ADC_FULL_SCALE_MV 2048.0
+#define PHOTODIODE_ADC_LSB_MV 0.0625
+#define PHOTODIODE_ADC_MAX_MV (PHOTODIODE_ADC_FULL_SCALE_MV - PHOTODIODE_ADC_LSB_MV)
+#define PHOTODIODE_ADC_USABLE_MV 2000.0
+
 #define PHOTODIODE_DEFAULT_DARK_MV 0.0
 #define PHOTODIODE_DEFAULT_LOWEST_DARK_MV 0.0
 #define PHOTODIODE_DEFAULT_DARK_NOISE_RMS_MV 0.0
-#define PHOTODIODE_DARK_MIN_MV -5000.0
-#define PHOTODIODE_DARK_MAX_MV 5000.0
+#define PHOTODIODE_DARK_MIN_MV (-PHOTODIODE_ADC_FULL_SCALE_MV)
+#define PHOTODIODE_DARK_MAX_MV PHOTODIODE_ADC_FULL_SCALE_MV
 #define PHOTODIODE_NOISE_RMS_MIN_MV 0.0
-#define PHOTODIODE_NOISE_RMS_MAX_MV 5000.0
+#define PHOTODIODE_NOISE_RMS_MAX_MV PHOTODIODE_ADC_FULL_SCALE_MV
 #define PHOTODIODE_RESPONSIVITY_MIN_A_PER_W 0.000001
 #define PHOTODIODE_RESPONSIVITY_MAX_A_PER_W 10.0
-#define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0
+#define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0e7
 #define PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A 1.0e12
+/* RMS scatter in the fixed 500 ms window, in ADC-input mV reconstructed from
+ * conversion codes. With the default effective gains and responsivities,
+ * 10 mV RMS is nominally 0.538 pW RMS at YJ and 17.3 pW RMS at HK:
+ * P_rms = 0.010 V / (transimpedance_v_per_a * responsivity_a_per_w).
+ * These are wavelength-dependent optical equivalents; real signal changes
+ * within the window also contribute to this warning statistic.
+ */
 #define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 10.0
 #define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 10.0
 #define PHOTODIODE_YJ_DEFAULT_RESPONSIVITY_A_PER_W 0.93
 #define PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W 0.60971
-#define PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A 5.0e10
-#define PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A 2.375e9
+/* Effective transimpedance at the ADC input: detector datasheet gain combined
+ * with the Rev. 2 0-10 V to 0-2 V divider and any intervening analog gain.
+ * YJ: 1.0e11 V/A * 0.2; HK: 4.75e9 V/A * 0.2. Keep this as one calibrated
+ * setting; the power conversion must not apply the divider a second time.
+ */
+#define PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A 2.0e10
+#define PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A 9.5e8
 #define PHOTODIODE_FIXED_WINDOW_MS 500U
-#define PHOTODIODE_INSTANT_ERR_MV 0.1875
 #define PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV 1.5
 
 struct app_pd_channel_settings;
@@ -62,6 +78,22 @@ struct photodiode_window_result {
 	int16_t max_raw;
 };
 
+/* Internal throughput reference supplied by the monitor, latched before ADC I/O.
+ * scale_per_mv includes detector response, routes, and emitted photon flux.
+ * Zero scale disables normalization; signed net samples are not rectified.
+ */
+struct photodiode_throughput_reference {
+	double scale_per_mv;
+	double source_relative_error;
+};
+
+struct photodiode_throughput_result {
+	uint16_t samples;
+	double mean;
+	double pd_error;
+	double error;
+};
+
 struct photodiode_channel_status {
 	int16_t raw;
 	double mv;
@@ -73,6 +105,7 @@ struct photodiode_channel_status {
 	struct photodiode_window_result configurable_window;
 	struct photodiode_window_result last_configurable_window;
 	struct photodiode_window_result fixed_window;
+	struct photodiode_throughput_result throughput;
 	struct photodiode_window_result last_fixed_window;
 	struct photodiode_window_result dark_window;
 	struct photodiode_window_result lowest_dark_window;
@@ -91,6 +124,16 @@ void photodiode_thread(void *p1, void *p2, void *p3);
 
 /** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
+
+/**
+ * @brief Update the acquisition reference without clearing normalized history.
+ *
+ * Throughput calls this after changing its source. reset starts a new measurement
+ * (also used when stopping), clearing only normalized history. May wait for the
+ * runtime mutex; performs no hardware I/O, persistence, or publication.
+ */
+void photodiode_set_throughput_reference(enum photodiode_channel channel,
+	struct photodiode_throughput_reference reference, bool reset);
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.

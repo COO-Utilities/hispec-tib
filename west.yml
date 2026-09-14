@@ -12,22 +12,21 @@ manifest:
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: main #v4.4.0
+      revision: e60d3379133c4315504e9113ecdcc05fbe552756
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
         name-allowlist:
           - cmsis_6      # required by the ARM port for Cortex-M [TODO is this the true rational? I thoguht this was for flash/debug? -JIB"]
           - hal_stm32    # required by the st32 nucleo board
-          - hal_rpi_pico # required for RP2350 (W5500-EVB-Pico2)
     - name: zscilib
       remote: zephyrproject-rtos
-      revision: master
+      revision: bf1cbf1a1661521cf3f528db40d842b700ecd826
       path: modules/lib/zscilib
     # Out-of-tree DAC Driver for optical attenuators
     - name: dac7578
       url: https://github.com/CaltechOpticalObservatories/dac7578
-      revision: develop
+      revision: cc375f8610f895c99a0f689d43fe052c6e0e7cf5
       path: modules/dac/dac7578
     # Out-of-tree DS2408 1-Wire GPIO driver (enable once repo exists)
     # - name: ds2408

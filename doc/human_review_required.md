@@ -8,6 +8,14 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Validate the PCB Rev. 2 analog changes on hardware
+  - Confirm both REF3333-fed DAC references, all populated DAC/op-amp paths,
+    both 0-2 V ADC paths, the 20 Hz filters, ADC noise/stability, and sampler
+    timing before persisting new attenuator calibrations.
+  - The first Rev. 2 boot reached the ADS1115 configuration-register write,
+    where the STM32 I2C driver reported NACK (not timeout, arbitration loss, or
+    bus error). Check ADC VDD, ADDR-to-GND, PB8/PB9 continuity, pull-ups, and an
+    acknowledged `0x48` address before changing firmware address or bus speed.
 - [x] sort out FVOA ripple, is ok?
   - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns
@@ -30,6 +38,10 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Decisions To Make
+- Decide settling allowances and validate filtered-noise
+  uncertainty before changing acquisition timing or statistics. See
+  `photodiode_notes.md` for the firmware/notebook window analysis and historical
+  noise-model discrepancies.
 
 ## TODOs
 - start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.

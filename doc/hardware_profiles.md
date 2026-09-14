@@ -105,5 +105,5 @@ Implemented routes:
 - `yj_calin -> yj_cal`
 - `hk_calin -> hk_cal`
 
-The `split` command uses the `*_calin -> *_split` routes. `ratio1` and
+The `mems/split` command uses the `*_calin -> *_split` routes. `ratio1` and
 `ratio2` are requested; `ratio3` is the computed remainder.

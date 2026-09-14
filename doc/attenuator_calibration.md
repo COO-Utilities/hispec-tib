@@ -34,8 +34,8 @@ flowchart TD
   CalState --> Status
   CalState --> Meta
   CalState --> Chunk
-  Fit[accepted fit] --> Runtime[attenuator runtime coefficients]
-  Fit --> Persist{persist requested}
+  Fit[accepted final fit and its residual RMS] --> Runtime[attenuator runtime coefficients and rms_db]
+  Runtime --> Persist{persist requested}
   Persist -- yes --> NVS[app settings NVS]
   Persist -- no --> Runtime
 ```
@@ -257,10 +257,10 @@ flowchart TD
   FitInput --> Optimize[weighted dB-space model fit]
   Optimize --> Metrics[residuals, correlation, span]
   Metrics --> Accepted{both physical fits accepted}
-  Accepted -- no --> CompleteFailed[complete with fit failed]
-  Accepted -- yes --> Apply[apply runtime coefficients]
+  Accepted -- no --> CompleteFailed[complete with fit failed; keep prior coefficients and RMS]
+  Accepted -- yes --> Apply[apply runtime coefficients and final rms_db together]
   Apply --> Persist{persist requested}
-  Persist -- yes --> Store[NVS settings]
+  Persist -- yes --> Store[NVS coefficient record including rms_db]
   Persist -- no --> CompleteOK[complete with runtime-only coeffs]
   Store --> CompleteOK
 ```
@@ -353,12 +353,30 @@ actual sweep-point grid. If the residual solve is ill-conditioned or fails that
 monotonicity check, firmware leaves `correction_coeff` as all zeros and keeps
 the base fit.
 
+The final, unweighted `sqrt(sum(residual_db^2) / point_count)` is installed as
+`rms_db` with each accepted physical model. It describes empirical model error
+across the fitted range, so the same RMS is used at all commanded attenuations.
+It is not a parameter standard error and is not divided by sqrt(point count)
+again. This can be conservative in regions with smaller residuals.
+
+Both physical fits must be accepted before installation. Failure leaves the
+previous coefficients and their RMS unchanged. Persistence saves RMS with the
+coefficient record; a new manual model without `rms_db` uses the 2 dB default.
+The existing acquisition, fit acceptance, and residual correction are unchanged.
+No additional sweep, offline calibration, or lab operation is required.
+
+Runtime transmission uncertainty is `T * ln(10)/10 * hypot(rms1, rms2)`. The
+physical devices' errors combine independently, but calibration error across
+repeated throughput samples is treated as correlated and does not average away.
+The throughput sampler combines it with the laser estimate uncertainty and
+PD-only error; the stream's `tp_rms_err` remains PD-only.
+
 ## Notebook Inspection
 
 `tools/attenuator_calibration_lab.ipynb` is the lab-side inspection script for
 this flow. It has two intentionally separate paths:
 
-- the embedded path runs `atten_calibrate_auto`, retrieves
+- the embedded path runs `atten_calibrate`, retrieves
   `atten_calibration_data`, and plots retained records, bridge events,
   residuals, and the coefficient-derived 2D attenuation surface;
 - the manual exploration path directly calls `atten()`, sleeps for the
@@ -368,7 +386,7 @@ this flow. It has two intentionally separate paths:
 The manual path supports both the firmware-style weighted fit and a SciPy
 least-squares exploratory fit. Its plots show propagated photodiode and
 normalization uncertainty; coefficients should be reviewed before any
-`set_atten_coeff(..., persist=True)` command is used.
+`atten_coeff(..., persist=True)` command is used.
 
 An accepted coefficient object contains:
 
@@ -378,6 +396,7 @@ An accepted coefficient object contains:
   "slope_inv_fvoa_mv": 0.00303104,
   "max_atten_db": 48.36,
   "gain": 1.533,
+  "rms_db": 0.75,
   "correction_coeff": [0.12, -0.03, 0.01, 0.0]
 }
 ```

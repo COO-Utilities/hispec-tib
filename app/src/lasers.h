@@ -22,6 +22,12 @@
 struct app_laser_channel_settings;
 struct k_work_q;
 
+/* Optical-power estimate uncertainty: 3% of output plus a 1%-of-maximum
+ * baseline derived from the compiled diode table when defaults are created.
+ */
+#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.03
+#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.01
+
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
 
@@ -340,12 +346,13 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
  * @brief Estimate emitted photon flux from the laser module's operating state.
  *
  * The laser module owns the current/TEC setpoints used for this estimate. This
- * reads only module state under a mutex; it does not perform Modbus I/O, change
+ * reads the same cached per-laser fractional_noise and constant_noise_mw as
+ * its property settings: sigma_power = hypot(power * fractional_noise,
+ * constant_noise_mw). This is model/calibration uncertainty, not independent
+ * sample noise. Reads only module state under a mutex; it does not perform Modbus I/O, change
  * GPIO state, enqueue, publish, or persist settings.
  */
 int laser_estimate_flux(enum hispec_laser_id id,
-			double fractional_noise,
-			double constant_noise_mw,
 			struct hispec_laser_flux_estimate *out);
 
 /** @brief Return current-emission on-time tracked by this module since boot. */

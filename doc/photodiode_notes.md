@@ -1,3 +1,59 @@
+## Sampling review
+
+Both ADC inputs have a capacitor after the 0-10 V to 0-2 V divider. Treating
+the divider's source resistance and capacitor as a nominal 20 Hz single-pole
+RC gives a 7.96 ms time constant and about 55 ms settling to 0.1% of a step.
+
+- Firmware samples **each channel at 50 Hz**; the ADS1115 uses **250 SPS**
+  conversions, about 4 ms each, sequentially within the 20 ms loop.
+- Atten auto-calibration waits its configurable averaging duration plus 4 ms after
+  each DAC change. Its rolling window can include the RC transient; the pad
+  also does not cover a complete sampling period or window-duration rounding.
+- `pd/<channel>.window` is the fixed 500 ms window. The manual notebook's
+  550 ms wait leaves roughly 50 ms nominal settling margin; the grid notebook's
+  1.1 s wait leaves substantially more. Sampling phase and conversion latency
+  affect the margins. The Python grid helper accepts shorter waits without
+  checking whether the window contains only settled measurements.
+- Window mean uncertainty uses `RMS / sqrt(N)` and then adds the stored dark
+  RMS in quadrature. Independence is approximate: ideal white noise through
+  this RC has adjacent-sample correlation `exp(-2*pi*20*0.020) = 0.081`.
+  For 25 samples, correlation increases the ideal mean standard error by about
+  8% relative to independent samples. This is not a validated correction factor
+  for the actual detector/ADC chain; dark RMS is also not dark-mean uncertainty.
+- A single-pole 20 Hz cutoff has equivalent noise bandwidth about 31.4 Hz,
+  and only 4.1 dB attenuation at the 25 Hz Nyquist frequency of the recorded
+  samples. It is not a sharp anti-alias filter. Keep the existing rates until
+  measured noise and timing justify changing them.
+- The 10 mV warning compares fixed-window scatter, so optical steps and drift
+  can trigger it as well as electronics noise.
+
+## Future 20 Hz measurements (not implemented)
+
+Rev. 2 lab observations suggest substantially lower PD noise and reliable ADC
+communication after removing the level shifters. A future candidate is one
+fresh ADC result per channel every 50 ms, used directly for throughput with an
+error appropriate to that measurement. The 500 ms rolling window would remain
+available for diagnostics and other callers. This could remove throughput's
+per-reading normalization history; the external contract is measurements with
+errors at a defined interval, independently of internal averaging choices.
+
+The current implementation remains at 250 SPS conversion, 50 Hz per-channel
+acquisition, nominal 10 Hz throughput, and a 500 ms monitoring window. A possible
+64 SPS converter setting needs about 31.3 ms for two sequential conversions
+before I2C and scheduling overhead, so it requires evaluation with a 50 ms loop,
+not a change to the converter rate alone. Use the existing ADC timing logs
+(`worst_loop_us`, `min_margin_us`, missed intervals, and overruns) plus throughput
+timing under representative load before selecting rates. Validate the resulting
+noise, filtering/aliasing, and per-measurement errors as part of that decision.
+
+## Historical exploratory noise model
+
+The example below retains its original assumptions for review. Its `/2`
+detector gains and HK `500 Hz` noise bandwidth do not describe the present ADC
+input chain. The `noise_bandwidth` parameter is used as equivalent noise
+bandwidth, which must not be confused with the RC cutoff. Reconcile the full
+noise model before using it for predictions.
+
 ```python
 import astropy.units as u
 from astropy import constants as const
@@ -71,12 +127,12 @@ class Photodiode(Detector):
                  noise = 7.5 * u.femtowatt / u.Hz ** 0.5,
                  gain = 1e11 * u.V/u.A,
                  saturation = 110 * u.picowatt,
-                 adc_noise=0.187 * u.uV,
+                 adc_noise=62.5 * u.uV,
                  saturation_wavelength = 1550 * u.nm,
                  resp_wavelength_nm: "np.ndarray | None" = None,
                  noise_bandwidth:float=20*u.Hz,
                  sample_rate:float = 50 * u.Hz,
-                 adc_gain:float = (2**16-1)/(2*6.144)/u.V,
+                 adc_gain:float = (2**15)/2.048/u.V,
                  resp_values: "np.ndarray | None" = None) -> None:
         super().__init__(name)
         self.in_p = self.add_port("in", PortDirection.IN)
@@ -125,8 +181,8 @@ class Photodiode(Detector):
         device_noise_volts = self.noise*np.sqrt(self.noise_bandwidth) * self._resp_a_per_w(self.saturation_wavelength)  * self.gain
 
         # ((7.5e-15 * np.sqrt(20) * .95e11 * 1e3 / 2))
-        # (2 * 6.144 / (2 ** 16 - 1) * 1e3)
-        # adc_noise = ((7.5e-15*sqrt(20)*.95e11*1e3/2))/(2*6.144/(2**16-1)*1e3)
+        # (2.048 / (2 ** 15) * 1e3)
+        # adc_noise = ((7.5e-15*sqrt(20)*.95e11*1e3/2))/(2.048/(2**15)*1e3)
 
         total_noise = np.sqrt(device_noise_volts**2 + shot_noise_volts**2 + self.adc_noise**2).to(u.V)
 
@@ -155,3 +211,14 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
     
 
 ```
+
+Throughput normalization belongs to the sampler's fixed window. The monitor
+supplies a cached photons-to-throughput factor after a source change; each ADC
+conversion latches its own reference and stores it beside the existing ring
+slot. No ADC readings are downsampled to the 100 ms telemetry cadence. Signed
+net readings are normalized before averaging, so attenuation changes do not
+mix denominators. Source calibration uncertainty is conservatively correlated
+across the window; the existing dark RMS floor is converted by the mean scale.
+The PD-only scatter retains the existing RMS/sqrt(N) convention. This change
+does not establish that filtered samples are independent, compensate analog
+settling, or correct clipping. Those remain physical validation concerns.

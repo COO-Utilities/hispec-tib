@@ -83,6 +83,40 @@ GET; a key with payload is a SET. See:
 
 Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 
+## Throughput Lab Notebook
+
+Open `tools/throuput_monitor_lab.ipynb` with the workspace `.venv` kernel.
+For the interactive Matplotlib backend, install into that same environment:
+
+```bash
+./.venv/bin/python -m pip install ipympl
+```
+
+The throughput section provides a fixed receive-log widget (500 records,
+updated at most twice per second), binary acquisition, a nonblocking five-panel
+dashboard, snapshot export, and explicit
+selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
+referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
+measurement and the laser used by its autolevel operation; purely passive
+monitoring leaves manual laser output alone. The notebook also explicitly sets
+the selected laser level to zero. Bank power and TECs remain available. This
+shutdown behavior requires firmware built with the corresponding
+throughput-monitor change.
+
+Throughput packets feed collection directly and are excluded from logging.
+The dashboard shows logarithmic throughput with a linked dB-loss axis, PD input
+with the 400–1600 mV control band, detector and total-throughput S/N, source
+current/attenuation, and estimated photon flux. Calibration uncertainty can
+limit total S/N even when detector S/N is high. Only the displayed record tail
+is converted per frame. Display gaps for nonpositive log values or undefined
+S/N do not change the underlying records or CSV exports.
+
+Both photodiodes can stream. Dual autolevel remains available for engineering
+use, but normal instrument light paths overlap and should use only one loop.
+
+Saved outputs are historical observations. Run cells individually; dark,
+calibration, and manual laser tests are separate lab operations.
+
 ## Documentation Build
 
 Documentation is Markdown-first Sphinx with Doxygen XML extraction through
@@ -121,9 +155,6 @@ hispec-tib/
 
 ## Open items
 
-- Review W5500/Pico references and remove
-- Reconcile DAC7578/twelve-FVOA hardware description with current six logical
-  attenuator channels and single `dac7578` device handle.
 - Resolve command/spec mismatches listed in `doc/human_review_required.md`.
 
 

@@ -24,6 +24,8 @@
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
+/* Per-physical model residual RMS until an accepted calibration supplies it. */
+#define ATTENUATOR_DEFAULT_RMS_DB 2.0
 /* Low-order empirical correction in modeled dB space, fitted after base coeffs. */
 #define ATTENUATOR_MODEL_CORRECTION_TERMS 6U
 
@@ -32,6 +34,7 @@ struct attenuator_model_coeffs {
     double slope_inv_fvoa_mv;
     double max_atten_db;
     double gain;
+    double rms_db; /* Residual model uncertainty in dB, shared across samples. */
     float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
@@ -205,14 +208,14 @@ bool attenuator_set_linear(struct attenuator *drv, double linear);
 bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
 
 /**
- * @brief Read logical transmission and propagate physical FVOA b uncertainty.
+ * @brief Read logical transmission and propagate each physical model residual RMS.
  *
- * This may block on I2C through attenuator_get(). The uncertainty inputs are
- * standard deviations in the model coordinate b for physical attenuator 1 and
- * 2. A zero uncertainty reports the nominal transmission with zero error.
+ * This may block on I2C through attenuator_get(). The stored per-physical rms_db
+ * values combine as hypot(rms1, rms2); sigma_T = T * ln(10)/10 * sigma_dB.
+ * These are independent physical-model contributions, each correlated across
+ * repeated measurements. Nominal transmission and hardware state are unchanged.
  */
 bool attenuator_estimate_transmission(struct attenuator *drv,
-                                      double sigma_b1, double sigma_b2,
                                       struct attenuator_transmission_estimate *out);
 
 /**

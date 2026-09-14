@@ -328,7 +328,7 @@ bool coo_cmd_key_matches_prefix(const char *key, const char *prefix);
  * Return the suffix after an exact or slash-delimited command-key prefix.
  *
  * Returns an empty string for exact matches, missing inputs, or non-matches.
- * For `laserbank/power/auto` with prefix `laserbank/power`, this returns
+ * For `laser/bankpower/auto` with prefix `laser/bankpower`, this returns
  * `auto`.
  */
 const char *coo_cmd_key_suffix_after(const char *key, const char *prefix);

@@ -23,7 +23,8 @@ Runtime ownership is:
   app/cross-domain command handlers.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
-- `attenuator.c`: DAC channel setup/read/write and coefficient application.
+- `attenuator.c`: DAC channel setup/read/write, coefficient application, and
+  transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
 - `maiman.c`: raw/scaled Modbus register transactions.
@@ -33,8 +34,8 @@ Runtime ownership is:
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
-  noise warnings.
-- `photodiode_command.c`: command-schema validation for `pd` and `pdsettings`.
+  noise warnings, plus throughput normalization and fixed-window statistics.
+- `photodiode_command.c`: command-schema validation for `pd` and `pd/settings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
@@ -117,11 +118,11 @@ command spec table for special cases such as always-query commands,
 suffix-triggered actions, and custom payload classifiers.
 
 Empty or no-payload requests are queries except for dispatcher built-ins such as
-`reboot`, app actions such as `laserbank/clearfaults`, and laser-bank topic suffixes such as
-`laserbank/power/override_on`. Non-empty payloads normally mean an effect
+`reboot`, app actions such as `laser/clearfaults`, and laser-bank topic suffixes such as
+`laser/bankpower/override_on`. Non-empty payloads normally mean an effect
 request, but documented query payloads remain queries: `status`, laser status
 endpoints, laser name-only queries, laser tune/settings readbacks, and
-`memsroute/route_loss` payloads that contain only `route`.
+`mems/route/loss` payloads that contain only `route`.
 
 Serial commands use the same classification after line normalization by the
 shared command-dispatch helper:
@@ -190,7 +191,7 @@ for ordinary IPv4 profile changes.
 DNS and NTP addresses are profile/settings data. Unsupported DNS/NTP fields are
 reported by command code. Manual DNS is applied to Zephyr's resolver when DNS is
 compiled in and a nonzero DNS server is configured; DHCP DNS is used when DHCP
-provides it and `preferdhcpdns` is true.
+provides it and `prefer_dhcpdns` is true.
 
 MQTT broker hostnames are accepted only when they resolve before settings are
 updated. Numeric IPv4 brokers do not require DNS. After a broker setting change,
@@ -238,3 +239,18 @@ items are centralized in `human_review_required.md`.
   queued as non-best-effort so it is retried until MQTT is available.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.
+
+Throughput input alignment: `throughput_monitor.c` owns the cached laser,
+attenuator, and route estimate; `photodiode.c` latches the supplied conversion
+reference before each ADC conversion and owns normalized fixed-window means
+and uncertainties. The sampler performs no source hardware I/O. Source changes
+preserve per-reading references; measurement restart clears normalized history
+without resetting raw PD diagnostics. Publication uses the captured source
+snapshot and normalized window, with no post-adjustment estimator rereads.
+
+At measurement start, route transmissions resolve from explicit settings first,
+then compiled TIB path defaults (switch products and planned static attenuation),
+then unity for unspecified route/laser pairs. Default totals stay in flash and
+do not consume override slots. The command applies the named input/output route;
+the monitor captures its effective losses for this run. Restart the measurement
+to pick up changed route-loss settings.

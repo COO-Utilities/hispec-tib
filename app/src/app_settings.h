@@ -70,6 +70,8 @@ struct app_attenuator_physical_settings {
 	double max_atten_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
+	/* Residual model RMS, installed/persisted together with these coefficients. */
+	double rms_db;
 	/* Optional empirical dB residual correction; all zeros means disabled. */
 	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
@@ -102,6 +104,7 @@ struct app_pd_channel_settings {
 	bool lowest_dark_valid;
 	double noise_warn_rms_mv;
 	double responsivity_a_per_w;
+	/* ADC-input V/A, combining detector transimpedance and the analog divider/gain. */
 	double transimpedance_v_per_a;
 	enum app_pd_power_mode power;
 	uint32_t autooff_s;
@@ -119,6 +122,9 @@ struct app_laserbank_settings {
 struct app_laser_channel_settings {
 	laserprops_t properties;
 	double current_set_calibration_pct;
+	/* App-owned optical-power uncertainty; never programmed into Maiman. */
+	double fractional_noise;
+	double constant_noise_mw;
 	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
 	 * as an operator-settable laser calibration value.
 	 */
@@ -276,10 +282,11 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 					     double total_emitting_s,
 					     bool persist);
 /**
- * @brief Get one route-loss record.
+ * @brief Get effective route transmission, including compiled TIB defaults.
  *
- * Missing records are not errors; @p transmission is returned as 1.0 so
- * optical math can treat unspecified routes as loss-free.
+ * Explicit RAM/NVS records override defaults, including transmission 1.0.
+ * Unspecified route/laser pairs return 1.0. May wait on the settings mutex;
+ * performs no hardware or flash I/O. Throughput captures this value at start.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission);

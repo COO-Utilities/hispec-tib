@@ -22,9 +22,9 @@ comparison artifact, not a replacement for `commands.md`.
   names `MSG_GET` and `MSG_SET` are dispatch-slot names, not user-visible
   protocol verbs.
 - Empty/no-payload requests are queries except no-payload actions such as `reboot`
-  and `laserbank/clearfaults`, plus laserbank topic-suffix actions.
+  and `laser/clearfaults`, plus laserbank topic-suffix actions.
 - Non-empty payload requests are effect/action requests except documented query
-  shapes for `status`, laser query endpoints, `memsroute/route_loss`, and
+  shapes for `status`, laser query endpoints, `mems/route/loss`, and
   `pd` dark-status.
 - The old MQTT `msg_type` payload convention is not used by command ingress.
 - Pure queries are not recorded as `lastcommand`; supported effect-capable
@@ -46,29 +46,30 @@ comparison artifact, not a replacement for `commands.md`.
 | Command key | MQTT request topic | Default response topic | Serial form |
 | --- | --- | --- | --- |
 | `help` | `cmd/<device>/req/help` | `cmd/<device>/resp/help` | `help` (dispatcher built-in) |
+| `help/options` | `cmd/<device>/req/help/options` | `cmd/<device>/resp/help/options` | `help/options` |
 | `ip` | `cmd/<device>/req/ip` | `cmd/<device>/resp/ip` | `ip [payload]` |
 | `mqtt` | `cmd/<device>/req/mqtt` | `cmd/<device>/resp/mqtt` | `mqtt [payload]` |
 | `time` | `cmd/<device>/req/time` | `cmd/<device>/resp/time` | `time [payload]` |
 | `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot` |
 | `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` (dispatcher built-in) |
-| `memsroute` | `cmd/<device>/req/memsroute` | `cmd/<device>/resp/memsroute` | `memsroute [payload]` |
-| `memsroute/route_loss` | `cmd/<device>/req/memsroute/route_loss` | `cmd/<device>/resp/memsroute/route_loss` | `memsroute/route_loss <payload>` |
+| `mems/route` | `cmd/<device>/req/mems/route` | `cmd/<device>/resp/mems/route` | `mems/route [payload]` |
+| `mems/route/loss` | `cmd/<device>/req/mems/route/loss` | `cmd/<device>/resp/mems/route/loss` | `mems/route/loss <payload>` |
 | `mems` | `cmd/<device>/req/mems` | `cmd/<device>/resp/mems` | `mems` |
 | `mems/<switch>` | `cmd/<device>/req/mems/<switch>` | `cmd/<device>/resp/mems/<switch>` | `mems/<switch> [payload]` |
-| `split` | `cmd/<device>/req/split` | `cmd/<device>/resp/split` | `split <payload>` |
-| `split/<channel>` | `cmd/<device>/req/split/<channel>` | `cmd/<device>/resp/split/<channel>` | `split/<channel>` |
+| `mems/split` | `cmd/<device>/req/mems/split` | `cmd/<device>/resp/mems/split` | `mems/split <payload>` |
+| `mems/split/<channel>` | `cmd/<device>/req/mems/split/<channel>` | `cmd/<device>/resp/mems/split/<channel>` | `mems/split/<channel>` |
 | `measure_throughput` | `cmd/<device>/req/measure_throughput` | `cmd/<device>/resp/measure_throughput` | `measure_throughput <payload>` |
-| `laserbank/power` | `cmd/<device>/req/laserbank/power` | `cmd/<device>/resp/laserbank/power` | `laserbank/power[/mode] [payload]` |
-| `laserbank/clearfaults` | `cmd/<device>/req/laserbank/clearfaults` | `cmd/<device>/resp/laserbank/clearfaults` | `laserbank/clearfaults` |
-| `laserbank/heater` | `cmd/<device>/req/laserbank/heater` | `cmd/<device>/resp/laserbank/heater` | `laserbank/heater[/mode] [payload]` |
+| `laser/bankpower` | `cmd/<device>/req/laser/bankpower` | `cmd/<device>/resp/laser/bankpower` | `laser/bankpower[/mode] [payload]` |
+| `laser/clearfaults` | `cmd/<device>/req/laser/clearfaults` | `cmd/<device>/resp/laser/clearfaults` | `laser/clearfaults` |
+| `laser/bankheater` | `cmd/<device>/req/laser/bankheater` | `cmd/<device>/resp/laser/bankheater` | `laser/bankheater[/mode] [payload]` |
 | `laser` | `cmd/<device>/req/laser` | `cmd/<device>/resp/laser` | `laser <payload>` |
 | `laser/tune` | `cmd/<device>/req/laser/tune` | `cmd/<device>/resp/laser/tune` | `laser/tune <payload>` |
 | `laser/status` | `cmd/<device>/req/laser/status` | `cmd/<device>/resp/laser/status` | `laser/status <payload>` |
 | `laser/settings` | `cmd/<device>/req/laser/settings` | `cmd/<device>/resp/laser/settings` | `laser/settings <payload>` |
 | `atten/<laser>` / `atten/<laser>/coeff` | `cmd/<device>/req/atten/<laser>[/coeff]` | `cmd/<device>/resp/atten/<laser>[/coeff]` | `atten/<laser> [payload]`; `atten/<laser>/coeff [payload]` |
 | `pd` | `cmd/<device>/req/pd` | `cmd/<device>/resp/pd` | `pd [payload]` |
-| `pdsettings/<channel>` | `cmd/<device>/req/pdsettings/<channel>` | `cmd/<device>/resp/pdsettings/<channel>` | `pdsettings/<channel> [payload]` |
-| `temp` | `cmd/<device>/req/temp` | `cmd/<device>/resp/temp` | `temp` |
+| `pd/settings/<channel>` | `cmd/<device>/req/pd/settings/<channel>` | `cmd/<device>/resp/pd/settings/<channel>` | `pd/settings/<channel> [payload]` |
+| `temps` | `cmd/<device>/req/temps` | `cmd/<device>/resp/temps` | `temps` |
 | `status` | `cmd/<device>/req/status` | `cmd/<device>/resp/status` | `status [payload]` |
 
 ## Implementation Map
@@ -142,7 +143,7 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Serial shorthand is implemented in command dispatch:
   `serialguard off`, `serialguard 60`, and `serialguard seconds=60`.
 
-### `memsroute` and `memsroute/route_loss`
+### `mems/route` and `mems/route/loss`
 
 - Owner: `memsroute_get()`, `memsroute_set()` in
   `app/src/mems_command.c`.
@@ -160,7 +161,7 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Enqueue: can emit `mems_timing_quantized` warnings.
 - Serial shorthand remains implemented in `app/src/command.c`.
 
-### `split`
+### `mems/split`
 
 - Owner: `splitting_get()`, `splitting_set()` in `app/src/mems_command.c`.
 - Side effects: applies the three MEMS switches that make up an AS splitter
@@ -173,12 +174,13 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 - Owner: `measure_throughput_set()` in `app/src/throughput_command.c` and
   `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
-- Side effects: starts or stops throughput telemetry, can enable photodiode
-  power, and with autolevel enabled can set attenuation and laser current.
+- Side effects: applies the requested output route and captures its loss at
+  start, starts or stops throughput telemetry, can enable photodiode power, and
+  with autolevel enabled can set attenuation and laser current.
 - Enqueue: telemetry is best-effort through `outbound_queue`; command handlers
   do not publish directly.
 
-### `laserbank/power`
+### `laser/bankpower`
 
 - Owner: `laserbank_power()` in `app/src/laser_command.c`; bank power behavior
   lives in `app/src/lasers.c`.
@@ -187,7 +189,7 @@ which slow resources it can touch, and known implementation-specific caveats.
   override-off best-effort writes currents to 0 before powering the bank off.
 - Blocking: Modbus and bank boot/off sleeps can block the command executor.
 
-### `laserbank/clearfaults`
+### `laser/clearfaults`
 
 - Owner: `laserbank_clearfaults()` in `app/src/laser_command.c`.
 - Board restriction: TIB only.
@@ -197,7 +199,7 @@ which slow resources it can touch, and known implementation-specific caveats.
 - Classification note: the dispatch table points both internal slots at the
   action handler; ingress classifies this as a no-payload action.
 
-### `laserbank/heater`
+### `laser/bankheater`
 
 - Owner: `laserbank_heater()` in `app/src/laser_command.c`, persisted mode in
   `app_settings.c`, policy/cadence in `laserbank_tempcontrol.c`, and relay GPIO
@@ -262,18 +264,18 @@ which slow resources it can touch, and known implementation-specific caveats.
   dark with `dark_mv` and optional `rms_mv`, resets lowest-dark tracking with
   `reset_lowest`, and optionally persists the selected channel's dark settings.
 
-### `pdsettings/<yj|hk>`
+### `pd/settings/<yj|hk>`
 
 - Owner: `pd_settings_get()`, `pd_settings_set()` in
   `app/src/photodiode_command.c`.
 - Board restriction: TIB only.
 - Side effects: updates runtime photodiode response settings, relay power
   intent, auto-off duration, and optional NVS persistence. Dark values are not
-  accepted or reported by `pdsettings`.
+  accepted or reported by `pd/settings`.
 
-### `temp`
+### `temps`
 
-- Owner: `temp_get()` in `app/src/command.c`, cached ambient state in
+- Owner: `temps_get()` in `app/src/command.c`, cached ambient state in
   `housekeeping.c`, and laser-bank temperature reads through `lasers.c`.
 - Side effects: reads cached ambient state and can perform Modbus reads for
   laser TEC temperatures on TIB.

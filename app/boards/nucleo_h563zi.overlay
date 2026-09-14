@@ -14,7 +14,7 @@
 	};
 
 	zephyr,user {
-		laser_power_gpios = <&gpiob 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>; /* CN9 D72 */
+		laser_power_gpios = <&gpiob 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* CN9 D72 */
 
 		/* Board-type strap inputs are solder jumpers to ground. */
 		board-type-tib-gpios = <&gpioa 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; /* D35 */
@@ -87,7 +87,7 @@
 &gpiob {
 	laser_bank_power_default: laser-bank-power-default {
 		gpio-hog;
-		gpios = <2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		gpios = <2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 		output-low;
 		line-name = "laser-bank-power-default-off";
 	};
@@ -149,7 +149,7 @@
 
 		channel@0 {
 			reg = <0>;
-			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,gain = "ADC_GAIN_1";
 			zephyr,reference = "ADC_REF_INTERNAL";
 			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 5)>;  // 250 sps 4 is 125
 			zephyr,resolution = <16>;
@@ -158,7 +158,7 @@
 
 		channel@2 {
 			reg = <2>;
-			zephyr,gain = "ADC_GAIN_1_3";
+			zephyr,gain = "ADC_GAIN_1";
 			zephyr,reference = "ADC_REF_INTERNAL";
 			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 5)>;
 			zephyr,resolution = <16>;
@@ -217,9 +217,9 @@
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "internal-flexible";
+		ti,reference = "external";
 		ti,avdd-microvolt = <3300000>;
-		ti,vref-microvolt = <2500000>;
+		ti,vref-microvolt = <3300000>;
 	};
 
 	dac7678_b: dac7678@4a {
@@ -228,9 +228,9 @@
 		status = "okay";
 		#io-channel-cells = <1>;
 		ti,clear-mode = "disabled";
-		ti,reference = "internal-flexible";
+		ti,reference = "external";
 		ti,avdd-microvolt = <3300000>;
-		ti,vref-microvolt = <2500000>;
+		ti,vref-microvolt = <3300000>;
 	};
 
 	pcal6416a: pcal6416a@21 {
