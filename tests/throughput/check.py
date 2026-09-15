@@ -763,3 +763,70 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('Maiman exception and sticky failure regressions passed')
+
+# Test allocation policy using production code and a linear optical model stub.
+allocator_source=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#define MAX(a,b) ((a)>(b)?(a):(b))
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#define CLAMP(v,l,h) MIN(MAX(v,l),h)
+#define ATTENUATOR_DB_EPSILON 1e-6
+#define snprintk snprintf
+#define coo_cmd_runtime_emit(...) ((void)0)
+struct attenuator_dac_cfg {double voltage,attenuation_db,limit;};
+struct attenuator_model_coeffs {double scale;};
+struct attenuator {struct attenuator_dac_cfg dac_cfg1,dac_cfg2;struct attenuator_model_coeffs coeff1,coeff2;double attenuation_db;};
+static int writes,fail_device=-1;
+static double attenuator_drive_limit_mv(const struct attenuator_dac_cfg *c){return c->limit;}
+static double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *c,double v){return v*c->scale;}
+static bool attenuator_set_physical_db(struct attenuator *a,unsigned i,double db){
+ ++writes;if((int)i==fail_device)return false;
+ struct attenuator_dac_cfg *d=i?&a->dac_cfg2:&a->dac_cfg1;
+ d->voltage=db/(i?a->coeff2.scale:a->coeff1.scale);d->attenuation_db=db;return true;
+}
+'''
+allocator_source += block('attenuator.c','static double attenuator_physical_max_db(')
+allocator_source += block('attenuator.c','bool attenuator_set_db(')
+allocator_source += r'''
+static struct attenuator pair(double x,double y,double m1,double m2){
+ return (struct attenuator){.dac_cfg1={x,999,m1},.dac_cfg2={y,999,m2},.coeff1={1},.coeff2={1}};
+}
+int main(void){
+ struct attenuator a=pair(36,0,39.2791,34.8723);
+ assert(attenuator_set_db(&a,41));assert(a.dac_cfg1.attenuation_db==36 && a.dac_cfg2.attenuation_db==5);
+ int n=writes;assert(attenuator_set_db(&a,41) && writes==n);
+ a=pair(39,35,40,40);assert(attenuator_set_db(&a,40));
+ assert(a.dac_cfg1.attenuation_db==20 && a.dac_cfg2.attenuation_db==20);
+ a=pair(35.9263,0,39.2791,34.8723);assert(attenuator_set_db(&a,40.70283));
+ assert(a.dac_cfg1.attenuation_db<39 && fabs(a.dac_cfg2.attenuation_db-4.77653)<1e-8);
+ a=pair(0,0,10,40);assert(attenuator_set_db(&a,45));
+ assert(a.dac_cfg1.attenuation_db==10 && a.dac_cfg2.attenuation_db==35);
+ a=pair(10,10,40,40);fail_device=1;assert(!attenuator_set_db(&a,30));
+ assert(a.dac_cfg1.attenuation_db==15 && a.dac_cfg2.attenuation_db==10 && a.attenuation_db==25);
+ fail_device=-1;
+ for(int j=0;j<10000;j++){
+  double m1=1+rand()%60,m2=1+rand()%60;
+  double x=(double)rand()/RAND_MAX*m1,y=(double)rand()/RAND_MAX*m2;
+  double target=(double)rand()/RAND_MAX*(m1+m2);
+  a=pair(x,y,m1,m2);assert(attenuator_set_db(&a,target));
+  assert(fabs(a.attenuation_db-target)<1e-5);
+  assert(a.dac_cfg1.attenuation_db>=-1e-8 && a.dac_cfg1.attenuation_db<=m1+1e-8);
+  assert(a.dac_cfg2.attenuation_db>=-1e-8 && a.dac_cfg2.attenuation_db<=m2+1e-8);
+  assert((a.dac_cfg1.attenuation_db-x)*(target-x-y)>=-1e-8);
+  assert((a.dac_cfg2.attenuation_db-y)*(target-x-y)>=-1e-8);
+ }
+ return 0;
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile=Path(tmp)/'allocator.c';exe=Path(tmp)/'allocator'
+    cfile.write_text(allocator_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('directional attenuator allocation regressions passed')

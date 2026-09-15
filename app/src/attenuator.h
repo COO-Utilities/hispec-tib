@@ -184,10 +184,11 @@ bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_in
 /**
  * @brief Set total logical attenuation in dB.
  *
- * The first physical attenuator is driven to its modeled maximum before the
- * second attenuator is used. This overrides any prior individual physical
- * attenuator set point and may enqueue a warning if the requested attenuation
- * exceeds the modeled drive range.
+ * Add dB to the less-attenuated device first, remove dB from the more-attenuated
+ * device first, then share changes once balanced. Neither device moves against
+ * the requested total direction; an unchanged total retains the allocation.
+ * May block on DAC I2C and enqueue a clamp warning. A partial failure retains
+ * confirmed writes and returns false; no automatic rollback is attempted.
  */
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
 

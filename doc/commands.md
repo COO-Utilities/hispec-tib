@@ -1134,9 +1134,10 @@ command wait budget, this command returns `{"error":"busy"}`.
     resolve to the matching TIB attenuator channel, but canonical command docs
     use the full logical laser names.
   - Each logical attenuator is a pair of physical FVOAs. Total set commands use
-    the full modeled range of the first physical attenuator before using the
-    second, and override any individual physical set point made through the C
-    attenuator API.
+    directional balancing: increases first use the less-attenuated device,
+    decreases first use the more-attenuated device, then share changes once
+    balanced. Both devices respect their modeled limits; an unchanged total
+    retains the existing physical allocation.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
   - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
     drive span. The firmware converts them to DAC codes using the

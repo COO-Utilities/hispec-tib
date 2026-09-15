@@ -800,48 +800,70 @@ static double attenuator_physical_max_db(const struct attenuator_dac_cfg *dac_cf
 
 bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
 {
-    double max_db1;
-    double max_total_db;
-    double db1;
-    double db2;
+    double current1, current2, max1, max2, lower1, upper1, db1, db2;
     char context[64];
 
-    if (drv == NULL || attenuation_db < 0.0) {
+    if (drv == NULL || !isfinite(attenuation_db) || attenuation_db < 0.0) {
         return false;
     }
 
-    max_db1 = attenuator_physical_max_db(&drv->dac_cfg1, &drv->coeff1);
-    max_total_db = max_db1 + attenuator_physical_max_db(&drv->dac_cfg2, &drv->coeff2);
+    /* Voltages are owned by the DAC layer. Re-evaluate them under the active
+     * coefficients, including coefficient replacement that preserves total dB.
+     */
+    current1 = attenuator_model_voltage_to_db(&drv->coeff1, drv->dac_cfg1.voltage);
+    current2 = attenuator_model_voltage_to_db(&drv->coeff2, drv->dac_cfg2.voltage);
+    max1 = attenuator_physical_max_db(&drv->dac_cfg1, &drv->coeff1);
+    max2 = attenuator_physical_max_db(&drv->dac_cfg2, &drv->coeff2);
+    if (!isfinite(current1) || !isfinite(current2) || !isfinite(max1) || !isfinite(max2)) {
+        return false;
+    }
+    drv->dac_cfg1.attenuation_db = current1;
+    drv->dac_cfg2.attenuation_db = current2;
+    drv->attenuation_db = current1 + current2;
 
-	if (attenuation_db > max_total_db) {
-		snprintk(context, sizeof(context),
-			 "requested=%.3f clamped=%.3f", attenuation_db, max_total_db);
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "attenuator_clamped",
-					     .msg = "attenuator command exceeded modeled range and was clamped",
-					     .context = context,
-				     });
-		attenuation_db = max_total_db;
-	}
+    if (attenuation_db > max1 + max2) {
+        snprintk(context, sizeof(context), "requested=%.3f clamped=%.3f",
+                 attenuation_db, max1 + max2);
+        coo_cmd_runtime_emit(command_runtime_get(),
+            &(const struct coo_cmd_runtime_emit_args){
+                .type = COO_CMD_RUNTIME_EMIT_WARNING,
+                .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+                .code = "attenuator_clamped",
+                .msg = "attenuator command exceeded modeled range and was clamped",
+                .context = context,
+            });
+        attenuation_db = max1 + max2;
+    }
+    if (fabs(attenuation_db - drv->attenuation_db) <= ATTENUATOR_DB_EPSILON) {
+        return true;
+    }
 
-    db1 = attenuation_db < max_db1 ? attenuation_db : max_db1;
+    /* Choose the most balanced allocation allowed by the requested direction.
+     * On an increase neither device decreases; on a decrease neither increases.
+     * This uses the less-attenuated device first when adding dB, and the more-
+     * attenuated one first when removing dB, avoiding the first-device plateau
+     * handoff where our optical model is least reliable.
+     */
+    if (attenuation_db > drv->attenuation_db) {
+        lower1 = MAX(current1, attenuation_db - max2);
+        upper1 = MIN(max1, attenuation_db - current2);
+    } else {
+        lower1 = MAX(0.0, attenuation_db - current2);
+        upper1 = MIN(current1, attenuation_db);
+    }
+    db1 = CLAMP(attenuation_db / 2.0, lower1, upper1);
     db2 = attenuation_db - db1;
-    if (db2 < ATTENUATOR_DB_EPSILON) {
-        db2 = 0.0;
-    }
-
-    if (!attenuator_set_physical_db(drv, 0, db1)) {
+    if (fabs(db1 - current1) > ATTENUATOR_DB_EPSILON &&
+        !attenuator_set_physical_db(drv, 0, db1)) {
         return false;
     }
-    if (!attenuator_set_physical_db(drv, 1, db2)) {
+    /* Keep the confirmed first write even if the second device fails. */
+    drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
+    if (fabs(db2 - current2) > ATTENUATOR_DB_EPSILON &&
+        !attenuator_set_physical_db(drv, 1, db2)) {
         return false;
     }
-
-    drv->attenuation_db = db1 + db2;
-
+    drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
     return true;
 }
 
@@ -952,6 +974,11 @@ int attenuator_apply_coefficients_preserve_db(
     if (!attenuator_set_db(drv, status.attenuation_db)) {
         drv->coeff1 = old_coeff1;
         drv->coeff2 = old_coeff2;
+        drv->dac_cfg1.attenuation_db =
+            attenuator_model_voltage_to_db(&drv->coeff1, drv->dac_cfg1.voltage);
+        drv->dac_cfg2.attenuation_db =
+            attenuator_model_voltage_to_db(&drv->coeff2, drv->dac_cfg2.voltage);
+        drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
         return -EIO;
     }
 
