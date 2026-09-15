@@ -228,7 +228,7 @@ The fitted model parameters for each physical FVOA are:
 fvoa_50pct_mv
 slope_inv_fvoa_mv
 max_atten_db
-correction_coeff[4]
+correction_coeff[6]
 ```
 
 where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage,
@@ -236,7 +236,7 @@ where `fvoa_50pct_mv` captures the FVOA-to-FVOA variation in turn-on voltage,
 `max_atten_db` captures the physical leakage floor of one FVOA at maximum
 attenuation. The firmware estimates `max_atten_db` from the final three usable
 fit points and then fits the two shape parameters with that floor held fixed.
-After that base physical fit, firmware can fit a four-term Chebyshev residual
+After that base physical fit, firmware can fit a six-term Chebyshev residual
 correction in model dB space:
 
 ```text

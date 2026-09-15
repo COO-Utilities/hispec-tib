@@ -507,10 +507,12 @@ int main(void) {
     cal.persistent=true;
     for(int i=0;i<2;++i) cal.fit[i]=(struct attenuator_calibration_fit_metrics){
         .accepted=true,.fvoa_50pct_mv=2600+i,.slope_inv_fvoa_mv=0.003,.max_atten_db=50,
-        .rms_db=0.75+i};
+        .rms_db=0.75+i,.correction_coeff={0,0,0,0,0.25f,-0.5f}};
     assert(apply_fit_to_settings_locked()==0 && saves==1);
     assert(saved.physical[0].rms_db==0.75 && saved.physical[1].rms_db==1.75);
     assert(a->coeff1.rms_db==0.75 && a->coeff2.rms_db==1.75);
+    assert(saved.physical[0].correction_coeff[4]==0.25f && saved.physical[1].correction_coeff[5]==-0.5f);
+    assert(a->coeff1.correction_coeff[5]==-0.5f && a->coeff2.correction_coeff[4]==0.25f);
     assert(attenuator_channel_valid(&saved));
     assert(attenuator_estimate_transmission(a,&out));
     assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(0.75,1.75))<1e-12);
@@ -553,7 +555,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(exe)],check=True)
 
 coeff = {'fvoa_50pct_mv':2500,'slope_inv_fvoa_mv':0.002,'max_atten_db':55,
-         'gain':1.533,'correction_coeff':[0,0,0,0],'rms_db':0.75}
+         'gain':1.533,'correction_coeff':[0]*6,'rms_db':0.75}
 parsed = host._decode_atten_physical_coeff(coeff,'dac1')
 assert parsed.rms_db == 0.75
 assert host._atten_physical_coeff_payload('dac1',parsed)['rms_db'] == 0.75
@@ -1383,6 +1385,143 @@ print('Python active/passive measurement command checks passed')
 entry=(ROOT/'app/src/command.c').read_text().split('CMD_SPEC_TIB("measure_throughput"',1)[1].split('COO_CMD_HELP_EFFECT',1)[0]
 allowed_keys=set(re.search(r'"(laser,[^"\n]+)"',entry).group(1).split(','))
 for _,payload in sent: assert set(payload)<=allowed_keys
+
+# Actual calibration classifier, six-term normal solve, evaluator and derivatives.
+source = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <errno.h>
+#define ATTENUATOR_MODEL_CORRECTION_TERMS 6
+#define MODEL_CORRECTION_START_DB (-10.0 * log10(.99))
+#define ATTEN_CAL_CORRECTION_PIVOT_EPS 1e-12
+#define PHOTODIODE_ADC_MAX_MV 2047.9375
+#define PHOTODIODE_ADC_USABLE_MV 2000.0
+#define PHOTODIODE_ADC_LSB_MV .0625
+#define ATTEN_CAL_SNR_USABLE 5.0
+'''
+for file,marker in [('attenuator.h','struct attenuator_model_coeffs {'),
+                    ('photodiode.h','struct photodiode_window_result {'),
+                    ('attenuator_calibration.c','enum atten_cal_record_classification {'),
+                    ('attenuator_calibration.c','struct atten_cal_measurement {')]:
+    source += block(file,marker) + (';\n' if marker.startswith('enum') else '')
+for file,marker in [('attenuator.c','static bool attenuator_model_correction_active('),
+                    ('attenuator.c','bool atten_model_correction_basis('),
+                    ('attenuator.c','static double attenuator_model_correction_db('),
+                    ('attenuator_calibration.c','static int solve_correction_normal_equation('),
+                    ('attenuator_calibration.c','static void build_measurement_from_pd_window(')]:
+    source += block(file,marker)
+source += r'''
+int main(void) {
+ struct photodiode_window_result w={.valid=true,.sample_length=11,.mean_mv=1675.585227,
+  .mean_net_mv=1675.585227,.mean_net_err_mv=238.157314,.max_mv=PHOTODIODE_ADC_MAX_MV};
+ struct atten_cal_measurement m;
+ build_measurement_from_pd_window(&w,&m);assert(m.classification==ATTEN_CAL_CLASSIFICATION_SATURATED);
+ w.max_mv=2000;w.mean_mv=w.mean_net_mv=1900;w.mean_net_err_mv=1;
+ build_measurement_from_pd_window(&w,&m);assert(m.classification==ATTEN_CAL_CLASSIFICATION_SATURATED);
+ w.max_mv=1999.9375;
+ build_measurement_from_pd_window(&w,&m);assert(m.classification==ATTEN_CAL_CLASSIFICATION_OK);
+ w.failed_samples=11;
+ build_measurement_from_pd_window(&w,&m);assert(m.classification==ATTEN_CAL_CLASSIFICATION_ADC_ERROR);
+ double normal[6][6]={0},rhs[6]={0};float fit[6]={0};
+ struct attenuator_model_coeffs c={.max_atten_db=60,.correction_coeff={1,-2,3,-4,5,-6}};
+ for(int i=0;i<80;i++) {
+  double base=MODEL_CORRECTION_START_DB+(60-MODEL_CORRECTION_START_DB)*(i+.5)/80;
+  double b[6],target=attenuator_model_correction_db(&c,base,NULL,NULL);
+  assert(atten_model_correction_basis(base,60,b));
+  for(int j=0;j<6;j++) {rhs[j]+=b[j]*target;for(int k=0;k<6;k++)normal[j][k]+=b[j]*b[k];}
+ }
+ assert(solve_correction_normal_equation(normal,rhs,fit)==0);
+ for(int j=0;j<6;j++)assert(fabs(fit[j]-c.correction_coeff[j])<1e-5);
+ memset(normal,0,sizeof(normal));assert(solve_correction_normal_equation(normal,rhs,fit)==-ERANGE);
+ for(int i=1;i<80;i++) {
+  double base=60.*i/80,db,dm,h=1e-4;
+  double y=attenuator_model_correction_db(&c,base,&db,&dm);
+  double fd=(attenuator_model_correction_db(&c,base+h,NULL,NULL)-attenuator_model_correction_db(&c,base-h,NULL,NULL))/(2*h);
+  assert(fabs(fd-db)<1e-7);
+  c.max_atten_db=60+h;double plus=attenuator_model_correction_db(&c,base,NULL,NULL);
+  c.max_atten_db=60-h;double minus=attenuator_model_correction_db(&c,base,NULL,NULL);
+  c.max_atten_db=60;assert(fabs((plus-minus)/(2*h)-dm)<1e-7);
+  printf("%.12g %.12g\n",base,y);
+ }
+ assert(attenuator_model_correction_db(&c,0,NULL,NULL)==0);
+ assert(attenuator_model_correction_db(&c,60,NULL,NULL)==0);
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'correction.c',Path(tmp)/'correction'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    values=np.loadtxt(io.StringIO(subprocess.check_output([str(exe)],text=True)))
+    np.testing.assert_allclose(host._atten_correction_db(values[:,0],60,[1,-2,3,-4,5,-6]),values[:,1],atol=1e-10)
+assert host.ATTENUATOR_MODEL_CORRECTION_TERMS==6
+assert '#define ATTENUATOR_MODEL_CORRECTION_TERMS 6U' in (ROOT/'app/src/attenuator.h').read_text()
+assert '#define APP_NVS_SCHEMA_VERSION 13U' in (ROOT/'app/src/app_settings.c').read_text()
+print('Clipped windows, six-term recovery, singular fallback, analytic derivatives and C/Python parity passed')
+
+# Exercise all coefficient JSON writers with nonzero fifth/sixth terms.
+source=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
+#include <math.h>
+#include <errno.h>
+#define ATTENUATOR_MODEL_CORRECTION_TERMS 6
+struct coo_cmd_response {char payload[2048];};
+static struct coo_cmd_response message;
+static int coo_json_append(char *p,size_t n,size_t *off,const char *fmt,...) {
+ va_list args;va_start(args,fmt);int count=vsnprintf(p+*off,n-*off,fmt,args);va_end(args);
+ if(count<0 || (size_t)count>=n-*off)return -ENOSPC;*off+=count;return 0;
+}
+static struct coo_cmd_response *atten_cal_telemetry_begin(size_t *off,const char *event){
+ *off=0;assert(!coo_json_append(message.payload,sizeof(message.payload),off,"{\"event\":\"%s\"",event));return &message;
+}
+static const char *physical_name(uint8_t physical){assert(physical==0);return "dac1";}
+static void atten_cal_publish_telemetry(struct coo_cmd_response *m){puts(m->payload);}
+'''
+for file,marker in [('attenuator.h','struct attenuator_model_coeffs {'),
+                    ('attenuator_calibration.h','struct attenuator_calibration_fit_metrics {'),
+                    ('attenuator_command.c','static int append_attenuator_physical_coeff_json('),
+                    ('attenuator_calibration.c','static int append_fit_json('),
+                    ('attenuator_calibration.c','static void atten_cal_emit_fit(')]:
+    if marker.startswith('struct '):
+        source+=block(file,marker)
+    else:
+        # These writers contain unmatched JSON braces inside C strings.
+        text=(ROOT/'app/src'/file).read_text()
+        start=text.index(marker)
+        source+=text[start:text.index('\n}',start)+2]+'\n'
+source+=r'''
+int main(void){
+ struct attenuator_model_coeffs c={.correction_coeff={1,-2,3,-4,5,-6}};
+ struct attenuator_calibration_fit_metrics fit={.valid=true,.accepted=true,.correction_coeff={1,-2,3,-4,5,-6}};
+ char payload[2048]="{";size_t off=1;
+ assert(!append_attenuator_physical_coeff_json(payload,sizeof(payload),&off,"dac1",&c));puts(strcat(payload,"}"));
+ strcpy(payload,"{\"base\":0");off=strlen(payload);
+ assert(!append_fit_json(payload,sizeof(payload),&off,"dac1",&fit));puts(strcat(payload,"}"));
+ atten_cal_emit_fit(0,&fit);return 0;
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'coefficient_json.c',Path(tmp)/'coefficient_json'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
+    replies=[json.loads(line) for line in subprocess.check_output([str(exe)],text=True).splitlines()]
+    for reply in replies:
+        assert reply.get('dac1',reply)['correction_coeff']==[1,-2,3,-4,5,-6]
+print('All coefficient JSON writers retain six terms')
+
+for base in ([2500,0.002,55], [2500,0.002,55,1.533]):
+    values=base+[1,-2,3,-4,5,-6]
+    assert host._atten_coeff_tuple('dac1',values)[4]==(1,-2,3,-4,5,-6)
+    assert host._atten_physical_coeff_payload('dac1',values)['correction_coeff']==[1,-2,3,-4,5,-6]
 
 # Relay owner: real locks, fake GPIO transport, queued expiry and elapsed health.
 source = r'''

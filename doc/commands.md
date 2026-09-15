@@ -1074,7 +1074,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "max_atten_db": 55.0,
       "gain": 1.533,
       "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     },
     "dac2": {
       "fvoa_50pct_mv": 2529.45,
@@ -1082,7 +1082,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "max_atten_db": 55.0,
       "gain": 1.533,
       "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     }
   }
   ```
@@ -1097,7 +1097,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "max_atten_db": 48.36,
       "gain": 1.533,
       "rms_db": 2.0,
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0]
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
     },
     "dac2": {
       "fvoa_50pct_mv": 3456.12,
@@ -1105,7 +1105,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "max_atten_db": 61.95,
       "gain": 1.533,
       "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     },
     "persist": true
   }
@@ -1115,7 +1115,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0]},"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0,0.0,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0,0.0,0.0]},"persist":true}
   ```
 
 - **Notes:**
@@ -1142,9 +1142,9 @@ command wait budget, this command returns `{"error":"busy"}`.
     Runtime dB/linear set commands normalize against the modeled open
     transmission at DAC 0, then apply the physical FVOA leakage floor
     `floor_tx = 10^(-max_atten_db / 10)`. `correction_coeff` is an optional
-    four-term Chebyshev residual correction in model dB space. Query responses
+    six-term Chebyshev residual correction in model dB space. Query responses
     always include it. In set payloads, omitting `correction_coeff` leaves the
-    currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0]` to
+    currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` to
     clear it intentionally.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.

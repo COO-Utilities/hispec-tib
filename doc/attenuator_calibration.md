@@ -91,7 +91,7 @@ sequenceDiagram
   Cal->>PD: reset configurable window for dwell_ms
   PD->>PD: exclude in-flight old conversion; fill rounded sample count
   PD-->>Cal: completed current window
-  Cal->>Cal: check owner health; classify saturation and SNR
+  Cal->>Cal: check owner health; classify raw maximum and SNR
   Cal->>Rec: append point/probe/bridge record
   Cal-->>Cal: schedule next point or fit
 ```
@@ -119,8 +119,8 @@ optical level.
 
 The acquisition logic treats photodiode readings as a band:
 
-- `saturated`: the photodiode mean is pinned at the ADC rail, so the optical
-  signal is too bright;
+- `saturated`: at least one valid raw reading reaches the 2000 mV usable-input
+  limit, so the window cannot supply an unbiased calibration ratio;
 - `ok`: the dark-subtracted mean is positive and has enough SNR;
 - `below_snr`: the optical signal is too dim for a useful fitted point.
 
@@ -277,10 +277,11 @@ before/after record indices. Each numbered chunk contains only raw records.
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
 
-Saturation classification is based on the photodiode window mean reaching the
-ADC rail. Window extrema are diagnostic only, since electrical and optical noise
-can produce isolated rail excursions without pinning the diode. Saturated sweep
-records are retained but are not fit candidates and do not trigger bridge
+Saturation classification uses the raw window maximum reaching the 2000 mV
+usable-input limit, before dark subtraction. A partly clipped window can have a
+plausible mean and S/N while biasing normalization, so even an isolated overrange
+reading excludes that window from references, bridge anchors, and fitting.
+Saturated sweep records remain available for diagnosis and do not trigger bridge
 normalization. Below-SNR sweep records trigger a bridge unless the DUT is
 already at the end of the firmware drive range.
 
@@ -338,7 +339,7 @@ logical two-FVOA attenuator. Firmware estimates it from the final three usable
 fit points, propagates that uncertainty into the weighted dB residuals, and
 then optimizes only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
-After the base fit, firmware fits an optional four-term Chebyshev correction to
+After the base fit, firmware fits an optional six-term Chebyshev correction to
 the remaining dB residuals:
 
 ```text
@@ -400,14 +401,23 @@ An accepted coefficient object contains:
   "max_atten_db": 48.36,
   "gain": 1.533,
   "rms_db": 0.75,
-  "correction_coeff": [0.12, -0.03, 0.01, 0.0]
+  "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
 }
 ```
 
-## Power lifetime
+## Power lifetime and correction validation
 
 Calibration holds its selected PD's auto-off inhibition for acquisition, including
 same-channel restart. It checks relay and source operational health before using
 each completed window. Faults terminate acquisition and attempt laser shutdown;
 a failed shutdown retains its identity for an explicit stop/restart. Numerical
 fitting needs no PD power and releases inhibition when acquisition completes.
+
+All six coefficients (`T0` through `T5`) participate in the basis, evaluator, and
+analytic derivatives. A singular/insufficient-data correction or failed
+monotonicity check emits `atten_correction_rejected`; the documented base-fit
+fallback remains available. `fit=ok` indicates an accepted final model and does
+not alone establish that optional correction was accepted; inspect its
+coefficients and warnings. NVS schema 13 resets the earlier application settings
+layout rather than migrating four-term records. Saved notebook outputs remain
+historical captures; reload the host module before requesting new six-term data.

@@ -186,8 +186,10 @@ bool atten_model_correction_basis(double base_db,
     envelope = t * (1.0 - t);
     basis[0] = envelope;
     basis[1] = envelope * x;
-    basis[2] = envelope * (2.0 * x * x - 1.0);
-    basis[3] = envelope * (4.0 * x * x * x - 3.0 * x);
+    /* The common envelope factors out of T_n = 2*x*T_(n-1) - T_(n-2). */
+    for (uint8_t i = 2U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        basis[i] = 2.0 * x * basis[i - 1U] - basis[i - 2U];
+    }
     return true;
 }
 
@@ -198,7 +200,7 @@ bool atten_model_correction_basis(double base_db,
  * slope_inv_fvoa_mv, and max_atten_db still define the erf shutter model plus
  * leakage floor. This ringfenced correction only models the smooth residual
  * left after that fit. Its envelope is zero near open transmission and at the
- * modeled leakage floor so clearing the four coefficients recovers the base
+ * modeled leakage floor so clearing the six coefficients recovers the base
  * model exactly.
  */
 static double attenuator_model_correction_db(const struct attenuator_model_coeffs *coeffs,
@@ -212,7 +214,6 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
     double shape;
     double d_shape_dt;
     double d_corr_dt;
-    double basis[ATTENUATOR_MODEL_CORRECTION_TERMS];
 
     if (d_corr_d_base_db != NULL) {
         *d_corr_d_base_db = 0.0;
@@ -233,17 +234,24 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
     }
 
     x = 2.0 * t - 1.0;
-    if (!atten_model_correction_basis(base_db, coeffs->max_atten_db, basis)) {
-        return 0.0;
+    /* Evaluate T0..T5 and differentiate the same recurrence with respect
+     * to t (dx/dt = 2). Every fitted coefficient affects both inversion and
+     * uncertainty derivatives.
+     */
+    double previous = 1.0, term = x;
+    double previous_derivative = 0.0, derivative = 2.0;
+    shape = coeffs->correction_coeff[0];
+    d_shape_dt = 0.0;
+    for (uint8_t i = 1U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        shape += coeffs->correction_coeff[i] * term;
+        d_shape_dt += coeffs->correction_coeff[i] * derivative;
+        double next = 2.0 * x * term - previous;
+        double next_derivative = 4.0 * term + 2.0 * x * derivative - previous_derivative;
+        previous = term;
+        term = next;
+        previous_derivative = derivative;
+        derivative = next_derivative;
     }
-    shape = (double)coeffs->correction_coeff[0] +
-            (double)coeffs->correction_coeff[1] * x +
-            (double)coeffs->correction_coeff[2] * (2.0 * x * x - 1.0) +
-            (double)coeffs->correction_coeff[3] * (4.0 * x * x * x - 3.0 * x);
-
-    d_shape_dt = 2.0 * (double)coeffs->correction_coeff[1] +
-                 8.0 * x * (double)coeffs->correction_coeff[2] +
-                 (24.0 * x * x - 6.0) * (double)coeffs->correction_coeff[3];
     d_corr_dt = (1.0 - 2.0 * t) * shape + t * (1.0 - t) * d_shape_dt;
     if (d_corr_d_base_db != NULL) {
         *d_corr_d_base_db = d_corr_dt / span;
@@ -251,10 +259,7 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
     if (d_corr_d_max_atten_db != NULL) {
         *d_corr_d_max_atten_db = -d_corr_dt * t / span;
     }
-    return (double)coeffs->correction_coeff[0] * basis[0] +
-           (double)coeffs->correction_coeff[1] * basis[1] +
-           (double)coeffs->correction_coeff[2] * basis[2] +
-           (double)coeffs->correction_coeff[3] * basis[3];
+    return t * (1.0 - t) * shape;
 }
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)

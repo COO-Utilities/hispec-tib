@@ -111,7 +111,7 @@ static int append_attenuator_physical_coeff_json(char *payload,
 			       "\"%s\":{\"fvoa_50pct_mv\":%.12g,"
 			       "\"slope_inv_fvoa_mv\":%.12g,"
 			       "\"max_atten_db\":%.12g,\"gain\":%.12g,\"rms_db\":%.9g,"
-			       "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g]}",
+			       "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]}",
 			       name,
 			       coeffs->fvoa_50pct_mv,
 			       coeffs->slope_inv_fvoa_mv,
@@ -120,7 +120,9 @@ static int append_attenuator_physical_coeff_json(char *payload,
 			       (double)coeffs->correction_coeff[0],
 			       (double)coeffs->correction_coeff[1],
 			       (double)coeffs->correction_coeff[2],
-			       (double)coeffs->correction_coeff[3]);
+			       (double)coeffs->correction_coeff[3],
+			       (double)coeffs->correction_coeff[4],
+			       (double)coeffs->correction_coeff[5]);
 }
 
 static int attenuator_index_from_command(const struct coo_cmd_request *cmd,

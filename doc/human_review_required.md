@@ -8,6 +8,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate owner communication health and calibration repair: one-second
+  checks, five-second sustained-loss shutdown/recovery, relay auto-off during
+  restart, and six-term fits with no clipped reference/bridge anchors. Confirm
+  Modbus errors and ADC/MEMS timing after removing throughput-rate relay reads.
 - [ ] Validate the PCB Rev. 2 analog changes on hardware
   - Confirm both REF3333-fed DAC references, all populated DAC/op-amp paths,
     both 0-2 V ADC paths, the 20 Hz filters, ADC noise/stability, and sampler

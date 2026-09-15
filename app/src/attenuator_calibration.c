@@ -51,6 +51,7 @@
 #include "attenuator.h"
 #include "command.h"
 #include "devices.h"
+#include "housekeeping.h"
 #include "mems_switching.h"
 #include "throughput_monitor.h"
 
@@ -425,7 +426,7 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    "\"slope_inv_fvoa_mv\":%.12g,"
 			    "\"max_atten_db\":%.12g,"
 			    "\"max_atten_sigma_db\":%.12g,"
-			    "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g],"
+			    "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g],"
 			    "\"corr\":%.12g,\"rms_db\":%.12g,"
 			    "\"max_abs_db\":%.12g,\"min_tx\":%.12g,"
 			    "\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
@@ -441,6 +442,8 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    fit != NULL ? (double)fit->correction_coeff[1] : (double)NAN,
 			    fit != NULL ? (double)fit->correction_coeff[2] : (double)NAN,
 			    fit != NULL ? (double)fit->correction_coeff[3] : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[4] : (double)NAN,
+			    fit != NULL ? (double)fit->correction_coeff[5] : (double)NAN,
 			    fit != NULL ? (double)fit->correlation : (double)NAN,
 			    fit != NULL ? (double)fit->rms_db : (double)NAN,
 			    fit != NULL ? (double)fit->max_abs_db : (double)NAN,
@@ -478,14 +481,13 @@ static void build_measurement_from_pd_window(const struct photodiode_window_resu
 	measurement->signal_err_mv = (float) window->mean_net_err_mv;
 	measurement->max_mv = (float) window->max_mv;
 
-	/**
-	 * Decide whether a photodiode window is pinned against the ADC rail.
-	 *
-	 * Saturation uses the voltage before dark subtraction and is based on the
-	 * mean, not the max excursion: a noisy rail sample is diagnostic, but a
-	 * saturated input has the whole averaging window at the wall.
+	/* Calibration ratios require an entirely usable window. Even one clipped
+	 * conversion can bias the mean and its reference/bridge normalization.
+	 * Use the raw maximum (before dark subtraction) and the 2 V linear-input
+	 * limit, not the 2047.9375 mV ADC code rail or a mean-only rail test.
+	 * Retain saturated records for inspection, never as fit/bridge anchors.
 	 */
-	saturated = window->mean_mv >= PHOTODIODE_ADC_MAX_MV;
+	saturated = window->max_mv >= PHOTODIODE_ADC_USABLE_MV;
 
 	if (!(measurement->signal_err_mv > 0.0f) || !isfinite(measurement->signal_err_mv)) {
 		measurement->signal_err_mv = (float)PHOTODIODE_ADC_LSB_MV;
@@ -1603,6 +1605,11 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 	}
 	if (used < ATTENUATOR_MODEL_CORRECTION_TERMS ||
 	    solve_correction_normal_equation(normal, rhs, correction_coeff) != 0) {
+		coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "atten_correction_rejected", .msg = "six-term correction has insufficient points or a singular solve; retaining base fit",
+			.context = physical_name(records == cal.records[0] ? 0U : 1U),
+		});
 		return;
 	}
 	memcpy(coeffs->correction_coeff, correction_coeff, sizeof(coeffs->correction_coeff));
@@ -1617,6 +1624,11 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 			if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
 			    eval.db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db) {
 				memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
+				coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+					.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+					.code = "atten_correction_rejected", .msg = "six-term correction fails monotonicity/evaluation check; retaining base fit",
+					.context = physical_name(records == cal.records[0] ? 0U : 1U),
+				});
 				return;
 			}
 			previous_db = eval.db;
@@ -1768,12 +1780,6 @@ static int apply_fit_to_settings_locked(void)
 			.max_atten_db = cal.fit[0].max_atten_db,
 			.rms_db = cal.fit[0].rms_db,
 			.gain = atten->coeff1.gain,
-			.correction_coeff = {
-				cal.fit[0].correction_coeff[0],
-				cal.fit[0].correction_coeff[1],
-				cal.fit[0].correction_coeff[2],
-				cal.fit[0].correction_coeff[3],
-			},
 		},
 		{
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
@@ -1781,14 +1787,14 @@ static int apply_fit_to_settings_locked(void)
 			.max_atten_db = cal.fit[1].max_atten_db,
 			.rms_db = cal.fit[1].rms_db,
 			.gain = atten->coeff2.gain,
-			.correction_coeff = {
-				cal.fit[1].correction_coeff[0],
-				cal.fit[1].correction_coeff[1],
-				cal.fit[1].correction_coeff[2],
-				cal.fit[1].correction_coeff[3],
-			},
 		},
 	};
+
+	/* Copy the complete basis; no terms may disappear when a fit is installed. */
+	for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		memcpy(physical[i].correction_coeff, cal.fit[i].correction_coeff,
+		       sizeof(physical[i].correction_coeff));
+	}
 
 	if (!cal.fit[0].accepted || !cal.fit[1].accepted ||
 	    !attenuator_model_coefficients_valid(physical)) {
@@ -1819,6 +1825,8 @@ static int apply_fit_to_settings_locked(void)
 /** Fit both physical FVOAs and move calibration to complete or error state. */
 static void auto_fit_locked(void)
 {
+	/* Acquisition is over; numerical fitting needs no powered detector. */
+	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	int first_error = 0;
 	bool all_accepted = true;
 
@@ -2118,7 +2126,7 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 		"\"valid\":true,\"accepted\":%s,\"points\":%u,"
 		"\"fvoa_50pct_mv\":%.12g,\"slope_inv_fvoa_mv\":%.12g,"
 		"\"max_atten_db\":%.12g,\"max_atten_sigma_db\":%.12g,"
-		"\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g],"
+		"\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g],"
 		"\"corr\":%.12g,\"rms_db\":%.12g,\"max_abs_db\":%.12g,"
 		"\"min_tx\":%.12g,\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
 		fit->accepted ? "true" : "false", fit->points,
@@ -2128,6 +2136,8 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 		(double)fit->correction_coeff[1],
 		(double)fit->correction_coeff[2],
 		(double)fit->correction_coeff[3],
+		(double)fit->correction_coeff[4],
+		(double)fit->correction_coeff[5],
 		fit->correlation, fit->rms_db, fit->max_abs_db,
 		fit->min_tx, fit->max_tx, fit->fvoa_span_mv);
 }

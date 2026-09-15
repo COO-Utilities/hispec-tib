@@ -113,10 +113,11 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v12 adds physical-attenuator residual RMS to coefficient records,
-following v11's per-laser optical-power uncertainty. Older schema markers are
-not migrated; firmware clears the old app settings layout, writes the v12
-marker, and uses defaults.
+Schema v13 resets calibrations acquired with the mean-only clipping test or
+the incomplete six-term correction basis. Coefficient records retain the
+physical-attenuator residual RMS added in v12 and the laser uncertainty added
+in v11. Older schema markers are not migrated: firmware clears the old app
+settings layout, writes the v13 marker, and uses defaults.
 
 ## Intentionally Not Persisted
 

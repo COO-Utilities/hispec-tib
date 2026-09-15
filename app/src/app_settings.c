@@ -32,7 +32,7 @@ LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
 /* Physical attenuator residual RMS extends coefficient records; reset old layouts. */
-#define APP_NVS_SCHEMA_VERSION 12U
+#define APP_NVS_SCHEMA_VERSION 13U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
