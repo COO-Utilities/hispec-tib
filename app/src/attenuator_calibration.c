@@ -195,6 +195,7 @@ struct atten_cal_state_data {
 	/* Others */
 	int64_t window_started_ms;
 	int last_error;
+	bool shutdown_pending; /* Keep laser identity after a failed fault shutdown. */
 	uint8_t reference_record_index[ATTENUATOR_PHYSICAL_COUNT];
 	bool reference_record_index_valid[ATTENUATOR_PHYSICAL_COUNT];
 	struct atten_cal_record records[ATTENUATOR_PHYSICAL_COUNT][ATTENUATOR_CAL_RECORD_COUNT];
@@ -617,9 +618,14 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 /** Put calibration into terminal error state and emit the corresponding telemetry. */
 static void auto_error_locked(int error)
 {
+	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	cal.last_error = error;
 	cal.state = ATTEN_CAL_STATE_ERROR;
 	cal.phase = ATTEN_CAL_PHASE_NONE;
+	/* Acquisition faults stop the calibration-owned source. A failed stop
+	 * leaves its identity available for the user's explicit stop/restart.
+	 */
+	cal.shutdown_pending = hispec_laser_stop_output(cal.laser, false) != 0;
 	atten_cal_emit_simple("error");
 }
 
@@ -1869,6 +1875,22 @@ static void auto_tick_locked(const struct photodiode_status *pd_status)
 				return;
 			}
 
+			/* Source health is an acquisition precondition, separate from its
+			 * current-based numerical power estimate. No hardware I/O here.
+			 */
+			bool powered;
+			int power_rc = housekeeping_power_get_confirmed((enum housekeeping_power_output)cal.channel, &powered);
+			if (power_rc != 0 || !powered) {
+				auto_error_locked(power_rc != 0 ? power_rc : -EIO);
+				return;
+			}
+			bool emitting;
+			int source_rc = hispec_laser_output_status(cal.laser, &emitting);
+			if (source_rc != 0 || !emitting) {
+				auto_error_locked(source_rc != 0 ? source_rc : -EIO);
+				return;
+			}
+
 			window = &pd_status->channel[cal.channel].configurable_window;
 			if (window->end_ms <= cal.window_started_ms ||
 			    window->sample_length < cal.dwell_ms / PHOTODIODE_SAMPLE_INTERVAL_MS) {
@@ -1903,6 +1925,7 @@ int attenuator_calibration_start_auto(
 	struct attenuator_calibration_status *status)
 {
 	bool replacing;
+	bool stop_failed = false;
 	int rc;
 
 	if (request == NULL || request->route_input == NULL ||
@@ -1915,7 +1938,38 @@ int attenuator_calibration_start_auto(
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
+	if (cal.shutdown_pending) {
+		rc = hispec_laser_stop_output(cal.laser, false);
+		if (rc != 0) {
+			copy_status_locked(status);
+			k_mutex_unlock(&cal_lock);
+			return rc;
+		}
+		cal.shutdown_pending = false;
+	}
 	replacing = cal.state == ATTEN_CAL_STATE_RUNNING;
+	if (replacing) {
+		cal.phase = ATTEN_CAL_PHASE_NONE;
+		/* A replacement on another laser must first release the old source.
+		 * Retain that identity if shutdown fails; do not start a second source.
+		 */
+		if (cal.laser != request->laser) {
+			rc = hispec_laser_stop_output(cal.laser, false);
+			if (rc != 0) {
+				cal.shutdown_pending = true;
+				cal.state = ATTEN_CAL_STATE_ERROR;
+				cal.last_error = rc;
+				housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
+				atten_cal_emit_simple("error");
+				copy_status_locked(status);
+				k_mutex_unlock(&cal_lock);
+				return rc;
+			}
+		}
+		if (cal.channel != request->channel) {
+			housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
+		}
+	}
 	k_mutex_unlock(&cal_lock);
 	if (replacing) {
 		coo_cmd_runtime_emit(command_runtime_get(),
@@ -1936,17 +1990,23 @@ int attenuator_calibration_start_auto(
 				     });
 	}
 	rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
-	if (rc != 0) {
-		return rc;
+	if (rc != 0) goto failed_start;
+	/* Recheck power after taking ownership: stopping throughput may have
+	 * released an old deadline. No acquisition begins unless PD is still on.
+	 */
+	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)request->channel, true);
+	bool powered;
+	rc = housekeeping_power_get((enum housekeeping_power_output)request->channel, &powered);
+	if (rc != 0 || !powered) {
+		rc = rc != 0 ? rc : -EIO;
+		goto failed_start;
 	}
 
 	rc = mems_router_apply_named_route(&router, request->route_input, request->output, false, NULL, NULL);
 	if (rc == 0) {
 		rc = mems_router_apply_named_route(&router, request->pd_input, request->pd_output, false, NULL, NULL);
 	}
-	if (rc != 0) {
-		return rc;
-	}
+	if (rc != 0) goto failed_start;
 
 	/** Clamp a requested dwell to the calibration-supported averaging interval. */
 	uint32_t dwell_ms;
@@ -1955,12 +2015,14 @@ int attenuator_calibration_start_auto(
 		           : MIN(request->dwell_ms, ATTEN_CAL_MAX_DWELL_MS);
 
 	if (!set_physical_pair(request->attenuator_index, 0U, 0, ATTENUATOR_DRIVE_MAX_MV)) {
-		return -EIO;
+		rc = -EIO;
+		goto failed_start;
 	}
 
 	rc = hispec_laser_stop_output(request->laser, false);
 	if (rc != 0) {
-		return rc;
+		stop_failed = true;
+		goto failed_start;
 	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
@@ -1979,14 +2041,42 @@ int attenuator_calibration_start_auto(
 	copy_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;
+
+failed_start:
+	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)request->channel, false);
+	k_mutex_lock(&cal_lock, K_FOREVER);
+	reset_locked(ATTEN_CAL_STATE_ERROR);
+	cal.channel = request->channel;
+	cal.laser = request->laser;
+	cal.last_error = rc;
+	/* No retry of a failed stop here. Earlier setup failures still release a
+	 * possibly emitting source, then keep any failed shutdown for explicit retry.
+	 */
+	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false) != 0;
+	atten_cal_emit_simple("error");
+	copy_status_locked(status);
+	k_mutex_unlock(&cal_lock);
+	return rc;
 }
 
 /** Stop calibration, discard active sequencing state, and return inactive status. */
 int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 {
 	k_mutex_lock(&cal_lock, K_FOREVER);
+	if (cal.shutdown_pending) {
+		int rc = hispec_laser_stop_output(cal.laser, false);
+		if (rc != 0) {
+			copy_status_locked(status);
+			k_mutex_unlock(&cal_lock);
+			return rc;
+		}
+		cal.shutdown_pending = false;
+	}
 	if (cal.state != ATTEN_CAL_STATE_INACTIVE) {
 		atten_cal_emit_simple("stop");
+	}
+	if (cal.state == ATTEN_CAL_STATE_RUNNING) {
+		housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	}
 	reset_locked(ATTEN_CAL_STATE_INACTIVE);
 	copy_status_locked(status);

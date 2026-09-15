@@ -56,8 +56,11 @@ struct throughput_source_reference {
 	double wavelength_nm;
 };
 
+/* Preparing retains the PD inhibition while command-owned routes change. */
+enum throughput_phase { TP_INACTIVE, TP_PREPARING, TP_RUNNING };
+
 struct throughput_state {
-	bool active;
+	enum throughput_phase phase;
 	bool autolevel;
 	bool binary;
 	bool has_laser;
@@ -132,7 +135,7 @@ static void channel_fiber_name(char *buf, size_t buf_len,
 /* Relinquish ownership without changing a manual command's laser setting. */
 static void release_locked(enum photodiode_channel channel)
 {
-	if (monitors[channel].active) {
+	if (monitors[channel].phase != TP_INACTIVE) {
 		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
 	memset(&monitors[channel], 0, sizeof(monitors[channel]));
@@ -143,10 +146,10 @@ static int stop_locked(enum photodiode_channel channel)
 {
 	struct throughput_state *state = &monitors[channel];
 
-	if (state->active) {
+	if (state->phase != TP_INACTIVE) {
 		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
-	state->active = false;
+	state->phase = TP_INACTIVE;
 	state->autolevel = false;
 	if (state->stop_laser) {
 		int rc = hispec_laser_stop_output(state->laser, false);
@@ -425,11 +428,13 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 			 * by an adjustment selected using an older copy of monitor state.
 			 */
 			k_mutex_lock(&monitors_lock, K_FOREVER);
-			if (!state->active) {
+			if (state->phase != TP_RUNNING) {
 				goto next;
 			}
+			rc = housekeeping_power_get_confirmed(pd_power_output(i), &pd_power);
 			if ((state->off_in_s > 0 && now - state->started_ms >= (int64_t)state->off_in_s * 1000) ||
-			    (housekeeping_power_get(pd_power_output(i), &pd_power) == 0 && !pd_power)) {
+			    rc != 0 || !pd_power) {
+				if (rc != 0 || !pd_power) warn_fault_stop(state, "photodiode power unavailable; stopping throughput", rc != 0 ? rc : -EIO);
 				(void)stop_locked(i);
 				goto next;
 			}
@@ -507,7 +512,7 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-		if (request->autolevel && i != channel && monitors[i].active && monitors[i].autolevel) {
+		if (request->autolevel && i != channel && monitors[i].phase == TP_RUNNING && monitors[i].autolevel) {
 			k_mutex_unlock(&monitors_lock);
 			return -EBUSY;
 		}
@@ -516,24 +521,26 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	 * also retry a failed shutdown before accepting a new operation.
 	 * Passive monitoring never assumes control of a manual laser setting.
 	 */
-	if (monitors[channel].stop_laser &&
-	    (!monitors[channel].active || !request->has_laser ||
-	     monitors[channel].laser != request->laser)) {
-		rc = stop_locked(channel);
+	bool stop_previous = monitors[channel].stop_laser &&
+		(monitors[channel].phase != TP_RUNNING || !request->has_laser ||
+		 monitors[channel].laser != request->laser);
+	/* Hold the PD across replacement, including a different laser on the same
+	 * channel. Preparing suppresses publishing/control until routes are ready.
+	 */
+	housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), true);
+	monitors[channel].phase = TP_PREPARING;
+	monitors[channel].autolevel = false;
+	if (stop_previous) {
+		rc = hispec_laser_stop_output(monitors[channel].laser, false);
 		if (rc != 0) {
+			/* Keep failed shutdown responsibility for a later explicit stop. */
+			housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
+			monitors[channel].phase = TP_INACTIVE;
 			k_mutex_unlock(&monitors_lock);
 			return rc;
 		}
+		monitors[channel].stop_laser = false;
 	}
-	/* Quiesce before command-owned routing, without dropping a same-source
-	 * shutdown obligation. Command dispatch serializes prepare/route/start;
-	 * failures after this point must call stop before replying.
-	 */
-	if (monitors[channel].active) {
-		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
-	}
-	monitors[channel].active = false;
-	monitors[channel].autolevel = false;
 	k_mutex_unlock(&monitors_lock);
 	return 0;
 }
@@ -555,6 +562,8 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	}
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 
+	/* Acquire before enabling; a queued auto-off cannot win between these calls. */
+	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 	rc = housekeeping_power_set(pd_power, true);
 	if (rc != 0) {
 		goto failed;
@@ -563,13 +572,12 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	 * Throughput owns this stream until stopped. Auto mode may still arm a
 	 * deadline via pd queries, but it must not turn off a running monitor.
 	 */
-	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 
 	/* The command resolved losses for both independent routes before starting. */
 	next.pd_route_tx = request->pd_route_tx;
 	next.laser_route_tx = request->laser_route_tx;
 
-	next.active = true;
+	next.phase = TP_PREPARING;
 	next.autolevel = request->autolevel;
 	next.binary = request->binary;
 	next.has_laser = request->has_laser;
@@ -608,6 +616,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	monitors[channel].previous_source = monitors[channel].source;
 	/* The first reported acquisition must begin after startup/context installation. */
 	monitors[channel].started_ms = k_uptime_get();
+	monitors[channel].phase = TP_RUNNING;
 	if (status != NULL) {
 		status->active = true;
 		status->channel = channel;
@@ -620,7 +629,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 failed:
 	/* Keep the identity for command-side stop, but never publish a failed start. */
 	housekeeping_photodiode_autooff_inhibit(pd_power, false);
-	monitors[channel].active = false;
+	monitors[channel].phase = TP_INACTIVE;
 	monitors[channel].autolevel = false;
 	k_mutex_unlock(&monitors_lock);
 	return rc;
@@ -656,8 +665,8 @@ bool throughput_monitor_any_active(void)
 	bool active;
 
 	k_mutex_lock(&monitors_lock, K_FOREVER);
-	active = monitors[PHOTODIODE_CHANNEL_YJ].active ||
-		 monitors[PHOTODIODE_CHANNEL_HK].active;
+	active = monitors[PHOTODIODE_CHANNEL_YJ].phase != TP_INACTIVE ||
+		 monitors[PHOTODIODE_CHANNEL_HK].phase != TP_INACTIVE;
 	k_mutex_unlock(&monitors_lock);
 	return active;
 }
@@ -666,7 +675,7 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-		if (monitors[i].active && monitors[i].has_laser && monitors[i].attenuator_index == attenuator_index) {
+		if (monitors[i].phase == TP_RUNNING && monitors[i].has_laser && monitors[i].attenuator_index == attenuator_index) {
 			monitors[i].autolevel = false;
 			if (refresh_reference(&monitors[i]) != 0) {
 				(void)stop_locked((enum photodiode_channel)i);

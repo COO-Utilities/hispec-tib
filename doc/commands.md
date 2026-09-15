@@ -517,11 +517,11 @@ both PDs; manually enabled additional lasers are not separated by this system.
 `stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
 attempts every owned laser shutdown. Failed shutdown disables streaming/control
 and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
-and operational source faults use the same stop path. Numerical laser
+and operational source/relay faults use the same stop path. Numerical laser
 estimates continue to use confirmed setpoints; acquisition checks owner health
 separately. A single failed read warns; five seconds without a response while
 in use faults the owner. Recovery does not restart measurements. See
-[laser operation and timing](api/maiman_laser.md).
+[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime).
 
 Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
 JSON; Python and the notebook default to binary. Binary channel and wavelength
@@ -676,7 +676,7 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   attenuation first, then laser current. The directional pair allocator avoids
   loading all attenuation onto one device. Startup sets maximum attenuation
   before raising the laser to 100%.
-- Photodiode `override_off` rejects start. Active streaming inhibits PD auto-off;
+- Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
   `off_in_s` stops the monitor after the requested seconds, with zero disabling
   expiry. Bank power/TECs remain under their existing owner.
 - Manual laser commands relinquish the stream without undoing the manual setting.

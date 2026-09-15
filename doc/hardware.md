@@ -226,6 +226,12 @@ For board files:
 
 ## Off-board power switch for photodiodes and laser bank aux heater
 Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
+- Hardware assumption: successful communication with the DS2408 establishes that
+  power is available for its PD/heater loads. Logical relay states establish which
+  loads are powered; no additional downstream power-good feedback is required.
+- Housekeeping checks the port approximately once per second. Five seconds without
+  a response is an operational fault; a single failed transaction warns. The
+  throughput loop consumes confirmed state without 1-Wire I/O.
 - P1 is the power switch for the YJ photodiode
 - P2 is the power switch for the HK photodiode
 - P3 is the power switch for the laser bank aux heater

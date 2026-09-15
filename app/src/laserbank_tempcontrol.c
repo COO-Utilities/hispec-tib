@@ -298,7 +298,7 @@ static void run_heater_control_cycle(void)
 	k_mutex_lock(&control_lock, K_FOREVER);
 	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
 	if (rc == -EBUSY) {
-		(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+		(void)housekeeping_power_get_confirmed(HOUSEKEEPING_POWER_BANK_HEATER,
 					     &control.status.heater_on);
 		summarize_temperature_state(&ambient, now_ms);
 		k_mutex_unlock(&control_lock);
@@ -320,7 +320,7 @@ static void run_heater_control_cycle(void)
 	} else {
 		control.status.last_error = rc;
 	}
-	(void)housekeeping_power_get(HOUSEKEEPING_POWER_BANK_HEATER,
+	(void)housekeeping_power_get_confirmed(HOUSEKEEPING_POWER_BANK_HEATER,
 				     &control.status.heater_on);
 
 	summarize_temperature_state(&ambient, now_ms);

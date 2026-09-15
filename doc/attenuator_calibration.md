@@ -91,7 +91,7 @@ sequenceDiagram
   Cal->>PD: reset configurable window for dwell_ms
   PD->>PD: exclude in-flight old conversion; fill rounded sample count
   PD-->>Cal: completed current window
-  Cal->>Cal: classify saturation and SNR
+  Cal->>Cal: check owner health; classify saturation and SNR
   Cal->>Rec: append point/probe/bridge record
   Cal-->>Cal: schedule next point or fit
 ```
@@ -403,3 +403,11 @@ An accepted coefficient object contains:
   "correction_coeff": [0.12, -0.03, 0.01, 0.0]
 }
 ```
+
+## Power lifetime
+
+Calibration holds its selected PD's auto-off inhibition for acquisition, including
+same-channel restart. It checks relay and source operational health before using
+each completed window. Faults terminate acquisition and attempt laser shutdown;
+a failed shutdown retains its identity for an explicit stop/restart. Numerical
+fitting needs no PD power and releases inhibition when acquisition completes.

@@ -26,6 +26,8 @@
 LOG_MODULE_REGISTER(housekeeping, LOG_LEVEL_INF);
 
 #define HOUSEKEEPING_TEMP_INTERVAL_MS 1000U
+#define RELAY_RESPONSE_TIMEOUT_MS 5000U
+#define RELAY_COMM_WARNING_MS 5000U
 #define HOUSEKEEPING_POWER_OUTPUT_COUNT (HOUSEKEEPING_POWER_BANK_HEATER + 1)
 #define HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE 0LL
 
@@ -34,7 +36,14 @@ struct power_on_time_runtime {
 	int64_t started_ms;
 };
 
+/* I/O -> state lock ordering. State readers never wait for GPIO/1-Wire.
+ * Auto-off inhibition also takes io_lock so it cannot race a committed off.
+ */
+static K_MUTEX_DEFINE(housekeeping_io_lock);
 static K_MUTEX_DEFINE(housekeeping_state_lock);
+static int64_t relay_response_deadline_ms;
+static int64_t relay_next_warning_ms;
+static bool relay_communication_fault;
 static struct housekeeping_temperature_status temperature_status;
 static int64_t last_sample_ms;
 static const struct device *temperature_dev;
@@ -184,6 +193,52 @@ static bool power_output_to_pd_index(enum housekeeping_power_output output,
 	return true;
 }
 
+/* Existing command runtime supplies console plus best-effort MQTT warnings.
+ * This is outside state_lock; callers may still serialize slow I/O.
+ */
+static void relay_health_warning(const char *code, const char *message, int error)
+{
+	char context[64];
+	snprintk(context, sizeof(context), "device=DS2408 rc=%d", error);
+	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+		.code = code, .msg = message, .context = context,
+	});
+}
+
+static void relay_note_response_locked(int error)
+{
+	bool recovered = false, warn = false;
+	int64_t now = k_uptime_get();
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	if (error == 0) {
+		relay_response_deadline_ms = now + RELAY_RESPONSE_TIMEOUT_MS;
+		recovered = relay_communication_fault;
+		relay_communication_fault = false;
+		relay_next_warning_ms = 0;
+	} else if (now >= relay_next_warning_ms) {
+		warn = true;
+		relay_next_warning_ms = now + RELAY_COMM_WARNING_MS;
+	}
+	k_mutex_unlock(&housekeeping_state_lock);
+	if (warn) relay_health_warning("relay_communication", "relay communication failed", error);
+	if (recovered) relay_health_warning("relay_communication_recovered", "relay communication restored; measurements remain stopped", 0);
+}
+
+/* The devices flag describes successful boot initialization. Runtime health
+ * must not gate physical probes: that would make a recovered block unreadable.
+ */
+int housekeeping_relay_error(void)
+{
+	if (!devices_relay_gpio_online()) return devices_relay_gpio_last_error();
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	int rc = k_uptime_get() >= relay_response_deadline_ms ? -ETIMEDOUT : 0;
+	k_mutex_unlock(&housekeeping_state_lock);
+	return rc;
+}
+
+static void power_on_time_update_locked(enum housekeeping_power_output output, bool active);
+
 static int power_get_locked(enum housekeeping_power_output output, bool *enabled)
 {
 	const struct gpio_dt_spec *gpio = power_gpio(output);
@@ -197,11 +252,15 @@ static int power_get_locked(enum housekeeping_power_output output, bool *enabled
 	}
 
 	val = gpio_pin_get_dt(gpio);
+	relay_note_response_locked(val < 0 ? val : 0);
 	if (val < 0) {
 		return val;
 	}
 
 	*enabled = val > 0;
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	power_on_time_update_locked(output, *enabled);
+	k_mutex_unlock(&housekeeping_state_lock);
 	return 0;
 }
 
@@ -253,8 +312,11 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 
 	/* Logical GPIO value; devicetree flags own DS2408 relay polarity. */
 	rc = gpio_pin_set_dt(gpio, enabled ? 1 : 0);
+	relay_note_response_locked(rc);
 	if (rc == 0) {
+		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 		power_on_time_update_locked(output, enabled);
+		k_mutex_unlock(&housekeeping_state_lock);
 	}
 	return rc;
 }
@@ -263,9 +325,9 @@ int housekeeping_power_set(enum housekeeping_power_output output, bool enabled)
 {
 	int rc;
 
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
 	rc = power_set_locked(output, enabled);
-	k_mutex_unlock(&housekeeping_state_lock);
+	k_mutex_unlock(&housekeeping_io_lock);
 	return rc;
 }
 
@@ -273,8 +335,22 @@ int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled)
 {
 	int rc;
 
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
 	rc = power_get_locked(output, enabled);
+	k_mutex_unlock(&housekeeping_io_lock);
+	return rc;
+}
+
+/* Read confirmed state only. A failed physical operation never publishes a
+ * guessed off value; communication health is returned separately as errno.
+ */
+int housekeeping_power_get_confirmed(enum housekeeping_power_output output, bool *enabled)
+{
+	if (output < 0 || output >= HOUSEKEEPING_POWER_OUTPUT_COUNT || enabled == NULL) return -EINVAL;
+	if (!devices_relay_gpio_online()) return devices_relay_gpio_last_error();
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	*enabled = power_on_time[output].active;
+	int rc = k_uptime_get() >= relay_response_deadline_ms ? -ETIMEDOUT : 0;
 	k_mutex_unlock(&housekeeping_state_lock);
 	return rc;
 }
@@ -353,19 +429,21 @@ int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
 	rc = power_get_locked(output, &enabled);
 	if (rc == 0 && !enabled) {
 		rc = power_set_locked(output, true);
 	}
 	if (rc == 0) {
+		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 		now = k_uptime_get();
 		pd_autooff_deadline_ms[index] =
 			autooff_s == 0U ? HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE :
 			now + (int64_t)autooff_s * 1000LL;
 		pd_autooff_reschedule_locked();
+		k_mutex_unlock(&housekeeping_state_lock);
 	}
-	k_mutex_unlock(&housekeeping_state_lock);
+	k_mutex_unlock(&housekeeping_io_lock);
 
 	if (was_off != NULL) {
 		*was_off = rc == 0 && !enabled;
@@ -381,10 +459,12 @@ void housekeeping_photodiode_autooff_cancel(enum housekeeping_power_output outpu
 		return;
 	}
 
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	pd_autooff_deadline_ms[index] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
 	pd_autooff_reschedule_locked();
 	k_mutex_unlock(&housekeeping_state_lock);
+	k_mutex_unlock(&housekeeping_io_lock);
 }
 
 void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,
@@ -396,10 +476,12 @@ void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output outp
 		return;
 	}
 
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	pd_autooff_inhibited[index] = inhibited;
 	pd_autooff_reschedule_locked();
 	k_mutex_unlock(&housekeeping_state_lock);
+	k_mutex_unlock(&housekeeping_io_lock);
 }
 
 int64_t housekeeping_photodiode_autooff_remaining_s(enum housekeeping_power_output output)
@@ -432,36 +514,60 @@ int64_t housekeeping_photodiode_autooff_remaining_s(enum housekeeping_power_outp
 static void temperature_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-
+	if (devices_relay_gpio_online()) {
+		bool fault = false;
+		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+		if (k_uptime_get() >= relay_response_deadline_ms && !relay_communication_fault) {
+			relay_communication_fault = true;
+			fault = true;
+		}
+		k_mutex_unlock(&housekeeping_state_lock);
+		if (fault) relay_health_warning("relay_communication_fault", "relay response timeout", -ETIMEDOUT);
+		/* One port read refreshes all three outputs. Successful DS2408 access
+		 * is the hardware's power-availability assumption; DT owns polarity.
+		 */
+		gpio_port_value_t raw;
+		k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+		int rc = gpio_port_get_raw(yj_power_gpio.port, &raw);
+		relay_note_response_locked(rc);
+		if (rc == 0) {
+			k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+			for (int i = 0; i < HOUSEKEEPING_POWER_OUTPUT_COUNT; ++i) {
+				const struct gpio_dt_spec *gpio = power_gpio(i);
+				bool on = ((raw & BIT(gpio->pin)) != 0) ^ ((gpio->dt_flags & GPIO_ACTIVE_LOW) != 0);
+				power_on_time_update_locked(i, on);
+			}
+			k_mutex_unlock(&housekeeping_state_lock);
+		}
+		k_mutex_unlock(&housekeeping_io_lock);
+	}
 	(void)temperature_sample_once();
 	(void)k_work_reschedule_for_queue(housekeeping_work_q, &temperature_work,
-					  K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
+				  K_MSEC(HOUSEKEEPING_TEMP_INTERVAL_MS));
 }
 
 static void pd_autooff_work_handler(struct k_work *work)
 {
-	int64_t now = k_uptime_get();
-
 	ARG_UNUSED(work);
-
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
-	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-		int rc;
-
-		if (pd_autooff_deadline_ms[i] == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE ||
-		    pd_autooff_inhibited[i] ||
-		    now < pd_autooff_deadline_ms[i]) {
-			continue;
-		}
-
-		pd_autooff_deadline_ms[i] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
-		rc = power_set_locked((enum housekeeping_power_output)i, false);
-		if (rc != 0) {
-			LOG_WRN("Failed to auto-off photodiode relay %u (%d)", i, rc);
+	/* Serialize final eligibility and GPIO write against inhibit/enable. The
+	 * state mutex is released for I/O, so throughput can always read state.
+	 */
+	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+	for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+		bool expired = pd_autooff_deadline_ms[i] != HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE &&
+			!pd_autooff_inhibited[i] && k_uptime_get() >= pd_autooff_deadline_ms[i];
+		if (expired) pd_autooff_deadline_ms[i] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+		k_mutex_unlock(&housekeeping_state_lock);
+		if (expired) {
+			int rc = power_set_locked(i, false);
+			if (rc != 0) LOG_WRN("Failed to auto-off photodiode relay %u (%d)", i, rc);
 		}
 	}
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	pd_autooff_reschedule_locked();
 	k_mutex_unlock(&housekeeping_state_lock);
+	k_mutex_unlock(&housekeeping_io_lock);
 }
 
 void housekeeping_start(struct k_work_q *work_q)
@@ -472,5 +578,9 @@ void housekeeping_start(struct k_work_q *work_q)
 	}
 
 	housekeeping_work_q = work_q;
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	/* Initial grace, not a claim that the relay has already responded. */
+	relay_response_deadline_ms = k_uptime_get() + RELAY_RESPONSE_TIMEOUT_MS;
+	k_mutex_unlock(&housekeeping_state_lock);
 	(void)k_work_reschedule_for_queue(housekeeping_work_q, &temperature_work, K_NO_WAIT);
 }

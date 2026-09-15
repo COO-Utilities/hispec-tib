@@ -20,7 +20,8 @@ def block(file, marker):
     while depth:
         depth += (text[end] == '{') - (text[end] == '}')
         end += 1
-    return text[start:end] + (';' if marker.startswith('struct ') else '') + '\n'
+    prefix = block(file, 'enum throughput_phase {') + ';\n' if marker == 'struct throughput_state {' else ''
+    return prefix + text[start:end] + (';' if marker.startswith('struct ') else '') + '\n'
 
 
 # Real host mutexes and an I/O barrier prove getters do not wait for transactions.
@@ -1138,10 +1139,10 @@ static void photodiode_get_status(struct photodiode_status *s) {
 }
 static void attenuator_calibration_tick(struct photodiode_status *s) {(void)s;}
 static int pd_power_output(int i) {return i;}
-static int housekeeping_power_get(int i,bool *p) {(void)i;*p=true;return 0;}
+static int housekeeping_power_get_confirmed(int i,bool *p) {(void)i;*p=true;return 0;}
 #define hispec_laser_name(i) "1028y"
 static int hispec_laser_output_status(enum hispec_laser_id id,bool *on){(void)id;*on=true;return 0;}
-static int stop_locked(int i) {monitors[i].active=false;stops++;return 0;}
+static int stop_locked(int i) {monitors[i].phase=TP_INACTIVE;stops++;return 0;}
 static int refresh_reference(struct throughput_state *s) {
     refreshes++;
     if(frame==6) return -EIO;
@@ -1173,10 +1174,10 @@ source+=block('throughput_monitor.c','static void warn_fault_stop(')
 source+=block('throughput_monitor.c','void throughput_monitor_thread(')
 source+=r'''
 int main(void) {
-    monitors[0]=(struct throughput_state){.active=true,.autolevel=true,.has_laser=true};
+    monitors[0]=(struct throughput_state){.phase=TP_RUNNING,.autolevel=true,.has_laser=true};
     if(!setjmp(done)) throughput_monitor_thread(NULL,NULL,NULL);
     assert(pubs==4 && moves==3 && stops==1 && refreshes==7 && warnings==1);
-    assert(!monitors[0].active && monitors[0].last_sample_ms==200);
+    assert(monitors[0].phase!=TP_RUNNING && monitors[0].last_sample_ms==200);
     puts("Consumer freshness, publication order, source fault checks passed");
 }
 '''
@@ -1259,7 +1260,8 @@ for file,names in {
     'throughput_monitor.h':['throughput_monitor_request','throughput_monitor_status'],
     'throughput_monitor.c':['throughput_source_reference','throughput_state','laser_pd_channel'],
 }.items():
-    for name in names: source+=block(file,'struct '+name+' {')
+    for name in names:
+        source+=block(file,'struct '+name+' {')
 for file,marker in [('devices.c','static const struct mems_route tib_routes[] ='),
                     ('throughput_monitor.c','static const struct laser_pd_channel laser_pd_channels[] =')]:
     source+=block(file,marker).rstrip()+';\n'
@@ -1276,7 +1278,7 @@ static void photodiode_get_status(struct photodiode_status *p) {memset(p,0,sizeo
 static bool attenuator_calibration_active(void) {return calibrating;}
 static void app_settings_get_photodiode(struct app_photodiode_settings *p) {p->channel[0].power=p->channel[1].power=power_off?APP_PD_POWER_OVERRIDE_OFF:0;}
 static int attenuator_index_from_laser_id(enum hispec_laser_id id,uint8_t *out) {*out=id;return 0;}
-static int housekeeping_power_set(enum housekeeping_power_output p,bool on) {(void)p;(void)on;return fail_power?-EIO:0;}
+static int housekeeping_power_set(enum housekeeping_power_output p,bool on) {(void)on;assert(inhibited[p]);return fail_power?-EIO:0;}
 static void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output p,bool on) {inhibited[p]=on;}
 static int hispec_laser_stop_output(enum hispec_laser_id l,bool bank) {(void)l;assert(!bank);stops++;return fail_stop?-EIO:0;}
 static bool attenuator_set_db(struct attenuator *a,double db) {(void)a;(void)db;return !fail_atten;}
@@ -1289,7 +1291,7 @@ static const struct mems_route *mems_router_get_route(int *r,const char *in,cons
 static int mems_router_apply_route(int *r,const struct mems_route *route,bool force,const char **failed,char *state) {
     (void)r;(void)force;(void)failed;(void)state;
     int channel=route->key.input_name[0]=='y'?0:1;
-    assert(!monitors[channel].active); /* Quiesce precedes all routing. */
+    assert(monitors[channel].phase!=TP_RUNNING); /* Quiesce precedes all routing. */
     last_routes[applied++%2]=route;return applied==fail_route?-EIO:0;
 }
 static int app_settings_get_route_loss(const char *route,const char *laser,double *tx) {
@@ -1311,7 +1313,7 @@ int main(void) {
     struct fixture f={.laser="1028y",.output="yj_ao",.autolevel=true};
     for(int channel=0;channel<2;channel++)for(int fiber=0;fiber<2;fiber++) {
         reset();struct fixture p={.laser="none",.channel=channel?"hk":"yj",.fiber=fiber?"s":"m"};
-        assert(!run(p) && applied==1 && monitors[channel].active);
+        assert(!run(p) && applied==1 && monitors[channel].phase==TP_RUNNING);
         assert(!monitors[channel].has_laser && !monitors[channel].stop_laser);
         assert(monitors[channel].pd_route_tx==(fiber?.60:.98));assert(isnan(monitors[channel].laser_route_tx));
         assert(!strcmp(last_routes[0]->key.output_name,channel?"hk_pd":"yj_pd"));
@@ -1320,26 +1322,26 @@ int main(void) {
         assert(!run(p) && applied==3); /* optional passive launch plus return */
     }
     reset();assert(!run(f) && applied==2 && monitors[0].autolevel && monitors[0].stop_laser);
-    struct fixture bad=f;bad.output="hk_ao";assert(run(bad)!=0 && applied==2 && monitors[0].active && stops==0);
-    bad=f;bad.channel="hk";assert(run(bad)!=0 && applied==2 && monitors[0].active);
-    omit_return=true;assert(run(f)!=0 && applied==2 && monitors[0].active);omit_return=false;
-    dark=true;assert(run(f)!=0 && applied==2 && monitors[0].active);dark=false;
+    struct fixture bad=f;bad.output="hk_ao";assert(run(bad)!=0 && applied==2 && monitors[0].phase==TP_RUNNING && stops==0);
+    bad=f;bad.channel="hk";assert(run(bad)!=0 && applied==2 && monitors[0].phase==TP_RUNNING);
+    omit_return=true;assert(run(f)!=0 && applied==2 && monitors[0].phase==TP_RUNNING);omit_return=false;
+    dark=true;assert(run(f)!=0 && applied==2 && monitors[0].phase==TP_RUNNING);dark=false;
     calibrating=true;assert(run(f)!=0 && applied==2);calibrating=false;
     power_off=true;assert(run(f)!=0 && applied==2);power_off=false;
-    bad=(struct fixture){.laser="1430hk",.output="hk_ao",.autolevel=true};assert(run(bad)!=0 && applied==2 && monitors[0].active);
+    bad=(struct fixture){.laser="1430hk",.output="hk_ao",.autolevel=true};assert(run(bad)!=0 && applied==2 && monitors[0].phase==TP_RUNNING);
     f.autolevel=false;assert(!run(f) && monitors[0].stop_laser && stops==0);
-    assert(!throughput_monitor_stop(0,NULL) && stops==1 && !monitors[0].active);
+    assert(!throughput_monitor_stop(0,NULL) && stops==1 && monitors[0].phase!=TP_RUNNING);
     for(int failure=1;failure<=2;failure++) {
         reset();f.autolevel=true;assert(!run(f));fail_route=applied+failure;
-        assert(run(f)!=0 && !monitors[0].active && stops==1 && !inhibited[0]);
+        assert(run(f)!=0 && monitors[0].phase!=TP_RUNNING && stops==1 && !inhibited[0]);
         assert(strstr(response.error,"MEMS may be partially changed"));
     }
     reset();assert(!run(f));fail_stop=1;fail_route=applied+1;
-    assert(run(f)!=0 && !monitors[0].active && monitors[0].stop_laser && stops==1);
+    assert(run(f)!=0 && monitors[0].phase!=TP_RUNNING && monitors[0].stop_laser && stops==1);
     fail_stop=0;assert(!throughput_monitor_stop(0,NULL) && stops==2 && !monitors[0].stop_laser);
     for(int failure=0;failure<3;failure++) {
         reset();fail_power=failure==0;fail_atten=failure==1;fail_source=failure==2;
-        assert(run(f)!=0 && !monitors[0].active && !inhibited[0]);
+        assert(run(f)!=0 && monitors[0].phase!=TP_RUNNING && !inhibited[0]);
         assert(stops==(failure==0?0:1));
     }
     reset();assert(!run(f));bad=f;bad.laser="1270j";assert(!run(bad) && stops==1 && monitors[0].laser==HISPEC_LASER_1270_J);
@@ -1381,3 +1383,192 @@ print('Python active/passive measurement command checks passed')
 entry=(ROOT/'app/src/command.c').read_text().split('CMD_SPEC_TIB("measure_throughput"',1)[1].split('COO_CMD_HELP_EFFECT',1)[0]
 allowed_keys=set(re.search(r'"(laser,[^"\n]+)"',entry).group(1).split(','))
 for _,payload in sent: assert set(payload)<=allowed_keys
+
+# Relay owner: real locks, fake GPIO transport, queued expiry and elapsed health.
+source = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <errno.h>
+#define K_FOREVER 0
+#define K_MSEC(x) (x)
+#define K_NO_WAIT 0
+#define ARG_UNUSED(x) (void)(x)
+#define LOG_WRN(...) ((void)0)
+#define PHOTODIODE_CHANNEL_COUNT 2
+#define HOUSEKEEPING_POWER_OUTPUT_COUNT 3
+#define HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE 0
+#define HOUSEKEEPING_TEMP_INTERVAL_MS 1000
+#define RELAY_RESPONSE_TIMEOUT_MS 5000
+#define RELAY_COMM_WARNING_MS 5000
+#define GPIO_ACTIVE_LOW 1
+#define BIT(x) (1U<<(x))
+#define snprintk snprintf
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+'''+mutex_harness
+source+=block('housekeeping.h','enum housekeeping_power_output {')+';\n'
+source+=block('housekeeping.c','struct power_on_time_runtime {')
+source+=r'''
+struct device {int unused;};
+struct gpio_dt_spec {const struct device *port; unsigned pin,dt_flags;};
+typedef unsigned gpio_port_value_t;
+struct k_work {int unused;};struct k_work_q {int unused;};struct k_work_delayable {int unused;};
+struct coo_cmd_runtime_emit_args {int type,delivery; const char *code,*msg,*context;};
+static struct k_mutex housekeeping_io_lock,housekeeping_state_lock;
+static struct device dev;
+static struct k_work_q queue,*housekeeping_work_q=&queue;
+static struct k_work_delayable temperature_work,pd_autooff_work;
+static const struct gpio_dt_spec yj_power_gpio={&dev,0,0},hk_power_gpio={&dev,1,GPIO_ACTIVE_LOW},heater_power_gpio={&dev,2,0};
+static struct power_on_time_runtime power_on_time[3];
+static int64_t relay_response_deadline_ms,relay_next_warning_ms,pd_autooff_deadline_ms[2],now=1000;
+static bool relay_communication_fault,pd_autooff_inhibited[2],fail_transport;
+static unsigned raw=BIT(1);static int writes,reads,warnings,faults,recoveries;
+static int64_t k_uptime_get(void){return now;}
+static bool devices_relay_gpio_online(void){return true;}
+static int devices_relay_gpio_last_error(void){return -ENODEV;}
+static void *command_runtime_get(void){return NULL;}
+static void coo_cmd_runtime_emit(void *r,const struct coo_cmd_runtime_emit_args *a){
+ (void)r;assert(a->type==COO_CMD_RUNTIME_EMIT_WARNING);assert(strstr(a->context,"rc="));
+ if(!strcmp(a->code,"relay_communication_fault"))faults++;
+ else if(!strcmp(a->code,"relay_communication_recovered"))recoveries++;else warnings++;
+}
+static int gpio_pin_get_dt(const struct gpio_dt_spec *g){reads++;return fail_transport?-EIO:!!(raw&BIT(g->pin))^!!(g->dt_flags&GPIO_ACTIVE_LOW);}
+static int gpio_pin_set_dt(const struct gpio_dt_spec *g,int on){
+ writes++;io_barrier();if(fail_transport)return -EIO;
+ if(!!on^!!(g->dt_flags&GPIO_ACTIVE_LOW))raw|=BIT(g->pin);else raw&=~BIT(g->pin);return 0;
+}
+static int gpio_port_get_raw(const struct device *d,gpio_port_value_t *p){(void)d;reads++;*p=raw;return fail_transport?-EIO:0;}
+static int k_work_cancel_delayable(struct k_work_delayable *w){(void)w;return 0;}
+static int k_work_reschedule_for_queue(struct k_work_q *q,struct k_work_delayable *w,int64_t t){(void)q;(void)w;(void)t;return 0;}
+static int temperature_sample_once(void){return 0;}
+static void power_on_time_update_locked(enum housekeeping_power_output,bool);
+'''
+for marker in ['static const struct gpio_dt_spec *power_gpio(', 'static bool power_output_is_photodiode(',
+               'static bool power_output_to_pd_index(', 'static void relay_health_warning(',
+               'static void relay_note_response_locked(', 'int housekeeping_relay_error(',
+               'static int power_get_locked(', 'static void power_on_time_update_locked(enum housekeeping_power_output output,\n',
+               'static int power_set_locked(', 'int housekeeping_power_set(', 'int housekeeping_power_get(',
+               'int housekeeping_power_get_confirmed(', 'double housekeeping_power_on_time_s(',
+               'static int64_t pd_next_autooff_deadline_locked(', 'static void pd_autooff_reschedule_locked(',
+               'int housekeeping_photodiode_auto_enable(', 'void housekeeping_photodiode_autooff_cancel(',
+               'void housekeeping_photodiode_autooff_inhibit(', 'int64_t housekeeping_photodiode_autooff_remaining_s(',
+               'static void temperature_work_handler(struct k_work *work)\n{',
+               'static void pd_autooff_work_handler(struct k_work *work)\n{']:
+    source+=block('housekeeping.c',marker)
+source+=r'''
+static void *turn_off(void *p){(void)p;assert(!housekeeping_power_set(0,false));return NULL;}
+int main(void){
+ init_mutex(&housekeeping_io_lock);init_mutex(&housekeeping_state_lock);
+ relay_response_deadline_ms=now+5000;
+ assert(!housekeeping_power_set(0,true));bool on,was_off;
+ assert(!housekeeping_power_get_confirmed(0,&on)&&on);
+ int old_reads=reads;assert(!housekeeping_power_get_confirmed(0,&on)&&reads==old_reads);
+ assert(!housekeeping_photodiode_auto_enable(0,1,&was_off)&&!was_off);
+ now+=1500;housekeeping_photodiode_autooff_inhibit(0,true);
+ int old_writes=writes;pd_autooff_work_handler(NULL);assert(writes==old_writes);
+ assert(housekeeping_photodiode_autooff_remaining_s(0)==-1);
+ housekeeping_photodiode_autooff_inhibit(0,false);pd_autooff_work_handler(NULL);
+ assert(!housekeeping_power_get_confirmed(0,&on)&&!on);
+ assert(housekeeping_power_on_time_s(0)==0);
+ assert(!housekeeping_power_set(0,true));housekeeping_photodiode_autooff_cancel(0);
+ fail_transport=true;assert(housekeeping_power_get(0,&on)==-EIO);
+ assert(!housekeeping_power_get_confirmed(0,&on)&&on);
+ now=relay_response_deadline_ms;assert(housekeeping_power_get_confirmed(0,&on)==-ETIMEDOUT&&on);
+ temperature_work_handler(NULL);assert(faults==1&&warnings>0);
+ temperature_work_handler(NULL);assert(faults==1);
+ fail_transport=false;now+=1000;temperature_work_handler(NULL);
+ assert(recoveries==1&&!housekeeping_relay_error());
+ assert(!housekeeping_power_get_confirmed(1,&on)&&!on); /* Active-low decoding. */
+ pthread_t writer;alarm(5);atomic_store(&block_io,true);
+ assert(!pthread_create(&writer,NULL,turn_off,NULL));wait_for_io();
+ assert(!housekeeping_power_get_confirmed(0,&on)&&on); /* State copy cannot wait for GPIO. */
+ atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
+ assert(!housekeeping_power_get_confirmed(0,&on)&&!on);
+ puts("Relay timeout/recovery, queued auto-off, polarity and concurrent state reads passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'relay.c',Path(tmp)/'relay'
+    cfile.write_text(source)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+# Calibration lifetime uses its real start/stop/error paths, with transport stubs.
+source=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <errno.h>
+#include <stdio.h>
+#define K_FOREVER 0
+#define PHOTODIODE_CHANNEL_COUNT 2
+#define ATTEN_CAL_MIN_DWELL_MS 100
+#define ATTEN_CAL_DEFAULT_DWELL_MS 400
+#define ATTEN_CAL_MAX_DWELL_MS 2000
+#define ATTENUATOR_DRIVE_MAX_MV 3300
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+#define ATTEN_CAL_MODE_TIB_AUTO 1
+#define ATTEN_CAL_PHASE_NONE 0
+#define ATTEN_CAL_PHASE_WAIT_WINDOW 1
+enum hispec_laser_id {L0,L1};enum photodiode_channel {YJ,HK};
+enum housekeeping_power_output {P0,P1};
+struct coo_cmd_runtime_emit_args {int type,delivery;const char *code,*msg;};
+struct attenuator_calibration_status {int state,error;};
+'''
+source+=block('attenuator_calibration.c','enum atten_cal_state {')+';\n'
+source+=block('attenuator_calibration.h','struct attenuator_calibration_auto_request {')
+source+=r'''
+static struct {int state,phase,mode,attenuator_index,physical_index,dwell_ms,laser_percent,last_error;
+ bool persistent,shutdown_pending;enum photodiode_channel channel;enum hispec_laser_id laser;} cal;
+static int cal_lock,router,fail_stop=-1,fail_route,release_count,stop_count[2];
+static bool inhibited[2],powered[2]={true,true},emitting[2];
+static void k_mutex_lock(int *m,int t){(void)m;(void)t;}static void k_mutex_unlock(int *m){(void)m;}
+static void *command_runtime_get(void){return NULL;}
+static void coo_cmd_runtime_emit(void *r,const struct coo_cmd_runtime_emit_args *a){(void)r;(void)a;}
+static bool devices_attenuator_channel_available(int i){return i<2;}
+static void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output i,bool on){if(inhibited[i]&&!on)release_count++;inhibited[i]=on;}
+static int housekeeping_power_get(enum housekeeping_power_output i,bool *on){assert(inhibited[i]);*on=powered[i];return 0;}
+static bool throughput_monitor_any_active(void){return false;}
+static int throughput_monitor_stop(int c,void *s){(void)c;(void)s;return 0;}
+static int mems_router_apply_named_route(void *r,const char *a,const char *b,bool c,void *d,void *e){(void)r;(void)a;(void)b;(void)c;(void)d;(void)e;return fail_route?-EIO:0;}
+static bool set_physical_pair(int i,int p,int a,int b){(void)i;(void)p;(void)a;(void)b;return true;}
+static int hispec_laser_stop_output(enum hispec_laser_id id,bool tec){(void)tec;stop_count[id]++;if(fail_stop==(int)id)return -EIO;emitting[id]=false;return 0;}
+static void copy_status_locked(struct attenuator_calibration_status *s){if(s){s->state=cal.state;s->error=cal.last_error;}}
+static void reset_locked(enum atten_cal_state state){memset(&cal,0,sizeof(cal));cal.state=state;}
+static void atten_cal_emit_simple(const char *e){(void)e;}
+static void auto_start_next_physical_locked(void){assert(!emitting[1-cal.laser]);emitting[cal.laser]=true;cal.phase=ATTEN_CAL_PHASE_WAIT_WINDOW;}
+'''
+for marker in ['static void auto_error_locked(', 'int attenuator_calibration_start_auto(', 'int attenuator_calibration_stop(']:
+    source+=block('attenuator_calibration.c',marker)
+source+=r'''
+int main(void){
+ struct attenuator_calibration_auto_request r={.laser=L0,.channel=YJ,.route_input="laser",.output="out",.pd_input="mm",.pd_output="pd",.dwell_ms=550};
+ struct attenuator_calibration_status status;
+ assert(!attenuator_calibration_start_auto(&r,&status)&&inhibited[0]);
+ int releases=release_count;assert(!attenuator_calibration_start_auto(&r,&status)&&release_count==releases);
+ r.laser=L1;assert(!attenuator_calibration_start_auto(&r,&status)&&!emitting[0]&&emitting[1]);
+ fail_stop=1;auto_error_locked(-ETIMEDOUT);
+ assert(!inhibited[0]&&cal.shutdown_pending&&cal.laser==L1);
+ assert(attenuator_calibration_stop(&status)==-EIO&&cal.shutdown_pending&&cal.laser==L1);
+ fail_stop=-1;assert(!attenuator_calibration_stop(&status)&&!emitting[1]&&!cal.shutdown_pending);
+ assert(!attenuator_calibration_start_auto(&r,&status));
+ assert(!attenuator_calibration_stop(&status)&&!inhibited[0]);
+ fail_stop=1;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&cal.shutdown_pending&&cal.laser==L1);
+ fail_stop=-1;assert(!attenuator_calibration_stop(&status));
+ powered[0]=false;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&!inhibited[0]);
+ powered[0]=true;fail_route=1;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&!inhibited[0]);
+ puts("Calibration inhibition, restart, source replacement and failed-stop identity passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'cal_lifetime.c',Path(tmp)/'cal_lifetime'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)

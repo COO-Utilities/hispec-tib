@@ -73,7 +73,7 @@ is applied. Source or external optical motion during a conversion remains visibl
 | Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero PD power; source must be finite and positive. |
 | Overrange | Raw ADC input ≥2000 mV sets `overrange`; retain numerical PD/TP value as nominal lower bound | PD and throughput errors become NaN/null, S/N suppressed. Source calibration error is still reported. The ADC rail remains 2047.9375 mV. |
 | Missing ADC conversion | Discard; retain previous latest state without advancing its timestamp | No duplicate stream record or control move. Diagnostic windows count failures; zero-good-sample averages fail. Warnings are rate-limited. |
-| Laser owner fault | Stop monitoring and attempt owned laser shutdown | No retries added. Laser estimation waits only for a short state copy, never for Modbus. Pending I/O leaves the last confirmed state readable. A failed stop retains unknown emission state and the shutdown obligation for explicit retry. |
+| Laser owner fault | Check operational health separately from the numerical estimate; stop affected acquisition | One failed read warns. Five seconds without a response while emitting faults; control/controller faults remain immediate. Failed shutdown retains its explicit retry obligation. |
 | Actuator failure | Stop monitoring; preserve confirmed owner state after partial writes | Do not normalize subsequent readings using an assumed successful move. |
 | Serialization | Binary doubles; JSON 12 significant digits, nonfinite values null | Preserve tiny powers/errors through Python, record arrays, and CSV. Binary and JSON share field order in firmware. |
 
@@ -257,3 +257,60 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
     
 
 ```
+
+## Communication and power lifetime
+
+Throughput fault stops also use the console/MQTT warning path, including when
+the measurement detects an expired response deadline before background work runs.
+
+The existing laser auto-off work probes the checked TEC-state register of emitting
+channels once per second, including channels whose shutdown failed. It does not
+depend on heater mode, setpoint changes, or the 20 Hz measurement loop. Heater
+control retains its ten-second cadence. Housekeeping's existing ambient work
+reads the DS2408 port once per second and publishes all three logical outputs.
+These intervals include work execution/scheduling overhead and are not hard
+real-time deadlines. No new thread, workqueue, or retry loop is introduced.
+
+A successful driver response refreshes the owner's five-second communication
+deadline. Local calculations, requested settings, and a busy bus do not count as
+responses. Maiman retains the last response timestamp and last error within each
+operation, so a partial read can report its error without hiding successful
+responses. Numerical laser estimates always use confirmed setpoints; they return
+`-EINVAL` for invalid/uninitialized use, never an operational I/O error.
+
+```{mermaid}
+flowchart LR
+  Ready[Responsive owner] -->|failed read| Transient[Warn; retain confirmed state]
+  Transient -->|successful response| Ready
+  Transient -->|five seconds without response| Fault[Owner communication fault]
+  Ready -->|failed laser control or confirmed controller fault| Fault
+  Fault --> Stop[Stop dependent acquisition; attempt owned laser shutdown]
+  Fault -->|communication restored| Recovery[Report recovery; acquisition remains stopped]
+```
+
+Source faults stop consumers of that source; shared relay loss stops affected PD
+measurements and calibration. Other independent measurements continue. An
+unsuccessful laser shutdown preserves the identity for an explicit stop retry.
+Recovery does not resume acquisition automatically. A successful DS2408 response
+is accepted as evidence that power is available to its loads; logical relay
+states determine which loads are enabled. Explicit power-off is always effective.
+
+Relay I/O and state copies use separate mutexes, ordered I/O then state. The
+throughput loop reads only confirmed state/health. Auto-off inhibition takes the
+I/O lock, serializing against a queued worker's final deadline check and write.
+Throughput owns inhibition while preparing routes and while running; calibration
+owns it throughout acquisition. Completion, cancellation, and failed startup
+release ownership. Releasing inhibition resumes the existing deadline, including
+an already expired deadline. No ownership counter is needed.
+
+Owner communication warnings use the existing console/MQTT warning emitter.
+The first failure is immediate; repeated failures are limited to one per device
+per five seconds. Fault and recovery transitions are immediate. They remain
+available with verbose Modbus/GPIO logging disabled; console warning filtering
+and best-effort MQTT queue capacity still apply. Raw `maiman` errors remain
+console diagnostics, separate from owner messages and measurement `/dt/` traffic.
+
+The GPIO 1-Wire implementation still masks interrupts during timing-critical
+operations. Removing throughput-rate relay polling reduces exposure but does not
+prove UART corruption is eliminated. Confirm sustained-loss shutdown, runtime
+margin, and the unexplained acquisition gap using hardware captures.

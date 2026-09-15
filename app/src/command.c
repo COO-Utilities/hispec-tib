@@ -1153,7 +1153,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                         devices_board_type_name(),
                         devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
                         router.num_switches,
-                        devices_relay_gpio_last_error()) != 0 ||
+                        housekeeping_relay_error()) != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,

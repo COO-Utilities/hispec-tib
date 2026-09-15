@@ -241,10 +241,11 @@ items are centralized in `human_review_required.md`.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.
 
-Laser and attenuator hardware operations serialize with module I/O mutexes.
+Laser, attenuator, and relay hardware operations serialize with module I/O mutexes.
 Their state mutexes protect only short copies/confirmed updates: no I/O,
 sleep, persistence, or telemetry runs under a state mutex. Readers see the last
-confirmed state during a pending operation and the owner's fault after failure.
+confirmed state during a pending operation. Numerical laser estimates and
+operational health are separate; transient read errors do not invalidate setpoints.
 Lock order is I/O then state; state readers never acquire the I/O mutex.
 Attenuator estimates use confirmed DAC voltages; explicit `attenuator_get`
 queries still read both registers. Settings/status copies own their mutable
@@ -270,6 +271,13 @@ may override returns with existing route/laser records.
 The command validates both routes, calls `throughput_monitor_prepare_start` to
 check exclusions and quiesce the target, applies launch (if requested) and return
 routes, then starts the monitor with resolved losses. The existing command
-executor serializes this sequence; no additional reservation state is needed.
+executor serializes this sequence; the preparing phase retains PD auto-off inhibition.
 Failure after preparation uses the existing stop path. Restart the measurement
 to pick up changed route-loss settings.
+
+Owner communication checks reuse the laser auto-off and housekeeping work items
+on the existing app blocking queue. Throughput and calibration consume state-only
+health snapshots; neither polls relay hardware. See
+[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime)
+for the one-second check cadence, five-second fault timeout, inhibition ownership,
+and failure/recovery flow.
