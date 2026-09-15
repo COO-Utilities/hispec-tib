@@ -114,6 +114,12 @@ limit total S/N even when detector S/N is high. Only the displayed record tail
 is converted per frame. Display gaps for nonpositive log values or undefined
 S/N do not change the underlying records or CSV exports.
 
+For externally supplied light, use
+`pcb.measure_throughput("none", channel="hk", fiber="S", autolevel=False, collect=True)`.
+It selects and corrects the SM return while leaving launch switching untouched.
+An optional `input`/`output` pair selects a calibration launch. PD power/error
+and detector S/N remain available; source and throughput fields are undefined.
+
 Both photodiodes can stream; firmware permits only one autolevel owner because
 the instrument light paths overlap. See [sampling and uncertainty](doc/photodiode_notes.md)
 for the error budget, missing-sample behavior, and 64 SPS converter option.

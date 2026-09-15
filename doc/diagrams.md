@@ -237,10 +237,16 @@ flowchart TD
 flowchart TD
   Command[measure_throughput request] --> Stop{stop requested}
   Stop -- yes --> Shutdown[under monitor lock: stop stream and owned laser]
-  Stop -- no --> Validate[validate input; reject dark, calibration, or second autolevel owner]
-  Validate --> Start[under monitor lock: stop previous owned source if replacing]
-  Start --> Route[apply route; enable PD; latch route losses]
-  Route --> Auto{autolevel}
+  Stop -- no --> Validate[command validates channel and both routes; resolves losses]
+  Validate --> Prepare[monitor checks dark, calibration, and single autolevel exclusion]
+  Prepare --> Quiesce[quiesce target; stop previous owned source if replacing]
+  Quiesce --> Launch[command applies launch if requested]
+  Launch --> Return[command always applies selected MM or SM return]
+  Return --> Start[monitor enables PD; copies resolved losses]
+  Launch -- failure --> Shutdown
+  Return -- failure --> Shutdown
+  Start -- failure --> Shutdown
+  Start --> Auto{autolevel}
   Auto -- yes --> Seed[maximum attenuation then laser 100 percent]
   Seed --> Ref[copy confirmed owner estimates into monitor context]
   Auto -- no --> Ref

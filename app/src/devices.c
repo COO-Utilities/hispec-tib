@@ -460,6 +460,69 @@ static const struct mems_route tib_routes[] = {
 	ROUTE_DEF("hk_sm", "hk_pd", tib_hk_sm_to_hk_pd),
 };
 
+/* TIB path defaults are transmission, not the API's fraction lost. These
+ * constants stay in flash; only explicit overrides occupy RAM/NVS records.
+ * AO and FEI traverse the same switches, selecting different B3/R3 outputs.
+ * Static laser attenuation is included once here, never in the FVOA model.
+ */
+static const struct {
+	const char *route;
+	const char *laser;
+	double transmission;
+} default_route_losses[] = {
+	/* YJ B2 * B3 = 0.88 * 0.88 = 0.7744; 1028 adds 50 dB static:
+	 * 0.7744 * 10^(-50/10) = 7.744e-6.
+	 */
+	{"yj_laser_to_yj_ao", "1028y", 7.744e-6},
+	{"yj_laser_to_yj_fei", "1028y", 7.744e-6},
+
+	/* Same B2/B3 path; 1270 adds 40 dB: 0.7744 * 10^(-40/10). */
+	{"yj_laser_to_yj_ao", "1270j", 7.744e-5},
+	{"yj_laser_to_yj_fei", "1270j", 7.744e-5},
+	/* YJ B1 * B2 * B3 = 0.88^3 = 0.681472; 1430 adds 100 dB:
+	 * 0.681472 * 10^(-100/10) = 6.81472e-11.
+	 */
+	{"yj_1430_to_yj_ao", "1430yj", 6.81472e-11},
+	{"yj_1430_to_yj_fei", "1430yj", 6.81472e-11},
+
+	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 50 dB:
+	 * 0.571787 * 10^(-50/10) = 5.71787e-6.
+	 */
+	{"hk_1430_to_hk_ao", "1430hk", 5.71787e-6},
+	{"hk_1430_to_hk_fei", "1430hk", 5.71787e-6},
+
+	/* HK R2 * R3 = 0.83 * 0.83 = 0.6889; 1510 adds 33 dB:
+	 * 0.6889 * 10^(-33/10) = 3.45267885246e-4.
+	 */
+	{"hk_laser_to_hk_ao", "1510h", 3.45267885246e-4},
+	{"hk_laser_to_hk_fei", "1510h", 3.45267885246e-4},
+	/* Same R2/R3 path; 2330 adds 3 dB:
+	 * 0.6889 * 10^(-3/10) = 0.345267885246.
+	 */
+	{"hk_laser_to_hk_ao", "2330k", 0.345267885246},
+	{"hk_laser_to_hk_fei", "2330k", 0.345267885246},
+	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
+	 * These do not traverse the outbound blue/red FFSW switches.
+	 */
+	{"yj_mm_to_yj_pd", NULL, 0.98},
+	{"yj_sm_to_yj_pd", NULL, 0.60},
+	{"hk_mm_to_hk_pd", NULL, 0.98},
+	{"hk_sm_to_hk_pd", NULL, 0.60},
+};
+
+/* Pure board-default lookup. NULL table source matches any light on that return. */
+double devices_route_loss_default(const char *route, const char *laser)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(default_route_losses); ++i) {
+		if (strcmp(default_route_losses[i].route, route) == 0 &&
+		    (default_route_losses[i].laser == NULL ||
+		     (laser != NULL && strcmp(default_route_losses[i].laser, laser) == 0))) {
+			return default_route_losses[i].transmission;
+		}
+	}
+	return 1.0;
+}
+
 /* AS splitter routes define the switch order used by splitting_set().
  * Step 1 selects output 1, step 2 is held on the splitter branch, and
  * step 3 is extended by step 1's deadtime before selecting output 2.

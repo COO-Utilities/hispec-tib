@@ -180,15 +180,16 @@ Nominal transmission is 0.88 per blue (YJ B1/B2/B3) FFSW and 0.83 per red
 PD and 0.60 for SM to PD on both channels. The return factors are separate
 from the outbound switch losses.
 
-The compiled route defaults combine the planned static laser attenuation above
-with the switches traversed below. AO and FEI use the same switch count.
+The compiled route defaults in `devices.c` combine static laser attenuation
+with the switches traversed below. Current lab defaults use 50 dB for 1028y and
+1430hk; the component planning table above retains its original target values. AO and FEI use the same switch count.
 
 | Laser | Outbound route input | Switch product | Static loss | Total transmission |
 |---|---|---|---|---|
-| 1028y | yj_laser | B2 × B3 = 0.88² | 73 dB | 3.88119393721e-8 |
+| 1028y | yj_laser | B2 × B3 = 0.88² | 50 dB | 7.744e-6 |
 | 1270j | yj_laser | B2 × B3 = 0.88² | 40 dB | 7.744e-5 |
 | 1430yj | yj_1430 | B1 × B2 × B3 = 0.88³ | 100 dB | 6.81472e-11 |
-| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 100 dB | 5.71787e-11 |
+| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 50 dB | 5.71787e-6 |
 | 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
 | 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
 
@@ -196,6 +197,9 @@ with the switches traversed below. AO and FEI use the same switch count.
 assembly defaults, not measurements of the installed path. Explicit
 `mems/route/loss` records replace the whole total. Dynamic FVOA attenuation is
 applied separately, so static attenuation must not also be folded into its fit.
+MM/SM return defaults are four generic channel/fiber entries, including unknown
+or astrophysical light. Existing per-laser return overrides apply when that
+laser is selected; unknown-source captures use the generic return value.
 
 ## Laser Diode Control
 MODBUS

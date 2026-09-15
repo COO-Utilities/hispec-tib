@@ -13,6 +13,7 @@
 
 #include "app_settings.h"
 #include "attenuator.h"
+#include "devices.h"
 #include "lasers.h"
 #include "photodiode.h"
 
@@ -1308,82 +1309,26 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 	return 0;
 }
 
-/* TIB path defaults are transmission, not the API's fraction lost. These
- * constants stay in flash; only explicit overrides occupy RAM/NVS records.
- * AO and FEI traverse the same switches, selecting different B3/R3 outputs.
- * Static laser attenuation is included once here, never in the FVOA model.
- */
-static const struct {
-	const char *route;
-	const char *laser;
-	double transmission;
-} default_route_losses[] = {
-	/* YJ B2 * B3 = 0.88 * 0.88 = 0.7744; 1028 adds 73 dB static:
-	 * 0.7744 * 10^(-73/10) = 3.88119393721e-8.
-	 */
-	{"yj_laser_to_yj_ao", "1028y", 3.88119393721e-8},
-	{"yj_laser_to_yj_fei", "1028y", 3.88119393721e-8},
-	/* Same B2/B3 path; 1270 adds 40 dB: 0.7744 * 10^(-40/10). */
-	{"yj_laser_to_yj_ao", "1270j", 7.744e-5},
-	{"yj_laser_to_yj_fei", "1270j", 7.744e-5},
-	/* YJ B1 * B2 * B3 = 0.88^3 = 0.681472; 1430 adds 100 dB:
-	 * 0.681472 * 10^(-100/10) = 6.81472e-11.
-	 */
-	{"yj_1430_to_yj_ao", "1430yj", 6.81472e-11},
-	{"yj_1430_to_yj_fei", "1430yj", 6.81472e-11},
-	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 100 dB:
-	 * 0.571787 * 10^(-100/10) = 5.71787e-11.
-	 */
-	{"hk_1430_to_hk_ao", "1430hk", 5.71787e-11},
-	{"hk_1430_to_hk_fei", "1430hk", 5.71787e-11},
-	/* HK R2 * R3 = 0.83 * 0.83 = 0.6889; 1510 adds 33 dB:
-	 * 0.6889 * 10^(-33/10) = 3.45267885246e-4.
-	 */
-	{"hk_laser_to_hk_ao", "1510h", 3.45267885246e-4},
-	{"hk_laser_to_hk_fei", "1510h", 3.45267885246e-4},
-	/* Same R2/R3 path; 2330 adds 3 dB:
-	 * 0.6889 * 10^(-3/10) = 0.345267885246.
-	 */
-	{"hk_laser_to_hk_ao", "2330k", 0.345267885246},
-	{"hk_laser_to_hk_fei", "2330k", 0.345267885246},
-	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
-	 * These do not traverse the outbound blue/red FFSW switches.
-	 */
-	{"yj_mm_to_yj_pd", "1028y", 0.98},
-	{"yj_sm_to_yj_pd", "1028y", 0.60},
-	{"yj_mm_to_yj_pd", "1270j", 0.98},
-	{"yj_sm_to_yj_pd", "1270j", 0.60},
-	{"yj_mm_to_yj_pd", "1430yj", 0.98},
-	{"yj_sm_to_yj_pd", "1430yj", 0.60},
-	{"hk_mm_to_hk_pd", "1430hk", 0.98},
-	{"hk_sm_to_hk_pd", "1430hk", 0.60},
-	{"hk_mm_to_hk_pd", "1510h", 0.98},
-	{"hk_sm_to_hk_pd", "1510h", 0.60},
-	{"hk_mm_to_hk_pd", "2330k", 0.98},
-	{"hk_sm_to_hk_pd", "2330k", 0.60},
-};
-
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission)
 {
 	int index;
 
-	if (transmission == NULL || route == NULL || laser == NULL) {
+	if (transmission == NULL || route == NULL) {
 		return -EINVAL;
 	}
-	if (route[0] == '\0' || laser[0] == '\0' ||
-	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
-	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
+	if (route[0] == '\0' || strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    (laser != NULL && (laser[0] == '\0' ||
+	     strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN))) {
 		return -EINVAL;
 	}
 
-	*transmission = 1.0;
-	for (size_t i = 0U; i < ARRAY_SIZE(default_route_losses); ++i) {
-		if (strcmp(default_route_losses[i].route, route) == 0 &&
-		    strcmp(default_route_losses[i].laser, laser) == 0) {
-			*transmission = default_route_losses[i].transmission;
-			break;
-		}
+	*transmission = devices_route_loss_default(route, laser);
+	/* An unknown source uses source-independent defaults, never another laser's
+	 * override. The persisted route/laser key format remains unchanged.
+	 */
+	if (laser == NULL) {
+		return 0;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);

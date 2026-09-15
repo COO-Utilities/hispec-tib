@@ -336,8 +336,8 @@ Route-loss records are app settings keyed by route name and laser name or split.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
 transmission must remain positive. Missing records use the nominal TIB defaults
-in [hardware.md](hardware.md#tib-route-loss-defaults) for known laser AO/FEI and
-matching PD return paths; other route/laser pairs report zero loss. Explicit
+in `devices.c`, documented in [hardware.md](hardware.md#tib-route-loss-defaults),
+for known laser AO/FEI paths and source-independent MM/SM returns; other route/laser pairs report zero loss. Explicit
 records replace the complete default, including an explicit zero loss.
 
 Strings ending in `dB`, `db`, or `DB` accept nonnegative finite loss in dB in the
@@ -479,6 +479,7 @@ these values feed the existing throughput and splitting calculations.
   {
     "autolevel": false,
     "laser": "none",
+    "channel": "yj",
     "input": "yj_cal",
     "output": "yj_ao",
     "fiber": "M",
@@ -524,12 +525,35 @@ JSON; Python and the notebook default to binary. Binary channel and wavelength
 identify the source, including both 1430 nm lasers, and a flag bit carries the
 actual autolevel state. No individual DAC values or laser percentages are streamed.
 
-Every start requires `output`. The monitor applies the route after checking
-exclusions; `input` is inferred from `laser` unless supplied. `laser:"none"`
-requires `input`, `output`, and `autolevel:false`; it streams PD measurements
-with source-dependent quantities NaN/null. Dark capture or active attenuator
-calibration rejects all starts. Taking a dark or starting calibration stops
-existing throughput; there is no automatic resume.
+For a known laser, `output` is required and `input` is inferred unless supplied.
+Optional `channel` must match that laser. Passive `laser:"none"` requires explicit
+`channel:"yj"` or `"hk"` and `autolevel:false`. Its `input` and `output` are an
+optional pair: omit both to leave launch switching untouched (for example,
+astrophysical illumination), or supply both to route external calibration light.
+An explicit launch must select that channel's AO or FEI output.
+
+The command validates launch and return routes before preparing the monitor.
+Preparation checks exclusions, quiesces the target stream, and stops an owned
+source if replacing it. The command then applies the optional launch route and
+**always** applies `yj_mm/sm -> yj_pd` or `hk_mm/sm -> hk_pd`. These use independent
+switches. Only then does the monitor enable PD power and start measurement.
+Route/start failure stops the prepared monitor and attempts its owned laser
+shutdown; routing failures can leave some MEMS switches changed and report that.
+Invalid input or an exclusion failure leaves an existing run untouched.
+
+All measurements divide detected power and its error by the selected return
+transmission. A known laser selects its route/laser override when present;
+unknown illumination uses the generic return defaults (MM 0.98, SM 0.60), without
+choosing another source's calibration. Passive PD voltage, corrected power,
+errors, and detector S/N remain available; source power, wavelength, launch
+transmission, and throughput are NaN/null because emission is unknown. No new
+persistent route key or telemetry field is introduced. A return-only example:
+```json
+{"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
+```
+
+Dark capture or active attenuator calibration rejects all starts. Taking a dark
+or starting calibration stops existing throughput; there is no automatic resume.
 
 `max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
 dynamic attenuator pair and **before** static route losses. Stream quantities
@@ -1838,6 +1862,7 @@ pcb.mems_split("yj")               # AS board
 pcb.mems_split("yj", 0.25, 0.25, stop_in_s=30)
 pcb.temps()
 pcb.measure_throughput("1028y", output="yj_ao", collect=True)
+pcb.measure_throughput("none", channel="hk", fiber="S", autolevel=False, collect=True)
 ```
 
 Existing `mems()`, `mems_switch(...)`, `atten(...)`, `pd(...)`, `pd_dark(...)`,

@@ -3,7 +3,7 @@
  * @brief Throughput monitor command worker and photodiode stream ownership.
  *
  * The monitor owns streaming publication and optional autolevel decisions. It
- * reads photodiode snapshots, attenuator state, route-loss settings, and laser
+ * reads photodiode snapshots, attenuator state, command-supplied route losses, and laser
  * estimates, but it does not read the ADC directly or publish MQTT directly.
  */
 
@@ -17,9 +17,11 @@
 #include "photodiode.h"
 
 struct throughput_monitor_request {
-	/* Route to apply after ownership checks; strings are consumed synchronously by start. */
-	const char *input;
-	const char *output;
+	/* Resolved run configuration. Return correction always applies; launch
+	 * transmission is NaN when the external source power is unknown.
+	 */
+	double pd_route_tx;
+	double laser_route_tx;
 	enum hispec_laser_id laser;
 	enum photodiode_channel channel;
 	bool has_laser;
@@ -40,11 +42,18 @@ struct throughput_monitor_status {
 /** Background thread; wakes on fresh ADC state and enqueues best-effort telemetry. */
 void throughput_monitor_thread(void *p1, void *p2, void *p3);
 
-/** Start or replace the monitor associated with the request's photodiode.
- * Captures route-loss settings for this run; restart to pick up their changes.
- * May block on hardware I/O; replacing an autolevel source stops its laser.
- * Both channels can stream. Only one autolevel operation may own the external
- * shared optical path. Dark/calibration acquisition excludes monitoring.
+/** Check exclusions and quiesce the target before the command changes routes.
+ * Both channels can stream; only one autolevel operation may own the shared
+ * optical path. Dark/calibration acquisition excludes monitoring. Replacing an
+ * owned source stops its laser (may block on Modbus); a same-source continuation
+ * retains the shutdown obligation. On error, no routing should be attempted.
+ */
+int throughput_monitor_prepare_start(const struct throughput_monitor_request *request);
+
+/** Start after successful prepare and command-owned route setup. Command dispatch
+ * serializes that sequence. Copies resolved losses for the run; restart to change
+ * them. May block on PD power, DAC and laser I/O. Any failure after prepare must
+ * use throughput_monitor_stop, including route setup failures in the command.
  */
 int throughput_monitor_start(const struct throughput_monitor_request *request,
 			     struct throughput_monitor_status *status);

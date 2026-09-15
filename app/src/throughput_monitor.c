@@ -16,7 +16,6 @@
 #include "command.h"
 #include "devices.h"
 #include "housekeeping.h"
-#include "mems_switching.h"
 
 #include <coo_commons/json_utils.h>
 #include <zephyr/sys/byteorder.h>
@@ -121,15 +120,6 @@ static int photodiode_channel_for_laser(enum hispec_laser_id laser,
 	}
 
 	return -ENOENT;
-}
-
-static void route_name_for_pd(char *buf, size_t buf_len,
-			      enum photodiode_channel channel, char fiber)
-{
-	const char *prefix = channel == PHOTODIODE_CHANNEL_YJ ? "yj" : "hk";
-	const char *kind = (fiber == 'M') ? "mm" : "sm";
-
-	snprintk(buf, buf_len, "%s_%s_to_%s_pd", prefix, kind, prefix);
 }
 
 static void channel_fiber_name(char *buf, size_t buf_len,
@@ -461,15 +451,11 @@ next:
 	}
 }
 
-int throughput_monitor_start(const struct throughput_monitor_request *request,
-			     struct throughput_monitor_status *status)
+int throughput_monitor_prepare_start(const struct throughput_monitor_request *request)
 {
 	enum photodiode_channel channel;
-	enum housekeeping_power_output pd_power;
-	uint8_t attenuator_index;
 	struct app_photodiode_settings pd_settings;
 	struct photodiode_status pd_status;
-	struct throughput_state next = {0};
 	int rc;
 
 	if (request == NULL) {
@@ -485,12 +471,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		return -EBUSY;
 	}
 	if (request->has_laser) {
-		if (photodiode_channel_for_laser(request->laser, &channel) != 0) {
+		if (photodiode_channel_for_laser(request->laser, &channel) != 0 ||
+		    channel != request->channel) {
 			return -EINVAL;
-		}
-		rc = attenuator_index_from_laser_id(request->laser, &attenuator_index);
-		if (rc != 0) {
-			return rc;
 		}
 	} else {
 		if (request->autolevel ||
@@ -498,7 +481,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			return -EINVAL;
 		}
 		channel = request->channel;
-		attenuator_index = 0U;
 	}
 
 	app_settings_get_photodiode(&pd_settings);
@@ -526,21 +508,39 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			return rc;
 		}
 	}
-	const char *failed_switch = NULL;
-	char failed_state = '\0';
-	rc = mems_router_apply_named_route(&router, request->input, request->output, false,
-		&failed_switch, &failed_state);
-	if (rc != 0) {
-		(void)stop_locked(channel);
-		k_mutex_unlock(&monitors_lock);
-		return rc;
+	/* Quiesce before command-owned routing, without dropping a same-source
+	 * shutdown obligation. Command dispatch serializes prepare/route/start;
+	 * failures after this point must call stop before replying.
+	 */
+	if (monitors[channel].active) {
+		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
-	pd_power = pd_power_output(channel);
+	monitors[channel].active = false;
+	monitors[channel].autolevel = false;
+	k_mutex_unlock(&monitors_lock);
+	return 0;
+}
+
+int throughput_monitor_start(const struct throughput_monitor_request *request,
+			     struct throughput_monitor_status *status)
+{
+	enum photodiode_channel channel = request->channel;
+	enum housekeeping_power_output pd_power = pd_power_output(channel);
+	uint8_t attenuator_index = 0U;
+	struct throughput_state next = {0};
+	int rc;
+
+	if (request->has_laser) {
+		rc = attenuator_index_from_laser_id(request->laser, &attenuator_index);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+
 	rc = housekeeping_power_set(pd_power, true);
 	if (rc != 0) {
-		(void)stop_locked(channel);
-		k_mutex_unlock(&monitors_lock);
-		return rc;
+		goto failed;
 	}
 	/*
 	 * Throughput owns this stream until stopped. Auto mode may still arm a
@@ -548,20 +548,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	 */
 	housekeeping_photodiode_autooff_inhibit(pd_power, true);
 
-	/* The monitor has applied this route. Capture its calibration once; dynamic
-	 * drive estimates reuse these losses until the next start request.
-	 */
-	next.pd_route_tx = 1.0;
-	next.laser_route_tx = 1.0;
-	if (request->has_laser) {
-		char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
-		const char *name = hispec_laser_name(request->laser);
-
-		route_name_for_pd(route, sizeof(route), channel, request->fiber);
-		(void)app_settings_get_route_loss(route, name, &next.pd_route_tx);
-		snprintk(route, sizeof(route), "%s_to_%s", request->input, request->output);
-		(void)app_settings_get_route_loss(route, name, &next.laser_route_tx);
-	}
+	/* The command resolved losses for both independent routes before starting. */
+	next.pd_route_tx = request->pd_route_tx;
+	next.laser_route_tx = request->laser_route_tx;
 
 	next.active = true;
 	next.autolevel = request->autolevel;
@@ -586,17 +575,13 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 				monitors[channel].level_percent, 0U);
 		}
 		if (rc != 0) {
-			(void)stop_locked(channel);
-			k_mutex_unlock(&monitors_lock);
-			return rc;
+			goto failed;
 		}
 	}
 
 	rc = refresh_reference(&monitors[channel]);
 	if (rc != 0) {
-		(void)stop_locked(channel);
-		k_mutex_unlock(&monitors_lock);
-		return rc;
+		goto failed;
 	}
 	monitors[channel].previous_source = monitors[channel].source;
 	/* The first reported acquisition must begin after startup/context installation. */
@@ -609,6 +594,14 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	}
 	k_mutex_unlock(&monitors_lock);
 	return 0;
+
+failed:
+	/* Keep the identity for command-side stop, but never publish a failed start. */
+	housekeeping_photodiode_autooff_inhibit(pd_power, false);
+	monitors[channel].active = false;
+	monitors[channel].autolevel = false;
+	k_mutex_unlock(&monitors_lock);
+	return rc;
 }
 
 int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *status)

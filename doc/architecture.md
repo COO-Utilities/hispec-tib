@@ -36,7 +36,8 @@ Runtime ownership is:
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
   noise warnings and diagnostic windows.
 - `photodiode_command.c`: command-schema validation for `pd` and `pd/settings`.
-- `throughput_command.c`: command-schema validation for `measure_throughput`.
+- `throughput_command.c`: validates `measure_throughput`, prepares ownership, applies
+  launch/return MEMS routes and resolves route-loss settings before starting.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
 - `housekeeping.c`: slow ambient-temperature sampling delayable work,
@@ -259,9 +260,16 @@ autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
 owners stop monitoring. Physical transition readings remain visible. See
 [the timing and error audit](photodiode_notes.md).
 
-At measurement start, route transmissions resolve from explicit settings first,
-then compiled TIB path defaults (switch products and planned static attenuation),
-then unity for unspecified route/laser pairs. Default totals stay in flash and
-do not consume override slots. The monitor applies the named input/output route after exclusions;
-the monitor captures its effective losses for this run. Restart the measurement
+At measurement start, the command resolves route transmissions from explicit
+settings first, then compiled path defaults in `devices.c`, then unity for an
+unspecified path. Defaults stay in flash and consume no override slots; settings
+owns override persistence. MM/SM return defaults are source-independent. Passive
+capture applies them too, but cannot infer emission or throughput. Known lasers
+may override returns with existing route/laser records.
+
+The command validates both routes, calls `throughput_monitor_prepare_start` to
+check exclusions and quiesce the target, applies launch (if requested) and return
+routes, then starts the monitor with resolved losses. The existing command
+executor serializes this sequence; no additional reservation state is needed.
+Failure after preparation uses the existing stop path. Restart the measurement
 to pick up changed route-loss settings.

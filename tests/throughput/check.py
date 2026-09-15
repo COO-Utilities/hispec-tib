@@ -225,6 +225,21 @@ int main(void) {
         for(size_t j=0;j<throughput_sample_msg.payload_len;j++) printf("%02x",(uint8_t)throughput_sample_msg.payload[j]);
         puts("");
     }
+    /* Passive light has a numerical PD power/error on either return fiber,
+     * while both serializations explicitly leave the denominator unknown. */
+    state.has_laser=state.autolevel=false;
+    state.laser_route_tx=NAN;
+    state.source=(struct throughput_source_reference){NAN,NAN,NAN,NAN,NAN,NAN,NAN,NAN};
+    state.previous_source=state.source;
+    pd.power_uw=.0002;pd.power_err_uw=.00001;pd.net_mv=9;pd.net_err_mv=.1;
+    for(int fiber=0;fiber<2;fiber++) {
+        state.pd_route_tx=fiber?.60:.98;
+        state.binary=false;publish_sample(&state,&pd);puts(throughput_sample_msg.payload);
+        state.binary=true;publish_sample(&state,&pd);
+        for(size_t j=0;j<throughput_sample_msg.payload_len;j++) printf("%02x",(uint8_t)throughput_sample_msg.payload[j]);
+        puts("");
+    }
+
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -367,7 +382,15 @@ for i in range(0,len(sample_wire_lines),2):
     for name in host._THROUGHPUT_FLOAT_FIELDS:
         a,b=getattr(sample,name),getattr(jsample,name)
         assert (a!=a and b!=b) or abs(a-b)<=1e-10*max(abs(a),1e-20), name
-    assert sample.flags==jsample.flags and sample.autolevel
+    assert sample.flags==jsample.flags and sample.autolevel==jsample.autolevel
+    if i>=8:
+        assert not sample.autolevel and jsample.laser=='none'
+        assert sample.tp!=sample.tp and sample.tp_err!=sample.tp_err
+        assert sample.delivered_power_nw!=sample.delivered_power_nw and sample.wavelength_nm!=sample.wavelength_nm
+        assert abs(sample.pd_power_nw-.2/sample.pd_route_tx)<1e-10
+        assert abs(sample.pd_power_err_nw-.01/sample.pd_route_tx)<1e-10
+    else:
+        assert sample.autolevel
     assert sample.t_ms==123 and sample.pd_raw==12
     if i==0:
         assert sample.pd_power_err_nw==2e-12 and abs(sample.tp-.2)<1e-15
@@ -584,9 +607,10 @@ static bool app_nvs_read_exact(unsigned i,void *p,size_t n,const char *name) {
     (void)name; if(!disk[i].configured) return false; memcpy(p,&disk[i],n); return true;
 }
 '''
-settings_text = (ROOT/'app/src/app_settings.c').read_text()
+settings_text = (ROOT/'app/src/devices.c').read_text()
 start = settings_text.rfind('static const struct {',0,settings_text.index('} default_route_losses[]'))
 source += settings_text[start:settings_text.index('\n};',start)+3] + '\n'
+source += block('devices.c','double devices_route_loss_default(')
 for marker in ['static bool route_loss_record_valid(', 'static void app_nvs_load_route_loss(',
                'static int route_loss_record_index_locked(', 'int app_settings_get_route_loss(',
                'int app_settings_set_route_loss(']:
@@ -617,6 +641,10 @@ int main(void) {
             assert(app_settings_get_route_loss(route,lasers[i],&tx)==0 && tx==(j?.60:.98));
         }
     }
+    /* Unknown illumination still has a return path; per-laser overrides are
+     * only selected when the source is known. No new persisted key is needed. */
+    assert(app_settings_get_route_loss("yj_sm_to_yj_pd",NULL,&tx)==0 && tx==.60);
+    assert(app_settings_get_route_loss("hk_mm_to_hk_pd",NULL,&tx)==0 && tx==.98);
     /* Defaults occupy no override slots, including after a simulated reboot. */
     for(unsigned i=0;i<APP_ROUTE_LOSS_RECORD_COUNT;i++) assert(!g_settings.snapshot.route_loss.record[i].configured);
     assert(app_settings_get_route_loss("1028y_to_M","1028y",&tx)==0 && tx==1);
@@ -629,6 +657,10 @@ int main(void) {
     app_nvs_load_route_loss(&g_settings.snapshot);
     assert(app_settings_get_route_loss("yj_1430_to_yj_ao","1430yj",&tx)==0 && tx==1e-11);
     assert(app_settings_get_route_loss("yj_1430_to_yj_fei","1430yj",&tx)==0 && tx==6.81472e-11);
+    assert(app_settings_set_route_loss("yj_sm_to_yj_pd","1028y",.5,true)==0);
+    assert(app_settings_get_route_loss("yj_sm_to_yj_pd","1028y",&tx)==0 && tx==.5);
+    assert(app_settings_get_route_loss("yj_sm_to_yj_pd",NULL,&tx)==0 && tx==.60);
+
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -739,6 +771,12 @@ with plt.ioff():
     assert np.isnan(fig.axes[0].lines[0].get_ydata()[2])
     assert fig.axes[0].lines[1].get_ydata()[1]==sample.tp
     plt.close(fig)
+    passive=host.decode_throughput_payload(bytes.fromhex(sample_wire_lines[9]))
+    monitor._samples.clear();monitor._samples.extend(dataclasses.replace(passive,t_ms=1000+i*50).as_tuple() for i in range(3))
+    fig,anim=monitor.plot_live(channel='yj');anim._func(0);fig.canvas.draw()
+    assert np.isnan(fig.axes[0].lines[0].get_ydata()).all()
+    assert np.isfinite(fig.axes[2].lines[0].get_ydata()).all()
+    fig.savefig('/private/tmp/hispec-passive-dashboard.png');plt.close(fig)
     monitor._samples.extend([sample.as_tuple()]*20000)
     # The dashboard must not convert the collector's whole array each frame.
     monitor.to_recarray=lambda: (_ for _ in ()).throw(AssertionError('full history conversion'))
@@ -1089,3 +1127,198 @@ with tempfile.TemporaryDirectory() as tmp:
     cfile.write_text(source)
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
+
+# Command preparation and both physical routes, using production command/monitor
+# bodies. Stub parsing (already tested by coo_commons), hardware, and persistence.
+source = r'''
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define K_FOREVER 0
+#define LOG_ERR(...) ((void)0)
+#define snprintk snprintf
+#define MEMS_SOURCEDEST_MAX_LEN 24
+#define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
+#define COO_JSON_EXTRACT_OK 0
+#define COO_JSON_EXTRACT_ERR -1
+#define COO_JSON_EXTRACT_MISSING 1
+#define PHOTODIODE_CHANNEL_COUNT 2
+#define APP_PD_POWER_OVERRIDE_OFF 2
+#define ROUTE_DEF(i,o,steps) {{i,o}}
+enum photodiode_channel {PHOTODIODE_CHANNEL_YJ,PHOTODIODE_CHANNEL_HK};
+enum housekeeping_power_output {YJ,HK};
+enum hispec_laser_id {HISPEC_LASER_1028_Y,HISPEC_LASER_1270_J,HISPEC_LASER_1430_YJ,HISPEC_LASER_1430_HK,HISPEC_LASER_1510_H,HISPEC_LASER_2330_K,HISPEC_LASER_UNKNOWN};
+static const char *laser_names[]={"1028y","1270j","1430yj","1430hk","1510h","2330k","none"};
+static const char *photodiode_channel_names[]={"yj","hk"};
+struct photodiode_status {struct {bool dark_pending;} channel[2];};
+struct app_photodiode_settings {struct {int power;} channel[2];};
+struct mems_route {struct {const char *input_name,*output_name;} key;};
+struct fixture {const char *laser,*channel,*fiber,*input,*output,*format,*stop; bool autolevel;};
+struct coo_cmd_request {const struct fixture *payload;};
+struct coo_cmd_response {char error[160];};
+struct coo_json_string_choice {const char *name;int value;};
+static int coo_json_extract_string(const struct fixture *p,const char *key,char *out,size_t n) {
+    const char *value=NULL;
+    #define FIELD(f) if(!strcmp(key,#f))value=p->f;
+    FIELD(laser) FIELD(channel) FIELD(fiber) FIELD(input) FIELD(output) FIELD(format) FIELD(stop)
+    #undef FIELD
+    if(!value)return COO_JSON_EXTRACT_MISSING;
+    if(strlen(value)>=n)return COO_JSON_EXTRACT_ERR;
+    snprintf(out,n,"%s",value);return 0;
+}
+static int coo_json_match_string_choice(const char *s,const struct coo_json_string_choice *c,size_t n,int *v) {
+    for(size_t i=0;i<n;i++) if(!strcmp(s,c[i].name)){*v=c[i].value;return 0;}return -1;
+}
+static int coo_json_extract_string_choice(const struct fixture *p,const char *key,const struct coo_json_string_choice *c,size_t n,int *v) {
+    char s[24];int rc=coo_json_extract_string(p,key,s,sizeof(s));
+    return rc==0?coo_json_match_string_choice(s,c,n,v):rc;
+}
+static int coo_json_extract_optional_bool(const struct fixture *p,const char *key,bool *v,bool *present) {
+    (void)key;(void)present;*v=p->autolevel;return 0;
+}
+static int coo_json_extract_optional_u32(const struct fixture *p,const char *key,uint32_t *v,bool *present) {
+    (void)p;(void)key;(void)v;(void)present;return 0;
+}
+static int coo_json_extract_optional_double_range(const struct fixture *p,const char *key,double *v,bool *present,double lo,double hi) {
+    (void)p;(void)key;(void)v;(void)lo;(void)hi;*present=false;return 0;
+}
+static int coo_cmd_error(struct coo_cmd_response *out,const struct coo_cmd_request *cmd,const char *msg) {
+    (void)cmd;snprintf(out->error,sizeof(out->error),"%s",msg);return -1;
+}
+static int coo_cmd_ok(struct coo_cmd_response *out,const struct coo_cmd_request *cmd) {(void)out;(void)cmd;return 0;}
+static int hispec_laser_id_from_name(const char *name,enum hispec_laser_id *out) {
+    for(int i=0;i<6;i++)if(!strcmp(name,laser_names[i])){*out=i;return 0;}return -EINVAL;
+}
+static const char *hispec_laser_name(enum hispec_laser_id id) {return laser_names[id];}
+'''
+for file,names in {
+    'throughput_monitor.h':['throughput_monitor_request','throughput_monitor_status'],
+    'throughput_monitor.c':['throughput_source_reference','throughput_state','laser_pd_channel'],
+}.items():
+    for name in names: source+=block(file,'struct '+name+' {')
+for file,marker in [('devices.c','static const struct mems_route tib_routes[] ='),
+                    ('throughput_monitor.c','static const struct laser_pd_channel laser_pd_channels[] =')]:
+    source+=block(file,marker).rstrip()+';\n'
+source+=r'''
+static struct throughput_state monitors[2];
+static int monitors_lock,router,applied,stops,fail_route,fail_power,fail_source,fail_stop,fail_atten;
+static bool dark,calibrating,power_off,inhibited[2],omit_return;
+static const struct mems_route *last_routes[2];
+static struct attenuator {int unused;} attenuators[6];
+static int64_t k_uptime_get(void) {return 100;}
+static void k_mutex_lock(int *p,int t) {(void)p;(void)t;}
+static void k_mutex_unlock(int *p) {(void)p;}
+static void photodiode_get_status(struct photodiode_status *p) {memset(p,0,sizeof(*p));p->channel[0].dark_pending=dark;}
+static bool attenuator_calibration_active(void) {return calibrating;}
+static void app_settings_get_photodiode(struct app_photodiode_settings *p) {p->channel[0].power=p->channel[1].power=power_off?APP_PD_POWER_OVERRIDE_OFF:0;}
+static int attenuator_index_from_laser_id(enum hispec_laser_id id,uint8_t *out) {*out=id;return 0;}
+static int housekeeping_power_set(enum housekeeping_power_output p,bool on) {(void)p;(void)on;return fail_power?-EIO:0;}
+static void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output p,bool on) {inhibited[p]=on;}
+static int hispec_laser_stop_output(enum hispec_laser_id l,bool bank) {(void)l;assert(!bank);stops++;return fail_stop?-EIO:0;}
+static bool attenuator_set_db(struct attenuator *a,double db) {(void)a;(void)db;return !fail_atten;}
+static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l,double p,unsigned off) {(void)l;(void)p;(void)off;return 0;}
+static int refresh_reference(struct throughput_state *s) {(void)s;return fail_source?-EIO:0;}
+static const struct mems_route *mems_router_get_route(int *r,const char *in,const char *out) {
+    (void)r;if(omit_return && strstr(out,"_pd"))return NULL;
+    for(size_t i=0;i<ARRAY_SIZE(tib_routes);i++)if(!strcmp(in,tib_routes[i].key.input_name)&&!strcmp(out,tib_routes[i].key.output_name))return &tib_routes[i];return NULL;
+}
+static int mems_router_apply_route(int *r,const struct mems_route *route,bool force,const char **failed,char *state) {
+    (void)r;(void)force;(void)failed;(void)state;
+    int channel=route->key.input_name[0]=='y'?0:1;
+    assert(!monitors[channel].active); /* Quiesce precedes all routing. */
+    last_routes[applied++%2]=route;return applied==fail_route?-EIO:0;
+}
+static int app_settings_get_route_loss(const char *route,const char *laser,double *tx) {
+    if(strstr(route,"_pd"))*tx=strstr(route,"_mm_")?.98:.60;
+    else {assert(laser);*tx=1e-6;}return 0;
+}
+'''
+for marker in ['static enum housekeeping_power_output pd_power_output(', 'static int photodiode_channel_for_laser(',
+               'static void release_locked(', 'static int stop_locked(',
+               'int throughput_monitor_prepare_start(', 'int throughput_monitor_start(', 'int throughput_monitor_stop(']:
+    source+=block('throughput_monitor.c',marker)
+command=(ROOT/'app/src/throughput_command.c').read_text()
+source+=command[command.index('enum throughput_format {'):]
+source+=r'''
+static struct coo_cmd_response response;
+static int run(struct fixture f) {response.error[0]=0;return measure_throughput_set(&(struct coo_cmd_request){&f},&response);}
+static void reset(void) {memset(monitors,0,sizeof(monitors));applied=stops=fail_route=fail_power=fail_source=fail_stop=fail_atten=0;dark=calibrating=power_off=omit_return=false;inhibited[0]=inhibited[1]=false;}
+int main(void) {
+    struct fixture f={.laser="1028y",.output="yj_ao",.autolevel=true};
+    for(int channel=0;channel<2;channel++)for(int fiber=0;fiber<2;fiber++) {
+        reset();struct fixture p={.laser="none",.channel=channel?"hk":"yj",.fiber=fiber?"s":"m"};
+        assert(!run(p) && applied==1 && monitors[channel].active);
+        assert(!monitors[channel].has_laser && !monitors[channel].stop_laser);
+        assert(monitors[channel].pd_route_tx==(fiber?.60:.98));assert(isnan(monitors[channel].laser_route_tx));
+        assert(!strcmp(last_routes[0]->key.output_name,channel?"hk_pd":"yj_pd"));
+        assert(!throughput_monitor_stop(channel,NULL) && stops==0 && !inhibited[channel]);
+        p.input=channel?"hk_cal":"yj_cal";p.output=channel?"hk_fei":"yj_ao";
+        assert(!run(p) && applied==3); /* optional passive launch plus return */
+    }
+    reset();assert(!run(f) && applied==2 && monitors[0].autolevel && monitors[0].stop_laser);
+    struct fixture bad=f;bad.output="hk_ao";assert(run(bad)!=0 && applied==2 && monitors[0].active && stops==0);
+    bad=f;bad.channel="hk";assert(run(bad)!=0 && applied==2 && monitors[0].active);
+    omit_return=true;assert(run(f)!=0 && applied==2 && monitors[0].active);omit_return=false;
+    dark=true;assert(run(f)!=0 && applied==2 && monitors[0].active);dark=false;
+    calibrating=true;assert(run(f)!=0 && applied==2);calibrating=false;
+    power_off=true;assert(run(f)!=0 && applied==2);power_off=false;
+    bad=(struct fixture){.laser="1430hk",.output="hk_ao",.autolevel=true};assert(run(bad)!=0 && applied==2 && monitors[0].active);
+    f.autolevel=false;assert(!run(f) && monitors[0].stop_laser && stops==0);
+    assert(!throughput_monitor_stop(0,NULL) && stops==1 && !monitors[0].active);
+    for(int failure=1;failure<=2;failure++) {
+        reset();f.autolevel=true;assert(!run(f));fail_route=applied+failure;
+        assert(run(f)!=0 && !monitors[0].active && stops==1 && !inhibited[0]);
+        assert(strstr(response.error,"MEMS may be partially changed"));
+    }
+    reset();assert(!run(f));fail_stop=1;fail_route=applied+1;
+    assert(run(f)!=0 && !monitors[0].active && monitors[0].stop_laser && stops==1);
+    fail_stop=0;assert(!throughput_monitor_stop(0,NULL) && stops==2 && !monitors[0].stop_laser);
+    for(int failure=0;failure<3;failure++) {
+        reset();fail_power=failure==0;fail_atten=failure==1;fail_source=failure==2;
+        assert(run(f)!=0 && !monitors[0].active && !inhibited[0]);
+        assert(stops==(failure==0?0:1));
+    }
+    reset();assert(!run(f));bad=f;bad.laser="1270j";assert(!run(bad) && stops==1 && monitors[0].laser==HISPEC_LASER_1270_J);
+    struct fixture passive={.laser="none",.channel="yj"};assert(!run(passive) && stops==2 && !monitors[0].stop_laser);
+    reset();passive.channel=NULL;assert(run(passive)!=0 && applied==0);
+    passive.channel="yj";passive.input="yj_cal";assert(run(passive)!=0 && applied==0);
+    puts("Throughput route, passive capture, exclusion and startup failure checks passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'startup.c',Path(tmp)/'startup'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+sent=[]
+client._request_ok=lambda command,payload: sent.append((command,payload))
+for channel in ('yj','hk'):
+    client.measure_throughput('none',channel=channel,autolevel=False)
+    assert sent[-1]==('measure_throughput',dict(laser='none',channel=channel,fiber='M',autolevel=False,off_in_s=300,format='binary'))
+    client.measure_throughput('none',channel=channel,autolevel=False,input=f'{channel}_cal',output=f'{channel}_ao',format='json')
+    assert sent[-1][1]['format']=='json' and sent[-1][1]['output']==f'{channel}_ao'
+for kwargs in ({'laser':'none','autolevel':False}, {'laser':'none','channel':'yj'},
+               {'laser':'none','channel':'yj','autolevel':False,'input':'yj_cal'},
+               {'laser':'1028y','output':'yj_ao','channel':'hk'}, {'laser':'1028y'},
+               {'laser':'1028y','output':'yj_pd'}, {'laser':'1028y','output':'hk_ao'}):
+    count=len(sent)
+    try: client.measure_throughput(**kwargs)
+    except host.HispecFibError: pass
+    else: raise AssertionError(f'invalid request accepted: {kwargs}')
+    assert len(sent)==count
+for laser in host.LASER_NAMES:
+    channel=host._LASER_TO_PD_CHANNEL[laser]
+    client.measure_throughput(laser,output=f'{channel}_fei')
+    assert sent[-1][1]['channel']==channel
+print('Python active/passive measurement command checks passed')
+
+# The shared command catalog validates keys before reaching the handler.
+entry=(ROOT/'app/src/command.c').read_text().split('CMD_SPEC_TIB("measure_throughput"',1)[1].split('COO_CMD_HELP_EFFECT',1)[0]
+allowed_keys=set(re.search(r'"(laser,[^"\n]+)"',entry).group(1).split(','))
+for _,payload in sent: assert set(payload)<=allowed_keys

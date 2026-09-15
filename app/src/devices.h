@@ -112,6 +112,12 @@ void devices_capture_boot_reset_cause(void);
  */
 void devices_queue_boot_reset_telemetry(void);
 
+/** Compiled route transmission, or 1.0 for an unspecified path. Pure lookup;
+ * @p route is a non-null route name. NULL @p laser selects only generic defaults
+ * (MM/SM returns); known laser names also select launch/static attenuation.
+ */
+double devices_route_loss_default(const char *route, const char *laser);
+
 /** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);
 

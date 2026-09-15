@@ -4780,7 +4780,7 @@ class HispecFibPcb:
         fiber: Literal["M", "S"] = "M",
         autolevel: bool = True,
         input: str | None = None,
-        output: str,
+        output: str | None = None,
         max_flux_ph_s: float | None = None,
         off_in_s: int = 300,
         format: Literal["json", "binary"] = "binary",
@@ -4790,11 +4790,13 @@ class HispecFibPcb:
     ) -> CommandOk | ThroughputMonitor:
         """Start a measurement, using binary telemetry unless JSON is requested.
 
-        Applies output and captures route losses; call again to refresh them.
-        With collect=True, return a background collector whose stop() also stops
-        this channel's measurement and any laser used by its autolevel operation.
-        Both channels can stream; overlapping instrument light paths normally
-        require using only one autolevel loop.
+        Applies launch and MM/SM return routes and captures their losses for the run.
+        For laser="none", specify channel and autolevel=False: only the return is
+        selected unless both input and output are supplied. Detected power is
+        return-corrected; source power and throughput are unknown (NaN).
+        With collect=True, return a collector whose stop() stops this channel's
+        measurement and any laser used by its autolevel operation. Both channels
+        can stream; firmware permits only one autolevel owner.
         """
         if laser != "none":
             _require_choice("laser", laser, LASER_NAMES)
@@ -4805,30 +4807,35 @@ class HispecFibPcb:
         if laser == "none":
             if autolevel:
                 raise HispecFibError('laser="none" requires autolevel=False')
-            if input is None:
-                raise HispecFibError('laser="none" requires an input route')
-            if channel is None and collect:
-                if str(input).startswith("yj") or str(output).startswith("yj"):
-                    channel = "yj"
-                elif str(input).startswith("hk") or str(output).startswith("hk"):
-                    channel = "hk"
-                else:
-                    raise HispecFibError('collecting laser="none" throughput requires channel="yj" or "hk"')
-            elif channel is not None:
-                _require_choice("channel", channel, PD_CHANNELS)
-        elif channel is None:
-            channel = _LASER_TO_PD_CHANNEL[laser]
+            if channel is None:
+                raise HispecFibError('laser="none" requires channel="yj" or "hk"')
+            if (input is None) != (output is None):
+                raise HispecFibError("passive launch requires both input and output")
         else:
-            _require_choice("channel", channel, PD_CHANNELS)
+            expected_channel = _LASER_TO_PD_CHANNEL[laser]
+            if channel is None:
+                channel = expected_channel
+            elif channel != expected_channel:
+                raise HispecFibError("channel does not match laser")
+            if output is None:
+                raise HispecFibError("laser measurement requires output")
+        _require_choice("channel", channel, PD_CHANNELS)
+        for name, value in (("input", input), ("output", output)):
+            if value is not None and not str(value).startswith(f"{channel}_"):
+                raise HispecFibError(f"{name} must belong to channel {channel}")
+        if output is not None and output not in (f"{channel}_ao", f"{channel}_fei"):
+            raise HispecFibError("launch output must be this channel's ao or fei")
 
         payload: dict[str, Any] = {
             "laser": laser,
-            "output": str(output),
+            "channel": channel,
             "fiber": fiber,
             "autolevel": bool(autolevel),
             "off_in_s": _require_nonnegative_u32("off_in_s", off_in_s),
             "format": format,
         }
+        if output is not None:
+            payload["output"] = str(output)
         if input is not None:
             payload["input"] = str(input)
         if max_flux_ph_s is not None:
