@@ -3,9 +3,11 @@
 `laser_estimate_flux(id, out)` uses the laser module's existing cached settings
 and current/TEC state. Optical-power uncertainty is
 `hypot(power_mw * fractional_noise, constant_noise_mw)`; this operation performs
-no Modbus I/O. Its nonblocking state read returns `-EBUSY` during another
-laser operation and `-EIO` for an invalid owner estimate. Nonfinite calibration
-values are rejected. See [settings](../settings.md) for compiled-table defaults.
+no Modbus I/O. It waits only for the short state-copy mutex, returns `-EINVAL`
+for invalid/uninitialized use, and never reports operational `-EBUSY`/`-EIO`.
+Throughput and calibration use `hispec_laser_output_status()` separately to
+check confirmed emission, control/controller faults, and communication timeout.
+See [settings](../settings.md) for compiled-table defaults.
 
 ```{eval-rst}
 .. doxygenfile:: app/src/maiman.h
@@ -31,11 +33,11 @@ not measured end-to-end latency: controller turnaround, thread scheduling, I/O
 contention, and optical response are additional. A cold bank also has its boot
 wait. No settling delay or polling of optical power is added.
 
-The laser owner keeps preparation and estimate validity. Configuration/power
-changes revoke preparation; detected I/O failures or controller faults invalidate
-the estimate. Maiman operations remember a failure across subsequent successful
-register reads, including positive Modbus exception responses. A later successful
-temperature poll does not requalify a failed current operation. Successful current
-control establishes the estimate again. The runtime emission flag remains set
-after an unsuccessful stop because physical emission is uncertain; a confirmed
-stop or bank GPIO off establishes zero output. No automatic retry is performed.
+The laser owner keeps preparation and confirmed setpoints separately from
+operational communication health. Failed control operations or confirmed
+controller faults revoke preparation. Diagnostic failures warn and invalidate
+only that observation; five seconds without a response while emitting faults
+operation. Successful communication restores availability, but measurements
+remain stopped and a control fault requires a successful control operation.
+Failed shutdown preserves its emission/shutdown obligation. See
+[communication flow](../photodiode_notes.md#communication-and-power-lifetime).

@@ -160,6 +160,9 @@ typedef struct {
 	 * an earlier transport/exception failure. maiman_init() starts a new operation.
 	 */
 	bool io_failed;
+	/* Operation-local transport facts, consumed by the laser owner. */
+	int last_error;
+	int64_t last_response_ms;
 } maiman_driver_t;
 
 /**

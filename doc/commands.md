@@ -517,8 +517,11 @@ both PDs; manually enabled additional lasers are not separated by this system.
 `stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
 attempts every owned laser shutdown. Failed shutdown disables streaming/control
 and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
-and a faulted laser-owner estimate use the same stop path. Pending laser I/O leaves the last confirmed owner state readable; estimation
-uses a separate short state lock and never reports bus contention.
+and operational source faults use the same stop path. Numerical laser
+estimates continue to use confirmed setpoints; acquisition checks owner health
+separately. A single failed read warns; five seconds without a response while
+in use faults the owner. Recovery does not restart measurements. See
+[laser operation and timing](api/maiman_laser.md).
 
 Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
 JSON; Python and the notebook default to binary. Binary channel and wavelength
@@ -769,9 +772,9 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 
 For an already emitting laser with valid preparation, level changes write only
 required current/TEC setpoints. Startup and invalidated preparation retain the
-full identity/profile/control sequence. Detected driver faults or I/O failures
-invalidate optical estimates; successful temperature reads do not clear that
-condition. See [laser operation and timing](api/maiman_laser.md).
+full identity/profile/control sequence. Failed control operations or confirmed
+controller faults revoke preparation. Diagnostic read failures retain setpoints;
+sustained communication loss faults operation separately from numerical estimates. See [laser operation and timing](api/maiman_laser.md).
 
 (laser-status)=
 ### `laser/status`

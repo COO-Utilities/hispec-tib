@@ -386,6 +386,21 @@ static void publish_sample(const struct throughput_state *state,
 	});
 }
 
+/* Report the measurement's stop even when it precedes the owner's background
+ * timeout notice. Keep this on the existing console/MQTT warning path.
+ */
+static void warn_fault_stop(const struct throughput_state *state, const char *reason, int error)
+{
+	char context[96];
+	snprintk(context, sizeof(context), "channel=%s laser=%s rc=%d",
+		photodiode_channel_names[state->channel],
+		state->has_laser ? hispec_laser_name(state->laser) : "none", error);
+	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+		.code = "throughput_stopped", .msg = reason, .context = context,
+	});
+}
+
 void throughput_monitor_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -418,9 +433,11 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				(void)stop_locked(i);
 				goto next;
 			}
-			rc = refresh_reference(state);
-			if (rc != 0 || (state->has_laser && state->autolevel && state->source.laser_current_ma <= 0.0)) {
-				LOG_WRN("Throughput source owner fault/off; stopping %s", hispec_laser_name(state->laser));
+			bool emitting = false;
+			if (state->has_laser) rc = hispec_laser_output_status(state->laser, &emitting);
+			if (rc == 0) rc = refresh_reference(state);
+			if (rc != 0 || (state->has_laser && state->autolevel && !emitting)) {
+				warn_fault_stop(state, "source unavailable; stopping throughput", rc != 0 ? rc : -EIO);
 				(void)stop_locked(i);
 				goto next;
 			}
@@ -441,7 +458,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 					rc = refresh_reference(state);
 				}
 				if (rc < 0) {
-					LOG_WRN("Throughput input change failed (%d); stopping", rc);
+					warn_fault_stop(state, "input change failed; stopping throughput", rc);
 					(void)stop_locked(i);
 				}
 			}
@@ -580,6 +597,11 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	}
 
 	rc = refresh_reference(&monitors[channel]);
+	if (rc == 0 && request->has_laser) {
+		bool emitting;
+		rc = hispec_laser_output_status(request->laser, &emitting);
+		if (rc == 0 && request->autolevel && !emitting) rc = -EIO;
+	}
 	if (rc != 0) {
 		goto failed;
 	}

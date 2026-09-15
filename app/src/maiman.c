@@ -142,6 +142,8 @@ void maiman_init_verbose(maiman_driver_t *drv, uint8_t node_id, bool verbose)
 	drv->node_id = node_id;
 	drv->verbose = verbose;
 	drv->io_failed = false;
+	drv->last_error = 0;
+	drv->last_response_ms = 0;
 }
 
 /**
@@ -157,6 +159,7 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 	}
 	if (maiman_client_iface < 0) {
 		drv->io_failed = true;
+		drv->last_error = -ENODEV;
 		LOG_ERR("Modbus read node=%u reg=0x%04x before client init",
 			drv->node_id, address);
 		return false;
@@ -171,6 +174,7 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 	/* Zephyr returns positive Modbus exception codes as well as negative errno. */
 	if (err != 0) {
 		drv->io_failed = true;
+		drv->last_error = err;
 		LOG_ERR("Modbus read node=%u reg=0x%04x failed: %d",
 			drv->node_id, address, err);
 		return false;
@@ -179,6 +183,7 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 		LOG_INF("Modbus read node=%u reg=%s(0x%04x) value=0x%04x",
 			drv->node_id, maiman_register_name(address), address, *value);
 	}
+	drv->last_response_ms = k_uptime_get();
 	return true;
 }
 
@@ -196,6 +201,7 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 	}
 	if (maiman_client_iface < 0) {
 		drv->io_failed = true;
+		drv->last_error = -ENODEV;
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x before client init",
 			drv->node_id, address, value);
 		return false;
@@ -209,6 +215,7 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 					address, &value, 1);
 	if (err != 0) {
 		drv->io_failed = true;
+		drv->last_error = err;
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x failed: %d",
 			drv->node_id, address, value, err);
 		return false;
@@ -217,6 +224,7 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 		LOG_INF("Modbus write node=%u reg=%s(0x%04x) ok",
 			drv->node_id, maiman_register_name(address), address);
 	}
+	drv->last_response_ms = k_uptime_get();
 	return true;
 }
 

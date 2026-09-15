@@ -350,11 +350,18 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
  * constant_noise_mw). This is model/calibration uncertainty, not independent
  * sample noise. Waits only for a short state copy, never for the I/O mutex.
  * Returns -EINVAL before owner initialization or for invalid arguments, and
- * -EIO after an owner fault. Pending I/O leaves the last confirmed state readable.
+ * never returns an operational I/O fault. Pending I/O leaves confirmed setpoints readable.
  * Does not perform Modbus I/O, change GPIO, enqueue, publish, or persist.
  */
 int laser_estimate_flux(enum hispec_laser_id id,
 			struct hispec_laser_flux_estimate *out);
+
+/** Copy confirmed emission and operational health using only the state mutex.
+ * Returns -ETIMEDOUT after five seconds without a response while emitting,
+ * -EIO for a control/controller fault, or -EINVAL for invalid/uninitialized use.
+ * Does no I/O, initialization, or publishing; use separately from estimates.
+ */
+int hispec_laser_output_status(enum hispec_laser_id id, bool *emitting);
 
 /** @brief Return current-emission on-time tracked by this module since boot. */
 double hispec_laser_current_on_time_s(enum hispec_laser_id id);

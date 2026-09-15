@@ -325,6 +325,8 @@ int main(void) {
         double power=(s->properties.max_current_ma-s->properties.threshold_current_ma)*s->properties.efficiency_mw_per_ma;
         assert(fabs(estimate.power_mw-power)<1e-12);
         double nominal_flux=estimate.flux_ph_s;
+        laser_output_estimate[i].valid=false; /* Operational faults do not gate arithmetic. */
+        assert(laser_estimate_flux(i,&estimate)==0 && estimate.flux_ph_s==nominal_flux);
         assert(fabs(estimate.power_err_mw-hypot(power*s->fractional_noise,s->constant_noise_mw))<1e-12);
         laser_settings[i].constant_noise_mw=0;
         assert(laser_estimate_flux(i,&estimate)==0);
@@ -843,7 +845,7 @@ laser_source = r'''
 #define HISPEC_LASER_COUNT 1
 enum hispec_laser_id {HISPEC_LASER_1028_Y};
 typedef struct {double max_current_ma; double operating_temp_c;} laserprops_t;
-typedef struct {unsigned node_id; bool io_failed;} maiman_driver_t;
+typedef struct {unsigned node_id; bool io_failed; int last_error; int64_t last_response_ms;} maiman_driver_t;
 struct hispec_laser_driver_profile {enum hispec_laser_id id; const char *name; unsigned node_id;};
 struct on_time_runtime {bool active;};
 static struct k_mutex laser_io_lock,laser_state_lock;
@@ -863,23 +865,48 @@ static int laser_io_lock_with_timeout(int t){return k_mutex_lock(&laser_io_lock,
 static const laserprops_t *runtime_props_locked(enum hispec_laser_id id){return &laser_settings[id].properties;}
 static bool float_is_valid(double x){return isfinite(x);}
 static void ensure_laser_runtime_settings_locked(void){}
-static void maiman_init(maiman_driver_t *d,unsigned n){d->node_id=n;d->io_failed=false;}
+static int64_t health_now=1000;
+static int64_t k_uptime_get(void) {return health_now;}
+#define MAX(a,b) ((a)>(b)?(a):(b))
+#define ARG_UNUSED(x) (void)(x)
+#define LASER_RESPONSE_TIMEOUT_MS 5000
+#define LASER_COMM_WARNING_MS 5000
+#define K_NO_WAIT 0
+struct k_work {int unused;};
+static int health_warnings,health_faults,health_recoveries,scheduled;
+static bool fail_read;
+static const struct hispec_laser_driver_profile laser_profiles[1]={{0,"test",1}};
+static void laser_autooff_reschedule(void) {scheduled++;}
+static void hispec_laser_service_autooff(void) {}
+static void laser_health_warning(enum hispec_laser_id id,const char *code,const char *message,int error) {
+ (void)id;(void)message;(void)error;
+ if(!strcmp(code,"laser_communication_fault")) health_faults++;
+ else if(!strcmp(code,"laser_communication_recovered")) health_recoveries++;
+ else health_warnings++;
+}
+static void maiman_init(maiman_driver_t *d,unsigned n){*d=(maiman_driver_t){.node_id=n};}
+static bool reply(maiman_driver_t *d,bool ok) {
+ if(ok)d->last_response_ms=health_now;else {d->io_failed=true;d->last_error=-EIO;}return ok;
+}
+static bool maiman_read_tec_started(maiman_driver_t *d,bool *on) {*on=true;return reply(d,!fail_read);}
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,bool v)
 {(void)v;++prepares;maiman_init(d,p->node_id);return 0;}
 static int verify_driver_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,void *o,unsigned expected)
 {(void)p;(void)d;(void)o;(void)expected;return 0;}
-static bool maiman_set_current(maiman_driver_t *d,double x){(void)d;(void)x;++writes;io_barrier();return !fail_write;}
-static bool maiman_start_device(maiman_driver_t *d){(void)d;++starts;return true;}
-static bool maiman_stop_device(maiman_driver_t *d){(void)d;++stops;return !fail_stop;}
-static bool maiman_stop_tec(maiman_driver_t *d){(void)d;return true;}
+static bool maiman_set_current(maiman_driver_t *d,double x){(void)d;(void)x;++writes;io_barrier();return reply(d,!fail_write);}
+static bool maiman_start_device(maiman_driver_t *d){++starts;return reply(d,true);}
+static bool maiman_stop_device(maiman_driver_t *d){++stops;return reply(d,!fail_stop);}
+static bool maiman_stop_tec(maiman_driver_t *d){return reply(d,true);}
 static void commit_current_runtime_locked(enum hispec_laser_id id,bool p);
 static void on_time_runtime_update_locked(struct on_time_runtime *r,unsigned n,enum hispec_laser_id id,bool active)
 {(void)n;r[id].active=active;}
 '''
-laser_source = laser_source.replace('#define K_FOREVER 0',mutex_harness+'\n#define K_FOREVER 0',1)
+laser_source = '#include <string.h>\n'+laser_source.replace('#define K_FOREVER 0',mutex_harness+'\n#define K_FOREVER 0',1)
 laser_source += block('lasers.c','struct laser_output_estimate_state {')
-laser_source += 'static struct laser_output_estimate_state laser_output_estimate[1];\n'
-for marker in ['static void output_estimate_set_locked(', 'static void invalidate_output_locked(',
+laser_source += 'static struct laser_output_estimate_state laser_output_estimate[1];\nstatic void invalidate_output_locked(enum hispec_laser_id);\n'
+for marker in ['static void laser_note_communication_locked(', 'int hispec_laser_output_status(',
+               'static void laser_autooff_work_handler(struct k_work *work)\n{',
+               'static void output_estimate_set_locked(', 'static void invalidate_output_locked(',
                'static bool output_ready_locked(']:
     laser_source += block('lasers.c',marker)
 # The stop function also has a forward declaration; select its definition.
@@ -932,6 +959,21 @@ int main(void){
  k_mutex_unlock(&laser_state_lock);
  atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
  assert(laser_output_estimate[0].current_ma==80 && laser_output_estimate[0].valid);
+ bool emitting;
+ int64_t deadline=laser_output_estimate[0].response_deadline_ms;
+ maiman_driver_t read={.io_failed=true,.last_error=-122};
+ laser_note_communication_locked(0,&read);
+ assert(hispec_laser_output_status(0,&emitting)==0 && emitting);
+ assert(laser_output_estimate[0].valid && laser_output_estimate[0].current_ma==80);
+ health_now=deadline-1;assert(hispec_laser_output_status(0,&emitting)==0);
+ health_now=deadline;assert(hispec_laser_output_status(0,&emitting)==-ETIMEDOUT);
+ fail_read=true;laser_autooff_work_handler(NULL);
+ assert(health_faults==1 && laser_output_estimate[0].communication_fault);
+ laser_autooff_work_handler(NULL);assert(health_faults==1);
+ fail_read=false;health_now+=1000;laser_autooff_work_handler(NULL);
+ assert(health_recoveries==1 && hispec_laser_output_status(0,&emitting)==0);
+ assert(!laser_output_estimate[0].prepared); /* An explicit new command must prepare again. */
+ assert(scheduled>0 && health_warnings>0);
  return 0;
 }
 '''
@@ -949,7 +991,9 @@ maiman_source=r'''
 #include <stddef.h>
 #define LOG_ERR(...) ((void)0)
 #define LOG_INF(...) ((void)0)
-typedef struct {uint8_t node_id;bool verbose;bool io_failed;} maiman_driver_t;
+#include <errno.h>
+typedef struct {uint8_t node_id;bool verbose;bool io_failed;int last_error;int64_t last_response_ms;} maiman_driver_t;
+static int64_t k_uptime_get(void){return 1000;}
 static int maiman_client_iface=0,reply;
 static const char *maiman_register_name(uint16_t a){(void)a;return "test";}
 static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
@@ -1071,11 +1115,12 @@ for file,names in {
     'throughput_monitor.c':['throughput_source_reference','throughput_state'],
     'lasers.h':['hispec_laser_flux_estimate'],
 }.items():
-    for name in names: source+=block(file,'struct '+name+' {')
+    for name in names:
+        source+=block(file,'struct '+name+' {')
 source+=r'''
 static struct throughput_state monitors[2];
 static struct photodiode_status throughput_pd_status;
-static int monitors_lock,frame,pubs,moves,stops,refreshes;
+static int monitors_lock,frame,pubs,moves,stops,refreshes,warnings;
 static int64_t now;
 static jmp_buf done;
 static int64_t k_uptime_get(void) {return now;}
@@ -1095,6 +1140,7 @@ static void attenuator_calibration_tick(struct photodiode_status *s) {(void)s;}
 static int pd_power_output(int i) {return i;}
 static int housekeeping_power_get(int i,bool *p) {(void)i;*p=true;return 0;}
 #define hispec_laser_name(i) "1028y"
+static int hispec_laser_output_status(enum hispec_laser_id id,bool *on){(void)id;*on=true;return 0;}
 static int stop_locked(int i) {monitors[i].active=false;stops++;return 0;}
 static int refresh_reference(struct throughput_state *s) {
     refreshes++;
@@ -1112,12 +1158,24 @@ static int autolevel_adjust(struct throughput_state *s,const struct photodiode_c
     assert(frame==1 || frame==4 || frame==5);return frame==1?1:0;
 }
 '''
+source+=r'''
+#define snprintk snprintf
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+static const char *photodiode_channel_names[]={"yj","hk"};
+struct coo_cmd_runtime_emit_args {int type,delivery;const char *code,*msg,*context;};
+static void *command_runtime_get(void){return NULL;}
+static int coo_cmd_runtime_emit(void *r,const struct coo_cmd_runtime_emit_args *a){
+ (void)r;assert(a->type==COO_CMD_RUNTIME_EMIT_WARNING && a->code && a->msg && a->context);warnings++;return 0;
+}
+'''
+source+=block('throughput_monitor.c','static void warn_fault_stop(')
 source+=block('throughput_monitor.c','void throughput_monitor_thread(')
 source+=r'''
 int main(void) {
     monitors[0]=(struct throughput_state){.active=true,.autolevel=true,.has_laser=true};
     if(!setjmp(done)) throughput_monitor_thread(NULL,NULL,NULL);
-    assert(pubs==4 && moves==3 && stops==1 && refreshes==7);
+    assert(pubs==4 && moves==3 && stops==1 && refreshes==7 && warnings==1);
     assert(!monitors[0].active && monitors[0].last_sample_ms==200);
     puts("Consumer freshness, publication order, source fault checks passed");
 }
@@ -1195,6 +1253,7 @@ static int hispec_laser_id_from_name(const char *name,enum hispec_laser_id *out)
     for(int i=0;i<6;i++)if(!strcmp(name,laser_names[i])){*out=i;return 0;}return -EINVAL;
 }
 static const char *hispec_laser_name(enum hispec_laser_id id) {return laser_names[id];}
+static int hispec_laser_output_status(enum hispec_laser_id id,bool *on){(void)id;*on=true;return 0;}
 '''
 for file,names in {
     'throughput_monitor.h':['throughput_monitor_request','throughput_monitor_status'],
