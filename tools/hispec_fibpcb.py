@@ -2640,6 +2640,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         x_axis: Literal["fvoa_mv", "sweep_mv"] = "fvoa_mv",
         figsize: tuple[float, float] = (10.0, 10.0),
     ):
+        """Plot retained records with event shapes and classification colors.
+
+        Black outlines mark fit inclusion; hollow symbols overlay reference
+        and bridge roles on the same samples.
+        """
         import matplotlib.pyplot as plt
 
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
@@ -2719,10 +2724,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 mask = event_mask & (np.asarray(rec.classification).astype(str) == classification)
                 if not np.any(mask):
                     continue
-                color = _ATTEN_CAL_EVENT_COLORS.get(
-                    event, _ATTEN_CAL_CLASSIFICATION_COLORS.get(classification, "0.35")
-                )
-                alpha = 0.85 if classification == "ok" else 0.62
+                color = _ATTEN_CAL_CLASSIFICATION_COLORS.get(classification, "0.35")
+                alpha = 0.85
                 included = mask & np.asarray(rec.included, dtype=bool)
                 other = mask & ~np.asarray(rec.included, dtype=bool)
                 if np.any(other):
@@ -2806,7 +2809,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     s=92,
                     facecolors="none",
                     edgecolors=_ATTEN_CAL_ROLE_COLORS[role],
-                    linewidths=1.3,
+                    linewidths=1.3 if role == "reference" else 1.0,
                     label=role,
                     zorder=4,
                 )
@@ -2834,7 +2837,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     fontsize=8,
                     color="0.35",
                 )
-        axes[0].legend(loc="best", fontsize="x-small", ncol=2)
+        axes[0].legend(loc="best", fontsize="small", ncol=2)
         return fig
 
     def plot_surface(
