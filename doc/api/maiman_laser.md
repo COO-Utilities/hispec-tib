@@ -3,7 +3,9 @@
 `laser_estimate_flux(id, out)` uses the laser module's existing cached settings
 and current/TEC state. Optical-power uncertainty is
 `hypot(power_mw * fractional_noise, constant_noise_mw)`; this operation performs
-no Modbus I/O. See [settings](../settings.md) for compiled-table defaults.
+no Modbus I/O. Its nonblocking state read returns `-EBUSY` during another
+laser operation and `-EIO` for an invalid owner estimate. Nonfinite calibration
+values are rejected. See [settings](../settings.md) for compiled-table defaults.
 
 ```{eval-rst}
 .. doxygenfile:: app/src/maiman.h

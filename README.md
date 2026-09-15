@@ -93,7 +93,7 @@ For the interactive Matplotlib backend, install into that same environment:
 ```
 
 The throughput section provides a fixed receive-log widget (500 records,
-updated at most twice per second), binary acquisition, a nonblocking five-panel
+updated at most twice per second), binary acquisition, a nonblocking six-panel
 dashboard, snapshot export, and explicit
 selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
 referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
@@ -106,13 +106,17 @@ throughput-monitor change.
 Throughput packets feed collection directly and are excluded from logging.
 The dashboard shows logarithmic throughput with a linked dB-loss axis, PD input
 with the 400–1600 mV control band, detector and total-throughput S/N, source
-current/attenuation, and estimated photon flux. Calibration uncertainty can
+current/attenuation, estimated laser output (µW), and route-corrected
+delivered/detected power (nW). Firmware sends one fresh conversion per channel
+every 50 ms; the dashboard refreshes at most 4 Hz. Overrange points are nominal
+throughput lower bounds, with no PD/throughput error band or S/N. Calibration uncertainty can
 limit total S/N even when detector S/N is high. Only the displayed record tail
 is converted per frame. Display gaps for nonpositive log values or undefined
 S/N do not change the underlying records or CSV exports.
 
-Both photodiodes can stream. Dual autolevel remains available for engineering
-use, but normal instrument light paths overlap and should use only one loop.
+Both photodiodes can stream; firmware permits only one autolevel owner because
+the instrument light paths overlap. See [sampling and uncertainty](doc/photodiode_notes.md)
+for the error budget, missing-sample behavior, and 64 SPS converter option.
 
 Saved outputs are historical observations. Run cells individually; dark,
 calibration, and manual laser tests are separate lab operations.

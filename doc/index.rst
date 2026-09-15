@@ -20,6 +20,7 @@ Source-of-truth rules:
    queues_and_work.md
    settings.md
    warnings_and_telemetry.md
+   photodiode_notes.md
    attenuator_calibration.md
    attenuator_calibration_lab_notes.md
    diagrams.md

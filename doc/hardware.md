@@ -151,9 +151,11 @@ Uses an ADS1115 16 bit 4 channel muxed ADC
 - PD 50 Ohm coax is fed to the ADC as a single-ended input.
 - Input circuitry uses filtering and a precision divider to map 0-10 V PD
   output to 0-2 V with 20 Hz bandwidth.
-- Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
-  preserves timing margin for the two-channel 20 ms sampler, at the cost of
-  less converter-side averaging than 128 SPS.
+- Sample each at 20 Hz, muxing between the two within a 50 ms period. Each
+  throughput record uses one fresh conversion. The overlay retains 250 SPS;
+  selecting 64 SPS permits two conversions in about 31.3 ms before I2C and
+  scheduling overhead. Confirm runtime margin and noise on hardware before
+  changing that default. Timing allowances derive from the selected rate.
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - ADC runs at 3.3v
 - Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)

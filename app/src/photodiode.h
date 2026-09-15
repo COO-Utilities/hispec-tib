@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define PUBLISH_INTERVAL_MS 20
+#define PHOTODIODE_SAMPLE_INTERVAL_MS 50U
 
 #define PHOTODIODE_CHANNEL_COUNT 2
 
@@ -78,20 +78,19 @@ struct photodiode_window_result {
 	int16_t max_raw;
 };
 
-/* Internal throughput reference supplied by the monitor, latched before ADC I/O.
- * scale_per_mv includes detector response, routes, and emitted photon flux.
- * Zero scale disables normalization; signed net samples are not rectified.
+/* Confirmed source estimate supplied by throughput after hardware changes.
+ * Latched before each ADC conversion; this is measurement context, not a second
+ * laser/attenuator owner. Powers include no measurement of actual optical output.
  */
-struct photodiode_throughput_reference {
-	double scale_per_mv;
-	double source_relative_error;
-};
-
-struct photodiode_throughput_result {
-	uint16_t samples;
-	double mean;
-	double pd_error;
-	double error;
+struct photodiode_source_reference {
+	double delivered_power_nw;
+	double delivered_power_err_nw;
+	double laser_output_power_uw;
+	double laser_output_power_err_uw;
+	double laser_current_ma;
+	double atten_tx;
+	double atten_db;
+	double wavelength_nm;
 };
 
 struct photodiode_channel_status {
@@ -105,7 +104,10 @@ struct photodiode_channel_status {
 	struct photodiode_window_result configurable_window;
 	struct photodiode_window_result last_configurable_window;
 	struct photodiode_window_result fixed_window;
-	struct photodiode_throughput_result throughput;
+	/* Monotonic acquisition start identifies freshness; UTC midpoint aligns scans. */
+	int64_t acquired_ms;
+	uint64_t t_ms;
+	struct photodiode_source_reference source;
 	struct photodiode_window_result last_fixed_window;
 	struct photodiode_window_result dark_window;
 	struct photodiode_window_result lowest_dark_window;
@@ -125,22 +127,25 @@ void photodiode_thread(void *p1, void *p2, void *p3);
 /** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
 
-/**
- * @brief Update the acquisition reference without clearing normalized history.
- *
- * Throughput calls this after changing its source. reset starts a new measurement
- * (also used when stopping), clearing only normalized history. May wait for the
- * runtime mutex; performs no hardware I/O, persistence, or publication.
+/** Replace the source reference for future conversions. Short runtime lock only;
+ * no hardware I/O. The completed reading retains its own acquisition reference.
  */
-void photodiode_set_throughput_reference(enum photodiode_channel channel,
-	struct photodiode_throughput_reference reference, bool reset);
+void photodiode_set_source_reference(enum photodiode_channel channel,
+	struct photodiode_source_reference reference);
+
+/** Wait for ADC completion (binary wakeup only, no queued readings). */
+int photodiode_wait_for_sample(k_timeout_t timeout);
+
+/** Conversion allowance derived from the selected ADS1115 rate, in ms. */
+uint32_t photodiode_conversion_time_ms(void);
+
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.
  *
  * Uses the app-owned photodiode responsivity and transimpedance settings. This
- * helper performs no I/O and returns zero for non-positive signal or invalid
- * response settings.
+ * helper performs no I/O, preserves signed net power, and returns NaN for
+ * invalid response settings.
  */
 double photodiode_power_uw_from_mv(double net_mv,
 				   const struct app_pd_channel_settings *settings);
@@ -163,7 +168,7 @@ double photodiode_power_uw_from_mv_at_wavelength(
  *
  * Uses app-owned response settings plus the caller-provided wavelength and
  * nearest nominal-laser photodiode correction. This helper performs no I/O and
- * returns zero for non-positive signal or invalid wavelength/response settings.
+ * preserves signed net flux and returns NaN for invalid wavelength/response settings.
  */
 double photodiode_photon_flux_from_mv(double net_mv,
 				      double wavelength_nm,

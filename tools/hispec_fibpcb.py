@@ -81,7 +81,27 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ10dh7d2Q")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ18dh2QB")
+_THROUGHPUT_FLOAT_FIELDS = (
+    "tp",
+    "tp_err",
+    "tp_pd_err",
+    "pd_power_nw",
+    "pd_power_err_nw",
+    "delivered_power_nw",
+    "delivered_power_err_nw",
+    "laser_output_power_uw",
+    "laser_output_power_err_uw",
+    "pd_route_tx",
+    "laser_route_tx",
+    "atten_tx",
+    "pd_mv",
+    "pd_net_mv",
+    "pd_net_err_mv",
+    "laser_current_ma",
+    "atten_db",
+    "wavelength_nm",
+)
 _ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
 _ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
 _ATTEN_CAL_BRIDGE_BINARY = struct.Struct("<2B")
@@ -92,33 +112,9 @@ _ATTEN_CAL_CLASSIFICATIONS = ("ok", "saturated", "below_snr", "adc_error")
 _ATTEN_CAL_STATES = ("inactive", "running", "complete", "error")
 _ATTEN_CAL_MODES = ("none", "tib_auto")
 THROUGHPUT_DTYPE = np.dtype(
-    [
-        ("channel", "U8"),
-        ("laser", "U16"),
-        ("autolevel", "?"),
-        ("t_ms", "u8"),
-        ("tp", "f8"),
-        ("tp_err", "f8"),
-        ("tp_rms_err", "f8"),
-        ("pd_flux_ph_s", "f8"),
-        ("pd_flux_err_ph_s", "f8"),
-        ("laser_flux_ph_s", "f8"),
-        ("laser_flux_err_ph_s", "f8"),
-        ("pd_route_tx", "f8"),
-        ("laser_route_tx", "f8"),
-        ("atten_tx", "f8"),
-        ("pd_raw", "i2"),
-        ("pd_mv", "f8"),
-        ("pd_net_mv", "f8"),
-        ("pd_mean_net_mv", "f8"),
-        ("pd_mean_net_err_mv", "f8"),
-        ("laser_current_ma", "f8"),
-        ("atten_db", "f8"),
-        ("wavelength_nm", "f8"),
-        ("pd_ontime_s", "u8"),
-        ("laser_current_ontime_s", "u8"),
-        ("flags", "O"),
-    ]
+    [("channel", "U8"), ("laser", "U16"), ("autolevel", "?"), ("t_ms", "u8")]
+    + [(name, "f8") for name in _THROUGHPUT_FLOAT_FIELDS]
+    + [("pd_raw", "i2"), ("pd_ontime_s", "u8"), ("laser_current_ontime_s", "u8"), ("flags", "O")]
 )
 ATTEN_CAL_DTYPE = np.dtype(
     [
@@ -3053,11 +3049,12 @@ class WarningEvent(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class ThroughputSample(ResponseRepr):
-    """Firmware window mean of individually normalized ADC readings.
+    """One fresh ADC conversion, nominally every 50 ms, and its source estimate.
 
-    ``tp_rms_err`` is PD-only; ``tp_err`` also includes correlated source
-    calibration uncertainty. During source changes, ``tp`` need not equal
-    ``pd_flux_ph_s / laser_flux_ph_s``: those remain diagnostic flux fields.
+    Power is route-corrected in nW; laser output before attenuation is in µW.
+    ``tp_pd_err`` is PD-only; ``tp_err`` includes source calibration uncertainty.
+    An ``overrange`` flag makes ``tp`` a nominal lower bound and its errors NaN.
+    No ADC conversion is reused in successive records.
     """
 
     channel: str
@@ -3066,22 +3063,23 @@ class ThroughputSample(ResponseRepr):
     t_ms: int
     tp: float
     tp_err: float
-    tp_rms_err: float
-    pd_flux_ph_s: float
-    pd_flux_err_ph_s: float
-    laser_flux_ph_s: float
-    laser_flux_err_ph_s: float
+    tp_pd_err: float
+    pd_power_nw: float
+    pd_power_err_nw: float
+    delivered_power_nw: float
+    delivered_power_err_nw: float
+    laser_output_power_uw: float
+    laser_output_power_err_uw: float
     pd_route_tx: float
     laser_route_tx: float
     atten_tx: float
-    pd_raw: int
     pd_mv: float
     pd_net_mv: float
-    pd_mean_net_mv: float
-    pd_mean_net_err_mv: float
+    pd_net_err_mv: float
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
+    pd_raw: int
     pd_ontime_s: int
     laser_current_ontime_s: int
     flags: tuple[str, ...] = ()
@@ -3461,24 +3459,8 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
             laser=str(data.get("laser", "")),
             autolevel=bool(data.get("autolevel", False)),
             t_ms=int(data.get("t_ms", 0)),
-            tp=_float_or_nan(data.get("tp", np.nan)),
-            tp_err=_float_or_nan(data.get("tp_err", np.nan)),
-            tp_rms_err=_float_or_nan(data.get("tp_rms_err", np.nan)),
-            pd_flux_ph_s=_float_or_nan(data.get("pd_flux_ph_s", np.nan)),
-            pd_flux_err_ph_s=_float_or_nan(data.get("pd_flux_err_ph_s", np.nan)),
-            laser_flux_ph_s=_float_or_nan(data.get("laser_flux_ph_s", np.nan)),
-            laser_flux_err_ph_s=_float_or_nan(data.get("laser_flux_err_ph_s", np.nan)),
-            pd_route_tx=_float_or_nan(data.get("pd_route_tx", np.nan)),
-            laser_route_tx=_float_or_nan(data.get("laser_route_tx", np.nan)),
-            atten_tx=_float_or_nan(data.get("atten_tx", np.nan)),
+            **{name: _float_or_nan(data.get(name)) for name in _THROUGHPUT_FLOAT_FIELDS},
             pd_raw=int(data.get("pd_raw", 0)),
-            pd_mv=_float_or_nan(data.get("pd_mv", np.nan)),
-            pd_net_mv=_float_or_nan(data.get("pd_net_mv", np.nan)),
-            pd_mean_net_mv=_float_or_nan(data.get("pd_mean_net_mv", np.nan)),
-            pd_mean_net_err_mv=_float_or_nan(data.get("pd_mean_net_err_mv", np.nan)),
-            laser_current_ma=_float_or_nan(data.get("laser_current_ma", np.nan)),
-            atten_db=_float_or_nan(data.get("atten_db", np.nan)),
-            wavelength_nm=_float_or_nan(data.get("wavelength_nm", np.nan)),
             pd_ontime_s=int(data.get("pd_ontime_s", 0)),
             laser_current_ontime_s=int(data.get("laser_current_ontime_s", 0)),
             flags=tuple(str(flag) for flag in (data.get("flags") or ())),
@@ -3490,35 +3472,16 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
         )
     values = _THROUGHPUT_BINARY.unpack(payload)
     channel = values[0].split(b"\0", 1)[0].decode("ascii", "replace")
-    f64 = values[2:12]
-    pd_raw = values[12]
-    extra = values[13:20]
     return ThroughputSample(
         channel=channel,
-        laser="",
-        autolevel=False,
+        laser="",  # Channel plus payload wavelength identifies the source.
+        autolevel=bool(values[23] & 2),
         t_ms=int(values[1]),
-        tp=float(f64[0]),
-        tp_err=float(f64[1]),
-        tp_rms_err=float(f64[2]),
-        pd_flux_ph_s=float(f64[3]),
-        pd_flux_err_ph_s=float(f64[4]),
-        laser_flux_ph_s=float(f64[5]),
-        laser_flux_err_ph_s=float(f64[6]),
-        pd_route_tx=float(f64[7]),
-        laser_route_tx=float(f64[8]),
-        atten_tx=float(f64[9]),
-        pd_raw=int(pd_raw),
-        pd_mv=float(extra[0]),
-        pd_net_mv=float(extra[1]),
-        pd_mean_net_mv=float(extra[2]),
-        pd_mean_net_err_mv=float(extra[3]),
-        laser_current_ma=float(extra[4]),
-        atten_db=float(extra[5]),
-        wavelength_nm=float(extra[6]),
-        pd_ontime_s=int(values[20]),
-        laser_current_ontime_s=int(values[21]),
-        flags=(),
+        **dict(zip(_THROUGHPUT_FLOAT_FIELDS, values[2:20])),
+        pd_raw=int(values[20]),
+        pd_ontime_s=int(values[21]),
+        laser_current_ontime_s=int(values[22]),
+        flags=("overrange",) if values[23] & 1 else (),
     )
 
 
@@ -3615,10 +3578,11 @@ class ThroughputMonitor:
         An all-channel collector requires a channel selection. Shaded bands show
         reported uncertainties, not confidence intervals adjusted for filtering.
         Throughput uses a log scale with a linked dB-loss axis. Detector S/N uses
-        the PD-window mean/error; total throughput S/N includes calibration error.
+        the individual PD reading/error; total throughput S/N includes calibration error.
         The PD guides show the current firmware's 20-80% usable-input band.
         Nonpositive log values and undefined S/N are display gaps, never changes
-        to the collected records. Only the latest max_points rows are converted.
+        to the collected records. Overrange points are nominal lower bounds, with no S/N or error band.
+        Only the latest max_points rows are converted, at no more than 4 Hz.
         ``animation.pause()/resume()`` and closing the figure affect display
         only. Toolbar zoom/pan disables autoscaling; enable it on each axis to
         follow incoming data again. Collection and hardware continue unchanged.
@@ -3635,35 +3599,37 @@ class ThroughputMonitor:
         _require_choice("channel", channel, PD_CHANNELS)
         if self.channel not in ("all", channel):
             raise HispecFibError(f"this collector only receives {self.channel} throughput")
-        interval_s = _require_float("interval_s", interval_s, 0.01, 3600.0)
+        interval_s = max(0.25, _require_float("interval_s", interval_s, 0.01, 3600.0))
         max_points = int(max_points)
         if max_points <= 0:
             raise HispecFibError("max_points must be positive")
 
-        fig = plt.figure(figsize=(13, 10), layout="constrained")
-        grid = fig.add_gridspec(3, 2)
+        fig = plt.figure(figsize=(13, 12), layout="constrained")
+        grid = fig.add_gridspec(4, 2)
         tp_ax = fig.add_subplot(grid[0, :])
         pd_ax = fig.add_subplot(grid[1, 0], sharex=tp_ax)
         snr_ax = fig.add_subplot(grid[1, 1], sharex=tp_ax)
         drive_ax = fig.add_subplot(grid[2, 0], sharex=tp_ax)
-        flux_ax = fig.add_subplot(grid[2, 1], sharex=tp_ax)
-        axes = (tp_ax, pd_ax, snr_ax, drive_ax, flux_ax)
+        source_ax = fig.add_subplot(grid[2, 1], sharex=tp_ax)
+        power_ax = fig.add_subplot(grid[3, :], sharex=tp_ax)
+        axes = (tp_ax, pd_ax, snr_ax, drive_ax, source_ax, power_ax)
         atten_ax = drive_ax.twinx()
         tp_ax.set(title="Throughput", ylabel="throughput (unitless)", yscale="log")
         pd_ax.set(title="Photodiode input", ylabel="ADC input (mV)")
         snr_ax.set(title="Signal / reported error", ylabel="S/N", yscale="log")
         drive_ax.set(title="Source and attenuation", ylabel="laser current (mA)")
         atten_ax.set_ylabel("combined attenuation (dB)")
-        flux_ax.set(title="Estimated photon flux", ylabel="photons / s", yscale="log")
-        log_axes = (tp_ax, snr_ax, flux_ax)
+        source_ax.set(title="Estimated laser optical output (before attenuation)", ylabel="power (µW)")
+        power_ax.set(title="Route-corrected optical power", ylabel="power (nW)", yscale="log")
+        log_axes = (tp_ax, snr_ax, power_ax)
         for ax in log_axes:
             ax.set_ylim(1.0, 10.0)  # Valid log ranges before positive samples arrive.
             ax.set_autoscaley_on(True)
         for ax in axes:
             ax.grid(True, alpha=0.25)
-        for ax in (drive_ax, flux_ax):
+        for ax in (power_ax,):
             ax.set_xlabel("elapsed time (s)")
-        for ax in (tp_ax, pd_ax, snr_ax):
+        for ax in (tp_ax, pd_ax, snr_ax, drive_ax, source_ax):
             ax.tick_params(labelbottom=False)
 
         def transmission_to_loss(values):
@@ -3693,7 +3659,7 @@ class ThroughputMonitor:
         pd_ax.axhline(PD_ADC_USABLE_MV, color="C3", ls=":", label="raw input ceiling")
         snr_series = []
         for numerator, denominator, label, color in (
-            ("pd_mean_net_mv", "pd_mean_net_err_mv", "PD mean / PD error", "C0"),
+            ("pd_net_mv", "pd_net_err_mv", "PD reading / PD error", "C0"),
             ("tp", "tp_err", "throughput / total error", "C1"),
         ):
             line, = snr_ax.plot([], [], label=label, color=color)
@@ -3704,16 +3670,18 @@ class ThroughputMonitor:
         for ax, field, error, label, color in (
             (tp_ax, "tp", "tp_err", "throughput", "C0"),
             (pd_ax, "pd_mv", None, "raw input", "C1"),
-            (pd_ax, "pd_mean_net_mv", "pd_mean_net_err_mv", "net mean", "C0"),
+            (pd_ax, "pd_net_mv", "pd_net_err_mv", "net reading", "C0"),
             (drive_ax, "laser_current_ma", None, "laser current", "C2"),
             (atten_ax, "atten_db", None, "combined attenuation", "C3"),
-            (flux_ax, "pd_flux_ph_s", "pd_flux_err_ph_s", "photodiode", "C0"),
-            (flux_ax, "laser_flux_ph_s", "laser_flux_err_ph_s", "emitted", "C1"),
+            (source_ax, "laser_output_power_uw", "laser_output_power_err_uw", "laser estimate", "C2"),
+            (power_ax, "pd_power_nw", "pd_power_err_nw", "detected / PD route transmission", "C0"),
+            (power_ax, "delivered_power_nw", "delivered_power_err_nw", "delivered (laser × attenuation × route)", "C1"),
         ):
-            line, = ax.plot([], [], label=label, color=color)
+            line, = ax.plot([], [], label=label, color=color, ls="--" if ax is atten_ax else "-")
             band = ax.fill_between([], [], [], color=color, alpha=0.18) if error else None
             series.append((ax, field, error, line, band))
-        for ax in (tp_ax, pd_ax, flux_ax):
+        bound_line, = tp_ax.plot([], [], "^", color="C3", label="overrange: nominal lower bound")
+        for ax in (tp_ax, pd_ax, source_ax, power_ax):
             ax.legend(loc="upper left")
         drive_ax.legend(drive_ax.lines + atten_ax.lines,
                         [line.get_label() for line in (*drive_ax.lines, *atten_ax.lines)],
@@ -3738,12 +3706,17 @@ class ThroughputMonitor:
                 wavelength = rec.wavelength_nm[-1]
                 source = f"{wavelength:g} nm" if np.isfinite(wavelength) else "unknown wavelength"
                 # Channel plus wavelength also distinguishes the two 1430 nm lasers.
-                title.set_text(f"{rec.channel[-1]} · {source} — shaded bands: reported ± error")
+                state = "autolevel" if rec.autolevel[-1] else "passive"
+                bound = " · OVERRANGE: TP ≥ shown, loss ≤ shown" if "overrange" in rec["flags"][-1] else ""
+                title.set_text(f"{rec.channel[-1]} · {source} · {state}{bound} — bands: reported ± error")
             t = (rec.t_ms.astype(float) - (start_ms or 0)) / 1000.0
             gaps = np.zeros(len(rec), dtype=bool)
             if len(rec) > 1:
                 gaps[1:] = (rec.channel[1:] != rec.channel[:-1]) | ~np.isclose(
-                    rec.wavelength_nm[1:], rec.wavelength_nm[:-1], equal_nan=True)
+                    rec.wavelength_nm[1:], rec.wavelength_nm[:-1], equal_nan=True) | (np.diff(rec.t_ms.astype(float)) > 75)
+            overrange = np.array(["overrange" in flags for flags in rec["flags"]], dtype=bool)
+            bounds = np.where(overrange & (rec.tp > 0), rec.tp, np.nan)
+            bound_line.set_data(t, bounds)
             for ax, field, error, line, band in series:
                 values = np.asarray(rec[field], dtype=float).copy()
                 values[gaps | ~np.isfinite(values)] = np.nan
@@ -3761,7 +3734,7 @@ class ThroughputMonitor:
                 err = np.asarray(rec[denominator], dtype=float)
                 values = np.full(len(rec), np.nan)
                 np.divide(rec[numerator], err, out=values, where=np.isfinite(err) & (err > 0))
-                values[gaps | ~np.isfinite(values) | (values <= 0)] = np.nan
+                values[gaps | overrange | ~np.isfinite(values) | (values <= 0)] = np.nan
                 line.set_data(t, values)
             for ax in (*axes, atten_ax):
                 ax.relim()

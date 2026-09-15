@@ -1,50 +1,84 @@
-## Sampling review
+# Photodiode Sampling and Uncertainty
 
-Both ADC inputs have a capacitor after the 0-10 V to 0-2 V divider. Treating
-the divider's source resistance and capacitor as a nominal 20 Hz single-pole
-RC gives a 7.96 ms time constant and about 55 ms settling to 0.1% of a step.
+## Sampling and throughput measurements
 
-- Firmware samples **each channel at 50 Hz**; the ADS1115 uses **250 SPS**
-  conversions, about 4 ms each, sequentially within the 20 ms loop.
-- Atten auto-calibration waits its configurable averaging duration plus 4 ms after
-  each DAC change. Its rolling window can include the RC transient; the pad
-  also does not cover a complete sampling period or window-duration rounding.
-- `pd/<channel>.window` is the fixed 500 ms window. The manual notebook's
-  550 ms wait leaves roughly 50 ms nominal settling margin; the grid notebook's
-  1.1 s wait leaves substantially more. Sampling phase and conversion latency
-  affect the margins. The Python grid helper accepts shorter waits without
-  checking whether the window contains only settled measurements.
-- Window mean uncertainty uses `RMS / sqrt(N)` and then adds the stored dark
-  RMS in quadrature. Independence is approximate: ideal white noise through
-  this RC has adjacent-sample correlation `exp(-2*pi*20*0.020) = 0.081`.
-  For 25 samples, correlation increases the ideal mean standard error by about
-  8% relative to independent samples. This is not a validated correction factor
-  for the actual detector/ADC chain; dark RMS is also not dark-mean uncertainty.
-- A single-pole 20 Hz cutoff has equivalent noise bandwidth about 31.4 Hz,
-  and only 4.1 dB attenuation at the 25 Hz Nyquist frequency of the recorded
-  samples. It is not a sharp anti-alias filter. Keep the existing rates until
-  measured noise and timing justify changing them.
-- The 10 mV warning compares fixed-window scatter, so optical steps and drift
-  can trigger it as well as electronics noise.
+Each channel produces one fresh ADS1115 conversion every **50 ms (20 Hz)**.
+Successive stream records never reuse ADC conversions. The fixed 500 ms rolling
+window remains available for PD diagnostics and the configurable window for
+dark capture and attenuator calibration; neither feeds throughput or autolevel.
+The ADS1115 remains at **250 SPS**, selected by devicetree, with sequential YJ/HK
+conversions. Selecting **64 SPS** requires no algorithm or window changes:
+two conversions take about 31.3 ms before I2C and scheduling overhead, compared
+with about 8.1 ms at 250 SPS. The calibration dwell rounds to the sampler's
+50 ms cadence and adds the selected converter's rounded-up conversion allowance
+(5 ms at 250 SPS, 16 ms at 64 SPS), rather than assuming a 4 ms conversion.
 
-## Future 20 Hz measurements (not implemented)
+The ADC owner latches a compact source estimate before conversion and copies it
+with the reading and timestamps into its existing latest-state structure. One
+binary semaphore wakes the throughput thread after the two-channel round.
+There is no frame queue or throughput history array. A delayed consumer gets
+the latest acquisition once; intermediate acquisitions may be missed, never
+replayed. `t_ms` is the UTC conversion midpoint estimate, including driver-call
+latency. Monotonic acquisition start time handles freshness and control ordering.
+Use acquisition gaps and existing ADC timing logs (`worst_loop_us`,
+`min_margin_us`, missed intervals, overruns) to assess runtime margin on hardware.
+The semaphore timeout also services expiry and calibration if ADC work stalls.
 
-Rev. 2 lab observations suggest substantially lower PD noise and reliable ADC
-communication after removing the level shifters. A future candidate is one
-fresh ADC result per channel every 50 ms, used directly for throughput with an
-error appropriate to that measurement. The 500 ms rolling window would remain
-available for diagnostics and other callers. This could remove throughput's
-per-reading normalization history; the external contract is measurements with
-errors at a defined interval, independently of internal averaging choices.
+Throughput publishes the completed reading before selecting the next adjustment.
+Normal and startup control use that fresh reading: below 20% useful net input,
+request three times the flux; above 80%, request one third. Raw input at/above
+2000 mV takes precedence over a low dark-subtracted value. A conversion that
+began before completion of the preceding control move can still be published,
+but cannot trigger another move. There is no additional settling window or
+blanked stream interval. Only one channel may own autolevel; both PDs may stream.
 
-The current implementation remains at 250 SPS conversion, 50 Hz per-channel
-acquisition, nominal 10 Hz throughput, and a 500 ms monitoring window. A possible
-64 SPS converter setting needs about 31.3 ms for two sequential conversions
-before I2C and scheduling overhead, so it requires evaluation with a 50 ms loop,
-not a change to the converter rate alone. Use the existing ADC timing logs
-(`worst_loop_us`, `min_margin_us`, missed intervals, and overruns) plus throughput
-timing under representative load before selecting rates. Validate the resulting
-noise, filtering/aliasing, and per-measurement errors as part of that decision.
+Both PCB input traces have nominal 20 Hz low-pass filters after the 0–10 V to
+0–2 V divider. For a single-pole model, the time constant is 7.96 ms and settling
+to 0.1% takes about 55 ms. Nonoverlapping conversions remove software-induced
+correlation; they do not prove physical statistical independence. Ideal filtered
+white noise has correlation `exp(-2*pi*20*.050) ≈ .0019` between instantaneous
+50 ms samples, but the actual detector/ADC chain needs measurement. A 20 Hz RC
+is not a sharp anti-alias filter for a 20 Hz stream. Lowering converter rate can
+change ADC noise filtering; validate timing, noise, aliasing, and actuator response
+before changing the default. No inverse filter or physical settling correction
+is applied. Source or external optical motion during a conversion remains visible.
+
+## Uncertainty and failure-path audit
+
+| Term | Implemented treatment | Interpretation / limit |
+|---|---|---|
+| ADC quantization | `q = 0.0625/sqrt(12)` mV | Nonzero single-reading floor. |
+| Measured dark noise | `sigma_read = max(q, dark.rms_mv)` | Empirical reading noise already includes ADC noise; do not add it twice. |
+| Measured dark offset | `sigma_dark = sigma_read/sqrt(N_dark)` | `N_dark = duration_ms/50 - failed_samples`, using nearest sample rounding. Assumes independent samples. |
+| Forced dark offset | `sigma_dark = supplied rms_mv`; `sigma_read = q` | Supplied offset uncertainty is not an empirical detector-noise measurement. |
+| One net reading | `sigma_net = hypot(sigma_read, sigma_dark)` | Offset error is shared between records, not independent noise to average away. |
+| Diagnostic window | `hypot(max(window.rms_mv,sigma_read)/sqrt(N_good), sigma_dark)` | Includes optical variation in window RMS; the dark floor does not shrink with that window. |
+| PD power | `net_mV * 1e6 / (effective_V_per_A * responsivity_A_per_W)` nW, with wavelength coefficient | Preserve negative/zero net values; error uses the same scale. Effective gain already contains the divider. |
+| Laser power | Current-based calibration with `hypot(P*fractional_noise, constant_noise_mw)` | Defaults 3% plus a floor of 1% of nominal maximum power; this is an estimate, not an optical reading. |
+| Attenuator | `sigma_T = T*ln(10)/10*hypot(rms1_db,rms2_db)` | Autocalibration stores each fit's residual RMS; assume independent device residuals. First-order symmetric error is approximate for large dB scatter. |
+| Delivered power | `L*T*laser_route_tx`; quadrature of laser and attenuator errors | Source calibration terms remain correlated across stream records. |
+| Route correction | Divide detected power by `pd_route_tx`; multiply source by `laser_route_tx` | Routes are latched at start. No route-loss calibration uncertainties are stored, so none are invented. |
+| Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero/negative PD power; source must be finite and positive. |
+| Overrange | Raw ADC input ≥2000 mV sets `overrange`; retain numerical PD/TP value as nominal lower bound | PD and throughput errors become NaN/null, S/N suppressed. Source calibration error is still reported. The ADC rail remains 2047.9375 mV. |
+| Missing ADC conversion | Discard; retain previous latest state without advancing its timestamp | No duplicate stream record or control move. Diagnostic windows count failures; zero-good-sample averages fail. Warnings are rate-limited. |
+| Laser owner fault | Stop monitoring and attempt owned laser shutdown | No retries added. Mutex busy means an operation is in flight, not a fault; skip control. A failed stop retains unknown emission state and the shutdown obligation for explicit retry. |
+| Actuator failure | Stop monitoring; preserve confirmed owner state after partial writes | Do not normalize subsequent readings using an assumed successful move. |
+| Serialization | Binary doubles; JSON 12 significant digits, nonfinite values null | Preserve tiny powers/errors through Python, record arrays, and CSV. Binary and JSON share field order in firmware. |
+
+Responsivity, effective gain, wavelength correction, route calibration, drift,
+shot noise at illuminated levels, and dynamic actuator/filter mismatch have no
+separately measured uncertainty terms in the present settings. Reported errors
+therefore cover the terms above, not a complete absolute calibration budget.
+The wavelength correction table is currently unity. Shot noise is not inferred
+from dark data; brighter-light noise needs validation against captures.
+
+Recapture dark after changing ADC cadence or converter rate. Saved dark records
+store duration and failures, not their acquisition rate; old captures cannot be
+reinterpreted exactly. Measured `dark.rms_mv` remains the reading scatter;
+`dark.mean_net_err_mv` and `pd.dark_err_mv` now report the dark-mean uncertainty.
+A capture stops throughput and its owned laser first, as attenuator calibration
+does. It does not automatically resume monitoring or turn off unrelated manual
+lasers. The notebook retains an explicit selected-laser-off cell.
 
 ## Historical exploratory noise model
 
@@ -211,14 +245,3 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
     
 
 ```
-
-Throughput normalization belongs to the sampler's fixed window. The monitor
-supplies a cached photons-to-throughput factor after a source change; each ADC
-conversion latches its own reference and stores it beside the existing ring
-slot. No ADC readings are downsampled to the 100 ms telemetry cadence. Signed
-net readings are normalized before averaging, so attenuation changes do not
-mix denominators. Source calibration uncertainty is conservatively correlated
-across the window; the existing dark RMS floor is converted by the mean scale.
-The PD-only scatter retains the existing RMS/sqrt(N) convention. This change
-does not establish that filtered samples are independent, compensate analog
-settling, or correct clipping. Those remain physical validation concerns.

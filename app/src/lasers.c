@@ -190,7 +190,7 @@ static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
 
 static bool float_is_valid(double value)
 {
-	return value == value;
+	return isfinite(value);
 }
 
 static bool float_is_positive(double value)
@@ -2052,11 +2052,13 @@ int laser_estimate_flux(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	k_mutex_lock(&laser_lock, K_FOREVER);
+	if (k_mutex_lock(&laser_lock, K_NO_WAIT) != 0) {
+		return -EBUSY;
+	}
 	ensure_laser_runtime_settings_locked();
 	if (!laser_output_estimate[id].valid) {
 		k_mutex_unlock(&laser_lock);
-		return -EAGAIN;
+		return -EIO;
 	}
 	properties = laser_settings[id].properties;
 	fractional_noise = laser_settings[id].fractional_noise;

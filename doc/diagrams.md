@@ -213,10 +213,11 @@ flowchart TD
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
-  SleepPeriod[sleep to 20 ms period]
+  SleepPeriod[wait for next 50 ms timer tick]
 
   DarkCmd[pd/dark/yj or pd/dark/hk] --> DarkMode{duration_ms or dark_mv}
-  DarkMode -- duration_ms --> Arm[set configurable window and arm pending dark]
+  DarkMode -- duration_ms --> StopTP[stop throughput and owned laser; abort on failure]
+  StopTP --> Arm[set configurable window and arm pending dark]
   Arm --> Query[command returns pending status]
   DarkMode -- dark_mv --> Force[force dark with optional rms_mv]
   Force --> Commit[update active dark]
@@ -234,50 +235,45 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Command[measure_throughput request] --> Stop{stop field present}
-  Stop -- yes --> StopReq[stop selected streams and their autolevel lasers under lock]
-  Stop -- no --> Validate[validate laser, output, fiber, format, autolevel, off_in_s]
-  Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> Route[apply requested input/output route]
-  Route --> StartLock[lock; stop previous autolevel laser if replacing its source]
-  StartLock --> PdPower[enable selected photodiode relay]
-  PdPower --> Loss[capture source and return transmission: explicit override, else TIB default, else unity]
-  Loss --> Arm[store monitor state]
-  Arm --> AutoStart{autolevel enabled}
-  AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
-  AutoStart -- no --> Ref[reset normalized history; cache source and supply ADC reference]
-  Seed --> Ref
-  Ref --> Ok[unlock and return status ok]
-  ADC[each 20 ms: latch reference before ADC conversion] --> Ring[store signed net mV and reference at existing fixed-ring index]
-  Ring --> Average[mean normalized readings; PD scatter plus correlated dark and calibration floors]
-  StopReq --> Stopped{laser shutdown succeeded}
-  Stopped -- yes --> Ok
-  Stopped -- no --> StopError[disable streaming and autolevel; retain laser for retry; return error]
+  Command[measure_throughput request] --> Stop{stop requested}
+  Stop -- yes --> Shutdown[under monitor lock: stop stream and owned laser]
+  Stop -- no --> Validate[validate input; reject dark, calibration, or second autolevel owner]
+  Validate --> Start[under monitor lock: stop previous owned source if replacing]
+  Start --> Route[apply route; enable PD; latch route losses]
+  Route --> Auto{autolevel}
+  Auto -- yes --> Seed[maximum attenuation then laser 100 percent]
+  Seed --> Ref[read owner estimates; update future ADC reference]
+  Auto -- no --> Ref
+  Ref --> Ready[return start status]
+  Shutdown --> Stopped{laser shutdown succeeded}
+  Stopped -- yes --> Clear[release ownership]
+  Stopped -- no --> Retry[retain shutdown obligation; return error]
 
-  Thread[throughput_monitor_thread every 100 ms] --> Lock[lock current channel state]
-  Lock --> Active{channel active}
-  Active -- no --> Unlock[unlock]
-  Active -- yes --> Timeout{off_in expired}
-  Timeout -- yes --> Clear[stop stream and its autolevel laser; retain identity and log if shutdown fails]
-  Timeout -- no --> PdOn{photodiode relay still on}
-  PdOn -- no --> Clear
-  PdOn -- yes --> Capture[capture PD and source snapshot before next input]
-  Average --> Capture
-  Capture --> Auto{autolevel}
-  Auto -- yes --> Gate{startup or high/low bypass or full process window since input change}
-  Gate -- yes --> Adjust[adjust attenuator or laser; bright backoff first]
-  Gate -- no --> Sync
-  Auto -- no --> Sync
-  Adjust --> Update[refresh acquisition reference; retain normalized history]
-  Update --> Sync[unlock]
-  Sync --> Publish[build JSON or binary from captured snapshot]
-  Publish --> OutQ[enqueue outbound_queue best effort]
-  OutQ --> Sleep[k_sleep 100 ms]
-  Clear --> Unlock
-  Unlock --> Sleep
+  Timer[50 ms PD timer] --> Latch[latch source reference before each channel conversion]
+  Latch --> ADC[ADC read]
+  ADC --> Valid{read succeeded}
+  Valid -- yes --> State[copy reading, timestamps, source into latest PD state]
+  Valid -- no --> Fail[count failed window sample; preserve last acquisition timestamp]
+  State --> Wake[binary semaphore after both channels]
+  Fail --> Wake
+  Wake --> Thread[throughput thread copies PD state; ticks calibration]
+  Thread --> Lock[lock active monitor]
+  Lock --> Fault{expired, PD off, or laser owner fault}
+  Fault -- yes --> Shutdown
+  Fault -- no --> Fresh{new acquisition after start}
+  Fresh -- no --> Unlock[unlock and wait; 50 ms timeout services expiry]
+  Fresh -- yes --> Publish[derive power ratio and errors from this acquisition; enqueue best effort]
+  Publish --> Control{autolevel, owner available, acquisition after preceding move}
+  Control -- no --> Unlock
+  Control -- yes --> Adjust[raw bright wins; fresh net outside band changes attenuator or laser]
+  Adjust --> Changed{move result}
+  Changed -- failure --> Shutdown
+  Changed -- unchanged --> Unlock
+  Changed -- success --> Future[refresh reference for future acquisitions]
+  Future --> Unlock
 
-  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; refresh reference; retain autolevel laser for shutdown]
-  LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
+  AttenChange[manual attenuation] --> Disable[disable control; refresh reference; retain owned shutdown]
+  LaserChange[manual laser change] --> Release[relinquish stream without undoing manual setting]
 ```
 
 ```mermaid
@@ -293,7 +289,7 @@ flowchart TD
   Install --> Save[save coefficient record including RMS when requested]
   Install --> Estimate[pair transmission and sigma_T from hypot of physical RMS values]
   Estimate --> Source[combine with laser flux uncertainty]
-  Source --> ADCRef[acquisition reference; correlated uncertainty across window]
+  Source --> ADCRef[acquisition reference; calibration error shared across records]
 ```
 
 Notebook collection and display:
@@ -305,7 +301,7 @@ flowchart TD
   Collect --> Decode[collector decodes into bounded record history]
   Decode --> CSV[snapshot and CSV retain original values]
   Decode --> Plot[plot timer copies only displayed tail]
-  Plot --> Panels[throughput and dB loss; PD band; S/N; source; flux]
+  Plot --> Panels[throughput and dB loss; PD band; S/N; current and attenuation; laser uW; delivered and detected nW]
   Kind -- no --> Logs[dispatch replies, warnings, and log messages]
   Logs --> Buffer[logging handler buffers latest 500 records]
   Buffer --> Pane[kernel asyncio task refreshes changed content at most twice per second]

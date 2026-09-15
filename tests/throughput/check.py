@@ -25,129 +25,158 @@ def block(file, marker):
 
 source = r'''
 #include <assert.h>
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #define MAX(a,b) ((a)>(b)?(a):(b))
 #define MIN(a,b) ((a)<(b)?(a):(b))
-#define LOG_WRN(...) ((void)0)
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define PD_WINDOW_MAX_SAMPLES 40
 #define PHOTODIODE_CHANNEL_COUNT 2
-#define PD_WINDOW_MAX_SAMPLES 25
-#define PD_THROUGHPUT_SAMPLES 25
-#define PHOTODIODE_FIXED_WINDOW_MS 500U
+#define PHOTODIODE_SAMPLE_INTERVAL_MS 50U
 #define PHOTODIODE_ADC_USABLE_MV 2000.0
-#define TP_LOW_FRACTION 0.2
-#define TP_HIGH_FRACTION 0.8
-#define TP_INSTANT_BAD_SAMPLES 5U
+#define PHOTODIODE_ADC_LSB_MV .0625
+#define TP_LOW_FRACTION .2
+#define TP_HIGH_FRACTION .8
 #define TP_MIN_ATTEN_TX 1e-9
+#define TP_FLAG_OVERRANGE 1
+#define TP_FLAG_AUTOLEVEL 2
 #define K_FOREVER 0
+#define PD_HARDWARE_LOG_RATELIMIT_MS 10000
+#define PD_NOISE_WARNING_COOLDOWN_MS 10000
+#define LOG_WRN(...) ((void)0)
+#define snprintk snprintf
+#define COO_CMD_RUNTIME_EMIT_DATA 0
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+static int64_t clock_ms=105;
 static int pd_runtime_lock;
-static int64_t clock_ms = 100;
-static int64_t k_uptime_get(void) { return clock_ms; }
-static void k_mutex_lock(int *p, int t) { (void)p; (void)t; }
-static void k_mutex_unlock(int *p) { (void)p; }
-enum photodiode_channel {PHOTODIODE_CHANNEL_YJ, PHOTODIODE_CHANNEL_HK};
+static int64_t k_uptime_get(void) {return clock_ms;}
+static void k_mutex_lock(int *p,int t) {(void)p;(void)t;}
+static void k_mutex_unlock(int *p) {(void)p;}
+enum photodiode_channel {PHOTODIODE_CHANNEL_YJ,PHOTODIODE_CHANNEL_HK};
 enum hispec_laser_id {HISPEC_LASER_1028_Y};
-struct app_pd_channel_settings { struct { double rms_mv; } dark; };
+struct app_pd_dark_result {uint32_t duration_ms; uint16_t failed_samples; double mean_mv,rms_mv;};
+struct app_pd_channel_settings {struct app_pd_dark_result dark; double responsivity_a_per_w,transimpedance_v_per_a,noise_warn_rms_mv;};
 '''
-for file, names in {
-    'photodiode.h': ['photodiode_window_result', 'photodiode_throughput_reference',
-                    'photodiode_throughput_result', 'photodiode_channel_status'],
-    'photodiode.c': ['pd_window_runtime', 'photodiode_dark_action', 'photodiode_runtime_channel'],
-    'lasers.h': ['hispec_laser_flux_estimate'],
-    'attenuator.h': ['attenuator_transmission_estimate'],
-    'throughput_monitor.c': ['throughput_state'],
+for file,names in {
+    'photodiode.h':['photodiode_window_result','photodiode_source_reference','photodiode_channel_status'],
+    'photodiode.c':['pd_window_runtime','photodiode_dark_action','photodiode_runtime_channel'],
+    'throughput_monitor.c':['throughput_state'],
 }.items():
-    for name in names:
-        source += block(file, 'struct ' + name + ' {')
+    for name in names: source += block(file,'struct '+name+' {')
 source += r'''
 static struct photodiode_runtime_channel pd_runtime[2];
-static int attenuators[6];
-static double written_tx;
-static bool attenuator_set_linear(int *a, double tx) { (void)a; written_tx=tx; return true; }
-static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l, double p, unsigned t)
-{ (void)l; (void)p; (void)t; return 0; }
-static int laser_estimate_flux(enum hispec_laser_id l,
-                              struct hispec_laser_flux_estimate *f)
-{ (void)l; f->flux_ph_s=100; return 0; }
-static double photodiode_power_uw_from_mv(double mv, const struct app_pd_channel_settings *s)
-{ (void)s; return mv; }
-static void pd_window_result_clear(struct photodiode_window_result *w) { memset(w,0,sizeof(*w)); }
+static struct attenuator {double attenuation_db;} attenuators[6];
+static double written_tx,written_pct;
+static int fail_write; static bool clamp_atten;
+static bool attenuator_set_linear(struct attenuator *a,double tx) {
+    written_tx=tx; if(fail_write) return false;
+    if(!clamp_atten) a->attenuation_db=-10*log10(tx);
+    return true;
+}
+static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l,double p,unsigned t)
+{(void)l;(void)t;written_pct=p;return fail_write?-EIO:0;}
+static void pd_window_result_clear(struct photodiode_window_result *w) {memset(w,0,sizeof(*w)); w->mean_mv=w->mean_net_mv=w->mean_net_err_mv=NAN;}
 '''
-for name in ['pd_window_recompute', 'pd_window_add_sample', 'pd_throughput_recompute']:
-    source += block('photodiode.c', 'static void ' + name + '(')
-source += block('photodiode.c', 'void photodiode_set_throughput_reference(')
-source += block('throughput_monitor.c', 'static bool autolevel_adjust(')
+source += block('photodiode.c','double photodiode_power_uw_from_mv(')
+for marker in ['static double pd_read_noise_mv(', 'static double pd_dark_mean_error_mv(',
+               'static void pd_window_recompute(', 'static void pd_window_add_sample(']:
+    source += block('photodiode.c',marker)
 source += r'''
-static void close_to(double a, double b) { assert(fabs(a-b) < 1e-10 * MAX(1.0, fabs(b))); }
+static double photodiode_power_uw_from_mv_at_wavelength(double mv,double nm,const struct app_pd_channel_settings *s) {(void)nm;return photodiode_power_uw_from_mv(mv,s);}
+static void pd_windows_ensure_locked(struct photodiode_runtime_channel *r) {r->fixed_window.target_samples=10;r->configurable_window.target_samples=10;}
+static bool pd_sample_is_step(struct photodiode_runtime_channel *r,double mv) {(void)r;(void)mv;return false;}
+static void pd_window_snapshot_last(struct pd_window_runtime *w) {w->last=w->current;}
+static bool pd_stage_completed_dark_locked(struct photodiode_runtime_channel *r,struct app_pd_dark_result *d,bool *p,bool *l,bool *f) {(void)r;(void)d;(void)p;(void)l;(void)f;return false;}
+static void pd_commit_dark_result(enum photodiode_channel c,struct app_pd_dark_result *d,bool p,bool l,bool f) {(void)c;(void)d;(void)p;(void)l;(void)f;}
+static void pd_emit_dark_failed_warning(enum photodiode_channel c) {(void)c;}
+static void pd_emit_adc_error_warning(enum photodiode_channel c,int rc) {(void)c;(void)rc;}
+static const char *photodiode_channel_names[]={"yj","hk"};
+struct coo_cmd_response {char payload[2048];size_t payload_len;};
+struct coo_cmd_runtime_emit_args {int type,delivery;const char *suffix,*code,*msg,*context;struct coo_cmd_response *out;};
+static struct coo_cmd_response throughput_sample_msg;
+static void *command_runtime_get(void) {return NULL;}
+static int coo_cmd_runtime_emit(void *r,const struct coo_cmd_runtime_emit_args *a) {(void)r;(void)a;return 0;}
+static int coo_json_append(char *out,size_t n,size_t *off,const char *fmt,...) {
+    va_list a;va_start(a,fmt);int k=vsnprintf(out+*off,n-*off,fmt,a);va_end(a);
+    if(k<0 || (size_t)k>=n-*off) return -ENOSPC;
+    *off+=(size_t)k;return 0;
+}
+static void sys_put_le64(uint64_t x,uint8_t *p) {for(int i=0;i<8;i++)p[i]=(uint8_t)(x>>(8*i));}
+static void sys_put_le16(uint16_t x,uint8_t *p) {p[0]=x;p[1]=x>>8;}
+static void channel_fiber_name(char *b,size_t n,enum photodiode_channel c,char f) {(void)c;(void)f;snprintf(b,n,"yj_m");}
+static int pd_power_output(int c) {return c;}
+static uint64_t housekeeping_power_on_time_s(int c) {(void)c;return 1;}
+static uint64_t hispec_laser_current_on_time_s(int c) {(void)c;return 2;}
+static const char *hispec_laser_name(int c) {(void)c;return "1028y";}
+'''
+source += block('photodiode.c','static void pd_update_channel(')
+source += block('photodiode.c','void photodiode_set_source_reference(')
+for marker in ['static int autolevel_adjust(', 'static void put_bytes(', 'static void put_u64(',
+               'static void put_i16(', 'static void put_f64(', 'static void publish_sample(']:
+    source += block('throughput_monitor.c',marker)
+source += r'''
+static void near(double a,double b) {assert(fabs(a-b)<=1e-10*MAX(fabs(b),1e-20));}
 int main(void) {
-    struct photodiode_runtime_channel *r = &pd_runtime[0];
-    struct app_pd_channel_settings settings = {.dark.rms_mv=0.5};
-    r->fixed_window.target_samples=25;
-    /* All 25 ADC samples, spanning several different process inputs. */
-    for (int i=0; i<25; ++i) {
-        double scale = i < 12 ? 0.001 : 0.003;
-        r->references[r->fixed_window.index] = (struct photodiode_throughput_reference){scale, 0.1};
-        pd_window_add_sample(&r->fixed_window, 0, 1, 0.01/scale, 0.01/scale, &settings, i*20);
-        pd_throughput_recompute(r, &settings);
-        close_to(r->throughput.mean, 0.01);
-        assert(r->throughput.samples == i+1);
-    }
-    close_to(r->throughput.pd_error, 0.5*(12*0.001+13*0.003)/25);
-    close_to(r->throughput.error, hypot(r->throughput.pd_error, 0.001));
-    photodiode_set_throughput_reference(0, (struct photodiode_throughput_reference){0.004,0.1}, false);
-    assert(r->throughput.samples == 25); /* Input changes retain history. */
-    photodiode_set_throughput_reference(0, (struct photodiode_throughput_reference){0.002,0.1}, true);
-    assert(r->throughput.samples == 0 && isnan(r->throughput.mean));
-    assert(r->fixed_window.filled == 25); /* Restart leaves raw diagnostics alone. */
-    /* At constant input, normalization commutes with the previous PD statistics. */
-    for (int i=0; i<25; ++i) {
-        double mv=100+i;
-        r->references[r->fixed_window.index]=r->reference;
-        pd_window_add_sample(&r->fixed_window, i==2 ? -1 : 0, 1, mv, mv, &settings, i*20);
-    }
-    pd_throughput_recompute(r,&settings);
-    assert(r->throughput.samples == 24);
-    close_to(r->throughput.mean, r->fixed_window.current.mean_net_mv*0.002);
-    close_to(r->throughput.pd_error, r->fixed_window.current.mean_net_err_mv*0.002);
-    close_to(r->throughput.error, hypot(r->throughput.pd_error, r->throughput.mean*0.1));
-    memset(r->fixed_window.good,0,sizeof(r->fixed_window.good));
-    pd_throughput_recompute(r,&settings);
-    assert(r->throughput.samples == 0 && isnan(r->throughput.error));
+    struct app_pd_channel_settings s={.responsivity_a_per_w=.93,.transimpedance_v_per_a=2e10,
+        .dark={.mean_mv=10,.rms_mv=.5,.duration_ms=500}};
+    near(pd_read_noise_mv(&s.dark),.5);
+    near(pd_dark_mean_error_mv(&s.dark),.5/sqrt(10));
+    s.dark.failed_samples=2;near(pd_dark_mean_error_mv(&s.dark),.5/sqrt(8));
+    s.dark.failed_samples=10;assert(isnan(pd_dark_mean_error_mv(&s.dark)));
+    s.dark.duration_ms=0;near(pd_dark_mean_error_mv(&s.dark),.5);
+    near(pd_read_noise_mv(&s.dark),.0625/sqrt(12));
+    near(photodiode_power_uw_from_mv(-100,&s),-100*1e3/(.93*2e10));
+    struct photodiode_source_reference ref={.delivered_power_nw=2,.atten_tx=.001,.atten_db=30,.wavelength_nm=1028,.laser_output_power_uw=1000};
+    photodiode_set_source_reference(0,ref);
+    pd_update_channel(0,0,1600,&s,ref,100,123000);
+    near(pd_runtime[0].net_mv,90);assert(pd_runtime[0].t_ms==123002);
+    ref.delivered_power_nw=6;photodiode_set_source_reference(0,ref);
+    assert(pd_runtime[0].source.delivered_power_nw==2); /* Completed context is immutable. */
+    clock_ms=155;pd_update_channel(0,-EIO,0,&s,ref,150,123050);
+    assert(pd_runtime[0].acquired_ms==100 && pd_runtime[0].source.delivered_power_nw==2);
+    assert(pd_runtime[0].fixed_window.current.failed_samples==1);
+    clock_ms=205;pd_update_channel(0,0,32000,&s,ref,200,123100);
+    assert(pd_runtime[0].acquired_ms==200 && pd_runtime[0].source.delivered_power_nw==6);
+    assert(isnan(pd_runtime[0].net_err_mv));
+    for(int i=0;i<10;i++) pd_update_channel(0,-EIO,0,&s,ref,250+i*50,123150+i*50);
+    assert(!pd_runtime[0].fixed_window.current.valid);
 
-    struct throughput_state state = {.acquiring=true, .level_percent=100};
-    struct photodiode_channel_status pd = {.net_mv=0,
-        .fixed_window={.valid=true, .mean_net_mv=0, .end_ms=100}};
-    struct attenuator_transmission_estimate atten = {.linear=0.001};
-    assert(autolevel_adjust(&state,&pd,&atten)); /* Immediate startup at 100 ms. */
-    close_to(written_tx, 0.003);
-    pd.net_mv=1000; pd.fixed_window.mean_net_mv=1000;
-    assert(!autolevel_adjust(&state,&pd,&atten));
-    assert(!state.acquiring);
-    state.input_changed_ms=100;
-    pd.fixed_window.mean_net_mv=300; pd.fixed_window.end_ms=599;
-    assert(!autolevel_adjust(&state,&pd,&atten)); /* Ordinary mean waits full window. */
-    pd.fixed_window.end_ms=600;
-    assert(autolevel_adjust(&state,&pd,&atten));
-    state.input_changed_ms=600; pd.fixed_window.end_ms=620;
-    pd.net_mv=0;
-    for (int i=0; i<4; ++i) assert(!autolevel_adjust(&state,&pd,&atten));
-    assert(autolevel_adjust(&state,&pd,&atten)); /* Low-count bypass survives. */
-    pd.net_mv=2000; pd.raw=INT16_MAX; state.high_count=0;
-    for (int i=0; i<4; ++i) assert(!autolevel_adjust(&state,&pd,&atten));
-    assert(autolevel_adjust(&state,&pd,&atten)); /* Bright wins over stale low mean. */
-    close_to(written_tx,atten.linear/3);
-    puts("throughput C regressions passed");
+    struct throughput_state state={.has_laser=true,.autolevel=true,.level_percent=100,.pd_route_tx=.5,.laser_route_tx=.2};
+    struct photodiode_channel_status pd={.mv=0,.net_mv=0,.source=ref};
+    assert(autolevel_adjust(&state,&pd)==1);near(written_tx,.003); /* No startup gate. */
+    pd.mv=1000;pd.net_mv=1000;assert(autolevel_adjust(&state,&pd)==0);
+    pd.mv=2000;pd.net_mv=0;assert(autolevel_adjust(&state,&pd)==1);near(written_tx,.001/3); /* Bright wins. */
+    fail_write=1;assert(autolevel_adjust(&state,&pd)==-EIO);fail_write=0;
+    clamp_atten=true;attenuators[0].attenuation_db=pd.source.atten_db;
+    assert(autolevel_adjust(&state,&pd)==1);near(written_pct,100.0/3); /* Pair limit yields to laser. */
+    clamp_atten=false;pd.mv=pd.net_mv=0;state.max_flux_ph_s=1;assert(autolevel_adjust(&state,&pd)==0);
+
+    pd=(struct photodiode_channel_status){.t_ms=123,.raw=12,.mv=10,.net_mv=9,.net_err_mv=.01,
+        .power_uw=.0002,.power_err_uw=1e-15,.source={.delivered_power_nw=2,.delivered_power_err_nw=.1,
+        .laser_output_power_uw=1000,.laser_output_power_err_uw=30,.atten_tx=.2,.wavelength_nm=1028}};
+    for(int i=0;i<4;i++) {
+        if(i==1) pd.mv=2000;
+        if(i==2) {pd.mv=10;pd.power_uw=-.0002;}
+        if(i==3) pd.power_uw=0;
+        state.binary=false;publish_sample(&state,&pd);puts(throughput_sample_msg.payload);
+        state.binary=true;publish_sample(&state,&pd);assert(throughput_sample_msg.payload_len==179);
+        for(size_t j=0;j<throughput_sample_msg.payload_len;j++) printf("%02x",(uint8_t)throughput_sample_msg.payload[j]);
+        puts("");
+    }
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
-    cfile = Path(tmp) / 'check.c'
-    exe = Path(tmp) / 'check'
+    cfile,exe=Path(tmp)/'sample.c',Path(tmp)/'sample'
     cfile.write_text(source)
-    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', str(cfile), '-lm', '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    sample_wire_lines=subprocess.check_output([str(exe)],text=True).splitlines()
+print('Fresh acquisition, ADC failures, dark uncertainty, and autolevel C checks passed')
 
 # Laser estimator, validation and NVS record round trip; no hardware is involved.
 source = r'''
@@ -162,10 +191,9 @@ source = r'''
 #define PLANCK_J_S 6.62607015e-34
 #define LIGHT_M_PER_S 299792458.0
 #define K_FOREVER 0
-#define float_is_valid(x) isfinite(x)
-#define float_is_positive(x) (isfinite(x) && (x)>0)
+#define K_NO_WAIT 0
 static int laser_lock;
-static void k_mutex_lock(int *p,int t) { (void)p; (void)t; }
+static int k_mutex_lock(int *p,int t) { (void)p; (void)t; return 0; }
 static void k_mutex_unlock(int *p) { (void)p; }
 static void ensure_laser_runtime_settings_locked(void) {}
 '''
@@ -191,7 +219,8 @@ struct app_settings_snapshot { struct app_laser_settings laser; };
 static void laser_defaults(struct app_settings_snapshot *s) {
 '''
 source += block('app_settings.c', 'for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i)') + '}\n'
-for marker in ['static int validate_laser_settings(', 'static bool laser_driver_settings_differ(',
+for marker in ['static bool float_is_valid(', 'static bool float_is_positive(',
+               'static int validate_laser_settings(', 'static bool laser_driver_settings_differ(',
                'double hispec_laser_estimate_power_mw(', 'double hispec_laser_estimate_wavelength_nm(',
                'int laser_estimate_flux(']:
     source += block('lasers.c', marker)
@@ -276,10 +305,22 @@ settings.update(model='test',expected_serial=123,tec_pid={'p':0,'i':0,'d':0},
 client._request_json = lambda command, payload: {'name':payload['name'], 'settings':settings}
 result = client.laser_settings(host.LASER_NAMES[0])
 assert result.fractional_noise == 0.03 and result.constant_noise_mw == 0.435675
-binary = host._THROUGHPUT_BINARY.pack(b'yj_m',123,*[0.01,0.002,0.001,20,1,2000,300,1,1,0.2],12,*[10,9,8,0.1,50,6,1028],1,2)
-sample = host.decode_throughput_payload(binary)
-jsample = host.decode_throughput_payload(json.dumps({'tp':0.01,'tp_err':0.002,'tp_rms_err':0.001}))
-assert (sample.tp,sample.tp_err,sample.tp_rms_err) == (jsample.tp,jsample.tp_err,jsample.tp_rms_err)
+for i in range(0,len(sample_wire_lines),2):
+    jsample=host.decode_throughput_payload(sample_wire_lines[i])
+    binary=bytes.fromhex(sample_wire_lines[i+1]); sample=host.decode_throughput_payload(binary)
+    for name in host._THROUGHPUT_FLOAT_FIELDS:
+        a,b=getattr(sample,name),getattr(jsample,name)
+        assert (a!=a and b!=b) or abs(a-b)<=1e-10*max(abs(a),1e-20), name
+    assert sample.flags==jsample.flags and sample.autolevel
+    assert sample.t_ms==123 and sample.pd_raw==12
+    if i==0:
+        assert sample.pd_power_err_nw==2e-12 and abs(sample.tp-.2)<1e-15
+    if i==2:
+        assert sample.flags==('overrange',) and sample.tp_err!=sample.tp_err
+    if i==4: assert sample.tp<0 and sample.tp_err>0
+    if i==6: assert sample.tp==0 and sample.tp_err>0
+# Use the finite first acquisition for subsequent rendering/collector checks.
+binary=bytes.fromhex(sample_wire_lines[1]); sample=host.decode_throughput_payload(binary)
 print('Python laser settings and JSON/binary telemetry checks passed')
 
 # Physical-model uncertainty and accepted-fit installation. Stub only hardware
@@ -470,16 +511,19 @@ source += r'''
 int main(void) {
     const char *lasers[]={"1028y","1270j","1430yj","1430hk","1510h","2330k"};
     const char *inputs[]={"yj_laser","yj_laser","yj_1430","hk_1430","hk_laser","hk_laser"};
-    const double db[]={73,40,100,100,33,3};
-    const unsigned switches[]={2,2,3,3,2,2};
     double tx; char route[24],json[64]; size_t off;
     for(unsigned i=0;i<6;i++) {
         const char *channel=i<3?"yj":"hk";
-        double expected=pow(i<3?.88:.83,switches[i])*pow(10,-db[i]/10);
         for(unsigned j=0;j<2;j++) {
             snprintf(route,sizeof(route),"%s_to_%s_%s",inputs[i],channel,j?"fei":"ao");
             assert(app_settings_get_route_loss(route,lasers[i],&tx)==0);
-            assert(fabs(tx/expected-1)<1e-11);
+            bool found=false;
+            for(unsigned d=0;d<ARRAY_SIZE(default_route_losses);d++) {
+                if(!strcmp(route,default_route_losses[d].route) && !strcmp(lasers[i],default_route_losses[d].laser)) {
+                    assert(tx==default_route_losses[d].transmission);found=true;break;
+                }
+            }
+            assert(found);
             off=0; assert(route_loss_append_loss(json,sizeof(json),&off,tx)==0);
             double loss=strtod(json,NULL);
             assert(loss<1 && fabs((1-loss)/tx-1)<2e-6);
@@ -563,20 +607,20 @@ with plt.ioff():
     fig,anim=empty.plot_live(max_points=10)
     anim._func(0); fig.canvas.draw(); plt.close(fig)
     rec=monitor.to_recarray()[:5].copy()
-    rec.t_ms=np.arange(5)*100+1000
+    rec.t_ms=np.arange(5)*50+1000
     rec.tp=[.01,0,-1,np.nan,2]
     rec.tp_err=[.002,0,.1,np.nan,.5]
-    rec.pd_mean_net_mv=[100,0,-5,100,100]
-    rec.pd_mean_net_err_mv=[1,0,1,np.nan,2]
+    rec.pd_net_mv=[100,0,-5,100,100]
+    rec.pd_net_err_mv=[1,0,1,np.nan,2]
     monitor._samples.clear()
     monitor._samples.extend(rec.tolist())
     # Interleave the other channel; selecting YJ must still preserve its time base.
     monitor._samples.extend([dataclasses.replace(sample,channel='hk_m').as_tuple()]*3)
     fig,anim=monitor.plot_live(channel='yj',max_points=5)
     anim._func(0); fig.canvas.draw()
-    tp,pd,snr,drive,flux,atten=fig.axes
+    tp,pd,snr,drive,source,power,atten=fig.axes
     np.testing.assert_allclose(tp.lines[0].get_ydata(),[.01,np.nan,np.nan,np.nan,2],equal_nan=True)
-    np.testing.assert_allclose(tp.lines[0].get_xdata(),np.arange(5)*.1)
+    np.testing.assert_allclose(tp.lines[0].get_xdata(),np.arange(5)*.05)
     np.testing.assert_allclose(snr.lines[0].get_ydata(),[100,np.nan,np.nan,np.nan,50],equal_nan=True)
     np.testing.assert_allclose(snr.lines[1].get_ydata(),[5,np.nan,np.nan,np.nan,4],equal_nan=True)
     assert pd.patches[0].get_y()==400 and pd.patches[0].get_height()==1200
@@ -597,6 +641,19 @@ with plt.ioff():
     for ax in fig.axes: ax.set_autoscale_on(True)
     anim._func(2); fig.canvas.draw(); plt.close(fig)
     np.testing.assert_allclose(monitor.to_recarray().tp[:5],rec.tp,equal_nan=True)
+    # Overrange suppresses S/N even if a caller supplied finite errors; gaps
+    # use acquisition times, not arrival timing or repeated old sample values.
+    over=dataclasses.replace(sample,flags=('overrange',),t_ms=1050)
+    normal=dataclasses.replace(sample,t_ms=1000)
+    after_gap=dataclasses.replace(sample,t_ms=1200)
+    monitor._samples.clear();monitor._samples.extend(x.as_tuple() for x in (normal,over,after_gap))
+    fig,anim=monitor.plot_live(channel='yj',interval_s=.01)
+    anim._func(0);fig.canvas.draw()
+    assert anim.event_source.interval==250
+    assert np.isnan(fig.axes[2].lines[0].get_ydata()[1])
+    assert np.isnan(fig.axes[0].lines[0].get_ydata()[2])
+    assert fig.axes[0].lines[1].get_ydata()[1]==sample.tp
+    plt.close(fig)
     monitor._samples.extend([sample.as_tuple()]*20000)
     # The dashboard must not convert the collector's whole array each frame.
     monitor.to_recarray=lambda: (_ for _ in ()).throw(AssertionError('full history conversion'))
@@ -631,6 +688,17 @@ async def check_message_pane():
     exec(cleanup_code,ns); await asyncio.sleep(0)
     assert task.cancelled() and client.logger is previous
 asyncio.run(check_message_pane())
+# CSV export retains power precision, signs, errors and overrange flags.
+import csv
+import pandas as pd
+csv_buffer=io.StringIO()
+records=[host.decode_throughput_payload(line).as_tuple() for line in sample_wire_lines[::2]]
+writer=csv.writer(csv_buffer);writer.writerow(host.THROUGHPUT_DTYPE.names);writer.writerows(records)
+csv_buffer.seek(0);saved=pd.read_csv(csv_buffer)
+assert saved.pd_power_err_nw[0]==2e-12
+assert np.isnan(saved.tp_err[1]) and 'overrange' in saved['flags'][1]
+assert saved.tp[2]<0 and saved.tp[3]==0 and saved.tp_err[3]>0
+
 print('Protocol filtering, dashboard math/rendering, and notebook lifecycle checks passed')
 
 # Exercise production laser current/stop paths with counted Modbus operations.
@@ -830,3 +898,83 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('directional attenuator allocation regressions passed')
+
+# Production consumer loop: coalesced wakeups cannot replay measurements or moves.
+source = r'''
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <setjmp.h>
+#include <stdio.h>
+#define PHOTODIODE_CHANNEL_COUNT 2
+#define PHOTODIODE_SAMPLE_INTERVAL_MS 50
+#define K_FOREVER 0
+#define K_MSEC(x) (x)
+#define ARG_UNUSED(x) (void)(x)
+#define LOG_WRN(...) ((void)0)
+enum photodiode_channel {PHOTODIODE_CHANNEL_YJ,PHOTODIODE_CHANNEL_HK};
+enum hispec_laser_id {HISPEC_LASER_1028_Y};
+'''
+for file,names in {
+    'photodiode.h':['photodiode_window_result','photodiode_source_reference','photodiode_channel_status','photodiode_status'],
+    'throughput_monitor.c':['throughput_state'],
+    'lasers.h':['hispec_laser_flux_estimate'],
+}.items():
+    for name in names: source+=block(file,'struct '+name+' {')
+source+=r'''
+static struct throughput_state monitors[2];
+static struct photodiode_status throughput_pd_status;
+static int monitors_lock,frame,pubs,moves,stops,refreshes;
+static int64_t now;
+static jmp_buf done;
+static int64_t k_uptime_get(void) {return now;}
+static void k_mutex_lock(int *m,int t) {(void)m;(void)t;}
+static void k_mutex_unlock(int *m) {(void)m;}
+static int photodiode_wait_for_sample(int t) {
+    assert(t==50);
+    if(++frame==7) longjmp(done,1);
+    now=frame*50;return 0;
+}
+static void photodiode_get_status(struct photodiode_status *s) {
+    /* frame 2 repeats; frame 3 began during the preceding move; 4 is fresh. */
+    const int64_t acquisitions[]={0,10,10,51,150,200,250};
+    s->channel[0].acquired_ms=acquisitions[frame];
+    s->channel[0].source.laser_current_ma=10;
+    s->channel[0].source.wavelength_nm=1028;
+}
+static void attenuator_calibration_tick(struct photodiode_status *s,int64_t t) {(void)s;(void)t;}
+static int pd_power_output(int i) {return i;}
+static int housekeeping_power_get(int i,bool *p) {(void)i;*p=true;return 0;}
+static int laser_estimate_flux(int i,struct hispec_laser_flux_estimate *e) {
+    (void)i;e->current_ma=10;e->wavelength_nm=1028;
+    return frame==5?-EBUSY:frame==6?-EIO:0;
+}
+#define hispec_laser_name(i) "1028y"
+static int stop_locked(int i) {monitors[i].active=false;stops++;return 0;}
+static int refresh_reference(struct throughput_state *s) {(void)s;refreshes++;now+=5;return 0;}
+static void publish_sample(const struct throughput_state *s,const struct photodiode_channel_status *pd) {
+    (void)s;(void)pd;pubs++;
+    assert(moves==(frame==1?0:frame<=4?1:2)); /* Publication precedes adjustment. */
+}
+static int autolevel_adjust(struct throughput_state *s,const struct photodiode_channel_status *pd) {
+    (void)s;(void)pd;moves++;
+    assert(frame==1 || frame==4);return frame==1?1:0;
+}
+'''
+source+=block('throughput_monitor.c','void throughput_monitor_thread(')
+source+=r'''
+int main(void) {
+    monitors[0]=(struct throughput_state){.active=true,.autolevel=true,.has_laser=true};
+    if(!setjmp(done)) throughput_monitor_thread(NULL,NULL,NULL);
+    assert(pubs==4 && moves==2 && stops==1 && refreshes==1);
+    assert(!monitors[0].active && monitors[0].last_sample_ms==200);
+    puts("Consumer freshness, publication order, busy/fault checks passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'consumer.c',Path(tmp)/'consumer'
+    cfile.write_text(source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)

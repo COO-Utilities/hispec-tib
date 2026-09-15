@@ -90,16 +90,6 @@ static int throughput_channel_from_input(const char *input,
 	return -EINVAL;
 }
 
-static int throughput_apply_route(const char *input,
-					       const char *output)
-{
-	const char *failed_switch = NULL;
-	char failed_state = '\0';
-
-	return mems_router_apply_named_route(&router, input, output, false,
-					     &failed_switch, &failed_state);
-}
-
 int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	char stop[8] = {0};
@@ -215,11 +205,6 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		return coo_cmd_error(out, cmd, "max_flux_ph_s requires autolevel");
 	}
 
-	rc = throughput_apply_route(input, output);
-	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "failed to apply output route");
-	}
-
 	request.input = input;
 	request.output = output;
 	rc = throughput_monitor_start(&request, &status);
@@ -229,7 +214,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 			return coo_cmd_error(out, cmd, "photodiode power override_off");
 		}
 		if (rc == -EBUSY) {
-			return coo_cmd_error(out, cmd, "attenuator calibration active");
+			return coo_cmd_error(out, cmd, "throughput start busy: dark/calibration, autolevel owner, or laser operation");
 		}
 		return coo_cmd_error(out, cmd, "measure_throughput start failed");
 	}

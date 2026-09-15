@@ -59,11 +59,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
-/* Existing conversion-sized pad: 250 SPS takes about 4 ms per conversion.
- * This is not an RC-settling allowance or a full 20 ms sampler-period guard;
- * see the Rev. 2 sampling review in doc/photodiode_notes.md.
- */
-#define ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS 4
 /* Minimum bracket width for companion-FVOA binary searches. */
 #define ATTEN_CAL_SEARCH_MIN_STEP_MV 5.0f
 /* Fixed DUT-FVOA sweep spacing after the initial open-reference point. */
@@ -584,7 +579,7 @@ static void reset_locked(enum atten_cal_state state)
 	cal.phase = ATTEN_CAL_PHASE_NONE;
 	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.laser_level_index = 0;
-	cal.dwell_ms = ATTEN_CAL_DEFAULT_DWELL_MS;
+	cal.dwell_ms = ATTEN_CAL_DEFAULT_DWELL_MS + photodiode_conversion_time_ms();
 	cal.laser_percent = initial_laser_levels_pct[0];
 }
 
@@ -610,7 +605,7 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->physical_index = cal.physical_index;
 	status->point_index = cal.point_index;
 	status->point_count = ATTENUATOR_CAL_RECORD_COUNT;
-	status->dwell_ms = cal.dwell_ms - ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS;
+	status->dwell_ms = cal.dwell_ms - photodiode_conversion_time_ms();
 	status->complete_pct = complete_percent_locked();
 	status->current_mv = cal.sweep_mv;
 	status->other_mv = cal.other_mv;
@@ -1945,6 +1940,9 @@ int attenuator_calibration_start_auto(
 		           ? ATTEN_CAL_DEFAULT_DWELL_MS
 		           : MIN(request->dwell_ms, ATTEN_CAL_MAX_DWELL_MS);
 
+	/* Match the PD owner's nearest-sample rounding before adding conversion time. */
+	dwell_ms = ((dwell_ms + PHOTODIODE_SAMPLE_INTERVAL_MS / 2U) /
+		PHOTODIODE_SAMPLE_INTERVAL_MS) * PHOTODIODE_SAMPLE_INTERVAL_MS;
 	rc = photodiode_set_configurable_window_duration(request->channel, dwell_ms);
 	if (rc != 0) {
 		return rc;
@@ -1965,7 +1963,7 @@ int attenuator_calibration_start_auto(
 	cal.phase = ATTEN_CAL_PHASE_NONE;
 	cal.attenuator_index = request->attenuator_index;
 	cal.physical_index = 0U;
-	cal.dwell_ms = dwell_ms + ATTEN_CAL_ADC_SAMPLE_INTERVAL_PAD_MS;
+	cal.dwell_ms = dwell_ms + photodiode_conversion_time_ms();
 	cal.persistent = request->persist;
 	cal.laser = request->laser;
 	cal.channel = request->channel;

@@ -471,7 +471,7 @@ these values feed the existing throughput and splitting calculations.
     "output": "yj_ao",
     "max_flux_ph_s": 1.0e12,
     "off_in_s": 300,
-    "format": "json"
+    "format": "binary"
   }
   ```
 - **Payload:** start monitoring an externally supplied/calibration input.
@@ -482,7 +482,7 @@ these values feed the existing throughput and splitting calculations.
     "input": "yj_cal",
     "output": "yj_ao",
     "fiber": "M",
-    "format": "json"
+    "format": "binary"
   }
   ```
 - **Payload:** stop monitoring.
@@ -493,8 +493,8 @@ these values feed the existing throughput and splitting calculations.
   ```
 
 `measure_throughput` is the only command that starts or stops photodiode
-streaming. It measures throughput by comparing the route-corrected flux at the
-selected photodiode with the route- and attenuator-corrected laser flux
+streaming. It measures throughput by comparing the route-corrected optical power at the
+selected photodiode with the route- and attenuator-corrected laser power
 estimate.
 
 `autolevel:true` lets firmware adjust the selected laser output level percent
@@ -508,188 +508,152 @@ same source with `autolevel:false` retains an existing operation's laser
 shutdown obligation; replacing its source first stops that autolevel laser.
 Bank power, TECs, and unrelated lasers are left unchanged.
 
-HK and YJ can both stream, with one measurement per photodiode channel. The
-firmware also supports two autolevel loops for engineering configurations with
-optically isolated paths. Normal instrument light paths combine outside this
-controller and influence both photodiodes, so normal operation should use only
-one autolevel loop. Additional manually enabled lasers can also affect the
-readings and throughput estimates; the firmware does not separate mixed light.
+HK and YJ can both stream, with one measurement per photodiode channel and
+**only one autolevel owner**. A second autolevel start is rejected before changing
+routes or outputs. External instrument paths combine the light and influence
+both PDs; manually enabled additional lasers are not separated by this system.
 
-`stop:"yj"` or `stop:"hk"` stops that channel; `stop:"all"` attempts both even
-if one laser fails to stop. A failed shutdown returns an error, disables
-streaming/autolevel, and retains the laser identity for an explicit stop retry.
-Expiry and loss of photodiode power use the same shutdown path, logging failures.
+`stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
+attempts every owned laser shutdown. Failed shutdown disables streaming/control
+and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
+and a faulted laser-owner estimate use the same stop path. A laser mutex busy
+with an operation is not treated as a fault; control waits for a fresh sample.
 
-Both `format:"json"` and `format:"binary"` remain supported. Firmware defaults
-to JSON when `format` is omitted; the Python `measure_throughput()` helper and
-throughput lab notebook default to binary to preserve small uncertainties.
-Binary `channel` and `wavelength_nm` identify the source, including both 1430 nm
-lasers; the binary packet has no laser-name or autolevel-status field.
+Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
+JSON; Python and the notebook default to binary. Binary channel and wavelength
+identify the source, including both 1430 nm lasers, and a flag bit carries the
+actual autolevel state. No individual DAC values or laser percentages are streamed.
 
-Every start requires `output`. Firmware selects the outbound MEMS route before
-starting the monitor. The route input is
-inferred from `laser` unless `input` is supplied explicitly. `laser:"none"` is
-for monitoring externally supplied light and requires `input`, `output`, and
-`autolevel:false`; throughput and emitted-flux fields that require a known
-laser are reported as `null` in JSON or NaN in binary.
+Every start requires `output`. The monitor applies the route after checking
+exclusions; `input` is inferred from `laser` unless supplied. `laser:"none"`
+requires `input`, `output`, and `autolevel:false`; it streams PD measurements
+with source-dependent quantities NaN/null. Dark capture or active attenuator
+calibration rejects all starts. Taking a dark or starting calibration stops
+existing throughput; there is no automatic resume.
 
-`max_flux_ph_s` is optional and valid only with `autolevel:true`. It limits the
-estimated emitted photon flux after the calibrated logical attenuator pair, so
-the limit uses the current laser flux estimate multiplied by
-`attenuator_estimate_transmission()`.
+`max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
+dynamic attenuator pair and **before** static route losses. Stream quantities
+use power: nW for detected/delivered light and µW for the estimated laser output
+before attenuation. No actual laser power readback exists.
 
-Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
-`transimpedance_v_per_a` from `pd/settings/<yj|hk>` with the active laser
-wavelength estimate. It applies the nearest nominal-laser photodiode
-multiplicative correction coefficient; the current firmware table uses `1.0`
-for every nominal laser wavelength. The photodiode sampler owns ADC reads and
-dark tracking and averaging of individually normalized throughput readings.
-The throughput monitor owns source references, streaming output, and autolevel
-decisions.
+The stream is nominally **20 Hz per channel**: one fresh ADC conversion per
+50 ms, without overlapping or reused samples. It does not use the fixed 500 ms
+PD window. The sampler attaches the source reference captured before conversion;
+`t_ms` is its estimated UTC conversion midpoint. A delayed consumer can skip
+intermediate readings; a failed ADC conversion produces no record or adjustment.
+Timestamps expose gaps. The latest diagnostic PD state remains available and
+its windows count failed conversions. ADC warnings are limited to one per
+channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
 
-Transient ADC read/write errors are treated as missing photodiode samples:
-firmware leaves the last good rolling value intact for streaming consumers and
-counts every failed sample in the active photodiode windows. It emits at most
-one `photodiode_adc_error` warning per channel every 10 seconds while failures
-continue. A window becomes unusable only when all attempted samples in that
-window fail.
+**Telemetry topics:** `dt/<device>/yj_tput`, `dt/<device>/hk_tput`.
 
-**Telemetry topics (published):**
-- `dt/<device>/yj_tput`
-- `dt/<device>/hk_tput`
-
-**Telemetry payload (`format:"json"`):**
+**JSON fields:**
 ```json
 {
   "channel": "yj_m",
-  "laser": "1430yj",
+  "laser": "1028y",
   "autolevel": true,
   "t_ms": 0,
-  "tp": 0.0,
-  "tp_err": 0.0,
-  "tp_rms_err": 0.0,
-  "pd_flux_ph_s": 0.0,
-  "pd_flux_err_ph_s": 0.0,
-  "laser_flux_ph_s": 0.0,
-  "laser_flux_err_ph_s": 0.0,
-  "pd_route_tx": 1.0,
-  "laser_route_tx": 1.0,
-  "atten_tx": 1.0,
-  "pd_raw": 0,
-  "pd_mv": 0.0,
-  "pd_net_mv": 0.0,
-  "pd_mean_net_mv": 0.0,
-  "pd_mean_net_err_mv": 0.0,
-  "laser_current_ma": 0.0,
-  "atten_db": 0.0,
-  "wavelength_nm": 1430.0,
-  "pd_ontime_s": 0,
-  "laser_current_ontime_s": 0,
+  "tp": 0.2,
+  "tp_err": 0.0100498756211,
+  "tp_pd_err": 0.001,
+  "pd_power_nw": 0.4,
+  "pd_power_err_nw": 0.002,
+  "delivered_power_nw": 2,
+  "delivered_power_err_nw": 0.1,
+  "laser_output_power_uw": 1000,
+  "laser_output_power_err_uw": 30,
+  "pd_route_tx": 0.5,
+  "laser_route_tx": 0.2,
+  "atten_tx": 0.01,
+  "pd_mv": 100,
+  "pd_net_mv": 90,
+  "pd_net_err_mv": 0.5,
+  "laser_current_ma": 50,
+  "atten_db": 20,
+  "wavelength_nm": 1028,
+  "pd_raw": 1600,
+  "pd_ontime_s": 1,
+  "laser_current_ontime_s": 2,
   "flags": []
 }
 ```
 
-`channel` combines the photodiode channel and fiber class with an underscore,
-for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
-milliseconds from the firmware clock. `pd_ontime_s` is the current continuous
-integer on-time in seconds of the photodiode power relay for that channel.
+`channel` is `yj_m`, `yj_s`, `hk_m`, or `hk_s`. On-times are integer seconds:
+PD relay continuous on-time and the laser module's current-emission on-time.
+Nonfinite values are JSON `null`; finite values use 12 significant digits.
 
-**Telemetry payload (`format:"binary"`):**
-
-Binary telemetry is little-endian and contains the fields below in order. The
-first field is a zero-padded 8-byte ASCII channel/fiber label such as `yj_m`.
+**Binary layout:** 179 bytes, little-endian, Python `struct` format
+`<8sQ18dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
 
 ```text
 char[8] channel
 uint64 t_ms
 float64 tp
 float64 tp_err
-float64 tp_rms_err
-float64 pd_flux_ph_s
-float64 pd_flux_err_ph_s
-float64 laser_flux_ph_s
-float64 laser_flux_err_ph_s
+float64 tp_pd_err
+float64 pd_power_nw
+float64 pd_power_err_nw
+float64 delivered_power_nw
+float64 delivered_power_err_nw
+float64 laser_output_power_uw
+float64 laser_output_power_err_uw
 float64 pd_route_tx
 float64 laser_route_tx
 float64 atten_tx
-int16 pd_raw
 float64 pd_mv
 float64 pd_net_mv
-float64 pd_mean_net_mv
-float64 pd_mean_net_err_mv
+float64 pd_net_err_mv
 float64 laser_current_ma
 float64 atten_db
 float64 wavelength_nm
+int16 pd_raw
 uint64 pd_ontime_s
 uint64 laser_current_ontime_s
+uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 ```
 
-**Notes:**
-- `tp` is the unitless mean of individually normalized ADC readings in the
-  fixed monitoring window. Every good ADC reading uses the input reference
-  latched before its acquisition, including readings before an attenuation
-  change. Only starting/stopping a measurement clears normalized history.
-  `NaN` means no usable normalized readings; values are not clamped.
-- `tp_rms_err` is normalized sample scatter divided by sqrt(valid samples),
-  combined with the stored dark RMS floor. `tp_err` additionally includes
-  source calibration uncertainty, treated as correlated across the window.
-  Calibration uncertainty is not reduced by averaging.
-- Diagnostic `pd_flux_ph_s` is still the raw PD-window mean converted to flux;
-  `laser_flux_ph_s`, attenuation, and current describe the captured source
-  before the next control move. During changes, `tp` need not equal the ratio
-  of those diagnostic flux fields.
-- Flux values are photons per second.
-- `pd_mv` is the instantaneous raw ADC millivolt reading and `pd_net_mv` is
-  the instantaneous dark-subtracted value. `pd_mean_net_mv` and
-  `pd_mean_net_err_mv` come from the photodiode sampler's fixed monitoring
-  window. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
-  `app/src/photodiode.h`.
-- `atten_tx` and `atten_db` are dynamic logical attenuator terms normalized to
-  the modeled 0 V FVOA state. Static assembly and route losses belong in
-  `mems/route/loss`.
-- Without an explicit record, known TIB routes use the nominal switch/static
-  loss defaults in [hardware.md](hardware.md#tib-route-loss-defaults); unspecified
-  route/laser pairs use transmission `1.0`.
-- Both outbound laser route loss and inbound photodiode route loss are applied
-  when estimating throughput.
-- Startup captures the outbound loss under `<input>_to_<output>` and the inbound
-  photodiode loss under `<yj|hk>_<mm|sm>_to_<yj|hk>_pd`, using the selected laser
-  name for both records. The return path follows `fiber:"M"|"S"`.
-- The monitor reuses these captured losses while refreshing dynamic laser and
-  attenuator estimates. Run `measure_throughput` again to apply another route or
-  capture changed route-loss settings.
-- Ordinary autolevel adjustments use the fixed-window net mean and wait for
-  `PHOTODIODE_FIXED_WINDOW_MS` since the last input change, using the sampler's
-  window-end timestamp. Below 20% usable range, request 3x flux; above 80%, 1/3.
-- Startup raises flux at the 100 ms monitor cadence until instantaneous signal
-  first reaches the 20% useful-range threshold. Five consecutive instantaneous
-  monitor observations below/above the useful band also bypass the ordinary
-  gate (near ADC saturation counts as high). Bright backoff takes priority;
-  a lagging low mean cannot request more light while the latest reading is high.
-- There is no additional settling timer or deliberate gap after input changes.
-  External optical response, the 20 Hz analog filters, and clipping still affect
-  measured throughput and require hardware validation.
-- Flux is raised by decreasing logical attenuation first, then raising laser
-  output level percent. Flux is decreased by increasing logical attenuation
-  first, then lowering laser output level percent.
-- At start with `autolevel:true`, attenuation is set to maximum before laser
-  power is raised.
-- Starting a monitor powers the required photodiode unless
-  `pd/settings/<channel>.power` is `override_off`; in that mode the command
-  fails with `photodiode power override_off`. While a monitor is running,
-  photodiode auto-off is inhibited and `pd/settings/<channel>.off_in_s` reports
-  `null`. Shutting down the required photodiode power stops that monitor.
-- `off_in_s` is an integer-second monitor auto-stop delay. `0` disables the
-  monitor auto-stop.
-- Changing the monitored laser output/settings manually relinquishes monitoring
-  without overriding the new manual setting. Changing its logical attenuator
-  disables automatic adjustments while streaming continues; stopping the
-  operation still turns off its autolevel laser. Run the command again to
-  re-enable adjustments.
-- Starting a monitor with `autolevel:true` while attenuator calibration is
-  active is rejected because both paths would own attenuator control.
-- Throughput uses the photodiode sampler windows; it does not own or start
-  dark commits.
+**Measurement and control interpretation:**
+
+- `tp = pd_power_nw / delivered_power_nw`. Signed net values are preserved.
+  Zero/invalid delivered power makes throughput NaN/null.
+- `pd_power_nw` is detected net power divided by PD route transmission.
+  `delivered_power_nw` is estimated laser output times dynamic attenuator and
+  outbound route transmissions. Laser output in µW is before both losses.
+- `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
+  includes laser calibration and attenuator-fit residual uncertainty. These
+  calibration errors are correlated between records and must not be reduced
+  by treating them as independent sample noise. The error audit documents the
+  assumptions and omitted calibration terms.
+- `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
+  Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
+  a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
+  Calibration's ADC-rail classification remains separate.
+- PD responsivity and effective transimpedance already include the analog
+  divider. The nearest nominal wavelength correction is applied once; current
+  correction coefficients are all unity.
+- `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
+  transmission. Static attenuation belongs in the source route loss.
+- Route losses resolve explicit settings, then compiled TIB switch/static
+  defaults, then unity for unspecified pairs. Start latches the outbound
+  `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission
+  using the selected laser name. Restart to capture changed route settings.
+- Publish the completed measurement before choosing a move. A fresh low reading
+  (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
+  Raw overrange wins over low net signal. Startup uses the same direct path.
+  A sample that began before the previous move completed cannot select another
+  move. There is no rolling-window gate, five-observation bypass, or settling
+  holdoff. Physical response and filter lag remain visible in the data.
+- Flux is raised with attenuation first, then laser current; lowered with
+  attenuation first, then laser current. The directional pair allocator avoids
+  loading all attenuation onto one device. Startup sets maximum attenuation
+  before raising the laser to 100%.
+- Photodiode `override_off` rejects start. Active streaming inhibits PD auto-off;
+  `off_in_s` stops the monitor after the requested seconds, with zero disabling
+  expiry. Bank power/TECs remain under their existing owner.
+- Manual laser commands relinquish the stream without undoing the manual setting.
+  Manual attenuation disables adjustments and refreshes future source references,
+  retaining the owned laser shutdown obligation. Display controls only affect UI.
 
 
 (laser)=
@@ -1169,7 +1133,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     not op-amp voltage noise. Contributions from the two physical devices are
     independent; repeated samples of the same calibration are correlated.
     Throughput includes this and laser uncertainty in `tp_err`;
-    `tp_rms_err` remains PD-only. The nominal transmission model is unchanged.
+    `tp_pd_err` remains PD-only. The nominal transmission model is unchanged.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
 
@@ -1403,10 +1367,10 @@ ownership are documented in `attenuator_calibration.md`.
   - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
     In auto power mode, a query enables the selected photodiode relay or relays.
   - `raw`, `mv`, `net_mv`, `net_err_mv`, `power_uw`, and `power_err_uw` are the
-    latest sample and its propagated dark error. Invalid latest samples are
-    reported with null floating-point values and the raw sentinel.
-  - `window` is the fixed public monitoring window used by throughput and
-    autolevel. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
+    latest successful conversion and its reading/offset error. An ADC failure
+    leaves this diagnostic state unchanged; throughput does not re-emit it.
+  - `window` is the fixed public diagnostic window, separate from throughput
+    and autolevel. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
     `app/src/photodiode.h`.
   - The internal configurable window used by dark measurement and attenuator
     calibration is not exposed through the command API.
@@ -1459,9 +1423,14 @@ ownership are documented in `attenuator_calibration.md`.
     greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
     `app/src/app_settings.h`.
   - `reset_lowest:true` resets the lowest-dark record to the active dark.
-  - `persist` defaults false. Duration captures are rejected while attenuator
-    calibration or autolevel throughput owns the configurable window. Dark
-    commands do not check laser state, attenuator position, or routes.
+  - `persist` defaults false. Duration captures are rejected during attenuator
+    calibration. They stop all throughput and its owned laser before capture;
+    stop failure aborts capture. Unrelated manual lasers and routes are unchanged.
+  - Captured `rms_mv` is single-reading scatter; `mean_net_err_mv` and
+    `pd.dark_err_mv` report dark-mean uncertainty. For a forced dark, supplied
+    `rms_mv` is offset uncertainty. Recapture dark after cadence/rate changes;
+    saved records do not encode the acquisition rate. See the
+    [uncertainty audit](photodiode_notes.md).
 
 (pd-settings)=
 ### `pd/settings`

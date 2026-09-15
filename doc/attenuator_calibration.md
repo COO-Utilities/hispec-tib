@@ -368,8 +368,8 @@ No additional sweep, offline calibration, or lab operation is required.
 Runtime transmission uncertainty is `T * ln(10)/10 * hypot(rms1, rms2)`. The
 physical devices' errors combine independently, but calibration error across
 repeated throughput samples is treated as correlated and does not average away.
-The throughput sampler combines it with the laser estimate uncertainty and
-PD-only error; the stream's `tp_rms_err` remains PD-only.
+The throughput monitor combines it with the laser estimate uncertainty and
+PD-only error; the stream's `tp_pd_err` remains PD-only.
 
 ## Notebook Inspection
 

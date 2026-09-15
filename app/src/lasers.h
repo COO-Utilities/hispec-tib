@@ -350,7 +350,9 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
  * reads the same cached per-laser fractional_noise and constant_noise_mw as
  * its property settings: sigma_power = hypot(power * fractional_noise,
  * constant_noise_mw). This is model/calibration uncertainty, not independent
- * sample noise. Reads only module state under a mutex; it does not perform Modbus I/O, change
+ * sample noise. Takes the module mutex without waiting: -EBUSY means another
+ * laser operation is in progress; -EIO means its operating estimate is invalid.
+ * It does not perform Modbus I/O, change
  * GPIO state, enqueue, publish, or persist settings.
  */
 int laser_estimate_flux(enum hispec_laser_id id,

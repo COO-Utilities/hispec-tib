@@ -38,10 +38,11 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Decisions To Make
-- Decide settling allowances and validate filtered-noise
-  uncertainty before changing acquisition timing or statistics. See
-  `photodiode_notes.md` for the firmware/notebook window analysis and historical
-  noise-model discrepancies.
+- Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
+  actuator response, illuminated PD noise, and dark-based error estimates.
+  No extra settling holdoff is used. 64 SPS builds but remains a hardware
+  evaluation option; the default is 250 SPS. See `photodiode_notes.md` for
+  the error budget and remaining physical calibration assumptions.
 
 ## TODOs
 - start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.
