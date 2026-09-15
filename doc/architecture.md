@@ -240,6 +240,15 @@ items are centralized in `human_review_required.md`.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.
 
+Laser and attenuator hardware operations serialize with module I/O mutexes.
+Their state mutexes protect only short copies/confirmed updates: no I/O,
+sleep, persistence, or telemetry runs under a state mutex. Readers see the last
+confirmed state during a pending operation and the owner's fault after failure.
+Lock order is I/O then state; state readers never acquire the I/O mutex.
+Attenuator estimates use confirmed DAC voltages; explicit `attenuator_get`
+queries still read both registers. Settings/status copies own their mutable
+properties rather than borrowing pointers into another thread's state.
+
 Throughput input alignment: laser and attenuator modules own their operating
 state; `throughput_monitor.c` captures a compact source estimate after changes.
 `photodiode.c` latches it before each conversion, stores it with the latest

@@ -23,6 +23,35 @@ def block(file, marker):
     return text[start:end] + (';' if marker.startswith('struct ') else '') + '\n'
 
 
+# Real host mutexes and an I/O barrier prove getters do not wait for transactions.
+# Recursive state locks match Zephyr's mutex semantics. An alarm bounds deadlocks.
+mutex_harness = r'''
+#include <pthread.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#include <time.h>
+struct k_mutex {pthread_mutex_t mutex;};
+static void init_mutex(struct k_mutex *m) {
+    pthread_mutexattr_t a; assert(!pthread_mutexattr_init(&a));
+    assert(!pthread_mutexattr_settype(&a,PTHREAD_MUTEX_RECURSIVE));
+    assert(!pthread_mutex_init(&m->mutex,&a)); pthread_mutexattr_destroy(&a);
+}
+static int k_mutex_lock(struct k_mutex *m,int timeout) {
+    (void)timeout; return pthread_mutex_lock(&m->mutex);
+}
+static void k_mutex_unlock(struct k_mutex *m) {assert(!pthread_mutex_unlock(&m->mutex));}
+static atomic_bool block_io,entered_io,release_io;
+static void io_barrier(void) {
+    if(!atomic_load(&block_io)) return;
+    atomic_store(&entered_io,true);
+    while(!atomic_load(&release_io)) nanosleep(&(struct timespec){.tv_nsec=1000000},NULL);
+}
+static void wait_for_io(void) {
+    while(!atomic_load(&entered_io)) nanosleep(&(struct timespec){.tv_nsec=1000000},NULL);
+}
+'''
+
+
 source = r'''
 #include <assert.h>
 #include <errno.h>
@@ -72,6 +101,9 @@ for file,names in {
 source += r'''
 static struct photodiode_runtime_channel pd_runtime[2];
 static struct attenuator {double attenuation_db;} attenuators[6];
+struct attenuator_transmission_estimate { double attenuation_db; };
+static bool attenuator_estimate_transmission(struct attenuator *a, struct attenuator_transmission_estimate *out)
+{out->attenuation_db=a->attenuation_db;return true;}
 static double written_tx,written_pct;
 static int fail_write; static bool clamp_atten;
 static bool attenuator_set_linear(struct attenuator *a,double tx) {
@@ -192,10 +224,10 @@ source = r'''
 #define LIGHT_M_PER_S 299792458.0
 #define K_FOREVER 0
 #define K_NO_WAIT 0
-static int laser_lock;
+static int laser_state_lock;
+static bool laser_runtime_initialized=true;
 static int k_mutex_lock(int *p,int t) { (void)p; (void)t; return 0; }
 static void k_mutex_unlock(int *p) { (void)p; }
-static void ensure_laser_runtime_settings_locked(void) {}
 '''
 for line in (ROOT/'app/src/lasers.h').read_text().splitlines():
     if line.startswith('#define HISPEC_LASER_DEFAULT_'):
@@ -343,6 +375,7 @@ source = r'''
 #define ATTENUATOR_DB_EPSILON 1e-6
 struct dac_channel_cfg {int channel_id;};
 '''
+source += mutex_harness
 for line in (ROOT/'app/src/attenuator.h').read_text().splitlines():
     if line.startswith(('#define ATTENUATOR_', '#define FVOA_DEFAULT_')):
         source += line+'\n'
@@ -361,15 +394,21 @@ static struct app_attenuator_channel_settings saved;
 static int saves;
 static bool fail_write;
 static double sample_tx=0.001;
+#define K_FOREVER 0
+static struct k_mutex attenuator_io_lock,attenuator_state_lock;
 static void app_settings_update_attenuator_channel(int i,const struct app_attenuator_channel_settings *s,bool persist)
 { (void)i; assert(persist); saved=*s; ++saves; }
-static bool attenuator_get(struct attenuator *a, struct attenuator_status *out)
-{ (void)a; *out=(struct attenuator_status){.linear=sample_tx,.attenuation_db=30,.voltage1=123,.voltage2=456}; return true; }
-static bool attenuator_set_db(struct attenuator *a,double db) { (void)a; (void)db; return !fail_write; }
+static bool attenuator_read_physical(struct attenuator_dac_cfg *d, const struct attenuator_model_coeffs *c)
+{ (void)c; d->valid=true; d->attenuation_db=d->voltage; return true; }
+static bool attenuator_set_db_staged(struct attenuator *a,double db) {
+    (void)db; io_barrier();
+    if(fail_write) {a->dac_cfg1.voltage=42;a->dac_cfg2.valid=false;return false;}
+    return true;
+}
 static double attenuator_model_floor_linear(const struct attenuator_model_coeffs *c)
 { return pow(10,-c->max_atten_db/10); }
 static double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *c,float mv)
-{ (void)mv; return c->max_atten_db; }
+{ (void)c; return mv; }
 /* JSON extraction stubs select absent/explicit RMS; the parser's replacement
  * semantics and validation, not the shared JSON library, are under test here. */
 static int rms_status=COO_JSON_EXTRACT_MISSING;
@@ -388,14 +427,20 @@ static int coo_json_extract_double(const char *j,const char *key,double *out) {
 static int coo_json_extract_double_array(const char *j,const char *key,double *out,size_t n,size_t *len)
 { (void)j;(void)key;(void)out;(void)n;(void)len;return COO_JSON_EXTRACT_MISSING; }
 '''
-for marker in ['static bool attenuator_model_coeff_valid(', 'bool attenuator_model_coefficients_valid(',
+for marker in ['void attenuator_snapshot(', 'static void attenuator_commit(', 'static bool attenuator_model_coeff_valid(', 'bool attenuator_model_coefficients_valid(',
                'bool attenuator_estimate_transmission(', 'int attenuator_apply_coefficients_preserve_db(']:
     source += block('attenuator.c',marker)
 source += block('app_settings.c','static bool attenuator_channel_valid(')
 source += block('attenuator_calibration.c','static int apply_fit_to_settings_locked(')
 source += block('attenuator_command.c','static int parse_attenuator_coeff_object(')
 source += r'''
+static void *replace_coefficients(void *arg) {
+    struct attenuator_model_coeffs *c=arg;
+    assert(attenuator_apply_coefficients_preserve_db(&attenuators[0],c)==0);
+    return NULL;
+}
 int main(void) {
+    init_mutex(&attenuator_io_lock);init_mutex(&attenuator_state_lock);
     struct attenuator *a=&attenuators[0];
     a->coeff1=(struct attenuator_model_coeffs){.fvoa_50pct_mv=2500,.slope_inv_fvoa_mv=0.002,
         .max_atten_db=55,.gain=1.533,.rms_db=ATTENUATOR_DEFAULT_RMS_DB};
@@ -403,8 +448,10 @@ int main(void) {
     struct attenuator_transmission_estimate out;
     for(int i=0;i<3;++i) {
         sample_tx=pow(10,-i*3);
+        a->dac_cfg1.valid=a->dac_cfg2.valid=true;
+        a->dac_cfg1.voltage=a->dac_cfg2.voltage=i*15;
         assert(attenuator_estimate_transmission(a,&out));
-        assert(out.linear==sample_tx && out.attenuation_db==30 && out.voltage1==123);
+        assert(out.linear==sample_tx && out.attenuation_db==i*30 && out.voltage1==i*15);
         assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(2,2))<1e-12);
     }
     cal.persistent=true;
@@ -432,13 +479,27 @@ int main(void) {
     assert(parse_attenuator_coeff_object("{}","dac1",&a->coeff1)==-EINVAL);
     saved.physical[0].rms_db=INFINITY;
     assert(!attenuator_channel_valid(&saved));
-    puts("attenuator uncertainty C regressions passed");
+    /* Block the writer after it staged new coefficients. Estimator must see
+     * the old complete pair and return before I/O is released. */
+    a->coeff1.rms_db=.5;
+    struct attenuator_model_coeffs next[2]={a->coeff1,a->coeff2};
+    next[0].rms_db=1.25;next[1].rms_db=2.5;
+    a->dac_cfg1.valid=a->dac_cfg2.valid=true;
+    double old_rms=a->coeff1.rms_db;
+    pthread_t writer;alarm(5);atomic_store(&block_io,true);
+    assert(!pthread_create(&writer,NULL,replace_coefficients,next));wait_for_io();
+    assert(attenuator_estimate_transmission(a,&out));
+    assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(old_rms,a->coeff2.rms_db))<1e-12);
+    atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
+    assert(attenuator_estimate_transmission(a,&out));
+    assert(fabs(out.linear_err/out.linear-log(10)/10*hypot(1.25,2.5))<1e-12);
+    puts("attenuator uncertainty and concurrent publication C regressions passed");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     cfile, exe = Path(tmp)/'atten.c', Path(tmp)/'atten'
     cfile.write_text(source)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 
 coeff = {'fvoa_50pct_mv':2500,'slope_inv_fvoa_mv':0.002,'max_atten_db':55,
@@ -723,36 +784,37 @@ typedef struct {double max_current_ma; double operating_temp_c;} laserprops_t;
 typedef struct {unsigned node_id; bool io_failed;} maiman_driver_t;
 struct hispec_laser_driver_profile {enum hispec_laser_id id; const char *name; unsigned node_id;};
 struct on_time_runtime {bool active;};
-static int laser_lock;
+static struct k_mutex laser_io_lock,laser_state_lock;
+static bool laser_runtime_initialized=true;
+struct app_laser_channel_settings {unsigned expected_serial; laserprops_t properties;};
+static struct app_laser_channel_settings laser_settings[1];
 static bool bank_power_requested_enabled=true;
 static int writes, starts, prepares, stops;
 static bool fail_write, fail_stop;
 static int64_t laser_autooff_deadline_ms[1];
 static struct on_time_runtime laser_current_runtime[1],laser_tec_runtime[1];
-static const laserprops_t props={250,25};
+
 static const struct hispec_laser_driver_profile profile={0,"test",1};
 static int profile_for_id(enum hispec_laser_id id, const struct hispec_laser_driver_profile **p)
 {(void)id; *p=&profile;return 0;}
-static void k_mutex_lock(int *p,int t){(void)p;(void)t;}
-static void k_mutex_unlock(int *p){(void)p;}
-static int laser_lock_with_timeout(int t){(void)t;return 0;}
-static const laserprops_t *runtime_props_locked(enum hispec_laser_id id){(void)id;return &props;}
+static int laser_io_lock_with_timeout(int t){return k_mutex_lock(&laser_io_lock,t);}
+static const laserprops_t *runtime_props_locked(enum hispec_laser_id id){return &laser_settings[id].properties;}
 static bool float_is_valid(double x){return isfinite(x);}
 static void ensure_laser_runtime_settings_locked(void){}
 static void maiman_init(maiman_driver_t *d,unsigned n){d->node_id=n;d->io_failed=false;}
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,bool v)
 {(void)v;++prepares;maiman_init(d,p->node_id);return 0;}
-static int verify_driver_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,void *o)
-{(void)p;(void)d;(void)o;return 0;}
-static bool maiman_set_current(maiman_driver_t *d,double x){(void)d;(void)x;++writes;return !fail_write;}
+static int verify_driver_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,void *o,unsigned expected)
+{(void)p;(void)d;(void)o;(void)expected;return 0;}
+static bool maiman_set_current(maiman_driver_t *d,double x){(void)d;(void)x;++writes;io_barrier();return !fail_write;}
 static bool maiman_start_device(maiman_driver_t *d){(void)d;++starts;return true;}
 static bool maiman_stop_device(maiman_driver_t *d){(void)d;++stops;return !fail_stop;}
 static bool maiman_stop_tec(maiman_driver_t *d){(void)d;return true;}
-static void commit_current_runtime_locked(enum hispec_laser_id id,bool p)
-{(void)p;laser_current_runtime[id].active=false;}
+static void commit_current_runtime_locked(enum hispec_laser_id id,bool p);
 static void on_time_runtime_update_locked(struct on_time_runtime *r,unsigned n,enum hispec_laser_id id,bool active)
 {(void)n;r[id].active=active;}
 '''
+laser_source = laser_source.replace('#define K_FOREVER 0',mutex_harness+'\n#define K_FOREVER 0',1)
 laser_source += block('lasers.c','struct laser_output_estimate_state {')
 laser_source += 'static struct laser_output_estimate_state laser_output_estimate[1];\n'
 for marker in ['static void output_estimate_set_locked(', 'static void invalidate_output_locked(',
@@ -761,10 +823,21 @@ for marker in ['static void output_estimate_set_locked(', 'static void invalidat
 # The stop function also has a forward declaration; select its definition.
 laser_text=(ROOT/'app/src/lasers.c').read_text()
 stop_marker='static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec)\n{'
+laser_source += r'''
+static void commit_current_runtime_locked(enum hispec_laser_id id,bool p) {
+    (void)p;laser_current_runtime[id].active=false;
+    output_estimate_set_locked(id,0,laser_output_estimate[id].tec_temperature_c);
+    laser_output_estimate[id].prepared=false;laser_autooff_deadline_ms[id]=0;
+}
+'''
 laser_source += block('lasers.c',stop_marker)
 laser_source += block('lasers.c','int hispec_laser_set_current_ma(')
+laser_source += block('lasers.c','int hispec_laser_get_channel_settings(')
 laser_source += r'''
+static void *change_current(void *p) {(void)p;assert(hispec_laser_set_current_ma(0,80)==0);return NULL;}
 int main(void){
+ init_mutex(&laser_io_lock);init_mutex(&laser_state_lock);
+ laser_settings[0].properties=(laserprops_t){250,25};
  assert(hispec_laser_set_current_ma(0,100)==0);
  assert(prepares==1 && writes==1 && starts==1);
  assert(hispec_laser_set_current_ma(0,150)==0);
@@ -784,13 +857,26 @@ int main(void){
  assert(hispec_laser_set_current_ma(0,0)==0);
  assert(!laser_current_runtime[0].active && laser_output_estimate[0].current_ma==0);
  assert(hispec_laser_set_current_ma(0,260)==-ERANGE);
+ struct app_laser_channel_settings copy;
+ laser_runtime_initialized=false;
+ assert(hispec_laser_get_channel_settings(0,&copy)==-EINVAL);
+ laser_runtime_initialized=true;
+ pthread_t writer;alarm(5);atomic_store(&block_io,true);
+ assert(!pthread_create(&writer,NULL,change_current,NULL));wait_for_io();
+ assert(hispec_laser_get_channel_settings(0,&copy)==0);
+ assert(copy.properties.max_current_ma==250 && copy.properties.operating_temp_c==25);
+ k_mutex_lock(&laser_state_lock,K_FOREVER);
+ assert(laser_output_estimate[0].current_ma==0);
+ k_mutex_unlock(&laser_state_lock);
+ atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
+ assert(laser_output_estimate[0].current_ma==80 && laser_output_estimate[0].valid);
  return 0;
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     cfile=Path(tmp)/'laser.c';exe=Path(tmp)/'laser'
     cfile.write_text(laser_source)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('laser current/stop regressions passed')
 
@@ -847,42 +933,43 @@ allocator_source=r'''
 #define ATTENUATOR_DB_EPSILON 1e-6
 #define snprintk snprintf
 #define coo_cmd_runtime_emit(...) ((void)0)
-struct attenuator_dac_cfg {double voltage,attenuation_db,limit;};
+struct attenuator_dac_cfg {double voltage,attenuation_db,limit;bool valid;};
 struct attenuator_model_coeffs {double scale;};
 struct attenuator {struct attenuator_dac_cfg dac_cfg1,dac_cfg2;struct attenuator_model_coeffs coeff1,coeff2;double attenuation_db;};
 static int writes,fail_device=-1;
 static double attenuator_drive_limit_mv(const struct attenuator_dac_cfg *c){return c->limit;}
 static double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *c,double v){return v*c->scale;}
-static bool attenuator_set_physical_db(struct attenuator *a,unsigned i,double db){
+static bool attenuator_set_physical_db_staged(struct attenuator *a,unsigned i,double db){
  ++writes;if((int)i==fail_device)return false;
  struct attenuator_dac_cfg *d=i?&a->dac_cfg2:&a->dac_cfg1;
  d->voltage=db/(i?a->coeff2.scale:a->coeff1.scale);d->attenuation_db=db;return true;
 }
 '''
 allocator_source += block('attenuator.c','static double attenuator_physical_max_db(')
-allocator_source += block('attenuator.c','bool attenuator_set_db(')
+allocator_source += 'static bool attenuator_read_physical(struct attenuator_dac_cfg *d,const struct attenuator_model_coeffs *c){(void)d;(void)c;return false;}\n'
+allocator_source += block('attenuator.c','static bool attenuator_set_db_staged(')
 allocator_source += r'''
 static struct attenuator pair(double x,double y,double m1,double m2){
- return (struct attenuator){.dac_cfg1={x,999,m1},.dac_cfg2={y,999,m2},.coeff1={1},.coeff2={1}};
+ return (struct attenuator){.dac_cfg1={x,999,m1,true},.dac_cfg2={y,999,m2,true},.coeff1={1},.coeff2={1}};
 }
 int main(void){
  struct attenuator a=pair(36,0,39.2791,34.8723);
- assert(attenuator_set_db(&a,41));assert(a.dac_cfg1.attenuation_db==36 && a.dac_cfg2.attenuation_db==5);
- int n=writes;assert(attenuator_set_db(&a,41) && writes==n);
- a=pair(39,35,40,40);assert(attenuator_set_db(&a,40));
+ assert(attenuator_set_db_staged(&a,41));assert(a.dac_cfg1.attenuation_db==36 && a.dac_cfg2.attenuation_db==5);
+ int n=writes;assert(attenuator_set_db_staged(&a,41) && writes==n);
+ a=pair(39,35,40,40);assert(attenuator_set_db_staged(&a,40));
  assert(a.dac_cfg1.attenuation_db==20 && a.dac_cfg2.attenuation_db==20);
- a=pair(35.9263,0,39.2791,34.8723);assert(attenuator_set_db(&a,40.70283));
+ a=pair(35.9263,0,39.2791,34.8723);assert(attenuator_set_db_staged(&a,40.70283));
  assert(a.dac_cfg1.attenuation_db<39 && fabs(a.dac_cfg2.attenuation_db-4.77653)<1e-8);
- a=pair(0,0,10,40);assert(attenuator_set_db(&a,45));
+ a=pair(0,0,10,40);assert(attenuator_set_db_staged(&a,45));
  assert(a.dac_cfg1.attenuation_db==10 && a.dac_cfg2.attenuation_db==35);
- a=pair(10,10,40,40);fail_device=1;assert(!attenuator_set_db(&a,30));
+ a=pair(10,10,40,40);fail_device=1;assert(!attenuator_set_db_staged(&a,30));
  assert(a.dac_cfg1.attenuation_db==15 && a.dac_cfg2.attenuation_db==10 && a.attenuation_db==25);
  fail_device=-1;
  for(int j=0;j<10000;j++){
   double m1=1+rand()%60,m2=1+rand()%60;
   double x=(double)rand()/RAND_MAX*m1,y=(double)rand()/RAND_MAX*m2;
   double target=(double)rand()/RAND_MAX*(m1+m2);
-  a=pair(x,y,m1,m2);assert(attenuator_set_db(&a,target));
+  a=pair(x,y,m1,m2);assert(attenuator_set_db_staged(&a,target));
   assert(fabs(a.attenuation_db-target)<1e-5);
   assert(a.dac_cfg1.attenuation_db>=-1e-8 && a.dac_cfg1.attenuation_db<=m1+1e-8);
   assert(a.dac_cfg2.attenuation_db>=-1e-8 && a.dac_cfg2.attenuation_db<=m2+1e-8);

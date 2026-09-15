@@ -263,7 +263,11 @@ static int autolevel_adjust(struct throughput_state *state,
 		if (!attenuator_set_linear(atten, next_tx)) {
 			return -EIO;
 		}
-		if (atten->attenuation_db != source->atten_db) {
+		struct attenuator_transmission_estimate applied;
+		if (!attenuator_estimate_transmission(atten, &applied)) {
+			return -EIO;
+		}
+		if (applied.attenuation_db != source->atten_db) {
 			return 1;
 		}
 		/* A clamped pair already at its limit must yield to laser adjustment. */

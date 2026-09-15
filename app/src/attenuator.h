@@ -54,6 +54,7 @@ struct attenuator_dac_cfg {
     float ideal_full_scale_mv;
     float drive_limit_mv;
     float voltage;
+    bool valid; /* Successful DAC write/read; cleared on an I/O failure. */
     double attenuation_db;
 };
 
@@ -86,6 +87,11 @@ struct attenuator {
     struct attenuator_dac_cfg dac_cfg2;
     double attenuation_db;
 };
+
+/** Copy confirmed runtime state and calibration under the short state mutex.
+ * No I/O; device/configuration pointers in the copy refer to static hardware.
+ */
+void attenuator_snapshot(const struct attenuator *drv, struct attenuator *out);
 
 /** Initialize a DAC channel. May block on I2C through the DAC driver. */
 bool attenuator_init(struct attenuator *drv,
@@ -211,7 +217,8 @@ bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
 /**
  * @brief Read logical transmission and propagate each physical model residual RMS.
  *
- * This may block on I2C through attenuator_get(). The stored per-physical rms_db
+ * This copies owner state without I/O; false means a DAC state is unknown.
+ * The stored per-physical rms_db
  * values combine as hypot(rms1, rms2); sigma_T = T * ln(10)/10 * sigma_dB.
  * These are independent physical-model contributions, each correlated across
  * repeated measurements. Nominal transmission and hardware state are unchanged.

@@ -1613,7 +1613,9 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 static int fit_one_physical_locked(uint8_t physical,
 				   struct attenuator_calibration_fit_metrics *out)
 {
-	struct attenuator *atten = &attenuators[cal.attenuator_index];
+	struct attenuator snapshot;
+	attenuator_snapshot(&attenuators[cal.attenuator_index], &snapshot);
+	const struct attenuator *atten = &snapshot;
 	const struct atten_cal_record *records = cal.records[physical];
 	double gain = physical == 0U ? atten->coeff1.gain : atten->coeff2.gain;
 	double fvoa_50pct_mv = 0.0;
@@ -1740,7 +1742,9 @@ static int fit_one_physical_locked(uint8_t physical,
  */
 static int apply_fit_to_settings_locked(void)
 {
-	struct attenuator *atten = &attenuators[cal.attenuator_index];
+	struct attenuator snapshot;
+	attenuator_snapshot(&attenuators[cal.attenuator_index], &snapshot);
+	const struct attenuator *atten = &snapshot;
 	struct app_attenuator_channel_settings stored = {0};
 	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT] = {
 		{
@@ -1775,7 +1779,7 @@ static int apply_fit_to_settings_locked(void)
 	    !attenuator_model_coefficients_valid(physical)) {
 		return -EINVAL;
 	}
-	if (attenuator_apply_coefficients_preserve_db(atten, physical) != 0) {
+	if (attenuator_apply_coefficients_preserve_db(&attenuators[cal.attenuator_index], physical) != 0) {
 		return -EIO;
 	}
 

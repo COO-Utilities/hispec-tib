@@ -61,7 +61,7 @@ is applied. Source or external optical motion during a conversion remains visibl
 | Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero/negative PD power; source must be finite and positive. |
 | Overrange | Raw ADC input ≥2000 mV sets `overrange`; retain numerical PD/TP value as nominal lower bound | PD and throughput errors become NaN/null, S/N suppressed. Source calibration error is still reported. The ADC rail remains 2047.9375 mV. |
 | Missing ADC conversion | Discard; retain previous latest state without advancing its timestamp | No duplicate stream record or control move. Diagnostic windows count failures; zero-good-sample averages fail. Warnings are rate-limited. |
-| Laser owner fault | Stop monitoring and attempt owned laser shutdown | No retries added. Mutex busy means an operation is in flight, not a fault; skip control. A failed stop retains unknown emission state and the shutdown obligation for explicit retry. |
+| Laser owner fault | Stop monitoring and attempt owned laser shutdown | No retries added. Laser estimation waits only for a short state copy, never for Modbus. Pending I/O leaves the last confirmed state readable. A failed stop retains unknown emission state and the shutdown obligation for explicit retry. |
 | Actuator failure | Stop monitoring; preserve confirmed owner state after partial writes | Do not normalize subsequent readings using an assumed successful move. |
 | Serialization | Binary doubles; JSON 12 significant digits, nonfinite values null | Preserve tiny powers/errors through Python, record arrays, and CSV. Binary and JSON share field order in firmware. |
 

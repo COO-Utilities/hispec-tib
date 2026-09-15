@@ -276,7 +276,7 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 				       const struct hispec_laser_status *status)
 {
 	size_t off = 0U;
-	const laserprops_t *props = status->properties;
+	const laserprops_t *props = &status->properties;
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"name\":\"%s\",\"powered\":%s,"

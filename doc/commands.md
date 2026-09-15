@@ -516,8 +516,8 @@ both PDs; manually enabled additional lasers are not separated by this system.
 `stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
 attempts every owned laser shutdown. Failed shutdown disables streaming/control
 and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
-and a faulted laser-owner estimate use the same stop path. A laser mutex busy
-with an operation is not treated as a fault; control waits for a fresh sample.
+and a faulted laser-owner estimate use the same stop path. Pending laser I/O leaves the last confirmed owner state readable; estimation
+uses a separate short state lock and never reports bus contention.
 
 Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
 JSON; Python and the notebook default to binary. Binary channel and wavelength

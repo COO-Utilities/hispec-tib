@@ -16,6 +16,35 @@
 
 LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
 
+/* Pair writes/readback and coefficient changes serialize here. Work on a local
+ * copy during I2C; state_lock publishes the resulting confirmed state in one
+ * assignment. Readers never take io_lock. Both locks are module-wide because
+ * all pairs share the DAC bus; no per-channel synchronization objects needed.
+ */
+static K_MUTEX_DEFINE(attenuator_io_lock);
+static K_MUTEX_DEFINE(attenuator_state_lock);
+
+void attenuator_snapshot(const struct attenuator *drv, struct attenuator *out)
+{
+    k_mutex_lock(&attenuator_state_lock, K_FOREVER);
+    *out = *drv;
+    k_mutex_unlock(&attenuator_state_lock);
+}
+
+/* Preserve successful physical writes even when the other DAC operation failed.
+ * Invalid channels retain their last confirmed voltage but cannot yield an
+ * estimate until a successful write/read establishes their state again.
+ */
+static void attenuator_commit(struct attenuator *drv, struct attenuator *next)
+{
+    next->dac_cfg1.attenuation_db = attenuator_model_voltage_to_db(&next->coeff1, next->dac_cfg1.voltage);
+    next->dac_cfg2.attenuation_db = attenuator_model_voltage_to_db(&next->coeff2, next->dac_cfg2.voltage);
+    next->attenuation_db = next->dac_cfg1.attenuation_db + next->dac_cfg2.attenuation_db;
+    k_mutex_lock(&attenuator_state_lock, K_FOREVER);
+    *drv = *next;
+    k_mutex_unlock(&attenuator_state_lock);
+}
+
 #define DAC_RESOLUTION_BITS 12
 #define DAC_MAX_CODE        ((1 << DAC_RESOLUTION_BITS) - 1)
 #define MODEL_ERF_SCALE     4.0
@@ -309,8 +338,9 @@ bool attenuator_init(struct attenuator *drv,
     memset(drv->coeff2.correction_coeff, 0, sizeof(drv->coeff2.correction_coeff));
     drv->attenuation_db = 0.0;
 
+    struct attenuator_status status;
     return attenuator_channel_setup(&drv->dac_cfg1) &&
-           attenuator_channel_setup(&drv->dac_cfg2);
+           attenuator_channel_setup(&drv->dac_cfg2) && attenuator_get(drv, &status);
 }
 
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
@@ -719,17 +749,19 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
      */
     err = dac_write_value(dac_cfg->dev, dac_cfg->cfg.channel_id, code);
     if (err != 0) {
+        dac_cfg->valid = false;
         LOG_ERR("DAC write failed: %d", err);
         return false;
     }
 
+    dac_cfg->valid = true;
     dac_cfg->voltage = applied_voltage;
     dac_cfg->attenuation_db = attenuator_model_voltage_to_db(coeffs, applied_voltage);
 
     return true;
 }
 
-bool attenuator_set_physical_db(struct attenuator *drv,
+static bool attenuator_set_physical_db_staged(struct attenuator *drv,
                                 uint8_t physical_index,
                                 double attenuation_db)
 {
@@ -774,7 +806,7 @@ bool attenuator_set_physical_db(struct attenuator *drv,
     return attenuator_write_voltage(dac_cfg, coeffs, voltage);
 }
 
-bool attenuator_set_physical_voltage(struct attenuator *drv,
+static bool attenuator_set_physical_voltage_staged(struct attenuator *drv,
                                      uint8_t physical_index,
                                      float voltage)
 {
@@ -798,12 +830,20 @@ static double attenuator_physical_max_db(const struct attenuator_dac_cfg *dac_cf
     return attenuator_model_voltage_to_db(coeffs,attenuator_drive_limit_mv(dac_cfg));
 }
 
-bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
+static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
+                                     const struct attenuator_model_coeffs *coeffs);
+
+static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_db)
 {
     double current1, current2, max1, max2, lower1, upper1, db1, db2;
     char context[64];
 
     if (drv == NULL || !isfinite(attenuation_db) || attenuation_db < 0.0) {
+        return false;
+    }
+
+    if ((!drv->dac_cfg1.valid && !attenuator_read_physical(&drv->dac_cfg1, &drv->coeff1)) ||
+        (!drv->dac_cfg2.valid && !attenuator_read_physical(&drv->dac_cfg2, &drv->coeff2))) {
         return false;
     }
 
@@ -854,17 +894,65 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
     db1 = CLAMP(attenuation_db / 2.0, lower1, upper1);
     db2 = attenuation_db - db1;
     if (fabs(db1 - current1) > ATTENUATOR_DB_EPSILON &&
-        !attenuator_set_physical_db(drv, 0, db1)) {
+        !attenuator_set_physical_db_staged(drv, 0, db1)) {
         return false;
     }
     /* Keep the confirmed first write even if the second device fails. */
     drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
     if (fabs(db2 - current2) > ATTENUATOR_DB_EPSILON &&
-        !attenuator_set_physical_db(drv, 1, db2)) {
+        !attenuator_set_physical_db_staged(drv, 1, db2)) {
         return false;
     }
     drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
     return true;
+}
+
+bool attenuator_set_physical_db(struct attenuator *drv, uint8_t physical_index, double attenuation_db)
+{
+    struct attenuator next;
+    bool ok;
+
+    if (drv == NULL) {
+        return false;
+    }
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    ok = attenuator_set_physical_db_staged(&next, physical_index, attenuation_db);
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    return ok;
+}
+
+bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_index, float voltage)
+{
+    struct attenuator next;
+    bool ok;
+
+    if (drv == NULL) {
+        return false;
+    }
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    ok = attenuator_set_physical_voltage_staged(&next, physical_index, voltage);
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    return ok;
+}
+
+bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
+{
+    struct attenuator next;
+    bool ok;
+
+    if (drv == NULL) {
+        return false;
+    }
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    ok = attenuator_set_db_staged(&next, attenuation_db);
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    return ok;
 }
 
 bool attenuator_set_linear(struct attenuator *drv, double linear)
@@ -888,10 +976,12 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
 
     err = dac7x78_read_value(dac_cfg->dev, dac_cfg->cfg.channel_id, &code);
     if (err != 0) {
+        dac_cfg->valid = false;
         LOG_ERR("DAC read failed: %d", err);
         return false;
     }
 
+    dac_cfg->valid = true;
     dac_cfg->voltage = attenuator_code_to_voltage(dac_cfg, code);
     dac_cfg->attenuation_db =
         attenuator_model_voltage_to_db(coeffs, dac_cfg->voltage);
@@ -901,52 +991,56 @@ static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
 
 bool attenuator_get(struct attenuator *drv, struct attenuator_status *out)
 {
-    double total_db;
+    struct attenuator next;
+    bool first_ok, second_ok;
 
     if (drv == NULL || out == NULL) {
         return false;
     }
-
-    if (!attenuator_read_physical(&drv->dac_cfg1, &drv->coeff1) ||
-        !attenuator_read_physical(&drv->dac_cfg2, &drv->coeff2)) {
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    first_ok = attenuator_read_physical(&next.dac_cfg1, &next.coeff1);
+    second_ok = attenuator_read_physical(&next.dac_cfg2, &next.coeff2);
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    if (!first_ok || !second_ok) {
         return false;
     }
-
-    total_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
-    drv->attenuation_db = total_db;
-
-    out->attenuation_db = total_db;
-    out->linear = (double)ZSL_POW((zsl_real_t)10.0,
-                                  (zsl_real_t)(-total_db / 10.0));
-    out->voltage1 = drv->dac_cfg1.voltage;
-    out->voltage2 = drv->dac_cfg2.voltage;
-    out->attenuation_db1 = drv->dac_cfg1.attenuation_db;
-    out->attenuation_db2 = drv->dac_cfg2.attenuation_db;
-
+    out->attenuation_db = next.attenuation_db;
+    out->linear = pow(10.0, -next.attenuation_db / 10.0);
+    out->voltage1 = next.dac_cfg1.voltage;
+    out->voltage2 = next.dac_cfg2.voltage;
+    out->attenuation_db1 = next.dac_cfg1.attenuation_db;
+    out->attenuation_db2 = next.dac_cfg2.attenuation_db;
     return true;
 }
 
 bool attenuator_estimate_transmission(struct attenuator *drv,
                                       struct attenuator_transmission_estimate *out)
 {
-    struct attenuator_status status;
+    struct attenuator snapshot;
 
-    if (drv == NULL || out == NULL || !attenuator_get(drv, &status)) {
+    if (drv == NULL || out == NULL) {
         return false;
     }
-
-    /* Fit residuals describe model uncertainty in commanded attenuation space.
-     * They are not ADC/drive-voltage sample noise and do not average away.
+    attenuator_snapshot(drv, &snapshot);
+    if (!snapshot.dac_cfg1.valid || !snapshot.dac_cfg2.valid) {
+        return false;
+    }
+    /* Derive dB from confirmed voltages and the same coefficient snapshot;
+     * boot may have installed calibration since the last register readback.
      */
-    out->linear = status.linear;
-    out->linear_err = status.linear * (log(10.0) / 10.0) *
-                      hypot(drv->coeff1.rms_db, drv->coeff2.rms_db);
-    out->attenuation_db = status.attenuation_db;
-    out->attenuation_db1 = status.attenuation_db1;
-    out->attenuation_db2 = status.attenuation_db2;
-    out->voltage1 = status.voltage1;
-    out->voltage2 = status.voltage2;
-
+    out->attenuation_db1 = attenuator_model_voltage_to_db(&snapshot.coeff1, snapshot.dac_cfg1.voltage);
+    out->attenuation_db2 = attenuator_model_voltage_to_db(&snapshot.coeff2, snapshot.dac_cfg2.voltage);
+    out->attenuation_db = out->attenuation_db1 + out->attenuation_db2;
+    out->linear = pow(10.0, -out->attenuation_db / 10.0);
+    /* Fit residuals are model uncertainty, not independent ADC noise: these
+     * contributions remain correlated across repeated measurements.
+     */
+    out->linear_err = out->linear * (log(10.0) / 10.0) *
+                     hypot(snapshot.coeff1.rms_db, snapshot.coeff2.rms_db);
+    out->voltage1 = snapshot.dac_cfg1.voltage;
+    out->voltage2 = snapshot.dac_cfg2.voltage;
     return true;
 }
 
@@ -954,33 +1048,35 @@ int attenuator_apply_coefficients_preserve_db(
     struct attenuator *drv,
     const struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT])
 {
-    struct attenuator_model_coeffs old_coeff1;
-    struct attenuator_model_coeffs old_coeff2;
-    struct attenuator_status status = {0};
+    struct attenuator next;
+    struct attenuator_model_coeffs old_coeff1, old_coeff2;
+    bool ok;
+    double total_db;
 
     if (drv == NULL || !attenuator_model_coefficients_valid(physical)) {
         return -EINVAL;
     }
-
-    if (!attenuator_get(drv, &status)) {
-        return -EIO;
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    old_coeff1 = next.coeff1;
+    old_coeff2 = next.coeff2;
+    bool first_ok = attenuator_read_physical(&next.dac_cfg1, &next.coeff1);
+    bool second_ok = attenuator_read_physical(&next.dac_cfg2, &next.coeff2);
+    ok = first_ok && second_ok;
+    if (ok) {
+        total_db = next.dac_cfg1.attenuation_db + next.dac_cfg2.attenuation_db;
+        next.coeff1 = physical[0];
+        next.coeff2 = physical[1];
+        ok = attenuator_set_db_staged(&next, total_db);
+        if (!ok) {
+            /* No rollback of DAC writes. Retain confirmed voltages and expose
+             * failure, interpreting those voltages under the old calibration.
+             */
+            next.coeff1 = old_coeff1;
+            next.coeff2 = old_coeff2;
+        }
     }
-
-    old_coeff1 = drv->coeff1;
-    old_coeff2 = drv->coeff2;
-    drv->coeff1 = physical[0];
-    drv->coeff2 = physical[1];
-
-    if (!attenuator_set_db(drv, status.attenuation_db)) {
-        drv->coeff1 = old_coeff1;
-        drv->coeff2 = old_coeff2;
-        drv->dac_cfg1.attenuation_db =
-            attenuator_model_voltage_to_db(&drv->coeff1, drv->dac_cfg1.voltage);
-        drv->dac_cfg2.attenuation_db =
-            attenuator_model_voltage_to_db(&drv->coeff2, drv->dac_cfg2.voltage);
-        drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
-        return -EIO;
-    }
-
-    return 0;
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    return ok ? 0 : -EIO;
 }

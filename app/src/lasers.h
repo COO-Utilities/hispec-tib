@@ -60,7 +60,7 @@ struct hispec_laser_driver_profile {
 struct hispec_laser_status {
 	enum hispec_laser_id id;
 	const char *name;
-	const laserprops_t *properties;
+	laserprops_t properties; /* Owned snapshot; no pointer into mutable settings. */
 	bool bank_powered;
 	bool serial_matches;
 	uint16_t expected_device_id;
@@ -166,8 +166,6 @@ int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out);
 /** @brief Return the stable command/API name for a laser channel. */
 const char *hispec_laser_name(enum hispec_laser_id id);
 
-/** @brief Return the fixed diode properties used for safety checks and estimates. */
-const laserprops_t *hispec_laser_properties(enum hispec_laser_id id);
 
 /** @brief Return the fixed Modbus address/serial profile for a channel. */
 int hispec_laser_get_driver_profile(enum hispec_laser_id id,
@@ -350,10 +348,10 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
  * reads the same cached per-laser fractional_noise and constant_noise_mw as
  * its property settings: sigma_power = hypot(power * fractional_noise,
  * constant_noise_mw). This is model/calibration uncertainty, not independent
- * sample noise. Takes the module mutex without waiting: -EBUSY means another
- * laser operation is in progress; -EIO means its operating estimate is invalid.
- * It does not perform Modbus I/O, change
- * GPIO state, enqueue, publish, or persist settings.
+ * sample noise. Waits only for a short state copy, never for the I/O mutex.
+ * Returns -EINVAL before owner initialization or for invalid arguments, and
+ * -EIO after an owner fault. Pending I/O leaves the last confirmed state readable.
+ * Does not perform Modbus I/O, change GPIO, enqueue, publish, or persist.
  */
 int laser_estimate_flux(enum hispec_laser_id id,
 			struct hispec_laser_flux_estimate *out);

@@ -226,15 +226,17 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	case ATTENUATOR_SETTING_COEFF:
 	{
 		size_t off = 0U;
+		struct attenuator snapshot;
+		attenuator_snapshot(&attenuators[attenuator_index], &snapshot);
 
 		if (coo_json_append(payload, sizeof(payload), &off, "{") != 0 ||
 		    append_attenuator_physical_coeff_json(payload, sizeof(payload), &off,
 							 "dac1",
-							 &attenuators[attenuator_index].coeff1) != 0 ||
+							 &snapshot.coeff1) != 0 ||
 		    coo_json_append(payload, sizeof(payload), &off, ",") != 0 ||
 		    append_attenuator_physical_coeff_json(payload, sizeof(payload), &off,
 							 "dac2",
-							 &attenuators[attenuator_index].coeff2) != 0 ||
+							 &snapshot.coeff2) != 0 ||
 		    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Coefficient response too large\"}");
@@ -540,8 +542,10 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 						  "{\"error\":\"Invalid persist flag\"}");
 		}
 
-		physical[0] = attenuators[attenuator_index].coeff1;
-		physical[1] = attenuators[attenuator_index].coeff2;
+		struct attenuator snapshot;
+		attenuator_snapshot(&attenuators[attenuator_index], &snapshot);
+		physical[0] = snapshot.coeff1;
+		physical[1] = snapshot.coeff2;
 		if (parse_attenuator_coeff_object(cmd->payload, "dac1", &physical[0]) != 0 ||
 		    parse_attenuator_coeff_object(cmd->payload, "dac2", &physical[1]) != 0 ||
 		    !attenuator_model_coefficients_valid(physical)) {
