@@ -288,9 +288,10 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
 /**
  * @brief Set raw diode current in mA.
  *
- * A positive current powers and prepares the bank, starts the TEC if needed,
- * writes the current setpoint, and starts emission. A zero current stops
- * emission without exposing a public startup/shutdown primitive.
+ * An already emitting, prepared laser needs only a current write. Startup or
+ * invalidated preparation powers/prepares the bank and starts TEC/emission as
+ * needed. A zero current stops emission. May block on Modbus; failed I/O
+ * invalidates the optical estimate without claiming that emission stopped.
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma);
 

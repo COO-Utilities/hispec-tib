@@ -156,6 +156,10 @@ int maiman_set_client_iface(int iface);
 typedef struct {
 	uint8_t node_id;
 	bool verbose;
+	/* Sticky for this operation's endpoint lifetime; later reads cannot hide
+	 * an earlier transport/exception failure. maiman_init() starts a new operation.
+	 */
+	bool io_failed;
 } maiman_driver_t;
 
 /**

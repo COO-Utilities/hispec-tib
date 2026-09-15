@@ -778,6 +778,12 @@ uint64 laser_current_ontime_s
   are clamped by the TEC temperature range and allowed current adjustment.
 
 
+For an already emitting laser with valid preparation, level changes write only
+required current/TEC setpoints. Startup and invalidated preparation retain the
+full identity/profile/control sequence. Detected driver faults or I/O failures
+invalidate optical estimates; successful temperature reads do not clear that
+condition. See [laser operation and timing](api/maiman_laser.md).
+
 (laser-status)=
 ### `laser/status`
 - **Payload -> detailed engineering status:**

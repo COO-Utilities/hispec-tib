@@ -632,3 +632,134 @@ async def check_message_pane():
     assert task.cancelled() and client.logger is previous
 asyncio.run(check_message_pane())
 print('Protocol filtering, dashboard math/rendering, and notebook lifecycle checks passed')
+
+# Exercise production laser current/stop paths with counted Modbus operations.
+laser_source = r'''
+#include <assert.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+#include <math.h>
+#define K_FOREVER 0
+#define K_MSEC(x) (x)
+#define LASER_COMMAND_LOCK_TIMEOUT_MS 250
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define LOG_INF(...) ((void)0)
+#define LOG_DBG(...) ((void)0)
+#define LOG_WRN(...) ((void)0)
+#define LASER_AUTOFF_NO_DEADLINE 0
+#define HISPEC_LASER_COUNT 1
+enum hispec_laser_id {HISPEC_LASER_1028_Y};
+typedef struct {double max_current_ma; double operating_temp_c;} laserprops_t;
+typedef struct {unsigned node_id; bool io_failed;} maiman_driver_t;
+struct hispec_laser_driver_profile {enum hispec_laser_id id; const char *name; unsigned node_id;};
+struct on_time_runtime {bool active;};
+static int laser_lock;
+static bool bank_power_requested_enabled=true;
+static int writes, starts, prepares, stops;
+static bool fail_write, fail_stop;
+static int64_t laser_autooff_deadline_ms[1];
+static struct on_time_runtime laser_current_runtime[1],laser_tec_runtime[1];
+static const laserprops_t props={250,25};
+static const struct hispec_laser_driver_profile profile={0,"test",1};
+static int profile_for_id(enum hispec_laser_id id, const struct hispec_laser_driver_profile **p)
+{(void)id; *p=&profile;return 0;}
+static void k_mutex_lock(int *p,int t){(void)p;(void)t;}
+static void k_mutex_unlock(int *p){(void)p;}
+static int laser_lock_with_timeout(int t){(void)t;return 0;}
+static const laserprops_t *runtime_props_locked(enum hispec_laser_id id){(void)id;return &props;}
+static bool float_is_valid(double x){return isfinite(x);}
+static void ensure_laser_runtime_settings_locked(void){}
+static void maiman_init(maiman_driver_t *d,unsigned n){d->node_id=n;d->io_failed=false;}
+static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,bool v)
+{(void)v;++prepares;maiman_init(d,p->node_id);return 0;}
+static int verify_driver_locked(const struct hispec_laser_driver_profile *p,maiman_driver_t *d,void *o)
+{(void)p;(void)d;(void)o;return 0;}
+static bool maiman_set_current(maiman_driver_t *d,double x){(void)d;(void)x;++writes;return !fail_write;}
+static bool maiman_start_device(maiman_driver_t *d){(void)d;++starts;return true;}
+static bool maiman_stop_device(maiman_driver_t *d){(void)d;++stops;return !fail_stop;}
+static bool maiman_stop_tec(maiman_driver_t *d){(void)d;return true;}
+static void commit_current_runtime_locked(enum hispec_laser_id id,bool p)
+{(void)p;laser_current_runtime[id].active=false;}
+static void on_time_runtime_update_locked(struct on_time_runtime *r,unsigned n,enum hispec_laser_id id,bool active)
+{(void)n;r[id].active=active;}
+'''
+laser_source += block('lasers.c','struct laser_output_estimate_state {')
+laser_source += 'static struct laser_output_estimate_state laser_output_estimate[1];\n'
+for marker in ['static void output_estimate_set_locked(', 'static void invalidate_output_locked(',
+               'static bool output_ready_locked(']:
+    laser_source += block('lasers.c',marker)
+# The stop function also has a forward declaration; select its definition.
+laser_text=(ROOT/'app/src/lasers.c').read_text()
+stop_marker='static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec)\n{'
+laser_source += block('lasers.c',stop_marker)
+laser_source += block('lasers.c','int hispec_laser_set_current_ma(')
+laser_source += r'''
+int main(void){
+ assert(hispec_laser_set_current_ma(0,100)==0);
+ assert(prepares==1 && writes==1 && starts==1);
+ assert(hispec_laser_set_current_ma(0,150)==0);
+ assert(hispec_laser_set_current_ma(0,50)==0);
+ assert(prepares==1 && writes==3 && starts==1);
+ assert(laser_output_estimate[0].current_ma==50);
+ fail_write=true;
+ assert(hispec_laser_set_current_ma(0,60)==-EIO);
+ assert(!laser_output_estimate[0].valid && !laser_output_estimate[0].prepared);
+ assert(laser_current_runtime[0].active); /* A failed write cannot prove emission stopped. */
+ fail_write=false;
+ assert(hispec_laser_set_current_ma(0,60)==0 && prepares==2 && starts==2);
+ fail_stop=true;
+ assert(hispec_laser_set_current_ma(0,0)==-EIO);
+ assert(laser_current_runtime[0].active && !laser_output_estimate[0].valid);
+ fail_stop=false;
+ assert(hispec_laser_set_current_ma(0,0)==0);
+ assert(!laser_current_runtime[0].active && laser_output_estimate[0].current_ma==0);
+ assert(hispec_laser_set_current_ma(0,260)==-ERANGE);
+ return 0;
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile=Path(tmp)/'laser.c';exe=Path(tmp)/'laser'
+    cfile.write_text(laser_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('laser current/stop regressions passed')
+
+maiman_source=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#define LOG_ERR(...) ((void)0)
+#define LOG_INF(...) ((void)0)
+typedef struct {uint8_t node_id;bool verbose;bool io_failed;} maiman_driver_t;
+static int maiman_client_iface=0,reply;
+static const char *maiman_register_name(uint16_t a){(void)a;return "test";}
+static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
+{(void)i;(void)n;(void)a;(void)c;*v=42;return reply;}
+static int modbus_write_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
+{(void)i;(void)n;(void)a;(void)v;(void)c;return reply;}
+'''
+for marker in ['void maiman_init_verbose(', 'bool maiman_read_u16(', 'bool maiman_write_u16(']:
+    maiman_source += block('maiman.c',marker)
+maiman_source += r'''
+int main(void){
+ maiman_driver_t d;uint16_t v;
+ maiman_init_verbose(&d,1,false);
+ reply=2;assert(!maiman_read_u16(&d,4,&v) && d.io_failed);
+ reply=0;assert(maiman_read_u16(&d,4,&v) && d.io_failed);
+ maiman_init_verbose(&d,1,false);assert(!d.io_failed);
+ reply=-5;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
+ maiman_init_verbose(&d,1,false);
+ reply=3;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
+ return 0;
+}
+'''
+# LOG_* macros consume arguments on target; stubs intentionally do not.
+with tempfile.TemporaryDirectory() as tmp:
+    cfile=Path(tmp)/'maiman.c';exe=Path(tmp)/'maiman'
+    cfile.write_text(maiman_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('Maiman exception and sticky failure regressions passed')

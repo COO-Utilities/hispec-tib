@@ -141,6 +141,7 @@ void maiman_init_verbose(maiman_driver_t *drv, uint8_t node_id, bool verbose)
 
 	drv->node_id = node_id;
 	drv->verbose = verbose;
+	drv->io_failed = false;
 }
 
 /**
@@ -155,6 +156,7 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 		return false;
 	}
 	if (maiman_client_iface < 0) {
+		drv->io_failed = true;
 		LOG_ERR("Modbus read node=%u reg=0x%04x before client init",
 			drv->node_id, address);
 		return false;
@@ -166,7 +168,9 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 
 	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
 				       address, value, 1);
-	if (err < 0) {
+	/* Zephyr returns positive Modbus exception codes as well as negative errno. */
+	if (err != 0) {
+		drv->io_failed = true;
 		LOG_ERR("Modbus read node=%u reg=0x%04x failed: %d",
 			drv->node_id, address, err);
 		return false;
@@ -191,6 +195,7 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 		return false;
 	}
 	if (maiman_client_iface < 0) {
+		drv->io_failed = true;
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x before client init",
 			drv->node_id, address, value);
 		return false;
@@ -202,7 +207,8 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 
 	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
 					address, &value, 1);
-	if (err < 0) {
+	if (err != 0) {
+		drv->io_failed = true;
 		LOG_ERR("Modbus write node=%u reg=0x%04x value=0x%04x failed: %d",
 			drv->node_id, address, value, err);
 		return false;

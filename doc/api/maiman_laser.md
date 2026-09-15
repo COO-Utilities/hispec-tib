@@ -13,3 +13,27 @@ no Modbus I/O. See [settings](../settings.md) for compiled-table defaults.
    :project: hispec_tib
 
 ```
+
+## Emission updates and failures
+
+A laser that is already emitting with valid preparation accepts a current change
+with one Modbus write. Increasing and decreasing current use the same path.
+Startup still checks identity, applies the runtime profile and controls, starts
+TEC operation if needed, and enables emission. Tuned level changes reuse this
+qualification, updating the TEC setpoint only when it changes.
+
+At 115200 baud, the former ordinary path's six reads and sixteen writes require
+about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One
+current write requires about 1.65 + 1.00 = 2.65 ms. These are transport estimates,
+not measured end-to-end latency: controller turnaround, thread scheduling, I/O
+contention, and optical response are additional. A cold bank also has its boot
+wait. No settling delay or polling of optical power is added.
+
+The laser owner keeps preparation and estimate validity. Configuration/power
+changes revoke preparation; detected I/O failures or controller faults invalidate
+the estimate. Maiman operations remember a failure across subsequent successful
+register reads, including positive Modbus exception responses. A later successful
+temperature poll does not requalify a failed current operation. Successful current
+control establishes the estimate again. The runtime emission flag remains set
+after an unsuccessful stop because physical emission is uncertain; a confirmed
+stop or bank GPIO off establishes zero output. No automatic retry is performed.
