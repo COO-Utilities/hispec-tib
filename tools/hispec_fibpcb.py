@@ -3518,7 +3518,8 @@ class ThroughputMonitor:
         """Stop this channel's measurement and the laser used by its autolevel.
 
         Purely passive measurements leave manual laser output unchanged. Manual
-        attenuation disables adjustments but retains autolevel's laser shutdown.
+        laser level or attenuation changes disable adjustments but retain
+        autolevel's laser shutdown.
         Bank power and TECs remain unchanged. Detach collection even if the
         command fails; calling stop again retries the firmware shutdown.
         """
@@ -4124,7 +4125,10 @@ class HispecFibPcb:
     def laser(
         self, name: str, value: float | None = None, *, autooff_s: int | None = None,
     ) -> LaserStatus | CommandOk:
-        """Query laser output, or set its value as a fraction from 0 to 1."""
+        """Query laser output, or set its value as a fraction from 0 to 1.
+
+        Setting a level disables autolevel while throughput streaming continues.
+        """
         _require_choice("name", name, LASER_NAMES)
         if value is None:
             if autooff_s is not None:
@@ -4795,6 +4799,8 @@ class HispecFibPcb:
         With collect=True, return a collector whose stop() stops this channel's
         measurement and any laser used by its autolevel operation. Both channels
         can stream; firmware permits only one autolevel owner.
+        Manual laser level and attenuation changes disable autolevel while this
+        collector and its live plot continue; the measurement deadline is retained.
         """
         if laser != "none":
             _require_choice("laser", laser, LASER_NAMES)

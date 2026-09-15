@@ -398,7 +398,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "invalid autooff_s");
 	}
 
-	throughput_monitor_note_laser_changed(id);
+	throughput_monitor_note_laser_changed(id, false);
 	rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser value failed", rc);
@@ -437,7 +437,7 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
 		return coo_cmd_error(out, cmd, "missing tune_nm");
 	}
-	throughput_monitor_note_laser_changed(id);
+	throughput_monitor_note_laser_changed(id, true);
 	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser tune failed", rc);
@@ -653,7 +653,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "no laser settings fields supplied");
 	}
 
-	throughput_monitor_note_laser_changed(id);
+	throughput_monitor_note_laser_changed(id, true);
 	rc = hispec_laser_update_channel_settings(id, &settings, persist);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);

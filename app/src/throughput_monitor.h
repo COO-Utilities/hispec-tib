@@ -75,9 +75,11 @@ bool throughput_monitor_any_active(void);
  */
 void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
 
-/** Relinquish monitoring when a manual command changes this laser.
- * Does not change laser output; the caller owns the new manual setting.
+/** Disable autolevel before a manual laser level write, retaining streaming and
+ * any owned laser shutdown. The sampling loop refreshes confirmed source state.
+ * Pass stop_monitoring=true for tuning/settings changes to relinquish the run.
+ * Takes the monitor lock; does not perform hardware I/O or change laser output.
  */
-void throughput_monitor_note_laser_changed(enum hispec_laser_id laser);
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring);
 
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */

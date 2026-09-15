@@ -503,8 +503,8 @@ and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without adjusting laser level or attenuation during monitoring.
 Stopping an autolevel operation also stops the laser it was using, even if
-manual attenuation has since disabled automatic adjustments. A purely passive
-measurement leaves manual laser output unchanged when stopped. Continuing the
+manual laser level or attenuation changes have since disabled automatic adjustments.
+A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
 same source with `autolevel:false` retains an existing operation's laser
 shutdown obligation; replacing its source first stops that autolevel laser.
 Bank power, TECs, and unrelated lasers are left unchanged.
@@ -679,9 +679,15 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 - Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
   `off_in_s` stops the monitor after the requested seconds, with zero disabling
   expiry. Bank power/TECs remain under their existing owner.
-- Manual laser commands relinquish the stream without undoing the manual setting.
-  Manual attenuation disables adjustments and updates the monitor source context,
-  retaining the owned laser shutdown obligation. Display controls only affect UI.
+- Manual laser level and attenuation commands disable autolevel while streaming
+  continues with updated source context and the existing laser shutdown obligation.
+  They do not restart the measurement deadline. A zero laser level keeps PD readings
+  flowing, with throughput NaN/null until estimated source power is positive.
+  Laser tuning/settings commands still relinquish the stream. Display controls only affect UI.
+
+For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
+output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
+and `pcb.atten(...)` repeatedly. The same collector and live plot continue running.
 
 
 (laser)=

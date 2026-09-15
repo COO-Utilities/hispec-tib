@@ -280,7 +280,8 @@ flowchart TD
   Future --> Unlock
 
   AttenChange[manual attenuation] --> Disable[disable control; refresh reference; retain owned shutdown]
-  LaserChange[manual laser change] --> Release[relinquish stream without undoing manual setting]
+  LaserChange[manual laser level] --> Disable
+  LaserSettings[laser tuning/settings] --> Release[relinquish stream without undoing manual setting]
 ```
 
 ```mermaid

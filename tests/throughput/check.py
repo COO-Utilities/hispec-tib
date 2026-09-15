@@ -216,6 +216,13 @@ int main(void) {
     memcpy(&reported_tp,throughput_sample_msg.payload+16,sizeof(reported_tp));near(reported_tp,.2);
     pd.sample_ms=150;publish_sample(&state,&pd);
     memcpy(&reported_tp,throughput_sample_msg.payload+16,sizeof(reported_tp));near(reported_tp,.4/6);
+    /* A manually extinguished source still publishes PD data; its ratio is unknown. */
+    state.source.delivered_power_nw=0;state.autolevel=false;
+    publish_sample(&state,&pd);memcpy(&reported_tp,throughput_sample_msg.payload+16,sizeof(reported_tp));assert(isnan(reported_tp));
+    memcpy(&reported_tp,throughput_sample_msg.payload+40,sizeof(reported_tp));near(reported_tp,.4);
+    state.binary=false;publish_sample(&state,&pd);
+    assert(strstr(throughput_sample_msg.payload,"\"tp\":null") && strstr(throughput_sample_msg.payload,"\"autolevel\":false"));
+    state.autolevel=true;
     state.source=state.previous_source;state.input_changed_ms=0;
     for(int i=0;i<4;i++) {
         if(i==1) pd.mv=2000;
@@ -1219,7 +1226,8 @@ static const char *photodiode_channel_names[]={"yj","hk"};
 struct photodiode_status {struct {bool dark_pending;} channel[2];};
 struct app_photodiode_settings {struct {int power;} channel[2];};
 struct mems_route {struct {const char *input_name,*output_name;} key;};
-struct fixture {const char *laser,*channel,*fiber,*input,*output,*format,*stop; bool autolevel;};
+struct fixture {const char *laser,*channel,*fiber,*input,*output,*format,*stop; bool autolevel; double value;};
+struct app_laser_channel_settings {uint32_t autooff_s;};
 struct coo_cmd_request {const struct fixture *payload;};
 struct coo_cmd_response {char error[160];};
 struct coo_json_string_choice {const char *name;int value;};
@@ -1257,6 +1265,11 @@ static int hispec_laser_id_from_name(const char *name,enum hispec_laser_id *out)
 }
 static const char *hispec_laser_name(enum hispec_laser_id id) {return laser_names[id];}
 static int hispec_laser_output_status(enum hispec_laser_id id,bool *on){(void)id;*on=true;return 0;}
+static int command_laser_id_from_payload(const struct coo_cmd_request *cmd,enum hispec_laser_id *id,char *name,size_t n)
+{(void)name;(void)n;return hispec_laser_id_from_name(cmd->payload->laser,id);}
+static int coo_json_extract_double(const struct fixture *p,const char *key,double *out) {(void)key;*out=p->value;return 0;}
+static int hispec_laser_get_channel_settings(enum hispec_laser_id id,struct app_laser_channel_settings *s) {(void)id;s->autooff_s=300;return 0;}
+static int laser_cmd_error_rc(struct coo_cmd_response *out,const struct coo_cmd_request *cmd,const char *msg,int rc) {(void)out;(void)cmd;(void)msg;return rc;}
 '''
 for file,names in {
     'throughput_monitor.h':['throughput_monitor_request','throughput_monitor_status'],
@@ -1271,6 +1284,9 @@ source+=r'''
 static struct throughput_state monitors[2];
 static int monitors_lock,router,applied,stops,fail_route,fail_power,fail_source,fail_stop,fail_atten;
 static bool dark,calibrating,power_off,inhibited[2],omit_return;
+static bool manual_level;
+static int level_error;
+static double written_level;
 static const struct mems_route *last_routes[2];
 static struct attenuator {int unused;} attenuators[6];
 static int64_t k_uptime_get(void) {return 100;}
@@ -1284,7 +1300,10 @@ static int housekeeping_power_set(enum housekeeping_power_output p,bool on) {(vo
 static void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output p,bool on) {inhibited[p]=on;}
 static int hispec_laser_stop_output(enum hispec_laser_id l,bool bank) {(void)l;assert(!bank);stops++;return fail_stop?-EIO:0;}
 static bool attenuator_set_db(struct attenuator *a,double db) {(void)a;(void)db;return !fail_atten;}
-static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l,double p,unsigned off) {(void)l;(void)p;(void)off;return 0;}
+static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l,double p,unsigned off) {
+    (void)off;if(manual_level)assert(!monitors[l<3?0:1].autolevel);
+    if(level_error)return level_error;written_level=p;return 0;
+}
 static int refresh_reference(struct throughput_state *s) {(void)s;return fail_source?-EIO:0;}
 static const struct mems_route *mems_router_get_route(int *r,const char *in,const char *out) {
     (void)r;if(omit_return && strstr(out,"_pd"))return NULL;
@@ -1303,8 +1322,10 @@ static int app_settings_get_route_loss(const char *route,const char *laser,doubl
 '''
 for marker in ['static enum housekeeping_power_output pd_power_output(', 'static int photodiode_channel_for_laser(',
                'static void release_locked(', 'static int stop_locked(',
-               'int throughput_monitor_prepare_start(', 'int throughput_monitor_start(', 'int throughput_monitor_stop(']:
+               'int throughput_monitor_prepare_start(', 'int throughput_monitor_start(', 'int throughput_monitor_stop(',
+               'void throughput_monitor_note_laser_changed(', 'void throughput_monitor_note_attenuator_changed(']:
     source+=block('throughput_monitor.c',marker)
+source+=block('laser_command.c','int laser_set(')
 command=(ROOT/'app/src/throughput_command.c').read_text()
 source+=command[command.index('enum throughput_format {'):]
 source+=r'''
@@ -1351,6 +1372,30 @@ int main(void) {
     reset();passive.channel=NULL;assert(run(passive)!=0 && applied==0);
     passive.channel="yj";passive.input="yj_cal";assert(run(passive)!=0 && applied==0);
     puts("Throughput route, passive capture, exclusion and startup failure checks passed");
+    for(int automatic=0;automatic<2;automatic++) {
+        reset();manual_level=false;f.autolevel=automatic;assert(!run(f));
+        monitors[0].off_in_s=3000;monitors[0].last_sample_ms=123;
+        struct throughput_state expected=monitors[0];expected.autolevel=false;
+        monitors[1]=(struct throughput_state){.phase=TP_RUNNING,.has_laser=true,.laser=HISPEC_LASER_1430_HK,.autolevel=true};
+        struct throughput_state other=monitors[1];
+        struct fixture level={.laser="1028y",.value=-1};
+        struct coo_cmd_request cmd={&level};
+        assert(laser_set(&cmd,&response)!=0 && monitors[0].autolevel==automatic);
+        manual_level=true;level.value=.2;assert(!laser_set(&cmd,&response) && written_level==20);
+        assert(!memcmp(&monitors[0],&expected,sizeof(expected)) && inhibited[0] && stops==0);
+        assert(!memcmp(&monitors[1],&other,sizeof(other)));
+        level_error=-EBUSY;assert(laser_set(&cmd,&response)==-EBUSY);
+        assert(monitors[0].phase==TP_RUNNING && inhibited[0]);level_error=0;
+        level.value=0;assert(!laser_set(&cmd,&response) && written_level==0);
+        level.value=.4;assert(!laser_set(&cmd,&response) && written_level==40);
+        throughput_monitor_note_attenuator_changed(0);
+        assert(!memcmp(&monitors[0],&expected,sizeof(expected)) && inhibited[0]);
+        assert(!throughput_monitor_stop(0,NULL) && stops==automatic && !inhibited[0]);
+    }
+    manual_level=false;reset();assert(!run(f));
+    throughput_monitor_note_laser_changed(HISPEC_LASER_1028_Y,true);
+    assert(monitors[0].phase==TP_INACTIVE && !inhibited[0] && stops==0);
+    puts("Manual laser/attenuation streaming, command ordering, busy and shutdown ownership checks passed");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

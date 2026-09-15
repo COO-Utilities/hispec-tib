@@ -80,7 +80,7 @@ struct throughput_state {
 	/* Route calibration is run configuration; driver state stays with its owner. */
 	double pd_route_tx;
 	double laser_route_tx;
-	/* Autolevel's laser must still stop after manual attenuation disables adjustments. */
+	/* Autolevel's laser must still stop after manual level changes disable adjustments. */
 	bool stop_laser;
 };
 
@@ -685,12 +685,19 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 	k_mutex_unlock(&monitors_lock);
 }
 
-void throughput_monitor_note_laser_changed(enum hispec_laser_id laser)
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		if (monitors[i].has_laser && monitors[i].laser == laser) {
-			release_locked((enum photodiode_channel)i);
+			if (stop_monitoring) {
+				release_locked((enum photodiode_channel)i);
+			} else {
+				/* Disable control before the manual write. The sampling loop
+				 * picks up confirmed setpoints after I/O; retain run ownership.
+				 */
+				monitors[i].autolevel = false;
+			}
 		}
 	}
 	k_mutex_unlock(&monitors_lock);
