@@ -62,8 +62,7 @@ flowchart TD
   PDValid -- no --> ENODATA[return ENODATA]
   PDValid -- yes --> StopTP[stop throughput monitor]
   StopTP --> Routes[apply laser-output and fiber-PD routes]
-  Routes --> ConfigWindow[set internal configurable window to dwell_ms]
-  ConfigWindow --> MaxAtten[set both FVOAs to max DAC drive]
+  Routes --> MaxAtten[set both FVOAs to max DAC drive]
   MaxAtten --> LaserOff[stop laser output]
   LaserOff --> Init[reset calibration state]
   Init --> First[start dac1 acquisition]
@@ -71,9 +70,9 @@ flowchart TD
 
 Automatic calibration does not power the photodiode or wait for a private
 photodiode settle phase. The selected photodiode must already be on and already
-producing valid sampler data. The command sets the photodiode internal
-configurable-window duration to the calibration dwell and every subsequent
-point waits that dwell after changing an attenuator.
+producing valid sampler data. After each input change the calibration resets
+the PD configurable window. The PD owner rounds `dwell_ms` to whole samples;
+calibration waits for that many post-reset conversion attempts.
 
 Dark handling is separate from attenuator calibration. The calibration reads
 the configured dark-subtracted photodiode configurable window; it does not
@@ -89,16 +88,20 @@ sequenceDiagram
   participant Rec as Retained records
 
   Cal->>Att: set swept and companion DAC voltages
-  Cal->>Cal: wait dwell_ms
-  PD-->>Cal: current configurable window
+  Cal->>PD: reset configurable window for dwell_ms
+  PD->>PD: exclude in-flight old conversion; fill rounded sample count
+  PD-->>Cal: completed current window
   Cal->>Cal: classify saturation and SNR
   Cal->>Rec: append point/probe/bridge record
   Cal-->>Cal: schedule next point or fit
 ```
 
-The DAC write is followed by a dwell equal to the configured photodiode
-configurable window. After the dwell, calibration reads the current
-configurable window, not the last closed window. The window supplies:
+After the DAC write, the PD resets its current configurable window and excludes
+any conversion begun before reset. Calibration waits for the accepted sample
+count and a result newer than that reset, including failed conversion attempts
+in the count. There is no guessed conversion allowance or separate settling
+window. Calibration reads the current window, not the last closed window.
+The window supplies:
 
 - raw mean millivolts,
 - dark-subtracted mean millivolts,
@@ -229,7 +232,7 @@ stateDiagram-v2
   [*] --> Inactive
   Inactive --> Running: atten/calibrate start
   Running --> WaitWindow: DAC pair set
-  WaitWindow --> WaitWindow: dwell not elapsed
+  WaitWindow --> WaitWindow: post-reset sample count not yet complete
   WaitWindow --> Running: measurement handled, next DAC pair set
   WaitWindow --> Complete: both physical fits complete
   WaitWindow --> Error: sequencing or apply error
@@ -239,7 +242,7 @@ stateDiagram-v2
 ```
 
 There is no separate photodiode-settle, DAC-settle, or photodiode-average
-phase. The only active wait is the configured dwell for the current internal
+phase. The only active wait is completion of the configured sample count in the current internal
 photodiode configurable window.
 
 ## Records, Telemetry, and Fit

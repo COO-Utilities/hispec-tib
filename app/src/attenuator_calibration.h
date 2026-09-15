@@ -101,7 +101,6 @@ int attenuator_calibration_write_record_chunk(void *payload,
 					      size_t *written);
 
 /** Advance automatic calibration. Called only by the throughput monitor thread. */
-void attenuator_calibration_tick(const struct photodiode_status *pd_status,
-				 int64_t now_ms);
+void attenuator_calibration_tick(const struct photodiode_status *pd_status);
 
 #endif /* HISPEC_ATTENUATOR_CALIBRATION_H */

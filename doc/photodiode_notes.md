@@ -9,20 +9,31 @@ dark capture and attenuator calibration; neither feeds throughput or autolevel.
 The ADS1115 remains at **250 SPS**, selected by devicetree, with sequential YJ/HK
 conversions. Selecting **64 SPS** requires no algorithm or window changes:
 two conversions take about 31.3 ms before I2C and scheduling overhead, compared
-with about 8.1 ms at 250 SPS. The calibration dwell rounds to the sampler's
-50 ms cadence and adds the selected converter's rounded-up conversion allowance
-(5 ms at 250 SPS, 16 ms at 64 SPS), rather than assuming a 4 ms conversion.
+with about 8.1 ms at 250 SPS. Calibration asks the PD owner to round its
+window to whole samples, resets it after each input change, and waits for that
+many conversion attempts. A conversion begun before reset is excluded. There
+is no converter-time pad or additional settling window.
 
-The ADC owner latches a compact source estimate before conversion and copies it
-with the reading and timestamps into its existing latest-state structure. One
-binary semaphore wakes the throughput thread after the two-channel round.
-There is no frame queue or throughput history array. A delayed consumer gets
-the latest acquisition once; intermediate acquisitions may be missed, never
-replayed. `t_ms` is the UTC conversion midpoint estimate, including driver-call
-latency. Monotonic acquisition start time handles freshness and control ordering.
-Use acquisition gaps and existing ADC timing logs (`worst_loop_us`,
-`min_margin_us`, missed intervals, overruns) to assess runtime margin on hardware.
-The semaphore timeout also services expiry and calibration if ADC work stalls.
+The ADC owner stores detector readings, uncertainty, one monotonic acquisition
+start (`sample_ms`), and an estimated UTC midpoint (`t_ms`). It owns no laser,
+attenuator, wavelength, or expected-source context. The nominal PD power uses
+validated channel calibration; the measurement layer applies a known source's
+wavelength correction and return-path loss afterward.
+
+One binary semaphore wakes throughput after the two-channel round. A delayed
+consumer gets the latest acquisition once; intermediate acquisitions may be
+missed, never replayed. Use acquisition gaps and existing ADC timing logs
+(`worst_loop_us`, `min_margin_us`, missed intervals, overruns) to assess hardware
+margin. The timeout still services expiry and calibration if ADC work stalls.
+
+Throughput reads the owners' confirmed state without hardware I/O. It retains
+only the previous and current source contexts and the time a change completed
+(or an external change was observed). A conversion begun at/before that time
+uses the previous context. This prevents a delayed old reading from receiving
+the next input's denominator; it does not deconvolve a physical transition or
+reconstruct an arbitrary series of rapid manual changes. The PCB and detector
+filters may make a transition reading predominantly reflect the previous input.
+No reading is blanked because an input changed.
 
 Throughput publishes the completed reading before selecting the next adjustment.
 Normal and startup control use that fresh reading: below 20% useful net input,
@@ -47,18 +58,18 @@ is applied. Source or external optical motion during a conversion remains visibl
 
 | Term | Implemented treatment | Interpretation / limit |
 |---|---|---|
-| ADC quantization | `q = 0.0625/sqrt(12)` mV | Nonzero single-reading floor. |
+| ADC quantization | `q = 0.0625/sqrt(12)` mV | Uniform rounding over one code width has variance LSB²/12, hence RMS LSB/√12. This quantization floor is not the total ADC noise. |
 | Measured dark noise | `sigma_read = max(q, dark.rms_mv)` | Empirical reading noise already includes ADC noise; do not add it twice. |
 | Measured dark offset | `sigma_dark = sigma_read/sqrt(N_dark)` | `N_dark = duration_ms/50 - failed_samples`, using nearest sample rounding. Assumes independent samples. |
 | Forced dark offset | `sigma_dark = supplied rms_mv`; `sigma_read = q` | Supplied offset uncertainty is not an empirical detector-noise measurement. |
 | One net reading | `sigma_net = hypot(sigma_read, sigma_dark)` | Offset error is shared between records, not independent noise to average away. |
 | Diagnostic window | `hypot(max(window.rms_mv,sigma_read)/sqrt(N_good), sigma_dark)` | Includes optical variation in window RMS; the dark floor does not shrink with that window. |
-| PD power | `net_mV * 1e6 / (effective_V_per_A * responsivity_A_per_W)` nW, with wavelength coefficient | Preserve negative/zero net values; error uses the same scale. Effective gain already contains the divider. |
+| PD power | `net_mV * 1e6 / (effective_V_per_A * responsivity_A_per_W)` nW, with wavelength coefficient | Clip negative power to zero, retain signed net voltage, and propagate NaN voltage. Error uses the same scale. Validated effective gain already contains the divider. |
 | Laser power | Current-based calibration with `hypot(P*fractional_noise, constant_noise_mw)` | Defaults 3% plus a floor of 1% of nominal maximum power; this is an estimate, not an optical reading. |
 | Attenuator | `sigma_T = T*ln(10)/10*hypot(rms1_db,rms2_db)` | Autocalibration stores each fit's residual RMS; assume independent device residuals. First-order symmetric error is approximate for large dB scatter. |
 | Delivered power | `L*T*laser_route_tx`; quadrature of laser and attenuator errors | Source calibration terms remain correlated across stream records. |
 | Route correction | Divide detected power by `pd_route_tx`; multiply source by `laser_route_tx` | Routes are latched at start. No route-loss calibration uncertainties are stored, so none are invented. |
-| Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero/negative PD power; source must be finite and positive. |
+| Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero PD power; source must be finite and positive. |
 | Overrange | Raw ADC input ≥2000 mV sets `overrange`; retain numerical PD/TP value as nominal lower bound | PD and throughput errors become NaN/null, S/N suppressed. Source calibration error is still reported. The ADC rail remains 2047.9375 mV. |
 | Missing ADC conversion | Discard; retain previous latest state without advancing its timestamp | No duplicate stream record or control move. Diagnostic windows count failures; zero-good-sample averages fail. Warnings are rate-limited. |
 | Laser owner fault | Stop monitoring and attempt owned laser shutdown | No retries added. Laser estimation waits only for a short state copy, never for Modbus. Pending I/O leaves the last confirmed state readable. A failed stop retains unknown emission state and the shutdown obligation for explicit retry. |

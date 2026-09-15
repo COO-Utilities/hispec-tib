@@ -193,7 +193,7 @@ struct atten_cal_state_data {
 	uint8_t bridge_before_index;
 	bool bridge_before_index_valid;
 	/* Others */
-	int64_t wait_until_ms;
+	int64_t window_started_ms;
 	int last_error;
 	uint8_t reference_record_index[ATTENUATOR_PHYSICAL_COUNT];
 	bool reference_record_index_valid[ATTENUATOR_PHYSICAL_COUNT];
@@ -579,7 +579,7 @@ static void reset_locked(enum atten_cal_state state)
 	cal.phase = ATTEN_CAL_PHASE_NONE;
 	cal.other_mv = ATTENUATOR_DRIVE_MAX_MV;
 	cal.laser_level_index = 0;
-	cal.dwell_ms = ATTEN_CAL_DEFAULT_DWELL_MS + photodiode_conversion_time_ms();
+	cal.dwell_ms = ATTEN_CAL_DEFAULT_DWELL_MS;
 	cal.laser_percent = initial_laser_levels_pct[0];
 }
 
@@ -605,7 +605,7 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->physical_index = cal.physical_index;
 	status->point_index = cal.point_index;
 	status->point_count = ATTENUATOR_CAL_RECORD_COUNT;
-	status->dwell_ms = cal.dwell_ms - photodiode_conversion_time_ms();
+	status->dwell_ms = cal.dwell_ms;
 	status->complete_pct = complete_percent_locked();
 	status->current_mv = cal.sweep_mv;
 	status->other_mv = cal.other_mv;
@@ -723,8 +723,17 @@ static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 		default:
 			break;
 	}
+	/* The PD owner rounds duration and excludes conversions already in flight.
+	 * Wait for its actual sample count, not dwell plus a guessed ADC allowance.
+	 */
+	int duration = photodiode_set_configurable_window_duration(cal.channel, cal.dwell_ms);
+	if (duration < 0) {
+		auto_error_locked(duration);
+		return;
+	}
+	cal.dwell_ms = (uint32_t)duration;
+	cal.window_started_ms = k_uptime_get();
 	atten_cal_emit_set(event);
-	cal.wait_until_ms = k_uptime_get() + cal.dwell_ms;
 	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;  // From here execution resumes at auto_tick_locked()
 }
 
@@ -1843,8 +1852,8 @@ static void auto_fit_locked(void)
 	atten_cal_emit_simple("complete");
 }
 
-/** Advance automatic calibration after a scheduled photodiode window dwell. */
-static void auto_tick_locked(const struct photodiode_status *pd_status, int64_t now_ms)
+/** Advance calibration when the PD has filled its post-change window. */
+static void auto_tick_locked(const struct photodiode_status *pd_status)
 {
 	const struct photodiode_window_result *window;
 	struct atten_cal_measurement measurement = {0};
@@ -1855,15 +1864,16 @@ static void auto_tick_locked(const struct photodiode_status *pd_status, int64_t 
 
 	switch (cal.phase) {
 		case ATTEN_CAL_PHASE_WAIT_WINDOW:
-			if (now_ms < cal.wait_until_ms) {
-				return;
-			}
 			if (pd_status == NULL) {
 				auto_error_locked(-EINVAL);
 				return;
 			}
 
 			window = &pd_status->channel[cal.channel].configurable_window;
+			if (window->end_ms <= cal.window_started_ms ||
+			    window->sample_length < cal.dwell_ms / PHOTODIODE_SAMPLE_INTERVAL_MS) {
+				return;
+			}
 			build_measurement_from_pd_window(window, &measurement);
 
 			switch (cal.measure_kind) {
@@ -1944,14 +1954,6 @@ int attenuator_calibration_start_auto(
 		           ? ATTEN_CAL_DEFAULT_DWELL_MS
 		           : MIN(request->dwell_ms, ATTEN_CAL_MAX_DWELL_MS);
 
-	/* Match the PD owner's nearest-sample rounding before adding conversion time. */
-	dwell_ms = ((dwell_ms + PHOTODIODE_SAMPLE_INTERVAL_MS / 2U) /
-		PHOTODIODE_SAMPLE_INTERVAL_MS) * PHOTODIODE_SAMPLE_INTERVAL_MS;
-	rc = photodiode_set_configurable_window_duration(request->channel, dwell_ms);
-	if (rc != 0) {
-		return rc;
-	}
-
 	if (!set_physical_pair(request->attenuator_index, 0U, 0, ATTENUATOR_DRIVE_MAX_MV)) {
 		return -EIO;
 	}
@@ -1967,7 +1969,7 @@ int attenuator_calibration_start_auto(
 	cal.phase = ATTEN_CAL_PHASE_NONE;
 	cal.attenuator_index = request->attenuator_index;
 	cal.physical_index = 0U;
-	cal.dwell_ms = dwell_ms + photodiode_conversion_time_ms();
+	cal.dwell_ms = dwell_ms;
 	cal.persistent = request->persist;
 	cal.laser = request->laser;
 	cal.channel = request->channel;
@@ -2211,10 +2213,9 @@ int attenuator_calibration_write_record_chunk(void *payload,
 }
 
 /** Public tick hook called by the throughput monitor thread. */
-void attenuator_calibration_tick(const struct photodiode_status *pd_status,
-				 int64_t now_ms)
+void attenuator_calibration_tick(const struct photodiode_status *pd_status)
 {
 	k_mutex_lock(&cal_lock, K_FOREVER);
-	auto_tick_locked(pd_status, now_ms);
+	auto_tick_locked(pd_status);
 	k_mutex_unlock(&cal_lock);
 }

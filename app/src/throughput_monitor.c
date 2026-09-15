@@ -42,6 +42,21 @@ struct laser_pd_channel {
 	enum photodiode_channel channel;
 };
 
+/* Nominal input context belongs to the measurement, not the ADC. Keep only
+ * the previous and current contexts around the last confirmed input change.
+ * This associates delayed readings; it does not model physical filter settling.
+ */
+struct throughput_source_reference {
+	double delivered_power_nw;
+	double delivered_power_err_nw;
+	double laser_output_power_uw;
+	double laser_output_power_err_uw;
+	double laser_current_ma;
+	double atten_tx;
+	double atten_db;
+	double wavelength_nm;
+};
+
 struct throughput_state {
 	bool active;
 	bool autolevel;
@@ -56,6 +71,8 @@ struct throughput_state {
 	uint32_t off_in_s;
 	double max_flux_ph_s;
 	int64_t input_changed_ms;
+	struct throughput_source_reference source;
+	struct throughput_source_reference previous_source;
 	int64_t last_sample_ms;
 	int64_t next_gap_warning_ms;
 	/* Route calibration is run configuration; driver state stays with its owner. */
@@ -128,7 +145,6 @@ static void release_locked(enum photodiode_channel channel)
 	if (monitors[channel].active) {
 		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
-	photodiode_set_source_reference(channel, (struct photodiode_source_reference){0});
 	memset(&monitors[channel], 0, sizeof(monitors[channel]));
 }
 
@@ -140,7 +156,6 @@ static int stop_locked(enum photodiode_channel channel)
 	if (state->active) {
 		housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
 	}
-	photodiode_set_source_reference(channel, (struct photodiode_source_reference){0});
 	state->active = false;
 	state->autolevel = false;
 	if (state->stop_laser) {
@@ -189,13 +204,13 @@ static void put_f64(uint8_t *payload, size_t payload_len, size_t *offset, double
 	put_bytes(payload, payload_len, offset, &value, sizeof(value));
 }
 
-/* Refresh only after source changes. The owners supply confirmed setpoints and
- * calibration; the ADC latches this compact context before each conversion.
- * Can block on DAC I/O, but never holds the PD mutex while doing hardware I/O.
+/* Read confirmed owner state without hardware I/O. Retain the prior context
+ * only when values change. One adjustment per new reading needs two contexts,
+ * not a sample history; arbitrary rapid manual changes are not reconstructed.
  */
 static int refresh_reference(struct throughput_state *state)
 {
-	struct photodiode_source_reference ref = {
+	struct throughput_source_reference ref = {
 		.delivered_power_nw = NAN, .delivered_power_err_nw = NAN,
 		.laser_output_power_uw = NAN, .laser_output_power_err_uw = NAN,
 		.laser_current_ma = NAN, .atten_tx = NAN, .atten_db = NAN, .wavelength_nm = NAN,
@@ -222,7 +237,11 @@ static int refresh_reference(struct throughput_state *state)
 			ref.wavelength_nm = laser.wavelength_nm;
 		}
 	}
-	photodiode_set_source_reference(state->channel, ref);
+	if (rc == 0 && memcmp(&ref, &state->source, sizeof(ref)) != 0) {
+		state->previous_source = state->source;
+		state->source = ref;
+		state->input_changed_ms = k_uptime_get();
+	}
 	return rc;
 }
 
@@ -234,7 +253,7 @@ static int refresh_reference(struct throughput_state *state)
 static int autolevel_adjust(struct throughput_state *state,
 			   const struct photodiode_channel_status *pd)
 {
-	const struct photodiode_source_reference *source = &pd->source;
+	const struct throughput_source_reference *source = &state->source;
 	struct attenuator *atten = &attenuators[state->attenuator_index];
 	bool high = pd->mv >= PHOTODIODE_ADC_USABLE_MV ||
 		pd->net_mv > PHOTODIODE_ADC_USABLE_MV * TP_HIGH_FRACTION;
@@ -289,21 +308,27 @@ static int autolevel_adjust(struct throughput_state *state,
 }
 
 /* Serialize a single acquisition, never a window mean. The same power ratio
- * drives both encodings. Its derivative form remains valid at zero/negative
- * net signal; relative PD error would divide by zero there.
+ * drives both encodings. Its derivative form remains valid at zero power;
+ * relative PD error would divide by zero there.
  */
 static void publish_sample(const struct throughput_state *state,
 			   const struct photodiode_channel_status *pd)
 {
-	const struct photodiode_source_reference *source = &pd->source;
+	/* Prefer the pre-change context for a conversion begun during the move.
+	 * An actual optical transition within a conversion remains visible; neither
+	 * context claims to deconvolve detector or PCB filtering.
+	 */
+	const struct throughput_source_reference *source = pd->sample_ms <= state->input_changed_ms ?
+		&state->previous_source : &state->source;
 	struct coo_cmd_response *msg = &throughput_sample_msg;
 	const char *topic_suffix = state->channel == PHOTODIODE_CHANNEL_YJ ? "yj_tput" : "hk_tput";
 	char channel_fiber[8] = {0};
 	size_t off = 0U;
 	bool overrange = pd->mv >= PHOTODIODE_ADC_USABLE_MV;
 	uint8_t flags = (overrange ? TP_FLAG_OVERRANGE : 0U) | (state->autolevel ? TP_FLAG_AUTOLEVEL : 0U);
-	double pd_power = pd->power_uw * 1000.0 / state->pd_route_tx;
-	double pd_error = overrange ? (double)NAN : pd->power_err_uw * 1000.0 / state->pd_route_tx;
+	double response = state->has_laser ? photodiode_wavelength_coefficient(source->wavelength_nm) : 1.0;
+	double pd_power = pd->power_uw * response * 1000.0 / state->pd_route_tx;
+	double pd_error = overrange ? (double)NAN : pd->power_err_uw * response * 1000.0 / state->pd_route_tx;
 	double tp = NAN, tp_pd_err = NAN, tp_err = NAN;
 	uint64_t pd_ontime = housekeeping_power_on_time_s(pd_power_output(state->channel));
 	uint64_t laser_ontime = state->has_laser ? hispec_laser_current_on_time_s(state->laser) : 0U;
@@ -384,7 +409,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 		(void)photodiode_wait_for_sample(K_MSEC(PHOTODIODE_SAMPLE_INTERVAL_MS));
 		int64_t now = k_uptime_get();
 		photodiode_get_status(&throughput_pd_status);
-		attenuator_calibration_tick(&throughput_pd_status, now);
+		attenuator_calibration_tick(&throughput_pd_status);
 		for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			struct throughput_state *state = &monitors[i];
 			const struct photodiode_channel_status *pd = &throughput_pd_status.channel[i];
@@ -403,45 +428,27 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 				(void)stop_locked(i);
 				goto next;
 			}
-			if (state->has_laser) {
-				struct hispec_laser_flux_estimate laser;
-				rc = laser_estimate_flux(state->laser, &laser);
-				if ((rc != 0 && rc != -EBUSY) ||
-				    (rc == 0 && state->autolevel && laser.current_ma <= 0.0)) {
-					LOG_WRN("Throughput laser estimate invalid; stopping %s", hispec_laser_name(state->laser));
-					(void)stop_locked(i);
-					goto next;
-				}
-				/* An owner-side change (e.g. auto-off) can occur without a manual
-				 * command callback. Refresh FUTURE acquisition context, never
-				 * replace the reference already attached to this reading.
-				 */
-				if (rc == 0 && (laser.current_ma != pd->source.laser_current_ma ||
-				    laser.wavelength_nm != pd->source.wavelength_nm)) {
-					if (refresh_reference(state) != 0) {
-						(void)stop_locked(i);
-						goto next;
-					}
-					state->input_changed_ms = k_uptime_get();
-				}
-			}
-			if (pd->acquired_ms <= state->started_ms || pd->acquired_ms <= state->last_sample_ms) {
+			rc = refresh_reference(state);
+			if (rc != 0 || (state->has_laser && state->autolevel && state->source.laser_current_ma <= 0.0)) {
+				LOG_WRN("Throughput source owner fault/off; stopping %s", hispec_laser_name(state->laser));
+				(void)stop_locked(i);
 				goto next;
 			}
-			if (state->last_sample_ms > 0 && pd->acquired_ms - state->last_sample_ms >
+			if (pd->sample_ms <= state->started_ms || pd->sample_ms <= state->last_sample_ms) {
+				goto next;
+			}
+			if (state->last_sample_ms > 0 && pd->sample_ms - state->last_sample_ms >
 			    PHOTODIODE_SAMPLE_INTERVAL_MS * 3 / 2 && now >= state->next_gap_warning_ms) {
 				LOG_WRN("Throughput %s acquisition gap: %lld ms", photodiode_channel_names[i],
-					(long long)(pd->acquired_ms - state->last_sample_ms));
+					(long long)(pd->sample_ms - state->last_sample_ms));
 				state->next_gap_warning_ms = now + 10000;
 			}
-			state->last_sample_ms = pd->acquired_ms;
+			state->last_sample_ms = pd->sample_ms;
 			publish_sample(state, pd);
-			if (rc != -EBUSY && state->autolevel && pd->acquired_ms > state->input_changed_ms) {
+			if (state->autolevel && pd->sample_ms > state->input_changed_ms) {
 				rc = autolevel_adjust(state, pd);
 				if (rc > 0) {
 					rc = refresh_reference(state);
-					/* Also exclude acquisitions begun before the new reference was installed. */
-					state->input_changed_ms = k_uptime_get();
 				}
 				if (rc < 0) {
 					LOG_WRN("Throughput input change failed (%d); stopping", rc);
@@ -570,7 +577,6 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	/* Continuing the same source with adjustments disabled retains its shutdown. */
 	next.stop_laser = request->autolevel || monitors[channel].stop_laser;
 	monitors[channel] = next;
-	photodiode_set_source_reference(channel, (struct photodiode_source_reference){0});
 
 	if (request->has_laser && request->autolevel) {
 		monitors[channel].level_percent = 100.0;
@@ -586,14 +592,14 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		}
 	}
 
-	monitors[channel].input_changed_ms = k_uptime_get();
 	rc = refresh_reference(&monitors[channel]);
 	if (rc != 0) {
 		(void)stop_locked(channel);
 		k_mutex_unlock(&monitors_lock);
 		return rc;
 	}
-	/* The first reported acquisition must begin after startup/reference installation. */
+	monitors[channel].previous_source = monitors[channel].source;
+	/* The first reported acquisition must begin after startup/context installation. */
 	monitors[channel].started_ms = k_uptime_get();
 	if (status != NULL) {
 		status->active = true;
@@ -645,7 +651,7 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-		if (monitors[i].active && monitors[i].attenuator_index == attenuator_index) {
+		if (monitors[i].active && monitors[i].has_laser && monitors[i].attenuator_index == attenuator_index) {
 			monitors[i].autolevel = false;
 			if (refresh_reference(&monitors[i]) != 0) {
 				(void)stop_locked((enum photodiode_channel)i);

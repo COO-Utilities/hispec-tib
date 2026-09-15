@@ -538,8 +538,9 @@ before attenuation. No actual laser power readback exists.
 
 The stream is nominally **20 Hz per channel**: one fresh ADC conversion per
 50 ms, without overlapping or reused samples. It does not use the fixed 500 ms
-PD window. The sampler attaches the source reference captured before conversion;
-`t_ms` is its estimated UTC conversion midpoint. A delayed consumer can skip
+PD window. The monitor selects its previous/current source context using the
+monotonic acquisition start and last input-change time; the PD module owns no
+source context. `t_ms` is the estimated UTC conversion midpoint. A delayed consumer can skip
 intermediate readings; a failed ADC conversion produces no record or adjustment.
 Timestamps expose gaps. The latest diagnostic PD state remains available and
 its windows count failed conversions. ADC warnings are limited to one per
@@ -652,7 +653,7 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   `off_in_s` stops the monitor after the requested seconds, with zero disabling
   expiry. Bank power/TECs remain under their existing owner.
 - Manual laser commands relinquish the stream without undoing the manual setting.
-  Manual attenuation disables adjustments and refreshes future source references,
+  Manual attenuation disables adjustments and updates the monitor source context,
   retaining the owned laser shutdown obligation. Display controls only affect UI.
 
 
@@ -1271,9 +1272,10 @@ ownership are documented in `attenuator_calibration.md`.
   - TIB automatic calibration requires the selected photodiode to already be
     powered and producing valid sampler data. It stops laser emission, sets
     both physical attenuators to the maximum firmware DAC-drive voltage, sets
-    the photodiode internal configurable-window duration to `dwell_ms`, and
-    then waits that dwell after each attenuator change. It does not measure a
-    private calibration dark. Each point uses the photodiode configurable
+    the photodiode internal configurable-window duration to `dwell_ms`, rounded
+    by the PD owner to whole samples. After each attenuator change it resets that
+    window and waits for its actual sample count; conversions begun before reset
+    are excluded. No extra conversion-time pad or private calibration dark is used. Each point uses the photodiode configurable
     window's configured dark-subtracted `mean_net_mv`; updating dark remains a
     separate `pd/dark/<channel>` operation.
   - Automatic calibration is SNR driven, not photodiode-mV-target driven. A

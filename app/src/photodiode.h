@@ -78,21 +78,6 @@ struct photodiode_window_result {
 	int16_t max_raw;
 };
 
-/* Confirmed source estimate supplied by throughput after hardware changes.
- * Latched before each ADC conversion; this is measurement context, not a second
- * laser/attenuator owner. Powers include no measurement of actual optical output.
- */
-struct photodiode_source_reference {
-	double delivered_power_nw;
-	double delivered_power_err_nw;
-	double laser_output_power_uw;
-	double laser_output_power_err_uw;
-	double laser_current_ma;
-	double atten_tx;
-	double atten_db;
-	double wavelength_nm;
-};
-
 struct photodiode_channel_status {
 	int16_t raw;
 	double mv;
@@ -105,9 +90,8 @@ struct photodiode_channel_status {
 	struct photodiode_window_result last_configurable_window;
 	struct photodiode_window_result fixed_window;
 	/* Monotonic acquisition start identifies freshness; UTC midpoint aligns scans. */
-	int64_t acquired_ms;
+	int64_t sample_ms;
 	uint64_t t_ms;
-	struct photodiode_source_reference source;
 	struct photodiode_window_result last_fixed_window;
 	struct photodiode_window_result dark_window;
 	struct photodiode_window_result lowest_dark_window;
@@ -127,28 +111,26 @@ void photodiode_thread(void *p1, void *p2, void *p3);
 /** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
 
-/** Replace the source reference for future conversions. Short runtime lock only;
- * no hardware I/O. The completed reading retains its own acquisition reference.
- */
-void photodiode_set_source_reference(enum photodiode_channel channel,
-	struct photodiode_source_reference reference);
-
 /** Wait for ADC completion (binary wakeup only, no queued readings). */
 int photodiode_wait_for_sample(k_timeout_t timeout);
-
-/** Conversion allowance derived from the selected ADS1115 rate, in ms. */
-uint32_t photodiode_conversion_time_ms(void);
-
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.
  *
- * Uses the app-owned photodiode responsivity and transimpedance settings. This
- * helper performs no I/O, preserves signed net power, and returns NaN for
- * invalid response settings.
+ * Requires non-null, validated channel settings: positive responsivity (A/W)
+ * and effective transimpedance (V/A, including the ADC divider). Converts to
+ * incident optical power at the PD, before return-path correction. Negative
+ * net millivolts clip to zero; NaN propagates. Overrange voltage still converts
+ * numerically; the caller interprets its saturation flag. Performs no I/O.
  */
 double photodiode_power_uw_from_mv(double net_mv,
 				   const struct app_pd_channel_settings *settings);
+
+/** Nearest nominal-laser power correction factor for a positive finite
+ * wavelength in nm. Pure table lookup; currently all coefficients are unity.
+ * A source-independent PD acquisition does not select a wavelength.
+ */
+double photodiode_wavelength_coefficient(double wavelength_nm);
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to wavelength-corrected power.
@@ -156,7 +138,9 @@ double photodiode_power_uw_from_mv(double net_mv,
  * Uses the nearest nominal laser wavelength's photodiode correction coefficient
  * plus app-owned response settings. The current coefficient table is fixed in
  * firmware, performs no I/O, and uses unity coefficients until lab values are
- * installed.
+ * installed. Requires a positive finite wavelength in nm and the same validated
+ * settings as photodiode_power_uw_from_mv; returns uW, clips negatives to zero,
+ * and propagates NaN input voltage.
  */
 double photodiode_power_uw_from_mv_at_wavelength(
 	double net_mv,
@@ -166,9 +150,11 @@ double photodiode_power_uw_from_mv_at_wavelength(
 /**
  * @brief Convert dark-subtracted ADC millivolts to photon flux.
  *
- * Uses app-owned response settings plus the caller-provided wavelength and
- * nearest nominal-laser photodiode correction. This helper performs no I/O and
- * preserves signed net flux and returns NaN for invalid wavelength/response settings.
+ * Requires the same validated settings as the power helper and a positive finite
+ * wavelength in nm supplied by the caller. Returns photons/s using P*lambda/(h*c)
+ * with nearest nominal-laser response correction. Negative net voltage clips to
+ * zero; NaN propagates. No I/O or source-ownership assumptions. A broadband source
+ * requires a caller-chosen effective wavelength to interpret this conversion.
  */
 double photodiode_photon_flux_from_mv(double net_mv,
 				      double wavelength_nm,
@@ -183,7 +169,9 @@ bool photodiode_settings_valid(const struct app_pd_channel_settings *settings);
  * Zero requests the shortest supported one-sample window. The implementation
  * rounds to the nearest whole sample and clamps to the maximum dark/window
  * duration. Changing duration closes the current configurable window into
- * last_configurable_window and starts a fresh current window.
+ * last_configurable_window and starts a fresh current window, even when the
+ * duration is unchanged. Conversions begun before reset are excluded.
+ * Returns the accepted duration in ms (positive), or a negative errno.
  */
 int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
 						uint32_t duration_ms);

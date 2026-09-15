@@ -242,34 +242,35 @@ flowchart TD
   Start --> Route[apply route; enable PD; latch route losses]
   Route --> Auto{autolevel}
   Auto -- yes --> Seed[maximum attenuation then laser 100 percent]
-  Seed --> Ref[read owner estimates; update future ADC reference]
+  Seed --> Ref[copy confirmed owner estimates into monitor context]
   Auto -- no --> Ref
   Ref --> Ready[return start status]
   Shutdown --> Stopped{laser shutdown succeeded}
   Stopped -- yes --> Clear[release ownership]
   Stopped -- no --> Retry[retain shutdown obligation; return error]
 
-  Timer[50 ms PD timer] --> Latch[latch source reference before each channel conversion]
-  Latch --> ADC[ADC read]
+  Timer[50 ms PD timer] --> ADC[record acquisition time; read ADC]
   ADC --> Valid{read succeeded}
-  Valid -- yes --> State[copy reading, timestamps, source into latest PD state]
+  Valid -- yes --> State[copy detector reading, errors and timestamps into latest PD state]
   Valid -- no --> Fail[count failed window sample; preserve last acquisition timestamp]
   State --> Wake[binary semaphore after both channels]
   Fail --> Wake
   Wake --> Thread[throughput thread copies PD state; ticks calibration]
   Thread --> Lock[lock active monitor]
-  Lock --> Fault{expired, PD off, or laser owner fault}
+  Lock --> Owners[copy source owners without hardware I/O]
+  Owners --> Fault{expired, PD off, or source owner fault}
   Fault -- yes --> Shutdown
   Fault -- no --> Fresh{new acquisition after start}
   Fresh -- no --> Unlock[unlock and wait; 50 ms timeout services expiry]
-  Fresh -- yes --> Publish[derive power ratio and errors from this acquisition; enqueue best effort]
+  Fresh -- yes --> Context[select prior or current monitor context by acquisition start]
+  Context --> Publish[derive power ratio and errors; enqueue best effort]
   Publish --> Control{autolevel, owner available, acquisition after preceding move}
   Control -- no --> Unlock
   Control -- yes --> Adjust[raw bright wins; fresh net outside band changes attenuator or laser]
   Adjust --> Changed{move result}
   Changed -- failure --> Shutdown
   Changed -- unchanged --> Unlock
-  Changed -- success --> Future[refresh reference for future acquisitions]
+  Changed -- success --> Future[retain prior context; install current context and change time]
   Future --> Unlock
 
   AttenChange[manual attenuation] --> Disable[disable control; refresh reference; retain owned shutdown]
@@ -289,7 +290,7 @@ flowchart TD
   Install --> Save[save coefficient record including RMS when requested]
   Install --> Estimate[pair transmission and sigma_T from hypot of physical RMS values]
   Estimate --> Source[combine with laser flux uncertainty]
-  Source --> ADCRef[acquisition reference; calibration error shared across records]
+  Source --> ADCRef[monitor source context; calibration error shared across records]
 ```
 
 Notebook collection and display:

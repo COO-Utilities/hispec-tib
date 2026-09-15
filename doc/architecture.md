@@ -34,7 +34,7 @@ Runtime ownership is:
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
-  noise warnings, acquisition-time source context, and diagnostic windows.
+  noise warnings and diagnostic windows.
 - `photodiode_command.c`: command-schema validation for `pd` and `pd/settings`.
 - `throughput_command.c`: command-schema validation for `measure_throughput`.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
@@ -249,13 +249,14 @@ Attenuator estimates use confirmed DAC voltages; explicit `attenuator_get`
 queries still read both registers. Settings/status copies own their mutable
 properties rather than borrowing pointers into another thread's state.
 
-Throughput input alignment: laser and attenuator modules own their operating
-state; `throughput_monitor.c` captures a compact source estimate after changes.
-`photodiode.c` latches it before each conversion, stores it with the latest
-reading, and wakes throughput with one binary semaphore. No throughput ring or
-frame queue exists. Short mutex copies protect existing state. At 20 Hz, each
-fresh conversion is published once before any autolevel move; the fixed 500 ms
-window serves diagnostics only. Faulted source owners stop monitoring. See
+Throughput input alignment: laser and attenuator modules own confirmed device
+state. `throughput_monitor.c` retains previous/current source contexts and the
+last change time, selecting the nominal reference at acquisition start.
+`photodiode.c` owns only detector acquisition and its timestamps, waking throughput
+with one binary semaphore after each channel round. There is no throughput ring
+or frame queue. At 20 Hz, each fresh conversion is published once before any
+autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
+owners stop monitoring. Physical transition readings remain visible. See
 [the timing and error audit](photodiode_notes.md).
 
 At measurement start, route transmissions resolve from explicit settings first,
