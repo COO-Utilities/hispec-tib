@@ -222,6 +222,15 @@ which slow resources it can touch, and known implementation-specific caveats.
   auto-off handled by laser-owned delayable work.
 - Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
+### Laser zero level and explicit stop
+
+`laser name=1028y value=0` writes zero current and retains driver readiness and the
+existing auto-off deadline. `laser name=1028y stop=true` shuts down the diode and
+applies `disable_tec_at_autooff`. Stop accepts zero/omitted value and no `autooff_s`.
+Identity/configuration are reused across ordinary stops until bank power cycles.
+Compact status reads dynamic measurements and uses cached identity/setpoints;
+`laser/status` explicitly reads engineering registers.
+
 ### `laser/tune`, `laser/status`, `laser/settings`
 
 - Owner: `laser_command.c` handlers with hardware work in `lasers.c` and

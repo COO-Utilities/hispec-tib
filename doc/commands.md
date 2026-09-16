@@ -733,8 +733,15 @@ and `pcb.atten(...)` repeatedly. The same collector and live plot continue runni
 - **Notes:** `value` is a fraction from 0 to 1 of the nominal current range above threshold current. Setting a positive value powers
   the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
   request when `tune_nm` is nonzero, sets the laser current, and restarts the
-  auto-off timer. Setting value 0 stops emission and writes driver current to 0;
-  it does not clear the stored `laser/tune` request. Laser output current is
+  auto-off timer. Setting value 0 writes zero current without STOP, retains driver/TEC
+  readiness, and preserves an existing auto-off deadline unless `autooff_s` is supplied.
+  It does not power up/start an idle driver or clear the stored `laser/tune` request.
+  Use `{"name":"1028y","stop":true}` for explicit shutdown: zero current, STOP,
+  and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, `value`
+  must be omitted or zero and `autooff_s` must be omitted. Laser auto-off and
+  measurement-owned expiry use this shutdown path. Zero-current time does not
+  count toward emission time. Identity and applied configuration remain valid
+  until bank power cycles or an explicit configuration/reset operation changes them. Laser output current is
   never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
   `ready` reports whether the driver is prepared to operate without a blocking
@@ -773,7 +780,7 @@ and `pcb.atten(...)` repeatedly. The same collector and live plot continue runni
   temperature or laser current. Future positive `laser` value commands apply
   the stored offset relative to `laser/settings.wavelength_nm`. Reissuing a
   positive `laser` value after changing value does not require retuning because
-  firmware reapplies the stored offset. Setting `laser` value 0 stops emission
+  firmware reapplies the stored offset. Setting `laser` value 0 zeros current without issuing STOP
   without clearing the stored tune request. Tuning is best-effort: large shifts
   are clamped by the TEC temperature range and allowed current adjustment.
 
@@ -1863,6 +1870,8 @@ pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss=0.5)
 pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss="3.0103 dB")
 pcb.laser("1028y")
 pcb.laser("1028y", value=0.25)
+pcb.laser("1028y", value=0)    # Temporary zero current; retains readiness/deadline.
+pcb.laser("1028y", stop=True) # Explicit shutdown, including configured TEC policy.
 pcb.laser_tune("1028y", tune_nm=0)
 pcb.laser_settings("1028y", autooff_s=300)
 pcb.laser_bankpower("auto")

@@ -4199,12 +4199,20 @@ class HispecFibPcb:
 
     def laser(
         self, name: str, value: float | None = None, *, autooff_s: int | None = None,
+        stop: bool = False,
     ) -> LaserStatus | CommandOk:
-        """Query laser output, or set its value as a fraction from 0 to 1.
+        """Query/set laser level; zero current retains readiness and the off deadline.
 
+        ``stop=True`` shuts down the diode and applies the configured TEC-off policy.
         Setting a level disables autolevel while throughput streaming continues.
         """
         _require_choice("name", name, LASER_NAMES)
+        if not isinstance(stop, bool):
+            raise HispecFibError("stop must be bool")
+        if stop:
+            if (value is not None and _require_float("value", value, 0.0, 1.0) != 0.0) or autooff_s is not None:
+                raise HispecFibError("stop requires zero/omitted value and no autooff_s")
+            return self._request_ok("laser", {"name": name, "stop": True})
         if value is None:
             if autooff_s is not None:
                 raise HispecFibError("value is required when setting laser output")

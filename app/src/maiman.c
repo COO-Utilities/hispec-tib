@@ -75,6 +75,11 @@ static const MaimanRegister register_table[] = {
 	{"D_COEFFICIENT", REG_TEC_D_COEFFICIENT},
 };
 
+/* Bench transaction trace; disable by changing this one local switch. */
+#define MAIMAN_TRACE true
+#define MAIMAN_BUSY_MS 350U
+static uint32_t transaction_sequence;
+static int64_t last_transaction_end_ms;
 static int maiman_client_iface = -ENODEV;
 
 int maiman_set_client_iface(int iface)
@@ -164,13 +169,21 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 			drv->node_id, address);
 		return false;
 	}
-	if (drv->verbose) {
-		LOG_INF("Modbus read node=%u reg=%s(0x%04x)",
-			drv->node_id, maiman_register_name(address), address);
-	}
+	uint32_t sequence = ++transaction_sequence;
+	int64_t started_ms = k_uptime_get();
+	int64_t gap_ms = last_transaction_end_ms ? started_ms - last_transaction_end_ms : -1;
 
 	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
 				       address, value, 1);
+	int64_t completed_ms = k_uptime_get();
+	last_transaction_end_ms = completed_ms;
+	if (MAIMAN_TRACE) {
+		LOG_INF("MB seq=%u node=%u op=read reg=%s(0x%04x) value=0x%04x start_ms=%lld elapsed_ms=%lld gap_ms=%lld rc=%d",
+			sequence, drv->node_id, maiman_register_name(address), address, err == 0 ? *value : 0U,
+			(long long)started_ms, (long long)(completed_ms - started_ms),
+			(long long)gap_ms, err);
+	}
+
 	/* Zephyr returns positive Modbus exception codes as well as negative errno. */
 	if (err != 0) {
 		drv->io_failed = true;
@@ -179,11 +192,7 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 			drv->node_id, address, err);
 		return false;
 	}
-	if (drv->verbose) {
-		LOG_INF("Modbus read node=%u reg=%s(0x%04x) value=0x%04x",
-			drv->node_id, maiman_register_name(address), address, *value);
-	}
-	drv->last_response_ms = k_uptime_get();
+	drv->last_response_ms = completed_ms;
 	return true;
 }
 
@@ -206,13 +215,36 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 			drv->node_id, address, value);
 		return false;
 	}
-	if (drv->verbose) {
-		LOG_INF("Modbus write node=%u reg=%s(0x%04x) value=0x%04x",
-			drv->node_id, maiman_register_name(address), address, value);
-	}
+	uint32_t sequence = ++transaction_sequence;
+	int64_t started_ms = k_uptime_get();
+	int64_t gap_ms = last_transaction_end_ms ? started_ms - last_transaction_end_ms : -1;
 
 	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
 					address, &value, 1);
+	int64_t completed_ms = k_uptime_get();
+	last_transaction_end_ms = completed_ms;
+	if (MAIMAN_TRACE) {
+		LOG_INF("MB seq=%u node=%u op=write reg=%s(0x%04x) value=0x%04x start_ms=%lld elapsed_ms=%lld gap_ms=%lld rc=%d",
+			sequence, drv->node_id, maiman_register_name(address), address, value,
+			(long long)started_ms, (long long)(completed_ms - started_ms),
+			(long long)gap_ms, err);
+	}
+	/* SF8025 manual p22: START/STOP can save parameters and make the
+	 * module unresponsive for about 300 ms. The owner holds its I/O mutex
+	 * throughout this yielding wait, including when an ACK was lost.
+	 * A timeout does not prove the command was rejected. SAVE/RESET use
+	 * the same guard here so raw writes cannot bypass the device timing.
+	 */
+	bool busy = (address == REG_STATE_OF_DEVICE_COMMAND &&
+		(value == MODBUS_START_COMMAND_VALUE || value == MODBUS_STOP_COMMAND_VALUE)) ||
+		address == REG_SAVE_PARAMETERS || address == REG_RESET_PARAMETERS;
+	if (busy) {
+		if (MAIMAN_TRACE) LOG_INF("MB quiet seq=%u node=%u reg=0x%04x start_ms=%lld wait_ms=%u",
+			sequence, drv->node_id, address, (long long)completed_ms, MAIMAN_BUSY_MS);
+		k_sleep(K_MSEC(MAIMAN_BUSY_MS));
+		if (MAIMAN_TRACE) LOG_INF("MB quiet seq=%u release_ms=%lld", sequence, (long long)k_uptime_get());
+	}
+
 	if (err != 0) {
 		drv->io_failed = true;
 		drv->last_error = err;
@@ -220,11 +252,7 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 			drv->node_id, address, value, err);
 		return false;
 	}
-	if (drv->verbose) {
-		LOG_INF("Modbus write node=%u reg=%s(0x%04x) ok",
-			drv->node_id, maiman_register_name(address), address);
-	}
-	drv->last_response_ms = k_uptime_get();
+	drv->last_response_ms = completed_ms;
 	return true;
 }
 
@@ -788,27 +816,10 @@ bool maiman_deny_external_ntc_interlock(maiman_driver_t *drv)
 
 bool maiman_save_parameters(maiman_driver_t *drv)
 {
-	if (!maiman_write_u16(drv, REG_SAVE_PARAMETERS, MODBUS_SAVE_PARAMETERS_VALUE)) {
-		return false;
-	}
-
-	/* The SF8025 manual says parameter save makes the device unresponsive for
-	 * about 300 ms. This Zephyr sleep yields the calling thread during that
-	 * EEPROM commit window before any follow-up Modbus transaction.
-	 */
-	k_sleep(K_MSEC(300));
-	return true;
+	return maiman_write_u16(drv, REG_SAVE_PARAMETERS, MODBUS_SAVE_PARAMETERS_VALUE);
 }
 
 bool maiman_reset_parameters(maiman_driver_t *drv)
 {
-	if (!maiman_write_u16(drv, REG_RESET_PARAMETERS, MODBUS_RESET_PARAMETERS_VALUE)) {
-		return false;
-	}
-
-	/* Resetting EEPROM-backed parameters has the same device-side commit delay
-	 * as saving according to the SF8025 manual's digital-control notes.
-	 */
-	k_sleep(K_MSEC(300));
-	return true;
+	return maiman_write_u16(drv, REG_RESET_PARAMETERS, MODBUS_RESET_PARAMETERS_VALUE);
 }

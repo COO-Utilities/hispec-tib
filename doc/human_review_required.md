@@ -8,6 +8,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate zero-current versus `laser stop=true`, auto-off at zero, and
+  retained configuration across STOP. Capture the temporary Maiman/RTU timing logs
+  to verify 350 ms busy guards and assess the unchanged 75 ms ACK deadline; see
+  `doc/api/maiman_laser.md`. Confirm no log drops before interpreting absent frames.
 - [ ] Bench-validate owner communication health and calibration repair: one-second
   checks, five-second sustained-loss shutdown/recovery, relay auto-off during
   restart, and six-term fits with no clipped reference/bridge anchors. Confirm

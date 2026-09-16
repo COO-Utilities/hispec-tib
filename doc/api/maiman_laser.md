@@ -20,24 +20,68 @@ See [settings](../settings.md) for compiled-table defaults.
 
 ## Emission updates and failures
 
-A laser that is already emitting with valid preparation accepts a current change
-with one Modbus write. Increasing and decreasing current use the same path.
-Startup still checks identity, applies the runtime profile and controls, starts
-TEC operation if needed, and enables emission. Tuned level changes reuse this
-qualification, updating the TEC setpoint only when it changes.
+A started laser accepts current changes, including zero, with one Modbus write.
+Zero current pauses emission-time accounting but preserves started state, tuning,
+and the existing auto-off deadline. Explicit `laser stop=true`, auto-off, and
+measurement-owned expiry use zero-current plus STOP and their existing TEC policy.
+
+Identity is verified once per driver per bank-power interval. Configuration is
+applied once and retained across STOP and communication errors; explicit settings
+changes/reset and bank power cycling invalidate affected configuration. Operational
+faults remain separate from known identity/configuration. An unsuccessful current
+or STOP write is still reported; acknowledged zero current is retained even if STOP
+fails. A confirmed repeated stop avoids redundant writes.
 
 At 115200 baud, the former ordinary path's six reads and sixteen writes require
 about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One
 current write requires about 1.65 + 1.00 = 2.65 ms. These are transport estimates,
 not measured end-to-end latency: controller turnaround, thread scheduling, I/O
 contention, and optical response are additional. A cold bank also has its boot
-wait. No settling delay or polling of optical power is added.
+wait. Ordinary current changes add no settling delay or optical polling. LD START/STOP and
+explicit EEPROM SAVE/RESET wait 350 ms after the transaction attempt, including
+a failed acknowledgement, before allowing another transaction. This implements the
+approximately 300 ms busy interval described on page 22 of the repository SF8025
+manual, with 50 ms margin. The response timeout remains 75 ms.
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed
-controller faults revoke preparation. Diagnostic failures warn and invalidate
-only that observation; five seconds without a response while emitting faults
-operation. Successful communication restores availability, but measurements
+controller faults invalidate operational readiness without erasing confirmed configuration. Diagnostic failures warn and invalidate
+only that observation; five seconds without a response while started (including
+zero current) faults operation. Successful communication restores availability, but measurements
 remain stopped and a control fault requires a successful control operation.
 Failed shutdown preserves its emission/shutdown obligation. See
 [communication flow](../photodiode_notes.md#communication-and-power-lifetime).
+
+## Temporary bench timing trace
+
+The bench build enables compact `MB` transaction records in `maiman.c` and temporary
+receive probes in the workspace Zephyr checkout (`subsys/modbus/modbus_serial.c`
+and `modbus_core.c`). Keep that checkout with the application when rebuilding this
+bench image. Disable transaction/quiet records with `MAIMAN_TRACE=false`; disable
+receive probes with `HISPEC_RTU_TRACE=false` in both Zephyr files. Logging remains
+deferred. No raw packet or per-byte logging is required.
+
+Capture the serial console continuously from before the first command through at
+least one second after the final response. Use firmware monotonic timestamps for
+analysis; terminal wall-clock timestamps include buffering. Also retain any dropped
+log-message warnings: missing records cannot establish that no frame arrived.
+
+| Record | Interpretation |
+|---|---|
+| `MB seq=... node=... op=... reg=... value=... start_ms=... elapsed_ms=... gap_ms=... rc=...` | One read/write, including failures. Elapsed time ends when the Modbus API returns, before the quiet wait. Gap is since the preceding API completion; first gap is -1. |
+| `MB quiet ... start_ms=... wait_ms=350` / `release_ms=...` | Busy operation and enforced release time. The next request must start at or after release. |
+| `MB frame boundary_ms=... bytes=...` | RTU framing timer completed and queued RX processing. Includes framing delay; not the exact last-byte arrival time. |
+| `MB rx processed_ms=... rc=... node=... fc=... len=... write_reg=...` | RX worker processed a frame. Failed frames omit decoded identity; read responses have no register address, reported as -1. |
+| `Laser ... prepare configuration_needed=...` / `applying configuration` | Separates ordinary restart from actual configuration writes. |
+
+For a timeout, compare `start_ms + elapsed_ms` with frame-boundary and processing
+records. A boundary before timeout but processing afterward points to RX scheduling;
+a boundary after timeout shows late frame completion. No boundary means no completed
+frame was observed, provided logging was not dropped. RTU has no transaction ID:
+associate responses using ordering, node/function and echoed write register, and do
+not assign ambiguous late frames to a request with certainty. Transaction `seq` is
+host-side firmware bookkeeping, not an on-wire identifier.
+
+Successful response timestamps remain the actual API completion time, never the end
+of the quiet interval. Neither elapsed time nor the guard turns a timeout into a
+successful acknowledgement. Use this capture to decide whether 75 ms needs revision.

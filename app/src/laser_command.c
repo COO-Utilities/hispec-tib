@@ -361,7 +361,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
 
-	rc = hispec_laser_get_status(id, &status);
+	rc = hispec_laser_get_status(id, false, &status);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser status failed", rc);
 	}
@@ -378,31 +378,38 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	char name[16] = {0};
 	double value = 0.0;
 	uint32_t autooff_s;
-	int parse_rc;
+	bool stop = false, autooff_present = false;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
-	parse_rc = coo_json_extract_double(cmd->payload, "value", &value);
-	if (parse_rc != COO_JSON_EXTRACT_OK || !(value >= 0.0 && value <= 1.0)) {
-		return coo_cmd_error(out, cmd, "value must be 0..1");
+	if (coo_json_extract_optional_bool(cmd->payload, "stop", &stop, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid stop");
+	}
+	int parsed = coo_json_extract_double(cmd->payload, "value", &value);
+	if ((parsed != COO_JSON_EXTRACT_OK && !(stop && parsed == COO_JSON_EXTRACT_MISSING)) ||
+	    !(value >= 0.0 && value <= 1.0) || (stop && value != 0.0)) {
+		return coo_cmd_error(out, cmd, "value must be 0..1; stop requires zero or omitted value");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
-	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
-	}
+	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
 	autooff_s = settings.autooff_s;
-	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s",
-					  &autooff_s, NULL) != 0) {
-		return coo_cmd_error(out, cmd, "invalid autooff_s");
+	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
+	    (stop && autooff_present)) {
+		return coo_cmd_error(out, cmd, "invalid autooff_s; not allowed with stop");
 	}
 
 	throughput_monitor_note_laser_changed(id, false);
-	rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
-	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser value failed", rc);
+	if (stop) {
+		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff);
+	} else if (value == 0.0 && !autooff_present) {
+		/* A momentary zero level preserves the existing shutdown deadline. */
+		rc = hispec_laser_set_current_ma(id, 0.0);
+	} else {
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
 	}
+	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser operation failed", rc);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -685,7 +692,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
 
-	rc = hispec_laser_get_status(id, &s);
+	rc = hispec_laser_get_status(id, true, &s);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
 	}

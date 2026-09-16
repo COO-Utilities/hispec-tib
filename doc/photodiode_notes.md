@@ -269,7 +269,7 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
 Throughput fault stops also use the console/MQTT warning path, including when
 the measurement detects an expired response deadline before background work runs.
 
-The existing laser auto-off work probes the checked TEC-state register of emitting
+The existing laser auto-off work probes the checked TEC-state register of started (including zero-current)
 channels once per second, including channels whose shutdown failed. It does not
 depend on heater mode, setpoint changes, or the 20 Hz measurement loop. Heater
 control retains its ten-second cadence. Housekeeping's existing ambient work
@@ -320,3 +320,13 @@ The GPIO 1-Wire implementation still masks interrupts during timing-critical
 operations. Removing throughput-rate relay polling reduces exposure but does not
 prove UART corruption is eliminated. Confirm sustained-loss shutdown, runtime
 margin, and the unexplained acquisition gap using hardware captures.
+
+### Laser zero level versus shutdown
+
+A manual `laser value=0` is a zero-current update; it preserves driver readiness and
+any existing auto-off deadline. `laser stop=true` is explicit shutdown. Captures and
+notebook cleanup must use explicit stop when they intend shutdown. Laser auto-off
+and measurement-owned expiry retain shutdown ownership at zero current. Temporary
+zero levels keep PD collection alive, with undefined throughput at zero source power.
+The [Maiman interface notes](api/maiman_laser.md#temporary-bench-timing-trace) describe
+transaction, quiet-interval, and RX timing logs for the next bench capture.

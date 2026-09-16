@@ -218,7 +218,11 @@ non-blocking and best-effort. Runtime warnings use one shared scratch response;
 if that buffer or the outbound queue is busy, the warning is logged locally and
 dropped rather than blocking a timing-sensitive caller.
 
-Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
+Maiman register calls are blocking Modbus RTU transactions. The Maiman write path
+holds the owner's I/O serialization through a yielding 350 ms quiet interval after
+LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
+Laser identity and applied configuration are retained for the bank-power interval;
+configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a
 fault-clear power-cycle interval. Background laser-bank temperature control,
 laser auto-off, and ambient-temperature refresh run on the app blocking

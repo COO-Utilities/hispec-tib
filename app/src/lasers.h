@@ -275,7 +275,8 @@ int hispec_laser_save_driver_settings(enum hispec_laser_id id);
 int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 
 /** @brief Read a best-effort snapshot of one laser channel. */
-int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status *out);
+/* Compact status uses confirmed configuration; engineering reads full hardware registers. */
+int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hispec_laser_status *out);
 
 /** @brief Stop one channel's emission and write current 0 when possible. */
 int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec);
@@ -286,9 +287,10 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
 /**
  * @brief Set raw diode current in mA.
  *
- * An already emitting, prepared laser needs only a current write. Startup or
- * invalidated preparation powers/prepares the bank and starts TEC/emission as
- * needed. A zero current stops emission. May block on Modbus; failed I/O
+ * An already started, prepared laser needs only a current write, including
+ * after a zero level. Preparation is retained until bank power changes or
+ * configuration is invalidated. Zero writes current without STOP and preserves
+ * the auto-off deadline. May block on Modbus; failed I/O
  * invalidates the optical estimate without claiming that emission stopped.
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma);

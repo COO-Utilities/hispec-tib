@@ -231,8 +231,8 @@ static const struct coo_cmd_spec command_specs[] = {
                  "TIB-only; always selects MM/SM return; passive launch unchanged if input/output omitted",
                  COO_CMD_HELP_EFFECT),
     CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_value,
-                        true, "name,value,autooff_s",
-                        "laser name=<laser> [value=<0..1> autooff_s=<s>]",
+                        true, "name,value,autooff_s,stop",
+                        "laser name=<laser> [value=<0..1> autooff_s=<s> stop=<bool>]",
                         "name required; value makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only laser output status/set command",
@@ -408,12 +408,14 @@ static enum coo_cmd_msg_type classify_laser_value(const struct coo_cmd_request *
                                                   void *user_data)
 {
     double fval;
+    bool stop;
 
     ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           coo_json_extract_double(cmd->payload, "value", &fval) != COO_JSON_EXTRACT_MISSING ?
+           (coo_json_extract_double(cmd->payload, "value", &fval) != COO_JSON_EXTRACT_MISSING ||
+            coo_json_extract_bool(cmd->payload, "stop", &stop) != COO_JSON_EXTRACT_MISSING) ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -1180,7 +1182,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
             struct hispec_laser_status laser = {0};
-            int rc = hispec_laser_get_status((enum hispec_laser_id)i, &laser);
+            int rc = hispec_laser_get_status((enum hispec_laser_id)i, false, &laser);
 
             if (coo_json_append(payload, sizeof(payload), &off,
                                 "%s\"%s\":{\"power_mw\":",
