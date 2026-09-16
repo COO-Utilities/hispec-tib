@@ -649,10 +649,12 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   `delivered_power_nw` is estimated laser output times dynamic attenuator and
   outbound route transmissions. Laser output in µW is before both losses.
 - `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
-  includes laser calibration and attenuator-fit residual uncertainty. These
-  calibration errors are correlated between records and must not be reduced
-  by treating them as independent sample noise. The error audit documents the
-  assumptions and omitted calibration terms.
+  includes laser calibration, attenuator-fit residual uncertainty, and modeled
+  FVOA electrical variation. Calibration errors are correlated between records
+  and must not be reduced by treating them as independent sample noise. The
+  combined error is not temporal RMS; electrical independence between FVOAs
+  does not imply independence over time. The error audit documents the assumptions
+  and omitted calibration terms.
 - `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
   Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
   a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
@@ -1162,12 +1164,17 @@ command wait budget, this command returns `{"error":"busy"}`.
     with its coefficients and saves both when persistence is requested. Rejected
     fits replace neither. No extra sweep or offline analysis is required.
   - The pair transmission estimate uses
-    `sigma_db = hypot(dac1.rms_db, dac2.rms_db)` and
-    `sigma_T = T * ln(10)/10 * sigma_db`. This describes model uncertainty,
-    not op-amp voltage noise. Contributions from the two physical devices are
-    independent; repeated samples of the same calibration are correlated.
-    Throughput includes this and laser uncertainty in `tp_err`;
-    `tp_pd_err` remains PD-only. The nominal transmission model is unchanged.
+    `sigma_db = hypot(hypot(dac1.rms_db, dac2.rms_db), hypot(electrical1, electrical2))`
+    and `sigma_T = T * ln(10)/10 * sigma_db`. For each device,
+    `electrical = abs(d_db_d_voltage_mv) * ATTENUATOR_FVOA_NOISE_RMS_MV / gain`.
+    This source constant defaults to 10 mV RMS after the amplifier, applied to
+    every FVOA; zero disables the electrical term. The full calibrated curve's
+    local slope predicts variation along the curve; stored `rms_db` estimates
+    its accuracy. The contributions and the two devices are assumed independent.
+    Calibration errors remain correlated across samples, and the combined
+    uncertainty is not temporal RMS. No bandwidth or averaging correction is
+    inferred from electrical RMS. Throughput includes this and laser uncertainty
+    in `tp_err`; `tp_pd_err` remains PD-only. Nominal transmission is unchanged.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
 

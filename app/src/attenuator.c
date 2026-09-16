@@ -1024,6 +1024,8 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
                                       struct attenuator_transmission_estimate *out)
 {
     struct attenuator snapshot;
+    struct atten_model_eval eval1, eval2;
+    double sigma_db1, sigma_db2;
 
     if (drv == NULL || out == NULL) {
         return false;
@@ -1035,15 +1037,28 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
     /* Derive dB from confirmed voltages and the same coefficient snapshot;
      * boot may have installed calibration since the last register readback.
      */
-    out->attenuation_db1 = attenuator_model_voltage_to_db(&snapshot.coeff1, snapshot.dac_cfg1.voltage);
-    out->attenuation_db2 = attenuator_model_voltage_to_db(&snapshot.coeff2, snapshot.dac_cfg2.voltage);
+    if (!atten_model_eval(&snapshot.coeff1, snapshot.dac_cfg1.voltage, &eval1) ||
+        !atten_model_eval(&snapshot.coeff2, snapshot.dac_cfg2.voltage, &eval2) ||
+        !atten_model_db_sigma(&eval1, snapshot.coeff1.rms_db,
+                             ATTENUATOR_FVOA_NOISE_RMS_MV / snapshot.coeff1.gain,
+                             0.0, &sigma_db1) ||
+        !atten_model_db_sigma(&eval2, snapshot.coeff2.rms_db,
+                             ATTENUATOR_FVOA_NOISE_RMS_MV / snapshot.coeff2.gain,
+                             0.0, &sigma_db2)) {
+        return false;
+    }
+    out->attenuation_db1 = eval1.db;
+    out->attenuation_db2 = eval2.db;
     out->attenuation_db = out->attenuation_db1 + out->attenuation_db2;
     out->linear = pow(10.0, -out->attenuation_db / 10.0);
     /* Fit residuals are model uncertainty, not independent ADC noise: these
      * contributions remain correlated across repeated measurements.
+     * Electrical noise moves along each calibrated curve. Treat it as
+     * independent of the model residuals and of the other FVOA's electrical
+     * noise. The combined uncertainty is not a temporal RMS prediction.
      */
     out->linear_err = out->linear * (log(10.0) / 10.0) *
-                     hypot(snapshot.coeff1.rms_db, snapshot.coeff2.rms_db);
+                     hypot(sigma_db1, sigma_db2);
     out->voltage1 = snapshot.dac_cfg1.voltage;
     out->voltage2 = snapshot.dac_cfg2.voltage;
     return true;

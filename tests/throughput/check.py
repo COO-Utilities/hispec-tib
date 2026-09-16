@@ -412,8 +412,8 @@ for i in range(0,len(sample_wire_lines),2):
 binary=bytes.fromhex(sample_wire_lines[1]); sample=host.decode_throughput_payload(binary)
 print('Python laser settings and JSON/binary telemetry checks passed')
 
-# Physical-model uncertainty and accepted-fit installation. Stub only hardware
-# and flash writes; exercise the production replacement/rollback code.
+# Model-uncertainty and accepted-fit installation with a fixed zero-sensitivity
+# model. Exercise replacement/rollback here; the real model is checked below.
 source = r'''
 #include <assert.h>
 #include <errno.h>
@@ -437,7 +437,7 @@ for line in (ROOT/'app/src/attenuator.h').read_text().splitlines():
     if line.startswith(('#define ATTENUATOR_', '#define FVOA_DEFAULT_')):
         source += line+'\n'
 for file, names in {
-    'attenuator.h': ['attenuator_model_coeffs','attenuator_dac_cfg','attenuator_status',
+    'attenuator.h': ['attenuator_model_coeffs','atten_model_eval','attenuator_dac_cfg','attenuator_status',
                     'attenuator_transmission_estimate','attenuator'],
     'app_settings.h': ['app_attenuator_physical_settings','app_attenuator_channel_settings'],
     'attenuator_calibration.h': ['attenuator_calibration_fit_metrics'],
@@ -466,6 +466,8 @@ static double attenuator_model_floor_linear(const struct attenuator_model_coeffs
 { return pow(10,-c->max_atten_db/10); }
 static double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *c,float mv)
 { (void)c; return mv; }
+static bool atten_model_eval(const struct attenuator_model_coeffs *c,float mv,struct atten_model_eval *out)
+{ (void)c; *out=(struct atten_model_eval){.db=mv,.tx=pow(10,-mv/10)}; return true; }
 /* JSON extraction stubs select absent/explicit RMS; the parser's replacement
  * semantics and validation, not the shared JSON library, are under test here. */
 static int rms_status=COO_JSON_EXTRACT_MISSING;
@@ -484,7 +486,7 @@ static int coo_json_extract_double(const char *j,const char *key,double *out) {
 static int coo_json_extract_double_array(const char *j,const char *key,double *out,size_t n,size_t *len)
 { (void)j;(void)key;(void)out;(void)n;(void)len;return COO_JSON_EXTRACT_MISSING; }
 '''
-for marker in ['void attenuator_snapshot(', 'static void attenuator_commit(', 'static bool attenuator_model_coeff_valid(', 'bool attenuator_model_coefficients_valid(',
+for marker in ['bool atten_model_db_sigma(', 'void attenuator_snapshot(', 'static void attenuator_commit(', 'static bool attenuator_model_coeff_valid(', 'bool attenuator_model_coefficients_valid(',
                'bool attenuator_estimate_transmission(', 'int attenuator_apply_coefficients_preserve_db(']:
     source += block('attenuator.c',marker)
 source += block('app_settings.c','static bool attenuator_channel_valid(')
@@ -580,6 +582,137 @@ without_rms = {key:value for key,value in coeff.items() if key != 'rms_db'}
 assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',without_rms)
 assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',(2500,0.002,55))
 print('Python attenuator RMS checks passed')
+
+# Real FVOA evaluator/analytic derivatives and estimator versus the Python
+# finite difference. Include the scope example, distinct gains, and plateaus.
+import io
+import numpy as np
+
+noise_coeff = host.AttenuatorCoeff(
+    host.AttenuatorPhysicalCoeff(3144.95, .00303104, 48.36, 1.533,
+                                tuple(float(np.float32(x)) for x in (.12,-.03,.01,0,0,0)), .75),
+    host.AttenuatorPhysicalCoeff(3456.12, .00247498, 61.95, 1.8, (0.,)*6, 1.25),
+)
+means, scope_rms = (3824., 3942.), (7.2, 9.3)
+noise = host.attenuator_noise(noise_coeff, mean_fvoa_mv=means, noise_rms_mv=scope_rms)
+assert list(noise.component) == ['dac1', 'dac2', 'pair']
+np.testing.assert_allclose(noise.tx[2], noise.tx[0]*noise.tx[1], rtol=1e-14)
+for i,c in enumerate((noise_coeff.dac1,noise_coeff.dac2)):
+    # Reproduce the original notebook calculation with the actual scope inputs.
+    a_minus,a0,a_plus = host._atten_db_from_coeff(
+        host._atten_coeff_tuple('scope',c), (means[i]+np.array([-.1,0,.1]))/c.gain)
+    np.testing.assert_allclose(noise.electrical_rms_db[i], abs(a_plus-a_minus)/.2*scope_rms[i])
+    np.testing.assert_allclose(noise.tx[i], 10**(-a0/10))
+np.testing.assert_allclose(noise.model_sigma_db, [.75,1.25,np.hypot(.75,1.25)])
+np.testing.assert_allclose(noise.electrical_rms_db[2], np.hypot(*noise.electrical_rms_db[:2]))
+np.testing.assert_allclose(noise.total_sigma_db, np.hypot(noise.model_sigma_db,noise.electrical_rms_db))
+for field in ('model_sigma','electrical_rms','total_sigma'):
+    np.testing.assert_allclose(noise[field+'_tx'], noise.tx*np.log(10)/10*noise[field+'_db'])
+np.testing.assert_allclose(noise.electrical_rms_pct, 100*noise.electrical_rms_tx/noise.tx)
+zero = host.attenuator_noise(noise_coeff,mean_fvoa_mv=means,noise_rms_mv=(0,0))
+np.testing.assert_array_equal(zero.electrical_rms_db, 0)
+np.testing.assert_array_equal(zero.total_sigma_tx, zero.model_sigma_tx)
+double = host.attenuator_noise(noise_coeff,mean_fvoa_mv=means,noise_rms_mv=np.array(scope_rms)*2)
+np.testing.assert_allclose(double.electrical_rms_tx, 2*noise.electrical_rms_tx)
+np.testing.assert_array_equal(double.model_sigma_tx, noise.model_sigma_tx)
+different_model = dataclasses.replace(noise_coeff,dac1=dataclasses.replace(noise_coeff.dac1,rms_db=1.5))
+changed = host.attenuator_noise(different_model,mean_fvoa_mv=means,noise_rms_mv=scope_rms)
+np.testing.assert_array_equal(changed.electrical_rms_tx,noise.electrical_rms_tx)
+assert changed.model_sigma_tx[0] == 2*noise.model_sigma_tx[0]
+assert changed.total_sigma_tx[2] > noise.total_sigma_tx[2]
+different_gain = dataclasses.replace(noise_coeff,dac1=dataclasses.replace(noise_coeff.dac1,gain=2.0))
+changed = host.attenuator_noise(different_gain,mean_fvoa_mv=means,noise_rms_mv=scope_rms)
+np.testing.assert_allclose(changed.electrical_rms_tx,noise.electrical_rms_tx,rtol=1e-9)
+for mean,rms in [((1,),scope_rms),(means,7),((1,2,3),scope_rms),((np.nan,1),scope_rms),
+                 (means,(np.inf,0)),((-1,1),scope_rms),(means,(1,-1)),(('bad',1),scope_rms)]:
+    try: host.attenuator_noise(noise_coeff,mean_fvoa_mv=mean,noise_rms_mv=rms)
+    except host.HispecFibError: pass
+    else: raise AssertionError('accepted invalid scope inputs')
+for bad in (None, host.AttenuatorCoeff(None,noise_coeff.dac2), *(
+        dataclasses.replace(noise_coeff,dac1=dataclasses.replace(noise_coeff.dac1,**fields))
+        for fields in ({'gain':0},{'slope_inv_fvoa_mv':-1},{'rms_db':-1},{'rms_db':np.nan},
+                       {'correction_coeff':(0,)},{'correction_coeff':(np.nan,)*6},
+                       {'max_atten_db':10000},{'fvoa_50pct_mv':-10000}))):
+    try: host.attenuator_noise(bad,mean_fvoa_mv=means,noise_rms_mv=scope_rms)
+    except host.HispecFibError: pass
+    else: raise AssertionError('accepted unusable coefficients')
+
+model_source = r'''
+#include <assert.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#define CLAMP(x,lo,hi) fmin(fmax((x),(lo)),(hi))
+#define ZSL_ERF erf
+#define ZSL_EXP exp
+#define ZSL_LOG10 log10
+typedef double zsl_real_t;
+struct dac_channel_cfg {int channel_id;};
+'''
+for file,prefixes in [('attenuator.h',('#define ATTENUATOR_', '#define FVOA_DEFAULT_')),
+                      ('attenuator.c',('#define MODEL_', '#define ATTENUATOR_DB_PER_NEPER'))]:
+    for line in (ROOT/'app/src'/file).read_text().splitlines():
+        if line.startswith(prefixes): model_source += line+'\n'
+model_source += '#ifndef M_PI\n#define M_PI 3.14159265358979323846\n#endif\n'
+for name in ('attenuator_model_coeffs','atten_model_eval','attenuator_dac_cfg',
+             'attenuator_transmission_estimate','attenuator'):
+    model_source += block('attenuator.h','struct '+name+' {')
+model_source += 'static void attenuator_snapshot(const struct attenuator *a,struct attenuator *b) {*b=*a;}\n'
+for marker in ('static double attenuator_model_delta_to_raw_linear(',
+               'static double attenuator_model_voltage_to_delta(',
+               'static double attenuator_model_floor_linear(',
+               'static bool attenuator_model_correction_active(',
+               'static double attenuator_model_correction_db(',
+               'bool atten_model_eval(', 'bool atten_model_db_sigma('):
+    model_source += block('attenuator.c',marker)
+model_main = r'''
+int main(void) {
+ struct attenuator a={
+  .coeff1={.fvoa_50pct_mv=3144.95,.slope_inv_fvoa_mv=.00303104,.max_atten_db=48.36,
+           .gain=1.533,.rms_db=.75,.correction_coeff={.12,-.03,.01,0,0,0}},
+  .coeff2={.fvoa_50pct_mv=3456.12,.slope_inv_fvoa_mv=.00247498,.max_atten_db=61.95,
+           .gain=1.8,.rms_db=1.25},
+  .dac_cfg1={.valid=true},.dac_cfg2={.valid=true}};
+ double mean1[]={0,3144.95,3824,4100,5000},mean2[]={0,3456.12,3942,4300,5500};
+ for(int i=0;i<5;i++) {
+  a.dac_cfg1.voltage=mean1[i]/a.coeff1.gain;a.dac_cfg2.voltage=mean2[i]/a.coeff2.gain;
+  struct atten_model_eval e1,e2;struct attenuator_transmission_estimate out;
+  assert(atten_model_eval(&a.coeff1,a.dac_cfg1.voltage,&e1));
+  assert(atten_model_eval(&a.coeff2,a.dac_cfg2.voltage,&e2));
+  assert(attenuator_estimate_transmission(&a,&out));
+  if(i==0 || i==4) assert(e1.d_db_d_voltage_mv==0 && e2.d_db_d_voltage_mv==0);
+  printf("%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
+   a.dac_cfg1.voltage*a.coeff1.gain,a.dac_cfg2.voltage*a.coeff2.gain,
+   e1.db,e1.tx,e1.d_db_d_voltage_mv,e2.db,e2.tx,e2.d_db_d_voltage_mv,
+   out.attenuation_db,out.linear,out.linear_err);
+ }
+ struct attenuator_transmission_estimate out;
+ assert(!attenuator_estimate_transmission(NULL,&out));
+ assert(!attenuator_estimate_transmission(&a,NULL));
+ a.dac_cfg1.valid=false;assert(!attenuator_estimate_transmission(&a,&out));a.dac_cfg1.valid=true;
+ a.coeff1.gain=0;assert(!attenuator_estimate_transmission(&a,&out));a.coeff1.gain=1.533;
+ a.coeff1.rms_db=NAN;assert(!attenuator_estimate_transmission(&a,&out));
+}
+'''
+firmware_noise = float(next(line.split()[-1] for line in (ROOT/'app/src/attenuator.h').read_text().splitlines()
+                            if line.startswith('#define ATTENUATOR_FVOA_NOISE_RMS_MV ')))
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe = Path(tmp)/'noise.c',Path(tmp)/'noise'
+    for rms in (firmware_noise,0.0):
+        cfile.write_text(model_source+'\n#undef ATTENUATOR_FVOA_NOISE_RMS_MV\n'
+                         +f'#define ATTENUATOR_FVOA_NOISE_RMS_MV {rms}\n'
+                         +block('attenuator.c','bool attenuator_estimate_transmission(')+model_main)
+        subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+        rows=np.loadtxt(io.StringIO(subprocess.check_output([str(exe)],text=True)))
+        for v1,v2,db1,tx1,slope1,db2,tx2,slope2,db,tx,err in rows:
+            result=host.attenuator_noise(noise_coeff,mean_fvoa_mv=(v1,v2),noise_rms_mv=(rms,rms))
+            np.testing.assert_allclose(result.db,[db1,db2,db],rtol=1e-9,atol=1e-12)
+            np.testing.assert_allclose(result.tx,[tx1,tx2,tx],rtol=1e-9)
+            np.testing.assert_allclose(result.electrical_rms_db[:2],
+                np.abs([slope1/noise_coeff.dac1.gain,slope2/noise_coeff.dac2.gain])*rms,rtol=2e-6,atol=1e-10)
+            np.testing.assert_allclose(result.total_sigma_tx[2],err,rtol=2e-6)
+print('FVOA scope inputs, separate uncertainties, analytic C/Python parity, and zero-noise checks passed')
 
 # Effective route calibration: defaults, overrides, NVS restore, and public loss precision.
 import re

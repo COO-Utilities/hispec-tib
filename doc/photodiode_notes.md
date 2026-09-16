@@ -66,7 +66,7 @@ is applied. Source or external optical motion during a conversion remains visibl
 | Diagnostic window | `hypot(max(window.rms_mv,sigma_read)/sqrt(N_good), sigma_dark)` | Includes optical variation in window RMS; the dark floor does not shrink with that window. |
 | PD power | `net_mV * 1e6 / (effective_V_per_A * responsivity_A_per_W)` nW, with wavelength coefficient | Clip negative power to zero, retain signed net voltage, and propagate NaN voltage. Error uses the same scale. Validated effective gain already contains the divider. |
 | Laser power | Current-based calibration with `hypot(P*fractional_noise, constant_noise_mw)` | Defaults 3% plus a floor of 1% of nominal maximum power; this is an estimate, not an optical reading. |
-| Attenuator | `sigma_T = T*ln(10)/10*hypot(rms1_db,rms2_db)` | Autocalibration stores each fit's residual RMS; assume independent device residuals. First-order symmetric error is approximate for large dB scatter. |
+| Attenuator | `sigma_T = T*ln(10)/10*hypot(hypot(rms1_db,rms2_db),hypot(electrical1_db,electrical2_db))` | Stored residual RMS estimates curve accuracy; electrical terms use the full local slope times `ATTENUATOR_FVOA_NOISE_RMS_MV / gain` (default 10 mV RMS after the amplifier). Assume independent contributions and devices. First-order symmetric error is approximate for large dB scatter. |
 | Delivered power | `L*T*laser_route_tx`; quadrature of laser and attenuator errors | Source calibration terms remain correlated across stream records. |
 | Route correction | Divide detected power **and its error** by `pd_route_tx`; multiply known source by `laser_route_tx` | Command applies launch and independent MM/SM return, latching losses at start. Passive light uses generic return defaults. No route-loss uncertainty terms are stored. |
 | Unknown illumination | PD voltage, corrected nW/error and detector S/N remain defined; source/throughput fields are NaN/null | No known emitted power or wavelength is inferred from a passive MM/SM return. Nominal responsivity is used; any source-spectrum correction belongs above the PD owner. |
@@ -81,6 +81,12 @@ Responsivity, effective gain, wavelength correction, route calibration, drift,
 shot noise at illuminated levels, and dynamic actuator/filter mismatch have no
 separately measured uncertainty terms in the present settings. Reported errors
 therefore cover the terms above, not a complete absolute calibration budget.
+Attenuator electrical variation is a static-model prediction along the curve;
+model residuals describe uncertainty in that curve. Their combined uncertainty
+is not temporal RMS. Calibration error remains correlated across records;
+electrical independence between the two devices does not establish temporal
+independence or justify dividing the combined error by sqrt(sample count).
+No FVOA frequency-response or averaging correction is inferred from scope RMS.
 The wavelength correction table is currently unity. Shot noise is not inferred
 from dark data; brighter-light noise needs validation against captures.
 

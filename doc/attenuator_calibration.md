@@ -369,11 +369,22 @@ coefficient record; a new manual model without `rms_db` uses the 2 dB default.
 The existing acquisition, fit acceptance, and residual correction are unchanged.
 No additional sweep, offline calibration, or lab operation is required.
 
-Runtime transmission uncertainty is `T * ln(10)/10 * hypot(rms1, rms2)`. The
-physical devices' errors combine independently, but calibration error across
-repeated throughput samples is treated as correlated and does not average away.
-The throughput monitor combines it with the laser estimate uncertainty and
-PD-only error; the stream's `tp_pd_err` remains PD-only.
+Runtime transmission uncertainty combines these model residuals with electrical
+variation. For each device, `electrical_sigma_db = abs(d_db_d_voltage_mv) *
+ATTENUATOR_FVOA_NOISE_RMS_MV / gain`. The constant defaults to 10 mV RMS measured
+after the amplifier; zero recovers model-only uncertainty. The local derivative
+includes the leakage floor and empirical correction. The pair uses
+`total_sigma_db = hypot(hypot(rms1, rms2), hypot(electrical1, electrical2))`, then
+`sigma_T = T * ln(10)/10 * total_sigma_db`.
+
+Model and electrical contributions are assumed independent, as are the two
+devices. Calibration error across repeated throughput samples remains correlated
+and does not average away; independence between devices does not establish
+temporal independence of electrical noise. This first-order static estimate
+applies no frequency-response correction, and its combined uncertainty is not
+temporal RMS variation. The throughput monitor combines it with laser uncertainty
+and PD-only error; `tp_pd_err` remains PD-only. The [Python scope helper](api/attenuator_control.md#scope-noise-in-python)
+reports model, electrical, and combined terms separately.
 
 ## Notebook Inspection
 

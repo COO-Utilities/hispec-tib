@@ -952,6 +952,80 @@ def _atten_db_from_coeff(
     return base_db + _atten_correction_db(base_db, coeff[2], coeff[4])
 
 
+def attenuator_noise(
+    coeff: AttenuatorCoeff,
+    *,
+    mean_fvoa_mv: Sequence[float],
+    noise_rms_mv: Sequence[float],
+) -> np.recarray:
+    """Estimate curve accuracy, electrical variation, and combined uncertainty.
+
+    Both voltage pairs are ordered dac1, dac2, in mV after the drive amplifiers.
+    This is a pure calculation using a queried AttenuatorCoeff, with no I/O.
+    Rows are dac1, dac2, pair; db/tx are nominal attenuation/transmission.
+    model_sigma_db/tx use the stored fit residual RMS; electrical_rms_db/tx
+    propagate scope RMS along the local curve. total_sigma_db/tx combine them
+    in quadrature. electrical_rms_pct is relative to each row's nominal tx.
+
+    The series devices and the model/electrical contributions are assumed
+    independent. Model error remains correlated across repeated measurements;
+    the total is not temporal RMS. This first-order static estimate assumes
+    the FVOA follows the measured voltage noise, with no bandwidth or averaging
+    correction. The derivative step is fixed at 0.1 FVOA-side mV.
+    """
+    if not isinstance(coeff, AttenuatorCoeff):
+        raise HispecFibError("coeff must be an AttenuatorCoeff from atten_coeff()")
+    try:
+        mean = np.asarray(mean_fvoa_mv, dtype=float)
+        rms = np.asarray(noise_rms_mv, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise HispecFibError("mean_fvoa_mv and noise_rms_mv must be numeric pairs") from exc
+    if (mean.shape != (2,) or rms.shape != (2,) or
+            not np.all(np.isfinite(mean) & (mean >= 0.0)) or
+            not np.all(np.isfinite(rms) & (rms >= 0.0))):
+        raise HispecFibError("mean_fvoa_mv and noise_rms_mv must be finite, nonnegative pairs")
+
+    out = np.zeros(3, dtype=[("component", "U4")] + [(name, "f8") for name in (
+        "db", "tx", "model_sigma_db", "model_sigma_tx", "electrical_rms_db",
+        "electrical_rms_tx", "total_sigma_db", "total_sigma_tx", "electrical_rms_pct",
+    )]).view(np.recarray)
+    out.component = ("dac1", "dac2", "pair")
+    for i, physical in enumerate((coeff.dac1, coeff.dac2)):
+        if not isinstance(physical, AttenuatorPhysicalCoeff):
+            raise HispecFibError(f"{out.component[i]} must be an AttenuatorPhysicalCoeff")
+        try:
+            values = _atten_coeff_tuple(str(out.component[i]), physical)
+            _atten_correction_tuple(str(out.component[i]), values[4])
+            model_rms = _require_float("rms_db", physical.rms_db, 0.0, math.inf)
+        except (TypeError, ValueError) as exc:
+            raise HispecFibError(f"{out.component[i]} coefficient is malformed") from exc
+        floor_tx = 10.0 ** (-values[2] / 10.0)
+        if not 0.0 < floor_tx < 1.0:
+            raise HispecFibError(f"{out.component[i]} model has an unusable leakage floor")
+        dac_mv = (mean[i] + np.array((-0.1, 0.0, 0.1))) / values[3]
+        db = _atten_db_from_coeff(values, dac_mv)
+        base_tx = float(_atten_relative_tx_from_coeff(values, [dac_mv[1]])[0])
+        if not np.all(np.isfinite(db)) or db[1] < 0.0 or not np.isfinite(base_tx):
+            raise HispecFibError(f"{out.component[i]} model is unusable at the supplied voltage")
+        # Match the firmware's zero derivative on the clamped open/leakage plateaus.
+        slope = (db[2] - db[0]) / 0.2 if floor_tx < base_tx < 1.0 else 0.0
+        out.db[i] = db[1]
+        out.model_sigma_db[i] = model_rms
+        out.electrical_rms_db[i] = abs(slope) * rms[i]
+
+    out.db[2] = out.db[0] + out.db[1]
+    out.model_sigma_db[2] = np.hypot(*out.model_sigma_db[:2])
+    out.electrical_rms_db[2] = np.hypot(*out.electrical_rms_db[:2])
+    out.tx = np.power(10.0, -out.db / 10.0)
+    out.total_sigma_db = np.hypot(out.model_sigma_db, out.electrical_rms_db)
+    scale = out.tx * np.log(10.0) / 10.0
+    out.model_sigma_tx = scale * out.model_sigma_db
+    out.electrical_rms_tx = scale * out.electrical_rms_db
+    out.total_sigma_tx = scale * out.total_sigma_db
+    out.electrical_rms_pct = 100.0 * np.log(10.0) / 10.0 * out.electrical_rms_db
+    return out
+
+
 def _atten_pair_db_from_coeffs(
     dac1_coeff: tuple[float, float, float, float, tuple[float, ...]],
     dac2_coeff: tuple[float, float, float, float, tuple[float, ...]],
@@ -3050,7 +3124,8 @@ class ThroughputSample(ResponseRepr):
     """One fresh ADC conversion, nominally every 50 ms, and its source estimate.
 
     Power is route-corrected in nW; laser output before attenuation is in µW.
-    ``tp_pd_err`` is PD-only; ``tp_err`` includes source calibration uncertainty.
+    ``tp_pd_err`` is PD-only; ``tp_err`` includes source calibration uncertainty
+    and modeled FVOA electrical variation. The total is not temporal RMS.
     An ``overrange`` flag makes ``tp`` a nominal lower bound and its errors NaN.
     No ADC conversion is reused in successive records.
     """

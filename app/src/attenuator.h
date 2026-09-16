@@ -26,6 +26,10 @@
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
 /* Per-physical model residual RMS until an accepted calibration supplies it. */
 #define ATTENUATOR_DEFAULT_RMS_DB 2.0
+/* Electrical RMS at each FVOA control line, after the op amp, in mV.
+ * Assume independent devices; zero disables this runtime uncertainty term.
+ */
+#define ATTENUATOR_FVOA_NOISE_RMS_MV 10.0
 /* Low-order empirical correction in modeled dB space, fitted after base coeffs. */
 #define ATTENUATOR_MODEL_CORRECTION_TERMS 6U
 
@@ -129,8 +133,8 @@ bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
  * @brief Propagate independent model/input uncertainties into dB uncertainty.
  *
  * The calibration fitter owns any minimum sigma floor. This helper only
- * combines the supplied measured dB uncertainty with voltage and finite-floor
- * model sensitivities from atten_model_eval().
+ * combines the supplied dB uncertainty (measurement or model residual) with
+ * voltage and finite-floor model sensitivities from atten_model_eval().
  */
 bool atten_model_db_sigma(const struct atten_model_eval *eval,
                           double measured_db_sigma,
@@ -215,13 +219,16 @@ bool attenuator_set_linear(struct attenuator *drv, double linear);
 bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
 
 /**
- * @brief Read logical transmission and propagate each physical model residual RMS.
+ * @brief Estimate transmission uncertainty from model residuals and drive noise.
  *
- * This copies owner state without I/O; false means a DAC state is unknown.
- * The stored per-physical rms_db
- * values combine as hypot(rms1, rms2); sigma_T = T * ln(10)/10 * sigma_dB.
- * These are independent physical-model contributions, each correlated across
- * repeated measurements. Nominal transmission and hardware state are unchanged.
+ * This copies owner state without I/O; false means unknown DAC state or an
+ * unusable model. Each rms_db describes curve accuracy; electrical variation
+ * uses the local slope and ATTENUATOR_FVOA_NOISE_RMS_MV / gain in DAC-side mV.
+ * Independent contributions combine in quadrature in dB, then
+ * sigma_T = T * ln(10)/10 * sigma_dB. Calibration errors remain correlated
+ * across repeated measurements; device-independent electrical noise does not
+ * establish temporal independence. The total is uncertainty, not temporal RMS.
+ * Nominal transmission and hardware state are unchanged.
  */
 bool attenuator_estimate_transmission(struct attenuator *drv,
                                       struct attenuator_transmission_estimate *out);
