@@ -3743,7 +3743,6 @@ class ThroughputMonitor:
         series = []
         for ax, field, error, label, color in (
             (tp_ax, "tp", "tp_err", "throughput", "C0"),
-            (pd_ax, "pd_mv", None, "raw input", "C1"),
             (pd_ax, "pd_net_mv", "pd_net_err_mv", "net reading", "C0"),
             (drive_ax, "laser_current_ma", None, "laser current", "C2"),
             (atten_ax, "atten_db", None, "combined attenuation", "C3"),
