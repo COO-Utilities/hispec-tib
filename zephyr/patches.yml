@@ -1,0 +1,20 @@
+# Pinned Zephyr source fixes; preserve local edits even on failure.
+checkout-command: ""
+clean-command: ""
+patches:
+  - path: 0001-ds18b20-lock-presence-probe.patch
+    sha256sum: 8d68ba36a5609381d28a1d66487b3b2ce84a745b907dde8de63ed4ac1ea5d964
+    module: zephyr
+    author: Jeb Bailey
+    email: jibailey@caltech.edu
+    date: 2026-09-17
+    upstreamable: false
+    apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake
+  - path: 0002-modbus-rtu-client-receive-lifetime.patch
+    sha256sum: 1c37eaf914b74536550774697d72e34238dd1383252546bea1332d5c69f2b751
+    module: zephyr
+    author: Jeb Bailey
+    email: jibailey@caltech.edu
+    date: 2026-09-17
+    upstreamable: false
+    apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake

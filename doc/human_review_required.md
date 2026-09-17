@@ -8,6 +8,11 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] After flashing the transport fixes, repeat cold DS18B20 initialization and
+  concurrent laser-status/relay/temperature polling; check USART2 overruns and
+  Modbus failures, including timeout followed by a new request. Native bus lock
+  ordering, RTU handoff/cleanup and automatic patch application have host checks;
+  physical timing still requires the PCB. No flash was part of this change.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
   startup, minimum-current fallback, and preference for lower attenuation.
   Verify actual Maiman TEC bound expand/target/narrow ordering and rejection

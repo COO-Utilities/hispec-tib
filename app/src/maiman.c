@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/w1.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
@@ -82,6 +83,8 @@ static uint32_t transaction_sequence;
 static int64_t last_transaction_end_ms;
 #endif
 static int maiman_client_iface = -ENODEV;
+static const struct device *const relay_bus = DEVICE_DT_GET(DT_NODELABEL(w1_pd_power));
+static const struct device *const temperature_bus = DEVICE_DT_GET(DT_NODELABEL(w1_temp));
 
 int maiman_set_client_iface(int iface)
 {
@@ -149,6 +152,8 @@ void maiman_init(maiman_driver_t *drv, uint8_t node_id)
 /**
  * Read a single 16-bit holding register via Zephyr's Modbus client API.
  * The call blocks until the RTU transaction completes or times out.
+ * Native 1-Wire locks exclude GPIO bit-banging (which masks interrupts) while
+ * the UART needs service. Always acquire relay then temperature, release in reverse.
  */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 {
@@ -170,9 +175,13 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
 	int64_t gap_ms = last_transaction_end_ms ? started_ms - last_transaction_end_ms : -1;
 #endif
 
+	w1_lock_bus(relay_bus);
+	w1_lock_bus(temperature_bus);
 	err = modbus_read_holding_regs(maiman_client_iface, drv->node_id,
 				       address, value, 1);
 	int64_t completed_ms = k_uptime_get();
+	w1_unlock_bus(temperature_bus);
+	w1_unlock_bus(relay_bus);
 #if CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG
 	last_transaction_end_ms = completed_ms;
 	LOG_DBG("MB seq=%u node=%u op=read reg=%s(0x%04x) value=0x%04x start_ms=%lld elapsed_ms=%lld gap_ms=%lld rc=%d",
@@ -197,6 +206,8 @@ bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value)
  * Write a single 16-bit holding register via Zephyr's Modbus client API.
  * This changes device state or an EEPROM-backed parameter depending on the
  * selected register; callers own any higher-level safety sequencing.
+ * The same 1-Wire exclusion as reads lasts through RTU cleanup, but not the
+ * controller's subsequent busy wait: there is no UART response pending then.
  */
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 {
@@ -218,9 +229,13 @@ bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value)
 	int64_t gap_ms = last_transaction_end_ms ? started_ms - last_transaction_end_ms : -1;
 #endif
 
+	w1_lock_bus(relay_bus);
+	w1_lock_bus(temperature_bus);
 	err = modbus_write_holding_regs(maiman_client_iface, drv->node_id,
 					address, &value, 1);
 	int64_t completed_ms = k_uptime_get();
+	w1_unlock_bus(temperature_bus);
+	w1_unlock_bus(relay_bus);
 #if CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG
 	last_transaction_end_ms = completed_ms;
 	LOG_DBG("MB seq=%u node=%u op=write reg=%s(0x%04x) value=0x%04x start_ms=%lld elapsed_ms=%lld gap_ms=%lld rc=%d",

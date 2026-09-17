@@ -1,0 +1,134 @@
+diff --git a/subsys/modbus/modbus_core.c b/subsys/modbus/modbus_core.c
+index 3e6f87c053b..62852c7ea42 100644
+--- a/subsys/modbus/modbus_core.c
++++ b/subsys/modbus/modbus_core.c
+@@ -137,16 +137,27 @@ void modbus_tx_adu(struct modbus_context *ctx)
+ 
+ int modbus_tx_wait_rx_adu(struct modbus_context *ctx)
+ {
++	int err;
++
++	if (IS_ENABLED(CONFIG_MODBUS_SERIAL)) {
++		modbus_serial_client_quiesce(ctx);
++	}
+ 	k_sem_reset(&ctx->client_wait_sem);
+ 
+ 	modbus_tx_adu(ctx);
+ 
+ 	if (k_sem_take(&ctx->client_wait_sem, K_USEC(ctx->rxwait_to)) != 0) {
+ 		LOG_WRN("Client wait-for-RX timeout");
+-		return -ETIMEDOUT;
++		err = -ETIMEDOUT;
++	} else {
++		err = ctx->rx_adu_err;
+ 	}
+ 
+-	return ctx->rx_adu_err;
++	/* Drain old RX work before the caller can release its transaction locks. */
++	if (IS_ENABLED(CONFIG_MODBUS_SERIAL)) {
++		modbus_serial_client_quiesce(ctx);
++	}
++	return err;
+ }
+ 
+ struct modbus_context *modbus_get_context(const uint8_t iface)
+diff --git a/subsys/modbus/modbus_internal.h b/subsys/modbus/modbus_internal.h
+index af2d7ac6e3d..9782dde99fd 100644
+--- a/subsys/modbus/modbus_internal.h
++++ b/subsys/modbus/modbus_internal.h
+@@ -208,6 +208,13 @@ void modbus_serial_rx_disable(struct modbus_context *ctx);
+  */
+ void modbus_serial_rx_enable(struct modbus_context *ctx);
+ 
++/**
++ * Quiesce an interrupt-driven RTU client between requests. Caller holds
++ * iface_lock and may sleep while a running RX work item finishes. Leaves
++ * the parsed rx_adu intact for client validation; other modes are unchanged.
++ */
++void modbus_serial_client_quiesce(struct modbus_context *ctx);
++
+ /**
+  * @brief Assemble ADU from serial line RX buffer
+  *
+diff --git a/subsys/modbus/modbus_serial.c b/subsys/modbus/modbus_serial.c
+index 480b8e93d75..1af3f577dc0 100644
+--- a/subsys/modbus/modbus_serial.c
++++ b/subsys/modbus/modbus_serial.c
+@@ -433,12 +433,17 @@ static void cb_handler_tx(struct modbus_context *ctx)
+ static void uart_cb_handler(const struct device *dev, void *app_data)
+ {
+ 	struct modbus_context *ctx = (struct modbus_context *)app_data;
++	unsigned int key = 0;
+ 
+ 	if (ctx == NULL) {
+ 		LOG_ERR("Modbus hardware is not properly initialized");
+ 		return;
+ 	}
+ 
++	/* Serialize RTU client buffer changes with the framing timer on UP. */
++	if (ctx->client && ctx->mode == MODBUS_MODE_RTU) {
++		key = irq_lock();
++	}
+ 	uart_irq_update(dev);
+ 
+ 	if (uart_irq_rx_ready(dev)) {
+@@ -448,6 +453,9 @@ static void uart_cb_handler(const struct device *dev, void *app_data)
+ 	if (uart_irq_tx_ready(dev)) {
+ 		cb_handler_tx(ctx);
+ 	}
++	if (ctx->client && ctx->mode == MODBUS_MODE_RTU) {
++		irq_unlock(key);
++	}
+ }
+ 
+ static void uart_cb_async_handler(const struct device *dev, struct uart_event *evt, void *app_data)
+@@ -500,7 +508,48 @@ static void rtu_tmr_handler(struct k_timer *t_id)
+ 		return;
+ 	}
+ 
+-	k_work_submit(&ctx->server_work);
++	if (ctx->client && !IS_ENABLED(CONFIG_MODBUS_SERIAL_ASYNC_API)) {
++		unsigned int key = irq_lock();
++
++		/* Freeze this frame before handing it to a possibly delayed worker.
++		 * Stop any timer rearmed by a byte just before this callback ran.
++		 * RX may already be off because the buffer filled; still submit it.
++		 */
++		modbus_serial_rx_off(ctx);
++		k_timer_stop(&ctx->cfg->rtu_timer);
++		k_work_submit(&ctx->server_work);
++		irq_unlock(key);
++	} else {
++		k_work_submit(&ctx->server_work);
++	}
++}
++
++void modbus_serial_client_quiesce(struct modbus_context *ctx)
++{
++	struct modbus_serial_config *cfg = ctx->cfg;
++	struct k_work_sync sync;
++	unsigned int key;
++
++	if (!ctx->client || ctx->mode != MODBUS_MODE_RTU ||
++	    IS_ENABLED(CONFIG_MODBUS_SERIAL_ASYNC_API)) {
++		return;
++	}
++
++	/* UP: stop every ISR producer before waiting for the parser. A pending
++	 * TX completion must not re-enable RX after a timeout. Never wait with
++	 * interrupts masked, or while running on the parser's workqueue.
++	 */
++	key = irq_lock();
++	modbus_serial_rx_off(ctx);
++	modbus_serial_tx_off(ctx);
++	k_timer_stop(&cfg->rtu_timer);
++	irq_unlock(key);
++	k_work_cancel_sync(&ctx->server_work, &sync);
++
++	modbus_serial_rx_fifo_drain(ctx);
++	cfg->uart_buf_ctr = 0;
++	cfg->uart_buf_ptr = cfg->uart_buf;
++	k_sem_reset(&ctx->client_wait_sem);
+ }
+ 
+ static int configure_gpio(struct modbus_context *ctx)

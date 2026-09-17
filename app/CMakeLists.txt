@@ -16,6 +16,20 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(app LANGUAGES C)
 
+# West verifies checksums; our apply command accepts already-applied patches.
+# Check at configure AND every build (including after a west update). Dependencies
+# on the shared interface put this before Zephyr compilation, not just app linking.
+set(HISPEC_PATCH_COMMAND ${PYTHON_EXECUTABLE} -m west patch
+        --src-module hispec-tib --dst-module zephyr apply)
+execute_process(COMMAND ${HISPEC_PATCH_COMMAND}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND_ERROR_IS_FATAL ANY)
+add_custom_target(hispec_zephyr_patches
+        COMMAND ${HISPEC_PATCH_COMMAND}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Checking required HISPEC Zephyr patches")
+add_dependencies(zephyr_interface hispec_zephyr_patches)
+
 set(HISPEC_BUILD_VERSION_HEADER
         ${CMAKE_CURRENT_BINARY_DIR}/generated/hispec_build_version.h)
 

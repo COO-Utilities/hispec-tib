@@ -221,6 +221,12 @@ dropped rather than blocking a timing-sensitive caller.
 Maiman register calls are blocking Modbus RTU transactions. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
+Each read/write also acquires the native relay then temperature 1-Wire bus locks,
+and releases them in reverse order after RTU receive cleanup, before the busy
+interval. This excludes the GPIO driver's interrupt-masked bit-banging while
+USART2 needs service. DS18B20 conversion waits remain outside the bus lock.
+Two versioned Zephyr patches cover the initial DS18B20 presence probe and RTU
+client receive-work lifetime; see [patch workflow](../zephyr/README.md).
 Laser identity and applied configuration are retained for the bank-power interval;
 configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a
