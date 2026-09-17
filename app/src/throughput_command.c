@@ -103,11 +103,12 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	char laser_name[16] = {0};
 	char input[MEMS_SOURCEDEST_MAX_LEN] = {0};
 	char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
-	struct throughput_monitor_request request = {0};
+	struct throughput_monitor_request request = {.initial_level = THROUGHPUT_DEFAULT_INITIAL_LEVEL};
 	struct throughput_monitor_status status = {0};
 	uint32_t off_in_s = 0U;
 	bool autolevel = true;
 	bool max_flux_present = false;
+	bool initial_level_present = false;
 	int choice_value;
 	int parse_rc;
 	int rc;
@@ -163,6 +164,13 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	if (coo_json_extract_optional_bool(cmd->payload, "autolevel",
 					   &autolevel, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid autolevel");
+	}
+	if (coo_json_extract_optional_double_range(cmd->payload, "initial_level",
+		&request.initial_level, &initial_level_present, 0.0, 1.0) != 0) {
+		return coo_cmd_error(out, cmd, "initial_level must be 0..1");
+	}
+	if (initial_level_present && !autolevel) {
+		return coo_cmd_error(out, cmd, "initial_level requires autolevel");
 	}
 
 	if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",

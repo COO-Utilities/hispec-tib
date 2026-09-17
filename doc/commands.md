@@ -478,6 +478,7 @@ these values feed the existing throughput and splitting calculations.
   ```json
   {
     "autolevel": true,
+    "initial_level": 0.5,
     "laser": "<lasername>",
     "fiber": "M",
     "output": "yj_ao",
@@ -514,6 +515,14 @@ estimate.
 and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without adjusting laser level or attenuation during monitoring.
+`initial_level` is an optional fraction from 0 to 1, accepted only with
+`autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
+calibrated attenuation, then sets this fraction of the threshold-to-nominal
+current range, bounded by `min_autolevel_current_ma` and nominal current.
+Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
+off. This applies to both compiled dimming priorities. Throughput ignores stored
+`tune_nm` and retains the live TEC target when already prepared; cold preparation
+still applies `default_operating_temp_c`.
 Stopping an autolevel operation also stops the laser it was using, even if
 manual laser level or attenuation changes have since disabled automatic adjustments.
 A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
@@ -688,10 +697,15 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   A sample that began before the previous move completed cannot select another
   move. There is no rolling-window gate, five-observation bypass, or settling
   holdoff. Physical response and filter lag remain visible in the data.
-- Flux is raised with attenuation first, then laser current; lowered with
-  attenuation first, then laser current. The directional pair allocator avoids
-  loading all attenuation onto one device. Startup sets the maximum calibrated
-  attenuation before raising the laser to 100%. Each FVOA is limited by its
+- Flux is raised by reducing attenuation first, then increasing laser current.
+  Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
+  `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before
+  increasing attenuation; `TP_ATTEN_FIRST` (0) preserves the previous order.
+  Either mode holds settings in the useful band and tries the other actuator
+  when the preferred one cannot move. Current is bounded by the per-laser
+  autolevel minimum and nominal current; checks use the actual 0.1 mA register
+  grid, so a repeated setpoint cannot count as progress. The directional pair
+  allocator avoids loading all attenuation onto one device. Each FVOA is limited by its
   `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
 - Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
   `off_in_s` stops the monitor after the requested seconds, with zero disabling
@@ -700,7 +714,8 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   continues with updated source context and the existing laser shutdown obligation.
   They do not restart the measurement deadline. A zero laser level keeps PD readings
   flowing, with throughput NaN/null until estimated source power is positive.
-  Laser tuning/settings commands still relinquish the stream. Display controls only affect UI.
+  Laser tuning/settings commands stop the stream. A failed settings update
+  retains any owned laser shutdown for explicit stop retry. Display controls only affect UI.
 
 For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
 output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
@@ -841,6 +856,7 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
       "fractional_noise": 0.03,
       "constant_noise_mw": 0.435675,
       "threshold_current_ma": 0.0,
+      "min_autolevel_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
@@ -870,6 +886,7 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     "settings": {
       "nominal_current_ma": 0.0,
       "expected_serial": 0,
+      "min_autolevel_current_ma": 0.0,
       "max_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
@@ -894,12 +911,17 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   ```
 
 - **Notes:**
+  - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
+    request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
+    upward to the 0.1 mA register grid. Raising threshold also raises this floor
+    silently. Updates with no representable interval through nominal current
+    are rejected. Manual output and calibration keep their existing minimum rules.
   - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
     app-owned optical-power uncertainty settings. The estimator reads its
     existing per-laser cache and computes `hypot(power_mw * fractional_noise,
     constant_noise_mw)` before converting power and uncertainty to photon flux.
-    These fields do not program Maiman; existing settings-command emission and
-    throughput-stop behavior still applies.
+    These fields do not program Maiman or stop emission by themselves; the
+    settings command still stops throughput monitoring.
   - Defaults are 3% fractional plus a constant 1% of each diode's **compiled**
     maximum modeled power. Constant defaults in mW: 1028 = 0.435675;
     1270, both 1430 channels, and 1510 = 0.086320; 2330 = 0.029481.
@@ -918,6 +940,16 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     calculations. Existing `tune_nm` remains stored, but the next positive
     `laser` value command may compute a different TEC/current point from the new
     baseline.
+  - `operating_temp_range_c` programs the writable TEC minimum/maximum during
+    preparation. Firmware expands the old range if needed, moves the default
+    target, then narrows it. A range-only change stops emission and invalidates
+    preparation; it is programmed at the next start without powering an idle
+    bank for the edit. Combining it with a driver-backed change programs both
+    immediately. Absolute device limits are never written.
+  - Settings `autooff_s` is the default for later manual `laser` commands;
+    command `autooff_s` overrides one operation. Throughput uses `off_in_s` for
+    its own duration and disables the separate laser auto-off while controlling
+    it. Changing the stored default does not rearm an active deadline.
   - Settings are checked when a laser is first talked to at each boot
   - `persist` is optional and defaults to false. Without `persist:true`,
     accepted changes apply to runtime and driver-backed state but are not saved
@@ -939,9 +971,18 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   - it is **encouraged** to send only the settings that requested changed.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
-  - Changes to settings will disable laser emission and may disable the TEC (stops emission + any throughput measurement using that laser)
+  - Actual changes to threshold, nominal current, efficiency, wavelength,
+    wavelength coefficients, autolevel minimum, operating range, or driver-backed
+    settings stop emission before acceptance. The TEC follows
+    `disable_tec_at_autooff`. Failed shutdown rejects the update and preserves
+    any measurement-owned shutdown obligation for retry. No-op updates and
+    changes only to noise, default auto-off, or TEC auto-off policy do not stop
+    emission. Successful settings updates still relinquish the measurement;
+    that behavior for non-stopping edits and tuning remains a deferred ownership
+    audit in `human_review_required.md`.
   - Failures before driver programming completes leave settings unchanged
-    (rollback is performed or an error emitted). If programming succeeds but
+    in app settings and report an error; partially written driver registers are
+    reprogrammed at the next preparation. If programming succeeds but
     restoring the previous bank power state fails, the successfully applied
     settings are still retained and persisted when requested; the command still
     reports the restore error because bank power needs operator attention.
@@ -953,6 +994,8 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     `isolation_db`, `ntc_t_coefficient_per_c`, and `emit_total_s`. Use `laser/tune`
     to set `tune_nm`; `name` belongs outside the settings object as the selector.
   - Non-Driver settings:
+    - `min_autolevel_current_ma`
+    - `nominal_current_ma`
     - `autooff_s`
     - `dlambda_dT_nm_per_k`
     - `dlambda_dA_nm_per_ma`

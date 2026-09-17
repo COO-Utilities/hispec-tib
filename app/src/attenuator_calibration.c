@@ -648,7 +648,7 @@ static bool auto_set_laser_level_locked(uint8_t level_index)
 	}
 	cal.laser_level_index = level_index;
 	cal.laser_percent = initial_laser_levels_pct[level_index];
-	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U) != 0) {
+	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U, true) != 0) {
 		auto_error_locked(-EIO);
 		return false;
 	}

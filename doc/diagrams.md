@@ -247,7 +247,7 @@ flowchart TD
   Return -- failure --> Shutdown
   Start -- failure --> Shutdown
   Start --> Auto{autolevel}
-  Auto -- yes --> Seed[maximum attenuation then laser 100 percent]
+  Auto -- yes --> Seed[maximum calibrated attenuation then bounded initial_level; default 0.5]
   Seed --> Ref[copy confirmed owner estimates into monitor context]
   Auto -- no --> Ref
   Ref --> Ready[return start status]
@@ -272,7 +272,7 @@ flowchart TD
   Context --> Publish[derive power ratio and errors; enqueue best effort]
   Publish --> Control{autolevel, owner available, acquisition after preceding move}
   Control -- no --> Unlock
-  Control -- yes --> Adjust[raw bright wins; fresh net outside band changes attenuator or laser]
+  Control -- yes --> Adjust[raw bright wins; low atten first; high uses compiled priority]
   Adjust --> Changed{move result}
   Changed -- failure --> Shutdown
   Changed -- unchanged --> Unlock
@@ -281,7 +281,10 @@ flowchart TD
 
   AttenChange[manual attenuation] --> Disable[disable control; refresh reference; retain owned shutdown]
   LaserChange[manual laser level] --> Disable
-  LaserSettings[laser tuning/settings] --> Release[relinquish stream without undoing manual setting]
+  LaserTune[laser tuning] --> Release[relinquish stream without undoing manual setting]
+  LaserSettings[laser settings] --> SettingsQuiet[quiesce stream; laser owner applies stop and settings]
+  SettingsQuiet -- success --> Release
+  SettingsQuiet -- failure --> Retry
 ```
 
 ```mermaid
@@ -525,7 +528,7 @@ flowchart TD
 flowchart TD
   Request[laser value effect request] --> Parse[validate laser name, value, autooff_s]
   Parse --> Settings[read laser channel settings]
-  Settings --> StopTP[stop throughput monitor for this laser]
+  Settings --> StopTP[disable autolevel; keep stream and owned shutdown]
   StopTP --> SetOutput[hispec_laser_set_output_percent_autooff]
   SetOutput --> Tuned{nonzero tune offset and level > 0}
   Tuned -- yes --> Tune[apply wavelength tune using current and TEC]
@@ -533,9 +536,9 @@ flowchart TD
   Tune --> Applied{hardware update ok}
   Percent --> Applied
   Applied -- no --> Error[return command error]
-  Applied -- yes --> LevelPositive{level > 0}
+  Applied -- yes --> LevelPositive{positive level or explicit autooff_s}
   LevelPositive -- yes --> Deadline[store auto-off deadline or zero for no timeout]
-  LevelPositive -- no --> Clear[clear auto-off deadline]
+  LevelPositive -- no --> Clear[preserve existing deadline at zero current]
   Deadline --> ScheduleTimeout[reschedule laser auto-off work]
   Clear --> Ok
   ScheduleTimeout --> Ok
@@ -556,7 +559,7 @@ flowchart TD
   Defaults[compiled diode table] --> Noise[3 percent fractional and 1 percent of compiled maximum power floor]
   Noise --> Policy[per-laser app policy]
   NVS[validated NVS policy] --> Policy
-  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; existing stop behavior]
+  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; stop stream; retain emission]
   Validate --> Policy
   Policy --> Cache[existing laser module cache under laser lock]
   Policy --> Persist[save on persist request; no Maiman programming for noise fields]

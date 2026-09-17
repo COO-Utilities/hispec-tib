@@ -35,12 +35,20 @@ Current app NVS records include:
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical
-  association check, plus `fractional_noise` and `constant_noise_mw`.
+  association check, plus `fractional_noise`, `constant_noise_mw`, and
+  `min_autolevel_current_ma`.
 - One laser total-emitting counter record per laser channel.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
 - One MEMS intent record containing per-switch static state intent, per-switch
   direct-toggle restart metadata, and per-channel split restart metadata.
+
+The autolevel-minimum addition changes the laser-policy record size while
+leaving schema 13 and all other records unchanged. Old laser-policy records fail
+the exact-size check and that channel uses compiled policy defaults. Reapply
+desired laser overrides after updating firmware. Emission counters, attenuator
+calibration, routes, networking, and other records remain valid; there is no
+migration or wholesale reset.
 
 ## Board-Type Reset Policy
 
@@ -75,6 +83,13 @@ silently reused on another.
 - Laser expected serials default to the initial known driver/diode association.
   Operators may update the value through `laser/settings` after confirming a
   replacement driver is physically associated with the intended diode.
+- Laser `min_autolevel_current_ma` defaults to threshold plus 0.1 mA rounded up
+  to the current-register grid. Validation normalizes it upward after threshold
+  changes and rejects an empty range through nominal current. It is app policy,
+  not the Maiman current limit. `initial_level` is a per-measurement fraction,
+  defaults to 0.5 in firmware, and is not persisted.
+- Laser settings `autooff_s` supplies the manual-command default; an explicit
+  command value overrides it. Throughput owns its separate `off_in_s` deadline.
 - Route-loss records default to absent. Known TIB laser AO/FEI paths then use
   the switch products plus planned static attenuation documented in
   [hardware.md](hardware.md#tib-route-loss-defaults); matching MM/SM return

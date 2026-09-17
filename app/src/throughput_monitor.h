@@ -16,6 +16,8 @@
 #include "lasers.h"
 #include "photodiode.h"
 
+#define THROUGHPUT_DEFAULT_INITIAL_LEVEL 0.5
+
 struct throughput_monitor_request {
 	/* Resolved run configuration. Return correction always applies; launch
 	 * transmission is NaN when the external source power is unknown.
@@ -30,6 +32,7 @@ struct throughput_monitor_request {
 	char fiber;
 	uint32_t off_in_s;
 	double max_flux_ph_s;
+	double initial_level;
 };
 
 struct throughput_monitor_status {
@@ -81,5 +84,12 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
  * Takes the monitor lock; does not perform hardware I/O or change laser output.
  */
 void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring);
+
+/** Quiesce this laser's stream and apply validated settings while serializing
+ * against autolevel. May block on laser I/O/NVS. Failed updates retain the
+ * owned laser identity for stop retry; success relinquishes the stopped stream.
+ */
+int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
+	const struct app_laser_channel_settings *settings, bool persist);
 
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */

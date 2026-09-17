@@ -31,8 +31,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Existing schema stays: size validation rejects only old attenuator records
- * after max_calibrated_db extends them, preserving unrelated settings. */
+/* Keep the schema: size checks reject extended attenuator/laser policy records
+ * from older firmware without discarding unrelated settings or counters. */
 #define APP_NVS_SCHEMA_VERSION 13U
 
 enum app_nvs_id {
@@ -106,6 +106,7 @@ struct app_nvs_laser_policy {
 	double nominal_current_ma;
 	double max_current_ma;
 	double threshold_current_ma;
+	double min_autolevel_current_ma;
 	double efficiency_mw_per_ma;
 	double wavelength_nm;
 	double current_set_calibration_pct;
@@ -293,6 +294,9 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->laserbank.heater_mode = LASERBANK_HEATER_MODE_AUTO;
 	for (uint8_t i = 0U; i < APP_LASER_CHANNEL_COUNT; ++i) {
 		s->laser.channel[i].properties = *default_laser_props[i];
+		double minimum = default_laser_props[i]->threshold_current_ma + 1.0 / DIVIDER_CURRENT;
+		s->laser.channel[i].min_autolevel_current_ma = hispec_laser_quantize_current_ma(
+			minimum, minimum, default_laser_props[i]->nominal_current_ma);
 		s->laser.channel[i].current_set_calibration_pct = 100.0;
 		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
 		/* Use the immutable diode table, not user settings or current output. */
@@ -511,6 +515,7 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->nominal_current_ma = laser->properties.nominal_current_ma;
 	stored->max_current_ma = laser->properties.max_current_ma;
 	stored->threshold_current_ma = laser->properties.threshold_current_ma;
+	stored->min_autolevel_current_ma = laser->min_autolevel_current_ma;
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
 	stored->wavelength_nm = laser->properties.wavelength_nm;
 	stored->current_set_calibration_pct = laser->current_set_calibration_pct;
@@ -806,6 +811,7 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.nominal_current_ma = stored->nominal_current_ma;
 	laser->properties.max_current_ma = stored->max_current_ma;
 	laser->properties.threshold_current_ma = stored->threshold_current_ma;
+	laser->min_autolevel_current_ma = stored->min_autolevel_current_ma;
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
 	laser->properties.wavelength_nm = stored->wavelength_nm;
 	laser->current_set_calibration_pct = stored->current_set_calibration_pct;

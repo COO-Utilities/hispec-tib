@@ -287,7 +287,10 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
 /**
  * @brief Set raw diode current in mA.
  *
- * An already started, prepared laser needs only a current write, including
+ * Requests and confirmed estimates use 0.1 mA register steps, bounded by the
+ * configured maximum. An unchanged healthy setpoint needs no transaction and
+ * does not refresh communication health. An already started, prepared laser
+ * otherwise needs only a current write, including
  * after a zero level. Preparation is retained until bank power changes or
  * configuration is invalidated. Zero writes current without STOP and preserves
  * the auto-off deadline. May block on Modbus; failed I/O
@@ -295,10 +298,20 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma);
 
-/** @brief Set output percent and configure auto-off deadline. */
+/** Round to Maiman current steps within inward-rounded bounds, or return NaN
+ * when no step exists. Pure calculation, no I/O or state changes. Control
+ * callers use this same conversion to predict moves and enforce flux limits.
+ */
+double hispec_laser_quantize_current_ma(double current_ma, double min_ma, double max_ma);
+
+/** Set output percent and configure auto-off, even for an unchanged setpoint.
+ * apply_tune=false changes current only and retains the existing TEC target;
+ * normal cold/unprepared startup still installs the configured default target.
+ * May block on Modbus. A no-op does not refresh communication health.
+ */
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
-					    uint32_t autooff_s);
+					    uint32_t autooff_s, bool apply_tune);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw);
@@ -329,9 +342,16 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
  */
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out);
-/** @brief Validate one complete app-owned laser channel settings record. */
+/** Validate a candidate and round/raise its autolevel minimum above threshold.
+ * No I/O or live-state changes; persist the normalized candidate if accepted.
+ */
 int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
-					   const struct app_laser_channel_settings *settings);
+					   struct app_laser_channel_settings *settings);
+/** Apply a validated/normalized policy. Model and envelope changes stop emission
+ * first; a failed stop rejects the update. Range-only edits invalidate preparation
+ * without powering an idle bank; driver-backed edits program immediately.
+ * May block on Modbus and requested NVS persistence.
+ */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);

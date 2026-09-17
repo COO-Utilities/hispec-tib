@@ -8,6 +8,11 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
+  startup, minimum-current fallback, and preference for lower attenuation.
+  Verify actual Maiman TEC bound expand/target/narrow ordering and rejection
+  recovery with the installed modules. Host tests cover register order and
+  failures; firmware builds do not establish optical response or hardware timing.
 - [ ] Bench-validate restricted 55 dB fitting and the continuous residual-to-floor
   continuation using the existing `atten_scan`. Confirm individual autolevel
   limits and collect the next calibration with the new `max_calibrated_db` field.
@@ -44,6 +49,11 @@ LLMs Agents: Do NOT change heading names in this file.
   the error budget and remaining physical calibration assumptions.
 
 ## TODOs
+- Audit successful noise/default-autooff/TEC-autooff-policy settings, settings
+  no-ops, and `laser/tune` that release a throughput stream while leaving its
+  laser emitting. They can discard measurement shutdown responsibility. Model
+  and envelope edits now stop emission; failed settings updates retain the owned
+  shutdown for explicit retry. The other ownership cases are intentionally deferred.
 - Retain raw attenuator calibration records and fit results through stop/error
   cleanup until the next acquisition. A status-payload failure followed by the
   notebook's stop cleanup currently clears the data needed to diagnose it.

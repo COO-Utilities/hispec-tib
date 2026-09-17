@@ -21,6 +21,12 @@ See [settings](../settings.md) for compiled-table defaults.
 ## Emission updates and failures
 
 A started laser accepts current changes, including zero, with one Modbus write.
+Current, percent, power, and tuning paths all round to the 0.1 mA register grid
+within their current bounds. Cached estimates and tune results use the applied
+value. Healthy repeated register values skip the write without refreshing
+communication health; an explicit auto-off request still rearms its deadline.
+Startup/recovery and TEC-only tuning changes still perform the required I/O.
+Requests that round to zero have the same accounting as explicit zero.
 Zero current pauses emission-time accounting but preserves started state, tuning,
 and the existing auto-off deadline. Explicit `laser stop=true`, auto-off, and
 measurement-owned expiry use zero-current plus STOP and their existing TEC policy.
@@ -31,6 +37,16 @@ changes/reset and bank power cycling invalidate affected configuration. Operatio
 faults remain separate from known identity/configuration. An unsuccessful current
 or STOP write is still reported; acknowledged zero current is retained even if STOP
 fails. A confirmed repeated stop avoids redundant writes.
+
+`hispec_laser_set_output_percent_autooff(..., apply_tune)` makes stored tuning
+explicit: manual levels and calibration apply it; throughput skips it and keeps
+the live TEC target. Preparation still installs the configured default target.
+Profile programming uses writable TEC bounds 0x0072 (minimum) and 0x0071
+(maximum), signed values scaled by 100. It expands the existing envelope before
+moving the default target and narrowing bounds. Absolute limits are read-only.
+A programming failure leaves preparation false and prevents a subsequent START
+until preparation succeeds. Range-only settings changes stop emission and defer
+programming until next preparation; combined driver-backed edits program now.
 
 At 115200 baud, the former ordinary path's six reads and sixteen writes require
 about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One

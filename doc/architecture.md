@@ -265,6 +265,21 @@ autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
 owners stop monitoring. Physical transition readings remain visible. See
 [the timing and error audit](photodiode_notes.md).
 
+Throughput starts at maximum calibrated attenuation and an optional initial
+laser fraction (firmware default 0.5). Brightening reduces attenuation before
+raising current. Dimming uses `TP_AUTOLEVEL_DIM_PRIORITY`: laser first by default,
+or the previous attenuation-first behavior. Both use the same actuator paths,
+calibrated limits, and global laser current quantization. The laser owner owns
+the current grid and per-laser autolevel floor; throughput owns priority and
+ignores stored tuning while retaining the live TEC target.
+
+Laser settings commands quiesce the matching monitor before applying settings
+under its lock. Changes affecting the emission model or operating envelope stop
+emission in `lasers.c`. Failure retains measurement shutdown responsibility;
+success releases it. App-only range edits defer TEC programming to preparation.
+Noise/default-policy edits and tuning that relinquish a still-emitting source
+remain a separate ownership audit in `human_review_required.md`.
+
 At measurement start, the command resolves route transmissions from explicit
 settings first, then compiled path defaults in `devices.c`, then unity for an
 unspecified path. Defaults stay in flash and consume no override slots; settings

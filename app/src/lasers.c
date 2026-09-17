@@ -293,6 +293,24 @@ static bool float_is_nonzero(double value)
 	return float_is_valid(value) && value != 0.0;
 }
 
+double hispec_laser_quantize_current_ma(double current_ma, double min_ma, double max_ma)
+{
+	if (!isfinite(current_ma) || !isfinite(min_ma) || !isfinite(max_ma) ||
+	    min_ma < 0.0 || max_ma > UINT16_MAX / DIVIDER_CURRENT || min_ma > max_ma) {
+		return NAN;
+	}
+	/* Bounds round inward; the request uses Maiman's nearest-step rounding.
+	 * nextafter removes a single floating-point rounding error at a register
+	 * boundary (for example, a computed threshold + one current step).
+	 */
+	double low = ceil(nextafter(min_ma * DIVIDER_CURRENT, -INFINITY));
+	double high = floor(nextafter(max_ma * DIVIDER_CURRENT, INFINITY));
+	if (low > high) {
+		return NAN;
+	}
+	return CLAMP(floor(current_ma * DIVIDER_CURRENT + 0.5), low, high) / DIVIDER_CURRENT;
+}
+
 /* Keep wait policy visible at call sites; this helper only maps Zephyr mutex
  * timeout return codes to the domain -EBUSY response expected by commands.
  */
@@ -1086,6 +1104,7 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 					const struct app_laser_channel_settings *settings)
 {
 	const laserprops_t *props = &settings->properties;
+	double old_min, old_max;
 	int rc;
 
 	laser_output_estimate[profile->id].prepared = false;
@@ -1095,7 +1114,8 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 		return rc;
 	}
 
-	if (!maiman_set_current_max(drv, props->max_current_ma)) {
+	if (!maiman_set_current_max(drv,
+		hispec_laser_quantize_current_ma(props->max_current_ma, 0.0, props->max_current_ma))) {
 		return -EIO;
 	}
 	if (!maiman_set_current_set_calibration(drv,
@@ -1105,7 +1125,25 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a)) {
 		return -EIO;
 	}
-	if (!maiman_set_tec_temperature(drv, props->operating_temp_c)) {
+	/* Expand before moving the target, then narrow. This also handles disjoint
+	 * old/new ranges without asking the controller to accept an invalid target.
+	 * Absolute device limits are read-only; only the writable bounds change.
+	 */
+	if (!maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MIN, DIVIDER_TEC_TEMPERATURE, true, &old_min) ||
+	    !maiman_read_scaled(drv, REG_TEC_TEMPERATURE_MAX, DIVIDER_TEC_TEMPERATURE, true, &old_max) ||
+	    (props->operating_temp_range_c.min_c < old_min &&
+	     !maiman_write_scaled(drv, REG_TEC_TEMPERATURE_MIN, DIVIDER_TEC_TEMPERATURE, true,
+		props->operating_temp_range_c.min_c)) ||
+	    (props->operating_temp_range_c.max_c > old_max &&
+	     !maiman_write_scaled(drv, REG_TEC_TEMPERATURE_MAX, DIVIDER_TEC_TEMPERATURE, true,
+		props->operating_temp_range_c.max_c)) ||
+	    !maiman_set_tec_temperature(drv, props->operating_temp_c) ||
+	    (props->operating_temp_range_c.min_c > old_min &&
+	     !maiman_write_scaled(drv, REG_TEC_TEMPERATURE_MIN, DIVIDER_TEC_TEMPERATURE, true,
+		props->operating_temp_range_c.min_c)) ||
+	    (props->operating_temp_range_c.max_c < old_max &&
+	     !maiman_write_scaled(drv, REG_TEC_TEMPERATURE_MAX, DIVIDER_TEC_TEMPERATURE, true,
+		props->operating_temp_range_c.max_c))) {
 		return -EIO;
 	}
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
@@ -1567,6 +1605,15 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		k_mutex_unlock(&laser_io_lock);
 		return -ERANGE;
 	}
+	current_ma = hispec_laser_quantize_current_ma(current_ma, 0.0, props->max_current_ma);
+	running = output_ready_locked(id);
+	/* A no-op is not communication and must not extend the response deadline.
+	 * An unprepared/faulted driver still needs the ordinary recovery path.
+	 */
+	if (running && current_ma == laser_output_estimate[id].current_ma) {
+		rc = 0;
+		goto out;
+	}
 
 	LOG_DBG("Laser %s level current_ma=%.3f started=%u configured=%u", profile->name,
 		current_ma, laser_output_estimate[id].started, laser_output_estimate[id].prepared);
@@ -1588,7 +1635,6 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		goto out;
 	}
 
-	running = output_ready_locked(id);
 	if (running) {
 		maiman_init(&drv, profile->node_id);
 	} else {
@@ -1675,17 +1721,16 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent)
 		return -EINVAL;
 	}
 
-	current_ma = props->threshold_current_ma + current_range_ma * (percent / 100.0);
-	if (current_ma > props->max_current_ma) {
-		current_ma = props->max_current_ma;
-	}
+	current_ma = hispec_laser_quantize_current_ma(
+		props->threshold_current_ma + current_range_ma * (percent / 100.0),
+		0.0, MIN(props->nominal_current_ma, props->max_current_ma));
 
 	return hispec_laser_set_current_ma(id, current_ma);
 }
 
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
-					    uint32_t autooff_s)
+					    uint32_t autooff_s, bool apply_tune)
 {
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props;
@@ -1701,7 +1746,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	}
 	props = &settings.properties;
 
-	if (percent > 0.0 && settings.tune_delta_nm != 0.0) {
+	if (apply_tune && percent > 0.0 && settings.tune_delta_nm != 0.0) {
 		/* Positive level commands apply the stored tune request. Setting
 		 * level 0 writes zero current without STOP and preserves tune_delta_nm
 		 * stored for the next start.
@@ -1816,7 +1861,7 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid)
 }
 
 static int validate_laser_settings(const struct hispec_laser_driver_profile *profile,
-				   const struct app_laser_channel_settings *settings)
+				   struct app_laser_channel_settings *settings)
 {
 	const laserprops_t *props;
 
@@ -1828,6 +1873,7 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	if (!float_is_valid(props->nominal_current_ma) ||
 	    !float_is_valid(props->max_current_ma) ||
 	    !float_is_valid(props->threshold_current_ma) ||
+	    !float_is_valid(settings->min_autolevel_current_ma) || settings->min_autolevel_current_ma < 0.0 ||
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !float_is_valid(props->wavelength_nm) ||
 	    !float_is_valid(settings->current_set_calibration_pct) ||
@@ -1869,11 +1915,21 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 		return -ERANGE;
 	}
 
+	/* Raising threshold may consume a previously accepted autolevel floor.
+	 * Normalize the candidate only; rejected updates never alter live settings.
+	 */
+	double minimum = MAX(settings->min_autolevel_current_ma,
+		props->threshold_current_ma + 1.0 / DIVIDER_CURRENT);
+	minimum = hispec_laser_quantize_current_ma(minimum, minimum, props->nominal_current_ma);
+	if (!isfinite(minimum)) {
+		return -ERANGE;
+	}
+	settings->min_autolevel_current_ma = minimum;
 	return 0;
 }
 
 int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
-					   const struct app_laser_channel_settings *settings)
+					   struct app_laser_channel_settings *settings)
 {
 	const struct hispec_laser_driver_profile *profile;
 	int rc;
@@ -1916,13 +1972,17 @@ int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 }
 
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
-					 const struct app_laser_channel_settings *settings,
+					 const struct app_laser_channel_settings *requested_settings,
 					 bool persist)
 {
 	const struct hispec_laser_driver_profile *profile;
+	struct app_laser_channel_settings normalized = *requested_settings;
+	const struct app_laser_channel_settings *settings = &normalized;
 	struct app_laser_channel_settings previous;
 	maiman_driver_t drv = {0};
 	bool apply_driver;
+	bool range_changed;
+	bool stop_emission;
 	bool settings_applied = false;
 	bool was_powered = false;
 	int rc;
@@ -1933,7 +1993,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		return rc;
 	}
 
-	rc = validate_laser_settings(profile, settings);
+	rc = validate_laser_settings(profile, &normalized);
 	if (rc != 0) {
 		return rc;
 	}
@@ -1947,6 +2007,26 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 	previous = laser_settings[id];
 	apply_driver = laser_driver_settings_differ(&previous, settings) ||
 		previous.expected_serial != settings->expected_serial;
+	range_changed = previous.properties.operating_temp_range_c.min_c != settings->properties.operating_temp_range_c.min_c ||
+		previous.properties.operating_temp_range_c.max_c != settings->properties.operating_temp_range_c.max_c;
+	stop_emission = apply_driver || range_changed ||
+		previous.properties.threshold_current_ma != settings->properties.threshold_current_ma ||
+		previous.properties.nominal_current_ma != settings->properties.nominal_current_ma ||
+		previous.properties.efficiency_mw_per_ma != settings->properties.efficiency_mw_per_ma ||
+		previous.properties.wavelength_nm != settings->properties.wavelength_nm ||
+		previous.properties.dlambda_dT_nm_per_k != settings->properties.dlambda_dT_nm_per_k ||
+		previous.properties.dlambda_dA_nm_per_ma != settings->properties.dlambda_dA_nm_per_ma ||
+		previous.min_autolevel_current_ma != settings->min_autolevel_current_ma;
+
+	/* Stop before changing the model or operating envelope. For app-only/range
+	 * updates this never powers an idle bank merely to program settings.
+	 */
+	if (stop_emission) {
+		rc = stop_output_locked(profile, settings->disable_tec_at_autooff);
+		if (rc != 0) {
+			goto out_unlock;
+		}
+	}
 
 	if (apply_driver) {
 		if (bank_power_mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) {
@@ -1986,7 +2066,13 @@ restore_power:
 out_unlock:
 	if (settings_applied) {
 		k_mutex_lock(&laser_state_lock, K_FOREVER);
+		/* STOP may have just committed emission time after the caller's copy. */
+		normalized.total_emitting_s = laser_settings[id].total_emitting_s;
 		laser_settings[id] = *settings;
+		if (range_changed && !apply_driver) {
+			/* Apply new bounds/default target at the next preparation/start. */
+			laser_output_estimate[id].prepared = false;
+		}
 		k_mutex_unlock(&laser_state_lock);
 	}
 	if (apply_driver) {
@@ -2316,16 +2402,20 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 						    props->threshold_current_ma,
 						    props->max_current_ma,
 						    &current_clamped);
-		delta_from_current_nm =
-			(target_current_ma - props->nominal_current_ma) *
-			props->dlambda_dA_nm_per_ma;
 	} else {
 		target_current_ma = desired_i_ma;
-		delta_from_current_nm =
-			(desired_i_ma - props->nominal_current_ma) *
-			props->dlambda_dA_nm_per_ma;
 	}
 
+	/* Report and apply the same register-representable current, including in
+	 * a dry-run tune result. Limits must survive the driver's rounding.
+	 */
+	target_current_ma = hispec_laser_quantize_current_ma(target_current_ma,
+		props->threshold_current_ma, props->max_current_ma);
+	if (!isfinite(target_current_ma)) {
+		return -ERANGE;
+	}
+	delta_from_current_nm = (target_current_ma - props->nominal_current_ma) *
+		props->dlambda_dA_nm_per_ma;
 	estimated_wavelength_nm = props->wavelength_nm +
 				  delta_from_temp_nm + delta_from_current_nm;
 	estimated_power_mw =
@@ -2341,6 +2431,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	result->temperature_clamped = temp_clamped;
 	result->current_clamped = current_clamped;
 
+	if (request->apply && target_current_ma == 0.0) {
+		return hispec_laser_set_current_ma(id, 0.0);
+	}
 	if (request->apply) {
 		maiman_driver_t drv = {0};
 
@@ -2357,15 +2450,22 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			return -ERANGE;
 		}
 		bool running = output_ready_locked(id);
+		bool current_changed = target_current_ma != laser_output_estimate[id].current_ma;
+		bool temperature_changed = target_temp_c != laser_output_estimate[id].tec_temperature_c;
+		if (running && !current_changed && !temperature_changed) {
+			/* Auto-off rearming belongs to the calling level operation. */
+			k_mutex_unlock(&laser_io_lock);
+			return 0;
+		}
 		if (running) {
 			maiman_init(&drv, profile->node_id);
 		} else {
 			rc = prepare_to_operate_locked(profile, &drv);
 		}
 		if (rc == 0 &&
-		    (((!running || target_temp_c != laser_output_estimate[id].tec_temperature_c) &&
+		    (((!running || temperature_changed) &&
 		      !maiman_set_tec_temperature(&drv, target_temp_c)) ||
-		     !maiman_set_current(&drv, target_current_ma) ||
+		     ((!running || current_changed) && !maiman_set_current(&drv, target_current_ma)) ||
 		     ((!laser_output_estimate[id].started || !laser_output_estimate[id].valid) && !maiman_start_device(&drv)))) {
 			LOG_WRN("Laser %s tune apply failed temp=%.3fC current=%.3fmA",
 				profile->name, (double)target_temp_c,

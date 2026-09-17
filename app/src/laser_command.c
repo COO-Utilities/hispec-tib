@@ -383,7 +383,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		/* A momentary zero level preserves the existing shutdown deadline. */
 		rc = hispec_laser_set_current_ma(id, 0.0);
 	} else {
-		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true);
 	}
 	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser operation failed", rc);
 	return coo_cmd_ok(out, cmd);
@@ -442,6 +442,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
 		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
+		"\"min_autolevel_current_ma\":%.1f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
 		"\"isolation_db\":%.2f,\"tec_max_current_a\":%.3f,"
@@ -460,6 +461,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		settings->fractional_noise, settings->constant_noise_mw,
 		(double)p->threshold_current_ma,
 		(double)p->efficiency_mw_per_ma,
+		settings->min_autolevel_current_ma,
 		(double)p->wavelength_nm,
 		(double)p->operating_temp_range_c.min_c,
 		(double)p->operating_temp_range_c.max_c,
@@ -515,7 +517,7 @@ static int laser_parse_settings_update(const char *json,
 		return -EINVAL;
 	}
 	if (coo_json_validate_top_level_keys(json,
-		"nominal_current_ma,max_current_ma,threshold_current_ma,efficiency_mw_per_ma,"
+		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,"
 		"wavelength_nm,current_set_calibration_pct,fractional_noise,constant_noise_mw,"
 		"default_operating_temp_c,operating_temp_range_c,tec_max_current_a,tec_pid,"
 		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
@@ -534,6 +536,7 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma);
 	LASER_PARSE_FLOAT("max_current_ma", settings->properties.max_current_ma);
 	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma);
+	LASER_PARSE_FLOAT("min_autolevel_current_ma", settings->min_autolevel_current_ma);
 	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma);
 	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
 	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
@@ -656,8 +659,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
 	}
 
-	throughput_monitor_note_laser_changed(id, true);
-	rc = hispec_laser_update_channel_settings(id, &settings, persist);
+	rc = throughput_monitor_update_laser_settings(id, &settings, persist);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
 	}

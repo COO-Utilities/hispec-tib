@@ -466,6 +466,7 @@ class LaserSettings(ResponseRepr):
     fractional_noise: float
     constant_noise_mw: float
     threshold_current_ma: float
+    min_autolevel_current_ma: float
     efficiency_mw_per_ma: float
     wavelength_nm: float
     operating_temp_range_c: tuple[float, float]
@@ -4176,6 +4177,7 @@ class HispecFibPcb:
         nominal_current_ma: float | None = None,
         max_current_ma: float | None = None,
         threshold_current_ma: float | None = None,
+        min_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
         wavelength_nm: float | None = None,
         current_set_calibration_pct: float | None = None,
@@ -4204,6 +4206,7 @@ class HispecFibPcb:
             nominal_current_ma=nominal_current_ma,
             max_current_ma=max_current_ma,
             threshold_current_ma=threshold_current_ma,
+            min_autolevel_current_ma=min_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
             wavelength_nm=wavelength_nm,
             current_set_calibration_pct=current_set_calibration_pct,
@@ -4219,7 +4222,7 @@ class HispecFibPcb:
             expected_serial=expected_serial,
         )
         settings = settings or {}
-        for key in ("fractional_noise", "constant_noise_mw"):
+        for key in ("fractional_noise", "constant_noise_mw", "min_autolevel_current_ma"):
             if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
                 raise HispecFibError(f"{key} must be finite and nonnegative")
         if tec_pid is not None:
@@ -4245,6 +4248,7 @@ class HispecFibPcb:
                 fractional_noise=float(settings["fractional_noise"]),
                 constant_noise_mw=float(settings["constant_noise_mw"]),
                 threshold_current_ma=float(settings["threshold_current_ma"]),
+                min_autolevel_current_ma=float(settings["min_autolevel_current_ma"]),
                 efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
                 wavelength_nm=float(settings["wavelength_nm"]),
                 operating_temp_range_c=(
@@ -4805,6 +4809,7 @@ class HispecFibPcb:
         *,
         fiber: Literal["M", "S"] = "M",
         autolevel: bool = True,
+        initial_level: float | None = None,
         input: str | None = None,
         output: str | None = None,
         max_flux_ph_s: float | None = None,
@@ -4825,6 +4830,9 @@ class HispecFibPcb:
         can stream; firmware permits only one autolevel owner.
         Manual laser level and attenuation changes disable autolevel while this
         collector and its live plot continue; the measurement deadline is retained.
+        Autolevel starts at maximum calibrated attenuation and initial_level
+        (firmware default 0.5), clamped to min_autolevel_current_ma. Zero selects
+        that minimum, not off. Autolevel ignores stored wavelength tuning.
         """
         if laser != "none":
             _require_choice("laser", laser, LASER_NAMES)
@@ -4832,6 +4840,8 @@ class HispecFibPcb:
         _require_choice("format", format, ("json", "binary"))
         if max_flux_ph_s is not None and not autolevel:
             raise HispecFibError("max_flux_ph_s is valid only with autolevel=True")
+        if initial_level is not None and not autolevel:
+            raise HispecFibError("initial_level is valid only with autolevel=True")
         if laser == "none":
             if autolevel:
                 raise HispecFibError('laser="none" requires autolevel=False')
@@ -4868,6 +4878,8 @@ class HispecFibPcb:
             payload["input"] = str(input)
         if max_flux_ph_s is not None:
             payload["max_flux_ph_s"] = _require_float("max_flux_ph_s", max_flux_ph_s, 1e-300, 1e300)
+        if initial_level is not None:
+            payload["initial_level"] = _require_float("initial_level", initial_level, 0.0, 1.0)
 
         monitor = None
         if collect:

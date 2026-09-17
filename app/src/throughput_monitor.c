@@ -25,6 +25,15 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 
 #define TP_LOW_FRACTION 0.20
 #define TP_HIGH_FRACTION 0.80
+#define TP_ATTEN_FIRST 0
+#define TP_LASER_FIRST 1
+/* Both policies brighten with attenuation first. Select only the dimming order. */
+#ifndef TP_AUTOLEVEL_DIM_PRIORITY
+#define TP_AUTOLEVEL_DIM_PRIORITY TP_LASER_FIRST
+#endif
+#if TP_AUTOLEVEL_DIM_PRIORITY != TP_ATTEN_FIRST && TP_AUTOLEVEL_DIM_PRIORITY != TP_LASER_FIRST
+#error "TP_AUTOLEVEL_DIM_PRIORITY must be TP_ATTEN_FIRST or TP_LASER_FIRST"
+#endif
 #define TP_FLAG_OVERRANGE BIT(0)
 #define TP_FLAG_AUTOLEVEL BIT(1)
 
@@ -67,7 +76,6 @@ struct throughput_state {
 	enum photodiode_channel channel;
 	uint8_t attenuator_index;
 	char fiber;
-	double level_percent;
 	int64_t started_ms;
 	uint32_t off_in_s;
 	double max_flux_ph_s;
@@ -253,11 +261,14 @@ static int autolevel_adjust(struct throughput_state *state,
 	double max_tx = 1.0;
 	double laser_flux = source->laser_output_power_uw * 1.0e-6 *
 		(source->wavelength_nm * 1.0e-9) / (6.62607015e-34 * 299792458.0);
-	double next_percent;
-	int rc;
+	struct app_laser_channel_settings settings;
 
 	if ((!high && !low) || !isfinite(source->atten_tx)) {
 		return 0;
+	}
+	int rc = hispec_laser_get_channel_settings(state->laser, &settings);
+	if (rc != 0) {
+		return rc;
 	}
 	/* Preserve the command's cap on flux AFTER dynamic attenuation but BEFORE
 	 * static route losses. Optical power is used everywhere else in the stream.
@@ -265,38 +276,58 @@ static int autolevel_adjust(struct throughput_state *state,
 	if (state->max_flux_ph_s > 0.0 && laser_flux > 0.0) {
 		max_tx = MIN(1.0, state->max_flux_ph_s / laser_flux);
 	}
-	if ((low && source->atten_tx < 0.999) || high) {
-		double next_tx = low ? MIN(source->atten_tx * 3.0, max_tx) :
-			source->atten_tx / 3.0;
-		if (low && next_tx <= source->atten_tx) {
-			return 0;
+	/* Try each actuator once; a clamped/quantized no-op yields to the other.
+	 * The same actuator code serves both build-time priority choices.
+	 */
+	bool laser_first = high && TP_AUTOLEVEL_DIM_PRIORITY == TP_LASER_FIRST;
+	for (unsigned pass = 0; pass < 2; ++pass) {
+		if ((pass == 0) != laser_first) {
+			double next_tx = low ? MIN(source->atten_tx * 3.0, max_tx) : source->atten_tx / 3.0;
+			if (low && next_tx <= source->atten_tx) {
+				continue;
+			}
+			if (!attenuator_set_linear(atten, next_tx, true)) {
+				return -EIO;
+			}
+			struct attenuator_transmission_estimate applied;
+			if (!attenuator_estimate_transmission(atten, &applied)) {
+				return -EIO;
+			}
+			if (applied.attenuation_db != source->atten_db) {
+				return 1;
+			}
+			continue;
 		}
-		if (!attenuator_set_linear(atten, next_tx, true)) {
-			return -EIO;
+		const laserprops_t *props = &settings.properties;
+		double excess_ma = source->laser_current_ma - props->threshold_current_ma;
+		double max_ma = props->nominal_current_ma;
+		if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
+			max_ma = MIN(max_ma, props->threshold_current_ma + excess_ma *
+				state->max_flux_ph_s / (laser_flux * source->atten_tx));
 		}
-		struct attenuator_transmission_estimate applied;
-		if (!attenuator_estimate_transmission(atten, &applied)) {
-			return -EIO;
+		double next_ma = hispec_laser_quantize_current_ma(
+			props->threshold_current_ma + (low ? excess_ma * 3.0 : excess_ma / 3.0),
+			settings.min_autolevel_current_ma, max_ma);
+		if (!isfinite(next_ma) || (low ? next_ma <= source->laser_current_ma :
+					       next_ma >= source->laser_current_ma)) {
+			continue;
 		}
-		if (applied.attenuation_db != source->atten_db) {
+		double percent = MIN(100.0, 100.0 * (next_ma - props->threshold_current_ma) /
+			(props->nominal_current_ma - props->threshold_current_ma));
+		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false);
+		if (rc != 0) {
+			return rc;
+		}
+		struct hispec_laser_flux_estimate applied;
+		rc = laser_estimate_flux(state->laser, &applied);
+		if (rc != 0) {
+			return rc;
+		}
+		if (applied.current_ma != source->laser_current_ma) {
 			return 1;
 		}
-		/* A clamped pair already at its limit must yield to laser adjustment. */
 	}
-	next_percent = low ? MIN(state->level_percent * 3.0, 100.0) : state->level_percent / 3.0;
-	if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
-		next_percent = MIN(next_percent, state->level_percent *
-			state->max_flux_ph_s / (laser_flux * source->atten_tx));
-	}
-	if (next_percent == state->level_percent || (low && next_percent <= state->level_percent)) {
-		return 0;
-	}
-	rc = hispec_laser_set_output_percent_autooff(state->laser, next_percent, 0U);
-	if (rc != 0) {
-		return rc;
-	}
-	state->level_percent = next_percent;
-	return 1;
+	return 0;
 }
 
 /* Serialize a single acquisition, never a window mean. The same power ratio
@@ -486,6 +517,10 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	if (request->fiber != 'M' && request->fiber != 'S') {
 		return -EINVAL;
 	}
+	if (request->autolevel && (!isfinite(request->initial_level) ||
+	    request->initial_level < 0.0 || request->initial_level > 1.0)) {
+		return -EINVAL;
+	}
 	photodiode_get_status(&pd_status);
 	if (attenuator_calibration_active() || pd_status.channel[0].dark_pending ||
 	    pd_status.channel[1].dark_pending) {
@@ -592,12 +627,21 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	monitors[channel] = next;
 
 	if (request->has_laser && request->autolevel) {
-		monitors[channel].level_percent = 100.0;
+		struct app_laser_channel_settings settings;
+		rc = hispec_laser_get_channel_settings(request->laser, &settings);
+		if (rc != 0) {
+			goto failed;
+		}
+		const laserprops_t *props = &settings.properties;
+		double range_ma = props->nominal_current_ma - props->threshold_current_ma;
+		double initial_ma = hispec_laser_quantize_current_ma(
+			props->threshold_current_ma + range_ma * request->initial_level,
+			settings.min_autolevel_current_ma, props->nominal_current_ma);
 		rc = attenuator_set_db(&attenuators[attenuator_index],
 			2.0 * ATTENUATOR_CALIBRATED_MAX_DB, true) ? 0 : -EIO;
 		if (rc == 0) {
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				monitors[channel].level_percent, 0U);
+				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false);
 		}
 		if (rc != 0) {
 			goto failed;
@@ -701,4 +745,27 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop
 		}
 	}
 	k_mutex_unlock(&monitors_lock);
+}
+
+int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
+	const struct app_laser_channel_settings *settings, bool persist)
+{
+	k_mutex_lock(&monitors_lock, K_FOREVER);
+	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		if (monitors[i].has_laser && monitors[i].laser == laser) {
+			housekeeping_photodiode_autooff_inhibit(pd_power_output(i), false);
+			monitors[i].phase = TP_INACTIVE;
+			monitors[i].autolevel = false;
+		}
+	}
+	int rc = hispec_laser_update_channel_settings(laser, settings, persist);
+	if (rc == 0) {
+		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+			if (monitors[i].has_laser && monitors[i].laser == laser) {
+				release_locked(i);
+			}
+		}
+	}
+	k_mutex_unlock(&monitors_lock);
+	return rc;
 }

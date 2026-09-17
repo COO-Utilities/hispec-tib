@@ -122,6 +122,8 @@ struct app_laserbank_settings {
 /** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
 struct app_laser_channel_settings {
 	laserprops_t properties;
+	/* Throughput autolevel floor; manual current/level commands may go lower. */
+	double min_autolevel_current_ma;
 	double current_set_calibration_pct;
 	/* App-owned optical-power uncertainty; never programmed into Maiman. */
 	double fractional_noise;
