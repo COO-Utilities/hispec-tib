@@ -725,6 +725,36 @@ int coo_json_append(char *buf, size_t buf_len, size_t *offset,
 	return rc;
 }
 
+int coo_json_append_seconds_or_null(char *buf, size_t buf_len, size_t *offset,
+				    bool active, double seconds)
+{
+	if (!active || seconds < 0.0 || seconds != seconds) {
+		return coo_json_append(buf, buf_len, offset, "null");
+	}
+
+	return coo_json_append(buf, buf_len, offset, "%lld", (long long)seconds);
+}
+
+int coo_json_append_i64_or_null(char *buf, size_t buf_len, size_t *offset,
+				bool active, int64_t value)
+{
+	if (!active) {
+		return coo_json_append(buf, buf_len, offset, "null");
+	}
+
+	return coo_json_append(buf, buf_len, offset, "%lld", (long long)value);
+}
+
+int coo_json_append_string_or_null(char *buf, size_t buf_len, size_t *offset,
+				   const char *value)
+{
+	if (value == NULL || value[0] == '\0') {
+		return coo_json_append(buf, buf_len, offset, "null");
+	}
+
+	return coo_json_append(buf, buf_len, offset, "\"%s\"", value);
+}
+
 int coo_json_append_float_or_null(char *buf, size_t buf_len, size_t *offset,
 				  double value, int precision)
 {

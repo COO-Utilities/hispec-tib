@@ -1097,25 +1097,6 @@ static int help_options_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-//TODO <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there. here and at least laser_coomand.c
-static int command_append_seconds_or_null(char *payload, size_t payload_len,
-                                          size_t *off, bool active, double seconds)
-{
-    if (!active || seconds < 0.0 || seconds != seconds) {
-        return coo_json_append(payload, payload_len, off, "null");
-    }
-    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
-}
-
-static int command_append_i64_or_null(char *payload, size_t payload_len,
-                                      size_t *off, bool active, int64_t seconds)
-{
-    if (!active) {
-        return coo_json_append(payload, payload_len, off, "null");
-    }
-    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
-}
-
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
@@ -1193,14 +1174,14 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                 coo_json_append(payload, sizeof(payload), &off,
                                 ",\"ready\":%s,\"tec_on_s\":",
                                 rc == 0 && laser.ready_to_operate ? "true" : "false") != 0 ||
-                command_append_seconds_or_null(payload, sizeof(payload), &off,
-                                               rc == 0 && laser.tec_runtime_active,
-                                               laser.tec_on_time_s) != 0 ||
+                coo_json_append_seconds_or_null(payload, sizeof(payload), &off,
+                                                rc == 0 && laser.tec_runtime_active,
+                                                laser.tec_on_time_s) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off,
                                 ",\"off_in_s\":") != 0 ||
-                command_append_i64_or_null(payload, sizeof(payload), &off,
-                                           rc == 0 && laser.autooff_active,
-                                           laser.off_in_s) != 0 ||
+                coo_json_append_i64_or_null(payload, sizeof(payload), &off,
+                                            rc == 0 && laser.autooff_active,
+                                            laser.off_in_s) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }

@@ -240,38 +240,6 @@ static int command_laser_id_from_payload(const struct coo_cmd_request *cmd,
 	return hispec_laser_id_from_name(name, id);
 }
 
-static int json_append_seconds_or_null(char *payload, size_t payload_len,
-				       size_t *off, bool active, double seconds)
-{
-	if (!active || seconds < 0.0 || seconds != seconds) {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "%lld",
-			       (long long)seconds);
-}
-
-static int json_append_i64_or_null(char *payload, size_t payload_len,
-				   size_t *off, bool active, int64_t seconds)
-{
-	if (!active) {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "%lld",
-			       (long long)seconds);
-}
-
-static int json_append_string_or_null(char *payload, size_t payload_len,
-				      size_t *off, const char *value)
-{
-	if (value == NULL || value[0] == '\0') {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "\"%s\"", value);
-}
-
 static int laser_append_compact_status(char *payload, size_t payload_len,
 				       const struct hispec_laser_status *status)
 {
@@ -284,23 +252,23 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 			    status->name,
 			    status->bank_powered ? "true" : "false",
 			    status->ready_to_operate ? "true" : "false") != 0 ||
-	    json_append_string_or_null(payload, payload_len, &off,
-				       status->blocked_reason) != 0 ||
+	    coo_json_append_string_or_null(payload, payload_len, &off,
+					   status->blocked_reason) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"tec_on_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->tec_runtime_active,
-					status->tec_on_time_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->tec_runtime_active,
+					    status->tec_on_time_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"emit_on_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->current_runtime_active,
-					status->current_on_time_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->current_runtime_active,
+					    status->current_on_time_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"emit_total_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->current_runtime_active,
-					status->total_emitting_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->current_runtime_active,
+					    status->total_emitting_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"temp_c\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
@@ -337,9 +305,9 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 					  status->tec_voltage_v, 3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"off_in_s\":") != 0 ||
-	    json_append_i64_or_null(payload, payload_len, &off,
-				    status->autooff_active,
-				    status->off_in_s) != 0 ||
+	    coo_json_append_i64_or_null(payload, payload_len, &off,
+					status->autooff_active,
+					status->off_in_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"oc_fault\":%s}",
 			    status->lock_ld_overcurrent ? "true" : "false") != 0) {
@@ -707,8 +675,8 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 			    s.serial_matches ? "true" : "false",
 			    s.device_state, s.lock_status, s.tec_state,
 			    s.blocking_lock_status) != 0 ||
-	    json_append_string_or_null(payload, sizeof(payload), &off,
-				       s.blocked_reason) != 0 ||
+	    coo_json_append_string_or_null(payload, sizeof(payload), &off,
+					   s.blocked_reason) != 0 ||
 	    coo_json_append(payload, sizeof(payload), &off,
 			    ",\"op_started\":%s,\"ready\":%s,"
 			    "\"curr_set_internal\":%s,\"enable_internal\":%s,"

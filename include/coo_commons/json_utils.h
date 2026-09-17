@@ -140,6 +140,21 @@ int coo_json_append(char *buf, size_t buf_len, size_t *offset,
 		    const char *fmt, ...);
 int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
 		     const char *fmt, va_list args);
+/**
+ * Append truncated whole seconds, or null if inactive, negative, or NaN.
+ * Active nonnegative values must be finite and fit in a signed 64-bit integer.
+ */
+int coo_json_append_seconds_or_null(char *buf, size_t buf_len, size_t *offset,
+				    bool active, double seconds);
+/** Append a signed JSON integer, or null if inactive. */
+int coo_json_append_i64_or_null(char *buf, size_t buf_len, size_t *offset,
+				bool active, int64_t value);
+/**
+ * Append a quoted string, or null if NULL or empty.
+ * No escaping is performed; callers must supply JSON-safe text.
+ */
+int coo_json_append_string_or_null(char *buf, size_t buf_len, size_t *offset,
+				   const char *value);
 /** Append a JSON number or null when @p value is NaN. */
 int coo_json_append_float_or_null(char *buf, size_t buf_len, size_t *offset,
 				  double value, int precision);
