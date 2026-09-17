@@ -53,3 +53,11 @@ endchoice
 module = APP
 module-str = APP
 source "subsys/logging/Kconfig.template.log_config"
+
+module = MAIMAN
+module-str = Maiman Modbus driver
+source "subsys/logging/Kconfig.template.log_config"
+
+module = LASERS
+module-str = Laser control
+source "subsys/logging/Kconfig.template.log_config"

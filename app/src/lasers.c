@@ -26,7 +26,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-LOG_MODULE_REGISTER(lasers, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(lasers, CONFIG_LASERS_LOG_LEVEL);
 
 #define PLANCK_J_S 6.62607015e-34
 #define LIGHT_M_PER_S 299792458.0
@@ -1089,7 +1089,7 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	int rc;
 
 	laser_output_estimate[profile->id].prepared = false;
-	LOG_INF("Laser %s applying configuration", profile->name);
+	LOG_DBG("Laser %s applying configuration", profile->name);
 	rc = check_ocp_limit_locked(profile, drv, props);
 	if (rc != 0) {
 		return rc;
@@ -1249,17 +1249,17 @@ static bool output_ready_locked(enum hispec_laser_id id)
 }
 
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *profile,
-				     maiman_driver_t *drv, bool verbose)
+				     maiman_driver_t *drv)
 {
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
 	uint16_t device_state, tec_state, lock_status;
 	int rc = ensure_bank_powered_locked();
 
 	if (rc != 0) return rc;
-	maiman_init_verbose(drv, profile->node_id, verbose);
+	maiman_init(drv, profile->node_id);
 	rc = verify_driver_locked(profile, drv, NULL, laser_settings[profile->id].expected_serial);
 	if (rc != 0) return rc;
-	LOG_INF("Laser %s prepare configuration_needed=%u", profile->name, !state->prepared);
+	LOG_DBG("Laser %s prepare configuration_needed=%u", profile->name, !state->prepared);
 	if (!state->prepared) {
 		/* Establish app-owned limits/default temperature/CW mode once per bank
 		 * power interval. Live tuning then survives ordinary STOP/start cycles.
@@ -1480,7 +1480,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 
 	maiman_init(&drv, profile->node_id);
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
-	LOG_INF("Laser %s stop started=%u valid=%u stop_tec=%u", profile->name, state->started, state->valid, stop_tec);
+	LOG_DBG("Laser %s stop started=%u valid=%u stop_tec=%u", profile->name, state->started, state->valid, stop_tec);
 	if (state->started || !state->valid || state->current_ma != 0.0) {
 		bool zeroed = maiman_set_current(&drv, 0.0);
 		if (zeroed) {
@@ -1568,7 +1568,7 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		return -ERANGE;
 	}
 
-	LOG_INF("Laser %s level current_ma=%.3f started=%u configured=%u", profile->name,
+	LOG_DBG("Laser %s level current_ma=%.3f started=%u configured=%u", profile->name,
 		current_ma, laser_output_estimate[id].started, laser_output_estimate[id].prepared);
 	if (current_ma == 0.0) {
 		maiman_init(&drv, profile->node_id);
@@ -1592,7 +1592,7 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 	if (running) {
 		maiman_init(&drv, profile->node_id);
 	} else {
-		rc = prepare_to_operate_locked(profile, &drv, true);
+		rc = prepare_to_operate_locked(profile, &drv);
 		if (rc != 0) {
 			goto out;
 		}
@@ -1623,7 +1623,7 @@ out:
 		invalidate_output_locked(id);
 	}
 	laser_note_communication_locked(id, &drv);
-	LOG_INF("Laser %s level result rc=%d started=%u current_ma=%.3f valid=%u", profile->name, rc,
+	LOG_DBG("Laser %s level result rc=%d started=%u current_ma=%.3f valid=%u", profile->name, rc,
 		laser_output_estimate[id].started, laser_output_estimate[id].current_ma, laser_output_estimate[id].valid);
 	k_mutex_unlock(&laser_io_lock);
 	laser_autooff_reschedule();
@@ -1764,7 +1764,7 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 	}
 
 
-	rc = prepare_to_operate_locked(profile, &drv, true);
+	rc = prepare_to_operate_locked(profile, &drv);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
 		LOG_WRN("Laser %s TEC setpoint write failed temp=%.3fC",
 			profile->name, (double)temperature_c);
@@ -2360,7 +2360,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		if (running) {
 			maiman_init(&drv, profile->node_id);
 		} else {
-			rc = prepare_to_operate_locked(profile, &drv, true);
+			rc = prepare_to_operate_locked(profile, &drv);
 		}
 		if (rc == 0 &&
 		    (((!running || target_temp_c != laser_output_estimate[id].tec_temperature_c) &&

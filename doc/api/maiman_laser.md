@@ -54,12 +54,27 @@ Failed shutdown preserves its emission/shutdown obligation. See
 
 ## Temporary bench timing trace
 
-The bench build enables compact `MB` transaction records in `maiman.c` and temporary
-receive probes in the workspace Zephyr checkout (`subsys/modbus/modbus_serial.c`
-and `modbus_core.c`). Keep that checkout with the application when rebuilding this
-bench image. Disable transaction/quiet records with `MAIMAN_TRACE=false`; disable
-receive probes with `HISPEC_RTU_TRACE=false` in both Zephyr files. Logging remains
-deferred. No raw packet or per-byte logging is required.
+Normal firmware uses Maiman and laser INFO levels, Modbus WARNING, and a shared
+2048-byte deferred-log buffer. Transaction/quiet and preparation details use DEBUG;
+compact receive probes use Modbus INFO. These are standard module log levels, with
+no per-operation verbosity argument or separate trace switch. Communication-health
+timestamps and busy waits are maintained even when logging is off.
+
+For a diagnostic capture, build separately with these Kconfig overrides:
+
+```sh
+./.venv/bin/west build --board=nucleo_h563zi/stm32h563xx \
+  --build-dir ./hispec-tib/app/build-maiman-log ./hispec-tib/app -- \
+  -DCONFIG_MAIMAN_LOG_LEVEL_DBG=y -DCONFIG_LASERS_LOG_LEVEL_DBG=y \
+  -DCONFIG_MODBUS_LOG_LEVEL_INF=y
+```
+
+Keep the workspace Zephyr checkout with the application: the receive probes are
+in `subsys/modbus/modbus_serial.c` and `modbus_core.c`. Modbus DEBUG also enables
+existing packet dumps, so use INFO for compact timing captures. The separate
+`debug.conf` profiling fragment overrides the buffer to 16 KiB and is not needed
+for this capture. The 2 KiB buffer is allocated once across modules; its increase
+from 1 KiB adds 1 KiB of RAM but does not guarantee lossless diagnostic bursts.
 
 Capture the serial console continuously from before the first command through at
 least one second after the final response. Use firmware monotonic timestamps for

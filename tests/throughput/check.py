@@ -983,7 +983,6 @@ laser_source = r'''
 #define K_FOREVER 0
 #define K_MSEC(x) (x)
 #define LASER_COMMAND_LOCK_TIMEOUT_MS 250
-#define VERBOSE_MAIMAN false
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define LOG_INF(...) ((void)0)
 #define LOG_DBG(...) ((void)0)
@@ -1043,7 +1042,6 @@ static bool maiman_read_tec_started(maiman_driver_t *d,bool *on) {*on=true;retur
 #define REG_LOCK_STATUS 5
 #define LOG_ERR(...) ((void)0)
 static int ensure_bank_powered_locked(void) {return 0;}
-static void maiman_init_verbose(maiman_driver_t *d,unsigned n,bool v) {(void)v;maiman_init(d,n);}
 static uint16_t maiman_get_device_id(maiman_driver_t *d) {identity_reads++;reply(d,true);return 0x1113;}
 static uint16_t maiman_get_serial_number(maiman_driver_t *d) {identity_reads++;reply(d,true);return 8229;}
 static int check_driver_serial_locked(const struct hispec_laser_driver_profile *p,uint16_t actual,uint16_t expected) {
@@ -1191,22 +1189,24 @@ maiman_source=r'''
 #define LOG_ERR(...) ((void)0)
 #include <stdarg.h>
 static void trace(const char *fmt, ...) {(void)fmt;}
-#define LOG_INF(...) trace(__VA_ARGS__)
+#define LOG_LEVEL_DBG 4
+#define LOG_DBG(...) do { if (CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG) trace(__VA_ARGS__); } while (0)
 #include <errno.h>
-typedef struct {uint8_t node_id;bool verbose;bool io_failed;int last_error;int64_t last_response_ms;} maiman_driver_t;
+typedef struct {uint8_t node_id;bool io_failed;int last_error;int64_t last_response_ms;} maiman_driver_t;
 static int64_t now=1000;
 static int64_t k_uptime_get(void){return now;}
 #define K_MSEC(x) (x)
 static void k_sleep(unsigned ms){now+=ms;}
-#define MAIMAN_TRACE true
 #define MAIMAN_BUSY_MS 350U
 #define REG_STATE_OF_DEVICE_COMMAND 4
 #define MODBUS_START_COMMAND_VALUE 8
 #define MODBUS_STOP_COMMAND_VALUE 16
 #define REG_SAVE_PARAMETERS 9
 #define REG_RESET_PARAMETERS 10
+#if CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG
 static uint32_t transaction_sequence;
 static int64_t last_transaction_end_ms;
+#endif
 static int maiman_client_iface=0,reply;
 static const char *maiman_register_name(uint16_t a){(void)a;return "test";}
 static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
@@ -1214,41 +1214,45 @@ static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c
 static int modbus_write_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
 {(void)i;(void)n;(void)a;(void)v;(void)c;now+= reply ? 75 : 4;return reply;}
 '''
-for marker in ['void maiman_init_verbose(', 'bool maiman_read_u16(', 'bool maiman_write_u16(']:
+for marker in ['void maiman_init(', 'bool maiman_read_u16(', 'bool maiman_write_u16(']:
     maiman_source += block('maiman.c',marker)
 maiman_source += r'''
 int main(void){
  maiman_driver_t d;uint16_t v;
- maiman_init_verbose(&d,1,false);
+ maiman_init(&d,1);
  reply=2;assert(!maiman_read_u16(&d,4,&v) && d.io_failed);
  reply=0;assert(maiman_read_u16(&d,4,&v) && d.io_failed);
- maiman_init_verbose(&d,1,false);assert(!d.io_failed);
+ maiman_init(&d,1);assert(!d.io_failed);
  reply=-5;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
- maiman_init_verbose(&d,1,false);
+ maiman_init(&d,1);
  reply=3;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
  const uint16_t regs[]={4,4,9,10};const uint16_t values[]={8,16,1,1};
  for(unsigned i=0;i<4;i++) for(unsigned fail=0;fail<2;fail++) {
-  maiman_init_verbose(&d,1,false);reply=fail?-ETIMEDOUT:0;
+  maiman_init(&d,1);reply=fail?-ETIMEDOUT:0;
   int64_t start=now;
   assert(maiman_write_u16(&d,regs[i],values[i])==!fail);
   assert(now-start==(fail?75:4)+350);
+#if CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG
   assert(last_transaction_end_ms==start+(fail?75:4));
+#endif
   assert(d.last_response_ms==(fail?0:start+4));
   /* Next request begins after quiet release, even following timeout. */
   reply=0;assert(maiman_read_u16(&d,4,&v));assert(now-start==(fail?75:4)+350+4);
  }
- maiman_init_verbose(&d,1,false);reply=0;int64_t start=now;
+ maiman_init(&d,1);reply=0;int64_t start=now;
  assert(maiman_write_u16(&d,8,0) && now-start==4);
  return 0;
 }
 '''
-# LOG_* macros consume arguments on target; stubs intentionally do not.
+# Logging must not change exception handling, response timestamps, or busy waits.
 with tempfile.TemporaryDirectory() as tmp:
     cfile=Path(tmp)/'maiman.c';exe=Path(tmp)/'maiman'
     cfile.write_text(maiman_source)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
-print('Maiman exception and sticky failure regressions passed')
+    for level in [0,3,4]:  # OFF, normal INFO, diagnostic DEBUG
+        subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',
+                        f'-DCONFIG_MAIMAN_LOG_LEVEL={level}',str(cfile),'-o',str(exe)],check=True)
+        subprocess.run([str(exe)],check=True)
+print('Maiman exception, sticky failure, and busy-wait regressions passed at OFF/INFO/DEBUG')
 
 # Test allocation policy using production code and a linear optical model stub.
 allocator_source=r'''
