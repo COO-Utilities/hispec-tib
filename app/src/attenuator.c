@@ -203,7 +203,7 @@ bool atten_model_correction_basis(double base_db,
  * modeled leakage floor so clearing the six coefficients recovers the base
  * model exactly.
  */
-static double attenuator_model_correction_db(const struct attenuator_model_coeffs *coeffs,
+static double attenuator_model_chebyshev_db(const struct attenuator_model_coeffs *coeffs,
                                              double base_db,
                                              double *d_corr_d_base_db,
                                              double *d_corr_d_max_atten_db)
@@ -243,8 +243,8 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
     shape = coeffs->correction_coeff[0];
     d_shape_dt = 0.0;
     for (uint8_t i = 1U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
-        shape += coeffs->correction_coeff[i] * term;
-        d_shape_dt += coeffs->correction_coeff[i] * derivative;
+        shape += (double)coeffs->correction_coeff[i] * term;
+        d_shape_dt += (double)coeffs->correction_coeff[i] * derivative;
         double next = 2.0 * x * term - previous;
         double next_derivative = 4.0 * term + 2.0 * x * derivative - previous_derivative;
         previous = term;
@@ -260,6 +260,50 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
         *d_corr_d_max_atten_db = -d_corr_dt * t / span;
     }
     return t * (1.0 - t) * shape;
+}
+
+/* Only the calibrated branch uses the polynomial. Recover its endpoint in base
+ * dB coordinates from Bc + C(Bc) = max_calibrated_db, then fade that residual
+ * linearly to the existing leakage floor. No voltage cutoff is stored, and no
+ * blend width is fitted. A zero limit is used only while constructing a fit.
+ * The implicit endpoint derivative keeps floor-uncertainty propagation valid.
+ */
+static double attenuator_model_correction_db(const struct attenuator_model_coeffs *coeffs,
+                                             double base_db,
+                                             double *d_corr_d_base_db,
+                                             double *d_corr_d_max_atten_db)
+{
+    double limit = coeffs->max_calibrated_db;
+    double floor = coeffs->max_atten_db;
+
+    if (attenuator_model_correction_active(coeffs) && limit > 0.0 && limit < floor) {
+        double lo = 0.0, hi = floor;
+        /* Double-precision endpoint resolution, independent of DAC resolution. */
+        for (uint8_t i = 0U; i < 48U; ++i) {
+            double mid = 0.5 * (lo + hi);
+            double db = mid + attenuator_model_chebyshev_db(coeffs, mid, NULL, NULL);
+            if (db < limit) lo = mid;
+            else hi = mid;
+        }
+        double bc = 0.5 * (lo + hi);
+        if (base_db > bc) {
+            double cb, cl;
+            (void)attenuator_model_chebyshev_db(coeffs, bc, &cb, &cl);
+            if (!(1.0 + cb > 0.0)) return NAN;
+            double span = floor - bc;
+            double cc = limit - bc;
+            double fraction = (floor - base_db) / span;
+            double d_bc_d_floor = -cl / (1.0 + cb);
+            if (d_corr_d_base_db != NULL) *d_corr_d_base_db = -cc / span;
+            if (d_corr_d_max_atten_db != NULL) {
+                *d_corr_d_max_atten_db = -d_bc_d_floor * fraction +
+                    cc * (1.0 - fraction * (1.0 - d_bc_d_floor)) / span;
+            }
+            return cc * fraction;
+        }
+    }
+    return attenuator_model_chebyshev_db(coeffs, base_db,
+        d_corr_d_base_db, d_corr_d_max_atten_db);
 }
 
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
@@ -332,12 +376,14 @@ bool attenuator_init(struct attenuator *drv,
     drv->coeff1.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
     drv->coeff1.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff1.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
+    drv->coeff1.max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB, FVOA_DEFAULT_MAX_ATTEN_DB);
     drv->coeff1.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->coeff1.rms_db = ATTENUATOR_DEFAULT_RMS_DB;
     memset(drv->coeff1.correction_coeff, 0, sizeof(drv->coeff1.correction_coeff));
     drv->coeff2.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN;
     drv->coeff2.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN);
     drv->coeff2.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB;
+    drv->coeff2.max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB, FVOA_DEFAULT_MAX_ATTEN_DB);
     drv->coeff2.gain = ATTENUATOR_DEFAULT_GAIN;
     drv->coeff2.rms_db = ATTENUATOR_DEFAULT_RMS_DB;
     memset(drv->coeff2.correction_coeff, 0, sizeof(drv->coeff2.correction_coeff));
@@ -626,6 +672,8 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
     if (coeffs == NULL || !isfinite(coeffs->fvoa_50pct_mv) ||
         !isfinite(coeffs->slope_inv_fvoa_mv) ||
         !isfinite(coeffs->max_atten_db) || !isfinite(coeffs->gain) ||
+        !isfinite(coeffs->max_calibrated_db) || coeffs->max_calibrated_db <= 0.0 ||
+        coeffs->max_calibrated_db > coeffs->max_atten_db ||
         !isfinite(coeffs->rms_db) || coeffs->rms_db < 0.0 ||
         coeffs->slope_inv_fvoa_mv <= 0.0 || coeffs->gain <= 0.0) {
         return false;
@@ -838,7 +886,8 @@ static double attenuator_physical_max_db(const struct attenuator_dac_cfg *dac_cf
 static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
                                      const struct attenuator_model_coeffs *coeffs);
 
-static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_db)
+static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_db,
+                                     bool calibrated_only)
 {
     double current1, current2, max1, max2, lower1, upper1, db1, db2;
     char context[64];
@@ -859,6 +908,10 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
     current2 = attenuator_model_voltage_to_db(&drv->coeff2, drv->dac_cfg2.voltage);
     max1 = attenuator_physical_max_db(&drv->dac_cfg1, &drv->coeff1);
     max2 = attenuator_physical_max_db(&drv->dac_cfg2, &drv->coeff2);
+    if (calibrated_only) {
+        max1 = MIN(max1, MIN(ATTENUATOR_CALIBRATED_MAX_DB, drv->coeff1.max_calibrated_db));
+        max2 = MIN(max2, MIN(ATTENUATOR_CALIBRATED_MAX_DB, drv->coeff2.max_calibrated_db));
+    }
     if (!isfinite(current1) || !isfinite(current2) || !isfinite(max1) || !isfinite(max2)) {
         return false;
     }
@@ -869,7 +922,7 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
     if (attenuation_db > max1 + max2) {
         snprintk(context, sizeof(context), "requested=%.3f clamped=%.3f",
                  attenuation_db, max1 + max2);
-        coo_cmd_runtime_emit(command_runtime_get(),
+        if (!calibrated_only) coo_cmd_runtime_emit(command_runtime_get(),
             &(const struct coo_cmd_runtime_emit_args){
                 .type = COO_CMD_RUNTIME_EMIT_WARNING,
                 .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
@@ -879,7 +932,8 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
             });
         attenuation_db = max1 + max2;
     }
-    if (fabs(attenuation_db - drv->attenuation_db) <= ATTENUATOR_DB_EPSILON) {
+    if (fabs(attenuation_db - drv->attenuation_db) <= ATTENUATOR_DB_EPSILON &&
+        current1 <= max1 && current2 <= max2) {
         return true;
     }
 
@@ -889,7 +943,11 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
      * attenuated one first when removing dB, avoiding the first-device plateau
      * handoff where our optical model is least reliable.
      */
-    if (attenuation_db > drv->attenuation_db) {
+    if (calibrated_only && (current1 > max1 || current2 > max2)) {
+        /* Manual settings can start outside either automatic range. */
+        lower1 = MAX(0.0, attenuation_db - max2);
+        upper1 = MIN(max1, attenuation_db);
+    } else if (attenuation_db > drv->attenuation_db) {
         lower1 = MAX(current1, attenuation_db - max2);
         upper1 = MIN(max1, attenuation_db - current2);
     } else {
@@ -944,7 +1002,7 @@ bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_in
     return ok;
 }
 
-bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
+bool attenuator_set_db(struct attenuator *drv, double attenuation_db, bool calibrated_only)
 {
     struct attenuator next;
     bool ok;
@@ -954,13 +1012,13 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db)
     }
     k_mutex_lock(&attenuator_io_lock, K_FOREVER);
     attenuator_snapshot(drv, &next);
-    ok = attenuator_set_db_staged(&next, attenuation_db);
+    ok = attenuator_set_db_staged(&next, attenuation_db, calibrated_only);
     attenuator_commit(drv, &next);
     k_mutex_unlock(&attenuator_io_lock);
     return ok;
 }
 
-bool attenuator_set_linear(struct attenuator *drv, double linear)
+bool attenuator_set_linear(struct attenuator *drv, double linear, bool calibrated_only)
 {
     double attenuation_db;
 
@@ -970,7 +1028,7 @@ bool attenuator_set_linear(struct attenuator *drv, double linear)
 
     attenuation_db = -10.0 * (double)ZSL_LOG10((zsl_real_t)linear);
 
-    return attenuator_set_db(drv, attenuation_db);
+    return attenuator_set_db(drv, attenuation_db, calibrated_only);
 }
 
 static bool attenuator_read_physical(struct attenuator_dac_cfg *dac_cfg,
@@ -1087,7 +1145,7 @@ int attenuator_apply_coefficients_preserve_db(
         total_db = next.dac_cfg1.attenuation_db + next.dac_cfg2.attenuation_db;
         next.coeff1 = physical[0];
         next.coeff2 = physical[1];
-        ok = attenuator_set_db_staged(&next, total_db);
+        ok = attenuator_set_db_staged(&next, total_db, false);
         if (!ok) {
             /* No rollback of DAC writes. Retain confirmed voltages and expose
              * failure, interpreting those voltages under the old calibration.

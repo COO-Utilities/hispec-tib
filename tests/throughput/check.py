@@ -107,7 +107,8 @@ static bool attenuator_estimate_transmission(struct attenuator *a, struct attenu
 {out->attenuation_db=a->attenuation_db;return true;}
 static double written_tx,written_pct;
 static int fail_write; static bool clamp_atten;
-static bool attenuator_set_linear(struct attenuator *a,double tx) {
+static bool attenuator_set_linear(struct attenuator *a,double tx,bool calibrated_only) {
+    assert(calibrated_only);
     written_tx=tx; if(fail_write) return false;
     if(!clamp_atten) a->attenuation_db=-10*log10(tx);
     return true;
@@ -412,6 +413,66 @@ for i in range(0,len(sample_wire_lines),2):
 binary=bytes.fromhex(sample_wire_lines[1]); sample=host.decode_throughput_payload(binary)
 print('Python laser settings and JSON/binary telemetry checks passed')
 
+# Current firmware response shapes: retain nullable timers and laser diagnostics.
+drift_client = object.__new__(host.HispecFibPcb)
+responses = {
+    'status': dict(fw='test', boots=1, board='tib', board_ok=True, mems_switches=8,
+                   relay_err=0, amb_c=None, pd_on_s=0, laserbank_on_s=0,
+                   lastcmd=dict(name='', src='unknown', t_ms=0), lasers={}),
+    'laser': dict(name='1028y', powered=True, ready=False, blocked_reason=None,
+                  tec_on_s=None, emit_on_s=None, emit_total_s=None, temp_c=None,
+                  i_mA=None, value=None, power_mw=None, nominal_nm=1028.0,
+                  tuned_nm=None, tune_nm=0.0, tec_ma=None, diode_v=None,
+                  tec_v=None, off_in_s=None, oc_fault=False),
+    'laser/status': dict(name='1028y', read_rc=0, powered=True, dev_id=1,
+                         serial=123, expected_serial=123, serial_ok=True,
+                         raw_state=0, raw_lock=0, raw_tec=0, blocking_lock=0,
+                         blocked_reason=None, op_started=False, ready=False,
+                         curr_set_internal=True, enable_internal=True, ext_ntc_denied=True,
+                         interlock_denied=True, interlock=False, ext_ntc_interlock=False,
+                         ld_overcurrent=False, ld_overheat=False, tec_started=False,
+                         tec_set_internal=True, tec_enable_internal=True, tec_error=False,
+                         tec_selfheat=False, i_mA=None, curr_meas_ma=None, curr_min_ma=None,
+                         curr_max_ma=None, drv_max_ma=None, ocp_ma=None, curr_cal_pct=None,
+                         diode_v=None, tec_temp_set_c=None, tec_temp_c=None, pcb_temp_c=None,
+                         tec_ma=None, tec_curr_lim_a=None, tec_v=None, pid=[1,2,3], ntc_t_coeff=None),
+    'laser/bankheater': dict(mode='auto', auto_state='waiting_for_temps', heater_on=False,
+                             bank_power=True, ambient_c=None, idle_tec_temps=0,
+                             idle_tec_avg_c=None, last_error=0, poll_age_s=None),
+    'time': dict(utc=12345, uptime_s=12),
+}
+drift_client._request = lambda key, payload=None: responses[key]
+for remaining in (None, 0, 31):
+    ready = remaining is not None
+    responses['status']['lasers']['1028y'] = dict(
+        power_mw=None, ready=ready, tec_on_s=remaining, off_in_s=remaining)
+    summary = drift_client.status(lasers=True).lasers[0].value
+    assert summary.ready is ready and summary.off_in_s == remaining and summary.tec_on_s == remaining
+for ready, reason, blocking in ((True, None, 0), (False, 'driver_identity_mismatch', 0x12)):
+    responses['laser'].update(ready=ready, blocked_reason=reason)
+    responses['laser/status'].update(ready=ready, blocked_reason=reason, blocking_lock=blocking)
+    compact, engineering = drift_client.laser('1028y'), drift_client.laser_status('1028y')
+    assert compact.ready is ready and compact.blocked_reason == reason
+    assert engineering.ready is ready and engineering.blocked_reason == reason
+    assert engineering.blocking_lock == blocking and engineering.pid == (1,2,3)
+for ambient, average in ((None, None), (21.25, 18.75)):
+    responses['laser/bankheater'].update(ambient_c=ambient, idle_tec_avg_c=average)
+    heater = drift_client.laser_bankheater()
+    assert heater.ambient_c == ambient and heater.idle_tec_avg_c == average
+from typing import get_type_hints
+heater_types = get_type_hints(host.LaserBankHeater)
+assert heater_types['ambient_c'] == heater_types['idle_tec_avg_c'] == float | None
+assert drift_client.time().uptime_s == 12
+for payload in ('{}', '{"uptime_s":12}'):
+    try:
+        host.decode_warning(payload)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError('warning without uptime_ms was accepted')
+assert host.decode_warning('{"uptime_ms":0}').uptime_ms == 0
+print('Python nullable status, laser diagnostics, heater types, and warning contract checks passed')
+
 # Model-uncertainty and accepted-fit installation with a fixed zero-sensitivity
 # model. Exercise replacement/rollback here; the real model is checked below.
 source = r'''
@@ -457,8 +518,8 @@ static void app_settings_update_attenuator_channel(int i,const struct app_attenu
 { (void)i; assert(persist); saved=*s; ++saves; }
 static bool attenuator_read_physical(struct attenuator_dac_cfg *d, const struct attenuator_model_coeffs *c)
 { (void)c; d->valid=true; d->attenuation_db=d->voltage; return true; }
-static bool attenuator_set_db_staged(struct attenuator *a,double db) {
-    (void)db; io_barrier();
+static bool attenuator_set_db_staged(struct attenuator *a,double db,bool calibrated_only) {
+    assert(!calibrated_only); (void)db; io_barrier();
     if(fail_write) {a->dac_cfg1.voltage=42;a->dac_cfg2.valid=false;return false;}
     return true;
 }
@@ -480,6 +541,7 @@ static int coo_json_extract_double(const char *j,const char *key,double *out) {
     if (!strcmp(key,"fvoa_50pct_mv")) *out=2500;
     if (!strcmp(key,"slope_inv_fvoa_mv")) *out=0.002;
     if (!strcmp(key,"max_atten_db")) *out=55;
+    if (!strcmp(key,"max_calibrated_db")) *out=50;
     if (!strcmp(key,"gain")) *out=1.533;
     return COO_JSON_EXTRACT_OK;
 }
@@ -502,7 +564,7 @@ int main(void) {
     init_mutex(&attenuator_io_lock);init_mutex(&attenuator_state_lock);
     struct attenuator *a=&attenuators[0];
     a->coeff1=(struct attenuator_model_coeffs){.fvoa_50pct_mv=2500,.slope_inv_fvoa_mv=0.002,
-        .max_atten_db=55,.gain=1.533,.rms_db=ATTENUATOR_DEFAULT_RMS_DB};
+        .max_atten_db=55,.max_calibrated_db=50,.gain=1.533,.rms_db=ATTENUATOR_DEFAULT_RMS_DB};
     a->coeff2=a->coeff1;
     struct attenuator_transmission_estimate out;
     for(int i=0;i<3;++i) {
@@ -515,10 +577,11 @@ int main(void) {
     }
     cal.persistent=true;
     for(int i=0;i<2;++i) cal.fit[i]=(struct attenuator_calibration_fit_metrics){
-        .accepted=true,.fvoa_50pct_mv=2600+i,.slope_inv_fvoa_mv=0.003,.max_atten_db=50,
+        .accepted=true,.fvoa_50pct_mv=2600+i,.slope_inv_fvoa_mv=0.003,.max_atten_db=50,.max_calibrated_db=40,
         .rms_db=0.75+i,.correction_coeff={0,0,0,0,0.25f,-0.5f}};
     assert(apply_fit_to_settings_locked()==0 && saves==1);
     assert(saved.physical[0].rms_db==0.75 && saved.physical[1].rms_db==1.75);
+    assert(saved.physical[0].max_calibrated_db==40 && a->coeff2.max_calibrated_db==40);
     assert(a->coeff1.rms_db==0.75 && a->coeff2.rms_db==1.75);
     assert(saved.physical[0].correction_coeff[4]==0.25f && saved.physical[1].correction_coeff[5]==-0.5f);
     assert(a->coeff1.correction_coeff[5]==-0.5f && a->coeff2.correction_coeff[4]==0.25f);
@@ -563,7 +626,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 
-coeff = {'fvoa_50pct_mv':2500,'slope_inv_fvoa_mv':0.002,'max_atten_db':55,
+coeff = {'fvoa_50pct_mv':2500,'slope_inv_fvoa_mv':0.002,'max_atten_db':55,'max_calibrated_db':50,
          'gain':1.533,'correction_coeff':[0]*6,'rms_db':0.75}
 parsed = host._decode_atten_physical_coeff(coeff,'dac1')
 assert parsed.rms_db == 0.75
@@ -580,7 +643,12 @@ for value in (-1,float('nan'),float('inf')):
         raise AssertionError('accepted invalid attenuator RMS')
 without_rms = {key:value for key,value in coeff.items() if key != 'rms_db'}
 assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',without_rms)
-assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',(2500,0.002,55))
+assert 'rms_db' not in host._atten_physical_coeff_payload('dac1',(2500,0.002,55,1.533,50))
+assert parsed.max_calibrated_db == 50
+try:
+    host._atten_physical_coeff_payload('dac1', {k:v for k,v in coeff.items() if k != 'max_calibrated_db'})
+except host.HispecFibError: pass
+else: raise AssertionError('accepted missing calibrated limit')
 print('Python attenuator RMS checks passed')
 
 # Real FVOA evaluator/analytic derivatives and estimator versus the Python
@@ -589,9 +657,9 @@ import io
 import numpy as np
 
 noise_coeff = host.AttenuatorCoeff(
-    host.AttenuatorPhysicalCoeff(3144.95, .00303104, 48.36, 1.533,
+    host.AttenuatorPhysicalCoeff(3144.95, .00303104, 48.36, 35.0, 1.533,
                                 tuple(float(np.float32(x)) for x in (.12,-.03,.01,0,0,0)), .75),
-    host.AttenuatorPhysicalCoeff(3456.12, .00247498, 61.95, 1.8, (0.,)*6, 1.25),
+    host.AttenuatorPhysicalCoeff(3456.12, .00247498, 61.95, 61.95, 1.8, (0.,)*6, 1.25),
 )
 means, scope_rms = (3824., 3942.), (7.2, 9.3)
 noise = host.attenuator_noise(noise_coeff, mean_fvoa_mv=means, noise_rms_mv=scope_rms)
@@ -663,13 +731,14 @@ for marker in ('static double attenuator_model_delta_to_raw_linear(',
                'static double attenuator_model_voltage_to_delta(',
                'static double attenuator_model_floor_linear(',
                'static bool attenuator_model_correction_active(',
+               'static double attenuator_model_chebyshev_db(',
                'static double attenuator_model_correction_db(',
                'bool atten_model_eval(', 'bool atten_model_db_sigma('):
     model_source += block('attenuator.c',marker)
 model_main = r'''
 int main(void) {
  struct attenuator a={
-  .coeff1={.fvoa_50pct_mv=3144.95,.slope_inv_fvoa_mv=.00303104,.max_atten_db=48.36,
+  .coeff1={.fvoa_50pct_mv=3144.95,.slope_inv_fvoa_mv=.00303104,.max_atten_db=48.36,.max_calibrated_db=35,
            .gain=1.533,.rms_db=.75,.correction_coeff={.12,-.03,.01,0,0,0}},
   .coeff2={.fvoa_50pct_mv=3456.12,.slope_inv_fvoa_mv=.00247498,.max_atten_db=61.95,
            .gain=1.8,.rms_db=1.25},
@@ -713,6 +782,38 @@ with tempfile.TemporaryDirectory() as tmp:
                 np.abs([slope1/noise_coeff.dac1.gain,slope2/noise_coeff.dac2.gain])*rms,rtol=2e-6,atol=1e-10)
             np.testing.assert_allclose(result.total_sigma_tx[2],err,rtol=2e-6)
 print('FVOA scope inputs, separate uncertainties, analytic C/Python parity, and zero-noise checks passed')
+
+# Forward/inverse agreement includes both sides of the calibrated endpoint.
+inverse_source = model_source + "\n#define ZSL_FMA fma\n#define ZSL_LOG log\n#define ZSL_ABS fabs\n#define ATTENUATOR_DB_EPSILON 1e-6\n#define ATTENUATOR_MODEL_INVERSE_STEPS 24U\n"
+probability = (ROOT.parent/'modules/lib/zscilib/src/probability.c').read_text()
+start = probability.index('zsl_real_t zsl_prob_erf_inv(')
+inverse_source += probability[start:probability.index('\n}', start)+2]+'\n'
+for marker in ('static double attenuator_model_raw_linear(', 'static double attenuator_model_open_linear(',
+               'double attenuator_model_voltage_to_db(', 'bool attenuator_model_db_to_voltage(',
+               'bool attenuator_estimate_transmission('):
+    inverse_source += block('attenuator.c', marker)
+inverse_source += r'''
+int main(void){
+ struct attenuator_model_coeffs c={.fvoa_50pct_mv=3000,.slope_inv_fvoa_mv=.0025,
+  .max_atten_db=80,.max_calibrated_db=55,.gain=1.533,.correction_coeff={4}};
+ double targets[]={1,20,54.99,55,55.01,60,70};
+ for(unsigned i=0;i<sizeof(targets)/sizeof(targets[0]);i++) {
+  float mv;assert(attenuator_model_db_to_voltage(&c,targets[i],&mv));
+  assert(fabs(attenuator_model_voltage_to_db(&c,mv)-targets[i])<1e-4);
+ }
+ c.correction_coeff[0]=0;
+ for(unsigned i=0;i<sizeof(targets)/sizeof(targets[0]);i++) {
+  float mv;assert(attenuator_model_db_to_voltage(&c,targets[i],&mv));
+  assert(fabs(attenuator_model_voltage_to_db(&c,mv)-targets[i])<1e-3);
+ }
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'inverse.c',Path(tmp)/'inverse'
+    cfile.write_text(inverse_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('Calibrated endpoint and rough-tail forward/inverse round trips passed')
 
 # Effective route calibration: defaults, overrides, NVS restore, and public loss precision.
 import re
@@ -858,10 +959,12 @@ for channel in ('yj','hk'):
     client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/{channel}_tput',payload=b'not logged'))
 assert not logs
 client._on_message(None,None,SimpleNamespace(topic=f'dt/{client.device}/warning',
-    payload=b'{"code":"test","msg":"visible warning","uptime_s":1}'))
+    payload=b'{"code":"test","msg":"visible warning","uptime_ms":12345}'))
 client._on_message(None,None,SimpleNamespace(topic=f'cmd/{client.device}/resp/laser',
     payload=b'{"status":"ok"}',properties=None))
 assert any('visible warning' in record.getMessage() for record in logs)
+assert client.warnings[-1].uptime_ms == 12345
+assert any('uptime_ms=12345' in record.getMessage() for record in logs)
 assert any('resp/laser' in record.getMessage() for record in logs)
 
 with plt.ioff():
@@ -1270,7 +1373,8 @@ allocator_source=r'''
 #define snprintk snprintf
 #define coo_cmd_runtime_emit(...) ((void)0)
 struct attenuator_dac_cfg {double voltage,attenuation_db,limit;bool valid;};
-struct attenuator_model_coeffs {double scale;};
+struct attenuator_model_coeffs {double scale,max_calibrated_db;};
+#define ATTENUATOR_CALIBRATED_MAX_DB 55.0
 struct attenuator {struct attenuator_dac_cfg dac_cfg1,dac_cfg2;struct attenuator_model_coeffs coeff1,coeff2;double attenuation_db;};
 static int writes,fail_device=-1;
 static double attenuator_drive_limit_mv(const struct attenuator_dac_cfg *c){return c->limit;}
@@ -1286,26 +1390,34 @@ allocator_source += 'static bool attenuator_read_physical(struct attenuator_dac_
 allocator_source += block('attenuator.c','static bool attenuator_set_db_staged(')
 allocator_source += r'''
 static struct attenuator pair(double x,double y,double m1,double m2){
- return (struct attenuator){.dac_cfg1={x,999,m1,true},.dac_cfg2={y,999,m2,true},.coeff1={1},.coeff2={1}};
+ return (struct attenuator){.dac_cfg1={x,999,m1,true},.dac_cfg2={y,999,m2,true},.coeff1={1,m1},.coeff2={1,m2}};
 }
 int main(void){
  struct attenuator a=pair(36,0,39.2791,34.8723);
- assert(attenuator_set_db_staged(&a,41));assert(a.dac_cfg1.attenuation_db==36 && a.dac_cfg2.attenuation_db==5);
- int n=writes;assert(attenuator_set_db_staged(&a,41) && writes==n);
- a=pair(39,35,40,40);assert(attenuator_set_db_staged(&a,40));
+ assert(attenuator_set_db_staged(&a,41,false));assert(a.dac_cfg1.attenuation_db==36 && a.dac_cfg2.attenuation_db==5);
+ int n=writes;assert(attenuator_set_db_staged(&a,41,false) && writes==n);
+ a=pair(39,35,40,40);assert(attenuator_set_db_staged(&a,40,false));
  assert(a.dac_cfg1.attenuation_db==20 && a.dac_cfg2.attenuation_db==20);
- a=pair(35.9263,0,39.2791,34.8723);assert(attenuator_set_db_staged(&a,40.70283));
+ a=pair(35.9263,0,39.2791,34.8723);assert(attenuator_set_db_staged(&a,40.70283,false));
  assert(a.dac_cfg1.attenuation_db<39 && fabs(a.dac_cfg2.attenuation_db-4.77653)<1e-8);
- a=pair(0,0,10,40);assert(attenuator_set_db_staged(&a,45));
+ a=pair(0,0,10,40);assert(attenuator_set_db_staged(&a,45,false));
  assert(a.dac_cfg1.attenuation_db==10 && a.dac_cfg2.attenuation_db==35);
- a=pair(10,10,40,40);fail_device=1;assert(!attenuator_set_db_staged(&a,30));
+ a=pair(10,10,40,40);fail_device=1;assert(!attenuator_set_db_staged(&a,30,false));
  assert(a.dac_cfg1.attenuation_db==15 && a.dac_cfg2.attenuation_db==10 && a.attenuation_db==25);
  fail_device=-1;
+ a=pair(0,0,80,90);a.coeff1.max_calibrated_db=40;a.coeff2.max_calibrated_db=55;
+ assert(attenuator_set_db_staged(&a,90,true));
+ assert(a.dac_cfg1.attenuation_db==40 && a.dac_cfg2.attenuation_db==50);
+ assert(attenuator_set_db_staged(&a,120,true) && a.attenuation_db==95);
+ a.dac_cfg1.voltage=70;a.dac_cfg2.voltage=20;
+ assert(attenuator_set_db_staged(&a,90,true));
+ assert(a.dac_cfg1.attenuation_db==40 && a.dac_cfg2.attenuation_db==50);
+ assert(attenuator_set_db_staged(&a,140,false) && a.attenuation_db==140);
  for(int j=0;j<10000;j++){
   double m1=1+rand()%60,m2=1+rand()%60;
   double x=(double)rand()/RAND_MAX*m1,y=(double)rand()/RAND_MAX*m2;
   double target=(double)rand()/RAND_MAX*(m1+m2);
-  a=pair(x,y,m1,m2);assert(attenuator_set_db_staged(&a,target));
+  a=pair(x,y,m1,m2);assert(attenuator_set_db_staged(&a,target,false));
   assert(fabs(a.attenuation_db-target)<1e-5);
   assert(a.dac_cfg1.attenuation_db>=-1e-8 && a.dac_cfg1.attenuation_db<=m1+1e-8);
   assert(a.dac_cfg2.attenuation_db>=-1e-8 && a.dac_cfg2.attenuation_db<=m2+1e-8);
@@ -1519,7 +1631,8 @@ static int attenuator_index_from_laser_id(enum hispec_laser_id id,uint8_t *out) 
 static int housekeeping_power_set(enum housekeeping_power_output p,bool on) {(void)on;assert(inhibited[p]);return fail_power?-EIO:0;}
 static void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output p,bool on) {inhibited[p]=on;}
 static int hispec_laser_stop_output(enum hispec_laser_id l,bool bank) {(void)l;assert(!bank);stops++;return fail_stop?-EIO:0;}
-static bool attenuator_set_db(struct attenuator *a,double db) {(void)a;(void)db;return !fail_atten;}
+#define ATTENUATOR_CALIBRATED_MAX_DB 55.0
+static bool attenuator_set_db(struct attenuator *a,double db,bool calibrated_only) {assert(calibrated_only);(void)a;(void)db;return !fail_atten;}
 static int hispec_laser_set_output_percent_autooff(enum hispec_laser_id l,double p,unsigned off) {
     (void)off;if(manual_level)assert(!monitors[l<3?0:1].autolevel);
     if(level_error)return level_error;written_level=p;return 0;
@@ -1683,6 +1796,7 @@ for file,marker in [('attenuator.h','struct attenuator_model_coeffs {'),
     source += block(file,marker) + (';\n' if marker.startswith('enum') else '')
 for file,marker in [('attenuator.c','static bool attenuator_model_correction_active('),
                     ('attenuator.c','bool atten_model_correction_basis('),
+                    ('attenuator.c','static double attenuator_model_chebyshev_db('),
                     ('attenuator.c','static double attenuator_model_correction_db('),
                     ('attenuator_calibration.c','static int solve_correction_normal_equation('),
                     ('attenuator_calibration.c','static void build_measurement_from_pd_window(')]:
@@ -1722,6 +1836,31 @@ int main(void) {
  }
  assert(attenuator_model_correction_db(&c,0,NULL,NULL)==0);
  assert(attenuator_model_correction_db(&c,60,NULL,NULL)==0);
+ /* A single T0 term gives an independently solvable quadratic endpoint. */
+ c=(struct attenuator_model_coeffs){.max_atten_db=60,.max_calibrated_db=37,.correction_coeff={4}};
+ double start=MODEL_CORRECTION_START_DB,span=60-start;
+ double t=2*(37-start)/(span+4+sqrt((span+4)*(span+4)-16*(37-start)));
+ double bc=start+span*t,cc=37-bc,h=1e-5,db,dm;
+ assert(fabs(bc+attenuator_model_correction_db(&c,bc,NULL,NULL)-37)<1e-10);
+ double left=bc-h+attenuator_model_correction_db(&c,bc-h,NULL,NULL);
+ double right=bc+h+attenuator_model_correction_db(&c,bc+h,NULL,NULL);
+ assert(right>=left && right-left<3*h);
+ assert(fabs(attenuator_model_correction_db(&c,(bc+60)/2,&db,&dm)-cc/2)<1e-10);
+ assert(fabs(db+cc/(60-bc))<1e-10);
+ for(int i=1;i<80;i++) {
+  double x=60.*i/80;
+  (void)attenuator_model_correction_db(&c,x,&db,&dm);
+  double fd=(attenuator_model_correction_db(&c,x+h,NULL,NULL)-attenuator_model_correction_db(&c,x-h,NULL,NULL))/(2*h);
+  assert(fabs(fd-db)<1e-7);
+  c.max_atten_db=60+h;double plus=attenuator_model_correction_db(&c,x,NULL,NULL);
+  c.max_atten_db=60-h;double minus=attenuator_model_correction_db(&c,x,NULL,NULL);
+  c.max_atten_db=60;assert(fabs((plus-minus)/(2*h)-dm)<1e-7);
+  assert(1+db>0);
+ }
+ assert(attenuator_model_correction_db(&c,60,NULL,NULL)==0);
+ c.correction_coeff[0]=0;
+ assert(attenuator_model_correction_db(&c,50,&db,&dm)==0 && db==0 && dm==0);
+
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -1747,7 +1886,8 @@ source=r'''
 #include <math.h>
 #include <errno.h>
 #define ATTENUATOR_MODEL_CORRECTION_TERMS 6
-struct coo_cmd_response {char payload[2048];};
+struct coo_cmd_response {char payload[1024];};
+#define MIN(a,b) ((a)<(b)?(a):(b))
 static struct coo_cmd_response message;
 static int coo_json_append(char *p,size_t n,size_t *off,const char *fmt,...) {
  va_list args;va_start(args,fmt);int count=vsnprintf(p+*off,n-*off,fmt,args);va_end(args);
@@ -1761,8 +1901,10 @@ static void atten_cal_publish_telemetry(struct coo_cmd_response *m){puts(m->payl
 '''
 for file,marker in [('attenuator.h','struct attenuator_model_coeffs {'),
                     ('attenuator_calibration.h','struct attenuator_calibration_fit_metrics {'),
+                    ('attenuator_calibration.h','struct attenuator_calibration_status {'),
                     ('attenuator_command.c','static int append_attenuator_physical_coeff_json('),
                     ('attenuator_calibration.c','static int append_fit_json('),
+                    ('attenuator_calibration.c','int attenuator_calibration_format_status('),
                     ('attenuator_calibration.c','static void atten_cal_emit_fit(')]:
     if marker.startswith('struct '):
         source+=block(file,marker)
@@ -1779,7 +1921,17 @@ int main(void){
  assert(!append_attenuator_physical_coeff_json(payload,sizeof(payload),&off,"dac1",&c));puts(strcat(payload,"}"));
  strcpy(payload,"{\"base\":0");off=strlen(payload);
  assert(!append_fit_json(payload,sizeof(payload),&off,"dac1",&fit));puts(strcat(payload,"}"));
- atten_cal_emit_fit(0,&fit);return 0;
+
+ atten_cal_emit_fit(0,&fit);
+ struct attenuator_calibration_status status={.state="complete",.mode="tib_auto",.physical="dac2",.fit="failed",.point_count=128,.point_index=127,.dwell_ms=2000,.complete_pct=100,.current_mv=3299.194336f,.other_mv=3299.194336f,.last_error=-2147483647};
+ for(unsigned i=0;i<2;i++) status.fit_metrics[i]=(struct attenuator_calibration_fit_metrics){
+  .valid=true,.accepted=true,.points=128,.fvoa_50pct_mv=10117.7991234,
+  .slope_inv_fvoa_mv=1.23456789123e-12,.max_atten_db=99.1234567891,
+  .max_calibrated_db=54.123456789,.max_atten_sigma_db=.000123456789,
+  .correlation=.999123456,.rms_db=.000123456789,.max_abs_db=.000123456789,
+  .correction_coeff={-1.23456789e-12f,-1.23456789e-12f,-1.23456789e-12f,-1.23456789e-12f,-1.23456789e-12f,-1.23456789e-12f}};
+ char compact[1024];assert(attenuator_calibration_format_status(compact,sizeof(compact),&status)==0);
+ assert(strlen(compact)<sizeof(compact));puts(compact);return 0;
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -1787,11 +1939,15 @@ with tempfile.TemporaryDirectory() as tmp:
     cfile.write_text(source)
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
     replies=[json.loads(line) for line in subprocess.check_output([str(exe)],text=True).splitlines()]
-    for reply in replies:
+    for reply in replies[:3]:
         assert reply.get('dac1',reply)['correction_coeff']==[1,-2,3,-4,5,-6]
-print('All coefficient JSON writers retain six terms')
+status = host._decode_atten_cal_status(replies[-1])
+assert abs(status.dac1.max_calibrated_db-54.123456789) < 1e-7
+assert status.dac1.min_tx is None and status.dac1.fvoa_span_mv is None
+assert len(status.dac1.correction_coeff) == 6
+print('Six-term writers, calibrated metadata and 1024-byte aggregate status checks passed')
 
-for base in ([2500,0.002,55], [2500,0.002,55,1.533]):
+for base in ([2500,0.002,55,1.533,50],):
     values=base+[1,-2,3,-4,5,-6]
     assert host._atten_coeff_tuple('dac1',values)[4]==(1,-2,3,-4,5,-6)
     assert host._atten_physical_coeff_payload('dac1',values)['correction_coeff']==[1,-2,3,-4,5,-6]

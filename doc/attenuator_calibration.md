@@ -70,8 +70,9 @@ flowchart TD
 
 Automatic calibration does not power the photodiode or wait for a private
 photodiode settle phase. The selected photodiode must already be on and already
-producing valid sampler data. After each input change the calibration resets
-the PD configurable window. The PD owner rounds `dwell_ms` to whole samples;
+producing valid sampler data. After setting both DACs for a measurement,
+calibration waits 100 ms for FVOA settling, then resets the PD configurable
+window. The PD owner rounds `dwell_ms` to whole samples;
 calibration waits for that many post-reset conversion attempts.
 
 Dark handling is separate from attenuator calibration. The calibration reads
@@ -88,6 +89,7 @@ sequenceDiagram
   participant Rec as Retained records
 
   Cal->>Att: set swept and companion DAC voltages
+  Cal->>Cal: sleep 100 ms for FVOA settling
   Cal->>PD: reset configurable window for dwell_ms
   PD->>PD: exclude in-flight old conversion; fill rounded sample count
   PD-->>Cal: completed current window
@@ -96,11 +98,18 @@ sequenceDiagram
   Cal-->>Cal: schedule next point or fit
 ```
 
-After the DAC write, the PD resets its current configurable window and excludes
-any conversion begun before reset. Calibration waits for the accepted sample
-count and a result newer than that reset, including failed conversion attempts
-in the count. There is no guessed conversion allowance or separate settling
-window. Calibration reads the current window, not the last closed window.
+After both DAC writes succeed, calibration sleeps for `ATTEN_CAL_SETTLE_MS`
+(100 ms), allowing for the FVOAs' response time of up to 60 ms. The PD then
+resets its current configurable window and excludes any conversion begun before
+reset. Calibration waits for the full requested sample count and a result newer
+than that reset, including failed conversion attempts in the count. Settling is
+additional to `dwell_ms`: a 550 ms averaging window still collects 11 samples
+after the wait. Calibration reads the current window, not the last closed window.
+
+The sleep holds the calibration mutex and pauses its calling thread, normally
+the throughput monitor, delaying throughput processing and calibration
+status/stop access during that interval. The ADC sampler continues independently.
+This wait applies to initial probes, ordinary sweep points, and bridge probes.
 The window supplies:
 
 - raw mean millivolts,
@@ -119,10 +128,16 @@ optical level.
 
 The acquisition logic treats photodiode readings as a band:
 
-- `saturated`: at least one valid raw reading reaches the 2000 mV usable-input
-  limit, so the window cannot supply an unbiased calibration ratio;
+- `saturated`: at least one valid raw reading reaches the manufacturer's
+  **2000 mV photodiode saturation/linearity limit**, expressed at the ADC input
+  after the divider, so the window cannot supply an unbiased calibration ratio;
 - `ok`: the dark-subtracted mean is positive and has enough SNR;
 - `below_snr`: the optical signal is too dim for a useful fitted point.
+
+The photodiode limit is not an output-voltage clamp: the detector can produce
+voltages beyond it and beyond the ADC range. The separate ADC clipping boundary
+is **2048 mV** full scale, with a maximum reported code of **2047.9375 mV**.
+Calibration therefore rejects photodiode saturation before the ADC clips.
 
 These are not interchangeable failure modes. A saturated DUT sweep sample is
 retained as a diagnostic record and the sweep continues toward more DUT
@@ -131,10 +146,14 @@ segment and starts bridge normalization from the latest retained usable anchor.
 
 For the companion FVOA the DAC direction must be read carefully: lower companion
 DAC opens the companion and raises photodiode signal; higher companion DAC
-attenuates more. Companion searches maintain a low-DAC saturated side, a
-more-attenuated high-DAC side, and the lowest usable companion DAC candidate.
-That candidate is the highest non-saturated photodiode signal found by the
-bounded search.
+attenuates more. Companion searches maintain a low-DAC too-bright side, a
+more-attenuated high-DAC side, and the lowest usable companion DAC candidate
+whose raw window maximum is below **1850 mV** (`ATTEN_CAL_SEARCH_MAX_MV`).
+This search target leaves headroom for fluctuations and increased transmission
+later in the sweep. It does not change the **2000 mV photodiode** saturation classification:
+a usable record between these limits remains `ok` but is not a search candidate.
+Initial-reference and bridge searches, including their fallback/recovery paths,
+use the same target.
 
 ## Per-Physical Acquisition
 
@@ -144,7 +163,7 @@ sequence for `dac1` and then `dac2`.
 ```mermaid
 flowchart TD
   StartPhysical[start physical FVOA] --> Initial[initial probe: DUT open, companion max]
-  Initial --> SaturatedAtMax{still saturated at companion max}
+  Initial --> SaturatedAtMax{still at/above 1850 mV peak at companion max}
   SaturatedAtMax -- yes --> LowerLaser{next laser level available}
   LowerLaser -- yes --> Initial
   LowerLaser -- no --> Error[calibration error]
@@ -158,9 +177,11 @@ flowchart TD
   Usable --> MoreRange
   MoreRange -- yes --> FinishPhysical
   MoreRange -- no --> Sweep
-  Band -- below_snr --> Bracket{dim edge bracketed}
-  Bracket -- no --> FinishPhysical
-  Bracket -- yes --> Bridge[bridge normalize]
+  Band -- below_snr --> BridgeRange{DUT below max and companion can open}
+  BridgeRange -- no --> FinishPhysical
+  BridgeRange -- yes --> Anchor{usable point or accepted bridge-after anchor}
+  Anchor -- no --> Error
+  Anchor -- yes --> Bridge[bridge normalize]
   Bridge --> Sweep
   FinishPhysical --> Next{dac1 complete}
   Next -- yes --> StartDac2[start dac2]
@@ -168,9 +189,9 @@ flowchart TD
 ```
 
 The initial probe protects the photodiode by starting with the companion FVOA
-at maximum attenuation. If even that clips the ADC, firmware retries with lower
-laser output levels. The companion binary search then finds the most open
-companion setting that is still non-saturated.
+at maximum attenuation. If even that reaches the 1850 mV peak target, firmware
+retries with lower laser output levels. The companion binary search finds the most open
+companion setting with usable SNR and a raw window maximum below the target.
 
 The selected open reference is a measured `initial_probe` record named by
 metadata. Firmware does not append a separate reference copy and does not
@@ -183,9 +204,9 @@ by `ATTEN_CAL_SWEEP_STEP_MV` until full DAC drive. A usable point updates the
 latest bridge anchor. A saturated point is too bright, so it also advances to
 the next linear DUT step but is not a fit candidate and does not become a bridge
 trigger. A below-SNR point marks the dim edge of the current segment. When that
-dim edge appears before the DUT reaches full drive, firmware performs bridge
-normalization instead of discarding the remaining dynamic range. The similarly
-named `ATTEN_CAL_SEARCH_MIN_STEP_MV` is only the minimum bracket width for
+dim edge appears before the DUT reaches full drive and the companion can still
+open, firmware performs bridge normalization. The similarly named
+`ATTEN_CAL_SEARCH_MIN_STEP_MV` is only the minimum bracket width for
 companion-FVOA binary searches.
 
 ## Bridge Normalization
@@ -199,6 +220,9 @@ sequenceDiagram
   participant Rec as Retained records
 
   Cal->>Rec: find latest usable DUT point in current segment
+  opt no usable ordinary DUT point
+    Cal->>Rec: select last accepted bridge-after at current segment and companion drive
+  end
   Cal->>DUT: hold that DUT drive
   Cal->>Other: search lower companion DAC for lowest usable point
   PD-->>Cal: bridge_probe records
@@ -212,18 +236,24 @@ sequenceDiagram
 Because the DUT FVOA does not move during the bridge, the before/after
 photodiode ratio measures only the change in companion transmission. The
 before side is the latest usable retained `point` in the segment being closed.
+If no such point exists, firmware uses the last accepted bridge's after record,
+provided it is classified `ok`, belongs to the current segment, and has the
+current companion DAC voltage. Other retained search probes are not eligible
+for this fallback. Firmware logs the selected fallback record and DAC pair.
 The after side is the accepted retained `bridge_probe` in the new segment.
 Those record indices are stored in the bridge table rather than copied into
 synthetic records. Later DUT measurements are divided by the cumulative segment
 scale so all segments share the open-reference normalization.
 
 If a bridge search cannot find a usable companion point, firmware either
-tightens the saturated-side search floor and keeps probing or finishes the
+tightens the too-bright-side search floor and keeps probing or finishes the
 physical when the search demonstrates that the current bridge would add no more
-useful attenuation range. A missing bridge anchor means the current segment has
-no usable sweep point; after a bridge, a single immediately below-SNR point is
-treated as the natural end of the physical sweep rather than an acquisition
-error.
+useful attenuation range. A single below-SNR sweep point immediately after a
+bridge does not establish the end of the physical range: the accepted
+bridge-after record can anchor another search with the DUT held at its voltage.
+If neither an ordinary point nor the accepted bridge-after record qualifies,
+acquisition fails with `-ERANGE`. Reaching full DUT drive or an already fully
+open companion still finishes the physical sweep.
 
 ## Tick State
 
@@ -231,7 +261,7 @@ error.
 stateDiagram-v2
   [*] --> Inactive
   Inactive --> Running: atten/calibrate start
-  Running --> WaitWindow: DAC pair set
+  Running --> WaitWindow: DAC pair set, settled, window reset
   WaitWindow --> WaitWindow: post-reset sample count not yet complete
   WaitWindow --> Running: measurement handled, next DAC pair set
   WaitWindow --> Complete: both physical fits complete
@@ -241,9 +271,9 @@ stateDiagram-v2
   Error --> Inactive: stop=true
 ```
 
-There is no separate photodiode-settle, DAC-settle, or photodiode-average
-phase. The only active wait is completion of the configured sample count in the current internal
-photodiode configurable window.
+The 100 ms settling sleep occurs inside measurement scheduling without a new
+state-machine phase. `WaitWindow` then waits for the configured sample count in
+the current internal photodiode configurable window.
 
 ## Records, Telemetry, and Fit
 
@@ -326,7 +356,8 @@ space:
 
 ```text
 measured_db = -10 * log10(tx)
-max_atten_db = mean(measured_db for final three fit points)
+max_atten_db = mean(measured_db for final three usable full-sweep points)
+fit_points = usable voltage prefix before first measured_db > 55
 floor_tx = 10^(-max_atten_db / 10)
 model_tx = floor_tx + (1 - floor_tx) * ideal_model_tx
 residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv,
@@ -336,11 +367,13 @@ residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv,
 
 `max_atten_db` is the physical FVOA leakage floor, not the sum available from a
 logical two-FVOA attenuator. Firmware estimates it from the final three usable
-fit points, propagates that uncertainty into the weighted dB residuals, and
-then optimizes only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
+full-sweep points, propagates that uncertainty into the weighted dB residuals, and
+then uses the restricted prefix to optimize only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
-After the base fit, firmware fits an optional six-term Chebyshev correction to
-the remaining dB residuals:
+The fitting ceiling is `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB per physical FVOA).
+Acquisition still covers the complete voltage range. Both the base fit and the
+optional six-term Chebyshev correction use the same retained prefix. The
+correction keeps its full-floor coordinates and is not forced to zero at 55 dB:
 
 ```text
 start_db = -10 * log10(0.99)
@@ -353,21 +386,47 @@ model_db = base_db + correction_db
 This correction is intentionally ringfenced from the three physical
 coefficients. It is zero near open transmission and at the modeled leakage
 floor, and it is accepted only if the corrected model remains monotonic on the
-actual sweep-point grid. If the residual solve is ill-conditioned or fails that
-monotonicity check, firmware leaves `correction_coeff` as all zeros and keeps
-the base fit.
+actual sweep points, checking both value order and nonnegative local slope.
+Increasing sampled values can otherwise hide a turn before the final point.
+If the residual solve is ill-conditioned or fails that monotonicity check,
+firmware leaves `correction_coeff` as all zeros and keeps the base fit.
+
+The installed `max_calibrated_db` is the smaller of 55 dB and the corrected
+model at the retained endpoint. It is separate from `max_atten_db`, which still
+sets the inferred leakage floor. The corresponding boundary is recovered from
+the corrected curve; no cutoff voltage is persisted. Above it, the polynomial
+is replaced by a fixed continuation, with `B` the base model, `L` its floor,
+and `Bc + Cc = max_calibrated_db`:
+
+```text
+model_db = B + Cc * (L - B) / (L - Bc)
+```
+
+The value is continuous at the boundary and tends to the original floor.
+The slope may have a corner. No blend width or additional fit parameter is
+introduced. All-zero correction coefficients recover the base model exactly.
+Forward evaluation, inverse commands and local sensitivities use this same
+piecewise curve.
 
 The final, unweighted `sqrt(sum(residual_db^2) / point_count)` is installed as
 `rms_db` with each accepted physical model. It describes empirical model error
-across the fitted range, so the same RMS is used at all commanded attenuations.
+across the restricted fitted range. The same stored RMS remains in runtime
+uncertainty estimates, but it does not establish accuracy above `max_calibrated_db`.
 It is not a parameter standard error and is not divided by sqrt(point count)
 again. This can be conservative in regions with smaller residuals.
 
 Both physical fits must be accepted before installation. Failure leaves the
 previous coefficients and their RMS unchanged. Persistence saves RMS with the
 coefficient record; a new manual model without `rms_db` uses the 2 dB default.
-The existing acquisition, fit acceptance, and residual correction are unchanged.
-No additional sweep, offline calibration, or lab operation is required.
+Manual dB, linear and voltage commands retain access to the full drive range; attenuation above the
+calibrated boundary is approximate. Autolevel bounds each device by the smaller
+of its stored calibrated limit, the 55 dB ceiling and its reachable drive range.
+It uses laser adjustment after reaching those limits.
+
+The coefficient record now includes `max_calibrated_db`. Old attenuator NVS
+records fail the existing size check and use built-in defaults until a new
+calibration is installed. Other settings are preserved; there is no global
+NVS reset or settings migration.
 
 Runtime transmission uncertainty combines these model residuals with electrical
 variation. For each device, `electrical_sigma_db = abs(d_db_d_voltage_mv) *
@@ -429,6 +488,17 @@ analytic derivatives. A singular/insufficient-data correction or failed
 monotonicity check emits `atten_correction_rejected`; the documented base-fit
 fallback remains available. `fit=ok` indicates an accepted final model and does
 not alone establish that optional correction was accepted; inspect its
-coefficients and warnings. NVS schema 13 resets the earlier application settings
-layout rather than migrating four-term records. Saved notebook outputs remain
-historical captures; reload the host module before requesting new six-term data.
+coefficients and warnings. The earlier move to NVS schema 13 reset the old
+four-term settings layout. This calibrated-range update keeps schema 13 and
+rejects only old attenuator records by size, as described above. Saved notebook
+outputs remain historical captures; reload the host module after updating firmware.
+
+### Compact calibration status
+
+The aggregate status includes each model's coefficients, `max_calibrated_db`,
+acceptance, point count, floor uncertainty, correlation, RMS and maximum error.
+Diagnostic scalars use six significant digits and progress voltages three decimal
+places; coefficient precision is retained. `min_tx`, `max_tx` and `fvoa_span_mv`
+remain in the per-device fit telemetry but are omitted from aggregate status and
+therefore are absent from newly fetched dataset metadata. This fits the existing
+1024-byte response buffers without increasing queue storage.

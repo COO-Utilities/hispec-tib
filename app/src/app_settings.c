@@ -31,7 +31,8 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Physical attenuator residual RMS extends coefficient records; reset old layouts. */
+/* Existing schema stays: size validation rejects only old attenuator records
+ * after max_calibrated_db extends them, preserving unrelated settings. */
 #define APP_NVS_SCHEMA_VERSION 13U
 
 enum app_nvs_id {
@@ -235,6 +236,8 @@ static void settings_defaults(struct app_settings_snapshot *s)
 					       ATTENUATOR_DEFAULT_GAIN);
 				s->attenuator.channel[ch].physical[physical].max_atten_db =
 					FVOA_DEFAULT_MAX_ATTEN_DB;
+				s->attenuator.channel[ch].physical[physical].max_calibrated_db =
+					MIN(ATTENUATOR_CALIBRATED_MAX_DB, FVOA_DEFAULT_MAX_ATTEN_DB);
 				s->attenuator.channel[ch].physical[physical].gain =
 					ATTENUATOR_DEFAULT_GAIN;
 				s->attenuator.channel[ch].physical[physical].rms_db =
@@ -599,6 +602,7 @@ static bool attenuator_channel_valid(const struct app_attenuator_channel_setting
 		physical[i].fvoa_50pct_mv = p->fvoa_50pct_mv;
 		physical[i].slope_inv_fvoa_mv = p->slope_inv_fvoa_mv;
 		physical[i].max_atten_db = p->max_atten_db;
+		physical[i].max_calibrated_db = p->max_calibrated_db;
 		physical[i].gain = p->gain;
 		physical[i].rms_db = p->rms_db;
 		memcpy(physical[i].correction_coeff, p->correction_coeff,

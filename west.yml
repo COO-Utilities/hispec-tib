@@ -12,16 +12,16 @@ manifest:
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: e60d3379133c4315504e9113ecdcc05fbe552756
+      revision:  e60d3379133c4315504e9113ecdcc05fbe552756  # planned update to 55303e23f59df42d3ba41f0e93ca2192240f804a
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
         name-allowlist:
-          - cmsis_6      # required by the ARM port for Cortex-M [TODO is this the true rational? I thoguht this was for flash/debug? -JIB"]
+          - cmsis_6      # required by the ARM port for Cortex-M
           - hal_stm32    # required by the st32 nucleo board
     - name: zscilib
       remote: zephyrproject-rtos
-      revision: bf1cbf1a1661521cf3f528db40d842b700ecd826
+      revision: bf1cbf1a1661521cf3f528db40d842b700ecd826  # planned update to b5668a80c02e8e0a8ca5f6debdbe1dc3e09e7f35
       path: modules/lib/zscilib
     # Out-of-tree DAC Driver for optical attenuators
     - name: dac7578

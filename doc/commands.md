@@ -185,9 +185,11 @@ not be needed for normal serial operation.
     "code": "<stable_warning_code>",
     "msg": "<short human text>",
     "context": "<short context>",
-    "uptime_s": 0
+    "uptime_ms": 0
   }
   ```
+
+`uptime_ms` is the device uptime in integer milliseconds
 
 Warnings do not imply command failure unless the command response also reports
 an error. Most warning delivery is intentionally lossy and is not mirrored into
@@ -676,8 +678,9 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   holdoff. Physical response and filter lag remain visible in the data.
 - Flux is raised with attenuation first, then laser current; lowered with
   attenuation first, then laser current. The directional pair allocator avoids
-  loading all attenuation onto one device. Startup sets maximum attenuation
-  before raising the laser to 100%.
+  loading all attenuation onto one device. Startup sets the maximum calibrated
+  attenuation before raising the laser to 100%. Each FVOA is limited by its
+  `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
 - Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
   `off_in_s` stops the monitor after the requested seconds, with zero disabling
   expiry. Bank power/TECs remain under their existing owner.
@@ -1110,6 +1113,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "fvoa_50pct_mv": 3144.95,
       "slope_inv_fvoa_mv": 0.00303104,
       "max_atten_db": 48.36,
+      "max_calibrated_db": 45.0,
       "gain": 1.533,
       "rms_db": 2.0,
       "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
@@ -1118,6 +1122,7 @@ command wait budget, this command returns `{"error":"busy"}`.
       "fvoa_50pct_mv": 3456.12,
       "slope_inv_fvoa_mv": 0.00247498,
       "max_atten_db": 61.95,
+      "max_calibrated_db": 55.0,
       "gain": 1.533,
       "rms_db": 2.0,
       "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -1130,7 +1135,7 @@ command wait budget, this command returns `{"error":"busy"}`.
   coefficient objects. The MQTT payload is the same JSON object without the
   serial key prefix.
   ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0,0.0,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0,0.0,0.0]},"persist":true}
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"max_calibrated_db":45.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0,0.0,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"max_calibrated_db":55.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0,0.0,0.0]},"persist":true}
   ```
 
 - **Notes:**
@@ -1161,6 +1166,17 @@ command wait budget, this command returns `{"error":"busy"}`.
     always include it. In set payloads, omitting `correction_coeff` leaves the
     currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` to
     clear it intentionally.
+  - `max_calibrated_db` is required in each replacement coefficient object and
+    returned by coefficient queries. It is the corrected-curve operating endpoint,
+    separate from the leakage-floor parameter `max_atten_db`. Automatic fitting
+    uses measured points through `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB), or the
+    lower range reached. Above the endpoint, the endpoint residual fades linearly
+    in base-model dB to zero at the existing floor; the polynomial is not extrapolated.
+  - Manual dB/linear and voltage commands retain full-range access. Values beyond
+    the calibrated endpoint are rough estimates. Autolevel uses individual
+    calibrated limits and switches to laser adjustment when they are exhausted.
+  - Updating firmware invalidates older attenuator coefficient records by size;
+    recalibrate before relying on them. Other NVS settings are preserved.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
@@ -1181,7 +1197,7 @@ command wait budget, this command returns `{"error":"busy"}`.
     Calibration errors remain correlated across samples, and the combined
     uncertainty is not temporal RMS. No bandwidth or averaging correction is
     inferred from electrical RMS. Throughput includes this and laser uncertainty
-    in `tp_err`; `tp_pd_err` remains PD-only. Nominal transmission is unchanged.
+    in `tp_err`; `tp_pd_err` remains PD-only. The error propagation does not alter nominal transmission.
   - There is no separate `attensettings` command; calibration coefficients live
     on `atten/<laser>/coeff`.
 
@@ -1211,13 +1227,12 @@ ownership are documented in `attenuator_calibration.md`.
       "fvoa_50pct_mv": 3144.95,
       "slope_inv_fvoa_mv": 0.00303104,
       "max_atten_db": 48.36,
+      "max_calibrated_db": 45.0,
       "max_atten_sigma_db": 0.29,
       "corr": 0.999,
       "rms_db": 0.1,
       "max_abs_db": 0.2,
-      "min_tx": 1.0e-6,
-      "max_tx": 0.9,
-      "fvoa_span_mv": 2400.0
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
     },
     "dac2": {"valid": false}
   }
@@ -1320,24 +1335,34 @@ ownership are documented in `attenuator_calibration.md`.
     powered and producing valid sampler data. It stops laser emission, sets
     both physical attenuators to the maximum firmware DAC-drive voltage, sets
     the photodiode internal configurable-window duration to `dwell_ms`, rounded
-    by the PD owner to whole samples. After each attenuator change it resets that
-    window and waits for its actual sample count; conversions begun before reset
-    are excluded. No extra conversion-time pad or private calibration dark is used. Each point uses the photodiode configurable
+    by the PD owner to whole samples. For each measurement, after both DAC writes
+    it sleeps 100 ms for FVOA settling, then resets that window and waits for its
+    full sample count. The settling wait is additional to `dwell_ms`; conversions
+    begun before reset are excluded. No extra conversion-time pad or private
+    calibration dark is used. Each point uses the photodiode configurable
     window's configured dark-subtracted `mean_net_mv`; updating dark remains a
     separate `pd/dark/<channel>` operation.
-  - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
-    measurement is usable when it is not ADC/electrical clipped and its
+  - Automatic calibration uses SNR for the dim edge and a separate headroom
+    target for companion searches. A measurement is usable when its raw window
+    maximum is below the manufacturer's **2000 mV photodiode saturation/linearity
+    limit**, expressed at the ADC input after the divider, and its
     dark-subtracted signal is at least 5 sigma above the sample mean
-    uncertainty. Saturation here means actual ADC clipping near
-    2.048 V, not a merely high photodiode voltage within the intended 0-2 V
-    operating range.
+    uncertainty. This photodiode limit is not an output-voltage clamp: the
+    detector can produce voltages beyond it and beyond the ADC range. The ADC
+    clips at **2048 mV** full scale; its maximum reported code is **2047.9375 mV**.
+    Calibration rejects photodiode saturation before ADC clipping occurs.
+    Initial-reference and bridge searches select usable candidates
+    with raw window maxima below **1850 mV**, leaving headroom for subsequent
+    fluctuations. A usable record between 1850 and 2000 mV remains `ok` but is
+    too bright for search selection. Laser fallback and bridge-search recovery
+    use the same 1850 mV search target.
     Low-but-clean points are retained and may be fit inputs. Saturated,
     below-SNR, and ADC-error measurements are retained as records but are not
     fit inputs.
-  - Automatic calibration does not use a voltage schedule or datasheet limits
+  - Automatic calibration does not use an FVOA datasheet voltage schedule
     to choose calibration points. For each physical FVOA it binary-searches the
-    companion FVOA to find the lowest usable companion DAC, selects that
-    measured initial-probe record as the open reference, linearly sweeps the
+    companion FVOA to find the lowest usable companion DAC below the peak target,
+    selects that measured initial-probe record as the open reference, linearly sweeps the
     DUT from 0 mV to maximum drive in
     `ATTEN_CAL_SWEEP_STEP_MV` increments, skips saturated bright-side sweep
     records as diagnostics, and bridge-normalizes when the sweep reaches the
@@ -1346,11 +1371,17 @@ ownership are documented in `attenuator_calibration.md`.
     DUT, selects the latest usable DUT point as the bridge-before record,
     searches the companion FVOA, and records the accepted bridge probe as the
     bridge-after record in the bridge table. The bridge ratio updates the
-    segment scale and its uncertainty.
+    segment scale and its uncertainty. If there is no usable DUT point in the
+    current segment, the last accepted bridge-after record can anchor another
+    bridge when it is classified `ok` and matches the current segment and
+    companion DAC voltage. A single below-SNR point after a bridge is not by
+    itself a reason to finish the sweep; lacking both eligible anchors is an
+    acquisition error.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
-    derived as fit candidates by classification and transmission-domain rules. External analysis can
-    inspect all retained records regardless of firmware fit success.
+    derived as fit candidates by classification and transmission-domain rules,
+    restricted to the contiguous prefix before the first measured point above
+    55 dB. External analysis can inspect all retained records regardless of fit success.
   - Automatic calibration uses the sampler-owned internal photodiode
     configurable window. It does not start a separate photodiode measurement or
     a new calibration thread; the throughput monitor thread advances the state
@@ -1361,16 +1392,19 @@ ownership are documented in `attenuator_calibration.md`.
     and optimizes the attenuator model directly in dB output space while
     keeping the coefficient names and meanings `fvoa_50pct_mv`,
     `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
-    `max_atten_db` from the final three usable fit points and holds it fixed
-    while optimizing the two shape parameters. It then fits the optional
-    `correction_coeff` residual layer in dB space against the same sweep-point
-    grid. If that correction is ill-conditioned or breaks monotonicity on the
-    sweep points, firmware leaves the correction coefficients at zero and keeps
+    `max_atten_db` from the final three usable full-sweep points and holds it
+    fixed while optimizing the two shape parameters on the prefix through
+    55 dB. It then fits the optional `correction_coeff` residual layer against
+    that same prefix. If the correction is ill-conditioned or breaks
+    monotonicity at retained sweep points (value order and local slope),
+    firmware leaves the correction coefficients at zero and keeps
     the base fit. The y uncertainty comes from photodiode mean
     uncertainty, bridge/segment-scale propagation, and the open-reference
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
     3 mV. Fit details include point count, correlation, residual RMS/max in dB,
-    fitted transmission span, FVOA-drive span, and correction coefficients.
+    calibrated limit and correction coefficients. Transmission/FVOA spans remain
+    in per-device fit telemetry, but are omitted from aggregate status to fit
+    the existing 1024-byte response buffers.
     The final `rms_db` is retained with each accepted physical model for runtime
     throughput uncertainty and optional NVS persistence.
 
@@ -1701,8 +1735,9 @@ ownership are documented in `attenuator_calibration.md`.
     "lasers": {
       "<lasername>": {
         "power_mw": 0.0,
-        "tec_on_s": 0,
-        "off_in_s": 0
+        "ready": false,
+        "tec_on_s": null,
+        "off_in_s": null
       }
     },
     "attens": {
@@ -1718,6 +1753,8 @@ ownership are documented in `attenuator_calibration.md`.
   }
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
+  Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
+  when inactive or unavailable. `ready` reports whether the laser can operate.
   `lastcmd` is restored from command-dispatch NVS storage when available.
 
 

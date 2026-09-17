@@ -68,6 +68,7 @@ struct app_attenuator_physical_settings {
 	double slope_inv_fvoa_mv;
 	/* Maximum attenuation of one physical FVOA from residual leakage. */
 	double max_atten_db;
+	double max_calibrated_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
 	/* Residual model RMS, installed/persisted together with these coefficients. */

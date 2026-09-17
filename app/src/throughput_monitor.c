@@ -25,7 +25,6 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 
 #define TP_LOW_FRACTION 0.20
 #define TP_HIGH_FRACTION 0.80
-#define TP_MIN_ATTEN_TX 1.0e-9
 #define TP_FLAG_OVERRANGE BIT(0)
 #define TP_FLAG_AUTOLEVEL BIT(1)
 
@@ -266,13 +265,13 @@ static int autolevel_adjust(struct throughput_state *state,
 	if (state->max_flux_ph_s > 0.0 && laser_flux > 0.0) {
 		max_tx = MIN(1.0, state->max_flux_ph_s / laser_flux);
 	}
-	if ((low && source->atten_tx < 0.999) || (high && source->atten_tx > TP_MIN_ATTEN_TX)) {
+	if ((low && source->atten_tx < 0.999) || high) {
 		double next_tx = low ? MIN(source->atten_tx * 3.0, max_tx) :
-			MAX(source->atten_tx / 3.0, TP_MIN_ATTEN_TX);
+			source->atten_tx / 3.0;
 		if (low && next_tx <= source->atten_tx) {
 			return 0;
 		}
-		if (!attenuator_set_linear(atten, next_tx)) {
+		if (!attenuator_set_linear(atten, next_tx, true)) {
 			return -EIO;
 		}
 		struct attenuator_transmission_estimate applied;
@@ -594,7 +593,8 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	if (request->has_laser && request->autolevel) {
 		monitors[channel].level_percent = 100.0;
-		rc = attenuator_set_db(&attenuators[attenuator_index], 120.0) ? 0 : -EIO;
+		rc = attenuator_set_db(&attenuators[attenuator_index],
+			2.0 * ATTENUATOR_CALIBRATED_MAX_DB, true) ? 0 : -EIO;
 		if (rc == 0) {
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
 				monitors[channel].level_percent, 0U);

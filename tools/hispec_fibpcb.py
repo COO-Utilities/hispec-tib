@@ -20,7 +20,7 @@ import struct
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from types import SimpleNamespace
 from typing import Any, Callable, Deque, Iterable, Literal, Mapping, Sequence
 
@@ -59,6 +59,7 @@ ATTENUATOR_MODEL_ERF_SCALE = 4.0
 ATTENUATOR_MODEL_CORRECTION_TERMS = 6
 ATTENUATOR_MODEL_CORRECTION_START_DB = -10.0 * math.log10(0.99)
 FVOA_DEFAULT_MAX_ATTEN_DB = 55.0
+ATTENUATOR_CALIBRATED_MAX_DB = 55.0
 ATTENUATOR_ADC_CLIP_MV = PD_ADC_FULL_SCALE_MV - PD_ADC_LSB_MV
 ATTENUATOR_CAL_SNR_USABLE = 5.0
 ATTEN_CAL_MIN_TX = 1.0e-10
@@ -344,8 +345,9 @@ class LastCommand(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class StatusLaserSummary(ResponseRepr):
     power_mw: float | None = None
+    ready: bool = False
     tec_on_s: int | None = None
-    off_in_s: int = 0
+    off_in_s: int | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -421,6 +423,8 @@ class RouteLoss(ResponseRepr):
 class LaserStatus(ResponseRepr):
     name: str
     powered: bool
+    ready: bool
+    blocked_reason: str | None
     tec_on_s: int | None
     emit_on_s: int | None
     emit_total_s: int | None
@@ -491,6 +495,8 @@ class LaserEngineeringStatus(ResponseRepr):
     raw_state: int
     raw_lock: int
     raw_tec: int
+    blocking_lock: int
+    blocked_reason: str | None
     op_started: bool
     ready: bool
     curr_set_internal: bool
@@ -541,9 +547,9 @@ class LaserBankHeater(ResponseRepr):
     auto_state: str
     heater_on: bool
     bank_power: bool
-    ambient_c: float
+    ambient_c: float | None
     idle_tec_temps: int
-    idle_tec_avg_c: int
+    idle_tec_avg_c: float | None
     last_error: int
     poll_age_s: int | None
 
@@ -567,6 +573,7 @@ class AttenuatorPhysicalCoeff(ResponseRepr):
     fvoa_50pct_mv: float
     slope_inv_fvoa_mv: float
     max_atten_db: float
+    max_calibrated_db: float
     gain: float
     correction_coeff: tuple[float, ...]
     rms_db: float = ATTENUATOR_DEFAULT_RMS_DB
@@ -586,6 +593,7 @@ class AttenuatorFitMetrics(ResponseRepr):
     fvoa_50pct_mv: float | None = None
     slope_inv_fvoa_mv: float | None = None
     max_atten_db: float | None = None
+    max_calibrated_db: float | None = None
     max_atten_sigma_db: float | None = None
     corr: float | None = None
     rms_db: float | None = None
@@ -604,11 +612,12 @@ class AttenuatorFitMetrics(ResponseRepr):
             f"fvoa_50pct_mv={_format_repr(self.fvoa_50pct_mv)}, "
             f"slope_inv_fvoa_mv={_format_repr(self.slope_inv_fvoa_mv)}, "
             f"max_atten_db={_format_repr(self.max_atten_db)}, "
+            f"max_calibrated_db={_format_repr(self.max_calibrated_db)}, "
             f"max_atten_sigma_db={_format_repr(self.max_atten_sigma_db)}, "
             f"corr={_format_repr(self.corr)}, "
             f"rms_db={_format_repr(self.rms_db)}, max_abs_db={_format_repr(self.max_abs_db)}, "
             f"correction_coeff={_format_repr(self.correction_coeff)}, "
-            f"fvoa_span_mv={_format_repr(self.fvoa_span_mv)})"
+            ")"
         )
 
     __str__ = __repr__
@@ -713,7 +722,7 @@ def _atten_correction_tuple(name: str, value: Sequence[float]) -> tuple[float, .
     return coeff
 
 
-def _atten_correction_db(
+def _atten_chebyshev_db(
     base_db: np.ndarray | Sequence[float],
     max_atten_db: float,
     correction_coeff: Sequence[float],
@@ -733,6 +742,34 @@ def _atten_correction_db(
     envelope = np.clip(t, 0.0, 1.0) * (1.0 - np.clip(t, 0.0, 1.0))
     cheb = np.polynomial.chebyshev.chebval(x, coeff)
     return np.where(active, envelope * cheb, 0.0)
+
+
+def _atten_correction_db(
+    base_db: np.ndarray | Sequence[float],
+    max_atten_db: float,
+    correction_coeff: Sequence[float],
+    max_calibrated_db: float = 0.0,
+) -> np.ndarray:
+    """Correct within the fitted range; fade the endpoint residual to the floor.
+
+    A zero limit evaluates the unrestricted polynomial for fitting/historical
+    analysis. Installed models and coefficient commands require a positive limit.
+    """
+    db = np.asarray(base_db, dtype=float)
+    if not (0.0 < max_calibrated_db < max_atten_db) or not np.any(correction_coeff):
+        return _atten_chebyshev_db(db, max_atten_db, correction_coeff)
+    lo, hi = 0.0, float(max_atten_db)
+    for _ in range(48):
+        mid = (lo + hi) / 2.0
+        if mid + float(_atten_chebyshev_db(mid, max_atten_db, correction_coeff)) < max_calibrated_db:
+            lo = mid
+        else:
+            hi = mid
+    boundary = (lo + hi) / 2.0
+    # Clamp polynomial arguments so the fitted polynomial is never extrapolated.
+    correction = _atten_chebyshev_db(np.minimum(db, boundary), max_atten_db, correction_coeff)
+    tail = (max_calibrated_db - boundary) * (max_atten_db - db) / (max_atten_db - boundary)
+    return np.where(db > boundary, tail, correction)
 
 
 def _atten_db_with_sigma(
@@ -859,80 +896,32 @@ def _atten_cal_record_row(
 def _atten_coeff_tuple(
     name: str,
     coeff: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float],
-) -> tuple[float, float, float, float, tuple[float, ...]]:
-    if isinstance(coeff, AttenuatorPhysicalCoeff):
-        fvoa_50pct_mv = coeff.fvoa_50pct_mv
-        slope_inv_fvoa_mv = coeff.slope_inv_fvoa_mv
-        max_atten_db = coeff.max_atten_db
-        gain = coeff.gain
-        correction_coeff = coeff.correction_coeff
-    elif isinstance(coeff, Mapping):
-        try:
-            fvoa_50pct_mv = float(coeff["fvoa_50pct_mv"])
-            slope_inv_fvoa_mv = float(coeff["slope_inv_fvoa_mv"])
-            max_atten_db = float(coeff["max_atten_db"])
-            gain = float(coeff.get("gain", ATTENUATOR_DEFAULT_GAIN))
-            correction_coeff = _atten_correction_tuple(
-                name, coeff.get("correction_coeff", (0.0,) * ATTENUATOR_MODEL_CORRECTION_TERMS)
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HispecFibError(f"{name} coefficient is malformed") from exc
-    else:
-        values = tuple(float(value) for value in coeff)
-        if len(values) == 3:
-            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values
-            gain = ATTENUATOR_DEFAULT_GAIN
-            correction_coeff = (0.0,) * ATTENUATOR_MODEL_CORRECTION_TERMS
-        elif len(values) == 4:
-            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values
-            correction_coeff = (0.0,) * ATTENUATOR_MODEL_CORRECTION_TERMS
-        elif len(values) == 3 + ATTENUATOR_MODEL_CORRECTION_TERMS:
-            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db = values[:3]
-            gain = ATTENUATOR_DEFAULT_GAIN
-            correction_coeff = _atten_correction_tuple(name, values[3:])
-        elif len(values) == 4 + ATTENUATOR_MODEL_CORRECTION_TERMS:
-            fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain = values[:4]
-            correction_coeff = _atten_correction_tuple(name, values[4:])
-        else:
-            raise HispecFibError(f"{name} coefficient must have 3, 4, 9, or 10 values")
-
-    if not (
-        np.isfinite(fvoa_50pct_mv)
-        and np.isfinite(slope_inv_fvoa_mv)
-        and np.isfinite(max_atten_db)
-        and np.isfinite(gain)
-        and slope_inv_fvoa_mv > 0.0
-        and max_atten_db > 0.0
-        and gain > 0.0
-    ):
-        raise HispecFibError(f"{name} coefficient values must be finite with positive slope, max attenuation, and gain")
-    return (
-        float(fvoa_50pct_mv),
-        float(slope_inv_fvoa_mv),
-        float(max_atten_db),
-        float(gain),
-        correction_coeff,
-    )
+) -> tuple[float, float, float, float, tuple[float, ...], float]:
+    values = _atten_physical_coeff_payload(name, coeff)
+    return (values["fvoa_50pct_mv"], values["slope_inv_fvoa_mv"],
+            values["max_atten_db"], values["gain"],
+            _atten_correction_tuple(name, values.get("correction_coeff", (0.0,) * 6)),
+            values["max_calibrated_db"])
 
 
 def _atten_b_from_coeff(
-    coeff: tuple[float, float, float, float, tuple[float, ...]],
+    coeff: tuple[float, float, float, float, tuple[float, ...], float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
-    fvoa_50pct_mv, slope_inv_fvoa_mv, _max_atten_db, gain, _correction_coeff = coeff
+    fvoa_50pct_mv, slope_inv_fvoa_mv, _max_atten_db, gain, _correction_coeff, _max_calibrated_db = coeff
     dac = np.asarray(dac_mv, dtype=float)
     return slope_inv_fvoa_mv * ((gain * dac) - fvoa_50pct_mv)
 
 
 def _atten_tx_from_coeff(
-    coeff: tuple[float, float, float, float, tuple[float, ...]],
+    coeff: tuple[float, float, float, float, tuple[float, ...], float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     return _atten_model_tx_from_b(_atten_b_from_coeff(coeff, dac_mv))
 
 
 def _atten_relative_tx_from_coeff(
-    coeff: tuple[float, float, float, float, tuple[float, ...]],
+    coeff: tuple[float, float, float, float, tuple[float, ...], float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     open_tx = float(_atten_tx_from_coeff(coeff, [0.0])[0])
@@ -945,11 +934,11 @@ def _atten_relative_tx_from_coeff(
 
 
 def _atten_db_from_coeff(
-    coeff: tuple[float, float, float, float, tuple[float, ...]],
+    coeff: tuple[float, float, float, float, tuple[float, ...], float],
     dac_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
     base_db = _atten_db_from_tx(_atten_relative_tx_from_coeff(coeff, dac_mv))
-    return base_db + _atten_correction_db(base_db, coeff[2], coeff[4])
+    return base_db + _atten_correction_db(base_db, coeff[2], coeff[4], coeff[5])
 
 
 def attenuator_noise(
@@ -1027,8 +1016,8 @@ def attenuator_noise(
 
 
 def _atten_pair_db_from_coeffs(
-    dac1_coeff: tuple[float, float, float, float, tuple[float, ...]],
-    dac2_coeff: tuple[float, float, float, float, tuple[float, ...]],
+    dac1_coeff: tuple[float, float, float, float, tuple[float, ...], float],
+    dac2_coeff: tuple[float, float, float, float, tuple[float, ...], float],
     dac1_mv: np.ndarray | Sequence[float],
     dac2_mv: np.ndarray | Sequence[float],
 ) -> np.ndarray:
@@ -1046,8 +1035,8 @@ def _atten_cal_pair_dac(records: np.recarray) -> tuple[np.ndarray, np.ndarray]:
 
 def _atten_cal_pair_sample_db(
     records: np.recarray,
-    dac1_coeff: tuple[float, float, float, float, tuple[float, ...]],
-    dac2_coeff: tuple[float, float, float, float, tuple[float, ...]],
+    dac1_coeff: tuple[float, float, float, float, tuple[float, ...], float],
+    dac2_coeff: tuple[float, float, float, float, tuple[float, ...], float],
 ) -> np.ndarray:
     physical = np.asarray(records.physical).astype(str)
     _, dac2 = _atten_cal_pair_dac(records)
@@ -2477,7 +2466,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
     def _fit_coeff_for_physical(
         self, physical: str
-    ) -> tuple[float, float, float, float, tuple[float, ...]] | None:
+    ) -> tuple[float, float, float, float, tuple[float, ...], float] | None:
         for item in self.meta:
             fits = item.get("fits") if isinstance(item, Mapping) else None
             if not isinstance(fits, Mapping):
@@ -2503,6 +2492,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 max_atten_db,
                 ATTENUATOR_DEFAULT_GAIN,
                 correction_coeff,
+                float(fit.max_calibrated_db or 0.0),
             )
         return None
 
@@ -3116,7 +3106,7 @@ class WarningEvent(ResponseRepr):
     code: str
     msg: str
     context: str
-    uptime_s: int
+    uptime_ms: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -3235,6 +3225,7 @@ def _decode_atten_physical_coeff(data: Mapping[str, Any], name: str) -> Attenuat
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
             max_atten_db=float(data["max_atten_db"]),
+            max_calibrated_db=float(data["max_calibrated_db"]),
             gain=float(data["gain"]),
             rms_db=float(data["rms_db"]),
             correction_coeff=_atten_correction_tuple(name, data["correction_coeff"]),
@@ -3249,80 +3240,30 @@ def _atten_physical_coeff_payload(
     *,
     default_gain: float = ATTENUATOR_DEFAULT_GAIN,
 ) -> dict[str, Any]:
-    rms_db = None
+    """Encode one model; flat sequences use f50, slope, floor, gain, limit[, c0..c5]."""
     if isinstance(value, AttenuatorPhysicalCoeff):
-        fvoa_50pct_mv = value.fvoa_50pct_mv
-        slope_inv_fvoa_mv = value.slope_inv_fvoa_mv
-        max_atten_db = value.max_atten_db
-        gain = value.gain
-        rms_db = value.rms_db
-        correction_coeff = value.correction_coeff
-        include_correction = True
-    elif isinstance(value, Mapping):
-        try:
-            fvoa_50pct_mv = value["fvoa_50pct_mv"]
-            slope_inv_fvoa_mv = value["slope_inv_fvoa_mv"]
-            max_atten_db = value["max_atten_db"]
-            gain = value.get("gain", default_gain)
-            rms_db = value.get("rms_db")
-            include_correction = "correction_coeff" in value
-            correction_coeff = (
-                _atten_correction_tuple(name, value["correction_coeff"])
-                if include_correction
-                else None
-            )
-        except KeyError as exc:
-            raise HispecFibError(
-                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
-            ) from exc
-    else:
-        if len(value) == 3:
-            fvoa_50pct_mv = value[0]
-            slope_inv_fvoa_mv = value[1]
-            max_atten_db = value[2]
-            gain = default_gain
-            correction_coeff = None
-            include_correction = False
-        elif len(value) == 4:
-            fvoa_50pct_mv = value[0]
-            slope_inv_fvoa_mv = value[1]
-            max_atten_db = value[2]
-            gain = value[3]
-            correction_coeff = None
-            include_correction = False
-        elif len(value) == 3 + ATTENUATOR_MODEL_CORRECTION_TERMS:
-            fvoa_50pct_mv = value[0]
-            slope_inv_fvoa_mv = value[1]
-            max_atten_db = value[2]
-            gain = default_gain
-            correction_coeff = _atten_correction_tuple(name, value[3:])
-            include_correction = True
-        elif len(value) == 4 + ATTENUATOR_MODEL_CORRECTION_TERMS:
-            fvoa_50pct_mv = value[0]
-            slope_inv_fvoa_mv = value[1]
-            max_atten_db = value[2]
-            gain = value[3]
-            correction_coeff = _atten_correction_tuple(name, value[4:])
-            include_correction = True
-        else:
-            raise HispecFibError(
-                f"{name} must contain fvoa_50pct_mv, slope_inv_fvoa_mv, and max_atten_db"
-            )
-
-    payload = {
-        "fvoa_50pct_mv": _require_float(f"{name}.fvoa_50pct_mv", fvoa_50pct_mv, 1e-12, 1e12),
-        "slope_inv_fvoa_mv": _require_float(
-            f"{name}.slope_inv_fvoa_mv", slope_inv_fvoa_mv, 1e-12, 1e12
-        ),
-        "max_atten_db": _require_float(f"{name}.max_atten_db", max_atten_db, 1e-12, 1e12),
-        "gain": _require_float(f"{name}.gain", gain, 1e-12, 1e12),
-    }
-    if rms_db is not None:
-        payload["rms_db"] = _require_float(f"{name}.rms_db", rms_db, 0.0, math.inf)
-    if include_correction:
-        assert correction_coeff is not None
-        payload["correction_coeff"] = list(correction_coeff)
-    return payload
+        value = asdict(value)
+    elif not isinstance(value, Mapping):
+        if len(value) not in (5, 5 + ATTENUATOR_MODEL_CORRECTION_TERMS):
+            raise HispecFibError(f"{name} coefficient must contain 5 or 11 values")
+        fields = ("fvoa_50pct_mv", "slope_inv_fvoa_mv", "max_atten_db", "gain", "max_calibrated_db")
+        sequence = value
+        value = dict(zip(fields, sequence[:5]))
+        if len(sequence) > 5:
+            value["correction_coeff"] = sequence[5:]
+    try:
+        payload = {key: _require_float(f"{name}.{key}", value[key], 1e-12, 1e12)
+                   for key in ("fvoa_50pct_mv", "slope_inv_fvoa_mv", "max_atten_db", "max_calibrated_db")}
+        payload["gain"] = _require_float(f"{name}.gain", value.get("gain", default_gain), 1e-12, 1e12)
+        if payload["max_calibrated_db"] > payload["max_atten_db"]:
+            raise HispecFibError(f"{name}.max_calibrated_db exceeds the leakage floor")
+        if "rms_db" in value:
+            payload["rms_db"] = _require_float(f"{name}.rms_db", value["rms_db"], 0.0, math.inf)
+        if "correction_coeff" in value:
+            payload["correction_coeff"] = list(_atten_correction_tuple(name, value["correction_coeff"]))
+        return payload
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HispecFibError(f"{name} coefficient is malformed; max_calibrated_db is required") from exc
 
 
 def _dataclass_from(cls: type[Any], mapping: Mapping[str, Any], **overrides: Any) -> Any:
@@ -3421,13 +3362,11 @@ def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationSt
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
             max_atten_db=float(data["max_atten_db"]),
+            max_calibrated_db=float(data["max_calibrated_db"]),
             max_atten_sigma_db=float(data["max_atten_sigma_db"]),
             corr=float(data["corr"]),
             rms_db=float(data["rms_db"]),
             max_abs_db=float(data["max_abs_db"]),
-            min_tx=float(data["min_tx"]),
-            max_tx=float(data["max_tx"]),
-            fvoa_span_mv=float(data["fvoa_span_mv"]),
             correction_coeff=_atten_correction_tuple("fit", data["correction_coeff"]),
         )
 
@@ -3510,6 +3449,7 @@ def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
 
 
 def decode_warning(payload: bytes | str) -> WarningEvent:
+    """Decode a firmware warning, preserving its required millisecond uptime."""
     data = _loads(payload)
     if not isinstance(data, Mapping):
         raise HispecFibError("warning payload is not a JSON object")
@@ -3518,7 +3458,7 @@ def decode_warning(payload: bytes | str) -> WarningEvent:
         code=str(data.get("code", "")),
         msg=str(data.get("msg", "")),
         context=str(data.get("context", "")),
-        uptime_s=int(data.get("uptime_s", 0)),
+        uptime_ms=int(data["uptime_ms"]),
     )
 
 
@@ -4008,6 +3948,7 @@ class HispecFibPcb:
         )
 
     def status(self, *, ip: bool = False, lasers: bool = False, attens: bool = False) -> Status:
+        """Query board status; inactive laser timers remain None in the summaries."""
         payload = _optional_payload(ip=ip or None, lasers=lasers or None, attens=attens or None)
         data = self._request_json("status", payload)
         return Status(
@@ -4026,8 +3967,9 @@ class HispecFibPcb:
                 data.get("lasers", {}),
                 lambda _name, value: StatusLaserSummary(
                     power_mw=value.get("power_mw"),
+                    ready=bool(value["ready"]),
                     tec_on_s=None if value.get("tec_on_s") is None else int(value.get("tec_on_s")),
-                    off_in_s=int(value.get("off_in_s", 0)),
+                    off_in_s=None if value["off_in_s"] is None else int(value["off_in_s"]),
                 ),
             ),
             attens=_named_values(
@@ -5144,11 +5086,11 @@ class HispecFibPcb:
         with self._warning_lock:
             self._warnings.append(event)
         self.logger.warning(
-            "PCB warning %s: %s context=%s uptime_s=%s",
+            "PCB warning %s: %s context=%s uptime_ms=%s",
             event.code,
             event.msg,
             event.context,
-            event.uptime_s,
+            event.uptime_ms,
         )
 
 

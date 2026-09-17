@@ -23,8 +23,10 @@
  * the photodiode signal back near the bright side of the usable band.
  * DAC direction is the inverse of signal: lower DAC raises signal,
  * higher DAC attenuates more. The companion search maintains a
- * saturated low-DAC side and a more-attenuated high-DAC side, while separately
- * remembering the lowest usable companion DAC candidate.
+ * too-bright low-DAC side and a more-attenuated high-DAC side, while separately
+ * remembering the lowest usable companion DAC candidate below the 1850 mV
+ * raw-window peak target. This leaves headroom below the 2000 mV usable limit;
+ * search headroom does not change retained measurement classifications.
  *
  * Each accepted bridge contributes an after/before photodiode ratio to the
  * cumulative segment scale. Retained records store only measured acquisition
@@ -60,6 +62,9 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_DEFAULT_DWELL_MS 400U
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
+#define ATTEN_CAL_SETTLE_MS 100U
+/* Peak target for reference/bridge searches, below the PD's 2000 mV usable limit. */
+#define ATTEN_CAL_SEARCH_MAX_MV 1850.0f
 /* Minimum bracket width for companion-FVOA binary searches. */
 #define ATTEN_CAL_SEARCH_MIN_STEP_MV 5.0f
 /* Fixed DUT-FVOA sweep spacing after the initial open-reference point. */
@@ -424,7 +429,7 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    "\"accepted\":%s,\"points\":%u,"
 			    "\"fvoa_50pct_mv\":%.12g,"
 			    "\"slope_inv_fvoa_mv\":%.12g,"
-			    "\"max_atten_db\":%.12g,"
+			    "\"max_atten_db\":%.12g,\"max_calibrated_db\":%.9g,"
 			    "\"max_atten_sigma_db\":%.12g,"
 			    "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g],"
 			    "\"corr\":%.12g,\"rms_db\":%.12g,"
@@ -437,6 +442,7 @@ static void atten_cal_emit_fit(uint8_t physical,
 			    fit != NULL ? (double)fit->fvoa_50pct_mv : (double)NAN,
 			    fit != NULL ? (double)fit->slope_inv_fvoa_mv : (double)NAN,
 			    fit != NULL ? (double)fit->max_atten_db : (double)NAN,
+			    fit != NULL ? fit->max_calibrated_db : (double)NAN,
 			    fit != NULL ? (double)fit->max_atten_sigma_db : (double)NAN,
 			    fit != NULL ? (double)fit->correction_coeff[0] : (double)NAN,
 			    fit != NULL ? (double)fit->correction_coeff[1] : (double)NAN,
@@ -481,10 +487,13 @@ static void build_measurement_from_pd_window(const struct photodiode_window_resu
 	measurement->signal_err_mv = (float) window->mean_net_err_mv;
 	measurement->max_mv = (float) window->max_mv;
 
-	/* Calibration ratios require an entirely usable window. Even one clipped
-	 * conversion can bias the mean and its reference/bridge normalization.
-	 * Use the raw maximum (before dark subtraction) and the 2 V linear-input
-	 * limit, not the 2047.9375 mV ADC code rail or a mean-only rail test.
+	/* Calibration ratios require an entirely usable window. Photodiode
+	 * saturation or ADC clipping can bias the mean and its normalization.
+	 * Use the raw maximum (before dark subtraction) and the manufacturer's
+	 * 2000 mV photodiode saturation/linearity limit, referred to the ADC input.
+	 * This is not an output clamp: the detector can exceed even the ADC range.
+	 * The ADC clips at 2048 mV full scale (2047.9375 mV maximum reported code).
+	 * Reject detector saturation before ADC clipping; do not use a mean-only test.
 	 * Retain saturated records for inspection, never as fit/bridge anchors.
 	 */
 	saturated = window->max_mv >= PHOTODIODE_ADC_USABLE_MV;
@@ -663,7 +672,7 @@ static float next_linear_sweep_mv(float sweep_mv)
  *
  * Companion DAC direction is inverted relative to photodiode signal: lower DAC
  * opens the companion and raises signal, while higher DAC attenuates more. The
- * low side of this bracket is therefore the too-bright/saturated side; the high
+ * low side of this bracket is therefore the at/above-target side; the high
  * side is the more-attenuated side. A usable candidate is tracked separately
  * because the high bracket can also be a below-SNR point.
  */
@@ -679,22 +688,26 @@ static void companion_search_begin_locked(float search_low_mv, float search_high
 /**
  * Fold one companion-search measurement into the shared bracket.
  *
- * Saturated means the companion needs more attenuation, so drive voltage low side moves up.
+ * A raw peak at/above the search target needs more companion attenuation, so
+ * the drive-voltage low side moves up even when the measurement is still usable.
  * Below-SNR means the companion is too attenuated, so the drive high voltage moves down.
  * A usable measurement becomes the current candidate and the search keeps going to lower attenuation
- * to find the brightest non-saturated point.
+ * to find the brightest point below the target. Retained classifications still
+ * use the PD's 2000 mV usable-input limit.
  */
-static bool companion_search_note_measurement_locked(enum atten_cal_record_classification classification, uint8_t index)
+static bool companion_search_note_measurement_locked(const struct atten_cal_record *record, uint8_t index)
 {
-
-	if (classification == ATTEN_CAL_CLASSIFICATION_SATURATED) {
+	if (record->classification == ATTEN_CAL_CLASSIFICATION_ADC_ERROR) {
+		return false;
+	}
+	if (record->max_mv >= ATTEN_CAL_SEARCH_MAX_MV) {
 		cal.search_low_mv = cal.other_mv;
-	} else if (classification == ATTEN_CAL_CLASSIFICATION_OK) {
+	} else if (record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
 		cal.search_high_mv = cal.other_mv;
 		cal.search_candidate_mv = cal.other_mv;
 		cal.search_candidate_valid = true;
 		cal.search_candidate_record_index = index;
-	} else if (classification == ATTEN_CAL_CLASSIFICATION_BELOW_SNR) {
+	} else if (record->classification == ATTEN_CAL_CLASSIFICATION_BELOW_SNR) {
 		cal.search_high_mv = cal.other_mv;
 	} else {
 		return false;
@@ -703,7 +716,11 @@ static bool companion_search_note_measurement_locked(enum atten_cal_record_class
 	return true;
 }
 
-/** Set DAC voltages for a measurement and wait one photodiode configurable window. */
+/**
+ * Set DAC voltages, sleep for FVOA settling, then start a full PD averaging window.
+ * Sleeps with cal_lock held, pausing the caller (normally the throughput monitor)
+ * and calibration status/stop access. The ADC sampler continues independently.
+ */
 static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 					 float sweep_mv, float other_mv)
 {
@@ -717,6 +734,11 @@ static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 		auto_error_locked(-EIO);
 		return;
 	}
+
+	/* FVOAs can take 60 ms to respond. Keep their transition outside the full
+	 * averaging window by settling after both writes and resetting the PD afterward.
+	 */
+	k_msleep(ATTEN_CAL_SETTLE_MS);
 
 	switch (kind) {
 		case ATTEN_CAL_MEASURE_INITIAL_PROBE:
@@ -775,7 +797,7 @@ static void auto_start_next_physical_locked(void)
 	if (!auto_set_laser_level_locked(0U)) {
 		return;
 	}
-	/* The first scheduled window provides the settling delay after changing laser level. */
+	/* Scheduling waits for settling before collecting the first window after the laser change. */
 	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 	atten_cal_emit_simple("physical_start");
 }
@@ -807,12 +829,12 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 		return;
 	}
 
-	if (!companion_search_note_measurement_locked(record->classification, cal.point_index)) {
+	if (!companion_search_note_measurement_locked(record, cal.point_index)) {
 		auto_error_locked(record->classification == ATTEN_CAL_CLASSIFICATION_ADC_ERROR ? -EIO : -ERANGE);
 		return;
 	}
 
-	if (record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED &&
+	if (record->max_mv >= ATTEN_CAL_SEARCH_MAX_MV &&
 		cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV - ATTEN_CAL_SEARCH_MIN_STEP_MV) {
 
 		/* Decrease laser level & try again */
@@ -825,7 +847,7 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 			return;
 		}
 
-		/* The next scheduled window provides the settling delay after changing laser level. */
+		/* Scheduling waits for settling before collecting the next window after the laser change. */
 		companion_search_begin_locked(0.0f, ATTENUATOR_DRIVE_MAX_MV);
 		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_INITIAL_PROBE, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 
@@ -836,7 +858,7 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 	if (cal.search_high_mv - cal.search_low_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV ||
 	    cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
 
-		/* The bracket is narrow enough; adopt the brightest retained usable initial probe. */
+		/* Adopt the brightest retained usable initial probe below the search target. */
 		uint8_t reference_index = cal.search_candidate_record_index;
 		if (!cal.search_candidate_valid) {
 			LOG_INF("atten cal initial probe no viable initial reference. impossible. physical=%s",
@@ -905,6 +927,9 @@ static void auto_handle_sweep_locked(const struct atten_cal_measurement *measure
  *
  * Saturated diagnostic sweep records are not valid bridge anchors, so the held
  * DUT voltage is recovered from retained usable records in the current segment.
+ * If no ordinary point is usable, the last accepted bridge-after record can
+ * anchor another bridge at the current companion setting. Hold that DUT drive
+ * and schedule a companion probe in a new segment.
  */
 static void auto_begin_bridge_locked(void)
 {
@@ -918,17 +943,11 @@ static void auto_begin_bridge_locked(void)
 		return;
 	}
 
-	bool all_below_snr = true;
-	uint8_t count = 0;
 	/* Find the latest usable DUT point in the current segment. */
 	for (uint8_t i = cal.record_count[physical]; i > 0U; --i) {
 		const struct atten_cal_record *record = &cal.records[physical][i - 1U];
 
 		if (record->segment == cal.segment_id && record->event == ATTEN_CAL_EVENT_POINT) {
-			count++;
-			if (record->classification != ATTEN_CAL_CLASSIFICATION_BELOW_SNR) {
-				all_below_snr = false;
-			}
 			if (record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
 				anchor = record;
 				anchor_index = i - 1U;
@@ -937,14 +956,28 @@ static void auto_begin_bridge_locked(void)
 		}
 	}
 
-	if (anchor == NULL) {
-		if (all_below_snr && count == 1U && cal.segment_id > 0U) {
-			LOG_INF("No bridge anchor found in segment %u, only one faint point. Odd. assuming done.",
-				cal.segment_id);
-			auto_finish_physical_locked();
-			return;
+	/* The first sweep point after a bridge can be below SNR while the accepted
+	 * bridge-after record still supplies a usable anchor at this companion DAC.
+	 * Use the accepted bridge table, not an arbitrary retained search probe.
+	 */
+	if (anchor == NULL && cal.bridge_count[physical] > 0U) {
+		const struct atten_cal_bridge *bridge =
+			&cal.bridges[physical][cal.bridge_count[physical] - 1U];
+		const struct atten_cal_record *record =
+			&cal.records[physical][bridge->after_record_index];
+
+		if (record->classification == ATTEN_CAL_CLASSIFICATION_OK &&
+		    record->segment == cal.segment_id && record->other_mv == cal.other_mv) {
+			anchor = record;
+			anchor_index = bridge->after_record_index;
+			LOG_INF("atten cal bridge anchor physical=%s segment=%u record=%u sweep_mv=%.3f other_mv=%.3f",
+				physical_name(physical), cal.segment_id, anchor_index,
+				(double)anchor->sweep_mv, (double)anchor->other_mv);
 		}
-		/** all sweep points in previous segment were saturated or below sn limit (and yet not at max drive) */
+	}
+
+	if (anchor == NULL) {
+		/* Neither a usable sweep point nor an accepted bridge-after anchor exists. */
 		LOG_ERR("No usable bridge anchor found in segment %u, should be impossible", cal.segment_id);
 		auto_error_locked(-ERANGE);
 		return;
@@ -972,7 +1005,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 		return;
 	}
 
-	if (!companion_search_note_measurement_locked(record->classification, cal.point_index)) {
+	if (!companion_search_note_measurement_locked(record, cal.point_index)) {
 		auto_error_locked(record->classification == ATTEN_CAL_CLASSIFICATION_ADC_ERROR ? -EIO : -ERANGE);
 		return;
 	}
@@ -980,7 +1013,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 	if (cal.search_high_mv - cal.search_low_mv <= ATTEN_CAL_SEARCH_MIN_STEP_MV ||
 	    cal.search_tries >= ATTEN_CAL_MAX_SEARCH_TRIES) {
 
-		/* The bracket is narrow enough; adopt the brightest retained usable bridge probe. */
+		/* Adopt the brightest retained usable bridge probe below the search target. */
 
 		uint8_t bridge_index = cal.search_candidate_record_index;
 		if (!cal.search_candidate_valid) {
@@ -993,7 +1026,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 
 				if (candidate_record->event == ATTEN_CAL_EVENT_BRIDGE_PROBE &&
 				    candidate_record->segment == cal.segment_id) {
-					if (candidate_record->classification == ATTEN_CAL_CLASSIFICATION_SATURATED) {
+					if (candidate_record->max_mv >= ATTEN_CAL_SEARCH_MAX_MV) {
 						search_floor = fmaxf(search_floor, candidate_record->other_mv);
 						break;
 					}
@@ -1009,7 +1042,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 			}
 
 			if (fabsf(search_floor - cal.other_mv) < ATTEN_CAL_SEARCH_MIN_STEP_MV) {
-				// somehow no good bridge probe as all were saturated, try again with a higher attenuation floor.
+				// No usable probe below the target; try again with a higher attenuation floor.
 				// If we are here, I think we should ALWAYS be here (and we should never get here)
 				LOG_INF("atten cal bridge probe no viable new point. impossible. physical=%s",
 					physical_name(cal.physical_index));
@@ -1557,7 +1590,7 @@ static int solve_correction_normal_equation(
  *
  * The correction is deliberately subordinate to the physical model. If the
  * small linear solve is ill-conditioned or the corrected model is not monotonic
- * on the actual sweep-point grid, the coefficients remain zero and the base fit
+ * at the actual sweep points (both value order and local slope), the coefficients remain zero and the base fit
  * is kept.
  */
 static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points,
@@ -1621,7 +1654,10 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 			const struct atten_cal_record *record = &records[points[i].record_index];
 			struct atten_model_eval eval;
 
+			/* Increasing sample values alone can hide a turn before the last
+			 * point, making the calibrated endpoint inversion ambiguous. */
 			if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
+			    eval.d_db_d_voltage_mv < 0.0 ||
 			    eval.db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db) {
 				memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
 				coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
@@ -1678,6 +1714,16 @@ static int fit_one_physical_locked(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
+	/* The full sweep supplies the leakage floor; only this contiguous measured
+	 * prefix constrains the base and residual fits. Keep all raw records.
+	 */
+	for (uint8_t i = 0U; i < point_count; ++i) {
+		if ((double)cal_fit_points[i].measured_db > ATTENUATOR_CALIBRATED_MAX_DB) {
+			point_count = i;
+			break;
+		}
+	}
+	if (point_count < ATTEN_CAL_MIN_FIT_POINTS) return -ERANGE;
 	rc = fit_optimize_db(cal_fit_points, records, point_count, gain,
 			     max_atten_db, max_atten_sigma_db,
 			     &fvoa_50pct_mv, &slope_inv_fvoa_mv);
@@ -1693,6 +1739,18 @@ static int fit_one_physical_locked(uint8_t physical,
 	};
 	fit_correction_coeff_locked(cal_fit_points, records, point_count,
 				    max_atten_sigma_db, &coeffs);
+	/* During fitting the zero limit leaves the polynomial unconstrained at the
+	 * retained endpoint. The installed limit belongs to the corrected curve.
+	 */
+	struct atten_model_eval endpoint;
+	if (!atten_model_eval(&coeffs,
+		records[cal_fit_points[point_count - 1U].record_index].sweep_mv, &endpoint)) {
+		return -ERANGE;
+	}
+	coeffs.max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB,
+		MIN(endpoint.db, max_atten_db));
+	if (!(coeffs.max_calibrated_db > 0.0)) return -ERANGE;
+
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		const struct atten_cal_fit_point *point = &cal_fit_points[i];
 		const struct atten_cal_record *record = &records[point->record_index];
@@ -1745,6 +1803,7 @@ static int fit_one_physical_locked(uint8_t physical,
 	out->fvoa_50pct_mv = fvoa_50pct_mv;
 	out->slope_inv_fvoa_mv = slope_inv_fvoa_mv;
 	out->max_atten_db = max_atten_db;
+	out->max_calibrated_db = coeffs.max_calibrated_db;
 	out->max_atten_sigma_db = max_atten_sigma_db;
 	out->rms_db = sqrt(sum_sq_db / (double)point_count);
 	out->max_abs_db = max_abs_db;
@@ -1778,6 +1837,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[0].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[0].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[0].max_atten_db,
+			.max_calibrated_db = cal.fit[0].max_calibrated_db,
 			.rms_db = cal.fit[0].rms_db,
 			.gain = atten->coeff1.gain,
 		},
@@ -1785,6 +1845,7 @@ static int apply_fit_to_settings_locked(void)
 			.fvoa_50pct_mv = cal.fit[1].fvoa_50pct_mv,
 			.slope_inv_fvoa_mv = cal.fit[1].slope_inv_fvoa_mv,
 			.max_atten_db = cal.fit[1].max_atten_db,
+			.max_calibrated_db = cal.fit[1].max_calibrated_db,
 			.rms_db = cal.fit[1].rms_db,
 			.gain = atten->coeff2.gain,
 		},
@@ -1807,6 +1868,7 @@ static int apply_fit_to_settings_locked(void)
 	stored.physical[0].fvoa_50pct_mv = physical[0].fvoa_50pct_mv;
 	stored.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 	stored.physical[0].max_atten_db = physical[0].max_atten_db;
+	stored.physical[0].max_calibrated_db = physical[0].max_calibrated_db;
 	stored.physical[0].gain = physical[0].gain;
 	stored.physical[0].rms_db = physical[0].rms_db;
 	memcpy(stored.physical[0].correction_coeff, physical[0].correction_coeff,
@@ -1814,6 +1876,7 @@ static int apply_fit_to_settings_locked(void)
 	stored.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 	stored.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 	stored.physical[1].max_atten_db = physical[1].max_atten_db;
+	stored.physical[1].max_calibrated_db = physical[1].max_calibrated_db;
 	stored.physical[1].gain = physical[1].gain;
 	stored.physical[1].rms_db = physical[1].rms_db;
 	memcpy(stored.physical[1].correction_coeff, physical[1].correction_coeff,
@@ -2125,21 +2188,19 @@ static int append_fit_json(char *payload, size_t payload_len, size_t *off,
 	return coo_json_append(payload, payload_len, off,
 		"\"valid\":true,\"accepted\":%s,\"points\":%u,"
 		"\"fvoa_50pct_mv\":%.12g,\"slope_inv_fvoa_mv\":%.12g,"
-		"\"max_atten_db\":%.12g,\"max_atten_sigma_db\":%.12g,"
+		"\"max_atten_db\":%.12g,\"max_calibrated_db\":%.9g,\"max_atten_sigma_db\":%.6g,"
 		"\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g],"
-		"\"corr\":%.12g,\"rms_db\":%.12g,\"max_abs_db\":%.12g,"
-		"\"min_tx\":%.12g,\"max_tx\":%.12g,\"fvoa_span_mv\":%.6f}",
+		"\"corr\":%.6g,\"rms_db\":%.6g,\"max_abs_db\":%.6g}",
 		fit->accepted ? "true" : "false", fit->points,
 		fit->fvoa_50pct_mv, fit->slope_inv_fvoa_mv,
-		fit->max_atten_db, fit->max_atten_sigma_db,
+		fit->max_atten_db, fit->max_calibrated_db, fit->max_atten_sigma_db,
 		(double)fit->correction_coeff[0],
 		(double)fit->correction_coeff[1],
 		(double)fit->correction_coeff[2],
 		(double)fit->correction_coeff[3],
 		(double)fit->correction_coeff[4],
 		(double)fit->correction_coeff[5],
-		fit->correlation, fit->rms_db, fit->max_abs_db,
-		fit->min_tx, fit->max_tx, fit->fvoa_span_mv);
+		fit->correlation, fit->rms_db, fit->max_abs_db);
 }
 
 /** Format the compact command response for current calibration status. */
@@ -2157,7 +2218,7 @@ int attenuator_calibration_format_status(
 		"{\"state\":\"%s\",\"mode\":\"%s\",\"physical\":\"%s\","
 		"\"fit\":\"%s\",\"n\":%u,\"t_ms\":%u,"
 		"\"complete_pct\":%u,\"point\":\"%u/%u\","
-		"\"mv\":%.6f,\"other_mv\":%.6f,\"error\":%d",
+		"\"mv\":%.3f,\"other_mv\":%.3f,\"error\":%d",
 		status->state != NULL ? status->state : "inactive",
 		status->mode != NULL ? status->mode : "none",
 		status->physical != NULL ? status->physical : "dac1",

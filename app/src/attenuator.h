@@ -24,6 +24,8 @@
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
+/* Measured-dB ceiling for fitting and per-device automatic operation. */
+#define ATTENUATOR_CALIBRATED_MAX_DB 55.0
 /* Per-physical model residual RMS until an accepted calibration supplies it. */
 #define ATTENUATOR_DEFAULT_RMS_DB 2.0
 /* Electrical RMS at each FVOA control line, after the op amp, in mV.
@@ -37,6 +39,7 @@ struct attenuator_model_coeffs {
     double fvoa_50pct_mv;
     double slope_inv_fvoa_mv;
     double max_atten_db;
+    double max_calibrated_db; /* Corrected-curve endpoint; distinct from leakage. */
     double gain;
     double rms_db; /* Residual model uncertainty in dB, shared across samples. */
     float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
@@ -197,10 +200,12 @@ bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_in
  * Add dB to the less-attenuated device first, remove dB from the more-attenuated
  * device first, then share changes once balanced. Neither device moves against
  * the requested total direction; an unchanged total retains the allocation.
+ * calibrated_only bounds each device by its calibrated range. Entering that
+ * range from manual settings may rebalance devices in opposite directions.
  * May block on DAC I2C and enqueue a clamp warning. A partial failure retains
  * confirmed writes and returns false; no automatic rollback is attempted.
  */
-bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
+bool attenuator_set_db(struct attenuator *drv, double attenuation_db, bool calibrated_only);
 
 /**
  * @brief Set total logical transmission as a linear fraction in (0, 1].
@@ -208,7 +213,7 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
  * This converts the requested transmission to dB attenuation and delegates to
  * attenuator_set_db().
  */
-bool attenuator_set_linear(struct attenuator *drv, double linear);
+bool attenuator_set_linear(struct attenuator *drv, double linear, bool calibrated_only);
 
 /**
  * @brief Read back both DAC registers and return logical/physical state.

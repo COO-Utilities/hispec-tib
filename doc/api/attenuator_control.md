@@ -61,3 +61,22 @@ control. Allocation uses the DAC owner's last confirmed voltages and active
 coefficients, including during coefficient replacement. Partial writes report
 failure and retain successful hardware changes; they are not retried or rolled
 back automatically.
+
+## Calibrated range
+
+`attenuator_set_db(drv, db, calibrated_only)` and
+`attenuator_set_linear(drv, tx, calibrated_only)` use the same allocator and
+I/O locking. Autolevel passes `true`; manual commands pass `false`. Automatic
+allocation respects each physical model's `max_calibrated_db`, the 55 dB
+source ceiling and its reachable drive limit. Entering automatic operation
+from out-of-range manual settings can rebalance the pair in opposite directions;
+ordinary changes retain directional allocation. Reaching the automatic pair
+limit yields to laser adjustment.
+
+`max_calibrated_db` is included in queried, installed and persisted coefficients.
+Python flat coefficient sequences use `f50, slope, floor_db, gain,
+max_calibrated_db[, c0, c1, c2, c3, c4, c5]`. Named fields are preferable.
+The existing `max_atten_db` remains the inferred leakage floor. See the
+[calibration model](../attenuator_calibration.md) for the continuous continuation
+beyond the calibrated endpoint. Its stored RMS describes only the fitted range;
+beyond that range, queried and commanded dB are approximate.

@@ -110,12 +110,12 @@ static int append_attenuator_physical_coeff_json(char *payload,
 	return coo_json_append(payload, payload_len, off,
 			       "\"%s\":{\"fvoa_50pct_mv\":%.12g,"
 			       "\"slope_inv_fvoa_mv\":%.12g,"
-			       "\"max_atten_db\":%.12g,\"gain\":%.12g,\"rms_db\":%.9g,"
+			       "\"max_atten_db\":%.12g,\"max_calibrated_db\":%.9g,\"gain\":%.12g,\"rms_db\":%.9g,"
 			       "\"correction_coeff\":[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]}",
 			       name,
 			       coeffs->fvoa_50pct_mv,
 			       coeffs->slope_inv_fvoa_mv,
-			       coeffs->max_atten_db,
+			       coeffs->max_atten_db, coeffs->max_calibrated_db,
 			       coeffs->gain, coeffs->rms_db,
 			       (double)coeffs->correction_coeff[0],
 			       (double)coeffs->correction_coeff[1],
@@ -275,6 +275,8 @@ static int parse_attenuator_coeff_object(const char *json,
 				    &out->slope_inv_fvoa_mv) != COO_JSON_EXTRACT_OK ||
 	    coo_json_extract_double(object_json, "max_atten_db",
 				    &out->max_atten_db) != COO_JSON_EXTRACT_OK ||
+	    coo_json_extract_double(object_json, "max_calibrated_db",
+				    &out->max_calibrated_db) != COO_JSON_EXTRACT_OK ||
 	    coo_json_extract_double(object_json, "gain",
 				    &out->gain) != COO_JSON_EXTRACT_OK) {
 		return -EINVAL;
@@ -489,12 +491,12 @@ static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
 
 	if (total_linear_present) {
 		if (!attenuator_set_linear(&attenuators[attenuator_index],
-					   total_linear)) {
+					   total_linear, false)) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Invalid linear transmission\"}");
 		}
 	} else if (total_db_present) {
-		if (!attenuator_set_db(&attenuators[attenuator_index], total_db)) {
+		if (!attenuator_set_db(&attenuators[attenuator_index], total_db, false)) {
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 					     "{\"error\":\"Invalid dB attenuation\"}");
 		}
@@ -558,6 +560,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		stored_coeffs.physical[0].fvoa_50pct_mv = physical[0].fvoa_50pct_mv;
 		stored_coeffs.physical[0].slope_inv_fvoa_mv = physical[0].slope_inv_fvoa_mv;
 		stored_coeffs.physical[0].max_atten_db = physical[0].max_atten_db;
+		stored_coeffs.physical[0].max_calibrated_db = physical[0].max_calibrated_db;
 		stored_coeffs.physical[0].gain = physical[0].gain;
 		stored_coeffs.physical[0].rms_db = physical[0].rms_db;
 		memcpy(stored_coeffs.physical[0].correction_coeff,
@@ -566,6 +569,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		stored_coeffs.physical[1].fvoa_50pct_mv = physical[1].fvoa_50pct_mv;
 		stored_coeffs.physical[1].slope_inv_fvoa_mv = physical[1].slope_inv_fvoa_mv;
 		stored_coeffs.physical[1].max_atten_db = physical[1].max_atten_db;
+		stored_coeffs.physical[1].max_calibrated_db = physical[1].max_calibrated_db;
 		stored_coeffs.physical[1].gain = physical[1].gain;
 		stored_coeffs.physical[1].rms_db = physical[1].rms_db;
 		memcpy(stored_coeffs.physical[1].correction_coeff,
