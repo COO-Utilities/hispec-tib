@@ -22,11 +22,12 @@
 struct app_laser_channel_settings;
 struct k_work_q;
 
-/* Optical-power estimate uncertainty: 3% of output plus a 1%-of-maximum
- * baseline derived from the compiled diode table when defaults are created.
- */
-#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.03
-#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.01
+// based on a quick test of 1028 into the PD with a ton of stattic attens
+// 0.1% fractional: leaves a few times margin above your brightest measured fractional RMS.
+// 0.003 mW constant: rounds tp ~0.0014–0.0021 mW scatter upward.
+// Together, approximately 0.70% uncertainty at level 0.01, 0.12% at 0.10, and 0.11% at 0.15.
+#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.001
+#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.0031
 
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
