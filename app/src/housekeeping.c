@@ -398,10 +398,6 @@ static void pd_autooff_reschedule_locked(void)
 	int64_t next_deadline;
 	int64_t delay_ms;
 
-	if (housekeeping_work_q == NULL) {
-		return;
-	}
-
 	next_deadline = pd_next_autooff_deadline_locked();
 	if (next_deadline == HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE) {
 		(void)k_work_cancel_delayable(&pd_autooff_work);
@@ -573,9 +569,6 @@ static void pd_autooff_work_handler(struct k_work *work)
 void housekeeping_start(struct k_work_q *work_q)
 {
 	__ASSERT_NO_MSG(work_q != NULL);
-	if (work_q == NULL) {
-		return;
-	}
 
 	housekeeping_work_q = work_q;
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);

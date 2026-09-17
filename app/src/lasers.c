@@ -1072,11 +1072,6 @@ static void laser_autooff_reschedule(void)
 	/* Auto-off can run Modbus stop commands, so it uses the app blocking
 	 * workqueue instead of Zephyr's Modbus-RX system workqueue.
 	 */
-
-	//TODO
-	if (laser_autooff_work_q == NULL) {
-		return;
-	}
 	if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
 		(void)k_work_cancel_delayable(&laser_autooff_work);
 	} else {
@@ -1088,9 +1083,6 @@ static void laser_autooff_reschedule(void)
 void hispec_laser_autooff_start(struct k_work_q *work_q)
 {
 	__ASSERT_NO_MSG(work_q != NULL);
-	if (work_q == NULL) {
-		return;
-	}
 
 	k_mutex_lock(&laser_io_lock, K_FOREVER);
 	ensure_laser_runtime_settings_locked();

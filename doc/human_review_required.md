@@ -68,8 +68,9 @@ LLMs Agents: Do NOT change heading names in this file.
 - Status needs to gain things we actually want.
 
 
-- houskeeping laserbank and lasers ALL have several checks for a non-null work_q. This is just paranoia. The q is static and started by main and the 
-  program cant exist without it. Centralize and elimiinate this so that future readers to not wonder if it could be null. The app SHOULD break (though safely) if it is.
+- Lab-investigate safe laser-bank and external-relay shutdown on fatal faults.
+  The current fatal path halts and relies on watchdog reset; formal shutdown
+  safety is deferred pending hardware exploration.
 
 
 ## Deferred Owner-Specified Capabilities

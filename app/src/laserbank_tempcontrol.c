@@ -74,6 +74,7 @@ static bool heater_mode_is_valid(enum laserbank_heater_mode mode)
 
 static int tempcontrol_reschedule(k_timeout_t delay)
 {
+	/* main() skips heater-worker startup if required TIB devices are not ready. */
 	if (tempcontrol_work_q == NULL) {
 		return -EAGAIN;
 	}
@@ -362,9 +363,6 @@ static void tempcontrol_work_handler(struct k_work *work)
 void laserbank_tempcontrol_start(struct k_work_q *work_q)
 {
 	__ASSERT_NO_MSG(work_q != NULL);
-	if (work_q == NULL) {
-		return;
-	}
 
 	tempcontrol_work_q = work_q;
 	(void)tempcontrol_reschedule(K_NO_WAIT);

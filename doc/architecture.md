@@ -228,6 +228,10 @@ fault-clear power-cycle interval. Background laser-bank temperature control,
 laser auto-off, and ambient-temperature refresh run on the app blocking
 workqueue rather than Zephyr's system workqueue because Zephyr Modbus client RX
 completion uses the system workqueue.
+`main()` starts the static app queue before binding its consumers. Housekeeping
+and laser auto-off are bound before command execution and throughput monitoring
+start; their startup functions assert the non-null queue precondition. Heater
+work is bound only when required TIB devices are ready.
 
 ## Implemented vs Intended
 
