@@ -114,6 +114,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 
 	parse_rc = coo_json_extract_string(cmd->payload, "stop", stop, sizeof(stop));
 	if (parse_rc == COO_JSON_EXTRACT_OK) {
+		/* Stop takes priority over accompanying start options. */
 		if (coo_json_match_string_choice(stop, stop_choices,
 						 ARRAY_SIZE(stop_choices),
 						 &choice_value) != 0) {

@@ -66,6 +66,13 @@ Draft 0.1
   with topic suffixes, such as `atten/<laser>/coeff`, `mems/split/yj`, or
   `laser/bankpower/<mode>`, opt into prefix matching. Unknown top-level payload
   keys are rejected before the domain handler runs.
+- Invalid arguments return an informative `error`; where useful, the message
+  names the field and refers to the catalog (`help`, `help/options`, and this
+  document). Unknown nested laser settings, PID fields, and attenuator
+  coefficient fields are also rejected. Unsigned integer fields reject negative,
+  fractional, and overflowing values; floating-point fields require finite values.
+- When a selector is supplied both in a topic suffix and in the payload, both
+  must be valid and agree. A payload selector cannot repair an invalid suffix.
 
 ## Serial Command Form
 
@@ -113,6 +120,7 @@ Payload rules:
 - Known compact forms use `serial_payload_from_shorthand()`, for example
   `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
+- Overlong command keys and shorthand tokens are rejected rather than truncated.
 
 Serial response format:
 
@@ -335,6 +343,8 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 
 Route-loss records are app settings keyed by route name and laser name or split.
+Each set request accepts exactly one top-level laser field, or one `split` tuple.
+The `lasers` object is a query response only. `persist` requires a loss value.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
 transmission must remain positive. Missing records use the nominal TIB defaults
@@ -510,6 +520,8 @@ A purely passive measurement leaves manual laser output unchanged when stopped. 
 same source with `autolevel:false` retains an existing operation's laser
 shutdown obligation; replacing its source first stops that autolevel laser.
 Bank power, TECs, and unrelated lasers are left unchanged.
+Valid `stop` requests take priority over accompanying start fields, whose values
+are ignored even if invalid. Unknown top-level fields are still rejected.
 
 HK and YJ can both stream, with one measurement per photodiode channel and
 **only one autolevel owner**. A second autolevel start is rejected before changing
@@ -933,9 +945,13 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     restoring the previous bank power state fails, the successfully applied
     settings are still retained and persisted when requested; the command still
     reports the restore error because bank power needs operator attention.
-  - Unsettable (attempts to set are silently ignored):
-    - `name`, `model`, `serial`
-    - `overcurrent_threshold_ma`
+  - Updates require a nonempty `settings` object containing writable fields.
+    `persist` alone is invalid. `tec_pid` accepts only `p`, `i`, and `d`.
+    `current_set_calibration_pct` is the canonical calibration field.
+  - Read-only and unknown settings return an error before changing laser or
+    throughput state. Read-only fields include `model`, `thermistor_kohm`,
+    `isolation_db`, `ntc_t_coefficient_per_c`, and `emit_total_s`. Use `laser/tune`
+    to set `tune_nm`; `name` belongs outside the settings object as the selector.
   - Non-Driver settings:
     - `autooff_s`
     - `dlambda_dT_nm_per_k`
@@ -1151,6 +1167,11 @@ command wait budget, this command returns `{"error":"busy"}`.
     balanced. Both devices respect their modeled limits; an unchanged total
     retains the existing physical allocation.
   - `value` is a unitless linear transmission fraction in `(0, 1]`.
+    The same range applies to `value1` and `value2`; dB values must be nonnegative.
+    Both physical values are validated before either device is written. Hardware
+    failure during a pair update can still leave an earlier write applied.
+  - Compact value requests reject coefficient fields and `persist`;
+    coefficient requests accept only `dac1`, `dac2`, and optional `persist`.
   - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
     drive span. The firmware converts them to DAC codes using the
     board-configured DAC reference transfer, then responses report the applied
@@ -1285,6 +1306,8 @@ ownership are documented in `attenuator_calibration.md`.
   ```json
   {"stop": true}
   ```
+  `stop:true` takes priority over accompanying start fields, whose values are
+  ignored even if invalid. Unknown top-level fields are still rejected.
 
 - **Telemetry topic:** `dt/<device>/atten`
 - **Telemetry payload:** attenuator calibration emits one best-effort JSON
@@ -1612,6 +1635,9 @@ ownership are documented in `attenuator_calibration.md`.
 - **Notes:**
   - Unsupported features don’t error; supported changes are still applied and
     partial status reports unsupported fields.
+  - Supported address fields must contain valid dotted IPv4 addresses before
+    networking or saved settings change. `gateway`, `dns`, and `ntp` also accept
+    an empty string to clear the value; `ip` and `subnet` do not.
   - IP precedence: runtime settings → compiled static defaults. The compiled
     static defaults are also the last-resort service fallback.
   - If `try_dhcp_first` is true and DHCP is compiled in, DHCP is tried before the

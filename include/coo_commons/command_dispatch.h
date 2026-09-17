@@ -398,7 +398,9 @@ int coo_cmd_normalize_serial_payload(const char *key,
 				     char *out,
 				     size_t out_len);
 
-/** Return the next whitespace-delimited serial token and advance @p cursor. */
+/** Return the next serial token and advance @p cursor. Oversized tokens return
+ * false without advancing; has_extra() then reports the unconsumed input.
+ */
 bool coo_cmd_serial_next_token(const char **cursor, char *out, size_t out_len);
 
 /** Return true when non-space payload text remains at @p cursor. */

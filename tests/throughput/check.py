@@ -535,6 +535,8 @@ static int rms_status=COO_JSON_EXTRACT_MISSING;
 static double parsed_rms;
 static int coo_json_extract_object(const char *j,const char *key,char *out,size_t n)
 { (void)j; (void)key; (void)n; out[0]=0; return COO_JSON_EXTRACT_OK; }
+static int coo_json_validate_top_level_keys(const char *j,const char *keys,char *bad,size_t n)
+{ (void)j; (void)keys; (void)bad; (void)n; return 0; }
 static int coo_json_extract_double(const char *j,const char *key,double *out) {
     (void)j;
     if (!strcmp(key,"rms_db")) {if (rms_status==0) *out=parsed_rms; return rms_status;}

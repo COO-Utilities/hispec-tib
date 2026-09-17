@@ -222,21 +222,25 @@ static int route_loss_extract_value(const struct coo_cmd_request *cmd,
                                     char *laser, size_t laser_len,
                                     double *transmission)
 {
+    bool found = false;
+
     for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
         const char *candidate = route_loss_laser_names[i];
         int rc;
 
         rc = route_loss_extract_field_transmission(cmd, candidate, transmission);
         if (rc == 0) {
+            if (found) {
+                return -EALREADY;
+            }
             snprintk(laser, laser_len, "%s", candidate);
-            return 0;
-        }
-        if (rc != -ENOENT) {
+            found = true;
+        } else if (rc != -ENOENT) {
             return rc;
         }
     }
 
-    return -ENOENT;
+    return found ? 0 : -ENOENT;
 }
 
 static int route_loss_extract_split_tuple(const struct coo_cmd_request *cmd,
@@ -391,6 +395,9 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
 
     if (split_rc == 0 && laser_rc == 0) {
         return coo_cmd_error(out, cmd, "route_loss uses split or laser value");
+    }
+    if (laser_rc == -EALREADY) {
+        return coo_cmd_error(out, cmd, "supply exactly one laser loss per request");
     }
     if (split_rc == -ERANGE || laser_rc == -ERANGE) {
         return coo_cmd_error(out, cmd, "route_loss out of range");
@@ -593,22 +600,26 @@ static int split_channel_index_from_key(const char *key, uint8_t *index)
 static int split_parse_channel(const struct coo_cmd_request *cmd, uint8_t *channel_index)
 {
     char channel[8] = {0};
+    uint8_t payload_channel;
     int parse_rc;
 
-    if (split_channel_index_from_key(cmd->key, channel_index) == 0) {
-        return 0;
-    }
-
-    parse_rc = coo_json_extract_string(cmd->payload, "channel",
-                                       channel, sizeof(channel));
-    if (parse_rc == COO_JSON_EXTRACT_MISSING) {
-        return -ENOENT;
-    }
-    if (parse_rc == COO_JSON_EXTRACT_ERR) {
+    parse_rc = coo_cmd_payload_empty(cmd) ? COO_JSON_EXTRACT_MISSING :
+        coo_json_extract_string(cmd->payload, "channel", channel, sizeof(channel));
+    if (parse_rc == COO_JSON_EXTRACT_ERR ||
+        (parse_rc == COO_JSON_EXTRACT_OK &&
+         mems_split_channel_index(channel, &payload_channel) != 0)) {
         return -EINVAL;
     }
-
-    return mems_split_channel_index(channel, channel_index);
+    if (strcmp(cmd->key, "mems/split") == 0) {
+        if (parse_rc != COO_JSON_EXTRACT_OK) return -ENOENT;
+        *channel_index = payload_channel;
+        return 0;
+    }
+    if (split_channel_index_from_key(cmd->key, channel_index) != 0 ||
+        (parse_rc == COO_JSON_EXTRACT_OK && payload_channel != *channel_index)) {
+        return -EINVAL;
+    }
+    return 0;
 }
 
 int splitting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)

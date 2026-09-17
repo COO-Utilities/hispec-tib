@@ -14,6 +14,7 @@
 #include <coo_commons/json_utils.h>
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <zephyr/data/json.h>
 #include <zephyr/sys/util.h>
@@ -72,7 +73,7 @@ static int coo_json_read_top_key(const char **cursor, char *key, size_t key_len)
 
 	p = *cursor + 1;
 	while (*p != '\0') {
-		if (*p == '\\') {
+		if (*p == '\\' || (unsigned char)*p < 0x20U) {
 			return -EINVAL;
 		}
 		if (*p == '"') {
@@ -365,32 +366,27 @@ int coo_json_extract_bool(const char *json, const char *key, bool *value)
 
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value)
 {
-	struct json_u32_field {
-		uint32_t value;
-	} parsed = { 0 };
+	uint64_t parsed;
 	int rc;
 
 	if (value == NULL) {
 		return COO_JSON_EXTRACT_ERR;
 	}
 
-	rc = find_json_key_value(json, key,
-				 JSON_TOK_UINT,
-				 &parsed,
-				 sizeof(parsed.value),
-				 offsetof(struct json_u32_field, value),
-				 Z_ALIGN_SHIFT(struct json_u32_field));
+	rc = coo_json_extract_u64(json, key, &parsed);
 	if (rc == COO_JSON_EXTRACT_OK) {
-		*value = parsed.value;
+		if (parsed > UINT32_MAX) {
+			return COO_JSON_EXTRACT_ERR;
+		}
+		*value = (uint32_t)parsed;
 	}
 	return rc;
 }
 
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
 {
-	struct json_u64_field {
-		uint64_t value;
-	} parsed = { 0 };
+	struct json_obj_token token = {0};
+	uint64_t parsed = 0U;
 	int rc;
 
 	if (value == NULL) {
@@ -398,13 +394,24 @@ int coo_json_extract_u64(const char *json, const char *key, uint64_t *value)
 	}
 
 	rc = find_json_key_value(json, key,
-				 JSON_TOK_UINT64,
-				 &parsed,
-				 sizeof(parsed.value),
-				 offsetof(struct json_u64_field, value),
-				 Z_ALIGN_SHIFT(struct json_u64_field));
+				 JSON_TOK_FLOAT, &token, sizeof(token), 0U,
+				 Z_ALIGN_SHIFT(struct json_obj_token));
 	if (rc == COO_JSON_EXTRACT_OK) {
-		*value = parsed.value;
+		/* Zephyr exposes the numeric token; strtoull would accept -1.
+		 * Check digits and width before changing the caller's value.
+		 */
+		if (token.length == 0U) {
+			return COO_JSON_EXTRACT_ERR;
+		}
+		for (size_t i = 0U; i < token.length; ++i) {
+			unsigned int digit = (unsigned char)token.start[i] - '0';
+
+			if (digit > 9U || parsed > (UINT64_MAX - digit) / 10U) {
+				return COO_JSON_EXTRACT_ERR;
+			}
+			parsed = parsed * 10U + digit;
+		}
+		*value = parsed;
 	}
 	return rc;
 }
@@ -427,6 +434,9 @@ int coo_json_extract_double(const char *json, const char *key, double *value)
 				 offsetof(struct json_double_field, value),
 				 Z_ALIGN_SHIFT(struct json_double_field));
 	if (rc == COO_JSON_EXTRACT_OK) {
+		if (!isfinite(parsed.value)) {
+			return COO_JSON_EXTRACT_ERR;
+		}
 		*value = parsed.value;
 	}
 	return rc;
@@ -471,6 +481,11 @@ int coo_json_extract_double_array(const char *json, const char *key,
 	}
 	if (parsed.values_len > max_values) {
 		return COO_JSON_EXTRACT_ERR;
+	}
+	for (size_t i = 0U; i < parsed.values_len; ++i) {
+		if (!isfinite(parsed.values[i])) {
+			return COO_JSON_EXTRACT_ERR;
+		}
 	}
 
 	memcpy(values, parsed.values, parsed.values_len * sizeof(values[0]));

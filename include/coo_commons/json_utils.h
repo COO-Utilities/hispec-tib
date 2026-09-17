@@ -65,11 +65,13 @@ int coo_json_match_string_choice(const char *text,
 
 /* Return values use enum coo_json_extract_status. */
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
+/** Extract an unsigned integer; reject signs, fractions, and overflow. */
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
+/** Extract an unsigned integer; reject signs, fractions, and overflow. */
 int coo_json_extract_u64(const char *json, const char *key, uint64_t *value);
-/** Extract one required JSON number into a double. */
+/** Extract one finite JSON number into a double. */
 int coo_json_extract_double(const char *json, const char *key, double *value);
-/** Extract a JSON number array into @p values. Supports up to 32 doubles. */
+/** Extract a finite JSON number array into @p values. Supports up to 32 doubles. */
 int coo_json_extract_double_array(const char *json, const char *key,
 				  double *values, size_t max_values,
 				  size_t *parsed_len);
