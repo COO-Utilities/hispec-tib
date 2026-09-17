@@ -8,6 +8,9 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
+  longer emits `laser_output_fault`; hard faults and active interlock still do.
+  Host tests exercise the production status path; repeat with the controller.
 - [ ] After flashing the transport fixes, repeat cold DS18B20 initialization and
   concurrent laser-status/relay/temperature polling; check USART2 overruns and
   Modbus failures, including timeout followed by a new request. Native bus lock

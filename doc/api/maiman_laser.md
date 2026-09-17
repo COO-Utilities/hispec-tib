@@ -75,6 +75,12 @@ controller faults invalidate operational readiness without erasing confirmed con
 only that observation; five seconds without a response while started (including
 zero current) faults operation. Successful communication restores availability, but measurements
 remain stopped and a control fault requires a successful control operation.
+When both the cached command state and observed controller state are stopped,
+the physical-interlock bit alone does not invalidate the acknowledged zero/STOP
+state. Status still reports the raw interlock, readiness and blocked reason.
+Identity mismatches, hard controller faults, and unexpected loss of operation or
+TEC while started retain their fault behavior. A diagnostic read never clears
+an existing control fault.
 Failed shutdown preserves its emission/shutdown obligation. See
 [communication flow](../photodiode_notes.md#communication-and-power-lifetime).
 

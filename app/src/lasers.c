@@ -1443,7 +1443,16 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 	out->lock_tec_selfheat = (out->lock_status & LOCK_STATE_TEC_SELFHEAT) != 0U;
 	out->blocking_lock_status = effective_blocking_lock_status(out->lock_status,
 								   out->device_state);
-	if (!drv.io_failed && (!out->serial_matches || out->blocking_lock_status != 0U ||
+	uint16_t fault_locks = out->blocking_lock_status;
+
+	/* STOP can leave the physical interlock asserted. It blocks a future
+	 * start, but is not an output fault when both intent and observation
+	 * are stopped. Keep the raw/readiness fields and all hard faults intact.
+	 */
+	if (!laser_output_estimate[id].started && !out->operation_started) {
+		fault_locks &= (uint16_t)~LOCK_STATE_INTERLOCK;
+	}
+	if (!drv.io_failed && (!out->serial_matches || fault_locks != 0U ||
 	    (laser_output_estimate[id].started &&
 	     ((out->device_state & OPERATION_STATE_STARTED) == 0U || !out->tec_started)))) {
 		invalidate_output_locked(id);

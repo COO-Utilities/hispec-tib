@@ -1458,6 +1458,88 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(exe)],check=True)
 print('laser current/stop regressions passed')
 
+# Exercise the entire production diagnostic path after an acknowledged STOP.
+# Register replies are stubbed; fault/readiness interpretation is production C.
+status_source = laser_harness
+status_source = status_source.replace('static uint16_t effective_blocking_lock_status(uint16_t l,uint16_t d) {(void)d;return l;}\n', '')
+status_source = status_source.replace('#define OPERATION_STATE_STARTED 2\n', '').replace('#define TEC_OPERATION_STATE_STARTED 2\n', '')
+maiman_header = (ROOT/'app/src/maiman.h').read_text()
+status_bits = maiman_header[maiman_header.index('#define OPERATION_STATE_STARTED'):maiman_header.index('// Modbus command values')]
+status_source = status_bits + status_source.replace('static int ensure_bank_powered_locked',
+    'static uint16_t effective_blocking_lock_status(uint16_t,uint16_t);\nstatic int ensure_bank_powered_locked', 1)
+status_source += block('lasers.h', 'struct hispec_laser_status {')
+status_source += r'''
+static uint16_t observed_locks,observed_tec;
+static double on_time_runtime_seconds_locked(struct on_time_runtime *r,unsigned n,enum hispec_laser_id id)
+{(void)r;(void)n;(void)id;return 0;}
+static uint16_t maiman_get_raw_status(maiman_driver_t *d)
+{reply(d,!fail_read);return hardware_started?OPERATION_STATE_STARTED:0;}
+static uint16_t maiman_get_raw_tec_status(maiman_driver_t *d){reply(d,!fail_read);return observed_tec;}
+static uint16_t maiman_get_raw_lock_status(maiman_driver_t *d){reply(d,!fail_read);return observed_locks;}
+static bool maiman_get_current(maiman_driver_t *d,double *v){*v=driver_current;return reply(d,!fail_read);}
+static bool maiman_get_tec_pid(maiman_driver_t *d,tec_pid_t *v){memset(v,0,sizeof(*v));return reply(d,!fail_read);}
+'''
+for name in ['current_measured', 'current_min', 'current_max', 'current_max_limit',
+             'current_protection_threshold', 'current_set_calibration', 'tec_temperature_value',
+             'pcb_temperature_measured', 'tec_current_limit', 'ntc_b25_100_coefficient',
+             'voltage_measured', 'tec_temperature_measured', 'tec_current_measured', 'tec_voltage']:
+    status_source += f'static double maiman_get_{name}(maiman_driver_t *d){{reply(d,!fail_read);return 0;}}\n'
+for marker in ['static uint16_t effective_blocking_lock_status(', 'static const char *laser_blocked_reason(',
+               'static double level_percent_for_current(', 'double hispec_laser_estimate_wavelength_nm(',
+               'static void status_defaults(', 'int hispec_laser_get_status(']:
+    status_source += block('lasers.c',marker)
+status_source += r'''
+int main(void){
+ init_mutex(&laser_io_lock);init_mutex(&laser_state_lock);
+ laser_settings[0].properties=LASER_1028;laser_settings[0].expected_serial=8229;
+ assert(!hispec_laser_set_current_ma(0,100));
+ assert(!hispec_laser_stop_output(0,true));
+ assert(laser_output_estimate[0].valid && !laser_output_estimate[0].started);
+ struct hispec_laser_status s;
+ observed_locks=LOCK_STATE_INTERLOCK;
+ for(int eng=0;eng<2;eng++){
+  int warnings=health_warnings;
+  assert(!hispec_laser_get_status(0,eng,&s));
+  assert(laser_output_estimate[0].valid && health_warnings==warnings);
+  assert(s.lock_status==2 && s.blocking_lock_status==2 && !s.ready_to_operate);
+  assert(!strcmp(s.blocked_reason,"tec_not_started") && s.current_set_ma==0);
+ }
+ const uint16_t hard[]={LOCK_STATE_LD_OVERCURRENT,LOCK_STATE_LD_OVERHEAT,
+  LOCK_STATE_EXTERNAL_NTC_INTERLOCK,LOCK_STATE_TEC_ERROR,LOCK_STATE_TEC_SELFHEAT};
+ for(unsigned i=0;i<ARRAY_SIZE(hard);i++){
+  observed_locks=hard[i]|LOCK_STATE_INTERLOCK;laser_output_estimate[0].valid=true;
+  int warnings=health_warnings;assert(!hispec_laser_get_status(0,false,&s));
+  assert(!laser_output_estimate[0].valid && health_warnings==warnings+1);
+ }
+ observed_locks=LOCK_STATE_INTERLOCK;observed_tec=TEC_OPERATION_STATE_STARTED;
+ for(int intent=0;intent<2;intent++)for(int observed=0;observed<2;observed++){
+  laser_output_estimate[0].started=intent;hardware_started=observed;
+  laser_output_estimate[0].valid=true;assert(!hispec_laser_get_status(0,false,&s));
+  assert(laser_output_estimate[0].valid==(!intent && !observed));
+ }
+ /* Unexpected LD or TEC stop remains a fault even without lock bits. */
+ observed_locks=0;laser_output_estimate[0].started=true;
+ for(int tec=0;tec<2;tec++){
+  hardware_started=!tec;observed_tec=tec?TEC_OPERATION_STATE_STARTED:0;
+  laser_output_estimate[0].valid=true;assert(!hispec_laser_get_status(0,false,&s));
+  assert(!laser_output_estimate[0].valid);
+ }
+ /* A successful diagnostic never clears an earlier control failure. */
+ laser_output_estimate[0].started=false;hardware_started=false;
+ assert(!hispec_laser_get_status(0,false,&s) && !laser_output_estimate[0].valid);
+ laser_output_estimate[0].valid=true;laser_settings[0].expected_serial=9999;
+ assert(hispec_laser_get_status(0,true,&s)==-EADDRNOTAVAIL && !laser_output_estimate[0].valid);
+ return 0;
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'status.c',Path(tmp)/'status'
+    cfile.write_text(status_source)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',
+                    '-Wno-unused-function','-Wno-unused-parameter','-I',str(ROOT/'app/src'),str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('Stopped interlock, diagnostic readiness, hard faults and retained control-fault checks passed')
+
 # Profile/settings tests reuse the real current/stop paths above. The TEC stub
 # rejects any intermediate envelope that excludes its current target.
 profile_stubs = r'''
