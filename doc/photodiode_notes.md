@@ -328,5 +328,6 @@ any existing auto-off deadline. `laser stop=true` is explicit shutdown. Captures
 notebook cleanup must use explicit stop when they intend shutdown. Laser auto-off
 and measurement-owned expiry retain shutdown ownership at zero current. Temporary
 zero levels keep PD collection alive, with undefined throughput at zero source power.
-The [Maiman interface notes](api/maiman_laser.md#temporary-bench-timing-trace) describe
-transaction, quiet-interval, and RX timing logs for the next bench capture.
+The [Maiman interface notes](api/maiman_laser.md#bench-transaction-timing-diagnostics)
+describe application transaction and quiet-interval logs, and their measurement
+limits, for the next bench capture.
