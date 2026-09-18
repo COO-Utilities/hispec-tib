@@ -900,24 +900,13 @@ static bool configure_relay_gpio_outputs(void)
 
 static bool setup_modbus_client(void)
 {
-	struct modbus_iface_param modbus_cfg = {
-		.mode = MODBUS_MODE_RTU,
-		.serial = {
-			.baud = MODBUS_BAUD,
-			.parity = MODBUS_PARITY,
-			.stop_bits = MODBUS_STOPBITS,
-		},
-		.rx_timeout = MODBUS_RX_TIMEOUT_US,
-	};
-
 	int client_iface = modbus_iface_get_by_name(modbus_name);
 
 	if (client_iface < 0) {
 		LOG_ERR("Modbus interface %s not found", modbus_name);
 		return false;
 	}
-	if (modbus_init_client(client_iface, modbus_cfg) == 0 &&
-	    maiman_set_client_iface(client_iface) == 0) {
+	if (maiman_init_client(client_iface) == 0) {
 		LOG_INF("Modbus client initialized on %s iface=%d", modbus_name, client_iface);
 		return true;
 	}

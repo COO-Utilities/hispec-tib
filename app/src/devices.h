@@ -21,19 +21,9 @@
 #include <zephyr/drivers/dac.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/modbus/modbus.h>
-#include <zephyr/drivers/uart.h>
 #include "mems_switching.h"
 #include "attenuator.h"
 
-#define MODBUS_BAUD 115200
-#define MODBUS_PARITY UART_CFG_PARITY_NONE
-#define MODBUS_STOPBITS UART_CFG_STOP_BITS_1
-/* Zephyr Modbus uses rx_timeout as the client response wait; its RTU frame
- * parser runs from Zephyr's system workqueue after the line goes idle. Keep app
- * blocking work off that queue so this short wait can fail fast without losing
- * physically received replies to workqueue starvation.
- */
-#define MODBUS_RX_TIMEOUT_US 75000U
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6

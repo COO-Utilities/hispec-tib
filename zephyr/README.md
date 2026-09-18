@@ -1,37 +1,27 @@
-# Required Zephyr patches
+# Native Zephyr transports
 
-`patches.yml` records checksummed patches for the Zephyr revision pinned in
-`west.yml`. The application checks/applies them at CMake configure and before
-compilation on every build, including incremental builds after `west update`.
-They are maintained here rather than committed to the Zephyr checkout.
+The application uses the unmodified Zephyr revision pinned in `west.yml`.
+There is no patch manifest, application helper, or configure/build patch hook.
 
-From the workspace root, the equivalent manual command is:
+USART2 uses the STM32 driver's native `fifo-enable` setting with interrupt-driven
+Modbus RTU and GPIO driver enable. Relay and temperature 1-Wire use separate
+UARTs through the stock serial driver, removing the GPIO interrupt blackout and
+Maiman's cross-bus locks. The dedicated Modbus workqueue remains disabled.
 
-```sh
-./.venv/bin/west patch --src-module hispec-tib --dst-module zephyr apply
-```
+Maiman owns the Modbus client configuration and uses public lifecycle APIs.
+Only a read/write returning `-ETIMEDOUT` calls `modbus_disable()`, while holding
+the existing laser I/O mutex outside the parser's workqueue. This disables RX/TX,
+stops the framing timer, and synchronizes cancellation of the shared parser work
+item. The original timeout is returned without retry. The interface stays
+disabled until the next requested register transaction (including a health poll)
+calls `modbus_init_client()`. Initialization configures local state and sends
+nothing; communication health changes only after an actual controller response.
+Other transaction errors do not disable or reinitialize the client.
 
-The small CMake apply command accepts either a clean applicable patch or a patch
-already fully applied. A conflict or partially applied patch stops the build
-without discarding local changes. Checksum mismatches also stop the build. Clean
-and checkout commands are disabled in the metadata; do not use rollback to
-resolve a conflict. Reconcile the checkout/patch explicitly when updating Zephyr,
-then update the patch checksum and run the regressions and firmware build.
-
-- Modbus: freeze interrupt-driven RTU client frames at timer handoff, then quiesce
-  RX/TX, stop the framing timer, and synchronize parser cancellation at request
-  entry and completion/timeout. Wait with interrupts enabled and preserve the
-  parsed ADU and original result. The caller must hold `iface_lock` and must not
-  run on the RX parser's workqueue (the application uses its blocking queue).
-  Submission uses upstream's `modbus_work_submit()`; the optional dedicated
-  Modbus workqueue remains disabled in this application.
-  The short IRQ critical sections target this UP Cortex-M board. Async, ASCII,
-  raw and server paths retain their existing behavior; this is not an SMP fix.
-
-Relay and temperature 1-Wire now use the unmodified UART-backed driver, removing
-the GPIO interrupt blackout and Maiman's cross-bus locks. The DS18B20 presence
-probe and GPIO mutex-init patches are retired. RTU receive-work lifetime remains
-an independent issue, so the Modbus patch above stays in place.
+This replaces timeout cleanup with public APIs; it does not reproduce the former
+patch's frame freeze or cleanup on every successful transaction. RTU still has
+no transaction ID, so a sufficiently late on-wire reply remains ambiguous. See
+[Maiman behavior](../doc/api/maiman_laser.md) for error and busy-wait details.
 
 The serial 1-Wire driver still uses a zero-initialized native bus mutex without
 initializing its wait queue. This is an upstream defect, left unpatched for the
@@ -44,9 +34,14 @@ Revisit initialization if this ownership changes. Sensor conversion still
 sleeps outside the bus lock. Stock reset timing and the accepted DS2408 timing
 exception at 3.3 V are documented in [hardware.md](../doc/hardware.md).
 
-Host checks: `python tests/transport/check.py` and
-`python tests/throughput/check.py` from this repository using the workspace venv.
+Host checks: `python tests/transport/check.py` exercises stock public lifecycle
+functions with forced queued/running parser interleavings;
+`python tests/throughput/check.py` checks Maiman's timeout policy, deferred
+initialization, original errors, timestamps and busy waits. Run both from this
+repository using the workspace venv.
 After the next flash, verify cold DS2408 discovery/startup outputs and the first
 DS18B20 acquisition, then repeat concurrent 1028y status reads, relay commands
 and temperature polling. Check presence failures, corrupted replies, USART2
-overruns and faults; laser emission is unnecessary.
+overruns and faults; laser emission is unnecessary for these communication checks.
+Also check a response-loss timeout followed by a later request, and repeat the
+original dark-acquisition/calibration sequence under the agreed laser limits.

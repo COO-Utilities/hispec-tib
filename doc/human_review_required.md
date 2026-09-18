@@ -17,14 +17,16 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
   longer emits `laser_output_fault`; hard faults and active interlock still do.
   Host tests exercise the production status path; repeat with the controller.
-- [ ] After flashing UART-backed 1-Wire, verify cold DS2408 discovery/startup
-  outputs and the first DS18B20 acquisition. Repeat concurrent 1028y status reads,
-  relay commands and temperature polling; check presence failures, corrupted
-  replies, USART2 overruns and faults. The two 1-Wire patches and Maiman's
-  cross-bus locks are removed; stock-driver ownership assumptions and the
-  accepted 3.3 V reset timing are documented in the patch notes and hardware.md.
-  RTU handoff, timeout cleanup and automatic patch application retain host checks.
-  PCB validation is pending the next flash; emission is unnecessary.
+- [ ] After flashing UART-backed 1-Wire and USART2 FIFO, verify cold DS2408
+  discovery/startup outputs and the first DS18B20 acquisition. Repeat concurrent
+  1028y status reads, relay commands and temperature polling; check presence
+  failures, corrupted replies, USART2 overruns and faults. All Zephyr patches,
+  build hooks and Maiman cross-bus locks are removed; stock-driver ownership and
+  accepted 3.3 V reset timing are documented in zephyr/README.md and hardware.md.
+  Host tests cover public timeout cancellation and initialization on the next
+  requested transaction. Verify response loss followed by a later request with
+  the controller; emission is unnecessary for these communication checks.
+  Repeat the original dark/calibration sequence under the agreed laser limits.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
   startup, minimum-current fallback, and preference for lower attenuation.
   Verify actual Maiman TEC bound expand/target/narrow ordering and rejection

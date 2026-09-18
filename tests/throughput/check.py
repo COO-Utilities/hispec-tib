@@ -1818,6 +1818,7 @@ maiman_source=r'''
 #include <stdint.h>
 #include <stddef.h>
 #define LOG_ERR(...) ((void)0)
+#define LOG_INF(...) ((void)0)
 #include <stdarg.h>
 static void trace(const char *fmt, ...) {(void)fmt;}
 #define LOG_LEVEL_DBG 4
@@ -1827,7 +1828,6 @@ typedef struct {uint8_t node_id;bool io_failed;int last_error;int64_t last_respo
 static int64_t now=1000;
 static int64_t k_uptime_get(void){return now;}
 #define K_MSEC(x) (x)
-static void k_sleep(unsigned ms){now+=ms;}
 #define MAIMAN_BUSY_MS 350U
 #define REG_STATE_OF_DEVICE_COMMAND 4
 #define MODBUS_START_COMMAND_VALUE 8
@@ -1838,42 +1838,103 @@ static void k_sleep(unsigned ms){now+=ms;}
 static uint32_t transaction_sequence;
 static int64_t last_transaction_end_ms;
 #endif
-static int maiman_client_iface=0,reply;
+static int maiman_client_iface=-ENODEV,reply;
+static bool maiman_client_initialized,configured;
+static int init_result,disable_result,inits,disables,reads,writes;
+#define MODBUS_MODE_RTU 0
+#define UART_CFG_PARITY_NONE 0
+#define UART_CFG_STOP_BITS_1 1
+struct modbus_iface_param {int mode;struct {unsigned baud;int parity,stop_bits;} serial;unsigned rx_timeout;};
+static int modbus_init_client(int i,struct modbus_iface_param p){
+ assert(i==0 && !configured);++inits;
+ assert(p.mode==MODBUS_MODE_RTU && p.serial.baud==115200 && p.serial.parity==UART_CFG_PARITY_NONE);
+ assert(p.serial.stop_bits==UART_CFG_STOP_BITS_1 && p.rx_timeout==75000);
+ configured=!init_result;return init_result;
+}
+static int modbus_disable(int i){
+ assert(i==0 && configured);++disables;now+=2;
+ if(!disable_result)configured=false;
+ return disable_result;
+}
+static void k_sleep(unsigned ms){
+ /* Timeout cancellation must finish before the controller busy wait. */
+ if(reply==-ETIMEDOUT)assert(!maiman_client_initialized && disables);
+ now+=ms;
+}
 static const char *maiman_register_name(uint16_t a){(void)a;return "test";}
 static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
-{(void)i;(void)n;(void)a;(void)c;*v=42;now+= reply ? 75 : 4;return reply;}
+{assert(i==0 && configured && maiman_client_initialized && c==1);(void)n;(void)a;
+ ++reads;*v=42;now+= reply ? 75 : 4;return reply;}
 static int modbus_write_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
-{(void)i;(void)n;(void)a;(void)v;(void)c;now+= reply ? 75 : 4;return reply;}
+{assert(i==0 && configured && maiman_client_initialized && c==1);(void)n;(void)a;(void)v;
+ ++writes;now+= reply ? 75 : 4;return reply;}
 '''
-for marker in ['void maiman_init(', 'bool maiman_read_u16(', 'bool maiman_write_u16(']:
+maiman_source += block('maiman.c','static const struct modbus_iface_param maiman_client_config =') + ';\n'
+for marker in ['int maiman_init_client(', 'static int maiman_ensure_client(',
+               'static void maiman_cancel_timeout(', 'void maiman_init(',
+               'bool maiman_read_u16(', 'bool maiman_write_u16(']:
     maiman_source += block('maiman.c',marker)
 maiman_source += r'''
 int main(void){
  maiman_driver_t d;uint16_t v;
  maiman_init(&d,1);
- reply=2;assert(!maiman_read_u16(&d,4,&v) && d.io_failed);
- reply=0;assert(maiman_read_u16(&d,4,&v) && d.io_failed);
- maiman_init(&d,1);assert(!d.io_failed);
- reply=-5;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
- maiman_init(&d,1);
- reply=3;assert(!maiman_write_u16(&d,8,1) && d.io_failed);
+ assert(!maiman_read_u16(&d,4,&v) && d.last_error==-ENODEV);
+ assert(!maiman_write_u16(&d,4,8) && d.last_error==-ENODEV);
+ assert(!inits && !reads && !writes && now==1000);
+ assert(maiman_init_client(-1)==-EINVAL && !inits);
+ assert(!maiman_init_client(0) && inits==1 && !reads && !writes && !d.last_response_ms);
+ reply=0;assert(maiman_read_u16(&d,4,&v) && d.io_failed); /* Failure is sticky. */
+ int64_t stamp=d.last_response_ms;
+ const int errors[]={2,3,-EIO,-EMSGSIZE,-EINVAL,-ENODEV};
+ for(unsigned i=0;i<sizeof(errors)/sizeof(errors[0]);i++){
+  reply=errors[i];
+  assert(!maiman_read_u16(&d,4,&v) && d.last_error==reply);
+  assert(!maiman_write_u16(&d,8,1) && d.last_error==reply);
+  assert(d.last_response_ms==stamp && !disables && inits==1);
+ }
+ /* Read timeouts disable once, preserve the last response, and never retry. */
+ int r=reads,w=writes,n=inits,c=disables;
+ reply=-ETIMEDOUT;assert(!maiman_read_u16(&d,4,&v));
+ assert(reads==r+1 && writes==w && inits==n && disables==c+1 && !configured);
+ assert(d.last_error==-ETIMEDOUT && d.last_response_ms==stamp);
+ assert(!maiman_read_u16(&d,4,&v)); /* A later poll initializes and may time out again. */
+ assert(reads==r+2 && inits==n+1 && disables==c+2 && !configured);
+ /* Local init failures send nothing, do not disable, and incur no busy wait. */
+ int64_t before=now;init_result=-ETIMEDOUT;
+ assert(!maiman_write_u16(&d,4,8) && d.last_error==-ETIMEDOUT);
+ init_result=-EIO;assert(!maiman_read_u16(&d,4,&v) && d.last_error==-EIO);
+ assert(reads==r+2 && writes==w && disables==c+2 && inits==n+3 && now==before);
+ assert(d.last_response_ms==stamp);
+ init_result=0;reply=0;assert(maiman_read_u16(&d,4,&v) && d.io_failed);
+ assert(inits==n+4 && reads==r+3 && writes==w && d.last_error==-EIO && d.last_response_ms==now);
+ maiman_init(&d,1);assert(!d.io_failed && !d.last_error && !d.last_response_ms);
  const uint16_t regs[]={4,4,9,10};const uint16_t values[]={8,16,1,1};
  for(unsigned i=0;i<4;i++) for(unsigned fail=0;fail<2;fail++) {
   maiman_init(&d,1);reply=fail?-ETIMEDOUT:0;
-  int64_t start=now;
+  int64_t start=now;r=reads;w=writes;n=inits;c=disables;
   assert(maiman_write_u16(&d,regs[i],values[i])==!fail);
-  assert(now-start==(fail?75:4)+350);
+  assert(now-start==(fail?75+2:4)+350);
+  assert(reads==r && writes==w+1 && inits==n && disables==c+(int)fail);
+  assert(configured==!fail);
 #if CONFIG_MAIMAN_LOG_LEVEL >= LOG_LEVEL_DBG
   assert(last_transaction_end_ms==start+(fail?75:4));
 #endif
   assert(d.last_response_ms==(fail?0:start+4));
   /* Next request begins after quiet release, even following timeout. */
-  reply=0;assert(maiman_read_u16(&d,4,&v));assert(now-start==(fail?75:4)+350+4);
+  reply=0;assert(maiman_read_u16(&d,4,&v));assert(now-start==(fail?75+2:4)+350+4);
+  assert(reads==r+1 && writes==w+1 && inits==n+(int)fail && disables==c+(int)fail);
  }
  maiman_init(&d,1);reply=0;int64_t start=now;
  assert(maiman_write_u16(&d,8,0) && now-start==4);
- maiman_client_iface=-ENODEV;assert(!maiman_read_u16(&d,4,&v));
- assert(!maiman_write_u16(&d,8,0));
+ /* Unexpected disable failure preserves the timeout and blocks further I/O. */
+ stamp=d.last_response_ms;n=inits;r=reads;w=writes;c=disables;
+ disable_result=-EINVAL;reply=-ETIMEDOUT;
+ assert(!maiman_write_u16(&d,4,16) && d.last_error==-ETIMEDOUT);
+ assert(disables==c+1 && inits==n && writes==w+1 && d.last_response_ms==stamp);
+ before=now;
+ assert(!maiman_read_u16(&d,4,&v) && d.last_error==-ENODEV);
+ assert(!maiman_write_u16(&d,4,8) && d.last_error==-ENODEV);
+ assert(reads==r && writes==w+1 && inits==n && disables==c+1 && now==before);
  return 0;
 }
 '''
@@ -1885,7 +1946,7 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',
                         f'-DCONFIG_MAIMAN_LOG_LEVEL={level}',str(cfile),'-o',str(exe)],check=True)
         subprocess.run([str(exe)],check=True)
-print('Maiman exception, sticky failure, and busy-wait regressions passed at OFF/INFO/DEBUG')
+print('Maiman timeout cancellation, deferred init, errors, timestamps and busy waits passed at OFF/INFO/DEBUG')
 
 # Test allocation policy using production code and a linear optical model stub.
 allocator_source=r'''

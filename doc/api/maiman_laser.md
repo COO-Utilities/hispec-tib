@@ -62,11 +62,33 @@ manual, with 50 ms margin. The response timeout remains 75 ms.
 Relay and temperature 1-Wire transfers use separate UART peripherals with
 interrupts enabled. Maiman does not acquire their bus locks; its owner retains
 the existing I/O serialization through the response and 350 ms busy interval.
-The remaining Zephyr patch freezes completed client frames before parsing and
-drains old parser work before reusing the receive buffer, including after a
-timeout; [build integration](../../zephyr/README.md) checks it automatically.
-Late on-wire replies still have no transaction ID; cleanup removes stale
-software work, not that protocol limitation.
+USART2 uses the STM32 driver's native hardware FIFO and the stock interrupt-driven
+Modbus implementation. Zephyr requires no local patches or build hooks.
+
+Maiman owns one RTU client configuration (115200 baud, 8N1, 75 ms response wait).
+After a Modbus read/write returns `-ETIMEDOUT`, it calls `modbus_disable()` before
+releasing the existing laser I/O mutex and before any controller busy wait. The
+public API disables RX/TX, stops the framing timer and synchronizes cancellation
+of the single shared parser work item. The operation retains its original timeout;
+it is never automatically replayed. CRC, short-frame, other errno and positive
+Modbus exception results retain the client without a lifecycle reset.
+
+The client stays disabled until the next requested register operation, including
+a background poll, calls `modbus_init_client()`. This configures the local UART,
+GPIO and transaction state; it sends nothing and does not establish controller
+availability. Client RX remains disabled until transmission completes, when the
+stock interrupt-driven path drains idle FIFO bytes before enabling reception.
+No bank power cycle, fault clear or controller-property write is added. An init
+failure sends no request, incurs no controller busy wait, and can be retried by
+a later request. An unexpected disable failure is logged separately, preserves
+the transaction timeout, and blocks further bus use until device initialization
+at reboot. Initialization never updates successful-response timestamps or clears
+the driver's sticky error state.
+
+The former patch's frame freeze and cleanup after every successful transaction
+are removed. Late on-wire replies still have no transaction ID; timeout cleanup
+cancels software work and does not resolve that protocol ambiguity. See the
+[transport notes](../../zephyr/README.md) for ownership and regression checks.
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed
@@ -113,7 +135,7 @@ log-message warnings: missing records leave gaps in the transaction history.
 
 | Record | Interpretation |
 |---|---|
-| `MB seq=... node=... op=... reg=... value=... start_ms=... elapsed_ms=... gap_ms=... rc=...` | One read/write, including failures. Elapsed time ends when the Modbus API returns, before the quiet wait. Gap is since the preceding API completion; first gap is -1. |
+| `MB seq=... node=... op=... reg=... value=... start_ms=... elapsed_ms=... gap_ms=... rc=...` | One read/write, including failures. Elapsed time ends when the Modbus API returns, before timeout cleanup or the quiet wait. Gap is since the preceding API completion; first gap is -1. |
 | `MB quiet ... start_ms=... wait_ms=350` / `release_ms=...` | Busy operation and enforced release time. The next request must start at or after release. |
 | `Laser ... prepare configuration_needed=...` / `applying configuration` | Separates ordinary restart from actual configuration writes. |
 

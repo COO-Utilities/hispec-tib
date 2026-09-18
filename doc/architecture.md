@@ -218,7 +218,12 @@ non-blocking and best-effort. Runtime warnings use one shared scratch response;
 if that buffer or the outbound queue is busy, the warning is logged locally and
 dropped rather than blocking a timing-sensitive caller.
 
-Maiman register calls are blocking Modbus RTU transactions. The Maiman write path
+Maiman owns client initialization and blocking Modbus RTU transactions. USART2
+uses its native hardware FIFO with the interrupt-driven driver. Only a transaction
+timeout disables the client through the public Modbus API, synchronizing shared
+parser cancellation before releasing the existing laser I/O mutex. Initialization
+is deferred until the next register request; neither initialization nor timeout
+cleanup sends a probe or replays a command. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
 Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
@@ -226,9 +231,8 @@ through Zephyr's stock serial 1-Wire driver. Transfers poll with interrupts
 enabled, so Maiman no longer acquires either bus lock. Housekeeping is the sole
 DS18B20 caller; relay calls remain serialized by housekeeping and the DS2408
 driver. DS18B20 conversion still sleeps on the blocking queue for up to 750 ms,
-outside the bus lock. The remaining Zephyr patch covers RTU client receive-work
-lifetime; the accepted stock 1-Wire mutex limitation is documented in the
-[patch workflow](../zephyr/README.md).
+outside the bus lock. Zephyr is unmodified; the accepted stock 1-Wire mutex
+limitation is documented in the [transport notes](../zephyr/README.md).
 Numerical attenuator fitting remains synchronous on throughput's priority-3
 thread, holding the calibration mutex. Its expensive loops check a local 10 ms
 budget between evaluations and sleep for 1 ms when due, allowing the priority-5

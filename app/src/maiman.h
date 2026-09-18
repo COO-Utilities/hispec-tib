@@ -78,10 +78,12 @@ typedef uint16_t laser_address_t;
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
 
 /*
- * Selects the Zephyr Modbus client interface used by subsequent blocking
- * Maiman register transactions. Device setup owns the interface lookup.
+ * Initializes the Zephyr Modbus client without sending a controller request.
+ * Device setup owns interface lookup and calls this before workers start.
+ * Runtime register calls own timeout cancellation and deferred initialization;
+ * callers must hold the laser I/O mutex and run outside the Modbus RX workqueue.
  */
-int maiman_set_client_iface(int iface);
+int maiman_init_client(int iface);
 
 
 /* Divider constants from the SF8025 v5.4 device metadata used by the

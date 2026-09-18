@@ -214,6 +214,11 @@ For board files:
     - CN9 6 D53 USART_B_TX PD5 USART2
     - CN9 8 D54 USART_B_RTS PD4 USART2
 
+The Nucleo overlay enables USART2's native eight-byte hardware FIFO with
+`fifo-enable`. Modbus uses the stock interrupt-driven UART API at 115200 baud,
+8N1, with PD4 controlled as GPIO driver enable. UART9 and UART12 separately
+provide the 1-Wire waveforms; no Zephyr source patches are required.
+
 ## Laser Bank Power Enable
 - 3.3V, GPIO to enable power driver
 - Switches gate of a BSS138 that connects the not inhibit of the power IC to ground
