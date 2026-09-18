@@ -1273,6 +1273,8 @@ command wait budget, this command returns `{"error":"busy"}`.
 ### `atten/calibrate`
 The implementation flow, bridge-normalization sequence, and retained-record
 ownership are documented in `attenuator_calibration.md`.
+Status queries return a coherent snapshot without waiting for numerical fitting.
+The state remains `running` during fitting; final metrics appear at completion.
 
 - **No payload -> compact calibration state:**
   ```json

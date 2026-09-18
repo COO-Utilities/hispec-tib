@@ -77,7 +77,7 @@ int attenuator_calibration_start_auto(
 /** Cancel calibration and return inactive state. */
 int attenuator_calibration_stop(struct attenuator_calibration_status *status);
 
-/** Copy current calibration status. */
+/** Copy the last completed owner update without waiting for hardware I/O or fitting. */
 void attenuator_calibration_get_status(struct attenuator_calibration_status *status);
 
 /** Return true while calibration owns attenuator-control sequencing. */

@@ -2644,6 +2644,93 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 
+# Real status publication/getters must not wait for the fitting owner or expose
+# partially written metrics. The actual tick holds cal_lock across this barrier.
+source=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#define K_FOREVER 0
+#define ATTENUATOR_PHYSICAL_COUNT 2
+#define ATTENUATOR_CAL_RECORD_COUNT 128
+#define ATTENUATOR_MODEL_CORRECTION_TERMS 6
+#define ATTENUATOR_DRIVE_MAX_MV 3300
+#define ATTEN_CAL_DEFAULT_DWELL_MS 400
+#define MIN(a,b) ((a)<(b)?(a):(b))
+enum hispec_laser_id {L0}; enum photodiode_channel {YJ};
+struct photodiode_status {int unused;};
+''' + mutex_harness
+for name in ['atten_cal_state', 'atten_cal_mode', 'atten_cal_phase', 'atten_cal_measure_kind']:
+    source+=block('attenuator_calibration.c', f'enum {name} {{')+';\n'
+for name in ['attenuator_calibration_fit_metrics', 'attenuator_calibration_status']:
+    source+=block('attenuator_calibration.h', f'struct {name} {{')
+for name in ['atten_cal_record', 'atten_cal_bridge', 'atten_cal_state_data']:
+    source+=block('attenuator_calibration.c', f'struct {name} {{')
+source+=block('attenuator_calibration.c', 'static struct attenuator_calibration_status cal_status =')+';\n'
+source+='''
+static struct atten_cal_state_data cal;
+static struct k_mutex cal_lock,cal_status_lock;
+static const uint8_t initial_laser_levels_pct[]={100,50,5};
+'''
+for marker in ['static const char *state_name(', 'static const char *mode_name(',
+               'static const char *physical_name(', 'static uint8_t complete_percent_locked(',
+               'static void reset_locked(',
+               'static void publish_status_locked(struct attenuator_calibration_status *out)',
+               'void attenuator_calibration_get_status(', 'bool attenuator_calibration_active(']:
+    source+=block('attenuator_calibration.c', marker)
+source+='''
+static void auto_tick_locked(const struct photodiode_status *pd){
+ (void)pd;
+ cal.fit[0].valid=cal.fit[0].accepted=true;cal.fit[0].rms_db=0.25;
+ io_barrier(); /* Fitting has written only one device and still owns cal_lock. */
+ cal.fit[1]=cal.fit[0];cal.state=ATTEN_CAL_STATE_COMPLETE;
+}
+'''
+source+=block('attenuator_calibration.c', 'void attenuator_calibration_tick(')
+source+=r'''
+static void *fit(void *unused){(void)unused;attenuator_calibration_tick(NULL);return NULL;}
+int main(void){
+ struct attenuator_calibration_status s,reply;
+ init_mutex(&cal_lock);init_mutex(&cal_status_lock);
+ attenuator_calibration_get_status(&s);
+ assert(!strcmp(s.state,"inactive")&&s.point_count==128&&!attenuator_calibration_active());
+ k_mutex_lock(&cal_lock,K_FOREVER);
+ reset_locked(ATTEN_CAL_STATE_RUNNING);cal.mode=ATTEN_CAL_MODE_TIB_AUTO;
+ cal.dwell_ms=550;cal.record_count[0]=42;publish_status_locked(&reply);
+ k_mutex_unlock(&cal_lock);
+ pthread_t writer;alarm(5);atomic_store(&block_io,true);
+ assert(!pthread_create(&writer,NULL,fit,NULL));wait_for_io();
+ for(int i=0;i<1000;i++){
+  attenuator_calibration_get_status(&s);
+  assert(!strcmp(s.state,"running")&&attenuator_calibration_active());
+  assert(s.dwell_ms==550&&s.complete_pct==reply.complete_pct);
+  assert(!s.fit_metrics[0].valid&&!s.fit_metrics[1].valid);
+ }
+ atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
+ attenuator_calibration_get_status(&s);
+ assert(!strcmp(s.state,"complete")&&!strcmp(s.fit,"ok")&&s.complete_pct==100);
+ assert(s.fit_metrics[0].rms_db==0.25&&s.fit_metrics[1].rms_db==0.25);
+ assert(!attenuator_calibration_active());
+ k_mutex_lock(&cal_lock,K_FOREVER);
+ reset_locked(ATTEN_CAL_STATE_ERROR);cal.last_error=-5;publish_status_locked(NULL);
+ k_mutex_unlock(&cal_lock);attenuator_calibration_get_status(&s);
+ assert(!strcmp(s.state,"error")&&!strcmp(s.fit,"failed")&&s.last_error==-5);
+ k_mutex_lock(&cal_lock,K_FOREVER);
+ reset_locked(ATTEN_CAL_STATE_INACTIVE);publish_status_locked(&reply);
+ k_mutex_unlock(&cal_lock);attenuator_calibration_get_status(&s);
+ assert(!strcmp(s.state,"inactive")&&!s.last_error&&!s.fit_metrics[0].valid);
+ assert(!memcmp(&s,&reply,sizeof(s)));
+ puts("Calibration polling during a held fit lock, coherent completion, error and reset passed");
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'cal_status.c',Path(tmp)/'cal_status'
+    cfile.write_text(source)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
 # Calibration lifetime uses its real start/stop/error paths, with transport stubs.
 source=r'''
 #include <assert.h>
@@ -2687,7 +2774,7 @@ static int throughput_monitor_stop(int c,void *s){(void)c;(void)s;return 0;}
 static int mems_router_apply_named_route(void *r,const char *a,const char *b,bool c,void *d,void *e){(void)r;(void)a;(void)b;(void)c;(void)d;(void)e;return fail_route?-EIO:0;}
 static bool set_physical_pair(int i,int p,int a,int b){(void)i;(void)p;(void)a;(void)b;return true;}
 static int hispec_laser_stop_output(enum hispec_laser_id id,bool tec){(void)tec;stop_count[id]++;if(fail_stop==(int)id)return -EIO;emitting[id]=false;return 0;}
-static void copy_status_locked(struct attenuator_calibration_status *s){if(s){s->state=cal.state;s->error=cal.last_error;}}
+static void publish_status_locked(struct attenuator_calibration_status *s){if(s){s->state=cal.state;s->error=cal.last_error;}}
 static void reset_locked(enum atten_cal_state state){memset(&cal,0,sizeof(cal));cal.state=state;}
 static void atten_cal_emit_simple(const char *e){(void)e;}
 static void auto_start_next_physical_locked(void){assert(!emitting[1-cal.laser]);emitting[cal.laser]=true;cal.phase=ATTEN_CAL_PHASE_WAIT_WINDOW;}

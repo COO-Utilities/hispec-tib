@@ -216,10 +216,16 @@ static const uint8_t initial_laser_levels_pct[] = {100, 50, 5};
 
 static struct atten_cal_state_data cal;
 static K_MUTEX_DEFINE(cal_lock);
+/* Readers must not wait for the owner to finish a numerical fit or hardware I/O. */
+static K_MUTEX_DEFINE(cal_status_lock);
+static struct attenuator_calibration_status cal_status = {
+	.state = "inactive", .mode = "none", .physical = "dac1", .fit = "none",
+	.point_count = ATTENUATOR_CAL_RECORD_COUNT,
+};
 static struct coo_cmd_response cal_telemetry_msg;
 static struct atten_cal_fit_point cal_fit_points[ATTENUATOR_CAL_RECORD_COUNT];
 
-static void copy_status_locked(struct attenuator_calibration_status *status);
+static void publish_status_locked(struct attenuator_calibration_status *status);
 static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind, float sweep_mv, float other_mv);
 static void auto_begin_bridge_locked(void);
 static void auto_close_bridge_locked(uint8_t index);
@@ -595,13 +601,12 @@ static void reset_locked(enum atten_cal_state state)
 	cal.laser_percent = initial_laser_levels_pct[0];
 }
 
-/** Copy internal calibration state into the public command/status structure. */
-static void copy_status_locked(struct attenuator_calibration_status *status)
+/** Publish a coherent status with cal_lock held; never hold the reader lock over I/O. */
+static void publish_status_locked(struct attenuator_calibration_status *out)
 {
-	if (status == NULL) {
-		return;
-	}
+	struct attenuator_calibration_status *status = &cal_status;
 
+	k_mutex_lock(&cal_status_lock, K_FOREVER);
 	memset(status, 0, sizeof(*status));
 	status->state = state_name(cal.state);
 	status->mode = mode_name(cal.mode);
@@ -624,6 +629,10 @@ static void copy_status_locked(struct attenuator_calibration_status *status)
 	status->last_error = cal.last_error;
 	status->laser_percent = cal.laser_percent;
 	memcpy(status->fit_metrics, cal.fit, sizeof(status->fit_metrics));
+	if (out != NULL) {
+		*out = *status;
+	}
+	k_mutex_unlock(&cal_status_lock);
 }
 
 /** Put calibration into terminal error state and emit the corresponding telemetry. */
@@ -1974,6 +1983,7 @@ static int apply_fit_to_settings_locked(void)
 /** Fit both physical FVOAs and move calibration to complete or error state. */
 static void auto_fit_locked(void)
 {
+	publish_status_locked(NULL);
 	/* Acquisition is over; numerical fitting needs no powered detector. */
 	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	int first_error = 0;
@@ -2098,7 +2108,7 @@ int attenuator_calibration_start_auto(
 	if (cal.shutdown_pending) {
 		rc = hispec_laser_stop_output(cal.laser, false);
 		if (rc != 0) {
-			copy_status_locked(status);
+			publish_status_locked(status);
 			k_mutex_unlock(&cal_lock);
 			return rc;
 		}
@@ -2118,7 +2128,7 @@ int attenuator_calibration_start_auto(
 				cal.last_error = rc;
 				housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 				atten_cal_emit_simple("error");
-				copy_status_locked(status);
+				publish_status_locked(status);
 				k_mutex_unlock(&cal_lock);
 				return rc;
 			}
@@ -2195,7 +2205,7 @@ int attenuator_calibration_start_auto(
 	cal.laser_percent = 0;
 	atten_cal_emit_simple("start");
 	auto_start_next_physical_locked();
-	copy_status_locked(status);
+	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;
 
@@ -2211,7 +2221,7 @@ failed_start:
 	 */
 	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false) != 0;
 	atten_cal_emit_simple("error");
-	copy_status_locked(status);
+	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return rc;
 }
@@ -2223,7 +2233,7 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 	if (cal.shutdown_pending) {
 		int rc = hispec_laser_stop_output(cal.laser, false);
 		if (rc != 0) {
-			copy_status_locked(status);
+			publish_status_locked(status);
 			k_mutex_unlock(&cal_lock);
 			return rc;
 		}
@@ -2236,17 +2246,20 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 		housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	}
 	reset_locked(ATTEN_CAL_STATE_INACTIVE);
-	copy_status_locked(status);
+	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;
 }
 
-/** Return a mutex-protected snapshot of current calibration status. */
+/** Copy the last completed owner update without waiting for acquisition or fitting. */
 void attenuator_calibration_get_status(struct attenuator_calibration_status *status)
 {
-	k_mutex_lock(&cal_lock, K_FOREVER);
-	copy_status_locked(status);
-	k_mutex_unlock(&cal_lock);
+	if (status == NULL) {
+		return;
+	}
+	k_mutex_lock(&cal_status_lock, K_FOREVER);
+	*status = cal_status;
+	k_mutex_unlock(&cal_status_lock);
 }
 
 /** Report whether calibration currently owns attenuator sequencing. */
@@ -2254,9 +2267,9 @@ bool attenuator_calibration_active(void)
 {
 	bool active;
 
-	k_mutex_lock(&cal_lock, K_FOREVER);
-	active = cal.state == ATTEN_CAL_STATE_RUNNING;
-	k_mutex_unlock(&cal_lock);
+	k_mutex_lock(&cal_status_lock, K_FOREVER);
+	active = strcmp(cal_status.state, "running") == 0;
+	k_mutex_unlock(&cal_status_lock);
 	return active;
 }
 
@@ -2464,5 +2477,6 @@ void attenuator_calibration_tick(const struct photodiode_status *pd_status)
 {
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	auto_tick_locked(pd_status);
+	publish_status_locked(NULL);
 	k_mutex_unlock(&cal_lock);
 }

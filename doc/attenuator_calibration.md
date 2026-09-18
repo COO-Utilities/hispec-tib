@@ -378,6 +378,10 @@ This lets lower-priority UART RX and communication-health work run without
 changing fit order, arithmetic, acceptance rules, priorities or health deadlines.
 The sleep holds no hardware I/O lock. Other work on the throughput thread still
 waits for the fit to finish; this is not asynchronous calibration.
+Status queries read the last completed owner update through a separate short
+mutex, so the fitter does not hold up Python polling. They retain `running` while
+fitting and publish both final fit results together when fitting completes.
+Start/stop and raw-record access still serialize with the calibration owner.
 
 Acquisition still covers the complete voltage range. Both the base fit and the
 optional Chebyshev correction use the same retained prefix, including the first

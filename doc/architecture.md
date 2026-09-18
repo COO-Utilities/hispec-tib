@@ -234,6 +234,10 @@ budget between evaluations and sleep for 1 ms when due, allowing the priority-5
 Modbus RX workqueue and priority-7 blocking/health queue to run. A yield alone
 would not run those lower-priority threads. Priorities and the five-second health
 deadline are unchanged; other throughput work still waits for fitting to finish.
+Calibration publishes a coherent command-status snapshot under a separate short
+mutex after start/stop/tick updates and before fitting. Status and active checks
+read that snapshot without waiting for the acquisition/fit mutex. The snapshot
+stays `running` throughout fitting and exposes final metrics together at completion.
 Laser identity and applied configuration are retained for the bank-power interval;
 configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

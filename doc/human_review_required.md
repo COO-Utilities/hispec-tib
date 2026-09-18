@@ -12,6 +12,8 @@ LLMs Agents: Do NOT change heading names in this file.
   and confirm health polls continue throughout both fits without false five-second
   timeouts. Host replay compares coefficients/metrics with and without pauses;
   actual scheduling gaps and fitting duration require target measurement.
+  Confirm Python calibration-status polling stays responsive through fitting;
+  status now reads a separate coherent snapshot instead of waiting for cal_lock.
 - [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
   longer emits `laser_output_fault`; hard faults and active interlock still do.
   Host tests exercise the production status path; repeat with the controller.
