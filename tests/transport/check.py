@@ -192,63 +192,6 @@ int main(void){
 run_c(source, 'rtu')
 print('RTU frame handoff, queued/running timeout cleanup, error preservation and next-request checks passed')
 
-# The actual lazy configure/conversion/sample path must lock every raw bus
-# operation and release before the 750 ms conversion sleep, including failures.
-ds = ZEPHYR/'drivers/sensor/maxim/ds18b20/ds18b20.c'
-source = r'''
-#include <assert.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <errno.h>
-#define LOG_ERR(...) ((void)0)
-#define LOG_DBG(...) ((void)0)
-#define __ASSERT_NO_MSG(x) assert(x)
-#define type_ds18b20 1
-#define DS18B20_CMD_CONVERT_T 0x44
-struct device {const void *config;void *data;const char *name;};
-struct rom {int family;};
-struct w1_slave_config {struct rom rom;};
-struct ds18b20_config {const struct device *bus;int family,chip,resolution;};
-struct ds18b20_data {struct w1_slave_config config;int scratchpad;bool lazy_loaded;};
-enum sensor_channel {SENSOR_CHAN_ALL,SENSOR_CHAN_AMBIENT_TEMP};
-static int locked,presence=1,convert_error,sleeps;
-static int w1_lock_bus(const struct device *d){(void)d;assert(!locked++);return 0;}
-static int w1_unlock_bus(const struct device *d){(void)d;assert(locked--==1);return 0;}
-static int w1_reset_bus(const struct device *d){(void)d;assert(locked);return presence;}
-static int w1_get_slave_count(const struct device *d){(void)d;return 1;}
-static uint64_t w1_rom_to_uint64(const struct rom *r){return r->family;}
-static int w1_read_rom(const struct device *d,struct rom *r){(void)d;r->family=1;return 0;}
-static void ds18b20_set_resolution(const struct device *d,int r){(void)d;(void)r;}
-static int ds18b20_write_scratchpad(const struct device *d,int s){(void)d;(void)s;return 0;}
-static int w1_reset_select(const struct device *d,struct w1_slave_config *s){(void)d;(void)s;assert(locked);return convert_error;}
-static int w1_write_byte(const struct device *d,int b){(void)d;(void)b;assert(locked);return 0;}
-static int measure_wait_ms(const struct device *d){(void)d;return 750;}
-static void k_msleep(int t){assert(t==750 && !locked);++sleeps;}
-static int ds18b20_read_scratchpad(const struct device *d,int *s){(void)d;(void)s;assert(!locked);return 0;}
-'''
-for m in ['static int ds18b20_configure(', 'static int ds18b20_temperature_convert(',
-          'static int ds18b20_sample_fetch(']:
-    # configure has a forward declaration; start at its definition.
-    text = ds.read_text(); marker = text.index(m)
-    if ';' in text[marker:text.index('{', marker)]:
-        marker = text.index(m, marker+1)
-        with tempfile.TemporaryDirectory() as tmp:
-            p=Path(tmp)/'ds.c';p.write_text(text[marker:]);source += block(p,m)
-    else:
-        source += block(ds,m)
-source += r'''
-int main(void){
- struct ds18b20_config c={.chip=type_ds18b20};struct ds18b20_data d={0};
- struct device dev={.config=&c,.data=&d};
- for(presence=-1;presence<=0;presence++)assert(ds18b20_sample_fetch(&dev,SENSOR_CHAN_ALL)==-ENODEV && !locked);
- presence=1;assert(!ds18b20_sample_fetch(&dev,SENSOR_CHAN_ALL) && d.lazy_loaded && sleeps==1);
- convert_error=-EIO;assert(ds18b20_sample_fetch(&dev,SENSOR_CHAN_ALL)==-EIO && !locked && sleeps==1);
- return 0;
-}
-'''
-run_c(source, 'ds18b20')
-print('DS18B20 cold presence/conversion lock and unlocked conversion wait checks passed')
-
 metadata = yaml.safe_load((ROOT/'zephyr/patches.yml').read_text())
 assert metadata['checkout-command'] == metadata['clean-command'] == ''
 for patch in metadata['patches']:

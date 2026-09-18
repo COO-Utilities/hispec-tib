@@ -221,12 +221,13 @@ dropped rather than blocking a timing-sensitive caller.
 Maiman register calls are blocking Modbus RTU transactions. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
-Each read/write also acquires the native relay then temperature 1-Wire bus locks,
-and releases them in reverse order after RTU receive cleanup, before the busy
-interval. This excludes the GPIO driver's interrupt-masked bit-banging while
-USART2 needs service. DS18B20 conversion waits remain outside the bus lock.
-Versioned Zephyr patches initialize the GPIO 1-Wire bus mutexes and cover the
-initial DS18B20 presence probe and RTU client receive-work lifetime; see
+Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
+through Zephyr's stock serial 1-Wire driver. Transfers poll with interrupts
+enabled, so Maiman no longer acquires either bus lock. Housekeeping is the sole
+DS18B20 caller; relay calls remain serialized by housekeeping and the DS2408
+driver. DS18B20 conversion still sleeps on the blocking queue for up to 750 ms,
+outside the bus lock. The remaining Zephyr patch covers RTU client receive-work
+lifetime; the accepted stock 1-Wire mutex limitation is documented in the
 [patch workflow](../zephyr/README.md).
 Numerical attenuator fitting remains synchronous on throughput's priority-3
 thread, holding the calibration mutex. Its expensive loops check a local 10 ms

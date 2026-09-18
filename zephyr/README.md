@@ -18,11 +18,6 @@ and checkout commands are disabled in the metadata; do not use rollback to
 resolve a conflict. Reconcile the checkout/patch explicitly when updating Zephyr,
 then update the patch checksum and run the regressions and firmware build.
 
-- GPIO 1-Wire: initialize each device's native bus mutex in the driver init.
-  A zeroed mutex can appear to work until contention appends through its null
-  wait-queue tail. Maiman's bus exclusion exposed this upstream driver defect.
-- DS18B20: acquire the native 1-Wire bus lock for the lazy initial presence probe.
-  Conversion command and readout already lock; the conversion wait stays unlocked.
 - Modbus: freeze interrupt-driven RTU client frames at timer handoff, then quiesce
   RX/TX, stop the framing timer, and synchronize parser cancellation at request
   entry and completion/timeout. Wait with interrupts enabled and preserve the
@@ -33,24 +28,25 @@ then update the patch checksum and run the regressions and firmware build.
   The short IRQ critical sections target this UP Cortex-M board. Async, ASCII,
   raw and server paths retain their existing behavior; this is not an SMP fix.
 
-Maiman holds both native 1-Wire bus locks through this cleanup. This is essential:
-releasing them at the ACK deadline while old RX work remains active reopens the
-UART/1-Wire overlap. No polling, command format, stored laser property, bus
-configuration, thread priority or response deadline is changed.
+Relay and temperature 1-Wire now use the unmodified UART-backed driver, removing
+the GPIO interrupt blackout and Maiman's cross-bus locks. The DS18B20 presence
+probe and GPIO mutex-init patches are retired. RTU receive-work lifetime remains
+an independent issue, so the Modbus patch above stays in place.
+
+The serial 1-Wire driver still uses a zero-initialized native bus mutex without
+initializing its wait queue. This is an upstream defect, left unpatched for the
+current ownership: housekeeping is the sole DS18B20 caller, and all runtime
+relay operations pass through the DS2408 driver's initialized mutex (as well as
+housekeeping's I/O lock). Each bus has one slave, no other raw bus caller, and no
+shell access. The pinned kernel's uncontended lock/unlock path works; the crash
+previously exposed by Maiman required contention on the native bus mutex.
+Revisit initialization if this ownership changes. Sensor conversion still
+sleeps outside the bus lock. Stock reset timing and the accepted DS2408 timing
+exception at 3.3 V are documented in [hardware.md](../doc/hardware.md).
 
 Host checks: `python tests/transport/check.py` and
 `python tests/throughput/check.py` from this repository using the workspace venv.
-The mutex regression uses the real STM32 GPIO driver, GPIO 1-Wire driver and
-Zephyr kernel on the Nucleo. It checks recursive locking, blocked waiters, handoff
-and reuse for both bus instances without slave transactions. There is no fake
-GPIO configuration callback. QEMU's GPIO emulator rejects the open-drain mode
-this driver requires, so this is a target test. Build from the workspace root:
-
-```sh
-./.venv/bin/west patch --src-module hispec-tib --dst-module zephyr apply
-./.venv/bin/west build -b nucleo_h563zi/stm32h563xx -d /tmp/hispec-w1-mutex hispec-tib/tests/transport/w1_mutex
-```
-
-Hardware validation after flashing must include cold sensor initialization,
-concurrent relay/temperature polling, and timeout recovery; host tests cannot
-establish absence of physical UART overruns.
+After the next flash, verify cold DS2408 discovery/startup outputs and the first
+DS18B20 acquisition, then repeat concurrent 1028y status reads, relay commands
+and temperature polling. Check presence failures, corrupted replies, USART2
+overruns and faults; laser emission is unnecessary.

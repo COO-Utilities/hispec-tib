@@ -167,14 +167,33 @@
 	};
 };
 
-/ {
+/* Both 1-Wire lines use external pull-ups and UART-generated timing. */
+&uart12_rx_pe9 {
+	drive-open-drain;
+	bias-disable;
+};
+
+&uart9_tx_pg1 {
+	/delete-property/ bias-pull-up;
+	drive-open-drain;
+	bias-disable;
+};
+
+/* PE9 is UART12 RX; swapping makes it the single-wire TX/RX pin. */
+&uart12 {
+	status = "okay";
+	pinctrl-0 = <&uart12_rx_pe9>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	single-wire;
+	tx-rx-swap;
+
 	/* 1-Wire bus for DS2408 relay control (CN9 D71 / PE9).
-	 * MB1404 requires SB35 OFF and SB67 ON for PE9 GPIO routing.
+	 * MB1404 requires SB35 OFF and SB67 ON for PE9 connector routing.
 	 */
 	w1_pd_power: w1-pd-power {
-		compatible = "zephyr,w1-gpio";
+		compatible = "zephyr,w1-serial";
 		status = "okay";
-		gpios = <&gpioe 9 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds2408_pd_power: ds2408-pd-power {
 			compatible = "maxim,ds2408";
@@ -188,12 +207,19 @@
 			output-low;
 		};
 	};
+};
+
+&uart9 {
+	status = "okay";
+	pinctrl-0 = <&uart9_tx_pg1>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	single-wire;
 
 	/* 1-Wire bus for DS18B20 temperature sensor (CN9 D64 / PG1). */
 	w1_temp: w1-temp {
-		compatible = "zephyr,w1-gpio";
+		compatible = "zephyr,w1-serial";
 		status = "okay";
-		gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 		ds18b20 {
 			compatible = "maxim,ds18b20";

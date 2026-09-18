@@ -17,16 +17,14 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
   longer emits `laser_output_fault`; hard faults and active interlock still do.
   Host tests exercise the production status path; repeat with the controller.
-- [ ] After flashing the transport fixes, repeat cold DS18B20 initialization and
-  concurrent laser-status/relay/temperature polling; check USART2 overruns and
-  Modbus failures, including timeout followed by a new request. Native bus lock
-  ordering, RTU handoff/cleanup and automatic patch application have host checks.
-  The GPIO driver's previously uninitialized bus mutexes caused the captured
-  BusFault under contention; the mutex regression now targets actual STM32 GPIO
-  initialization instead of the QEMU GPIO configuration stub. It must be run on
-  the Nucleo; building it alone does not verify runtime contention.
-  Repeat that status-read workload after flashing the initialization fix;
-  physical timing still requires the PCB. No flash was part of this change.
+- [ ] After flashing UART-backed 1-Wire, verify cold DS2408 discovery/startup
+  outputs and the first DS18B20 acquisition. Repeat concurrent 1028y status reads,
+  relay commands and temperature polling; check presence failures, corrupted
+  replies, USART2 overruns and faults. The two 1-Wire patches and Maiman's
+  cross-bus locks are removed; stock-driver ownership assumptions and the
+  accepted 3.3 V reset timing are documented in the patch notes and hardware.md.
+  RTU handoff, timeout cleanup and automatic patch application retain host checks.
+  PCB validation is pending the next flash; emission is unnecessary.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
   startup, minimum-current fallback, and preference for lower attenuation.
   Verify actual Maiman TEC bound expand/target/narrow ordering and rejection

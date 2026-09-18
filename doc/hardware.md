@@ -226,6 +226,15 @@ For board files:
 
 ## Off-board power switch for photodiodes and laser bank aux heater
 Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
+- The data line has an external 3.3 V pull-up and connects directly to the Nucleo
+  without level shifting.
+- Zephyr's stock UART-backed 1-Wire driver uses 115200 baud for data and 9600
+  baud for reset, producing an approximately 521 us reset-low pulse. The
+  [DS2408 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/ds2408.pdf)
+  specifies 660–720 us at this pull-up voltage (page 3). The owner accepts the
+  stock timing for this board: the previous 480 us GPIO reset also operated
+  outside that specification. Revisit reset timing only if observed failures
+  justify it; no reset-timing extension is applied.
 - Hardware assumption: successful communication with the DS2408 establishes that
   power is available for its PD/heater loads. Logical relay states establish which
   loads are powered; no additional downstream power-good feedback is required.
@@ -246,15 +255,17 @@ Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
   allowed missing-at-boot fault (the mems' PCAL being unavaialble would indicate a much larger, PCB, problem).
 
 For board files:
-- Nucleo: CN9 15 D71 IO PE9
-- MB1404 solder bridges for PE9 must select GPIO on Zio/ST morpho:
+- Nucleo: CN9 15 D71 IO PE9, UART12_RX (AF6) with TX/RX swap and single-wire
+  mode. Pinctrl configures open-drain drive with the external pull-up.
+- MB1404 solder bridges for PE9 must route it to Zio/ST morpho:
   SB35 OFF, SB67 ON.
 
 ## DS18B20 1Wire Temperature Sensor
 - 3.3v digital temp sensor for good measure
 
 For board files:
-- Nucleo: CN9 30 D64 IO PG1 - (can be configured as UART9_TX)
+- Nucleo: CN9 30 D64 IO PG1, UART9_TX (AF11) in single-wire mode, open-drain
+  with the existing external pull-up. Uses the same stock serial 1-Wire timings.
 
 Nucleo board pins in use:
 - USB

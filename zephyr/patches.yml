@@ -2,14 +2,6 @@
 checkout-command: ""
 clean-command: ""
 patches:
-  - path: 0001-ds18b20-lock-presence-probe.patch
-    sha256sum: 8d68ba36a5609381d28a1d66487b3b2ce84a745b907dde8de63ed4ac1ea5d964
-    module: zephyr
-    author: Jeb Bailey
-    email: jibailey@caltech.edu
-    date: 2026-09-17
-    upstreamable: false
-    apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake
   - path: 0002-modbus-rtu-client-receive-lifetime.patch
     sha256sum: 4c73d108c564955193a304398a1efd64130663f4cfdf8d078f2970fb3865e9e0
     module: zephyr
@@ -17,12 +9,4 @@ patches:
     email: jibailey@caltech.edu
     date: 2026-09-17
     upstreamable: false
-    apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake
-  - path: 0003-w1-gpio-initialize-bus-mutex.patch
-    sha256sum: d81645eabc7a8c4da039d86625cb157601a3219ca3a69afe3c32131ec02720c1
-    module: zephyr
-    author: Jeb Bailey
-    email: jibailey@caltech.edu
-    date: 2026-09-17
-    upstreamable: true
     apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake

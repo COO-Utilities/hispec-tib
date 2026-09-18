@@ -1,9 +1,0 @@
-tests:
-  hispec.transport.w1_mutex:
-    platform_allow: nucleo_h563zi/stm32h563xx
-    integration_platforms:
-      - nucleo_h563zi/stm32h563xx
-    tags:
-      - drivers
-      - w1
-    timeout: 10

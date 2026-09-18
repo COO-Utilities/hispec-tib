@@ -1827,12 +1827,7 @@ typedef struct {uint8_t node_id;bool io_failed;int last_error;int64_t last_respo
 static int64_t now=1000;
 static int64_t k_uptime_get(void){return now;}
 #define K_MSEC(x) (x)
-static int bus_depth,lock_count,unlock_count;
-static const int relay_device=1,temperature_device=2;
-static const int *relay_bus=&relay_device,*temperature_bus=&temperature_device;
-static void w1_lock_bus(const int *bus){assert(*bus==++bus_depth);++lock_count;}
-static void w1_unlock_bus(const int *bus){assert(*bus==bus_depth--);++unlock_count;}
-static void k_sleep(unsigned ms){assert(bus_depth==0);now+=ms;}
+static void k_sleep(unsigned ms){now+=ms;}
 #define MAIMAN_BUSY_MS 350U
 #define REG_STATE_OF_DEVICE_COMMAND 4
 #define MODBUS_START_COMMAND_VALUE 8
@@ -1846,9 +1841,9 @@ static int64_t last_transaction_end_ms;
 static int maiman_client_iface=0,reply;
 static const char *maiman_register_name(uint16_t a){(void)a;return "test";}
 static int modbus_read_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
-{(void)i;(void)n;(void)a;(void)c;assert(bus_depth==2);*v=42;now+= reply ? 75 : 4;return reply;}
+{(void)i;(void)n;(void)a;(void)c;*v=42;now+= reply ? 75 : 4;return reply;}
 static int modbus_write_holding_regs(int i,uint8_t n,uint16_t a,uint16_t *v,int c)
-{(void)i;(void)n;(void)a;(void)v;(void)c;assert(bus_depth==2);now+= reply ? 75 : 4;return reply;}
+{(void)i;(void)n;(void)a;(void)v;(void)c;now+= reply ? 75 : 4;return reply;}
 '''
 for marker in ['void maiman_init(', 'bool maiman_read_u16(', 'bool maiman_write_u16(']:
     maiman_source += block('maiman.c',marker)
@@ -1877,9 +1872,8 @@ int main(void){
  }
  maiman_init(&d,1);reply=0;int64_t start=now;
  assert(maiman_write_u16(&d,8,0) && now-start==4);
- assert(!bus_depth && lock_count==unlock_count && lock_count>20);
  maiman_client_iface=-ENODEV;assert(!maiman_read_u16(&d,4,&v));
- assert(!maiman_write_u16(&d,8,0) && !bus_depth);
+ assert(!maiman_write_u16(&d,8,0));
  return 0;
 }
 '''

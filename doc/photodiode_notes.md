@@ -316,10 +316,11 @@ available with verbose Modbus/GPIO logging disabled; console warning filtering
 and best-effort MQTT queue capacity still apply. Raw `maiman` errors remain
 console diagnostics, separate from owner messages and measurement `/dt/` traffic.
 
-The GPIO 1-Wire implementation still masks interrupts during timing-critical
-operations. Removing throughput-rate relay polling reduces exposure but does not
-prove UART corruption is eliminated. Confirm sustained-loss shutdown, runtime
-margin, and the unexplained acquisition gap using hardware captures.
+Relay and temperature 1-Wire transfers now use dedicated UARTs, eliminating the
+GPIO driver's interrupt-masked waveforms. Housekeeping and the DS2408 driver
+retain relay I/O serialization; Maiman no longer locks either 1-Wire bus.
+Confirm sustained-loss shutdown, runtime margin, and the unexplained acquisition
+gap using hardware captures.
 
 ### Laser zero level versus shutdown
 

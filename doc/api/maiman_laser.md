@@ -59,15 +59,14 @@ a failed acknowledgement, before allowing another transaction. This implements t
 approximately 300 ms busy interval described on page 22 of the repository SF8025
 manual, with 50 ms margin. The response timeout remains 75 ms.
 
-Every transaction holds the existing relay and temperature 1-Wire bus locks, in
-that order, until RTU cleanup completes (also on errors/timeouts). This prevents
-the GPIO 1-Wire driver's interrupt blackout from overrunning the UART. Both locks
-are released before the 350 ms busy interval. Temperature conversion holds its
-bus only for command/readout, not the conversion wait. The required Zephyr
-patches also freeze completed client frames before parsing and drain old parser
-work before reusing the receive buffer; [build integration](../../zephyr/README.md)
-checks these patches automatically. Late on-wire replies still have no transaction
-ID; cleanup removes stale software work, not that protocol limitation.
+Relay and temperature 1-Wire transfers use separate UART peripherals with
+interrupts enabled. Maiman does not acquire their bus locks; its owner retains
+the existing I/O serialization through the response and 350 ms busy interval.
+The remaining Zephyr patch freezes completed client frames before parsing and
+drains old parser work before reusing the receive buffer, including after a
+timeout; [build integration](../../zephyr/README.md) checks it automatically.
+Late on-wire replies still have no transaction ID; cleanup removes stale
+software work, not that protocol limitation.
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed
