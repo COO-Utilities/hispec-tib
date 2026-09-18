@@ -18,3 +18,11 @@ patches:
     date: 2026-09-17
     upstreamable: false
     apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake
+  - path: 0003-w1-gpio-initialize-bus-mutex.patch
+    sha256sum: d81645eabc7a8c4da039d86625cb157601a3219ca3a69afe3c32131ec02720c1
+    module: zephyr
+    author: Jeb Bailey
+    email: jibailey@caltech.edu
+    date: 2026-09-17
+    upstreamable: true
+    apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake

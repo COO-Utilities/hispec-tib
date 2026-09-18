@@ -1,0 +1,18 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	test_gpio: test-gpio {
+		compatible = "zephyr,gpio-emul";
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <2>;
+	};
+	relay_bus: relay-bus {
+		compatible = "zephyr,w1-gpio";
+		gpios = <&test_gpio 0 GPIO_ACTIVE_HIGH>;
+	};
+	temperature_bus: temperature-bus {
+		compatible = "zephyr,w1-gpio";
+		gpios = <&test_gpio 1 GPIO_ACTIVE_HIGH>;
+	};
+};

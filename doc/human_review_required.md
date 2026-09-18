@@ -14,7 +14,10 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] After flashing the transport fixes, repeat cold DS18B20 initialization and
   concurrent laser-status/relay/temperature polling; check USART2 overruns and
   Modbus failures, including timeout followed by a new request. Native bus lock
-  ordering, RTU handoff/cleanup and automatic patch application have host checks;
+  ordering, RTU handoff/cleanup and automatic patch application have host checks.
+  The GPIO driver's previously uninitialized bus mutexes caused the captured
+  BusFault under contention; real-kernel QEMU coverage now checks both mutexes.
+  Repeat that status-read workload after flashing the initialization fix;
   physical timing still requires the PCB. No flash was part of this change.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
   startup, minimum-current fallback, and preference for lower attenuation.
