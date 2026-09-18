@@ -1,8 +1,8 @@
 tests:
   hispec.transport.w1_mutex:
-    platform_allow: qemu_cortex_m3
+    platform_allow: nucleo_h563zi/stm32h563xx
     integration_platforms:
-      - qemu_cortex_m3
+      - nucleo_h563zi/stm32h563xx
     tags:
       - drivers
       - w1

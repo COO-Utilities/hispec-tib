@@ -11,7 +11,7 @@ patches:
     upstreamable: false
     apply-command: cmake -P ../hispec-tib/app/cmake/apply_zephyr_patch.cmake
   - path: 0002-modbus-rtu-client-receive-lifetime.patch
-    sha256sum: 1c37eaf914b74536550774697d72e34238dd1383252546bea1332d5c69f2b751
+    sha256sum: 4c73d108c564955193a304398a1efd64130663f4cfdf8d078f2970fb3865e9e0
     module: zephyr
     author: Jeb Bailey
     email: jibailey@caltech.edu

@@ -20,7 +20,9 @@ LLMs Agents: Do NOT change heading names in this file.
   Modbus failures, including timeout followed by a new request. Native bus lock
   ordering, RTU handoff/cleanup and automatic patch application have host checks.
   The GPIO driver's previously uninitialized bus mutexes caused the captured
-  BusFault under contention; real-kernel QEMU coverage now checks both mutexes.
+  BusFault under contention; the mutex regression now targets actual STM32 GPIO
+  initialization instead of the QEMU GPIO configuration stub. It must be run on
+  the Nucleo; building it alone does not verify runtime contention.
   Repeat that status-read workload after flashing the initialization fix;
   physical timing still requires the PCB. No flash was part of this change.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level

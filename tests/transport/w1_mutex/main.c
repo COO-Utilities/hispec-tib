@@ -1,24 +1,5 @@
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/w1.h>
 #include <zephyr/ztest.h>
-
-/* gpio-emul rejects open-drain configuration. Supply only that hardware
- * boundary here; the W1 driver initialization and kernel mutexes remain real.
- * This test performs no GPIO transfers.
- */
-static int pin_configure(const struct device *dev, gpio_pin_t pin, gpio_flags_t flags)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(pin);
-	ARG_UNUSED(flags);
-	return 0;
-}
-
-static struct gpio_driver_data gpio_data;
-static const struct gpio_driver_config gpio_config = {.port_pin_mask = BIT_MASK(2)};
-static DEVICE_API(gpio, gpio_api) = {.pin_configure = pin_configure};
-DEVICE_DT_DEFINE(DT_NODELABEL(test_gpio), NULL, NULL, &gpio_data, &gpio_config,
-		 POST_KERNEL, CONFIG_GPIO_INIT_PRIORITY, &gpio_api);
 
 static K_THREAD_STACK_DEFINE(waiter_stack, 1024);
 static struct k_thread waiter;

@@ -98,7 +98,7 @@ static void k_sem_reset(struct k_sem *s){s->count=0;}
 static void k_sem_give(struct k_sem *s){s->count=1;}
 static void modbus_rx_handler(struct k_work *w);
 static void cb_handler_rx(struct modbus_context *ctx);
-static void k_work_submit(struct k_work *w){
+static void modbus_work_submit(struct k_work *w){
  struct modbus_context *c=CONTAINER_OF(w,struct modbus_context,server_work);
  w->queued=true;++submits;
  /* Inject a byte at the handoff, before the delayed worker can run. */

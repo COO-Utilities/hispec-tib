@@ -86,7 +86,7 @@ index 480b8e93d75..1af3f577dc0 100644
  		return;
  	}
  
--	k_work_submit(&ctx->server_work);
+-	modbus_work_submit(&ctx->server_work);
 +	if (ctx->client && !IS_ENABLED(CONFIG_MODBUS_SERIAL_ASYNC_API)) {
 +		unsigned int key = irq_lock();
 +
@@ -96,10 +96,10 @@ index 480b8e93d75..1af3f577dc0 100644
 +		 */
 +		modbus_serial_rx_off(ctx);
 +		k_timer_stop(&ctx->cfg->rtu_timer);
-+		k_work_submit(&ctx->server_work);
++		modbus_work_submit(&ctx->server_work);
 +		irq_unlock(key);
 +	} else {
-+		k_work_submit(&ctx->server_work);
++		modbus_work_submit(&ctx->server_work);
 +	}
 +}
 +

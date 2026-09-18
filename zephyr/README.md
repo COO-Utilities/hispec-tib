@@ -27,7 +27,9 @@ then update the patch checksum and run the regressions and firmware build.
   RX/TX, stop the framing timer, and synchronize parser cancellation at request
   entry and completion/timeout. Wait with interrupts enabled and preserve the
   parsed ADU and original result. The caller must hold `iface_lock` and must not
-  run on the RX parser's system workqueue (the application uses its blocking queue).
+  run on the RX parser's workqueue (the application uses its blocking queue).
+  Submission uses upstream's `modbus_work_submit()`; the optional dedicated
+  Modbus workqueue remains disabled in this application.
   The short IRQ critical sections target this UP Cortex-M board. Async, ASCII,
   raw and server paths retain their existing behavior; this is not an SMP fix.
 
@@ -38,13 +40,15 @@ configuration, thread priority or response deadline is changed.
 
 Host checks: `python tests/transport/check.py` and
 `python tests/throughput/check.py` from this repository using the workspace venv.
-The mutex regression uses the real GPIO 1-Wire driver and Zephyr kernel in QEMU,
-with only GPIO pin configuration stubbed. It checks recursive locking, blocked
-waiters, handoff and reuse for both bus instances. From the workspace root:
+The mutex regression uses the real STM32 GPIO driver, GPIO 1-Wire driver and
+Zephyr kernel on the Nucleo. It checks recursive locking, blocked waiters, handoff
+and reuse for both bus instances without slave transactions. There is no fake
+GPIO configuration callback. QEMU's GPIO emulator rejects the open-drain mode
+this driver requires, so this is a target test. Build from the workspace root:
 
 ```sh
 ./.venv/bin/west patch --src-module hispec-tib --dst-module zephyr apply
-./.venv/bin/python zephyr/scripts/twister -T hispec-tib/tests/transport/w1_mutex -p qemu_cortex_m3 --inline-logs
+./.venv/bin/west build -b nucleo_h563zi/stm32h563xx -d /tmp/hispec-w1-mutex hispec-tib/tests/transport/w1_mutex
 ```
 
 Hardware validation after flashing must include cold sensor initialization,
