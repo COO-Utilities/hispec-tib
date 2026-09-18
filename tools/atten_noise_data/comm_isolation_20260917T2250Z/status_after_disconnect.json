@@ -1,0 +1,16 @@
+{
+  "fw": "620d711a0244-dirty",
+  "boots": 37,
+  "board": "tib",
+  "board_ok": true,
+  "mems_switches": 8,
+  "relay_err": 0,
+  "amb_c": 20.312,
+  "pd_on_s": 0,
+  "laserbank_on_s": 1198,
+  "lastcmd": {
+    "name": "laser",
+    "src": "mqtt",
+    "t_ms": 1121056
+  }
+}

@@ -1314,6 +1314,20 @@ static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
 	return 0;
 }
 
+/* Numerical fitting runs synchronously at throughput priority while cal_lock
+ * stays held. A real sleep lets lower-priority RX/housekeeping work run;
+ * k_yield() would only help equal/higher priorities. No I/O lock is held here.
+ * The caller owns its deadline; checks do not alter fit data or evaluation order.
+ */
+#define ATTEN_CAL_FIT_CPU_BUDGET_MS 10
+static void fit_pause_if_due(int64_t *deadline)
+{
+	if (k_uptime_get() >= *deadline) {
+		k_msleep(1);
+		*deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
+	}
+}
+
 /** Return one weighted residual, and optionally its analytic fit Jacobian. */
 static int fit_point_weighted_eval(const struct atten_cal_fit_point *point,
 				   const struct atten_cal_record *records,
@@ -1358,6 +1372,7 @@ static double fit_cost(const struct atten_cal_fit_point *points,
 		       double max_atten_sigma_db)
 {
 	double cost = 0.0;
+	int64_t pause_deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		double residual;
@@ -1368,6 +1383,7 @@ static double fit_cost(const struct atten_cal_fit_point *points,
 			return INFINITY;
 		}
 		cost += residual * residual;
+		fit_pause_if_due(&pause_deadline);
 	}
 	return cost;
 }
@@ -1429,6 +1445,7 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 	double lambda = ATTEN_CAL_FIT_INITIAL_LAMBDA;
 	double cost;
 	struct attenuator_model_coeffs coeffs;
+	int64_t pause_deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
 
 	if (points == NULL || records == NULL || fvoa_50pct_mv == NULL ||
 	    slope_inv_fvoa_mv == NULL ||
@@ -1479,6 +1496,7 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 			h11 += j1 * j1;
 			g0 += j0 * r;
 			g1 += j1 * r;
+			fit_pause_if_due(&pause_deadline);
 		}
 
 		h00 += lambda;
@@ -1501,6 +1519,7 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 		};
 		trial_cost = fit_cost(points, records, point_count,
 				      &trial_coeffs, max_atten_sigma_db);
+		fit_pause_if_due(&pause_deadline);
 		if (isfinite(trial_cost) && trial_cost < cost) {
 			if (fabs(trial_f50 - f50) < 1.0e-6 &&
 			    fabs(trial_slope - slope) < 1.0e-12) {
@@ -1527,22 +1546,25 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 static int solve_correction_normal_equation(
 	double normal[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS],
 	double rhs[ATTENUATOR_MODEL_CORRECTION_TERMS],
+	uint8_t terms,
 	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS])
 {
 	double matrix[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS + 1U];
 
-	for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
-		for (uint8_t col = 0U; col < ATTENUATOR_MODEL_CORRECTION_TERMS; ++col) {
+	/* The leading submatrix refits T0..T(terms-1); unused stored terms stay zero. */
+	memset(correction_coeff, 0, sizeof(float) * ATTENUATOR_MODEL_CORRECTION_TERMS);
+	for (uint8_t row = 0U; row < terms; ++row) {
+		for (uint8_t col = 0U; col < terms; ++col) {
 			matrix[row][col] = normal[row][col];
 		}
-		matrix[row][ATTENUATOR_MODEL_CORRECTION_TERMS] = rhs[row];
+		matrix[row][terms] = rhs[row];
 	}
 
-	for (uint8_t col = 0U; col < ATTENUATOR_MODEL_CORRECTION_TERMS; ++col) {
+	for (uint8_t col = 0U; col < terms; ++col) {
 		uint8_t pivot = col;
 		double pivot_abs = fabs(matrix[col][col]);
 
-		for (uint8_t row = col + 1U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+		for (uint8_t row = col + 1U; row < terms; ++row) {
 			double value_abs = fabs(matrix[row][col]);
 
 			if (value_abs > pivot_abs) {
@@ -1554,28 +1576,28 @@ static int solve_correction_normal_equation(
 			return -ERANGE;
 		}
 		if (pivot != col) {
-			for (uint8_t k = col; k <= ATTENUATOR_MODEL_CORRECTION_TERMS; ++k) {
+			for (uint8_t k = col; k <= terms; ++k) {
 				double tmp = matrix[col][k];
 
 				matrix[col][k] = matrix[pivot][k];
 				matrix[pivot][k] = tmp;
 			}
 		}
-		for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
+		for (uint8_t row = 0U; row < terms; ++row) {
 			double scale;
 
 			if (row == col) {
 				continue;
 			}
 			scale = matrix[row][col] / matrix[col][col];
-			for (uint8_t k = col; k <= ATTENUATOR_MODEL_CORRECTION_TERMS; ++k) {
+			for (uint8_t k = col; k <= terms; ++k) {
 				matrix[row][k] -= scale * matrix[col][k];
 			}
 		}
 	}
 
-	for (uint8_t row = 0U; row < ATTENUATOR_MODEL_CORRECTION_TERMS; ++row) {
-		double value = matrix[row][ATTENUATOR_MODEL_CORRECTION_TERMS] / matrix[row][row];
+	for (uint8_t row = 0U; row < terms; ++row) {
+		double value = matrix[row][terms] / matrix[row][row];
 
 		if (!isfinite(value)) {
 			return -ERANGE;
@@ -1585,15 +1607,68 @@ static int solve_correction_normal_equation(
 	return 0;
 }
 
+/** Check the final curve, including the open region where clipping can leave no fit
+ * points. A 1 mV grid checks values and analytic slopes between samples; retained
+ * voltages and the calibrated join are also checked. This is numerical validation,
+ * not a proof between grid locations. No I/O; returns the first failing location.
+ */
+static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
+                            const struct atten_cal_fit_point *points,
+                            const struct atten_cal_record *records, uint8_t point_count,
+                            float *failed_mv, struct atten_model_eval *eval)
+{
+	float join_mv = 0.0f;
+	int64_t pause_deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
+
+	for (uint8_t pass = 0U; pass < 3U; ++pass) {
+		double previous_db = -INFINITY;
+		uint16_t count = pass == 0U ? (uint16_t)ATTENUATOR_DRIVE_MAX_MV + 1U :
+			(pass == 1U ? point_count : 3U);
+
+		if (pass == 2U) {
+			/* At the leakage floor there is no separate continuation join. */
+			if (coeffs->max_calibrated_db >= coeffs->max_atten_db) break;
+			*failed_mv = NAN;
+			*eval = (struct atten_model_eval){.db = NAN, .d_db_d_voltage_mv = NAN};
+			if (!attenuator_model_db_to_voltage(coeffs, coeffs->max_calibrated_db, &join_mv)) return false;
+		}
+		for (uint16_t i = 0U; i < count; ++i) {
+			float mv;
+			if (pass == 0U) {
+				mv = (float)i; /* 1 mV grid across the complete final curve. */
+			} else if (pass == 1U) {
+				mv = records[points[i].record_index].sweep_mv;
+			} else {
+				mv = i == 1U ? join_mv : nextafterf(join_mv, i == 0U ? -INFINITY : INFINITY);
+			}
+			*failed_mv = CLAMP(mv, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
+			*eval = (struct atten_model_eval){.db = NAN, .d_db_d_voltage_mv = NAN};
+			if (!atten_model_eval(coeffs, *failed_mv, eval) ||
+			    eval->d_db_d_voltage_mv < 0.0 ||
+			    eval->db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db ||
+			    (pass == 2U && i == 1U &&
+			     fabs(eval->db - coeffs->max_calibrated_db) > ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB)) {
+				return false;
+			}
+			previous_db = eval->db;
+			fit_pause_if_due(&pause_deadline);
+		}
+	}
+	return true;
+}
+
 /**
  * Fit the optional empirical residual correction after the base model fit.
  *
- * The correction is deliberately subordinate to the physical model. If the
- * small linear solve is ill-conditioned or the corrected model is not monotonic
- * at the actual sweep points (both value order and local slope), the coefficients remain zero and the base fit
- * is kept.
+ * The correction remains subordinate to the physical model. Refit successively
+ * fewer leading Chebyshev terms when the solve or the final curve is invalid;
+ * dropping every term is the last fallback. The six stored slots never change.
+ * All candidates use the same measured prefix, including its above-limit anchor.
+ * Each candidate's calibrated limit and continuation are established BEFORE
+ * validation, so unused polynomial behavior in the tail cannot reject a good fit.
+ * Numerical work only; one best-effort warning summarizes a reduced-order result.
  */
-static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points,
+static int fit_correction_coeff_locked(const struct atten_cal_fit_point *points,
 					const struct atten_cal_record *records,
 					uint8_t point_count,
 					double max_atten_sigma_db,
@@ -1601,14 +1676,12 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 {
 	double normal[ATTENUATOR_MODEL_CORRECTION_TERMS][ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
 	double rhs[ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
-	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS] = {0};
 	uint8_t used = 0U;
+	int selected = -1;
+	char first_failure[112] = "";
+	int64_t pause_deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
 
-	if (points == NULL || records == NULL || coeffs == NULL) {
-		return;
-	}
 	memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
-
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		const struct atten_cal_fit_point *point = &points[i];
 		const struct atten_cal_record *record = &records[point->record_index];
@@ -1618,6 +1691,7 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 		double residual_db;
 		double weight;
 
+		fit_pause_if_due(&pause_deadline);
 		if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
 		    !atten_model_db_sigma(&eval, (double)point->measured_db_err,
 					  (double)ATTEN_CAL_DAC_SIGMA_MV,
@@ -1636,40 +1710,55 @@ static void fit_correction_coeff_locked(const struct atten_cal_fit_point *points
 		}
 		used++;
 	}
-	if (used < ATTENUATOR_MODEL_CORRECTION_TERMS ||
-	    solve_correction_normal_equation(normal, rhs, correction_coeff) != 0) {
-		coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
-			.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-			.code = "atten_correction_rejected", .msg = "six-term correction has insufficient points or a singular solve; retaining base fit",
-			.context = physical_name(records == cal.records[0] ? 0U : 1U),
-		});
-		return;
-	}
-	memcpy(coeffs->correction_coeff, correction_coeff, sizeof(coeffs->correction_coeff));
+	for (int terms = ATTENUATOR_MODEL_CORRECTION_TERMS; terms >= 0; --terms) {
+		const struct atten_cal_fit_point *last = &points[point_count - 1U];
+		float failed_mv = records[last->record_index].sweep_mv;
+		struct atten_model_eval eval = {.db = NAN, .d_db_d_voltage_mv = NAN};
+		const char *reason = "solve";
+		int rc = 0;
 
-	{
-		double previous_db = -INFINITY;
-
-		for (uint8_t i = 0U; i < point_count; ++i) {
-			const struct atten_cal_record *record = &records[points[i].record_index];
-			struct atten_model_eval eval;
-
-			/* Increasing sample values alone can hide a turn before the last
-			 * point, making the calibrated endpoint inversion ambiguous. */
-			if (!atten_model_eval(coeffs, record->sweep_mv, &eval) ||
-			    eval.d_db_d_voltage_mv < 0.0 ||
-			    eval.db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db) {
-				memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
-				coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
-					.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					.code = "atten_correction_rejected", .msg = "six-term correction fails monotonicity/evaluation check; retaining base fit",
-					.context = physical_name(records == cal.records[0] ? 0U : 1U),
-				});
-				return;
+		fit_pause_if_due(&pause_deadline);
+		/* Zero temporarily selects the raw polynomial while locating its endpoint. */
+		coeffs->max_calibrated_db = 0.0;
+		memset(coeffs->correction_coeff, 0, sizeof(coeffs->correction_coeff));
+		if (terms > 0) {
+			rc = used < terms ? -ERANGE :
+				solve_correction_normal_equation(normal, rhs, (uint8_t)terms, coeffs->correction_coeff);
+		}
+		if (rc == 0) {
+			reason = "endpoint";
+			if (atten_model_eval(coeffs, failed_mv, &eval)) {
+				coeffs->max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB,
+					MIN((double)last->measured_db, MIN(eval.db, coeffs->max_atten_db)));
+				if (coeffs->max_calibrated_db > 0.0) {
+					reason = "curve";
+					if (fit_curve_valid(coeffs, points, records, point_count, &failed_mv, &eval)) {
+						selected = terms;
+						break;
+					}
+				}
 			}
-			previous_db = eval.db;
+		}
+		if (first_failure[0] == '\0') {
+			snprintk(first_failure, sizeof(first_failure), "check=%s mv=%.3f db=%.6g slope=%.6g",
+				 reason, (double)failed_mv, eval.db, eval.d_db_d_voltage_mv);
 		}
 	}
+	if (selected != ATTENUATOR_MODEL_CORRECTION_TERMS) {
+		char context[160];
+		const char *name = physical_name(records == cal.records[0] ? 0U : 1U);
+
+		snprintk(context, sizeof(context), "%s terms=%d first_failure: %s", name, selected, first_failure);
+		LOG_WRN("atten correction %s", context);
+		coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "atten_correction_rejected",
+			.msg = selected < 0 ? "no valid attenuator fit" : (selected == 0 ?
+				"all corrections rejected; retaining base fit" : "full correction rejected; refitted with fewer terms"),
+			.context = context,
+		});
+	}
+	return selected < 0 ? -ERANGE : 0;
 }
 
 /** Fit one physical FVOA's retained records to the firmware attenuator model. */
@@ -1697,7 +1786,9 @@ static int fit_one_physical_locked(uint8_t physical,
 	double sum_measured_measured = 0.0;
 	double sum_model_measured = 0.0;
 	uint8_t point_count = 0U;
+	uint8_t scored_count = 0U;
 	struct attenuator_model_coeffs coeffs;
+	int64_t pause_deadline = k_uptime_get() + ATTEN_CAL_FIT_CPU_BUDGET_MS;
 	int rc;
 
 	if (out == NULL || physical >= ATTENUATOR_PHYSICAL_COUNT || !(gain > 0.0)) {
@@ -1714,12 +1805,13 @@ static int fit_one_physical_locked(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
-	/* The full sweep supplies the leakage floor; only this contiguous measured
-	 * prefix constrains the base and residual fits. Keep all raw records.
+	/* The full sweep supplies the leakage floor. Include the first measured
+	 * point above the operating limit to anchor both fits across that boundary,
+	 * rather than extrapolating from the last point below it. Keep all raw records.
 	 */
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		if ((double)cal_fit_points[i].measured_db > ATTENUATOR_CALIBRATED_MAX_DB) {
-			point_count = i;
+			point_count = i + 1U;
 			break;
 		}
 	}
@@ -1737,63 +1829,57 @@ static int fit_one_physical_locked(uint8_t physical,
 		.max_atten_db = max_atten_db,
 		.gain = gain,
 	};
-	fit_correction_coeff_locked(cal_fit_points, records, point_count,
-				    max_atten_sigma_db, &coeffs);
-	/* During fitting the zero limit leaves the polynomial unconstrained at the
-	 * retained endpoint. The installed limit belongs to the corrected curve.
-	 */
-	struct atten_model_eval endpoint;
-	if (!atten_model_eval(&coeffs,
-		records[cal_fit_points[point_count - 1U].record_index].sweep_mv, &endpoint)) {
-		return -ERANGE;
-	}
-	coeffs.max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB,
-		MIN(endpoint.db, max_atten_db));
-	if (!(coeffs.max_calibrated_db > 0.0)) return -ERANGE;
+	rc = fit_correction_coeff_locked(cal_fit_points, records, point_count,
+					 max_atten_sigma_db, &coeffs);
+	if (rc != 0) return rc;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		const struct atten_cal_fit_point *point = &cal_fit_points[i];
 		const struct atten_cal_record *record = &records[point->record_index];
 		struct atten_model_eval eval;
 		double measured_db = (double)point->measured_db;
-		double residual_db;
 		double x = (double)record->sweep_mv * gain;
 		double tx = pow(10.0, -measured_db / 10.0);
 
-		if (!atten_model_eval(&coeffs, record->sweep_mv, &eval)) {
-			return -ERANGE;
-		}
-		residual_db = eval.db - measured_db;
-		if (!isfinite(eval.db) || !isfinite(residual_db) ||
-		    !isfinite(tx) || !(tx > 0.0)) {
-			return -ERANGE;
-		}
-		sum_sq_db += residual_db * residual_db;
-		max_abs_db = MAX(max_abs_db, fabs(residual_db));
+		/* Spans and point count describe all fitting support, including the anchor. */
 		min_tx = MIN(min_tx, tx);
 		max_tx = MAX(max_tx, tx);
 		min_x = MIN(min_x, x);
 		max_x = MAX(max_x, x);
+		/* Score by MEASURED attenuation. A bad prediction above the limit must
+		 * still increase RMS for a measurement inside the calibrated region.
+		 */
+		if (measured_db > coeffs.max_calibrated_db) continue;
+		if (!atten_model_eval(&coeffs, record->sweep_mv, &eval)) return -ERANGE;
+		double residual_db = eval.db - measured_db;
+		if (!isfinite(residual_db)) return -ERANGE;
+		scored_count++;
+		sum_sq_db += residual_db * residual_db;
+		max_abs_db = MAX(max_abs_db, fabs(residual_db));
 		sum_model += eval.db;
 		sum_measured += measured_db;
 		sum_model_model += eval.db * eval.db;
 		sum_measured_measured += measured_db * measured_db;
 		sum_model_measured += eval.db * measured_db;
+		fit_pause_if_due(&pause_deadline);
 	}
 
-	if (point_count < ATTEN_CAL_MIN_FIT_POINTS || !(max_x > min_x)) {
+	/* The fit already met its support-count minimum. Correlation needs two
+	 * scored points; excluding the boundary anchor must not raise that minimum.
+	 */
+	if (scored_count < 2U || !(max_x > min_x)) {
 		return -ERANGE;
 	}
 	{
-		double denom_model = (double)point_count * sum_model_model -
+		double denom_model = (double)scored_count * sum_model_model -
 				     sum_model * sum_model;
-		double denom_measured = (double)point_count * sum_measured_measured -
+		double denom_measured = (double)scored_count * sum_measured_measured -
 					sum_measured * sum_measured;
 
 		if (!(denom_model > 0.0) || !(denom_measured > 0.0)) {
 			return -ERANGE;
 		}
-		out->correlation = ((double)point_count * sum_model_measured -
+		out->correlation = ((double)scored_count * sum_model_measured -
 				    sum_model * sum_measured) /
 				   sqrt(denom_model * denom_measured);
 	}
@@ -1805,7 +1891,7 @@ static int fit_one_physical_locked(uint8_t physical,
 	out->max_atten_db = max_atten_db;
 	out->max_calibrated_db = coeffs.max_calibrated_db;
 	out->max_atten_sigma_db = max_atten_sigma_db;
-	out->rms_db = sqrt(sum_sq_db / (double)point_count);
+	out->rms_db = sqrt(sum_sq_db / (double)scored_count);
 	out->max_abs_db = max_abs_db;
 	out->min_tx = min_tx;
 	out->max_tx = max_tx;

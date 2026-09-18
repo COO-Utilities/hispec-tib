@@ -898,6 +898,7 @@ for marker in ('static double attenuator_model_raw_linear(', 'static double atte
                'double attenuator_model_voltage_to_db(', 'bool attenuator_model_db_to_voltage(',
                'bool attenuator_estimate_transmission('):
     inverse_source += block('attenuator.c', marker)
+curve_validation_source = inverse_source
 inverse_source += r'''
 int main(void){
  struct attenuator_model_coeffs c={.fvoa_50pct_mv=3000,.slope_inv_fvoa_mv=.0025,
@@ -920,6 +921,136 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('Calibrated endpoint and rough-tail forward/inverse round trips passed')
+
+# Recorded DAC1's six-term candidate is valid at retained points but turns near
+# the open end. The five-term refit must survive the production curve checker.
+curve_validation_source += '#include <string.h>\n#define ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB 1.0e-4\n'
+fit_clock_source = r"""
+#define ATTEN_CAL_FIT_CPU_BUDGET_MS 10
+static int64_t fit_clock;
+static int fit_sleeps;
+static bool fit_pauses_enabled=true;
+static int64_t k_uptime_get(void){return fit_pauses_enabled?fit_clock++:0;}
+static void k_msleep(int ms){assert(ms==1);++fit_sleeps;fit_clock+=ms;}
+""" + block('attenuator_calibration.c', 'static void fit_pause_if_due(')
+curve_validation_source += fit_clock_source
+
+for marker in ('struct atten_cal_record {', 'struct atten_cal_fit_point {',
+               'static bool fit_curve_valid('):
+    curve_validation_source += block('attenuator_calibration.c', marker)
+fit_replay_source = curve_validation_source
+curve_validation_source += r'''
+int main(void) {
+ struct attenuator_model_coeffs c={.fvoa_50pct_mv=3299.99362586,.slope_inv_fvoa_mv=.00289068400715,
+  .max_atten_db=73.3546880086,.max_calibrated_db=55,.gain=1.533,
+  .correction_coeff={-38.8084831,-24.2570744,-62.5005569,-6.50202751,-14.9005966,6.59192467}};
+ struct atten_cal_record records[2]={{.sweep_mv=2150},{.sweep_mv=2950}};
+ struct atten_cal_fit_point points[2]={{.record_index=0},{.record_index=1}};
+ struct atten_model_eval eval;float failed_mv;
+ assert(atten_model_eval(&c,2150,&eval) && eval.d_db_d_voltage_mv>0);
+ assert(!fit_curve_valid(&c,points,records,2,&failed_mv,&eval));
+ assert(failed_mv>1700 && failed_mv<2150);
+ float corrected[6]={-44.3638229,-43.984787,-71.6152267,-21.0198765,-19.2872257,0};
+ memcpy(c.correction_coeff,corrected,sizeof(corrected));
+ assert(fit_curve_valid(&c,points,records,2,&failed_mv,&eval));
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'curve_validation.c',Path(tmp)/'curve_validation'
+    cfile.write_text(curve_validation_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('Recorded between-sample correction failure and reduced-order curve validation passed')
+
+# Replay the recorded 199-point acquisition through the production fitter. Clock
+# reads simulate elapsed work; sleep is counted, not a host scheduling claim.
+# Both runs must have identical coefficients, metrics, acceptance and warnings.
+fit_replay_source += '\n#include <errno.h>\n#define MAX(a,b) fmax(a,b)\n#define MIN(a,b) fmin(a,b)\n'
+cal_text = (ROOT/'app/src/attenuator_calibration.c').read_text()
+fit_replay_source += cal_text[cal_text.index('#define ATTEN_CAL_DEFAULT_DWELL_MS'):cal_text.index('enum atten_cal_state {')]
+for line in (ROOT/'app/src/attenuator_calibration.h').read_text().splitlines():
+    if line.startswith('#define ATTENUATOR_CAL_'): fit_replay_source += line+'\n'
+for marker in ('enum atten_cal_record_event {', 'enum atten_cal_record_classification {',
+               'struct atten_cal_bridge {'):
+    fit_replay_source += block('attenuator_calibration.c', marker) + (';\n' if marker.startswith('enum') else '')
+fit_replay_source += block('attenuator_calibration.h', 'struct attenuator_calibration_fit_metrics {')
+fit_replay_source += r'''
+static struct attenuator attenuators[1];
+static struct {
+ uint8_t attenuator_index,reference_record_index[2],record_count[2],bridge_count[2];
+ bool reference_record_index_valid[2];
+ struct atten_cal_record records[2][ATTENUATOR_CAL_RECORD_COUNT];
+ struct atten_cal_bridge bridges[2][ATTENUATOR_CAL_RECORD_COUNT];
+} cal;
+static struct atten_cal_fit_point cal_fit_points[ATTENUATOR_CAL_RECORD_COUNT];
+#define LOG_WRN(...) ((void)0)
+#define snprintk snprintf
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+struct coo_cmd_runtime_emit_args {int type,delivery;const char *code,*msg,*context;};
+static char warnings[4][160];static int warning_count;
+static void *command_runtime_get(void){return NULL;}
+static void coo_cmd_runtime_emit(void *p,const struct coo_cmd_runtime_emit_args *a){
+ (void)p;assert(warning_count<4);snprintf(warnings[warning_count++],160,"%s",a->context);
+}
+static const char *physical_name(unsigned p){return p?"dac2":"dac1";}
+'''
+fit_replay_source += block('attenuator.c', 'bool atten_model_correction_basis(')
+for marker in ('static bool record_is_fit_candidate(', 'static int build_segment_scales_locked(',
+               'static int build_fit_points_locked(', 'static int estimate_max_atten_db(',
+               'static int fit_point_weighted_eval(', 'static double fit_cost(',
+               'static void fit_initial_guess(', 'static int fit_optimize_db(',
+               'static int solve_correction_normal_equation(', 'static int fit_correction_coeff_locked(',
+               'static int fit_one_physical_locked('):
+    fit_replay_source += block('attenuator_calibration.c', marker)
+fixture = np.load(ROOT/'tests/throughput/calibration_replay.npz', allow_pickle=False)
+meta = json.loads(str(fixture['metadata']))
+fit_replay_source += 'static void load_records(void){\n'
+for physical,name in enumerate(('dac1','dac2')):
+    rows = fixture['records'][fixture['records']['physical']==name]
+    m = meta[name]
+    fit_replay_source += (f'cal.record_count[{physical}]={len(rows)};'
+                          f'cal.reference_record_index[{physical}]={m["reference_record"]};'
+                          f'cal.reference_record_index_valid[{physical}]=true;'
+                          f'cal.bridge_count[{physical}]={m["bridge_count"]};\n')
+    for i,bridge in enumerate(m['bridges']):
+        fit_replay_source += f'cal.bridges[{physical}][{i}]=(struct atten_cal_bridge){{{bridge["before_record"]},{bridge["after_record"]}}};\n'
+    for row in rows:
+        values = {key:format(float(row[key]), '.17g') for key in
+                  ('sweep_mv','other_mv','laser_pct','signal_mv','signal_err_mv','max_mv','segment')}
+        values.update(event='ATTEN_CAL_EVENT_'+row['event'].upper(),
+                      classification='ATTEN_CAL_CLASSIFICATION_'+row['classification'].upper())
+        fit_replay_source += f'cal.records[{physical}][{row["record"]}]=(struct atten_cal_record){{'+','.join(f'.{key}={value}' for key,value in values.items())+'};\n'
+fit_replay_source += r'''
+ attenuators[0].coeff1.gain=attenuators[0].coeff2.gain=1.533;
+}
+int main(void){
+ load_records();
+ struct attenuator_calibration_fit_metrics baseline[2],paused[2];
+ int baseline_rc[2];char baseline_warnings[4][160];
+ fit_pauses_enabled=false;
+ for(int i=0;i<2;i++)baseline_rc[i]=fit_one_physical_locked(i,&baseline[i]);
+ assert(fit_sleeps==0);memcpy(baseline_warnings,warnings,sizeof(warnings));
+ int baseline_warning_count=warning_count;warning_count=0;memset(warnings,0,sizeof(warnings));
+ fit_pauses_enabled=true;
+ for(int i=0;i<2;i++){
+  int before=fit_sleeps;
+  assert(fit_one_physical_locked(i,&paused[i])==baseline_rc[i]);
+  assert(!memcmp(&baseline[i],&paused[i],sizeof(paused[i])) && fit_sleeps>before);
+  assert(paused[i].valid && paused[i].accepted);
+  printf("Replay dac%d: points=%u, rms_db=%.9g, identical with pauses (%d sleeps)\n",
+         i+1,paused[i].points,paused[i].rms_db,fit_sleeps-before);
+ }
+ assert(warning_count==baseline_warning_count && !memcmp(warnings,baseline_warnings,sizeof(warnings)));
+ return 0;
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    cfile,exe=Path(tmp)/'fit_replay.c',Path(tmp)/'fit_replay'
+    cfile.write_text(fit_replay_source)
+    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-lm','-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+print('Recorded calibration pause/no-pause coefficients, metrics, acceptance and warnings match exactly')
 
 # Effective route calibration: defaults, overrides, NVS restore, and public loss precision.
 import re
@@ -2264,9 +2395,14 @@ int main(void) {
   assert(atten_model_correction_basis(base,60,b));
   for(int j=0;j<6;j++) {rhs[j]+=b[j]*target;for(int k=0;k<6;k++)normal[j][k]+=b[j]*b[k];}
  }
- assert(solve_correction_normal_equation(normal,rhs,fit)==0);
+ assert(solve_correction_normal_equation(normal,rhs,6,fit)==0);
  for(int j=0;j<6;j++)assert(fabs(fit[j]-c.correction_coeff[j])<1e-5);
- memset(normal,0,sizeof(normal));assert(solve_correction_normal_equation(normal,rhs,fit)==-ERANGE);
+ /* Refitting a leading submatrix must clear unused stored terms and solve
+  * that smaller system, rather than truncate the six-term solution. */
+ assert(solve_correction_normal_equation(normal,rhs,4,fit)==0);
+ assert(fit[4]==0 && fit[5]==0);
+ for(int j=0;j<4;j++) {double sum=0;for(int k=0;k<4;k++)sum+=normal[j][k]*fit[k];assert(fabs(sum-rhs[j])<1e-6);}
+ memset(normal,0,sizeof(normal));assert(solve_correction_normal_equation(normal,rhs,6,fit)==-ERANGE);
  for(int i=1;i<80;i++) {
   double base=60.*i/80,db,dm,h=1e-4;
   double y=attenuator_model_correction_db(&c,base,&db,&dm);

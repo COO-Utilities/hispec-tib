@@ -24,7 +24,7 @@
 struct attenuator_calibration_fit_metrics {
 	bool valid;
 	bool accepted;
-	uint8_t points;
+	uint8_t points; /* Fitting-support count, including the first above-limit point. */
 	double fvoa_50pct_mv;
 	double slope_inv_fvoa_mv;
 	double max_atten_db;

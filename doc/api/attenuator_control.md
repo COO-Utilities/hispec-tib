@@ -78,5 +78,6 @@ Python flat coefficient sequences use `f50, slope, floor_db, gain,
 max_calibrated_db[, c0, c1, c2, c3, c4, c5]`. Named fields are preferable.
 The existing `max_atten_db` remains the inferred leakage floor. See the
 [calibration model](../attenuator_calibration.md) for the continuous continuation
-beyond the calibrated endpoint. Its stored RMS describes only the fitted range;
-beyond that range, queried and commanded dB are approximate.
+beyond the calibrated endpoint. Its stored RMS scores fitting-support measurements
+within `max_calibrated_db`, excluding the above-limit boundary anchor. Beyond that
+range, queried and commanded dB are approximate.

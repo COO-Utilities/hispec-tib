@@ -8,6 +8,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] After flashing, replay saved calibration records with the laser disabled
+  and confirm health polls continue throughout both fits without false five-second
+  timeouts. Host replay compares coefficients/metrics with and without pauses;
+  actual scheduling gaps and fitting duration require target measurement.
 - [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
   longer emits `laser_output_fault`; hard faults and active interlock still do.
   Host tests exercise the production status path; repeat with the controller.
@@ -24,9 +28,11 @@ LLMs Agents: Do NOT change heading names in this file.
   Verify actual Maiman TEC bound expand/target/narrow ordering and rejection
   recovery with the installed modules. Host tests cover register order and
   failures; firmware builds do not establish optical response or hardware timing.
-- [ ] Bench-validate restricted 55 dB fitting and the continuous residual-to-floor
-  continuation using the existing `atten_scan`. Confirm individual autolevel
-  limits and collect the next calibration with the new `max_calibrated_db` field.
+- [ ] Bench-validate 55 dB fitting with the first above-limit support point and
+  correction refits from six terms down to one. Check selected terms, calibrated
+  residuals, individual autolevel limits and continuous residual-to-floor
+  continuation using `atten_scan`. Offline replay checks numerical behavior;
+  fresh acquisition and embedded fitting duration still need bench validation.
 - [ ] Verify compact calibration status with both six-term corrections. Numeric
   formatting and omission of three aggregate span/transmission diagnostics keep
   the 1024-byte buffers; those diagnostics remain in per-device fit telemetry.
@@ -60,6 +66,11 @@ LLMs Agents: Do NOT change heading names in this file.
   the error budget and remaining physical calibration assumptions.
 
 ## TODOs
+- Investigate DAC1 reference/sweep disagreement before changing acquisition:
+  capture `cal_1028y_20260917T213847_376797Z.npz`, reference record 7 and first
+  sweep record 11 both command DUT 0 / companion 2810.156 mV, but raw peaks are
+  1767.688 / 2047.938 mV. The repeated sweep clips through DUT 2050 mV despite
+  warm PD context. Trace command/window timing; no reference-reselection loop.
 - Audit successful noise/default-autooff/TEC-autooff-policy settings, settings
   no-ops, and `laser/tune` that release a throughput stream while leaving its
   laser emitting. They can discard measurement shutdown responsibility. Model

@@ -1233,18 +1233,22 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `max_calibrated_db` is required in each replacement coefficient object and
     returned by coefficient queries. It is the corrected-curve operating endpoint,
     separate from the leakage-floor parameter `max_atten_db`. Automatic fitting
-    uses measured points through `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB), or the
-    lower range reached. Above the endpoint, the endpoint residual fades linearly
+    uses the usable measured prefix through the first point above
+    `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB). The operating limit is the minimum
+    of 55 dB, the last supporting measurement, its model prediction and the floor.
+    Above the endpoint, the endpoint residual fades linearly
     in base-model dB to zero at the existing floor; the polynomial is not extrapolated.
   - Manual dB/linear and voltage commands retain full-range access. Values beyond
     the calibrated endpoint are rough estimates. Autolevel uses individual
     calibrated limits and switches to laser adjustment when they are exhausted.
-  - Updating firmware invalidates older attenuator coefficient records by size;
-    recalibrate before relying on them. Other NVS settings are preserved.
+  - Records predating `max_calibrated_db` are rejected by size; other NVS settings
+    are preserved. The fitting update keeps the current record layout; recalibrate
+    to obtain its new fits.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
-    in attenuation dB. It defaults to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
+    in attenuation dB for measured points within `max_calibrated_db`. It defaults
+    to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
     A manual model replacement omitting `rms_db` uses that default, rather than
     inheriting confidence from the previous fit. An explicit zero is allowed.
   - Accepted autocalibration installs the final model's unweighted residual RMS
@@ -1446,8 +1450,9 @@ ownership are documented in `attenuator_calibration.md`.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
     derived as fit candidates by classification and transmission-domain rules,
-    restricted to the contiguous prefix before the first measured point above
-    55 dB. External analysis can inspect all retained records regardless of fit success.
+    restricted to the contiguous prefix including the first measured point above
+    55 dB. The extra point constrains the operating boundary in both fitting stages.
+    External analysis can inspect all retained records regardless of fit success.
   - Automatic calibration uses the sampler-owned internal photodiode
     configurable window. It does not start a separate photodiode measurement or
     a new calibration thread; the throughput monitor thread advances the state
@@ -1459,15 +1464,24 @@ ownership are documented in `attenuator_calibration.md`.
     keeping the coefficient names and meanings `fvoa_50pct_mv`,
     `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
     `max_atten_db` from the final three usable full-sweep points and holds it
-    fixed while optimizing the two shape parameters on the prefix through
-    55 dB. It then fits the optional `correction_coeff` residual layer against
-    that same prefix. If the correction is ill-conditioned or breaks
-    monotonicity at retained sweep points (value order and local slope),
-    firmware leaves the correction coefficients at zero and keeps
-    the base fit. The y uncertainty comes from photodiode mean
+    fixed while optimizing the two shape parameters on that prefix. It then fits
+    the optional `correction_coeff` residual layer against the same data, trying
+    six leading Chebyshev terms, then five, down to one. Each candidate receives
+    its calibrated limit and continuation before checking the final curve on a
+    1 mV grid across the drive range, at retained fit voltages and at the calibrated
+    join. Values must be finite, nonnegative and ordered; analytic slopes must
+    be nonnegative. This numerical check can detect turns between measured points;
+    it is not a proof between grid locations. The first valid correction is kept,
+    with unused coefficient slots zeroed. The base-only model is the last fallback.
+    A single `atten_correction_rejected` warning identifies the selected term count
+    (`0` for base only, `-1` for no valid model) and the first failed check/location.
+    The same summary is logged locally. The y uncertainty comes from photodiode mean
     uncertainty, bridge/segment-scale propagation, and the open-reference
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
-    3 mV. Fit details include point count, correlation, residual RMS/max in dB,
+    3 mV. `points` counts all fitting support, including the above-limit anchor.
+    Correlation and residual RMS/max score only those support points whose measured
+    attenuation is within `max_calibrated_db`; a model prediction above the limit
+    does not remove a large error from these metrics. Fit details also include
     calibrated limit and correction coefficients. Transmission/FVOA spans remain
     in per-device fit telemetry, but are omitted from aggregate status to fit
     the existing 1024-byte response buffers.

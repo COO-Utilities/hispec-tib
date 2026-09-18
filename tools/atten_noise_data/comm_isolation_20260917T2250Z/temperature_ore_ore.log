@@ -1,0 +1,82 @@
+__enable_irq () at /Users/jibailey/src/hispec-zephyr-mlang/modules/hal/cmsis_6/CMSIS/Core/Include/cmsis_gcc.h:800
+800	  __ASM volatile ("cpsie i" : : : "memory");
+Hardware assisted breakpoint 1 at 0x804a50a: file /Users/jibailey/src/hispec-zephyr-mlang/modules/hal/stm32/stm32cube/stm32h5xx/drivers/include/stm32h5xx_ll_usart.h, line 3318.
+[New Thread 2]
+[Thread 1 exited]
+[New Thread 536878880]
+[New Thread 536878496]
+[New Thread 536878688]
+[New Thread 536878272]
+[New Thread 536910608]
+[New Thread 536909912]
+[New Thread 536914816]
+[New Thread 536913336]
+[New Thread 536874992]
+[New Thread 536913976]
+[New Thread 536913720]
+[New Thread 536914280]
+[New Thread 536871656]
+[New Thread 536915896]
+[New Thread 536910888]
+[New Thread 536915288]
+[New Thread 536915480]
+[Switching to Thread 2]
+
+Thread 2 "Handler mode" hit Breakpoint 1, LL_USART_ClearFlag_ORE (USARTx=0x40004400) at /Users/jibailey/src/hispec-zephyr-mlang/modules/hal/stm32/stm32cube/stm32h5xx/drivers/include/stm32h5xx_ll_usart.h:3318
+3318	  WRITE_REG(USARTx->ICR, USART_ICR_ORECF);
+UART_OVERRUN_CLEAR_PATH
+r0             0x1                 1
+r1             0x8                 8
+r2             0x100               256
+r3             0x40004400          1073759232
+r4             0x20000112          536871186
+r5             0xa0000000          2684354560
+r6             0x804ce94           134532756
+r7             0x804d72c           134534956
+r8             0x804d778           134535032
+r9             0x1                 1
+r10            0x0                 0
+r11            0x0                 0
+r12            0x5ecb4             388276
+sp             0x200197f8          0x200197f8 <z_interrupt_stacks+1984>
+lr             0x804a4eb           0x804a4eb <uart_stm32_fifo_read+24>
+pc             0x804a50a           0x804a50a <uart_stm32_fifo_read+56>
+xpsr           0xa100004b          [ N C GE=0 EXC=75 T ]
+#0  LL_USART_ClearFlag_ORE (USARTx=0x40004400) at /Users/jibailey/src/hispec-zephyr-mlang/modules/hal/stm32/stm32cube/stm32h5xx/drivers/include/stm32h5xx_ll_usart.h:3318
+#1  uart_stm32_fifo_read_visitor (dev=<optimized out>, read_fn=<optimized out>, rx_data=<optimized out>, size=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/serial/uart_stm32.c:989
+#2  uart_stm32_fifo_read (dev=<optimized out>, rx_data=0x20000112 <modbus_serial_cfg+82> "\005\003", size=256) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/serial/uart_stm32.c:1013
+#3  0x08021674 in cb_handler_rx (ctx=0x20001164 <mb_ctx_tbl>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/subsys/modbus/modbus_serial.c:398
+#4  uart_cb_handler (dev=0x804ce94 <__device_dts_ord_188>, app_data=0x20001164 <mb_ctx_tbl>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/subsys/modbus/modbus_serial.c:445
+#5  0x0801f52e in _isr_wrapper () at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/arch/arm/core/cortex_m/isr_wrapper.c:81
+#6  <signal handler called>
+#7  w1_gpio_reset_bus (dev=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/w1/w1_zephyr_gpio.c:168
+#8  0x0804a88a in skip_rom (dev=0x804cfc8 <__device_dts_ord_230>, config=0x200102c4 <data_maxim_ds18b20_0>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/w1/w1_net.c:316
+#9  0x0804a8d4 in reset_select (dev=dev@entry=0x804cfc8 <__device_dts_ord_230>, config=config@entry=0x200102c4 <data_maxim_ds18b20_0>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/w1/w1_net.c:355
+#10 0x0804a94c in w1_reset_select (dev=dev@entry=0x804cfc8 <__device_dts_ord_230>, config=config@entry=0x200102c4 <data_maxim_ds18b20_0>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/w1/w1_net.c:363
+#11 0x08033c1a in ds18b20_temperature_convert (dev=0x804d0a8 <__device_dts_ord_231>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/sensor/maxim/ds18b20/ds18b20.c:185
+#12 ds18b20_sample_fetch (dev=0x804d0a8 <__device_dts_ord_231>, chan=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/drivers/sensor/maxim/ds18b20/ds18b20.c:235
+#13 0x0800541a in z_impl_sensor_sample_fetch (dev=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/include/zephyr/drivers/sensor.h:945
+#14 sensor_sample_fetch (dev=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/build/zephyr/include/generated/zephyr/syscalls/sensor.h:87
+#15 temperature_sample_once () at /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/src/housekeeping.c:145
+#16 temperature_work_handler (work=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/app/src/housekeeping.c:540
+#17 0x0803b53a in work_queue_main (workq_ptr=0x20001cc0 <app_blocking_workq>, p2=<optimized out>, p3=<optimized out>) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/kernel/work.c:757
+#18 0x0801eb7a in z_thread_entry (entry=0x803b419 <work_queue_main>, p1=0x20001cc0 <app_blocking_workq>, p2=0x0, p3=0x0) at /Users/jibailey/src/hispec-zephyr-mlang/zephyr/kernel/sys/thread_entry.c:60
+$1 = "app_blocking", '\000' <repeats 19 times>
+$2 = 0x0
+0x20000112 <modbus_serial_cfg+82>:	0x05	0x03	0x00	0x8a	0x00	0x01	0xa4	0x64
+0x2000011a <modbus_serial_cfg+90>:	0x00	0x00	0x00	0x00	0x00	0x00	0x00	0x00
+0x20000122 <modbus_serial_cfg+98>:	0x00	0x00	0x00	0x00	0x00	0x00	0x00	0x00
+$3 = 5 '\005'
+$4 = 3 '\003'
+$5 = 4
+0x200012ca <mb_ctx_tbl+358>:	0x00	0x8a	0x00	0x01	0x00	0x00	0x00	0x00
+$6 = 0
+$7 = 0x3
+$8 = false
+$9 = 0x804d0a8
+40004400:  0000002d 00000000 00000000             |...-........|
+4000441c:  006210da                               |.b..|
+Removed breakpoint at 0x0804a50a
+8 hardware breakpoints available
+No breakpoints installed
+[Inferior 1 (Remote target) detached]

@@ -1,0 +1,284 @@
+{
+  "context": {
+    "utc": "2026-09-17T00:24:15.664796+00:00",
+    "setup": "1028 nm->25 dB static->FVOA1->FVOA2->PD optic->PD; (no switches)",
+    "laser": "1028y",
+    "channel": "yj",
+    "output": "yj_ao",
+    "fiber": "M",
+    "flashed_adc_sps": 64,
+    "static_loss_db": 25.0,
+    "return_tx": 1.0,
+    "external_laser_power_mw": null,
+    "status": {
+      "fw": "f578cbd0ae4d-dirty",
+      "boots": 24,
+      "board": "tib",
+      "board_ok": true,
+      "mems_switches": 8,
+      "relay_err": 0,
+      "amb_c": 20.312,
+      "pd_on_s": 0,
+      "laserbank_on_s": 779,
+      "lastcmd": {
+        "name": "laser",
+        "src": "mqtt",
+        "t_ms": 360417
+      },
+      "ip": null,
+      "lasers": [],
+      "attens": []
+    },
+    "coeff": {
+      "dac1": {
+        "fvoa_50pct_mv": 3293.15717273,
+        "slope_inv_fvoa_mv": 0.00292573449187,
+        "max_atten_db": 68.4642690023,
+        "gain": 1.533,
+        "correction_coeff": [
+          -38.4836349,
+          -51.7249603,
+          -67.926239,
+          -36.7524147,
+          -27.4305172,
+          -12.3758669
+        ],
+        "rms_db": 0.472037022
+      },
+      "dac2": {
+        "fvoa_50pct_mv": 2950.62019298,
+        "slope_inv_fvoa_mv": 0.00241365877071,
+        "max_atten_db": 89.708732605,
+        "gain": 1.533,
+        "correction_coeff": [
+          -22.0610142,
+          -4.47504234,
+          -37.1953392,
+          0.559437811,
+          -7.95089197,
+          -6.74567747
+        ],
+        "rms_db": 2.57721103
+      }
+    },
+    "atten": {
+      "db": 94.036265,
+      "linear": 3.94796642159e-10,
+      "v1_mv": 2253.442383,
+      "v2_mv": 3299.194336,
+      "db1": 4.327533,
+      "db2": 89.708733,
+      "linear1": 0.369187264127,
+      "linear2": 1.06936690542e-09
+    },
+    "laser_status": {
+      "name": "1028y",
+      "powered": true,
+      "tec_on_s": null,
+      "emit_on_s": null,
+      "emit_total_s": null,
+      "temp_c": 27.37,
+      "i_mA": 0.0,
+      "value": 0.0,
+      "power_mw": 0.0,
+      "nominal_nm": 1028.01,
+      "tuned_nm": 1028.01,
+      "tune_nm": 0.0,
+      "tec_ma": 0.0,
+      "diode_v": 0.0,
+      "tec_v": 0.0,
+      "off_in_s": null,
+      "oc_fault": false
+    },
+    "laser_settings": {
+      "name": "1028y",
+      "model": "FLPD-1028-50-DFB-BTF",
+      "expected_serial": 8229,
+      "nominal_current_ma": 250.0,
+      "max_current_ma": 250.0,
+      "current_set_calibration_pct": 100.0,
+      "fractional_noise": 0.03,
+      "constant_noise_mw": 0.435675,
+      "threshold_current_ma": 14.5,
+      "efficiency_mw_per_ma": 0.185,
+      "wavelength_nm": 1028.01,
+      "operating_temp_range_c": [
+        17.0,
+        38.0
+      ],
+      "default_operating_temp_c": 25.0,
+      "thermistor_kohm": 10.0,
+      "isolation_db": 30.0,
+      "tec_max_current_a": 1.2,
+      "tec_pid": {
+        "p": 20,
+        "i": 1000,
+        "d": 1000
+      },
+      "disable_tec_at_autooff": true,
+      "ntc_t_coefficient_per_c": -0.044,
+      "dlambda_dT_nm_per_k": 0.12,
+      "dlambda_dA_nm_per_ma": 0.015,
+      "autooff_s": 10800,
+      "tune_nm": 0.0,
+      "emit_total_s": 9274
+    },
+    "pd_settings": {
+      "channel": "yj",
+      "noisewarn_mv": 10.0,
+      "responsivity_a_per_w": 0.93,
+      "transimpedance_v_per_a": 20000000000.0,
+      "power": "auto",
+      "autooff_s": 300,
+      "off_in_s": null
+    },
+    "dark": {
+      "channel": "yj",
+      "pending": false,
+      "duration_ms": 0,
+      "dark": {
+        "duration_ms": 2000,
+        "failed_samples": 0,
+        "mean_mv": 2.990625,
+        "mean_net_mv": 0.0,
+        "rms_mv": 0.349259820012,
+        "mean_net_err_mv": 0.055222826321,
+        "min_mv": 1.875,
+        "max_mv": 3.875,
+        "power_uw": 0.0,
+        "power_err_uw": 2.96896915704e-09
+      },
+      "lowest_dark": {
+        "duration_ms": 2000,
+        "failed_samples": 0,
+        "mean_mv": 1.70625,
+        "mean_net_mv": 0.0,
+        "rms_mv": 0.375572479689,
+        "mean_net_err_mv": 0.0593832231148,
+        "min_mv": 1.0,
+        "max_mv": 2.375,
+        "power_uw": 0.0,
+        "power_err_uw": 3.19264640402e-09
+      }
+    }
+  },
+  "program": [
+    [
+      "50 ref",
+      25,
+      25
+    ],
+    [
+      "50 left",
+      20,
+      30
+    ],
+    [
+      "50 ref repeat",
+      25,
+      25
+    ],
+    [
+      "50 right",
+      30,
+      20
+    ],
+    [
+      "60 ref",
+      25,
+      35
+    ],
+    [
+      "60 balanced",
+      30,
+      30
+    ],
+    [
+      "60 reversed",
+      35,
+      25
+    ],
+    [
+      "60 ref repeat",
+      25,
+      35
+    ]
+  ],
+  "command_model": "installed",
+  "candidate_variant": "adaptive endpoint",
+  "laser_fraction": 0.1,
+  "settle_seconds": 1.0,
+  "steps": [
+    {
+      "index": 0,
+      "label": "dark",
+      "command_db": [
+        null,
+        null
+      ],
+      "state": {
+        "db": 94.036265,
+        "linear": 3.94796642159e-10,
+        "v1_mv": 2253.442383,
+        "v2_mv": 3299.194336,
+        "db1": 4.327533,
+        "db2": 89.708733,
+        "linear1": 0.369187264127,
+        "linear2": 1.06936690542e-09
+      },
+      "start_utc": "2026-09-17T00:24:19.711932+00:00"
+    },
+    {
+      "index": 1,
+      "label": "50 ref",
+      "command_db": [
+        25,
+        25
+      ],
+      "state": {
+        "db": 50.014362,
+        "linear": 9.9669847836e-06,
+        "v1_mv": 2560.400391,
+        "v2_mv": 2423.4375,
+        "db1": 25.003588,
+        "db2": 25.010774,
+        "linear1": 0.00315966618916,
+        "linear2": 0.00315444233248
+      },
+      "start_utc": "2026-09-17T00:24:37.005880+00:00"
+    }
+  ],
+  "complete": false,
+  "dark_before": {
+    "channel": "yj",
+    "pending": false,
+    "duration_ms": 0,
+    "dark": {
+      "duration_ms": 2000,
+      "failed_samples": 0,
+      "mean_mv": 53.496875,
+      "mean_net_mv": 0.0,
+      "rms_mv": 298.813080079,
+      "mean_net_err_mv": 47.246496385,
+      "min_mv": 0.875,
+      "max_mv": 1919.375,
+      "power_uw": 0.0,
+      "power_err_uw": 2.54013421425e-06
+    },
+    "lowest_dark": {
+      "duration_ms": 2000,
+      "failed_samples": 0,
+      "mean_mv": 1.70625,
+      "mean_net_mv": 0.0,
+      "rms_mv": 0.375572479689,
+      "mean_net_err_mv": 0.0593832231148,
+      "min_mv": 1.0,
+      "max_mv": 2.375,
+      "power_uw": 0.0,
+      "power_err_uw": 3.19264640402e-09
+    }
+  },
+  "error": "RuntimeError('Overrange or unexpected autolevel; raw samples retained.')",
+  "laser_off_confirmed": true,
+  "stream_stop_confirmed": true
+}

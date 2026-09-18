@@ -228,6 +228,12 @@ USART2 needs service. DS18B20 conversion waits remain outside the bus lock.
 Versioned Zephyr patches initialize the GPIO 1-Wire bus mutexes and cover the
 initial DS18B20 presence probe and RTU client receive-work lifetime; see
 [patch workflow](../zephyr/README.md).
+Numerical attenuator fitting remains synchronous on throughput's priority-3
+thread, holding the calibration mutex. Its expensive loops check a local 10 ms
+budget between evaluations and sleep for 1 ms when due, allowing the priority-5
+Modbus RX workqueue and priority-7 blocking/health queue to run. A yield alone
+would not run those lower-priority threads. Priorities and the five-second health
+deadline are unchanged; other throughput work still waits for fitting to finish.
 Laser identity and applied configuration are retained for the bank-power interval;
 configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

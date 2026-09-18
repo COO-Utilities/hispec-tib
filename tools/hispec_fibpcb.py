@@ -2659,7 +2659,14 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if coeff is not None:
                 model_db = _atten_db_from_coeff(coeff, rec.sweep_mv)
                 rec.residual_db[:] = model_db - rec.db
-                rec.included[:] = rec.fit_candidate & np.isfinite(rec.residual_db)
+                # Eligibility includes the full sweep. The captured firmware count
+                # identifies the prefix actually used, including any boundary anchor.
+                for item in self.meta:
+                    fit = item.get("fits", {}).get(physical)
+                    if isinstance(fit, AttenuatorFitMetrics) and fit.valid:
+                        support = np.flatnonzero(rec.fit_candidate)[:int(fit.points or 0)]
+                        rec.included[support] = True
+                        break
             out[mask] = rec
         return out.view(np.recarray)
 
@@ -2702,7 +2709,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
     ):
         """Plot retained records with event shapes and classification colors.
 
-        Black outlines mark fit inclusion; hollow symbols overlay reference
+        Black outlines mark captured fitting support; hollow symbols overlay reference
         and bridge roles on the same samples.
         """
         import matplotlib.pyplot as plt
@@ -2770,7 +2777,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             )
         axes[2].set_ylabel("attenuation_db")
 
-        axes[3].set_title("fit residuals for derived fit candidates")
+        axes[3].set_title("firmware residuals at captured fitting-support points")
         axes[3].axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
         axes[3].set_ylabel("residual_db")
         axes[3].set_xlabel("FVOA drive (mV)" if x_axis == "fvoa_mv" else "DAC drive (mV)")
@@ -2826,7 +2833,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                         facecolors=color,
                         edgecolors="black",
                         linewidths=0.8,
-                        label=f"{event}/{classification} included",
+                        label=f"{event}/{classification} fit support",
                         zorder=3,
                     )
                     axes[1].scatter(
@@ -2882,7 +2889,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 s=38,
                 color="black",
                 alpha=0.85,
-                label="fit included",
+                label="captured fit support",
             )
         for segment in np.unique(np.asarray(rec.segment, dtype=int)):
             mask = np.asarray(rec.segment, dtype=int) == segment
@@ -2897,7 +2904,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     fontsize=8,
                     color="0.35",
                 )
-        axes[0].legend(loc="best", fontsize="small", ncol=2)
+        axes[0].legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize="small")
         return fig
 
     def plot_surface(

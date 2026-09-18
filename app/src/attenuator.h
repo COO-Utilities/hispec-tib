@@ -24,7 +24,7 @@
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
-/* Measured-dB ceiling for fitting and per-device automatic operation. */
+/* Per-device operating ceiling; fitting also includes the first point above it. */
 #define ATTENUATOR_CALIBRATED_MAX_DB 55.0
 /* Per-physical model residual RMS until an accepted calibration supplies it. */
 #define ATTENUATOR_DEFAULT_RMS_DB 2.0
@@ -41,7 +41,7 @@ struct attenuator_model_coeffs {
     double max_atten_db;
     double max_calibrated_db; /* Corrected-curve endpoint; distinct from leakage. */
     double gain;
-    double rms_db; /* Residual model uncertainty in dB, shared across samples. */
+    double rms_db; /* RMS within max_calibrated_db, shared across readings. */
     float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 

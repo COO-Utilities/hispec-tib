@@ -357,7 +357,7 @@ space:
 ```text
 measured_db = -10 * log10(tx)
 max_atten_db = mean(measured_db for final three usable full-sweep points)
-fit_points = usable voltage prefix before first measured_db > 55
+fit_points = usable voltage prefix including first measured_db > 55
 floor_tx = 10^(-max_atten_db / 10)
 model_tx = floor_tx + (1 - floor_tx) * ideal_model_tx
 residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv,
@@ -370,9 +370,18 @@ logical two-FVOA attenuator. Firmware estimates it from the final three usable
 full-sweep points, propagates that uncertainty into the weighted dB residuals, and
 then uses the restricted prefix to optimize only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
-The fitting ceiling is `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB per physical FVOA).
+The operating ceiling is `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB per physical FVOA).
+Fitting stays synchronous under the calibration mutex. The optimizer, correction
+assembly/candidate checks, full-curve validation and scoring loops check a local
+10 ms CPU budget between numerical evaluations and sleep for 1 ms when due.
+This lets lower-priority UART RX and communication-health work run without
+changing fit order, arithmetic, acceptance rules, priorities or health deadlines.
+The sleep holds no hardware I/O lock. Other work on the throughput thread still
+waits for the fit to finish; this is not asynchronous calibration.
+
 Acquisition still covers the complete voltage range. Both the base fit and the
-optional six-term Chebyshev correction use the same retained prefix. The
+optional Chebyshev correction use the same retained prefix, including the first
+above-ceiling point so the boundary has measured support on both sides. The
 correction keeps its full-floor coordinates and is not forced to zero at 55 dB:
 
 ```text
@@ -384,18 +393,25 @@ model_db = base_db + correction_db
 ```
 
 This correction is intentionally ringfenced from the three physical
-coefficients. It is zero near open transmission and at the modeled leakage
-floor, and it is accepted only if the corrected model remains monotonic on the
-actual sweep points, checking both value order and nonnegative local slope.
-Increasing sampled values can otherwise hide a turn before the final point.
-If the residual solve is ill-conditioned or fails that monotonicity check,
-firmware leaves `correction_coeff` as all zeros and keeps the base fit.
+coefficients. Its raw envelope is zero near open transmission and at the modeled
+leakage floor. The fitter tries six leading terms, then five, down to one,
+refitting the smaller normal equation each time and zeroing unused coefficient
+slots. It keeps the first valid final curve. The base-only model is the last
+fallback; no error-budget threshold or regularization parameter is introduced.
 
-The installed `max_calibrated_db` is the smaller of 55 dB and the corrected
-model at the retained endpoint. It is separate from `max_atten_db`, which still
-sets the inferred leakage floor. The corresponding boundary is recovered from
-the corrected curve; no cutoff voltage is persisted. Above it, the polynomial
-is replaced by a fixed continuation, with `B` the base model, `L` its floor,
+Every candidate receives its calibrated limit and continuation before validation.
+Firmware checks finite, nonnegative, ordered values and nonnegative analytic slopes
+on a 1 mV grid across the drive range, at retained fit voltages, and at the calibrated
+join and its adjacent float voltages. This covers the open region even when clipping
+left no fit points there. Increasing sampled values alone can hide a turn between
+points. The grid is a numerical check, not a proof between its locations. Unused raw
+polynomial behavior above the calibrated endpoint does not reject a valid continuation.
+
+The installed `max_calibrated_db` is the minimum of 55 dB, the last supporting
+measurement, its corrected-model prediction, and the leakage floor. It is separate
+from `max_atten_db`, which still sets that inferred floor. The corresponding boundary
+is recovered from the corrected curve; no cutoff voltage is persisted. Above it,
+the polynomial is replaced by a fixed continuation, with `B` the base model, `L` its floor,
 and `Bc + Cc = max_calibrated_db`:
 
 ```text
@@ -408,12 +424,18 @@ introduced. All-zero correction coefficients recover the base model exactly.
 Forward evaluation, inverse commands and local sensitivities use this same
 piecewise curve.
 
-The final, unweighted `sqrt(sum(residual_db^2) / point_count)` is installed as
-`rms_db` with each accepted physical model. It describes empirical model error
-across the restricted fitted range. The same stored RMS remains in runtime
-uncertainty estimates, but it does not establish accuracy above `max_calibrated_db`.
-It is not a parameter standard error and is not divided by sqrt(point count)
-again. This can be conservative in regions with smaller residuals.
+The final, unweighted `sqrt(sum(residual_db^2) / scored_count)` is installed as
+`rms_db` with each accepted physical model. Correlation and maximum absolute
+residual use the same scored points: fitting-support measurements whose **measured**
+attenuation is within `max_calibrated_db`. The extra above-limit point constrains
+the fit but does not enter these metrics. An in-range measurement with an
+out-of-range prediction still contributes its full error. The reported `points`
+and transmission/voltage spans describe all fitting support, including that anchor.
+
+The same stored RMS remains in runtime uncertainty estimates, but it does not
+establish accuracy above `max_calibrated_db`. It is not a parameter standard error
+and is not divided by sqrt(point count) again. This can be conservative in regions
+with smaller residuals.
 
 Both physical fits must be accepted before installation. Failure leaves the
 previous coefficients and their RMS unchanged. Persistence saves RMS with the
@@ -484,13 +506,16 @@ a failed shutdown retains its identity for an explicit stop/restart. Numerical
 fitting needs no PD power and releases inhibition when acquisition completes.
 
 All six coefficients (`T0` through `T5`) participate in the basis, evaluator, and
-analytic derivatives. A singular/insufficient-data correction or failed
-monotonicity check emits `atten_correction_rejected`; the documented base-fit
-fallback remains available. `fit=ok` indicates an accepted final model and does
-not alone establish that optional correction was accepted; inspect its
+analytic derivatives; reduced-order fits zero the unused high-order slots.
+`atten_correction_rejected` summarizes a reduced-order or base-only result once per
+physical device, including the selected term count and first failed check, voltage,
+value and slope. The summary also goes to the local log. `terms=0` is base-only;
+`terms=-1` means no valid candidate, including the base model. `fit=ok` indicates an
+accepted final model and does not alone establish that optional correction was accepted; inspect its
 coefficients and warnings. The earlier move to NVS schema 13 reset the old
-four-term settings layout. This calibrated-range update keeps schema 13 and
-rejects only old attenuator records by size, as described above. Saved notebook
+four-term settings layout. The earlier calibrated-range update kept schema 13 and
+rejected old attenuator records by size. This fitting change preserves the current
+layout; recalibration is needed to obtain the new fits. Saved notebook
 outputs remain historical captures; reload the host module after updating firmware.
 
 ### Compact calibration status
