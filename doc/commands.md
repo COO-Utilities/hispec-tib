@@ -993,6 +993,9 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     throughput state. Read-only fields include `model`, `thermistor_kohm`,
     `isolation_db`, `ntc_t_coefficient_per_c`, and `emit_total_s`. Use `laser/tune`
     to set `tune_nm`; `name` belongs outside the settings object as the selector.
+  - `ntc_t_coefficient_per_c` is `null` when the diode datasheet provides no
+    value (1270j, both 1430 channels, and 1510h). The Python client represents
+    this unavailable coefficient as NumPy `NaN`.
   - Non-Driver settings:
     - `min_autolevel_current_ma`
     - `nominal_current_ma`

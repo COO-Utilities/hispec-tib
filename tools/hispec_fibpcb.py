@@ -4207,6 +4207,7 @@ class HispecFibPcb:
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
         still applies; restart measurement after changing calibration.
+        An unavailable ntc_t_coefficient_per_c is returned as NumPy NaN.
         """
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
@@ -4268,7 +4269,7 @@ class HispecFibPcb:
                 tec_max_current_a=float(settings["tec_max_current_a"]),
                 tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
                 disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
-                ntc_t_coefficient_per_c=float(settings["ntc_t_coefficient_per_c"]),
+                ntc_t_coefficient_per_c=_float_or_nan(settings["ntc_t_coefficient_per_c"]),
                 dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
                 dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
                 autooff_s=int(settings["autooff_s"]),

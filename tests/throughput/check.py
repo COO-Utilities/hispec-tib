@@ -311,6 +311,7 @@ source = r'''
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include "laser_properties.h"
@@ -373,8 +374,11 @@ static int hispec_laser_validate_channel_settings(enum hispec_laser_id id,struct
  return validate_laser_settings(&(struct hispec_laser_driver_profile){.properties=default_laser_props[id]},s);
 }
 #define snprintk snprintf
-static const char *hispec_laser_name(enum hispec_laser_id id){(void)id;return "1028y";}
 '''
+source += block('lasers.c', 'static const struct hispec_laser_driver_profile laser_profiles[] =') + ';\n'
+source += 'static const char *hispec_laser_name(enum hispec_laser_id id){return laser_profiles[id].name;}\n'
+for marker in ('int coo_json_vappend(', 'int coo_json_append(', 'int coo_json_append_float_or_null('):
+    source += block(ROOT/'lib/coo_commons/json_utils.c', marker)
 for marker in ['static uint16_t laser_policy_nvs_id(', 'static uint16_t laser_total_nvs_id(',
                'static bool double_in_range(', 'static bool app_nvs_read_exact(', 'static void app_nvs_load_laser(']:
     source += block('app_settings.c',marker)
@@ -403,6 +407,8 @@ int main(void) {
         char payload[1024];
         assert(!laser_settings_payload(payload,sizeof(payload),i,s));
         assert(strstr(payload,"\"min_autolevel_current_ma\":"));
+        puts(payload);
+        assert(laser_settings_payload(payload,strlen(payload),i,s)==-ENOSPC);
         assert(laser_settings_payload(payload,32,i,s)==-ENOSPC);
         laser_settings[i]=*s;
         laser_output_estimate[i].valid=true;
@@ -453,14 +459,14 @@ int main(void) {
     }
     policy_size=sizeof(nvs_policy);app_nvs_load_laser(&loaded);
     assert(loaded.laser.channel[0].min_autolevel_current_ma==20 && loaded.laser.channel[0].total_emitting_s==1234);
-    puts("laser uncertainty C regressions passed");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     cfile, exe = Path(tmp)/'laser.c', Path(tmp)/'laser'
     cfile.write_text(source)
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'app/src'),str(cfile),'-lm','-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+    laser_wire_lines = subprocess.check_output([str(exe)],text=True).splitlines()
+print('laser uncertainty C regressions passed')
 
 # Host command fields and telemetry remain usable in both documented formats.
 import sys
@@ -482,14 +488,22 @@ for key in ('fractional_noise','constant_noise_mw','min_autolevel_current_ma'):
             pass
         else:
             raise AssertionError(f'accepted invalid {key}: {value}')
-settings = {field.name:0 for field in dataclasses.fields(host.LaserSettings)}
-settings.update(model='test',expected_serial=123,tec_pid={'p':0,'i':0,'d':0},
-                operating_temp_range_c=[17,38],fractional_noise=0.03,constant_noise_mw=0.435675,
-                min_autolevel_current_ma=14.6)
-client._request_json = lambda command, payload: {'name':payload['name'], 'settings':settings}
-result = client.laser_settings(host.LASER_NAMES[0])
-assert result.fractional_noise == 0.03 and result.constant_noise_mw == 0.435675
-assert result.min_autolevel_current_ma == 14.6
+# Decode the actual C responses locally; no transport is constructed.
+assert len(laser_wire_lines) == len(host.LASER_NAMES)
+for name, wire in zip(host.LASER_NAMES, laser_wire_lines):
+    reply = json.loads(wire)
+    json.dumps(reply, allow_nan=False)  # Reject every non-JSON numeric value.
+    assert reply['name'] == name
+    client._request = lambda key, payload: host._decode_ok_or_raise(f'cmd/hsfib-tib/resp/{key}', wire.encode())
+    result = client.laser_settings(name)
+    assert result.name == name
+    if name in ('1028y', '2330k'):
+        assert result.ntc_t_coefficient_per_c == -0.044
+    else:
+        assert reply['settings']['ntc_t_coefficient_per_c'] is None
+        assert result.ntc_t_coefficient_per_c != result.ntc_t_coefficient_per_c
+    for field in ('fractional_noise', 'constant_noise_mw', 'min_autolevel_current_ma'):
+        assert getattr(result, field) == reply['settings'][field]
 assert client.laser_settings('1028y',min_autolevel_current_ma=15)[1]['settings']=={'min_autolevel_current_ma':15}
 for i in range(0,len(sample_wire_lines),2):
     jsample=host.decode_throughput_payload(sample_wire_lines[i])

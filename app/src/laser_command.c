@@ -428,14 +428,15 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	return coo_cmd_ok(out, cmd);
 }
 
+/* Format a settings snapshot; unavailable datasheet values remain JSON null. */
 static int laser_settings_payload(char *payload, size_t payload_len,
 				  enum hispec_laser_id id,
 				  const struct app_laser_channel_settings *settings)
 {
 	const laserprops_t *p = &settings->properties;
-	int written;
+	size_t off = 0U;
 
-	written = snprintk(payload, payload_len,
+	if (coo_json_append(payload, payload_len, &off,
 		"{\"name\":\"%s\",\"settings\":{"
 		"\"model\":\"%s\",\"expected_serial\":%u,"
 		"\"nominal_current_ma\":%.3f,"
@@ -448,11 +449,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"isolation_db\":%.2f,\"tec_max_current_a\":%.3f,"
 		"\"tec_pid\":{\"p\":%u,\"i\":%u,\"d\":%u},"
 		"\"disable_tec_at_autooff\":%s,"
-		"\"ntc_t_coefficient_per_c\":%.6f,"
-		"\"dlambda_dT_nm_per_k\":%.6f,"
-		"\"dlambda_dA_nm_per_ma\":%.6f,"
-		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
-		"\"emit_total_s\":%llu}}",
+		"\"ntc_t_coefficient_per_c\":",
 		hispec_laser_name(id), p->model_number,
 		settings->expected_serial,
 		(double)p->nominal_current_ma,
@@ -470,15 +467,23 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->isolation_db,
 		(double)p->tec_max_current_a,
 		p->tec_pid.kp, p->tec_pid.ki, p->tec_pid.kd,
-		settings->disable_tec_at_autooff ? "true" : "false",
-		(double)p->ntc_t_coefficient_per_c,
+		settings->disable_tec_at_autooff ? "true" : "false") != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  p->ntc_t_coefficient_per_c, 6) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+		",\"dlambda_dT_nm_per_k\":%.6f,"
+		"\"dlambda_dA_nm_per_ma\":%.6f,"
+		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
+		"\"emit_total_s\":%llu}}",
 		(double)p->dlambda_dT_nm_per_k,
 		(double)p->dlambda_dA_nm_per_ma,
 		settings->autooff_s,
 		(double)settings->tune_delta_nm,
-		(unsigned long long)settings->total_emitting_s);
+		(unsigned long long)settings->total_emitting_s) != 0) {
+		return -ENOSPC;
+	}
 
-	return written >= 0 && written < (int)payload_len ? 0 : -ENOSPC;
+	return 0;
 }
 
 int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
