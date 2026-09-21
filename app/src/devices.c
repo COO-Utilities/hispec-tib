@@ -60,8 +60,8 @@ struct mems_router router;
 
 
 static const char *const tib_switch_names[8] = {
-	"yj_forward_retro", "yj_cal_laser", "yj_ao_fei",
-	"hk_forward_retro", "hk_cal_laser", "hk_ao_fei",
+	"yj_forward_retro", "yj_laser_cal", "yj_ao_fei",
+	"hk_forward_retro", "hk_laser_cal", "hk_ao_fei",
 	"yj_mm_sm", "hk_mm_sm",
 };
 
@@ -377,29 +377,29 @@ void devices_queue_boot_reset_telemetry(void)
 	  .steps = (steps_), .num_steps = ARRAY_SIZE(steps_) }
 
 static const struct mems_route_step tib_yj_1430_to_yj_ao[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_forward_retro", 'A'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_1430_to_yj_fei[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_forward_retro", 'A'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_cal_to_yj_ao[] = {
-	{"yj_cal_laser", 'A'},
+	{"yj_laser_cal", 'B'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_cal_to_yj_fei[] = {
-	{"yj_cal_laser", 'A'},
+	{"yj_laser_cal", 'B'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_laser_to_yj_ao[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_laser_to_yj_fei[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_mm_to_yj_pd[] = {
@@ -409,29 +409,29 @@ static const struct mems_route_step tib_yj_sm_to_yj_pd[] = {
 	{"yj_mm_sm", 'B'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_ao[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_forward_retro", 'A'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_fei[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_forward_retro", 'A'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_cal_to_hk_ao[] = {
-	{"hk_cal_laser", 'A'},
+	{"hk_laser_cal", 'B'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_cal_to_hk_fei[] = {
-	{"hk_cal_laser", 'A'},
+	{"hk_laser_cal", 'B'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_laser_to_hk_ao[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_laser_to_hk_fei[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_mm_to_hk_pd[] = {

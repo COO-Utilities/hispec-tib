@@ -97,7 +97,7 @@ No-payload serial request form is just the key:
 
 ```text
 status
-mems/yj_cal_laser
+mems/yj_laser_cal
 mems/split/yj
 ```
 
@@ -106,7 +106,7 @@ Requests with payload use the key followed by a payload. There are no `get` or
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
+mems/yj_laser_cal state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
 mems/split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 stop_in_s=300
 laser/bankpower/override_on
 ```
@@ -118,7 +118,7 @@ Payload rules:
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
   `state=A off_in_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
-  `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
+  `serialguard off`, `serialguard 60`, or `mems/yj_laser_cal A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
 - Overlong command keys and shorthand tokens are rejected rather than truncated.
 
@@ -414,11 +414,11 @@ these values feed the existing throughput and splitting calculations.
     "state": "A|B|?"
   }
   ```
-  For example, `mems/yj_cal_laser state=B` returns:
+  For example, `mems/yj_laser_cal state=B` returns:
   ```json
   {"state":"B"}
   ```
-  and `mems/yj_cal_laser state=A` returns:
+  and `mems/yj_laser_cal state=A` returns:
   ```json
   {"state":"A"}
   ```

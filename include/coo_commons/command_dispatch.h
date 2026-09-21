@@ -336,7 +336,7 @@ const char *coo_cmd_key_suffix_after(const char *key, const char *prefix);
 /**
  * Copy one slash-delimited suffix segment after a command-key prefix.
  *
- * Returns 0 for keys like `mems/yj_cal_laser` with prefix `mems`. Exact
+ * Returns 0 for keys like `mems/yj_laser_cal` with prefix `mems`. Exact
  * matches, nested suffixes, missing inputs, and too-small output buffers fail
  * with a negative errno value.
  */

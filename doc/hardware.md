@@ -86,12 +86,12 @@ PCAL assignments:
   - sw8 A B: P0 0, 1 / gpio 0, 1 
 
 - TIB:
-  - sw1: FFSW, SW1_TIBB1 YJATC laser retro or forward
-  - sw2: FFSW, SW1_TIBB2 YJ CAL/Laser selector
-  - sw3: FFSW, SW1_TIBB3 YJ FEI/AO selector
-  - sw4: FFSW, SW1_TIBR1 HKATC laser retro or forward
-  - sw5: FFSW, SW1_TIBR2 HK CAL/Laser selector
-  - sw6: FFSW, SW1_TIBR3 HK FEI/AO selector
+  - sw1: FFSW, SW1_TIBB1 YJATC laser forward/retro selector
+  - sw2: FFSW, SW1_TIBB2 YJ Laser/CAL selector
+  - sw3: FFSW, SW1_TIBB3 YJ AO/FEI selector
+  - sw4: FFSW, SW1_TIBR1 HKATC laser forward/retro selector
+  - sw5: FFSW, SW1_TIBR2 HK Laser/CAL selector
+  - sw6: FFSW, SW1_TIBR3 HK AO/FEI selector
   - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
   - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
 - AS

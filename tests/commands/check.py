@@ -501,7 +501,7 @@ int main(void) {
     request("laser/bankpower/","{}");assert(runtime_classify(&runtime,&cmd)==COO_CMD_EFFECT);
     request("laser/bankheater/","{}");assert(runtime_classify(&runtime,&cmd)==COO_CMD_EFFECT);
     request("laser/typo","{}");error_response(runtime_execute_default(&runtime,&cmd,&out),"Unknown request");
-    request("mems/yj_cal_laser","{\"value\":\"A\"}");
+    request("mems/yj_laser_cal","{\"value\":\"B\"}");
     error_response(runtime_execute_default(&runtime,&cmd,&out),"unknown argument");
 
     char long_token[300],normalized[1024];memset(long_token,'1',sizeof(long_token)-1);long_token[sizeof(long_token)-1]=0;
@@ -513,7 +513,7 @@ int main(void) {
     assert(coo_cmd_normalize_serial_payload("time",long_token,NULL,NULL,normalized,sizeof(normalized))!=0);
     memset(long_token,'k',COO_CMD_KEY_MAX);long_token[COO_CMD_KEY_MAX]=0;
     coo_cmd_runtime_handle_serial_line(&runtime,long_token);error_response(0,"command key too long");assert(queued==0);
-    char serial[]="mems/yj_cal_laser A 0.5 30";
+    char serial[]="mems/yj_laser_cal B 0.5 30";
     coo_cmd_runtime_handle_serial_line(&runtime,serial);assert(queued==1);
     assert(strstr(cmd.payload,"\"state\":\"A\"") && strstr(cmd.payload,"\"off_in_s\":30"));
     request("reboot","{\"erase_non_ip_settings\":false}");
