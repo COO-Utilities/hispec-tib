@@ -1,8 +1,10 @@
-"""Command regressions using production C bodies and the real Zephyr JSON parser.
+"""Offline command regressions using production C bodies and the Zephyr JSON parser.
 
 Run from the workspace: ./.venv/bin/python hispec-tib/tests/commands/check.py.
+Only local C executables run; no PCB client, MQTT connection, or serial port is used.
 Domain operations, hardware, scheduling, and persistence are stubbed in handler checks.
 The catalog check stubs handlers to prove invalid keys never reach them.
+Importing this file does not compile or run the checks.
 """
 from pathlib import Path
 import re
@@ -166,16 +168,22 @@ static void sntp_sync_schedule_now(void) {++notes;}
 '''
 source += functions(COMMAND, 'static int command_extract_ipv4(', 'int ip_set(')
 source += functions('app/src/lasers.h', 'enum hispec_laser_id {', 'struct hispec_laser_driver_profile {')
-source += functions('app/src/lasers.c', 'static bool float_is_valid(', 'static int validate_laser_settings(')
+for file, macro in (
+    ('app/src/maiman.h', 'DIVIDER_CURRENT'),
+    ('app/src/throughput_monitor.h', 'THROUGHPUT_DEFAULT_INITIAL_LEVEL'),
+):
+    source += next(line for line in (ROOT / file).read_text().splitlines()
+                   if line.startswith('#define ' + macro + ' ')) + '\n'
+source += functions('app/src/lasers.c', 'static bool float_is_valid(',
+    'double hispec_laser_quantize_current_ma(', 'static int validate_laser_settings(')
 source += r'''
 static int hispec_laser_id_from_name(const char *name,enum hispec_laser_id *id)
 {if(strcmp(name,"1028y"))return -EINVAL;*id=HISPEC_LASER_1028_Y;return 0;}
 static int hispec_laser_get_channel_settings(enum hispec_laser_id id,struct app_laser_channel_settings *s)
 {(void)id;*s=(struct app_laser_channel_settings){.properties=LASER_1028,.expected_serial=1,.current_set_calibration_pct=100};return 0;}
-static int hispec_laser_validate_channel_settings(enum hispec_laser_id id,const struct app_laser_channel_settings *s)
+static int hispec_laser_validate_channel_settings(enum hispec_laser_id id,struct app_laser_channel_settings *s)
 {(void)id;return validate_laser_settings(&(struct hispec_laser_driver_profile){.properties=&LASER_1028},s);}
-static void throughput_monitor_note_laser_changed(enum hispec_laser_id id,bool stop) {(void)id;assert(stop);++notes;}
-static int hispec_laser_update_channel_settings(enum hispec_laser_id id,const struct app_laser_channel_settings *s,bool p)
+static int throughput_monitor_update_laser_settings(enum hispec_laser_id id,const struct app_laser_channel_settings *s,bool p)
 {(void)id;(void)s;(void)p;++writes;return fail_io?-EIO:0;}
 '''
 source += functions(LASER, 'static int laser_cmd_error_rc(', 'static int command_laser_id_from_payload(', 'int laser_settings_set(')
@@ -304,7 +312,7 @@ int main(void) {
     request("laser/settings","{\"name\":\"1028y\",\"persist\":true}");
     error_response(laser_settings_set(&cmd,&out),"settings object");assert(writes==0 && notes==0);
     request("laser/settings","{\"name\":\"1028y\",\"settings\":{\"autooff_s\":30}}");
-    assert(laser_settings_set(&cmd,&out)==0 && out.msg_type==COO_CMD_RESP_OK && writes==1 && notes==1);
+    assert(laser_settings_set(&cmd,&out)==0 && out.msg_type==COO_CMD_RESP_OK && writes==1 && notes==0);
     writes=notes=0;
     request("laser","{\"name\":\"1028y\"}");assert(classify_laser_request(&cmd,NULL,NULL)==COO_CMD_QUERY);
     request("laser","{\"name\":\"1028y\",\"autooff_s\":1}");assert(classify_laser_request(&cmd,NULL,NULL)==COO_CMD_EFFECT);
@@ -374,8 +382,6 @@ def run(name, text, extra_flags=()):
         subprocess.run([str(exe)], check=True)
 
 
-run('handlers', source)
-
 # Unsupported optional IP features retain their partial-response behavior.
 ip_disabled = source[:source.index('int main(void) {')]
 for feature in ('CONFIG_NET_DHCPV4', 'CONFIG_DNS_RESOLVER', 'CONFIG_SNTP'):
@@ -388,9 +394,6 @@ int main(void) {
     puts("unsupported IP feature partial-response check passed");
 }
 '''
-# The existing ip_set keeps ntp_changed when SNTP is compiled out.
-run('ip_disabled', ip_disabled, ('-Wno-unused-but-set-variable',))
-
 catalog = common + r'''
 #define CONFIG_COO_CMD_REBOOT 1
 #define CONFIG_COO_CMD_SERIAL_GUARD 1
@@ -501,7 +504,7 @@ int main(void) {
     request("laser/bankpower/","{}");assert(runtime_classify(&runtime,&cmd)==COO_CMD_EFFECT);
     request("laser/bankheater/","{}");assert(runtime_classify(&runtime,&cmd)==COO_CMD_EFFECT);
     request("laser/typo","{}");error_response(runtime_execute_default(&runtime,&cmd,&out),"Unknown request");
-    request("mems/yj_laser_cal","{\"value\":\"B\"}");
+    request("mems/test_switch","{\"value\":\"B\"}");
     error_response(runtime_execute_default(&runtime,&cmd,&out),"unknown argument");
 
     char long_token[300],normalized[1024];memset(long_token,'1',sizeof(long_token)-1);long_token[sizeof(long_token)-1]=0;
@@ -513,13 +516,19 @@ int main(void) {
     assert(coo_cmd_normalize_serial_payload("time",long_token,NULL,NULL,normalized,sizeof(normalized))!=0);
     memset(long_token,'k',COO_CMD_KEY_MAX);long_token[COO_CMD_KEY_MAX]=0;
     coo_cmd_runtime_handle_serial_line(&runtime,long_token);error_response(0,"command key too long");assert(queued==0);
-    char serial[]="mems/yj_laser_cal B 0.5 30";
-    coo_cmd_runtime_handle_serial_line(&runtime,serial);assert(queued==1);
-    assert(strstr(cmd.payload,"\"state\":\"A\"") && strstr(cmd.payload,"\"off_in_s\":30"));
+    /* Fictitious switch; the stub queue records the parsed request only. */
+    char serial[]="mems/test_switch A 0.5 30";
+    coo_cmd_runtime_handle_serial_line(&runtime,serial);assert(queued==1 && calls==0);
+    assert(strstr(cmd.payload,"\"state\":\"A\"") && strstr(cmd.payload,"\"duty_cycle\":0.5") &&
+           strstr(cmd.payload,"\"off_in_s\":30"));
     request("reboot","{\"erase_non_ip_settings\":false}");
     assert(runtime_handle_builtin_request(&runtime,&cmd,&out));
     assert(out.msg_type==COO_CMD_RESP_OK && runtime.reboot_pending && scheduled==1);
     printf("catalog/serial/builtin checks passed (%u command rows, %u rejection cases)\n",endpoints,checks);
 }
 '''
-run('catalog', catalog)
+if __name__ == '__main__':
+    run('handlers', source)
+    # The existing ip_set keeps ntp_changed when SNTP is compiled out.
+    run('ip_disabled', ip_disabled, ('-Wno-unused-but-set-variable',))
+    run('catalog', catalog)
