@@ -1,6 +1,7 @@
 """Host checks for production C arithmetic/control with ADC and actuator I/O stubbed.
 
 Run with the workspace venv: python tests/throughput/check.py.
+Optional positional .npz paths replay additional lab captures through the C fitter.
 Function bodies and data layouts are read from firmware so these checks exercise
 its implementation; this is not a second Python model of the control loop.
 """
@@ -976,7 +977,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(exe)],check=True)
 print('Recorded between-sample correction failure and reduced-order curve validation passed')
 
-# Replay the recorded 199-point acquisition through the production fitter. Clock
+# Replay recorded acquisitions through the production fitter. Clock
 # reads simulate elapsed work; sleep is counted, not a host scheduling claim.
 # Both runs must have identical coefficients, metrics, acceptance and warnings.
 fit_replay_source += '\n#include <errno.h>\n#define MAX(a,b) fmax(a,b)\n#define MIN(a,b) fmin(a,b)\n'
@@ -1017,28 +1018,25 @@ for marker in ('static bool record_is_fit_candidate(', 'static int build_segment
                'static int solve_correction_normal_equation(', 'static int fit_correction_coeff_locked(',
                'static int fit_one_physical_locked('):
     fit_replay_source += block('attenuator_calibration.c', marker)
-fixture = np.load(ROOT/'tests/throughput/calibration_replay.npz', allow_pickle=False)
-meta = json.loads(str(fixture['metadata']))
-fit_replay_source += 'static void load_records(void){\n'
-for physical,name in enumerate(('dac1','dac2')):
-    rows = fixture['records'][fixture['records']['physical']==name]
-    m = meta[name]
-    fit_replay_source += (f'cal.record_count[{physical}]={len(rows)};'
-                          f'cal.reference_record_index[{physical}]={m["reference_record"]};'
-                          f'cal.reference_record_index_valid[{physical}]=true;'
-                          f'cal.bridge_count[{physical}]={m["bridge_count"]};\n')
-    for i,bridge in enumerate(m['bridges']):
-        fit_replay_source += f'cal.bridges[{physical}][{i}]=(struct atten_cal_bridge){{{bridge["before_record"]},{bridge["after_record"]}}};\n'
-    for row in rows:
-        values = {key:format(float(row[key]), '.17g') for key in
-                  ('sweep_mv','other_mv','laser_pct','signal_mv','signal_err_mv','max_mv','segment')}
-        values.update(event='ATTEN_CAL_EVENT_'+row['event'].upper(),
-                      classification='ATTEN_CAL_CLASSIFICATION_'+row['classification'].upper())
-        fit_replay_source += f'cal.records[{physical}][{row["record"]}]=(struct atten_cal_record){{'+','.join(f'.{key}={value}' for key,value in values.items())+'};\n'
 fit_replay_source += r'''
- attenuators[0].coeff1.gain=attenuators[0].coeff2.gain=1.533;
+static void check_signed_support(void){
+ memset(&cal,0,sizeof(cal));cal.record_count[0]=10;cal.reference_record_index_valid[0]=true;
+ cal.records[0][0]=(struct atten_cal_record){.event=ATTEN_CAL_EVENT_INITIAL_PROBE,
+  .classification=ATTEN_CAL_CLASSIFICATION_OK,.signal_mv=100,.signal_err_mv=1};
+ const float tx[]={1,1.04f,.96f,.8f,.5f,.1f,1.04f,1e-12f,1.04f};
+ for(int i=1;i<10;i++)cal.records[0][i]=(struct atten_cal_record){.event=ATTEN_CAL_EVENT_POINT,
+  .classification=ATTEN_CAL_CLASSIFICATION_OK,.signal_mv=100*tx[i-1],.signal_err_mv=1};
+ cal.records[0][7].classification=ATTEN_CAL_CLASSIFICATION_SATURATED;
+ cal.records[0][9].classification=ATTEN_CAL_CLASSIFICATION_BELOW_SNR;
+ uint8_t count=0;assert(!build_fit_points_locked(0,cal_fit_points,&count) && count==6);
+ for(int i=0;i<6;i++)assert(cal_fit_points[i].record_index==i+1);
+ assert(cal_fit_points[0].measured_db==0 && cal_fit_points[2].measured_db>0);
+ assert(fabs(cal_fit_points[1].measured_db+10*log10(1.04))<1e-6);
 }
+'''
+fit_replay_main = r'''
 int main(void){
+ check_signed_support();
  load_records();
  struct attenuator_calibration_fit_metrics baseline[2],paused[2];
  int baseline_rc[2];char baseline_warnings[4][160];
@@ -1054,17 +1052,71 @@ int main(void){
   assert(paused[i].valid && paused[i].accepted);
   printf("Replay dac%d: points=%u, rms_db=%.9g, identical with pauses (%d sleeps)\n",
          i+1,paused[i].points,paused[i].rms_db,fit_sleeps-before);
+  const struct attenuator_calibration_fit_metrics *f=&paused[i];
+  printf("FIT %d %u %.17g %.17g %.17g %.17g %.17g %.17g %.17g",i+1,f->points,
+         f->fvoa_50pct_mv,f->slope_inv_fvoa_mv,f->max_atten_db,f->max_calibrated_db,
+         f->correlation,f->rms_db,f->max_abs_db);
+  for(unsigned j=0;j<ATTENUATOR_MODEL_CORRECTION_TERMS;j++)printf(" %.9g",(double)f->correction_coeff[j]);
+  puts("");
  }
  assert(warning_count==baseline_warning_count && !memcmp(warnings,baseline_warnings,sizeof(warnings)));
  return 0;
 }
 '''
-with tempfile.TemporaryDirectory() as tmp:
-    cfile,exe=Path(tmp)/'fit_replay.c',Path(tmp)/'fit_replay'
-    cfile.write_text(fit_replay_source)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-lm','-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
-print('Recorded calibration pause/no-pause coefficients, metrics, acceptance and warnings match exactly')
+np.testing.assert_allclose(host._atten_db_from_tx([.96,1,1.04]), -10*np.log10([.96,1,1.04]))
+db,_ = host._atten_db_with_sigma([96,100,104],[1,1,1],reference_mv=100)
+np.testing.assert_allclose(db, -10*np.log10([.96,1,1.04]))
+for fixture_path in (ROOT/'tests/throughput/calibration_replay.npz', *(Path(p) for p in sys.argv[1:])):
+    with np.load(fixture_path, allow_pickle=False) as fixture:
+        records=fixture['records'].copy();saved=json.loads(str(fixture['metadata']))
+    meta=({m['physical']:m for m in saved['meta'] if 'reference_record' in m}
+          if 'meta' in saved else saved)
+    replay=fit_replay_source+'static void load_records(void){memset(&cal,0,sizeof(cal));\n'
+    for physical,name in enumerate(('dac1','dac2')):
+        rows=records[records['physical']==name];m=meta[name]
+        replay+=(f'cal.record_count[{physical}]={len(rows)};'
+                 f'cal.reference_record_index[{physical}]={m["reference_record"]};'
+                 f'cal.reference_record_index_valid[{physical}]=true;'
+                 f'cal.bridge_count[{physical}]={m["bridge_count"]};\n')
+        for i,bridge in enumerate(m['bridges']):
+            replay+=f'cal.bridges[{physical}][{i}]=(struct atten_cal_bridge){{{bridge["before_record"]},{bridge["after_record"]}}};\n'
+        for row in rows:
+            values={key:format(float(row[key]),'.17g') for key in
+                    ('sweep_mv','other_mv','laser_pct','signal_mv','signal_err_mv','max_mv','segment')}
+            values.update(event='ATTEN_CAL_EVENT_'+row['event'].upper(),
+                          classification='ATTEN_CAL_CLASSIFICATION_'+row['classification'].upper())
+            replay+=f'cal.records[{physical}][{row["record"]}]=(struct atten_cal_record){{'+','.join(f'.{key}={value}' for key,value in values.items())+'};\n'
+    replay+='attenuators[0].coeff1.gain=attenuators[0].coeff2.gain=1.533;\n}\n'+fit_replay_main
+    with tempfile.TemporaryDirectory() as tmp:
+        cfile,exe=Path(tmp)/'fit_replay.c',Path(tmp)/'fit_replay'
+        cfile.write_text(replay)
+        subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(cfile),'-lm','-o',str(exe)],check=True)
+        result=subprocess.run([str(exe)],check=True,capture_output=True,text=True)
+    print(fixture_path.name+'\n'+result.stdout,end='')
+    fits={}
+    for line in result.stdout.splitlines():
+        if not line.startswith('FIT '): continue
+        parts=line.split();values=list(map(float,parts[3:]))
+        fields=('fvoa_50pct_mv','slope_inv_fvoa_mv','max_atten_db','max_calibrated_db','corr','rms_db','max_abs_db')
+        fits['dac'+parts[1]]=host.AttenuatorFitMetrics(valid=True,accepted=True,points=int(parts[2]),
+            **dict(zip(fields,values[:7])),correction_coeff=tuple(values[7:]))
+    host_meta=[dict(m,physical=name,record_chunk_count=1,reference_valid=True) for name,m in meta.items()]
+    dataset=host.AttenuatorCalibrationDataset(records,tuple([{'fits':fits},*host_meta]))
+    for name,fit in fits.items():
+        points=dataset.physical(name).derived()
+        assert points.included.sum()==fit.points
+        assert not np.any(points.included & (points.classification!='ok'))
+        scored=points[points.included & (np.asarray(points.db,dtype=np.float32)<=fit.max_calibrated_db)]
+        assert len(scored)<fit.points  # The measured above-limit anchor is not scored.
+        np.testing.assert_allclose(np.sqrt(np.mean(scored.residual_db**2)),fit.rms_db,atol=1e-5,rtol=1e-5)
+        np.testing.assert_allclose(np.max(np.abs(scored.residual_db)),fit.max_abs_db,atol=1e-5,rtol=1e-5)
+        curve=host._atten_db_from_coeff(dataset._fit_coeff_for_physical(name),np.arange(3301))
+        assert np.isfinite(curve).all() and curve.min()>=0 and np.diff(curve).min()>=-1e-5
+    # A captured count cannot identify support if an older eligibility rule disagrees.
+    old_fits={name:dataclasses.replace(fit,points=fit.points-1) for name,fit in fits.items()}
+    unknown=host.AttenuatorCalibrationDataset(records,tuple([{'fits':old_fits},*host_meta])).derived()
+    assert not unknown.included.any() and np.isfinite(unknown.residual_db[unknown.fit_candidate]).all()
+print('Signed fit support, recorded C fits/scoring, bounded curves and support-count mismatch checks passed')
 
 # Effective route calibration: defaults, overrides, NVS restore, and public loss precision.
 import re

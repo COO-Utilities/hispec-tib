@@ -63,7 +63,6 @@ ATTENUATOR_CALIBRATED_MAX_DB = 55.0
 ATTENUATOR_ADC_CLIP_MV = PD_ADC_FULL_SCALE_MV - PD_ADC_LSB_MV
 ATTENUATOR_CAL_SNR_USABLE = 5.0
 ATTEN_CAL_MIN_TX = 1.0e-10
-ATTEN_CAL_MAX_TX = 0.999999
 ATTEN_CAL_MIN_DB_ERR = 1.0e-6
 ATTENUATOR_FIT_MIN_SIGMA_DB = 0.5
 ATTENUATOR_CENSORED_SIGMA_DB = 3.0
@@ -712,8 +711,9 @@ def _atten_model_b_from_db(db: np.ndarray | Sequence[float]) -> np.ndarray:
 
 
 def _atten_db_from_tx(tx: np.ndarray | Sequence[float]) -> np.ndarray:
+    """Keep signed reference-relative measurements; model bounds belong to the model."""
     with np.errstate(divide="ignore", invalid="ignore"):
-        return -10.0 * np.log10(np.clip(np.asarray(tx, dtype=float), 1.0e-300, 1.0))
+        return -10.0 * np.log10(np.maximum(np.asarray(tx, dtype=float), 1.0e-300))
 
 
 def _atten_correction_tuple(name: str, value: Sequence[float]) -> tuple[float, ...]:
@@ -784,7 +784,7 @@ def _atten_db_with_sigma(
     sigma_y = np.broadcast_to(np.asarray(sigma_mv, dtype=float), y.shape)
     sigma_y = np.where(np.isfinite(sigma_y) & (sigma_y > 0.0), sigma_y, np.nan)
     ref_sigma = max(float(reference_sigma_mv), 0.0)
-    tx = np.clip(y / reference_mv, 1.0e-300, 1.0)
+    tx = np.maximum(y / reference_mv, 1.0e-300)
     db = _atten_db_from_tx(tx)
     frac_sigma = np.sqrt((sigma_y / np.maximum(np.abs(y), 1.0e-12)) ** 2 +
                          (ref_sigma / reference_mv) ** 2)
@@ -2653,19 +2653,27 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
                 rec.fit_candidate[i] = (
                     str(row.event) == "point"
-                    and ATTEN_CAL_MIN_TX < tx < ATTEN_CAL_MAX_TX
+                    and np.isfinite(db) and np.isfinite(db_err)
+                    and tx >= ATTEN_CAL_MIN_TX
                 )
             coeff = coeffs[physical]
             if coeff is not None:
                 model_db = _atten_db_from_coeff(coeff, rec.sweep_mv)
                 rec.residual_db[:] = model_db - rec.db
-                # Eligibility includes the full sweep. The captured firmware count
-                # identifies the prefix actually used, including any boundary anchor.
+                # Eligibility includes the full sweep. Only infer captured support
+                # when its count agrees with today's prefix, including the boundary
+                # anchor. Older fits may have excluded readings above the reference;
+                # a count alone cannot identify those historical record indices.
                 for item in self.meta:
                     fit = item.get("fits", {}).get(physical)
                     if isinstance(fit, AttenuatorFitMetrics) and fit.valid:
-                        support = np.flatnonzero(rec.fit_candidate)[:int(fit.points or 0)]
-                        rec.included[support] = True
+                        support = np.flatnonzero(rec.fit_candidate)
+                        above = np.flatnonzero(np.asarray(rec.db[support], dtype=np.float32)
+                                               > ATTENUATOR_CALIBRATED_MAX_DB)
+                        if len(above):
+                            support = support[:int(above[0]) + 1]
+                        if len(support) == int(fit.points or 0):
+                            rec.included[support] = True
                         break
             out[mask] = rec
         return out.view(np.recarray)
@@ -2709,8 +2717,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
     ):
         """Plot retained records with event shapes and classification colors.
 
-        Black outlines mark captured fitting support; hollow symbols overlay reference
-        and bridge roles on the same samples.
+        Black outlines mark inferred fitting support when its count agrees with
+        the captured fit. Hollow symbols overlay reference and bridge roles.
         """
         import matplotlib.pyplot as plt
 
@@ -2777,7 +2785,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             )
         axes[2].set_ylabel("attenuation_db")
 
-        axes[3].set_title("firmware residuals at captured fitting-support points")
+        axes[3].set_title("saved firmware model − all valid sweep measurements")
         axes[3].axhline(0.0, color="0.35", linewidth=0.8, linestyle="--")
         axes[3].set_ylabel("residual_db")
         axes[3].set_xlabel("FVOA drive (mV)" if x_axis == "fvoa_mv" else "DAC drive (mV)")
@@ -2881,7 +2889,9 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     zorder=4,
                 )
 
-        included = np.asarray(rec.included, dtype=bool) & np.isfinite(x) & np.isfinite(residual_db)
+        valid = (np.asarray(rec.event) == "point") & np.isfinite(x) & np.isfinite(residual_db)
+        axes[3].scatter(x[valid], residual_db[valid], s=25, color="tab:blue", label="valid sweep")
+        included = np.asarray(rec.included, dtype=bool) & valid
         if np.any(included):
             axes[3].scatter(
                 x[included],
@@ -2891,6 +2901,9 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 alpha=0.85,
                 label="captured fit support",
             )
+        elif self._fit_coeff_for_physical(physical) is not None:
+            axes[3].text(.02, .04, "Captured fit support unavailable: point counts disagree.",
+                         transform=axes[3].transAxes, fontsize=8)
         for segment in np.unique(np.asarray(rec.segment, dtype=int)):
             mask = np.asarray(rec.segment, dtype=int) == segment
             if np.any(mask):

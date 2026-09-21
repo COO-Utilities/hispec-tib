@@ -8,6 +8,14 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate high-signal fit support after removing the upper transmission
+  exclusion. Valid readings at/above the measured reference now enter both fits
+  and signed residual statistics. Verify the open-region plots and installed RMS
+  in a fresh calibration; model, 55 dB boundary and reference selection are unchanged.
+- [ ] Run the notebook's `dac1_reversal` program after detector preparation:
+  alternate 2822.241211 / 2848.022461 mV with DAC2 at zero, retaining startup and
+  repeated visits. Compare final-30-second means, noise and drift before choosing
+  a device-failure threshold or attributing the asymmetry to the DAC1 capacitor.
 - [ ] After flashing, replay saved calibration records with the laser disabled
   and confirm health polls continue throughout both fits without false five-second
   timeouts. Host replay compares coefficients/metrics with and without pauses;
@@ -70,6 +78,13 @@ LLMs Agents: Do NOT change heading names in this file.
   the error budget and remaining physical calibration assumptions.
 
 ## TODOs
+- Investigate detector startup and illuminated settling separately. The September 21
+  19:05 UTC noise capture saved a clipped dark (mean 53.8 mV, RMS 319.5 mV), then
+  a stable dark trace near -2 mV. Notebook preparation now waits five seconds and
+  rejects unusable dark results before illumination; firmware dark acceptance and
+  the actual hardware stabilization time still need investigation. The same run
+  shows a long transition after 182 seconds of laser emission, so laser warmup alone
+  does not explain all settling. Keep the sampler-owned notification TODO below.
 - Investigate DAC1 reference/sweep disagreement before changing acquisition:
   capture `cal_1028y_20260917T213847_376797Z.npz`, reference record 7 and first
   sweep record 11 both command DUT 0 / companion 2810.156 mV, but raw peaks are

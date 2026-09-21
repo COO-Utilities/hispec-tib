@@ -1250,7 +1250,8 @@ command wait budget, this command returns `{"error":"busy"}`.
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
-    in attenuation dB for measured points within `max_calibrated_db`. It defaults
+    in attenuation dB for fitting-support measurements at or below
+    `max_calibrated_db`, including negative reference-relative measurements. It defaults
     to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
     A manual model replacement omitting `rms_db` uses that default, rather than
     inheriting confidence from the previous fit. An explicit zero is allowed.
@@ -1454,9 +1455,11 @@ The state remains `running` during fitting; final metrics appear at completion.
     acquisition error.
   - Firmware does not try to classify or discard whole nonlinear regions. It
     reports every retained acquisition record, and the fit uses only records
-    derived as fit candidates by classification and transmission-domain rules,
+    derived as fit candidates by classification and the minimum transmission limit,
     restricted to the contiguous prefix including the first measured point above
     55 dB. The extra point constrains the operating boundary in both fitting stages.
+    Valid sweep readings equal to or brighter than the measured reference remain
+    eligible. Their measured dB may be zero or negative; the model stays nonnegative.
     External analysis can inspect all retained records regardless of fit success.
   - Automatic calibration uses the sampler-owned internal photodiode
     configurable window. It does not start a separate photodiode measurement or
@@ -1485,7 +1488,8 @@ The state remains `running` during fitting; final metrics appear at completion.
     uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
     3 mV. `points` counts all fitting support, including the above-limit anchor.
     Correlation and residual RMS/max score only those support points whose measured
-    attenuation is within `max_calibrated_db`; a model prediction above the limit
+    attenuation is at or below `max_calibrated_db`, including negative
+    reference-relative measurements; a model prediction above the limit
     does not remove a large error from these metrics. Fit details also include
     calibrated limit and correction coefficients. Transmission/FVOA spans remain
     in per-device fit telemetry, but are omitted from aggregate status to fit

@@ -72,7 +72,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_MAX_SEARCH_TRIES 16U
 #define ATTEN_CAL_MIN_FIT_POINTS ATTENUATOR_CAL_MIN_FIT_POINTS
 #define ATTEN_CAL_MIN_TX 1.0e-10
-#define ATTEN_CAL_MAX_TX 0.999999
 #define ATTEN_CAL_MIN_FIT_CORR 0.85
 #define ATTEN_CAL_MIN_DB_ERR 1.0e-6
 #define ATTENUATOR_FIT_MIN_SIGMA_DB 0.5
@@ -1247,8 +1246,11 @@ static int build_fit_points_locked(uint8_t physical,
 		signal_err = (double)record->signal_err_mv;
 		tx = signal / (open_signal * scale);
 
-		/** Decide whether a normalized transmission lies in the invertible fit domain. */
-		if (tx < ATTEN_CAL_MIN_TX || tx > ATTEN_CAL_MAX_TX) {
+		/* The reference is a measurement, so valid sweep readings can be
+		 * brighter than it. Keep their negative measured dB in the direct
+		 * dB-space fit and residuals; rejecting them selects only dimmer noise.
+		 */
+		if (tx < ATTEN_CAL_MIN_TX) {
 			continue;
 		}
 

@@ -342,7 +342,15 @@ The derived relative transmission for a fit point is:
 tx = signal_mv / (reference_signal_mv * segment_scale[segment])
 ```
 
-with relative variance:
+The reference is a measured signal, so valid sweep readings can have `tx >= 1`.
+These remain fit inputs with signed measured attenuation: for example, `tx = 1.04`
+is approximately -0.17 dB relative to the reference. Removing such points would
+select only the dimmer fluctuations near the open end. Saturation and SNR checks
+still apply, and the minimum fit transmission remains `1e-10`. The physical model
+remains nonnegative and monotonic; a negative measurement contributes its full
+residual rather than being clamped to zero.
+
+The propagated relative variance is:
 
 ```text
 (sigma_tx / tx)^2 =
@@ -431,10 +439,17 @@ piecewise curve.
 The final, unweighted `sqrt(sum(residual_db^2) / scored_count)` is installed as
 `rms_db` with each accepted physical model. Correlation and maximum absolute
 residual use the same scored points: fitting-support measurements whose **measured**
-attenuation is within `max_calibrated_db`. The extra above-limit point constrains
+attenuation is at or below `max_calibrated_db`, including negative reference-relative
+measurements. The extra above-limit point constrains
 the fit but does not enter these metrics. An in-range measurement with an
 out-of-range prediction still contributes its full error. The reported `points`
 and transmission/voltage spans describe all fitting support, including that anchor.
+
+The lab plots all valid sweep measurements and their signed residuals. Captured
+firmware metrics are kept separate from an offline all-valid-point RMS. Raw records
+do not carry per-point fit-inclusion flags: host tools only mark inferred support
+when the current-rule prefix count matches the captured fit count. A mismatch
+leaves support unmarked rather than assigning today's eligibility to an older fit.
 
 The same stored RMS remains in runtime uncertainty estimates, but it does not
 establish accuracy above `max_calibrated_db`. It is not a parameter standard error
