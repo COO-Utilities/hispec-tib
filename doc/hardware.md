@@ -121,7 +121,9 @@ A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
   `Vout = code / 4096 * VREFIN`, clipped by AVDD.
 - Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
   toward the FVOA 0 - 5V command range; op-amp gain is firmware-calibrated.
-- Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
+- Must not exceed Vmax of attenuator (6V for FVOA, so safe). 
+  - Imax per datasheet is 36.66 mA, but lab testing suggests that the FVOA resistance is a fairly consistent:
+  - 615 Ohms (530-616 Ohms measured via an ammeter and bench supply)
 - OpAmp supplies required current to attenuator.
 - Each laser channel uses a pair of physical attenuators:
   - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
