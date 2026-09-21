@@ -2,9 +2,14 @@
 
 These are the canonical AI-assisted development rules for the HISPEC-FIB / HiSPEC-TIB Zephyr firmware repository.
 
-The primary goal is simple, explicit, maintainable C firmware that uses Zephyr correctly, remains readable after long gaps, and does not accumulate generated architecture. The repository is not a place for agent-designed frameworks, compatibility layers, speculative abstractions, or production-style migration machinery unless the human owner explicitly asks for them.
+The primary goal is simple, explicit, maintainable C firmware that uses Zephyr correctly, remains readable after long 
+gaps, and does not accumulate generated architecture. The repository is not a place for agent-designed frameworks, 
+compatibility layers, speculative abstractions, or production-style migration machinery unless the human owner 
+explicitly asks for them.
 
-This code is currently desk/lab firmware unless the human owner explicitly says otherwise. Backward compatibility is not assumed for unreleased firmware commands, host-tool APIs, Python parsers, telemetry schemas, settings fields, debug formats, or calibration data formats.
+This code is currently desk/lab firmware unless the human owner explicitly says otherwise. Backward compatibility is
+not assumed for unreleased firmware commands, host-tool APIs, Python parsers, telemetry schemas, settings fields, 
+debug formats, or calibration data formats.
 
 ---
 
