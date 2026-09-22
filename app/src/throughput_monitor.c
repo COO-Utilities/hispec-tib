@@ -586,6 +586,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	enum housekeeping_power_output pd_power = pd_power_output(channel);
 	uint8_t attenuator_index = 0U;
 	struct throughput_state next = {0};
+	const char *stage = "photodiode power";
 	int rc;
 
 	if (request->has_laser) {
@@ -628,6 +629,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	if (request->has_laser && request->autolevel) {
 		struct app_laser_channel_settings settings;
+		stage = "laser settings";
 		rc = hispec_laser_get_channel_settings(request->laser, &settings);
 		if (rc != 0) {
 			goto failed;
@@ -637,9 +639,11 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		double initial_ma = hispec_laser_quantize_current_ma(
 			props->threshold_current_ma + range_ma * request->initial_level,
 			settings.min_autolevel_current_ma, props->nominal_current_ma);
+		stage = "initial attenuation";
 		rc = attenuator_set_db(&attenuators[attenuator_index],
 			2.0 * ATTENUATOR_CALIBRATED_MAX_DB, true) ? 0 : -EIO;
 		if (rc == 0) {
+			stage = "initial laser current";
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
 				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false);
 		}
@@ -648,11 +652,16 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		}
 	}
 
+	stage = "source reference";
 	rc = refresh_reference(&monitors[channel]);
 	if (rc == 0 && request->has_laser) {
 		bool emitting;
+		stage = "laser health";
 		rc = hispec_laser_output_status(request->laser, &emitting);
-		if (rc == 0 && request->autolevel && !emitting) rc = -EIO;
+		if (rc == 0 && request->autolevel && !emitting) {
+			stage = "autolevel emission";
+			rc = -EIO;
+		}
 	}
 	if (rc != 0) {
 		goto failed;
@@ -671,6 +680,9 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	return 0;
 
 failed:
+	LOG_ERR("Throughput start channel=%s laser=%s stage=%s rc=%d",
+		photodiode_channel_names[channel],
+		request->has_laser ? hispec_laser_name(request->laser) : "none", stage, rc);
 	/* Keep the identity for command-side stop, but never publish a failed start. */
 	housekeeping_photodiode_autooff_inhibit(pd_power, false);
 	monitors[channel].phase = TP_INACTIVE;

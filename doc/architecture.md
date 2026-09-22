@@ -299,6 +299,11 @@ autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
 owners stop monitoring. Physical transition readings remain visible. See
 [the timing and error audit](photodiode_notes.md).
 
+Passive monitoring accepts a laser whose control state is unconfirmed after
+bank power-on, so acquisition can precede the first laser command. The laser
+owner distinguishes this from a control fault; throughput and calibration retain
+their shared health check, and calibration additionally requires emission.
+
 Throughput starts at maximum calibrated attenuation and an optional initial
 laser fraction (firmware default 0.5). Brightening reduces attenuation before
 raising current. Dimming uses `TP_AUTOLEVEL_DIM_PRIORITY`: laser first by default,

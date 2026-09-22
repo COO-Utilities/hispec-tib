@@ -4875,6 +4875,10 @@ class HispecFibPcb:
         can stream; firmware permits only one autolevel owner.
         Manual laser level and attenuation changes disable autolevel while this
         collector and its live plot continue; the measurement deadline is retained.
+        With autolevel=False, a named laser can be monitored before its first
+        command, including through bank power-on and laser preparation. PD samples
+        continue while throughput is undefined at zero source power. This does
+        not prepare or start the laser; actual source faults still stop capture.
         Autolevel starts at maximum calibrated attenuation and initial_level
         (firmware default 0.5), clamped to min_autolevel_current_ma. Zero selects
         that minimum, not off. Autolevel ignores stored wavelength tuning.

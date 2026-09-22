@@ -380,7 +380,10 @@ int laser_estimate_flux(enum hispec_laser_id id,
 			struct hispec_laser_flux_estimate *out);
 
 /** Copy confirmed emission and operational health using only the state mutex.
- * Returns -ETIMEDOUT after five seconds without a response while emitting,
+ * Unconfirmed startup state after bank power-on returns 0 with emitting=false,
+ * allowing passive capture throughout initial preparation. Failed control
+ * operations still return an error.
+ * Returns -ETIMEDOUT after five seconds without a response while started,
  * -EIO for a control/controller fault, or -EINVAL for invalid/uninitialized use.
  * Does no I/O, initialization, or publishing; use separately from estimates.
  */

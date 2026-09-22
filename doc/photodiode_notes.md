@@ -269,6 +269,15 @@ pd_hk = Photodiode("hk", resp_wavelength_nm=THOR_QE_TC[0], resp_values=THOR_QE_T
 Throughput fault stops also use the console/MQTT warning path, including when
 the measurement detects an expired response deadline before background work runs.
 
+Laser control state distinguishes unconfirmed bank startup, confirmed control,
+and a control/controller fault. Bank power-on invalidates preparation and leaves
+control unconfirmed, which permits passive throughput capture with no confirmed
+emission. Preparation alone does not start the response-timeout check. Successful
+laser startup publishes confirmed state and its response deadline together;
+failed control enters the fault path. A successful STOP confirms stopped state,
+while a zero-current write preserves unconfirmed or faulted state while powered.
+Autolevel and calibration still require healthy, confirmed emission.
+
 The existing laser auto-off work probes the checked TEC-state register of started (including zero-current)
 channels once per second, including channels whose shutdown failed. It does not
 depend on heater mode, setpoint changes, or the 20 Hz measurement loop. Heater
@@ -281,7 +290,8 @@ A successful driver response refreshes the owner's five-second communication
 deadline. Local calculations, requested settings, and a busy bus do not count as
 responses. Maiman retains the last response timestamp and last error within each
 operation, so a partial read can report its error without hiding successful
-responses. Numerical laser estimates always use confirmed setpoints; they return
+responses. Numerical laser estimates use confirmed setpoints, initially zero
+current with the configured default temperature before any command; they return
 `-EINVAL` for invalid/uninitialized use, never an operational I/O error.
 
 ```{mermaid}

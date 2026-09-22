@@ -1786,6 +1786,15 @@ estimate.
 and logical attenuator to keep the photodiode signal in the useful
 ADC/photodiode range. `autolevel:false` streams the selected photodiode level
 and derived values without adjusting laser level or attenuation during monitoring.
+For a named laser, passive monitoring can start before any laser command, with
+bank power off or on. It continues through bank power-on, controller preparation,
+TEC startup, and the first current command; no preliminary STOP or positive-current
+command is required. The source-current estimate starts at zero, and throughput
+is undefined (`null` in JSON, NaN in binary) while delivered source power is zero.
+PD measurements remain available throughout. These source estimates describe
+commanded state, not an optical measurement; actual control/communication faults
+still stop the stream.
+
 `initial_level` is an optional fraction from 0 to 1, accepted only with
 `autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
 calibrated attenuation, then sets this fraction of the threshold-to-nominal

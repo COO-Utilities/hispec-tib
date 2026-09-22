@@ -2033,8 +2033,10 @@ static void auto_tick_locked(const struct photodiode_status *pd_status)
 				return;
 			}
 
-			/* Source health is an acquisition precondition, separate from its
-			 * current-based numerical power estimate. No hardware I/O here.
+			/* Source health and confirmed emission are acquisition preconditions,
+			 * separate from the current-based numerical power estimate. An
+			 * unconfirmed source permits passive streaming, not calibration.
+			 * No hardware I/O here.
 			 */
 			bool powered;
 			int power_rc = housekeeping_power_get_confirmed((enum housekeeping_power_output)cal.channel, &powered);

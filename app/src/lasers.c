@@ -53,10 +53,19 @@ struct on_time_runtime {
 	int64_t accumulated_ms;
 };
 
+/* Unconfirmed after bank power-on is observable by a passive stream, but is
+ * not permission to skip controller preparation or an explicit STOP.
+ */
+enum laser_control_state {
+	LASER_CONTROL_UNCONFIRMED,
+	LASER_CONTROL_CONFIRMED,
+	LASER_CONTROL_FAULT,
+};
+
 struct laser_output_estimate_state {
 	double current_ma;
 	double tec_temperature_c;
-	bool valid; /* Control operation / observed controller condition, not read freshness. */
+	enum laser_control_state control; /* Control state, separate from read freshness. */
 	int64_t response_deadline_ms;
 	int64_t next_warning_ms;
 	bool communication_fault;
@@ -164,7 +173,7 @@ static void ensure_laser_runtime_settings_locked(void)
 		laser_output_estimate[i].current_ma = 0.0;
 		laser_output_estimate[i].tec_temperature_c =
 			stored.channel[i].properties.operating_temp_c;
-		laser_output_estimate[i].valid = true;
+		laser_output_estimate[i].control = LASER_CONTROL_CONFIRMED;
 		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
 	}
 
@@ -183,7 +192,7 @@ static void output_estimate_set_locked(enum hispec_laser_id id,
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	laser_output_estimate[id].current_ma = current_ma;
 	laser_output_estimate[id].tec_temperature_c = tec_temperature_c;
-	laser_output_estimate[id].valid = true;
+	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
 	/* This helper publishes a completed control operation. Install its grace
 	 * atomically with emission state so a reader cannot see new current with
 	 * an old/zero response deadline before transport accounting runs.
@@ -204,8 +213,8 @@ static void laser_health_warning(enum hispec_laser_id id, const char *code,
 static void invalidate_output_locked(enum hispec_laser_id id)
 {
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
-	bool newly_faulted = laser_output_estimate[id].valid;
-	laser_output_estimate[id].valid = false;
+	bool newly_faulted = laser_output_estimate[id].control != LASER_CONTROL_FAULT;
+	laser_output_estimate[id].control = LASER_CONTROL_FAULT;
 	k_mutex_unlock(&laser_state_lock);
 	if (newly_faulted) laser_health_warning(id, "laser_output_fault", "laser control operation or controller condition faulted", -EIO);
 }
@@ -261,10 +270,21 @@ int hispec_laser_output_status(enum hispec_laser_id id, bool *emitting)
 	if (id < 0 || id >= HISPEC_LASER_COUNT || emitting == NULL) return -EINVAL;
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	const struct laser_output_estimate_state *state = &laser_output_estimate[id];
-	*emitting = bank_power_requested_enabled && laser_current_runtime[id].active;
-	int rc = !laser_runtime_initialized ? -EINVAL :
-		(state->started && k_uptime_get() >= state->response_deadline_ms ? -ETIMEDOUT :
-		 (!state->valid ? -EIO : 0));
+	*emitting = bank_power_requested_enabled && state->control == LASER_CONTROL_CONFIRMED &&
+		laser_current_runtime[id].active;
+	/* A first start may be in flight, with no completed command/deadline yet.
+	 * Keep passive acquisition alive; consumers requiring emission still reject it.
+	 */
+	int rc = 0;
+	if (!laser_runtime_initialized) {
+		rc = -EINVAL;
+	} else if (state->control != LASER_CONTROL_UNCONFIRMED) {
+		if (state->started && k_uptime_get() >= state->response_deadline_ms) {
+			rc = -ETIMEDOUT;
+		} else if (state->control == LASER_CONTROL_FAULT) {
+			rc = -EIO;
+		}
+	}
 	k_mutex_unlock(&laser_state_lock);
 	return rc;
 }
@@ -384,7 +404,7 @@ static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
 						       id);
 	laser_settings[id].total_emitting_s = total;
 	laser_output_estimate[id].current_ma = 0.0;
-	laser_output_estimate[id].valid = true;
+	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
 	laser_output_estimate[id].started = false;
 	laser_autooff_deadline_ms[id] = LASER_AUTOFF_NO_DEADLINE;
 	laser_current_runtime[id].active = false;
@@ -595,7 +615,8 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		laser_output_estimate[i].device_id = 0;
 		laser_output_estimate[i].serial = 0;
 		laser_output_estimate[i].started = false;
-		laser_output_estimate[i].valid = !enabled;
+		laser_output_estimate[i].control = enabled ?
+			LASER_CONTROL_UNCONFIRMED : LASER_CONTROL_CONFIRMED;
 		if (!enabled) {
 			output_estimate_set_locked((enum hispec_laser_id)i, 0.0,
 				laser_output_estimate[i].tec_temperature_c);
@@ -1274,7 +1295,8 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id)
 static bool output_ready_locked(enum hispec_laser_id id)
 {
 	return bank_power_requested_enabled && laser_output_estimate[id].started &&
-	       laser_output_estimate[id].valid && laser_output_estimate[id].prepared &&
+	       laser_output_estimate[id].control == LASER_CONTROL_CONFIRMED &&
+	       laser_output_estimate[id].prepared &&
 	       k_uptime_get() < laser_output_estimate[id].response_deadline_ms;
 }
 
@@ -1519,8 +1541,8 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 
 	maiman_init(&drv, profile->node_id);
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
-	LOG_DBG("Laser %s stop started=%u valid=%u stop_tec=%u", profile->name, state->started, state->valid, stop_tec);
-	if (state->started || !state->valid || state->current_ma != 0.0) {
+	LOG_DBG("Laser %s stop started=%u control=%u stop_tec=%u", profile->name, state->started, state->control, stop_tec);
+	if (state->started || state->control != LASER_CONTROL_CONFIRMED || state->current_ma != 0.0) {
 		bool zeroed = maiman_set_current(&drv, 0.0);
 		if (zeroed) {
 			on_time_runtime_update_locked(laser_current_runtime, ARRAY_SIZE(laser_current_runtime), profile->id, false);
@@ -1625,11 +1647,12 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		} else {
 			on_time_runtime_update_locked(laser_current_runtime, ARRAY_SIZE(laser_current_runtime), id, false);
 			k_mutex_lock(&laser_state_lock, K_FOREVER);
-			bool was_valid = laser_output_estimate[id].valid;
+			enum laser_control_state prior_control = laser_output_estimate[id].control;
 			output_estimate_set_locked(id, 0.0, laser_output_estimate[id].tec_temperature_c);
-			/* Zeroing current cannot establish whether a previously failed STOP
-			 * actually stopped the driver. Preserve that uncertainty. */
-			laser_output_estimate[id].valid = was_valid || !bank_power_requested_enabled;
+			/* Zeroing current establishes neither initial controller state nor
+			 * whether a previously failed STOP actually stopped the driver. */
+			laser_output_estimate[id].control = bank_power_requested_enabled ?
+				prior_control : LASER_CONTROL_CONFIRMED;
 			k_mutex_unlock(&laser_state_lock);
 			rc = 0;
 		}
@@ -1649,7 +1672,8 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 	 * current. No profile writes, repeated enable, or invented settling delay.
 	 */
 	if (!maiman_set_current(&drv, current_ma) ||
-	    ((!laser_output_estimate[id].started || !laser_output_estimate[id].valid) && !maiman_start_device(&drv))) {
+	    ((!laser_output_estimate[id].started ||
+	      laser_output_estimate[id].control != LASER_CONTROL_CONFIRMED) && !maiman_start_device(&drv))) {
 		LOG_WRN("Laser %s current/enable write failed current=%.3fmA",
 			profile->name, (double)current_ma);
 		rc = -EIO;
@@ -1670,8 +1694,8 @@ out:
 		invalidate_output_locked(id);
 	}
 	laser_note_communication_locked(id, &drv);
-	LOG_DBG("Laser %s level result rc=%d started=%u current_ma=%.3f valid=%u", profile->name, rc,
-		laser_output_estimate[id].started, laser_output_estimate[id].current_ma, laser_output_estimate[id].valid);
+	LOG_DBG("Laser %s level result rc=%d started=%u current_ma=%.3f control=%u", profile->name, rc,
+		laser_output_estimate[id].started, laser_output_estimate[id].current_ma, laser_output_estimate[id].control);
 	k_mutex_unlock(&laser_io_lock);
 	laser_autooff_reschedule();
 	return rc;
@@ -2154,7 +2178,10 @@ static void laser_autooff_work_handler(struct k_work *work)
 		bool active, fault = false;
 		k_mutex_lock(&laser_state_lock, K_FOREVER);
 		struct laser_output_estimate_state *state = &laser_output_estimate[i];
-		active = bank_power_requested_enabled && laser_output_estimate[i].started;
+		/* Preparation can observe START before a first command completes.
+		 * Only established operation (including a fault) owns a deadline. */
+		active = bank_power_requested_enabled && state->started &&
+			state->control != LASER_CONTROL_UNCONFIRMED;
 		if (active && k_uptime_get() >= state->response_deadline_ms && !state->communication_fault) {
 			state->communication_fault = true;
 			fault = true;
@@ -2163,7 +2190,8 @@ static void laser_autooff_work_handler(struct k_work *work)
 		if (fault) laser_health_warning(i, "laser_communication_fault", "laser response timeout", -ETIMEDOUT);
 		if (!active || laser_io_lock_with_timeout(K_NO_WAIT) != 0) continue;
 		/* Recheck after serialization: a foreground stop may have won the bus. */
-		if (bank_power_requested_enabled && laser_output_estimate[i].started) {
+		if (bank_power_requested_enabled && state->started &&
+		    state->control != LASER_CONTROL_UNCONFIRMED) {
 			maiman_driver_t drv;
 			bool started;
 			maiman_init(&drv, laser_profiles[i].node_id);
@@ -2467,7 +2495,8 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		    (((!running || temperature_changed) &&
 		      !maiman_set_tec_temperature(&drv, target_temp_c)) ||
 		     ((!running || current_changed) && !maiman_set_current(&drv, target_current_ma)) ||
-		     ((!laser_output_estimate[id].started || !laser_output_estimate[id].valid) && !maiman_start_device(&drv)))) {
+		     ((!laser_output_estimate[id].started ||
+		       laser_output_estimate[id].control != LASER_CONTROL_CONFIRMED) && !maiman_start_device(&drv)))) {
 			LOG_WRN("Laser %s tune apply failed temp=%.3fC current=%.3fmA",
 				profile->name, (double)target_temp_c,
 				(double)target_current_ma);
