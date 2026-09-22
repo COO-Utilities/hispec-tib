@@ -237,7 +237,7 @@ Numerical attenuator fitting reuses the throughput thread after stopping the
 calibration-owned laser and releasing PD auto-off inhibition. It releases the
 calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
 this build), below Modbus RX (5), commands (6), housekeeping (7), and logging (13).
-There are no timed pauses in the math. It restores priority 3 with no mutex held
+It restores priority 3 with no mutex held
 before finalization. Other throughput work still waits for fitting to finish.
 Start/stop commands set a cancellation flag and wait on a completion semaphore
 without holding the calibration mutex. Numerical loops check cancellation;
