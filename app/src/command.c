@@ -71,15 +71,9 @@ static bool command_tib_supported(const struct coo_cmd_spec *spec, void *user_da
 static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *cmd,
                                                  const struct coo_cmd_spec *spec,
                                                  void *user_data);
-static enum coo_cmd_msg_type classify_laser_value(const struct coo_cmd_request *cmd,
-                                                  const struct coo_cmd_spec *spec,
-                                                  void *user_data);
-static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *cmd,
-                                                 const struct coo_cmd_spec *spec,
-                                                 void *user_data);
-static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
-                                                     const struct coo_cmd_spec *spec,
-                                                     void *user_data);
+static enum coo_cmd_msg_type classify_laser_request(const struct coo_cmd_request *cmd,
+                                                   const struct coo_cmd_spec *spec,
+                                                   void *user_data);
 static int help_options_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out);
 static int serial_mems_switch_shorthand(const char *key, const char *payload,
@@ -190,8 +184,8 @@ static const struct coo_cmd_spec command_specs[] = {
     CMD_SPEC_CUSTOM("mems/route/loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
                     "route,1028y,1270j,1430yj,1430hk,1510h,2330k,split,persist",
-                    "mems/route/loss route=<route> [<laser>=<loss> ... persist=<bool>]",
-                    "route required for effect; laser fields optional by query/effect mode",
+                    "mems/route/loss route=<route> [<laser>=<loss> persist=<bool>]",
+                    "route required; set exactly one laser loss or a split tuple",
                     "laser fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,split",
                     "loss: fraction lost 0 <= loss < 1, or a quoted nonnegative dB value",
                     COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
@@ -206,7 +200,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .serial_shorthand = serial_mems_switch_shorthand,
       .key_prefix_match = true,
-      .allowed_payload_keys = "state,duty_cycle,off_in_s,cycle_ms,force,toggle_rate_hz,value",
+      .allowed_payload_keys = "state,duty_cycle,off_in_s,cycle_ms,force,toggle_rate_hz",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("mems/<switchname>", NULL,
                   "mems/<switchname> [state=<A|B> force=<bool> duty_cycle=<0..1> cycle_ms=<ms> off_in_s=<s>]",
@@ -224,21 +218,21 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COO_CMD_CLASS_DEFAULT, false,
-                 "laser,fiber,input,output,autolevel,max_flux_ph_s,off_in_s,format,stop",
-                 "measure_throughput laser=<laser|none> output=<name> [fiber=<M|S> input=<name> autolevel=<bool> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
-                 "stop with stop=<yj|hk|all>; laser=none requires input, output, and autolevel=false",
+                 "laser,channel,fiber,input,output,autolevel,initial_level,max_flux_ph_s,off_in_s,format,stop",
+                 "measure_throughput laser=<laser|none> [channel=<yj|hk> input=<name> output=<name> fiber=<M|S> autolevel=<bool> initial_level=<0..1> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
+                 "stop=<yj|hk|all>; known laser requires output; none requires channel and autolevel=false, with optional input/output pair",
                  "format: json,binary",
-                 "TIB-only throughput monitor command",
+                 "TIB-only; always selects MM/SM return; passive launch unchanged if input/output omitted",
                  COO_CMD_HELP_EFFECT),
-    CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_value,
-                        true, "name,value,autooff_s",
-                        "laser name=<laser> [value=<0..1> autooff_s=<s>]",
+    CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_request,
+                        true, "name,value,autooff_s,stop",
+                        "laser name=<laser> [value=<0..1> autooff_s=<s> stop=<bool>]",
                         "name required; value makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only laser output status/set command",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/tune", laser_tune_get, laser_tune_set,
-                        classify_laser_tune, true, "name,tune_nm",
+                        classify_laser_request, true, "name,tune_nm",
                         "laser/tune name=<laser> [tune_nm=<nm>]",
                         "name required; tune_nm makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
@@ -252,7 +246,7 @@ static const struct coo_cmd_spec command_specs[] = {
                  "TIB-only detailed engineering status; may perform slow Modbus reads",
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/settings", laser_settings_get, laser_settings_set,
-                        classify_laser_settings, true, "name,settings,persist",
+                        classify_laser_request, true, "name,settings,persist",
                         "laser/settings name=<laser> [settings={...} persist=<bool>]",
                         "name required; settings object required for effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
@@ -368,30 +362,6 @@ static bool command_tib_supported(const struct coo_cmd_spec *spec, void *user_da
     return devices_board_type() == HISPEC_BOARD_TIB;
 }
 
-static bool route_loss_payload_has_value(const char *payload)
-{
-    static const char *const route_loss_value_keys[] = {
-        "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k", "split",
-    };
-    char text[32];
-    double value;
-
-    if (payload == NULL) {
-        return false;
-    }
-
-    for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_value_keys); ++i) {
-        const char *key = route_loss_value_keys[i];
-
-        if (coo_json_extract_double(payload, key, &value) == COO_JSON_EXTRACT_OK ||
-            coo_json_extract_string(payload, key, text, sizeof(text)) == COO_JSON_EXTRACT_OK) {
-            return true;
-        }
-    }
-
-    return strstr(payload, "\"split\"") != NULL;
-}
-
 static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *cmd,
                                                  const struct coo_cmd_spec *spec,
                                                  void *user_data)
@@ -399,50 +369,23 @@ static enum coo_cmd_msg_type classify_route_loss(const struct coo_cmd_request *c
     ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
-    return route_loss_payload_has_value(cmd != NULL ? cmd->payload : NULL) ?
+    return cmd != NULL &&
+           coo_json_validate_top_level_keys(cmd->payload, "route", NULL, 0U) != 0 ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
-static enum coo_cmd_msg_type classify_laser_value(const struct coo_cmd_request *cmd,
-                                                  const struct coo_cmd_spec *spec,
-                                                  void *user_data)
+/* Only the selector is a query. Any supplied setting must reach validation,
+ * including malformed values and orphan autooff_s/persist arguments.
+ */
+static enum coo_cmd_msg_type classify_laser_request(const struct coo_cmd_request *cmd,
+                                                   const struct coo_cmd_spec *spec,
+                                                   void *user_data)
 {
-    double fval;
-
     ARG_UNUSED(spec);
     ARG_UNUSED(user_data);
 
     return cmd != NULL &&
-           coo_json_extract_double(cmd->payload, "value", &fval) != COO_JSON_EXTRACT_MISSING ?
-           COO_CMD_EFFECT : COO_CMD_QUERY;
-}
-
-static enum coo_cmd_msg_type classify_laser_tune(const struct coo_cmd_request *cmd,
-                                                 const struct coo_cmd_spec *spec,
-                                                 void *user_data)
-{
-    double fval;
-
-    ARG_UNUSED(spec);
-    ARG_UNUSED(user_data);
-
-    return cmd != NULL &&
-           coo_json_extract_double(cmd->payload, "tune_nm", &fval) != COO_JSON_EXTRACT_MISSING ?
-           COO_CMD_EFFECT : COO_CMD_QUERY;
-}
-
-static enum coo_cmd_msg_type classify_laser_settings(const struct coo_cmd_request *cmd,
-                                                     const struct coo_cmd_spec *spec,
-                                                     void *user_data)
-{
-    char settings_json[MAX_PAYLOAD_LEN];
-
-    ARG_UNUSED(spec);
-    ARG_UNUSED(user_data);
-
-    return cmd != NULL &&
-           coo_json_extract_object(cmd->payload, "settings",
-                                   settings_json, sizeof(settings_json)) != COO_JSON_EXTRACT_MISSING ?
+           coo_json_validate_top_level_keys(cmd->payload, "name", NULL, 0U) != 0 ?
            COO_CMD_EFFECT : COO_CMD_QUERY;
 }
 
@@ -689,6 +632,22 @@ static void network_config_from_app_ip(const struct app_ip_settings *ip_cfg,
 #endif
 }
 
+/* Validate supplied addresses before network fallback can mask a typo.
+ * Optional server/gateway fields retain their empty-string clear operation.
+ */
+static int command_extract_ipv4(const char *json, const char *key,
+                                char *out, size_t out_len, bool allow_empty)
+{
+    struct in_addr address;
+    int rc = coo_json_extract_string(json, key, out, out_len);
+
+    if (rc == COO_JSON_EXTRACT_OK && !(allow_empty && out[0] == '\0') &&
+        net_addr_pton(AF_INET, out, &address) != 0) {
+        return COO_JSON_EXTRACT_ERR;
+    }
+    return rc;
+}
+
 int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_ip_settings ip_cfg;
@@ -762,7 +721,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "ip", buf, sizeof(buf));
+    parse_rc = command_extract_ipv4(cmd->payload, "ip", buf, sizeof(buf), false);
     if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.ip, buf, sizeof(ip_cfg.ip) - 1);
         ip_cfg.ip[sizeof(ip_cfg.ip) - 1] = '\0';
@@ -772,7 +731,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "invalid ip");
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "subnet", buf, sizeof(buf));
+    parse_rc = command_extract_ipv4(cmd->payload, "subnet", buf, sizeof(buf), false);
     if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.subnet, buf, sizeof(ip_cfg.subnet) - 1);
         ip_cfg.subnet[sizeof(ip_cfg.subnet) - 1] = '\0';
@@ -782,7 +741,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "invalid subnet");
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "gateway", buf, sizeof(buf));
+    parse_rc = command_extract_ipv4(cmd->payload, "gateway", buf, sizeof(buf), true);
     if (parse_rc == COO_JSON_EXTRACT_OK) {
         strncpy(ip_cfg.gateway, buf, sizeof(ip_cfg.gateway) - 1);
         ip_cfg.gateway[sizeof(ip_cfg.gateway) - 1] = '\0';
@@ -792,7 +751,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         return coo_cmd_error(out, cmd, "invalid gateway");
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "dns", buf, sizeof(buf));
+    parse_rc = command_extract_ipv4(cmd->payload, "dns", buf, sizeof(buf), true);
     if (!dns_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_dns = true;
@@ -808,7 +767,7 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
     }
 
-    parse_rc = coo_json_extract_string(cmd->payload, "ntp", buf, sizeof(buf));
+    parse_rc = command_extract_ipv4(cmd->payload, "ntp", buf, sizeof(buf), true);
     if (!ntp_supported) {
         if (parse_rc != COO_JSON_EXTRACT_MISSING) {
             unsupported_ntp = true;
@@ -1095,25 +1054,6 @@ static int help_options_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-//TODO <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there. here and at least laser_coomand.c
-static int command_append_seconds_or_null(char *payload, size_t payload_len,
-                                          size_t *off, bool active, double seconds)
-{
-    if (!active || seconds < 0.0 || seconds != seconds) {
-        return coo_json_append(payload, payload_len, off, "null");
-    }
-    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
-}
-
-static int command_append_i64_or_null(char *payload, size_t payload_len,
-                                      size_t *off, bool active, int64_t seconds)
-{
-    if (!active) {
-        return coo_json_append(payload, payload_len, off, "null");
-    }
-    return coo_json_append(payload, payload_len, off, "%lld", (long long)seconds);
-}
-
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
@@ -1153,7 +1093,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                         devices_board_type_name(),
                         devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
                         router.num_switches,
-                        devices_relay_gpio_last_error()) != 0 ||
+                        housekeeping_relay_error()) != 0 ||
         coo_json_append_float_or_null(payload, sizeof(payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
         coo_json_append(payload, sizeof(payload), &off,
@@ -1180,7 +1120,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
             struct hispec_laser_status laser = {0};
-            int rc = hispec_laser_get_status((enum hispec_laser_id)i, &laser);
+            int rc = hispec_laser_get_status((enum hispec_laser_id)i, false, &laser);
 
             if (coo_json_append(payload, sizeof(payload), &off,
                                 "%s\"%s\":{\"power_mw\":",
@@ -1191,14 +1131,14 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
                 coo_json_append(payload, sizeof(payload), &off,
                                 ",\"ready\":%s,\"tec_on_s\":",
                                 rc == 0 && laser.ready_to_operate ? "true" : "false") != 0 ||
-                command_append_seconds_or_null(payload, sizeof(payload), &off,
-                                               rc == 0 && laser.tec_runtime_active,
-                                               laser.tec_on_time_s) != 0 ||
+                coo_json_append_seconds_or_null(payload, sizeof(payload), &off,
+                                                rc == 0 && laser.tec_runtime_active,
+                                                laser.tec_on_time_s) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off,
                                 ",\"off_in_s\":") != 0 ||
-                command_append_i64_or_null(payload, sizeof(payload), &off,
-                                           rc == 0 && laser.autooff_active,
-                                           laser.off_in_s) != 0 ||
+                coo_json_append_i64_or_null(payload, sizeof(payload), &off,
+                                            rc == 0 && laser.autooff_active,
+                                            laser.off_in_s) != 0 ||
                 coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }

@@ -2,9 +2,14 @@
 
 These are the canonical AI-assisted development rules for the HISPEC-FIB / HiSPEC-TIB Zephyr firmware repository.
 
-The primary goal is simple, explicit, maintainable C firmware that uses Zephyr correctly, remains readable after long gaps, and does not accumulate generated architecture. The repository is not a place for agent-designed frameworks, compatibility layers, speculative abstractions, or production-style migration machinery unless the human owner explicitly asks for them.
+The primary goal is simple, explicit, maintainable C firmware that uses Zephyr correctly, remains readable after long 
+gaps, and does not accumulate generated architecture. The repository is not a place for agent-designed frameworks, 
+compatibility layers, speculative abstractions, or production-style migration machinery unless the human owner 
+explicitly asks for them.
 
-This code is currently desk/lab firmware unless the human owner explicitly says otherwise. Backward compatibility is not assumed for unreleased firmware commands, host-tool APIs, Python parsers, telemetry schemas, settings fields, debug formats, or calibration data formats.
+This code is currently desk/lab firmware unless the human owner explicitly says otherwise. Backward compatibility is
+not assumed for unreleased firmware commands, host-tool APIs, Python parsers, telemetry schemas, settings fields, 
+debug formats, or calibration data formats.
 
 ---
 
@@ -854,11 +859,27 @@ For a complex area, use this sequence:
 
 5. **Verify**
 
-  * build,
-  * run targeted checks,
+  * use relevant existing builds/tests or temporary, task-specific checks,
   * report limitations.
 
 Do not jump from scout directly to architecture.
+
+### Verification and test ownership
+
+Documentation, docstrings, and explicit owner instructions define intended behavior. Tests are supporting
+evidence and do not independently establish requirements.
+
+Do not add or expand permanent tests, check scripts, test harnesses, or verification infrastructure unless
+explicitly requested. A request to fix or implement behavior does not itself authorize these additions.
+
+Temporary, task-specific verification is welcome; report what it establishes and its limitations.
+
+When an existing test conflicts with an intended change, explain the conflict. Do not preserve obsolete
+behavior or change production code merely to satisfy the test. Existing checks do not automatically become
+mandatory work gates.
+
+If permanent tests are requested, use conventional tooling appropriate to the language and keep their purpose
+and assertions human-readable. Do not recreate deleted check tooling without an explicit request.
 
 ---
 

@@ -26,7 +26,10 @@ to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample
 is dropped.
 
 Photodiode sampling is released by a `k_timer`; ADC I/O runs in the photodiode
-thread, not in the timer ISR.
+thread, not in the timer ISR. Its period is 50 ms. At round completion, a
+binary semaphore wakes throughput to copy the latest state under the PD mutex.
+This carries no data and coalesces delayed wakeups; no new queue or sample array
+is introduced. Acquisition timestamps prevent duplicate output/control.
 
 ## Command Dispatcher Delayable Work
 

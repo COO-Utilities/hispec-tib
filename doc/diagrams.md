@@ -213,10 +213,11 @@ flowchart TD
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
-  SleepPeriod[sleep to 20 ms period]
+  SleepPeriod[wait for next 50 ms timer tick]
 
   DarkCmd[pd/dark/yj or pd/dark/hk] --> DarkMode{duration_ms or dark_mv}
-  DarkMode -- duration_ms --> Arm[set configurable window and arm pending dark]
+  DarkMode -- duration_ms --> StopTP[stop throughput and owned laser; abort on failure]
+  StopTP --> Arm[set configurable window and arm pending dark]
   Arm --> Query[command returns pending status]
   DarkMode -- dark_mv --> Force[force dark with optional rms_mv]
   Force --> Commit[update active dark]
@@ -234,50 +235,56 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Command[measure_throughput request] --> Stop{stop field present}
-  Stop -- yes --> StopReq[stop selected streams and their autolevel lasers under lock]
-  Stop -- no --> Validate[validate laser, output, fiber, format, autolevel, off_in_s]
-  Validate --> Map[map laser to photodiode channel and attenuator]
-  Map --> Route[apply requested input/output route]
-  Route --> StartLock[lock; stop previous autolevel laser if replacing its source]
-  StartLock --> PdPower[enable selected photodiode relay]
-  PdPower --> Loss[capture source and return transmission: explicit override, else TIB default, else unity]
-  Loss --> Arm[store monitor state]
-  Arm --> AutoStart{autolevel enabled}
-  AutoStart -- yes --> Seed[set attenuator to high attenuation and laser to 100 percent]
-  AutoStart -- no --> Ref[reset normalized history; cache source and supply ADC reference]
-  Seed --> Ref
-  Ref --> Ok[unlock and return status ok]
-  ADC[each 20 ms: latch reference before ADC conversion] --> Ring[store signed net mV and reference at existing fixed-ring index]
-  Ring --> Average[mean normalized readings; PD scatter plus correlated dark and calibration floors]
-  StopReq --> Stopped{laser shutdown succeeded}
-  Stopped -- yes --> Ok
-  Stopped -- no --> StopError[disable streaming and autolevel; retain laser for retry; return error]
+  Command[measure_throughput request] --> Stop{stop requested}
+  Stop -- yes --> Shutdown[under monitor lock: stop stream and owned laser]
+  Stop -- no --> Validate[command validates channel and both routes; resolves losses]
+  Validate --> Prepare[monitor checks dark, calibration, and single autolevel exclusion]
+  Prepare --> Quiesce[quiesce target; stop previous owned source if replacing]
+  Quiesce --> Launch[command applies launch if requested]
+  Launch --> Return[command always applies selected MM or SM return]
+  Return --> Start[monitor enables PD; copies resolved losses]
+  Launch -- failure --> Shutdown
+  Return -- failure --> Shutdown
+  Start -- failure --> Shutdown
+  Start --> Auto{autolevel}
+  Auto -- yes --> Seed[maximum calibrated attenuation then bounded initial_level; default 0.5]
+  Seed --> Ref[copy confirmed owner estimates into monitor context]
+  Auto -- no --> Ref
+  Ref --> Ready[return start status]
+  Shutdown --> Stopped{laser shutdown succeeded}
+  Stopped -- yes --> Clear[release ownership]
+  Stopped -- no --> Retry[retain shutdown obligation; return error]
 
-  Thread[throughput_monitor_thread every 100 ms] --> Lock[lock current channel state]
-  Lock --> Active{channel active}
-  Active -- no --> Unlock[unlock]
-  Active -- yes --> Timeout{off_in expired}
-  Timeout -- yes --> Clear[stop stream and its autolevel laser; retain identity and log if shutdown fails]
-  Timeout -- no --> PdOn{photodiode relay still on}
-  PdOn -- no --> Clear
-  PdOn -- yes --> Capture[capture PD and source snapshot before next input]
-  Average --> Capture
-  Capture --> Auto{autolevel}
-  Auto -- yes --> Gate{startup or high/low bypass or full process window since input change}
-  Gate -- yes --> Adjust[adjust attenuator or laser; bright backoff first]
-  Gate -- no --> Sync
-  Auto -- no --> Sync
-  Adjust --> Update[refresh acquisition reference; retain normalized history]
-  Update --> Sync[unlock]
-  Sync --> Publish[build JSON or binary from captured snapshot]
-  Publish --> OutQ[enqueue outbound_queue best effort]
-  OutQ --> Sleep[k_sleep 100 ms]
-  Clear --> Unlock
-  Unlock --> Sleep
+  Timer[50 ms PD timer] --> ADC[record acquisition time; read ADC]
+  ADC --> Valid{read succeeded}
+  Valid -- yes --> State[copy detector reading, errors and timestamps into latest PD state]
+  Valid -- no --> Fail[count failed window sample; preserve last acquisition timestamp]
+  State --> Wake[binary semaphore after both channels]
+  Fail --> Wake
+  Wake --> Thread[throughput thread copies PD state; ticks calibration]
+  Thread --> Lock[lock active monitor]
+  Lock --> Owners[copy source owners without hardware I/O]
+  Owners --> Fault{expired, PD off, or source owner fault}
+  Fault -- yes --> Shutdown
+  Fault -- no --> Fresh{new acquisition after start}
+  Fresh -- no --> Unlock[unlock and wait; 50 ms timeout services expiry]
+  Fresh -- yes --> Context[select prior or current monitor context by acquisition start]
+  Context --> Publish[derive power ratio and errors; enqueue best effort]
+  Publish --> Control{autolevel, owner available, acquisition after preceding move}
+  Control -- no --> Unlock
+  Control -- yes --> Adjust[raw bright wins; low atten first; high uses compiled priority]
+  Adjust --> Changed{move result}
+  Changed -- failure --> Shutdown
+  Changed -- unchanged --> Unlock
+  Changed -- success --> Future[retain prior context; install current context and change time]
+  Future --> Unlock
 
-  AttenChange[attenuator command changes same attenuator] --> DisableAuto[disable adjustments; refresh reference; retain autolevel laser for shutdown]
-  LaserChange[laser command changes same laser] --> StopMonitor[relinquish monitor without changing manual laser setting]
+  AttenChange[manual attenuation] --> Disable[disable control; refresh reference; retain owned shutdown]
+  LaserChange[manual laser level] --> Disable
+  LaserTune[laser tuning] --> Release[relinquish stream without undoing manual setting]
+  LaserSettings[laser settings] --> SettingsQuiet[quiesce stream; laser owner applies stop and settings]
+  SettingsQuiet -- success --> Release
+  SettingsQuiet -- failure --> Retry
 ```
 
 ```mermaid
@@ -293,7 +300,7 @@ flowchart TD
   Install --> Save[save coefficient record including RMS when requested]
   Install --> Estimate[pair transmission and sigma_T from hypot of physical RMS values]
   Estimate --> Source[combine with laser flux uncertainty]
-  Source --> ADCRef[acquisition reference; correlated uncertainty across window]
+  Source --> ADCRef[monitor source context; calibration error shared across records]
 ```
 
 Notebook collection and display:
@@ -305,7 +312,7 @@ flowchart TD
   Collect --> Decode[collector decodes into bounded record history]
   Decode --> CSV[snapshot and CSV retain original values]
   Decode --> Plot[plot timer copies only displayed tail]
-  Plot --> Panels[throughput and dB loss; PD band; S/N; source; flux]
+  Plot --> Panels[throughput and dB loss; PD band; S/N; current and attenuation; laser uW; delivered and detected nW]
   Kind -- no --> Logs[dispatch replies, warnings, and log messages]
   Logs --> Buffer[logging handler buffers latest 500 records]
   Buffer --> Pane[kernel asyncio task refreshes changed content at most twice per second]
@@ -521,7 +528,7 @@ flowchart TD
 flowchart TD
   Request[laser value effect request] --> Parse[validate laser name, value, autooff_s]
   Parse --> Settings[read laser channel settings]
-  Settings --> StopTP[stop throughput monitor for this laser]
+  Settings --> StopTP[disable autolevel; keep stream and owned shutdown]
   StopTP --> SetOutput[hispec_laser_set_output_percent_autooff]
   SetOutput --> Tuned{nonzero tune offset and level > 0}
   Tuned -- yes --> Tune[apply wavelength tune using current and TEC]
@@ -529,9 +536,9 @@ flowchart TD
   Tune --> Applied{hardware update ok}
   Percent --> Applied
   Applied -- no --> Error[return command error]
-  Applied -- yes --> LevelPositive{level > 0}
+  Applied -- yes --> LevelPositive{positive level or explicit autooff_s}
   LevelPositive -- yes --> Deadline[store auto-off deadline or zero for no timeout]
-  LevelPositive -- no --> Clear[clear auto-off deadline]
+  LevelPositive -- no --> Clear[preserve existing deadline at zero current]
   Deadline --> ScheduleTimeout[reschedule laser auto-off work]
   Clear --> Ok
   ScheduleTimeout --> Ok
@@ -552,7 +559,7 @@ flowchart TD
   Defaults[compiled diode table] --> Noise[3 percent fractional and 1 percent of compiled maximum power floor]
   Noise --> Policy[per-laser app policy]
   NVS[validated NVS policy] --> Policy
-  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; existing stop behavior]
+  Command[laser/settings uncertainty update] --> Validate[validate finite nonnegative; stop stream; retain emission]
   Validate --> Policy
   Policy --> Cache[existing laser module cache under laser lock]
   Policy --> Persist[save on persist request; no Maiman programming for noise fields]

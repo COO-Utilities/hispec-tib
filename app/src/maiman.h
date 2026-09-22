@@ -78,10 +78,12 @@ typedef uint16_t laser_address_t;
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
 
 /*
- * Selects the Zephyr Modbus client interface used by subsequent blocking
- * Maiman register transactions. Device setup owns the interface lookup.
+ * Initializes the Zephyr Modbus client without sending a controller request.
+ * Device setup owns interface lookup and calls this before workers start.
+ * Runtime register calls own timeout cancellation and deferred initialization;
+ * callers must hold the laser I/O mutex and run outside the Modbus RX workqueue.
  */
-int maiman_set_client_iface(int iface);
+int maiman_init_client(int iface);
 
 
 /* Divider constants from the SF8025 v5.4 device metadata used by the
@@ -155,14 +157,19 @@ int maiman_set_client_iface(int iface);
  */
 typedef struct {
 	uint8_t node_id;
-	bool verbose;
+	/* Sticky for this operation's endpoint lifetime; later reads cannot hide
+	 * an earlier transport/exception failure. maiman_init() starts a new operation.
+	 */
+	bool io_failed;
+	/* Operation-local transport facts, consumed by the laser owner. */
+	int last_error;
+	int64_t last_response_ms;
 } maiman_driver_t;
 
 /**
- * Initialize the driver with the target Modbus node ID.
+ * Initialize an operation's endpoint and clear its communication results; no I/O.
  */
 void maiman_init(maiman_driver_t *drv, uint8_t node_id);
-void maiman_init_verbose(maiman_driver_t *drv, uint8_t node_id, bool verbose);
 
 /** Read/write one raw holding register. Calls block on Modbus RTU I/O. */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);

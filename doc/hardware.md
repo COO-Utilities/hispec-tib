@@ -86,12 +86,12 @@ PCAL assignments:
   - sw8 A B: P0 0, 1 / gpio 0, 1 
 
 - TIB:
-  - sw1: FFSW, SW1_TIBB1 YJATC laser retro or forward
-  - sw2: FFSW, SW1_TIBB2 YJ CAL/Laser selector
-  - sw3: FFSW, SW1_TIBB3 YJ FEI/AO selector
-  - sw4: FFSW, SW1_TIBR1 HKATC laser retro or forward
-  - sw5: FFSW, SW1_TIBR2 HK CAL/Laser selector
-  - sw6: FFSW, SW1_TIBR3 HK FEI/AO selector
+  - sw1: FFSW, SW1_TIBB1 YJATC laser forward/retro selector
+  - sw2: FFSW, SW1_TIBB2 YJ Laser/CAL selector
+  - sw3: FFSW, SW1_TIBB3 YJ AO/FEI selector
+  - sw4: FFSW, SW1_TIBR1 HKATC laser forward/retro selector
+  - sw5: FFSW, SW1_TIBR2 HK Laser/CAL selector
+  - sw6: FFSW, SW1_TIBR3 HK AO/FEI selector
   - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
   - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
 - AS
@@ -121,7 +121,9 @@ A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
   `Vout = code / 4096 * VREFIN`, clipped by AVDD.
 - Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
   toward the FVOA 0 - 5V command range; op-amp gain is firmware-calibrated.
-- Must not exceed Vmax of attenuator (6V for FVOA, so safe). Imax is 36.66 mA
+- Must not exceed Vmax of attenuator (6V for FVOA, so safe). 
+  - Imax per datasheet is 36.66 mA, but lab testing suggests that the FVOA resistance is a fairly consistent:
+  - 615 Ohms (530-616 Ohms measured via an ammeter and bench supply)
 - OpAmp supplies required current to attenuator.
 - Each laser channel uses a pair of physical attenuators:
   - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
@@ -151,9 +153,11 @@ Uses an ADS1115 16 bit 4 channel muxed ADC
 - PD 50 Ohm coax is fed to the ADC as a single-ended input.
 - Input circuitry uses filtering and a precision divider to map 0-10 V PD
   output to 0-2 V with 20 Hz bandwidth.
-- Sample each at 50 Hz muxing between the two. The faster ADS1115 data rate
-  preserves timing margin for the two-channel 20 ms sampler, at the cost of
-  less converter-side averaging than 128 SPS.
+- Sample each at 20 Hz, muxing between the two within a 50 ms period. Each
+  throughput record uses one fresh conversion. The overlay retains 250 SPS;
+  selecting 64 SPS permits two conversions in about 31.3 ms before I2C and
+  scheduling overhead. Confirm runtime margin and noise on hardware before
+  changing that default. Timing allowances derive from the selected rate.
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - ADC runs at 3.3v
 - Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
@@ -178,15 +182,16 @@ Nominal transmission is 0.88 per blue (YJ B1/B2/B3) FFSW and 0.83 per red
 PD and 0.60 for SM to PD on both channels. The return factors are separate
 from the outbound switch losses.
 
-The compiled route defaults combine the planned static laser attenuation above
-with the switches traversed below. AO and FEI use the same switch count.
+The compiled route defaults in `devices.c` combine static laser attenuation
+with the switches traversed below. Current lab defaults use 50 dB for 1028y and
+1430hk; the component planning table above retains its original target values. AO and FEI use the same switch count.
 
 | Laser | Outbound route input | Switch product | Static loss | Total transmission |
 |---|---|---|---|---|
-| 1028y | yj_laser | B2 × B3 = 0.88² | 73 dB | 3.88119393721e-8 |
+| 1028y | yj_laser | B2 × B3 = 0.88² | 50 dB | 7.744e-6 |
 | 1270j | yj_laser | B2 × B3 = 0.88² | 40 dB | 7.744e-5 |
 | 1430yj | yj_1430 | B1 × B2 × B3 = 0.88³ | 100 dB | 6.81472e-11 |
-| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 100 dB | 5.71787e-11 |
+| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 50 dB | 5.71787e-6 |
 | 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
 | 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
 
@@ -194,6 +199,9 @@ with the switches traversed below. AO and FEI use the same switch count.
 assembly defaults, not measurements of the installed path. Explicit
 `mems/route/loss` records replace the whole total. Dynamic FVOA attenuation is
 applied separately, so static attenuation must not also be folded into its fit.
+MM/SM return defaults are four generic channel/fiber entries, including unknown
+or astrophysical light. Existing per-laser return overrides apply when that
+laser is selected; unknown-source captures use the generic return value.
 
 ## Laser Diode Control
 MODBUS
@@ -208,6 +216,11 @@ For board files:
     - CN9 6 D53 USART_B_TX PD5 USART2
     - CN9 8 D54 USART_B_RTS PD4 USART2
 
+The Nucleo overlay enables USART2's native eight-byte hardware FIFO with
+`fifo-enable`. Modbus uses the stock interrupt-driven UART API at 115200 baud,
+8N1, with PD4 controlled as GPIO driver enable. UART9 and UART12 separately
+provide the 1-Wire waveforms; no Zephyr source patches are required.
+
 ## Laser Bank Power Enable
 - 3.3V, GPIO to enable power driver
 - Switches gate of a BSS138 that connects the not inhibit of the power IC to ground
@@ -220,6 +233,21 @@ For board files:
 
 ## Off-board power switch for photodiodes and laser bank aux heater
 Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
+- The data line has an external 3.3 V pull-up and connects directly to the Nucleo
+  without level shifting.
+- Zephyr's stock UART-backed 1-Wire driver uses 115200 baud for data and 9600
+  baud for reset, producing an approximately 521 us reset-low pulse. The
+  [DS2408 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/ds2408.pdf)
+  specifies 660–720 us at this pull-up voltage (page 3). The owner accepts the
+  stock timing for this board: the previous 480 us GPIO reset also operated
+  outside that specification. Revisit reset timing only if observed failures
+  justify it; no reset-timing extension is applied.
+- Hardware assumption: successful communication with the DS2408 establishes that
+  power is available for its PD/heater loads. Logical relay states establish which
+  loads are powered; no additional downstream power-good feedback is required.
+- Housekeeping checks the port approximately once per second. Five seconds without
+  a response is an operational fault; a single failed transaction warns. The
+  throughput loop consumes confirmed state without 1-Wire I/O.
 - P1 is the power switch for the YJ photodiode
 - P2 is the power switch for the HK photodiode
 - P3 is the power switch for the laser bank aux heater
@@ -234,15 +262,17 @@ Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
   allowed missing-at-boot fault (the mems' PCAL being unavaialble would indicate a much larger, PCB, problem).
 
 For board files:
-- Nucleo: CN9 15 D71 IO PE9
-- MB1404 solder bridges for PE9 must select GPIO on Zio/ST morpho:
+- Nucleo: CN9 15 D71 IO PE9, UART12_RX (AF6) with TX/RX swap and single-wire
+  mode. Pinctrl configures open-drain drive with the external pull-up.
+- MB1404 solder bridges for PE9 must route it to Zio/ST morpho:
   SB35 OFF, SB67 ON.
 
 ## DS18B20 1Wire Temperature Sensor
 - 3.3v digital temp sensor for good measure
 
 For board files:
-- Nucleo: CN9 30 D64 IO PG1 - (can be configured as UART9_TX)
+- Nucleo: CN9 30 D64 IO PG1, UART9_TX (AF11) in single-wire mode, open-drain
+  with the existing external pull-up. Uses the same stock serial 1-Wire timings.
 
 Nucleo board pins in use:
 - USB

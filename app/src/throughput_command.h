@@ -16,8 +16,10 @@
 /**
  * @brief Parse and apply the measure_throughput command.
  *
- * Validates the MQTT/serial payload, starts or stops the matching monitor, and
- * returns one command response. This adapter does not publish telemetry; the
+ * Validates the MQTT/serial payload and both routes, prepares the target monitor,
+ * applies optional launch and required MM/SM return, then starts it with resolved
+ * losses. Can sleep on MEMS, PD power and source I/O. Failures after preparation
+ * stop the monitor and attempt any owned laser shutdown. Returns one response. This adapter does not publish telemetry; the
  * active monitor thread later enqueues telemetry through the command runtime.
  */
 int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

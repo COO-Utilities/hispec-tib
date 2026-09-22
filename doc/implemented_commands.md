@@ -176,7 +176,9 @@ which slow resources it can touch, and known implementation-specific caveats.
   `throughput_monitor_thread()` in `app/src/throughput_monitor.c`.
 - Side effects: applies the requested output route and captures its loss at
   start, starts or stops throughput telemetry, can enable photodiode power, and
-  with autolevel enabled can set attenuation and laser current.
+  with autolevel enabled can set attenuation and laser current. Streams fresh
+  20 Hz acquisitions; only one autolevel owner is allowed. Dark/calibration
+  excludes starts. Fault/expiry/stop shuts down the owned laser.
 - Enqueue: telemetry is best-effort through `outbound_queue`; command handlers
   do not publish directly.
 
@@ -220,6 +222,15 @@ which slow resources it can touch, and known implementation-specific caveats.
   auto-off handled by laser-owned delayable work.
 - Blocking: Maiman Modbus and bank boot/off sleeps can block.
 
+### Laser zero level and explicit stop
+
+`laser name=1028y value=0` writes zero current and retains driver readiness and the
+existing auto-off deadline. `laser name=1028y stop=true` shuts down the diode and
+applies `disable_tec_at_autooff`. Stop accepts zero/omitted value and no `autooff_s`.
+Identity/configuration are reused across ordinary stops until bank power cycles.
+Compact status reads dynamic measurements and uses cached identity/setpoints;
+`laser/status` explicitly reads engineering registers.
+
 ### `laser/tune`, `laser/status`, `laser/settings`
 
 - Owner: `laser_command.c` handlers with hardware work in `lasers.c` and
@@ -260,7 +271,8 @@ which slow resources it can touch, and known implementation-specific caveats.
   configurable dark windows in `app/src/photodiode.c`; persistent dark records
   in `app/src/app_settings.c`.
 - Board restriction: TIB only.
-- Side effects: arms a sampler-owned dark capture with `duration_ms`, forces
+- Side effects: stops throughput and its owned laser before arming a
+  sampler-owned dark capture with `duration_ms`, forces
   dark with `dark_mv` and optional `rms_mv`, resets lowest-dark tracking with
   `reset_lowest`, and optionally persists the selected channel's dark settings.
 

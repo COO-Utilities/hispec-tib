@@ -447,7 +447,16 @@ int coo_cmd_key_suffix_pair_copy(const char *key,
 
 bool coo_cmd_payload_empty(const struct coo_cmd_request *cmd)
 {
-	return cmd == NULL || cmd->payload_len == 0U || strcmp(cmd->payload, "{}") == 0;
+	if (cmd == NULL || cmd->payload_len == 0U) {
+		return true;
+	}
+	const char *p = coo_json_skip_ws(cmd->payload);
+
+	if (*p++ != '{') {
+		return false;
+	}
+	p = coo_json_skip_ws(p);
+	return *p == '}' && *coo_json_skip_ws(p + 1) == '\0';
 }
 
 bool coo_cmd_copy_mqtt_utf8(const struct mqtt_utf8 *topic,
@@ -490,7 +499,10 @@ bool coo_cmd_serial_next_token(const char **cursor, char *out, size_t out_len)
 
 	len = strcspn(start, " \t");
 	if (len >= out_len) {
-		len = out_len - 1U;
+		/* Leave the token pending so has_extra() distinguishes overflow
+		 * from end-of-input in callers reading optional tokens.
+		 */
+		return false;
 	}
 
 	memcpy(out, start, len);
@@ -712,6 +724,9 @@ static int serial_payload_from_key_values(const char *payload, char *out,
 			return -EINVAL;
 		}
 		first = false;
+	}
+	if (coo_cmd_serial_has_extra(cursor)) {
+		return -ENOSPC;
 	}
 
 	written = snprintk(out + off, out_len - off, "}");
@@ -1062,19 +1077,19 @@ static int runtime_validation_reply(int reply_rc)
 	return reply_rc == 0 ? 1 : reply_rc;
 }
 
-static int runtime_validate_payload_keys(const struct coo_cmd_spec *spec,
+static int runtime_validate_payload_keys(const char *allowed_keys,
 					 const struct coo_cmd_request *cmd,
 					 struct coo_cmd_response *out)
 {
 	char unknown_key[64] = {0};
 	int rc;
 
-	if (spec == NULL || cmd == NULL || coo_cmd_payload_empty(cmd)) {
+	if (cmd == NULL || coo_cmd_payload_empty(cmd)) {
 		return 0;
 	}
 
 	rc = coo_json_validate_top_level_keys(cmd->payload,
-					      spec->allowed_payload_keys,
+					      allowed_keys,
 					      unknown_key,
 					      sizeof(unknown_key));
 	if (rc == 0) {
@@ -1741,7 +1756,8 @@ static int runtime_parse_reboot_options(const struct coo_cmd_request *cmd,
 		return rc;
 	}
 	if (changed) {
-		return 0;
+		return coo_json_validate_top_level_keys(cmd->payload,
+						 "erase_non_ip_settings", NULL, 0U);
 	}
 
 	/* Generic serial shorthand normalizes reboot erase_non_ip_settings to value. */
@@ -1835,12 +1851,18 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 #endif
 
 	if (runtime_key_is_help(cmd->key)) {
+		if (runtime_validate_payload_keys("", cmd, out) != 0) {
+			return true;
+		}
 		(void)runtime_help_response(runtime, cmd, out);
 		return true;
 	}
 
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	if (runtime_key_is_serial_guard(cmd->key)) {
+		if (runtime_validate_payload_keys("seconds,persist", cmd, out) != 0) {
+			return true;
+		}
 		if (cmd->msg_type == COO_CMD_EFFECT) {
 			(void)runtime_serial_guard_set(runtime, cmd, out);
 		} else {
@@ -1852,6 +1874,9 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 
 #if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_key_is_reboot(cmd->key)) {
+		if (runtime_validate_payload_keys("erase_non_ip_settings,value", cmd, out) != 0) {
+			return true;
+		}
 		(void)runtime_reboot_set(runtime, cmd, out);
 		return true;
 	}
@@ -1911,7 +1936,7 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 		return coo_cmd_error(out, cmd, "command unavailable on this board");
 	}
 	{
-		int validate_rc = runtime_validate_payload_keys(spec, cmd, out);
+		int validate_rc = runtime_validate_payload_keys(spec->allowed_payload_keys, cmd, out);
 
 		if (validate_rc > 0) {
 			return 0;
@@ -1992,7 +2017,7 @@ static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 			return COO_CMD_EFFECT;
 		case COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT:
 			return (!coo_cmd_payload_empty(cmd) ||
-				coo_cmd_key_suffix_after(cmd->key, spec->key)[0] != '\0') ?
+				strcmp(cmd->key, spec->key) != 0) ?
 			       COO_CMD_EFFECT : COO_CMD_QUERY;
 		case COO_CMD_CLASS_CUSTOM:
 			if (spec->custom_classify != NULL) {
@@ -2095,6 +2120,10 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 	}
 
 	cmd = &runtime->ingress_cmd;
+	if (strlen(key) >= sizeof(cmd->key)) {
+		runtime_enqueue_serial_error(runtime, "command key too long");
+		return;
+	}
 	memset(cmd, 0, sizeof(*cmd));
 	cmd->source = COO_CMD_SOURCE_SERIAL;
 	strncpy(cmd->key, key, sizeof(cmd->key) - 1U);

@@ -14,6 +14,8 @@
 #include <stdint.h>                    // int16_t, int64_t, etc.
 #include <string.h>
 #include <math.h>
+#include <time.h>
+#include <zephyr/sys/clock.h>
 
 #include "photodiode.h"
 #include "app_settings.h"
@@ -69,6 +71,13 @@ const char *const photodiode_channel_names[PHOTODIODE_CHANNEL_COUNT] = {
 };
 
 static K_TIMER_DEFINE(pd_sample_timer, NULL, NULL);
+/* Latest-state handoff: a delayed reader sees the newest acquisition, not a queue. */
+static K_SEM_DEFINE(pd_sample_ready, 0, 1);
+
+int photodiode_wait_for_sample(k_timeout_t timeout)
+{
+    return k_sem_take(&pd_sample_ready, timeout);
+}
 
 /* ADC_GAIN_1 gives the ADS1115 a +/-2.048 V bipolar range. Single-ended
  * measurements use its positive 15-bit half, or exactly 62.5 uV per count.
@@ -83,11 +92,7 @@ static K_TIMER_DEFINE(pd_sample_timer, NULL, NULL);
 #define PD_NOISE_WARNING_COOLDOWN_MS 60000U
 #define PD_WINDOW_DEFAULT_DURATION_MS PHOTODIODE_FIXED_WINDOW_MS
 #define PD_WINDOW_MAX_DURATION_MS APP_PD_DARK_DURATION_MAX_MS
-#define PD_WINDOW_MAX_SAMPLES (PD_WINDOW_MAX_DURATION_MS / PUBLISH_INTERVAL_MS)
-/* Match the existing duration-to-sample rounding; reuse the fixed ring's index. */
-#define PD_THROUGHPUT_SAMPLES ((PHOTODIODE_FIXED_WINDOW_MS + PUBLISH_INTERVAL_MS / 2U) / PUBLISH_INTERVAL_MS)
-BUILD_ASSERT(PD_THROUGHPUT_SAMPLES > 0U && PD_THROUGHPUT_SAMPLES <= PD_WINDOW_MAX_SAMPLES,
-	     "normalized references must cover the fixed window");
+#define PD_WINDOW_MAX_SAMPLES (PD_WINDOW_MAX_DURATION_MS / PHOTODIODE_SAMPLE_INTERVAL_MS)
 #define PD_STEP_MIN_UV 5000U
 #define PD_STEP_MIN_MV ((double)PD_STEP_MIN_UV / 1000.0)
 #define PD_STEP_RMS_MULT 8.0
@@ -138,16 +143,13 @@ struct photodiode_runtime_channel {
 	double net_err_mv;
 	double power_uw;
 	double power_err_uw;
-	int64_t updated_ms;
 	int64_t next_adc_warning_ms;
 	int64_t next_noise_warning_ms;
 	struct pd_window_runtime configurable_window;
 	struct pd_window_runtime fixed_window;
-	struct photodiode_throughput_reference reference;
-	struct photodiode_throughput_reference references[PD_THROUGHPUT_SAMPLES];
-	struct photodiode_throughput_result throughput;
-	/* Reject a conversion begun before a new measurement, without a sample counter. */
-	int64_t throughput_reset_ms;
+	int64_t configurable_start_ms; /* Exclude a conversion begun before window reset. */
+	int64_t sample_ms;
+	uint64_t t_ms;
 	struct photodiode_dark_action dark_action;
 };
 
@@ -206,6 +208,8 @@ static uint32_t pd_ads1115_conversion_us(void)
     }
 }
 
+
+
 static uint64_t pd_ads1115_i2c_wire_us_per_sample(void)
 {
     return pd_i2c_wire_us_for_bits(PD_ADC_I2C_WIRE_BITS_PER_SAMPLE);
@@ -250,7 +254,7 @@ static void pd_timing_note_loop(struct photodiode_loop_timing *loop,
     }
 
     loop->worst_loop_us = elapsed_us;
-    loop->min_margin_us = ((int64_t)PUBLISH_INTERVAL_MS * 1000LL) -
+    loop->min_margin_us = ((int64_t)PHOTODIODE_SAMPLE_INTERVAL_MS * 1000LL) -
                           (int64_t)elapsed_us;
     /* Earlier phase probes showed settings refresh, rolling-stat updates, and
      * shared-state updates are normally sub-100 us. Keep the durable metric as
@@ -379,29 +383,18 @@ static int pd_read_raw(enum photodiode_channel channel, int16_t *raw)
 double photodiode_power_uw_from_mv(double net_mv,
                                    const struct app_pd_channel_settings *settings)
 {
-    double signal_v;
-    double power_w;
-
-    if (settings == NULL || net_mv <= 0.0 ||
-        settings->responsivity_a_per_w <= 0.0 ||
-        settings->transimpedance_v_per_a <= 0.0) {
-        return 0.0;
-    }
-
-    signal_v = net_mv / 1000.0;
-    power_w = signal_v / (settings->transimpedance_v_per_a *
-                          settings->responsivity_a_per_w);
-    return power_w * 1.0e6;
+    /* Settings owns validated gain/response. The comparison preserves NaN;
+     * fmax(0, NaN) would instead hide a missing reading as measured zero.
+     */
+    double signal_mv = net_mv < 0.0 ? 0.0 : net_mv;
+    return signal_mv * 1.0e3 /
+        (settings->transimpedance_v_per_a * settings->responsivity_a_per_w);
 }
 
-static double photodiode_nearest_wavelength_coefficient(double wavelength_nm)
+double photodiode_wavelength_coefficient(double wavelength_nm)
 {
     double best_delta;
     double best_coeff;
-
-    if (wavelength_nm <= 0.0 || !isfinite(wavelength_nm)) {
-        return 0.0;
-    }
 
     best_delta = fabs(wavelength_nm - wavelength_coefficients[0].wavelength_nm);
     best_coeff = wavelength_coefficients[0].coefficient;
@@ -422,11 +415,7 @@ double photodiode_power_uw_from_mv_at_wavelength(
     double wavelength_nm,
     const struct app_pd_channel_settings *settings)
 {
-    double coefficient = photodiode_nearest_wavelength_coefficient(wavelength_nm);
-
-    if (coefficient <= 0.0) {
-        return 0.0;
-    }
+    double coefficient = photodiode_wavelength_coefficient(wavelength_nm);
 
     return photodiode_power_uw_from_mv(net_mv, settings) * coefficient;
 }
@@ -435,21 +424,9 @@ double photodiode_photon_flux_from_mv(double net_mv,
                                       double wavelength_nm,
                                       const struct app_pd_channel_settings *settings)
 {
-    double power_w;
-    double photon_j;
-
-    if (wavelength_nm <= 0.0) {
-        return 0.0;
-    }
-
-    power_w = photodiode_power_uw_from_mv_at_wavelength(
+    double power_w = photodiode_power_uw_from_mv_at_wavelength(
         net_mv, wavelength_nm, settings) * 1.0e-6;
-    if (power_w <= 0.0) {
-        return 0.0;
-    }
-
-    photon_j = PLANCK_J_S * LIGHT_M_PER_S / (wavelength_nm * 1.0e-9);
-    return power_w / photon_j;
+    return power_w * (wavelength_nm * 1.0e-9) / (PLANCK_J_S * LIGHT_M_PER_S);
 }
 
 static bool pd_dark_result_valid(const struct app_pd_dark_result *dark)
@@ -498,21 +475,21 @@ bool photodiode_settings_valid(const struct app_pd_channel_settings *settings)
 
 static uint16_t pd_window_duration_to_samples(uint32_t duration_ms)
 {
-	uint32_t requested_ms = duration_ms == 0U ? PUBLISH_INTERVAL_MS : duration_ms;
+	uint32_t requested_ms = duration_ms == 0U ? PHOTODIODE_SAMPLE_INTERVAL_MS : duration_ms;
 	uint32_t samples;
 
 	if (requested_ms >= PD_WINDOW_MAX_DURATION_MS) {
 		return (uint16_t)PD_WINDOW_MAX_SAMPLES;
 	}
 
-	requested_ms += PUBLISH_INTERVAL_MS / 2U;
-	samples = requested_ms / PUBLISH_INTERVAL_MS;
+	requested_ms += PHOTODIODE_SAMPLE_INTERVAL_MS / 2U;
+	samples = requested_ms / PHOTODIODE_SAMPLE_INTERVAL_MS;
 	return (uint16_t)CLAMP(samples, 1U, PD_WINDOW_MAX_SAMPLES);
 }
 
 static uint32_t pd_window_samples_to_duration_ms(uint16_t samples)
 {
-	return (uint32_t)samples * PUBLISH_INTERVAL_MS;
+	return (uint32_t)samples * PHOTODIODE_SAMPLE_INTERVAL_MS;
 }
 
 static void pd_window_result_clear(struct photodiode_window_result *result)
@@ -581,6 +558,37 @@ static void pd_window_snapshot_last(struct pd_window_runtime *window)
 	window->last = window->current;
 }
 
+/* Measured dark RMS is the empirical single-reading noise baseline (already
+ * including ADC noise). Quantization RMS is a floor, not an added duplicate.
+ * Forced-dark rms_mv instead describes uncertainty in the supplied offset.
+ */
+static double pd_read_noise_mv(const struct app_pd_dark_result *dark)
+{
+    /* Uniform rounding error over [-LSB/2, +LSB/2] has variance LSB^2/12,
+     * hence RMS LSB/sqrt(12): 0.01804 mV for our 0.0625 mV code spacing.
+     * This is a quantization floor, not a measurement of total ADC noise.
+     */
+    double quantization = PHOTODIODE_ADC_LSB_MV / sqrt(12.0);
+
+    return dark->duration_ms > 0U ?
+        MAX(quantization, dark->rms_mv) : quantization;
+}
+
+/* A measured dark mean has a smaller uncertainty than its individual readings.
+ * This assumes disjoint dark samples; recapture dark after changing ADC cadence
+ * or data rate. The saved duration/failures describe samples at that cadence.
+ */
+static double pd_dark_mean_error_mv(const struct app_pd_dark_result *dark)
+{
+    if (dark->duration_ms == 0U) {
+        return dark->rms_mv;
+    }
+    int samples = (dark->duration_ms + PHOTODIODE_SAMPLE_INTERVAL_MS / 2U) /
+                  PHOTODIODE_SAMPLE_INTERVAL_MS;
+    samples -= dark->failed_samples;
+    return samples > 0 ? pd_read_noise_mv(dark) / sqrt((double)samples) : (double)NAN;
+}
+
 static void pd_window_recompute(struct pd_window_runtime *window,
 				const struct app_pd_channel_settings *settings,
 				int64_t now_ms)
@@ -644,10 +652,10 @@ static void pd_window_recompute(struct pd_window_runtime *window,
 	next.mean_net_mv = sum_net_mv / (double)good_count;
 	next.rms_mv = sqrt(m2 / (double)good_count);
 	next.mean_net_err_mv = next.rms_mv / sqrt((double)good_count);
-	if (settings != NULL && settings->dark.rms_mv > 0.0) {
-		next.mean_net_err_mv = sqrt(next.mean_net_err_mv * next.mean_net_err_mv +
-					    settings->dark.rms_mv *
-						    settings->dark.rms_mv);
+	if (settings != NULL) {
+		next.mean_net_err_mv = hypot(
+			MAX(next.rms_mv, pd_read_noise_mv(&settings->dark)) / sqrt((double)good_count),
+			pd_dark_mean_error_mv(&settings->dark));
 	}
 	if (settings != NULL) {
 		next.power_uw = photodiode_power_uw_from_mv(next.mean_net_mv, settings);
@@ -680,64 +688,14 @@ static void pd_window_add_sample(struct pd_window_runtime *window,
 	pd_window_recompute(window, settings, now_ms);
 }
 
-/* Average per-acquisition throughput, retaining every good fixed-window sample.
- * Source calibration and dark uncertainty are shared errors, not independent
- * noise observations: neither floor is divided by sqrt(sample count).
- * Called with pd_runtime_lock held; arithmetic only, no hardware/settings I/O.
- */
-static void pd_throughput_recompute(struct photodiode_runtime_channel *runtime,
-				    const struct app_pd_channel_settings *settings)
-{
-	const struct pd_window_runtime *window = &runtime->fixed_window;
-	struct photodiode_throughput_result result = {.mean = NAN, .pd_error = NAN, .error = NAN};
-	double mean = 0.0, m2 = 0.0, scale_sum = 0.0, calibration_sum = 0.0;
 
-	for (uint16_t i = 0U; i < window->filled; ++i) {
-		const struct photodiode_throughput_reference *ref = &runtime->references[i];
-
-		if (!window->good[i] || !(ref->scale_per_mv > 0.0)) {
-			continue;
-		}
-		double value = window->net_mv[i] * ref->scale_per_mv;
-		double delta = value - mean;
-
-		result.samples++;
-		mean += delta / result.samples;
-		m2 += delta * (value - mean);
-		scale_sum += ref->scale_per_mv;
-		calibration_sum += fabs(value) * ref->source_relative_error;
-	}
-	if (result.samples > 0U) {
-		result.mean = mean;
-		result.pd_error = hypot(sqrt(MAX(m2, 0.0)) / result.samples,
-			settings->dark.rms_mv * scale_sum / result.samples);
-		result.error = hypot(result.pd_error, calibration_sum / result.samples);
-	}
-	runtime->throughput = result;
-}
-
-void photodiode_set_throughput_reference(enum photodiode_channel channel,
-	struct photodiode_throughput_reference reference, bool reset)
-{
-	k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-	struct photodiode_runtime_channel *runtime = &pd_runtime[channel];
-
-	runtime->reference = reference;
-	if (reset) {
-		memset(runtime->references, 0, sizeof(runtime->references));
-		runtime->throughput = (struct photodiode_throughput_result){
-			.mean = NAN, .pd_error = NAN, .error = NAN};
-		runtime->throughput_reset_ms = k_uptime_get();
-	}
-	k_mutex_unlock(&pd_runtime_lock);
-}
 
 static bool pd_sample_is_step(const struct photodiode_runtime_channel *channel,
 			      double mv)
 {
 	double threshold = PD_STEP_MIN_MV;
 
-	if (channel == NULL || channel->updated_ms <= 0) {
+	if (channel == NULL || channel->sample_ms <= 0) {
 		return false;
 	}
 	if (channel->fixed_window.current.valid &&
@@ -771,11 +729,11 @@ pd_dark_window_from_settings(const struct app_pd_dark_result *dark,
 	result.mean_mv = dark->mean_mv;
 	result.mean_net_mv = 0.0;
 	result.rms_mv = dark->rms_mv;
-	result.mean_net_err_mv = dark->rms_mv;
+	result.mean_net_err_mv = pd_dark_mean_error_mv(dark);
 	result.min_mv = dark->min_mv;
 	result.max_mv = dark->max_mv;
 	result.power_uw = 0.0;
-	result.power_err_uw = photodiode_power_uw_from_mv(dark->rms_mv, settings);
+	result.power_err_uw = photodiode_power_uw_from_mv(result.mean_net_err_mv, settings);
 	result.max_raw = dark->max_raw;
 	return result;
 }
@@ -910,8 +868,7 @@ static void pd_emit_dark_failed_warning(enum photodiode_channel channel)
 
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
                               const struct app_pd_channel_settings *settings,
-                              struct photodiode_throughput_reference reference,
-                              int64_t acquisition_ms)
+                              int64_t acquisition_ms, uint64_t utc_start_ms)
 {
 	struct photodiode_runtime_channel *runtime;
 	struct app_pd_dark_result completed_dark = {0};
@@ -930,10 +887,10 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	if (rc == 0) {
 		mv = (double)raw * PHOTODIODE_ADC_LSB_MV;
 		net_mv = mv - settings->dark.mean_mv;
-		net_err_mv = sqrt((PHOTODIODE_ADC_LSB_MV *
-				   PHOTODIODE_ADC_LSB_MV) +
-				  (settings->dark.rms_mv *
-				   settings->dark.rms_mv));
+		net_err_mv = hypot(pd_read_noise_mv(&settings->dark), pd_dark_mean_error_mv(&settings->dark));
+		if (mv >= PHOTODIODE_ADC_USABLE_MV) {
+			net_err_mv = NAN; /* Numerical reading retained as an overrange bound. */
+		}
 	}
 
 	k_mutex_lock(&pd_runtime_lock, K_FOREVER);
@@ -951,20 +908,19 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 		runtime->net_mv = net_mv;
 		runtime->net_err_mv = net_err_mv;
 		runtime->power_uw = photodiode_power_uw_from_mv(net_mv, settings);
-		runtime->power_err_uw = photodiode_power_uw_from_mv(net_err_mv,
-								    settings);
-		runtime->updated_ms = now;
+		runtime->power_err_uw = photodiode_power_uw_from_mv(net_err_mv, settings);
+		runtime->sample_ms = acquisition_ms;
+		runtime->t_ms = utc_start_ms + (uint64_t)(now - acquisition_ms) / 2U;
 	}
 
-	pd_window_add_sample(&runtime->configurable_window, rc, raw, mv, net_mv, settings, now);
-	/* Only a measurement restart invalidates a conversion already in flight.
-	 * Ordinary source changes preserve that conversion's latched reference.
+	/* Reset can occur while an ADC conversion is in flight. Count only reads
+	 * begun afterward in the new calibration/dark window; fixed diagnostics
+	 * still receive every conversion attempt.
 	 */
-	runtime->references[runtime->fixed_window.index] =
-		acquisition_ms > runtime->throughput_reset_ms ? reference :
-		(struct photodiode_throughput_reference){0};
+	if (acquisition_ms > runtime->configurable_start_ms) {
+		pd_window_add_sample(&runtime->configurable_window, rc, raw, mv, net_mv, settings, now);
+	}
 	pd_window_add_sample(&runtime->fixed_window, rc, raw, mv, net_mv, settings, now);
-	pd_throughput_recompute(runtime, settings);
 	commit_dark = pd_stage_completed_dark_locked(runtime, &completed_dark,
 						     &dark_persist,
 						     &dark_reset_lowest,
@@ -1040,14 +996,14 @@ void photodiode_get_status(struct photodiode_status *out)
         struct photodiode_channel_status *dst = &out->channel[i];
         const struct app_pd_channel_settings *ch = &settings.channel[i];
 
-        if (src->updated_ms > 0) {
+        if (src->sample_ms > 0) {
             dst->raw = src->raw;
             dst->mv = src->mv;
             dst->net_mv = src->net_mv;
             dst->net_err_mv = src->net_err_mv;
             dst->power_uw = src->power_uw;
             dst->power_err_uw = src->power_err_uw;
-            dst->age_ms = (uint32_t)(now - src->updated_ms);
+            dst->age_ms = (uint32_t)(now - src->sample_ms);
         } else {
             dst->raw = INT16_MIN;
             dst->mv = NAN;
@@ -1060,7 +1016,8 @@ void photodiode_get_status(struct photodiode_status *out)
         dst->configurable_window = src->configurable_window.current;
         dst->last_configurable_window = src->configurable_window.last;
         dst->fixed_window = src->fixed_window.current;
-        dst->throughput = src->throughput;
+        dst->sample_ms = src->sample_ms;
+        dst->t_ms = src->t_ms;
         dst->last_fixed_window = src->fixed_window.last;
         dst->dark_window = pd_dark_window_from_settings(&ch->dark, true, ch);
 	        dst->lowest_dark_window =
@@ -1082,6 +1039,7 @@ static void pd_set_configurable_window_locked(struct photodiode_runtime_channel 
 	pd_windows_ensure_locked(runtime);
 	window = &runtime->configurable_window;
 	window->last = window->current;
+	runtime->configurable_start_ms = k_uptime_get();
 	window->target_samples = sample_count;
 	pd_window_reset_current(window);
 }
@@ -1107,7 +1065,7 @@ int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
 	}
 	pd_set_configurable_window_locked(&pd_runtime[channel], sample_count);
 	k_mutex_unlock(&pd_runtime_lock);
-	return 0;
+	return (int)pd_window_samples_to_duration_ms(sample_count);
 }
 
 int photodiode_start_dark_capture(enum photodiode_channel channel,
@@ -1217,7 +1175,7 @@ void photodiode_thread(void *p1, void *p2, void *p3)
      */
     app_settings_get_photodiode(&settings);
 
-    k_timer_start(&pd_sample_timer, K_NO_WAIT, K_MSEC(PUBLISH_INTERVAL_MS));
+    k_timer_start(&pd_sample_timer, K_NO_WAIT, K_MSEC(PHOTODIODE_SAMPLE_INTERVAL_MS));
 
     while (1) {
         struct photodiode_loop_timing loop_timing = {0};
@@ -1239,11 +1197,13 @@ void photodiode_thread(void *p1, void *p2, void *p3)
             uint64_t adc_elapsed_us;
             int rc;
 
-            /* Capture the process input before starting this ADC conversion. */
-            k_mutex_lock(&pd_runtime_lock, K_FOREVER);
-            struct photodiode_throughput_reference reference = pd_runtime[i].reference;
+            /* One monotonic sample time identifies this acquisition; UTC is
+             * separately retained for alignment with external experiment data.
+             */
             int64_t acquisition_ms = k_uptime_get();
-            k_mutex_unlock(&pd_runtime_lock);
+            struct timespec utc;
+            (void)sys_clock_gettime(SYS_CLOCK_REALTIME, &utc);
+            uint64_t utc_start_ms = (uint64_t)utc.tv_sec * 1000U + utc.tv_nsec / 1000000U;
             adc_start_cycles = k_cycle_get_64();
             rc = pd_read_raw((enum photodiode_channel)i, &raw);
             adc_elapsed_us = k_cyc_to_us_floor64(k_cycle_get_64() - adc_start_cycles);
@@ -1258,9 +1218,13 @@ void photodiode_thread(void *p1, void *p2, void *p3)
                                        photodiode_channel_names[i], rc);
             }
             pd_update_channel((enum photodiode_channel)i, rc, raw, &settings.channel[i],
-                              reference, acquisition_ms);
+                              acquisition_ms, utc_start_ms);
         }
 
+        /* Both channel snapshots are ready. Binary wakeup coalesces overruns;
+         * the consumer uses acquisition timestamps and never replays old data.
+         */
+        k_sem_give(&pd_sample_ready);
         pd_timing_note_loop(&loop_timing,
                             k_cyc_to_us_floor64(k_cycle_get_64() - loop_start_cycles),
                             adc_total_us);

@@ -66,6 +66,13 @@ Draft 0.1
   with topic suffixes, such as `atten/<laser>/coeff`, `mems/split/yj`, or
   `laser/bankpower/<mode>`, opt into prefix matching. Unknown top-level payload
   keys are rejected before the domain handler runs.
+- Invalid arguments return an informative `error`; where useful, the message
+  names the field and refers to the catalog (`help`, `help/options`, and this
+  document). Unknown nested laser settings, PID fields, and attenuator
+  coefficient fields are also rejected. Unsigned integer fields reject negative,
+  fractional, and overflowing values; floating-point fields require finite values.
+- When a selector is supplied both in a topic suffix and in the payload, both
+  must be valid and agree. A payload selector cannot repair an invalid suffix.
 
 ## Serial Command Form
 
@@ -90,7 +97,7 @@ No-payload serial request form is just the key:
 
 ```text
 status
-mems/yj_cal_laser
+mems/yj_laser_cal
 mems/split/yj
 ```
 
@@ -99,7 +106,7 @@ Requests with payload use the key followed by a payload. There are no `get` or
 
 ```text
 serialguard seconds=60
-mems/yj_cal_laser state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
+mems/yj_laser_cal state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
 mems/split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 stop_in_s=300
 laser/bankpower/override_on
 ```
@@ -111,8 +118,9 @@ Payload rules:
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
   `state=A off_in_s=30`.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
-  `serialguard off`, `serialguard 60`, or `mems/yj_cal_laser A 0.5 30`.
+  `serialguard off`, `serialguard 60`, or `mems/yj_laser_cal A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
+- Overlong command keys and shorthand tokens are rejected rather than truncated.
 
 Serial response format:
 
@@ -139,31 +147,31 @@ not be needed for normal serial operation.
 ## Command Endpoints
 - [`help`](#help)
 - [`help/options`](#help-options)
-- [`mems/route`](#mems-route)
-- [`mems/route/loss`](#route-loss)
+- [`status`](#status)
+- [`temps`](#temps)
+- [`time`](#time)
+- [`ip`](#ip)
+- [`mqtt`](#mqtt)
+- [`serialguard`](#serialguard)
+- [`reboot`](#reboot)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
-- [`measure_throughput`](#measure-throughput)
+- [`mems/route`](#mems-route)
+- [`mems/route/loss`](#route-loss)
+- [`mems/split`](#mems-split)
 - [`laser`](#laser)
 - [`laser/tune`](#laser-tune)
 - [`laser/status`](#laser-status)
 - [`laser/settings`](#laser-settings)
 - [`laser/bankpower`](#laserbank-power)
-- [`laser/clearfaults`](#laserbank-clearfaults)
 - [`laser/bankheater`](#laserbank-heater)
+- [`laser/clearfaults`](#laserbank-clearfaults)
 - [`atten/<laser>`](#atten)
 - [`atten/<laser>/coeff`](#atten-coeff)
 - [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
 - [`pd/settings/<yj|hk>`](#pd-settings)
-- [`ip`](#ip)
-- [`mqtt`](#mqtt)
-- [`serialguard`](#serialguard)
-- [`time`](#time)
-- [`temps`](#temps)
-- [`status`](#status)
-- [`reboot`](#reboot)
-- [`mems/split`](#mems-split)
+- [`measure_throughput`](#measure-throughput)
 - Telemetry: `yj_tput`, `hk_tput`
 - Warnings: [`dt/<device>/warning`](#warning-publication)
 - Boot telemetry: [`dt/<device>/boot`](#boot-telemetry)
@@ -185,9 +193,11 @@ not be needed for normal serial operation.
     "code": "<stable_warning_code>",
     "msg": "<short human text>",
     "context": "<short context>",
-    "uptime_s": 0
+    "uptime_ms": 0
   }
   ```
+
+`uptime_ms` is the device uptime in integer milliseconds
 
 Warnings do not imply command failure unless the command response also reports
 an error. Most warning delivery is intentionally lossy and is not mirrored into
@@ -251,6 +261,324 @@ while serial guard is active and attenuator DAC-range clamping.
   board-selected MEMS route table. `routes` is the authoritative list of valid
   input/output pairs for `mems/route` and route-bearing commands. `lasers` is
   populated on TIB and empty on non-TIB board profiles.
+
+(status)=
+### `status`
+- **No payload or payload -> firmware status.**
+
+  Optional payload:
+  ```json
+  {
+    "ip": true,
+    "lasers": true,
+    "attens": true
+  }
+  ```
+
+  Response:
+  ```json
+  {
+    "fw": "<tag-or-short-git-hash>",
+    "boots": 0,
+    "board": "tib|cal_yj|cal_hk|as|unknown",
+    "board_ok": true,
+    "mems_switches": 8,
+    "relay_err": 0,
+    "ip": "<response of ip command query>",
+    "amb_c": 0.0,
+    "pd_on_s": 0,
+    "laserbank_on_s": 0,
+    "lasers": {
+      "<lasername>": {
+        "power_mw": 0.0,
+        "ready": false,
+        "tec_on_s": null,
+        "off_in_s": null
+      }
+    },
+    "attens": {
+      "<attenname>": {
+        "value_db": 0.0
+      }
+    },
+    "lastcmd": {
+      "name": "<cmdname>",
+      "src": "mqtt",
+      "t_ms": 0
+    }
+  }
+  ```
+- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
+  Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
+  when inactive or unavailable. `ready` reports whether the laser can operate.
+  `lastcmd` is restored from command-dispatch NVS storage when available.
+
+
+(temps)=
+### `temps`
+- **No payload -> temperature status:**
+  ```json
+  {
+    "ambient_c": 0.0,
+    "laserbank_c": 0.0,
+    "lasers": {
+      "<lasername>": 0.0
+    }
+  }
+  ```
+
+- **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
+  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
+  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
+  returns `{"error":"busy"}` instead of an ambient-only partial response.
+
+(time)=
+### `time`
+- **No payload -> firmware time:**
+  ```json
+  {
+    "utc": 0,
+    "uptime_s": 0
+  }
+  ```
+- **Payload:** set firmware time.
+  ```json
+  {"unix_ms":0}
+  ```
+
+- **Notes:** set time may be overwritten later by NTP if configured and responding.
+
+(ip)=
+### `ip`
+- **No payload -> IP configuration:**
+  ```json
+  {
+    "src": "<source>",
+    "try_dhcp_first": true,
+    "prefer_dhcpdns": true,
+    "prefer_dhcpntp": true,
+    "manual": {
+      "ip": "<ip>",
+      "subnet": "<subnet>",
+      "gateway": "<gateway>",
+      "dns": "<ip>",
+      "ntp": "<ip>"
+    },
+    "active": {
+      "ready": true,
+      "ip": "<ip>"
+    },
+    "ntp": {
+      "src": "<source>",
+      "server": "<ip>"
+    }
+  }
+  ```
+- **Payload:** update IP configuration.
+  ```json
+  {
+    "ip": "<ip>",
+    "ntp": "<ip>",
+    "dns": "<ip>",
+    "subnet": "<subnet>",
+    "gateway": "<gateway>",
+    "try_dhcp_first": true,
+    "prefer_dhcpntp": true,
+    "prefer_dhcpdns": true,
+    "persist": true
+  }
+  ```
+
+- **Notes:**
+  - Unsupported features don’t error; supported changes are still applied and
+    partial status reports unsupported fields.
+  - Supported address fields must contain valid dotted IPv4 addresses before
+    networking or saved settings change. `gateway`, `dns`, and `ntp` also accept
+    an empty string to clear the value; `ip` and `subnet` do not.
+  - IP precedence: runtime settings → compiled static defaults. The compiled
+    static defaults are also the last-resort service fallback.
+  - If `try_dhcp_first` is true and DHCP is compiled in, DHCP is tried before the
+    runtime static profile. Static fallback remains DHCP-overridable so a later
+    lease can replace it.
+  - Partial responses include keys indicating which settings are not supported.
+  - network-affecting changes are applied at runtime; ordinary changes do not
+    require reboot.
+  - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
+
+(mqtt)=
+### `mqtt`
+- **No payload -> MQTT broker configuration:**
+  ```json
+  {"broker":"<value>:<port>","dns_supported":true}
+  ```
+- **Payload:** update MQTT broker configuration.
+  ```json
+  {
+    "broker": "<ipv4-or-hostname>:<port>",
+    "persist": true
+  }
+  ```
+
+- **Notes:**
+  - Broker value must be one `<host-or-ip>:<port>` string.
+  - If DNS is not compiled in, hostname values are rejected.
+  - Hostname values must resolve before settings are updated. Numeric IPv4
+    broker values do not require DNS.
+  - Successful set updates runtime settings and triggers MQTT reconnect
+    behavior. If the new broker cannot connect, firmware restores the prior
+    broker and emits a best-effort `mqtt_broker_revert` warning.
+
+(serialguard)=
+### `serialguard`
+- **No payload -> serial guard configuration and current state:**
+  ```json
+  {"serialguard_s":30,"active":true,"remaining_s":12}
+  ```
+- **Payload:** update serial guard configuration.
+  ```json
+  {
+    "seconds": 30
+  }
+  ```
+  Supplying `persist` is rejected; serial guard is runtime-only and is not restored after reboot.
+
+- **Notes:**
+  - Any non-empty serial command activates or refreshes the guard.
+  - The `serialguard` command itself is allowed while the guard is active so an
+    operator can extend, shorten, or disable the current expiry.
+  - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
+    `serialguard off`.
+  - While active, MQTT requests that may change hardware or runtime state are
+    rejected before dispatch and logged. Safe read-only MQTT requests are
+    allowed according to the app command table.
+  - The guard is owned by the command-dispatch library and uses one
+    dispatcher-owned `k_work_delayable` item.
+  - `seconds:0` disables serial override.
+
+(reboot)=
+### `reboot`
+- **No payload:** schedule a non-cancelable reboot after the response window.
+  ```json
+  {"status":"ok","rebooting_in_ms":3000}
+  ```
+- **Payload:** erase persisted app settings except IP settings and boot count
+  immediately before reboot.
+  ```json
+  {"erase_non_ip_settings":true}
+  ```
+- **Serial form:**
+  ```text
+  reboot erase_non_ip_settings
+  ```
+- **Notes:** command dispatch owns the reboot delayable work item. Immediately
+  before reboot it calls the app reboot-prepare hook so firmware can put
+  hardware into a safer state and, when requested, erase non-IP persisted
+  settings. The erase preserves IP settings, boot count, and storage schema
+  metadata. Once a reboot is pending, later commands are rejected before app
+  handlers run.
+
+(mems)=
+### `mems`
+- **No payload -> all MEMS switch states:**
+  ```json
+  {
+    "<switchname>": {
+      "state": "A|B|?"
+    }
+  }
+  ```
+- **Notes:** The all-switch query is intentionally compact so the TIB
+  eight-switch response fits the fixed MQTT payload buffer. Static switches
+  report only `state`. A switch currently configured with a non-constant duty
+  request also includes `duty_cycle`. Use `mems/<switchname>` for
+  actual dwell timing and stop-in details.
+
+(mems-switchname)=
+### `mems/<switchname>`
+- **Topic:** `cmd/<device>/req/mems/<switchname>`
+- **No payload or payload -> one MEMS switch state.**
+
+  Static payload:
+  ```json
+  {"state":"A","force":false}
+  ```
+  or:
+  ```json
+  {"state":"B"}
+  ```
+  Toggle:
+  ```json
+  {
+    "state": "A",
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "off_in_s": 30
+  }
+  ```
+
+  Response:
+  ```json
+  {
+    "state": "A|B|?"
+  }
+  ```
+  For example, `mems/yj_laser_cal state=B` returns:
+  ```json
+  {"state":"B"}
+  ```
+  and `mems/yj_laser_cal state=A` returns:
+  ```json
+  {"state":"A"}
+  ```
+  Response while configured with a non-constant duty request:
+  ```json
+  {
+    "state": "A|B|?",
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "a_ms": 200,
+    "b_ms": 200,
+    "stop_in_s": 30
+  }
+  ```
+- **Notes:**
+  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
+    responses always use uppercase `A`/`B`.
+  - `force:true` is valid only for static A/B requests. It queues one actuation
+    pulse even when the switch already reports that state. Repeated force
+    requests before the pulse fires coalesce to one pending pulse.
+  - `duty_cycle` is only valid with `state:"A"`.
+  - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
+  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
+    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
+    the firmware may quantize duty inside the requested cycle but does not
+    stretch the requested cycle beyond MEMS tick granularity.
+  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
+  - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
+  - Request `off_in_s` is integer seconds, with max 4 hours. Response
+    `stop_in_s` is remaining toggle time.
+  - Static switch requests persist as user intent. With
+    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
+    from that intent and resends the pulse shortly after startup. This reasserts
+    software intent; firmware still does not physically verify switch position
+    across reboot, switch replacement, or external actuation.
+  - Mixed-duty toggle requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
+    using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
+  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
+    constant A or B profiles.
+  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
+    and B states. The firmware keeps all A/B actuation pulses at least
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
+    `cycle_ms` if required.
+  - Static state changes can be delayed until the same pulse-spacing rule is
+    satisfied; status reports the last pulsed state until the delayed pulse
+    occurs. A delayed same-state `force:true` pulse is not separately reported
+    in status.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
+
 
 (mems-route)=
 ### `mems/route`
@@ -333,11 +661,13 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 
 Route-loss records are app settings keyed by route name and laser name or split.
+Each set request accepts exactly one top-level laser field, or one `split` tuple.
+The `lasers` object is a query response only. `persist` requires a loss value.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
 transmission must remain positive. Missing records use the nominal TIB defaults
-in [hardware.md](hardware.md#tib-route-loss-defaults) for known laser AO/FEI and
-matching PD return paths; other route/laser pairs report zero loss. Explicit
+in `devices.c`, documented in [hardware.md](hardware.md#tib-route-loss-defaults),
+for known laser AO/FEI paths and source-independent MM/SM returns; other route/laser pairs report zero loss. Explicit
 records replace the complete default, including an explicit zero loss.
 
 Strings ending in `dB`, `db`, or `DB` accept nonnegative finite loss in dB in the
@@ -356,1367 +686,6 @@ its wavelength-dependent loss record. The return path uses keys such as
 `hk_calin_to_hk_split` and the three output losses. Storage remains transmission;
 these values feed the existing throughput and splitting calculations.
 
-
-(mems)=
-### `mems`
-- **No payload -> all MEMS switch states:**
-  ```json
-  {
-    "<switchname>": {
-      "state": "A|B|?"
-    }
-  }
-  ```
-- **Notes:** The all-switch query is intentionally compact so the TIB
-  eight-switch response fits the fixed MQTT payload buffer. Static switches
-  report only `state`. A switch currently configured with a non-constant duty
-  request also includes `duty_cycle`. Use `mems/<switchname>` for
-  actual dwell timing and stop-in details.
-
-(mems-switchname)=
-### `mems/<switchname>`
-- **Topic:** `cmd/<device>/req/mems/<switchname>`
-- **No payload or payload -> one MEMS switch state.**
-
-  Static payload:
-  ```json
-  {"state":"A","force":false}
-  ```
-  or:
-  ```json
-  {"state":"B"}
-  ```
-  Toggle:
-  ```json
-  {
-    "state": "A",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "off_in_s": 30
-  }
-  ```
-
-  Response:
-  ```json
-  {
-    "state": "A|B|?"
-  }
-  ```
-  For example, `mems/yj_cal_laser state=B` returns:
-  ```json
-  {"state":"B"}
-  ```
-  and `mems/yj_cal_laser state=A` returns:
-  ```json
-  {"state":"A"}
-  ```
-  Response while configured with a non-constant duty request:
-  ```json
-  {
-    "state": "A|B|?",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "a_ms": 200,
-    "b_ms": 200,
-    "stop_in_s": 30
-  }
-  ```
-- **Notes:**
-  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
-    responses always use uppercase `A`/`B`.
-  - `force:true` is valid only for static A/B requests. It queues one actuation
-    pulse even when the switch already reports that state. Repeated force
-    requests before the pulse fires coalesce to one pending pulse.
-  - `duty_cycle` is only valid with `state:"A"`.
-  - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
-  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
-    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
-    the firmware may quantize duty inside the requested cycle but does not
-    stretch the requested cycle beyond MEMS tick granularity.
-  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
-  - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - Request `off_in_s` is integer seconds, with max 4 hours. Response
-    `stop_in_s` is remaining toggle time.
-  - Static switch requests persist as user intent. With
-    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
-    from that intent and resends the pulse shortly after startup. This reasserts
-    software intent; firmware still does not physically verify switch position
-    across reboot, switch replacement, or external actuation.
-  - Mixed-duty toggle requests persist as restart metadata. With
-    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
-    using its original commanded duration. Runtime remaining time is not
-    preserved across reboot.
-  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
-    constant A or B profiles.
-  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
-    and B states. The firmware keeps all A/B actuation pulses at least
-    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
-    `cycle_ms` if required.
-  - Static state changes can be delayed until the same pulse-spacing rule is
-    satisfied; status reports the last pulsed state until the delayed pulse
-    occurs. A delayed same-state `force:true` pulse is not separately reported
-    in status.
-  - If the actual cycle differs from requested, the firmware emits
-    `mems_timing_quantized` on `dt/<device>/warning`.
-
-
-(measure-throughput)=
-### `measure_throughput`
-- **Payload:** start monitoring.
-  ```json
-  {
-    "autolevel": true,
-    "laser": "<lasername>",
-    "fiber": "M",
-    "output": "yj_ao",
-    "max_flux_ph_s": 1.0e12,
-    "off_in_s": 300,
-    "format": "json"
-  }
-  ```
-- **Payload:** start monitoring an externally supplied/calibration input.
-  ```json
-  {
-    "autolevel": false,
-    "laser": "none",
-    "input": "yj_cal",
-    "output": "yj_ao",
-    "fiber": "M",
-    "format": "json"
-  }
-  ```
-- **Payload:** stop monitoring.
-  ```json
-  {
-    "stop": "yj"
-  }
-  ```
-
-`measure_throughput` is the only command that starts or stops photodiode
-streaming. It measures throughput by comparing the route-corrected flux at the
-selected photodiode with the route- and attenuator-corrected laser flux
-estimate.
-
-`autolevel:true` lets firmware adjust the selected laser output level percent
-and logical attenuator to keep the photodiode signal in the useful
-ADC/photodiode range. `autolevel:false` streams the selected photodiode level
-and derived values without adjusting laser level or attenuation during monitoring.
-Stopping an autolevel operation also stops the laser it was using, even if
-manual attenuation has since disabled automatic adjustments. A purely passive
-measurement leaves manual laser output unchanged when stopped. Continuing the
-same source with `autolevel:false` retains an existing operation's laser
-shutdown obligation; replacing its source first stops that autolevel laser.
-Bank power, TECs, and unrelated lasers are left unchanged.
-
-HK and YJ can both stream, with one measurement per photodiode channel. The
-firmware also supports two autolevel loops for engineering configurations with
-optically isolated paths. Normal instrument light paths combine outside this
-controller and influence both photodiodes, so normal operation should use only
-one autolevel loop. Additional manually enabled lasers can also affect the
-readings and throughput estimates; the firmware does not separate mixed light.
-
-`stop:"yj"` or `stop:"hk"` stops that channel; `stop:"all"` attempts both even
-if one laser fails to stop. A failed shutdown returns an error, disables
-streaming/autolevel, and retains the laser identity for an explicit stop retry.
-Expiry and loss of photodiode power use the same shutdown path, logging failures.
-
-Both `format:"json"` and `format:"binary"` remain supported. Firmware defaults
-to JSON when `format` is omitted; the Python `measure_throughput()` helper and
-throughput lab notebook default to binary to preserve small uncertainties.
-Binary `channel` and `wavelength_nm` identify the source, including both 1430 nm
-lasers; the binary packet has no laser-name or autolevel-status field.
-
-Every start requires `output`. Firmware selects the outbound MEMS route before
-starting the monitor. The route input is
-inferred from `laser` unless `input` is supplied explicitly. `laser:"none"` is
-for monitoring externally supplied light and requires `input`, `output`, and
-`autolevel:false`; throughput and emitted-flux fields that require a known
-laser are reported as `null` in JSON or NaN in binary.
-
-`max_flux_ph_s` is optional and valid only with `autolevel:true`. It limits the
-estimated emitted photon flux after the calibrated logical attenuator pair, so
-the limit uses the current laser flux estimate multiplied by
-`attenuator_estimate_transmission()`.
-
-Firmware uses each photodiode channel's configured `responsivity_a_per_w` and
-`transimpedance_v_per_a` from `pd/settings/<yj|hk>` with the active laser
-wavelength estimate. It applies the nearest nominal-laser photodiode
-multiplicative correction coefficient; the current firmware table uses `1.0`
-for every nominal laser wavelength. The photodiode sampler owns ADC reads and
-dark tracking and averaging of individually normalized throughput readings.
-The throughput monitor owns source references, streaming output, and autolevel
-decisions.
-
-Transient ADC read/write errors are treated as missing photodiode samples:
-firmware leaves the last good rolling value intact for streaming consumers and
-counts every failed sample in the active photodiode windows. It emits at most
-one `photodiode_adc_error` warning per channel every 10 seconds while failures
-continue. A window becomes unusable only when all attempted samples in that
-window fail.
-
-**Telemetry topics (published):**
-- `dt/<device>/yj_tput`
-- `dt/<device>/hk_tput`
-
-**Telemetry payload (`format:"json"`):**
-```json
-{
-  "channel": "yj_m",
-  "laser": "1430yj",
-  "autolevel": true,
-  "t_ms": 0,
-  "tp": 0.0,
-  "tp_err": 0.0,
-  "tp_rms_err": 0.0,
-  "pd_flux_ph_s": 0.0,
-  "pd_flux_err_ph_s": 0.0,
-  "laser_flux_ph_s": 0.0,
-  "laser_flux_err_ph_s": 0.0,
-  "pd_route_tx": 1.0,
-  "laser_route_tx": 1.0,
-  "atten_tx": 1.0,
-  "pd_raw": 0,
-  "pd_mv": 0.0,
-  "pd_net_mv": 0.0,
-  "pd_mean_net_mv": 0.0,
-  "pd_mean_net_err_mv": 0.0,
-  "laser_current_ma": 0.0,
-  "atten_db": 0.0,
-  "wavelength_nm": 1430.0,
-  "pd_ontime_s": 0,
-  "laser_current_ontime_s": 0,
-  "flags": []
-}
-```
-
-`channel` combines the photodiode channel and fiber class with an underscore,
-for example `yj_m`, `yj_s`, `hk_m`, or `hk_s`. `t_ms` is Unix time in
-milliseconds from the firmware clock. `pd_ontime_s` is the current continuous
-integer on-time in seconds of the photodiode power relay for that channel.
-
-**Telemetry payload (`format:"binary"`):**
-
-Binary telemetry is little-endian and contains the fields below in order. The
-first field is a zero-padded 8-byte ASCII channel/fiber label such as `yj_m`.
-
-```text
-char[8] channel
-uint64 t_ms
-float64 tp
-float64 tp_err
-float64 tp_rms_err
-float64 pd_flux_ph_s
-float64 pd_flux_err_ph_s
-float64 laser_flux_ph_s
-float64 laser_flux_err_ph_s
-float64 pd_route_tx
-float64 laser_route_tx
-float64 atten_tx
-int16 pd_raw
-float64 pd_mv
-float64 pd_net_mv
-float64 pd_mean_net_mv
-float64 pd_mean_net_err_mv
-float64 laser_current_ma
-float64 atten_db
-float64 wavelength_nm
-uint64 pd_ontime_s
-uint64 laser_current_ontime_s
-```
-
-**Notes:**
-- `tp` is the unitless mean of individually normalized ADC readings in the
-  fixed monitoring window. Every good ADC reading uses the input reference
-  latched before its acquisition, including readings before an attenuation
-  change. Only starting/stopping a measurement clears normalized history.
-  `NaN` means no usable normalized readings; values are not clamped.
-- `tp_rms_err` is normalized sample scatter divided by sqrt(valid samples),
-  combined with the stored dark RMS floor. `tp_err` additionally includes
-  source calibration uncertainty, treated as correlated across the window.
-  Calibration uncertainty is not reduced by averaging.
-- Diagnostic `pd_flux_ph_s` is still the raw PD-window mean converted to flux;
-  `laser_flux_ph_s`, attenuation, and current describe the captured source
-  before the next control move. During changes, `tp` need not equal the ratio
-  of those diagnostic flux fields.
-- Flux values are photons per second.
-- `pd_mv` is the instantaneous raw ADC millivolt reading and `pd_net_mv` is
-  the instantaneous dark-subtracted value. `pd_mean_net_mv` and
-  `pd_mean_net_err_mv` come from the photodiode sampler's fixed monitoring
-  window. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
-  `app/src/photodiode.h`.
-- `atten_tx` and `atten_db` are dynamic logical attenuator terms normalized to
-  the modeled 0 V FVOA state. Static assembly and route losses belong in
-  `mems/route/loss`.
-- Without an explicit record, known TIB routes use the nominal switch/static
-  loss defaults in [hardware.md](hardware.md#tib-route-loss-defaults); unspecified
-  route/laser pairs use transmission `1.0`.
-- Both outbound laser route loss and inbound photodiode route loss are applied
-  when estimating throughput.
-- Startup captures the outbound loss under `<input>_to_<output>` and the inbound
-  photodiode loss under `<yj|hk>_<mm|sm>_to_<yj|hk>_pd`, using the selected laser
-  name for both records. The return path follows `fiber:"M"|"S"`.
-- The monitor reuses these captured losses while refreshing dynamic laser and
-  attenuator estimates. Run `measure_throughput` again to apply another route or
-  capture changed route-loss settings.
-- Ordinary autolevel adjustments use the fixed-window net mean and wait for
-  `PHOTODIODE_FIXED_WINDOW_MS` since the last input change, using the sampler's
-  window-end timestamp. Below 20% usable range, request 3x flux; above 80%, 1/3.
-- Startup raises flux at the 100 ms monitor cadence until instantaneous signal
-  first reaches the 20% useful-range threshold. Five consecutive instantaneous
-  monitor observations below/above the useful band also bypass the ordinary
-  gate (near ADC saturation counts as high). Bright backoff takes priority;
-  a lagging low mean cannot request more light while the latest reading is high.
-- There is no additional settling timer or deliberate gap after input changes.
-  External optical response, the 20 Hz analog filters, and clipping still affect
-  measured throughput and require hardware validation.
-- Flux is raised by decreasing logical attenuation first, then raising laser
-  output level percent. Flux is decreased by increasing logical attenuation
-  first, then lowering laser output level percent.
-- At start with `autolevel:true`, attenuation is set to maximum before laser
-  power is raised.
-- Starting a monitor powers the required photodiode unless
-  `pd/settings/<channel>.power` is `override_off`; in that mode the command
-  fails with `photodiode power override_off`. While a monitor is running,
-  photodiode auto-off is inhibited and `pd/settings/<channel>.off_in_s` reports
-  `null`. Shutting down the required photodiode power stops that monitor.
-- `off_in_s` is an integer-second monitor auto-stop delay. `0` disables the
-  monitor auto-stop.
-- Changing the monitored laser output/settings manually relinquishes monitoring
-  without overriding the new manual setting. Changing its logical attenuator
-  disables automatic adjustments while streaming continues; stopping the
-  operation still turns off its autolevel laser. Run the command again to
-  re-enable adjustments.
-- Starting a monitor with `autolevel:true` while attenuator calibration is
-  active is rejected because both paths would own attenuator control.
-- Throughput uses the photodiode sampler windows; it does not own or start
-  dark commits.
-
-
-(laser)=
-### `laser`
-- **Payload -> laser status:**
-  ```json
-  {"name":"<lasername>"}
-  ```
-  ```json
-  {
-    "name": "<lasername>",
-    "powered": true,
-    "ready": true,
-    "blocked_reason": null,
-    "tec_on_s": null,
-    "emit_on_s": null,
-    "emit_total_s": null,
-    "temp_c": 0.0,
-    "i_mA": 0.0,
-    "value": 0.0,
-    "power_mw": 0.0,
-    "nominal_nm": 0.0,
-    "tuned_nm": 0.0,
-    "tune_nm": 0.0,
-    "tec_ma": 0.0,
-    "diode_v": 0.0,
-    "tec_v": 0.0,
-    "off_in_s": null,
-    "oc_fault": false
-  }
-  ```
-- **Payload:** set one laser output level.
-  ```json
-  {
-    "name": "<lasername>",
-    "value": 0.0,
-    "autooff_s": 0
-  }
-  ```
-
-- **Notes:** `value` is a fraction from 0 to 1 of the nominal current range above threshold current. Setting a positive value powers
-  the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
-  request when `tune_nm` is nonzero, sets the laser current, and restarts the
-  auto-off timer. Setting value 0 stops emission and writes driver current to 0;
-  it does not clear the stored `laser/tune` request. Laser output current is
-  never persisted by app settings. The Maiman
-  driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
-  `ready` reports whether the driver is prepared to operate without a blocking
-  SF8025 lock condition. `blocked_reason` is `null` when no blocking condition
-  is present, including a ready but idle laser; otherwise it reports a concise
-  cause such as `bank_off`, `tec_not_started`, `ld_overcurrent`, or
-  `interlock`. Active time fields are integer seconds while active and `null`
-  when inactive. The persisted lifetime
-  total remains available through `laser/settings`. `autooff_s` is optional and
-  non-persistent; if supplied, it overrides the default configured through
-  `laser/settings` for this start. If another laser-bank operation occupies the
-  shared Maiman Modbus bus past the command wait budget, laser commands return
-  `{"error":"busy"}`.
-
-(laser-tune)=
-### `laser/tune`
-- **Payload -> stored tuning request:**
-  ```json
-  {"name":"<lasername>"}
-  ```
-  ```json
-  {
-    "name": "<lasername>",
-    "tune_nm": 0.0
-  }
-  ```
-- **Payload:** set the stored tuning request.
-  ```json
-  {
-    "name": "<lasername>",
-    "tune_nm": 0.0
-  }
-  ```
-- **Notes:** Sets the wavelength tuning request used when running the laser.
-  The request is stored by firmware; it does not immediately write TEC
-  temperature or laser current. Future positive `laser` value commands apply
-  the stored offset relative to `laser/settings.wavelength_nm`. Reissuing a
-  positive `laser` value after changing value does not require retuning because
-  firmware reapplies the stored offset. Setting `laser` value 0 stops emission
-  without clearing the stored tune request. Tuning is best-effort: large shifts
-  are clamped by the TEC temperature range and allowed current adjustment.
-
-
-(laser-status)=
-### `laser/status`
-- **Payload -> detailed engineering status:**
-  ```json
-  {"name":"<lasername>"}
-  ```
-
-Detailed engineering status derived from the Maiman status query used in
-`refrence_docs_examples/lasers.py`. Includes raw state, lock, and TEC-state
-registers, measured diode/TEC voltage and current, driver limits, PID, hard
-device-id verification, configured expected driver serial, `blocking_lock`,
-`blocked_reason`, and interlock flags. This command may be slower than
-the basic `laser` query because it reads many Modbus registers. A serial mismatch is
-reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
-The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
-
-
-(laser-settings)=
-### `laser/settings`
-- **Payload -> laser settings:**
-  ```json
-  {"name":"<lasername>"}
-  ```
-  ```json
-  {
-    "name": "<lasername>",
-    "settings": {
-      "model": "<string>",
-      "expected_serial": 0,
-      "nominal_current_ma": 0.0,
-      "max_current_ma": 0.0,
-      "current_set_calibration_pct": 0.0,
-      "fractional_noise": 0.03,
-      "constant_noise_mw": 0.435675,
-      "threshold_current_ma": 0.0,
-      "efficiency_mw_per_ma": 0.0,
-      "wavelength_nm": 0.0,
-      "operating_temp_range_c": [0.0, 0.0],
-      "default_operating_temp_c": 0.0,
-      "thermistor_kohm": 0.0,
-      "isolation_db": 0.0,
-      "tec_max_current_a": 0.0,
-      "tec_pid": {
-        "p": 0,
-        "i": 0,
-        "d": 0
-      },
-      "disable_tec_at_autooff": true,
-      "ntc_t_coefficient_per_c": 0.0,
-      "dlambda_dT_nm_per_k": 0.0,
-      "dlambda_dA_nm_per_ma": 0.0,
-      "autooff_s": 0,
-      "tune_nm": 0.0,
-      "emit_total_s": 0
-    }
-  }
-  ```
-- **Payload:** update laser settings.
-  ```json
-  {
-    "name": "<lasername>",
-    "settings": {
-      "nominal_current_ma": 0.0,
-      "expected_serial": 0,
-      "max_current_ma": 0.0,
-      "efficiency_mw_per_ma": 0.0,
-      "wavelength_nm": 0.0,
-      "current_set_calibration_pct": 0.0,
-      "fractional_noise": 0.03,
-      "constant_noise_mw": 0.435675,
-      "tec_max_current_a": 0.0,
-      "default_operating_temp_c": 0.0,
-      "operating_temp_range_c": [0.0, 0.0],
-      "tec_pid": {
-        "p": 0,
-        "i": 0,
-        "d": 0
-      },
-      "disable_tec_at_autooff": true,
-      "dlambda_dT_nm_per_k": 0.0,
-      "dlambda_dA_nm_per_ma": 0.0,
-      "autooff_s": 0
-    },
-    "persist": true
-  }
-  ```
-
-- **Notes:**
-  - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
-    app-owned optical-power uncertainty settings. The estimator reads its
-    existing per-laser cache and computes `hypot(power_mw * fractional_noise,
-    constant_noise_mw)` before converting power and uncertainty to photon flux.
-    These fields do not program Maiman; existing settings-command emission and
-    throughput-stop behavior still applies.
-  - Defaults are 3% fractional plus a constant 1% of each diode's **compiled**
-    maximum modeled power. Constant defaults in mW: 1028 = 0.435675;
-    1270, both 1430 channels, and 1510 = 0.086320; 2330 = 0.029481.
-    The baseline does not change when current output or user property settings
-    change. `persist:true` saves both fields with that laser's policy.
-  - It is the user's responsibility to ensure the triple of
-    (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
-    aligned and in sync because these values form the baseline for wavelength
-    tuning.
-  - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
-    applied during driver preparation and TEC start. It is not the live tuned
-    TEC setpoint. Tuning may write a different live TEC setpoint when a positive
-    `laser` value command applies the stored `tune_nm`, but it does not overwrite
-    `default_operating_temp_c`.
-  - Changing `default_operating_temp_c` changes the baseline used by future tune
-    calculations. Existing `tune_nm` remains stored, but the next positive
-    `laser` value command may compute a different TEC/current point from the new
-    baseline.
-  - Settings are checked when a laser is first talked to at each boot
-  - `persist` is optional and defaults to false. Without `persist:true`,
-    accepted changes apply to runtime and driver-backed state but are not saved
-    in app NVS for the next controller boot.
-  - After device-ID and serial checks pass, a mismatch between settings the
-    driver stores in its EEPROM and controller NVRAM will trigger a warning in
-    the log and the driver values will be programmed.
-  - `expected_serial` is the operator-confirmed Maiman driver serial for this
-    laser/diode association. It must be nonzero. A serial mismatch blocks
-    driver-backed writes until the operator confirms the physical association
-    and updates `expected_serial`; firmware does not learn or persist changed
-    serials by itself. A device-ID mismatch remains an identity fault.
-  - If the laser bank is off, firmware powers it, applies driver-backed settings,
-    verifies them as practical, and then restores the previous bank power state.
-    Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
-    `default_operating_temp_c`, `tec_max_current_a`, and `tec_pid`. If
-    `laser/bankpower` is `override_off`, driver-backed settings changes return
-    an error.
-  - it is **encouraged** to send only the settings that requested changed.
-  - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
-    adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
-  - Changes to settings will disable laser emission and may disable the TEC (stops emission + any throughput measurement using that laser)
-  - Failures before driver programming completes leave settings unchanged
-    (rollback is performed or an error emitted). If programming succeeds but
-    restoring the previous bank power state fails, the successfully applied
-    settings are still retained and persisted when requested; the command still
-    reports the restore error because bank power needs operator attention.
-  - Unsettable (attempts to set are silently ignored):
-    - `name`, `model`, `serial`
-    - `overcurrent_threshold_ma`
-  - Non-Driver settings:
-    - `autooff_s`
-    - `dlambda_dT_nm_per_k`
-    - `dlambda_dA_nm_per_ma`
-    - `disable_tec_at_autooff`
-    - `wavelength_nm`
-    - `threshold_current_ma`
-    - `efficiency_mw_per_ma`
-  - Settings that are informational only (included for datasheet posterity):
-    - `isolation_db`
-  - Ranges:
-    - Operating temp range: limited to [15,40] strong advice to limit to 17,38
-    - current_set_calibration: 95 - 105 in steps of .01
-    - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
-
-
-(laserbank-power)=
-### `laser/bankpower`
-- **No payload -> laser-bank power state:**
-  ```json
-  {
-    "mode": "auto|override_on|override_off",
-    "powered": false
-  }
-  ```
-- **Payload or topic suffix -> laser-bank power state after update:**
-  ```json
-  {"mode":"auto|override_on|override_off"}
-  ```
-  Suffix requests use
-  `cmd/<device>/req/laser/bankpower/auto`,
-  `cmd/<device>/req/laser/bankpower/override_on`, or
-  `cmd/<device>/req/laser/bankpower/override_off`.
-
-- **Notes:** `override_off` is the compiled boot default. In `auto`, power to the laser bank is handled by the bank
-  heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
-  emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
-  while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an
-  error response that still includes the current `mode` and firmware-requested `powered` state. If another laser-bank
-  operation occupies the shared Maiman Modbus bus past the command wait budget,
-  mode changes return `{"error":"busy"}`.
-
-(laserbank-clearfaults)=
-### `laser/clearfaults`
-- **No payload -> clear result:**
-  ```json
-  {"off_ms":250}
-  ```
-
-This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
-fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
-The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
-off or no faults).
-If another laser-bank operation occupies the shared Maiman Modbus bus past the
-command wait budget, this command returns `{"error":"busy"}`.
-
-
-(laserbank-heater)=
-### `laser/bankheater`
-- **No payload -> laser-bank heater state:**
-  ```json
-  {
-    "mode": "auto|override_on|override_off",
-    "auto_state": "waiting_for_temps|warming_disabled_tec|disabled_tec_warm|tecs_running|holding|override_on|override_off",
-    "heater_on": false,
-    "bank_power": true,
-    "ambient_c": null,
-    "idle_tec_temps": 0,
-    "idle_tec_avg_c": null,
-    "last_error": 0,
-    "poll_age_s": 0
-  }
-  ```
-- **Payload or topic suffix -> laser-bank heater state after update:**
-  ```json
-  {"mode":"auto|override_on|override_off"}
-  ```
-  Suffix requests use
-  `cmd/<device>/req/laser/bankheater/auto`,
-  `cmd/<device>/req/laser/bankheater/override_on`, or
-  `cmd/<device>/req/laser/bankheater/override_off`.
-
-- **Notes:** `auto` is the default at boot. In `auto`, laser-bank
-  temperature-control work powers the bank so the Maiman temperature monitors
-  can initialize, polls TEC temperatures at a fixed interval, and drives the
-  laser-bank heater through housekeeping relay-power helpers.
-  `auto_state` summarizes the internal policy state without exposing the
-  control-loop booleans: `waiting_for_temps` means no fresh driver
-  temperatures are available; `warming_disabled_tec` means at least one idle TEC
-  probe is below the heater-on threshold; `disabled_tec_warm` means at least one
-  idle TEC probe is warm enough for heater turnoff; `tecs_running` means all
-  driver TECs are enabled; `holding` means no heater state change was requested
-  in the latest loop. `idle_tec_temps` counts fresh driver temperature readings
-  whose TEC is not started, and `idle_tec_avg_c` averages only those readings;
-  actively controlled TEC temperatures remain laser telemetry and are not used
-  for this aggregate. `ambient_c` and `idle_tec_avg_c` are `null` when
-  unavailable. `poll_age_s` is an integer age in seconds or `null` before the
-  first poll. The off threshold is 15 C when ambient is valid and above 15 C,
-  otherwise 20 C. If all laser temperatures are stale, auto mode turns the
-  heater off when ambient is invalid or at least 15 C. When valid ambient is
-  below 15 C, auto mode powers the bank so driver
-  temperature monitors can initialize and leaves heater state unchanged until
-  valid laser temperature data is available. If all TECs remain enabled for at
-  least one control interval, the heater is turned off.
-  `override_on` and `override_off` force the heater state and suspend the
-  automatic warmup policy. While a heater override is active, firmware emits
-  `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
-  If the off-board DS2408 relay expander is offline, set requests return an I/O
-  error because the heater relay cannot be driven.
-
-(atten)=
-(atten-coeff)=
-### `atten`
-- **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
-- **Topics:**
-  - `cmd/<device>/req/atten/<laser>`
-  - `cmd/<device>/req/atten/<laser>/coeff`
-  - Responses use the same key under `cmd/<device>/resp/...`.
-- **No payload to `atten/<laser>` -> attenuator setting:**
-  ```json
-  {
-    "db": 12.5,
-    "linear": 0.0562,
-    "v1_mv": 1234.0,
-    "v2_mv": 0.0,
-    "db1": 12.5,
-    "db2": 0.0,
-    "linear1": 0.0562,
-    "linear2": 1.0
-  }
-  ```
-- **Payload to `atten/<laser>`:** set total attenuation or one or both physical
-  attenuators. `value` is total linear transmission and `value_db` is total
-  attenuation in dB. The total fields are mutually exclusive with the physical
-  `value1*` and `value2*` fields.
-  ```json
-  {"value":0.25}
-  {"value_db":12.5}
-  {"value1":0.25,"value2_db":6.0}
-  {"value1_mv":1234.0,"value2":1.0}
-  ```
-  Each physical attenuator may use a different unit, but a single physical
-  attenuator may only use one unit per request. For example, `value1` and
-  `value2_db` is valid, while `value1` and `value1_db` in the same request is
-  rejected. Millivolt inputs are clamped to the firmware drive span, quantized
-  through the board-configured DAC transfer, and responses report the applied
-  DAC-side millivolts read back from the DAC.
-- **No payload to `coeff` -> model coefficients:**
-  ```json
-  {
-    "dac1": {
-      "fvoa_50pct_mv": 2529.45,
-      "slope_inv_fvoa_mv": 0.00158137,
-      "max_atten_db": 55.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
-    },
-    "dac2": {
-      "fvoa_50pct_mv": 2529.45,
-      "slope_inv_fvoa_mv": 0.00158137,
-      "max_atten_db": 55.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
-    }
-  }
-  ```
-- **Payload to `coeff`:** set the model coefficients for the two physical
-  attenuators that make up the logical attenuator. Both `dac1` and `dac2`
-  objects are required.
-  ```json
-  {
-    "dac1": {
-      "fvoa_50pct_mv": 3144.95,
-      "slope_inv_fvoa_mv": 0.00303104,
-      "max_atten_db": 48.36,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0]
-    },
-    "dac2": {
-      "fvoa_50pct_mv": 3456.12,
-      "slope_inv_fvoa_mv": 0.00247498,
-      "max_atten_db": 61.95,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0]
-    },
-    "persist": true
-  }
-  ```
-- **Serial form for `coeff`:** send the JSON object after the key. The default
-  serial shorthand only builds a `value` payload, so it is not useful for
-  coefficient objects. The MQTT payload is the same JSON object without the
-  serial key prefix.
-  ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0]},"persist":true}
-  ```
-
-- **Notes:**
-  - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
-    or `2330k`. On calibration boards only, the LFC attenuator is addressed as
-    `atten/lfc` and `atten/lfc/coeff`.
-  - Laser aliases accepted by the laser profile table, such as `1028`, also
-    resolve to the matching TIB attenuator channel, but canonical command docs
-    use the full logical laser names.
-  - Each logical attenuator is a pair of physical FVOAs. Total set commands use
-    the full modeled range of the first physical attenuator before using the
-    second, and override any individual physical set point made through the C
-    attenuator API.
-  - `value` is a unitless linear transmission fraction in `(0, 1]`.
-  - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
-    drive span. The firmware converts them to DAC codes using the
-    board-configured DAC reference transfer, then responses report the applied
-    DAC-side millivolts after code quantization and output-rail clipping.
-  - Coefficients are loaded from persistent app NVS during
-    `setup_attenuators()`. They define the erf coordinate
-    `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
-    ideal transmission `ideal_tx = (erf(4) - erf(delta)) / (2 * erf(4))`.
-    Runtime dB/linear set commands normalize against the modeled open
-    transmission at DAC 0, then apply the physical FVOA leakage floor
-    `floor_tx = 10^(-max_atten_db / 10)`. `correction_coeff` is an optional
-    four-term Chebyshev residual correction in model dB space. Query responses
-    always include it. In set payloads, omitting `correction_coeff` leaves the
-    currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0]` to
-    clear it intentionally.
-  - `persist` is optional and defaults to false. A non-persistent coefficient
-    update changes runtime behavior until reboot or a later coefficient command.
-  - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
-    in attenuation dB. It defaults to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
-    A manual model replacement omitting `rms_db` uses that default, rather than
-    inheriting confidence from the previous fit. An explicit zero is allowed.
-  - Accepted autocalibration installs the final model's unweighted residual RMS
-    with its coefficients and saves both when persistence is requested. Rejected
-    fits replace neither. No extra sweep or offline analysis is required.
-  - The pair transmission estimate uses
-    `sigma_db = hypot(dac1.rms_db, dac2.rms_db)` and
-    `sigma_T = T * ln(10)/10 * sigma_db`. This describes model uncertainty,
-    not op-amp voltage noise. Contributions from the two physical devices are
-    independent; repeated samples of the same calibration are correlated.
-    Throughput includes this and laser uncertainty in `tp_err`;
-    `tp_rms_err` remains PD-only. The nominal transmission model is unchanged.
-  - There is no separate `attensettings` command; calibration coefficients live
-    on `atten/<laser>/coeff`.
-
-(atten-calibrate)=
-### `atten/calibrate`
-The implementation flow, bridge-normalization sequence, and retained-record
-ownership are documented in `attenuator_calibration.md`.
-
-- **No payload -> compact calibration state:**
-  ```json
-  {
-    "state": "inactive",
-    "mode": "none",
-    "physical": "dac1",
-    "fit": "none",
-    "n": 128,
-    "t_ms": 300,
-    "complete_pct": 0,
-    "point": "1/128",
-    "mv": 0.0,
-    "other_mv": 3300.0,
-    "error": 0,
-    "dac1": {
-      "valid": true,
-      "accepted": true,
-      "points": 12,
-      "fvoa_50pct_mv": 3144.95,
-      "slope_inv_fvoa_mv": 0.00303104,
-      "max_atten_db": 48.36,
-      "max_atten_sigma_db": 0.29,
-      "corr": 0.999,
-      "rms_db": 0.1,
-      "max_abs_db": 0.2,
-      "min_tx": 1.0e-6,
-      "max_tx": 0.9,
-      "fvoa_span_mv": 2400.0
-    },
-    "dac2": {"valid": false}
-  }
-  ```
-- **Record data query:** retained calibration acquisition records are available
-  as metadata plus fixed binary MQTT record chunks, independent of best-effort
-  telemetry:
-  ```
-  atten/calibrate/records/<dac1|dac2>
-  atten/calibrate/records/<dac1|dac2>/<chunk>
-  ```
-  The metadata query has no chunk suffix. The response is not JSON and is
-  MQTT-only because the serial response printer is string-oriented. The
-  metadata response starts with `<4s 15B>`: magic `HAC4`, version, kind
-  (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
-  overflow, record-size, records-per-chunk, record-count, record-chunk-count,
-  reference-valid, reference-record, and bridge-count. It is followed by
-  `bridge-count` little-endian `<2B>` bridge entries containing
-  `before_record` and `after_record` indices. The reference and bridge entries
-  name roles for retained raw records; they are not separate copied records.
-
-  Each numbered chunk response contains only raw records and no header. Chunk
-  `0` starts at record `0`; subsequent chunks use the fixed
-  `records-per-chunk` value reported by metadata. Version 3 uses record size
-  27 bytes, and each raw record has little-endian layout `<6f 3B>`:
-  `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
-  `event`, `classification`, and `segment`. Event codes are `0=point`,
-  `1=initial_probe`, and `2=bridge_probe`; classification codes are `0=ok`,
-  `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
-  `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
-  `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
-  NumPy raw record array with those firmware names. It also adds convenience
-  `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
-  default FVOA drive gain; those columns are host-side coordinates, not
-  additional firmware measurements. Bridge scale, scaled signal, transmission,
-  dB attenuation, fit inclusion, and residuals are derived from the raw records
-  and the accepted bridge boundaries after acquisition.
-- **Payload:** start automatic TIB calibration for the logical pair belonging to
-  a laser.
-  ```json
-  {
-    "laser": "1430yj",
-    "output": "yj_ao",
-    "fiber": "M",
-    "dwell_ms": 300,
-    "persist": true
-  }
-  ```
-- **Payload:** stop/cancel any calibration.
-  ```json
-  {"stop": true}
-  ```
-
-- **Telemetry topic:** `dt/<device>/atten`
-- **Telemetry payload:** attenuator calibration emits one best-effort JSON
-  message per significant state transition, DAC setpoint, retained
-  measurement record, bridge measurement, and fit result. Calibration continues
-  if telemetry is dropped; authoritative acquisition data is queried through
-  `atten/calibrate/records`.
-  ```json
-  {
-    "event": "point",
-    "state": "running",
-    "mode": "tib_auto",
-    "physical": "dac1",
-    "attenuator": 2,
-    "complete_pct": 10,
-    "record_count": 4,
-    "segment": 0,
-    "sweep_mv": 1983.0,
-    "other_mv": 1764.0,
-    "laser_pct": 100.0,
-    "i": 4,
-    "classification": "ok",
-    "signal_mv": 124.0,
-    "signal_err_mv": 0.1,
-    "max_mv": 124.6
-  }
-  ```
-  Other `event` values include `start`, `physical_start`, `initial_probe_set`,
-  `point_set`, `bridge_probe_set`, `initial_probe`, `point`, `bridge_probe`,
-  `fit`, `complete`, `stop`, and `error`. Fit input and residual diagnostics
-  are retained in calibration state and queried through
-  `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
-  burst.
-
-- **Notes:**
-  - State names are `inactive`, `running`, `complete`, and `error`.
-    A canceled calibration returns to `inactive`. If automatic acquisition
-    completes but the fit is not accepted, state is `complete`, fit is `failed`,
-    coefficients are not persisted, and retained data remains available for lab
-    analysis. Fit state is `ok` when both physical attenuators are accepted,
-    `failed` after an unsuccessful fit, and `none` before a fit exists.
-    Accepted calibration coefficients are applied to runtime attenuator control;
-    they are persisted to NVS only when `persist` is requested.
-  - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
-    selects the logical attenuator pair and outbound route input, while `fiber`
-    selects the photodiode route as in `measure_throughput`.
-  - TIB automatic calibration requires the selected photodiode to already be
-    powered and producing valid sampler data. It stops laser emission, sets
-    both physical attenuators to the maximum firmware DAC-drive voltage, sets
-    the photodiode internal configurable-window duration to `dwell_ms`, and
-    then waits that dwell after each attenuator change. It does not measure a
-    private calibration dark. Each point uses the photodiode configurable
-    window's configured dark-subtracted `mean_net_mv`; updating dark remains a
-    separate `pd/dark/<channel>` operation.
-  - Automatic calibration is SNR driven, not photodiode-mV-target driven. A
-    measurement is usable when it is not ADC/electrical clipped and its
-    dark-subtracted signal is at least 5 sigma above the sample mean
-    uncertainty. Saturation here means actual ADC clipping near
-    2.048 V, not a merely high photodiode voltage within the intended 0-2 V
-    operating range.
-    Low-but-clean points are retained and may be fit inputs. Saturated,
-    below-SNR, and ADC-error measurements are retained as records but are not
-    fit inputs.
-  - Automatic calibration does not use a voltage schedule or datasheet limits
-    to choose calibration points. For each physical FVOA it binary-searches the
-    companion FVOA to find the lowest usable companion DAC, selects that
-    measured initial-probe record as the open reference, linearly sweeps the
-    DUT from 0 mV to maximum drive in
-    `ATTEN_CAL_SWEEP_STEP_MV` increments, skips saturated bright-side sweep
-    records as diagnostics, and bridge-normalizes when the sweep reaches the
-    below-SNR dim edge. `ATTEN_CAL_SEARCH_MIN_STEP_MV` is the companion binary
-    search resolution, not the DUT sweep step. Bridge normalization holds the
-    DUT, selects the latest usable DUT point as the bridge-before record,
-    searches the companion FVOA, and records the accepted bridge probe as the
-    bridge-after record in the bridge table. The bridge ratio updates the
-    segment scale and its uncertainty.
-  - Firmware does not try to classify or discard whole nonlinear regions. It
-    reports every retained acquisition record, and the fit uses only records
-    derived as fit candidates by classification and transmission-domain rules. External analysis can
-    inspect all retained records regardless of firmware fit success.
-  - Automatic calibration uses the sampler-owned internal photodiode
-    configurable window. It does not start a separate photodiode measurement or
-    a new calibration thread; the throughput monitor thread advances the state
-    machine.
-  - The automatic fit derives all normalized quantities from raw records after
-    acquisition. It divides each retained signal by the open reference and the
-    cumulative bridge segment scale, converts that relative transmission to dB,
-    and optimizes the attenuator model directly in dB output space while
-    keeping the coefficient names and meanings `fvoa_50pct_mv`,
-    `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
-    `max_atten_db` from the final three usable fit points and holds it fixed
-    while optimizing the two shape parameters. It then fits the optional
-    `correction_coeff` residual layer in dB space against the same sweep-point
-    grid. If that correction is ill-conditioned or breaks monotonicity on the
-    sweep points, firmware leaves the correction coefficients at zero and keeps
-    the base fit. The y uncertainty comes from photodiode mean
-    uncertainty, bridge/segment-scale propagation, and the open-reference
-    uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
-    3 mV. Fit details include point count, correlation, residual RMS/max in dB,
-    fitted transmission span, FVOA-drive span, and correction coefficients.
-    The final `rms_db` is retained with each accepted physical model for runtime
-    throughput uncertainty and optional NVS persistence.
-
-(pd)=
-### `pd`
-- **Topic:** `cmd/<device>/req/pd` or `cmd/<device>/req/pd/<yj|hk>`
-- **No payload -> photodiode values and the public monitoring window:**
-  ```json
-  {
-    "yj": {
-      "raw": 0,
-      "mv": 0.0,
-      "net_mv": 0.0,
-      "net_err_mv": 0.0,
-      "power_uw": 0.0,
-      "power_err_uw": 0.0,
-      "dark_mv": 0.0,
-      "dark_err_mv": 0.0,
-      "window": {
-        "duration_ms": 0,
-        "failed_samples": 0,
-        "mean_mv": 0.0,
-        "mean_net_mv": 0.0,
-        "rms_mv": 0.0,
-        "mean_net_err_mv": 0.0,
-        "min_mv": 0.0,
-        "max_mv": 0.0,
-        "power_uw": 0.0,
-        "power_err_uw": 0.0
-      },
-      "pd_powered": true,
-      "pd_on_s": 0
-    },
-    "hk": {}
-  }
-  ```
-- **Single-channel query:** `pd/yj` returns only the selected channel:
-  ```json
-  {"yj": {}}
-  ```
-
-- **Notes:**
-  - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
-    In auto power mode, a query enables the selected photodiode relay or relays.
-  - `raw`, `mv`, `net_mv`, `net_err_mv`, `power_uw`, and `power_err_uw` are the
-    latest sample and its propagated dark error. Invalid latest samples are
-    reported with null floating-point values and the raw sentinel.
-  - `window` is the fixed public monitoring window used by throughput and
-    autolevel. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
-    `app/src/photodiode.h`.
-  - The internal configurable window used by dark measurement and attenuator
-    calibration is not exposed through the command API.
-  - Dark measurement and forced dark updates are done through
-    `pd/dark/<channel>`, not through `pd` or `pd/settings`.
-
-(pddark)=
-### `pd/dark`
-- **Topic:** `cmd/<device>/req/pd/dark/<yj|hk>`
-- **No payload -> active and lowest dark windows:**
-  ```json
-  {
-    "channel": "yj",
-    "pending": false,
-    "duration_ms": 0,
-    "dark": {
-      "duration_ms": 0,
-      "failed_samples": 0,
-      "mean_mv": 0.0,
-      "mean_net_mv": 0.0,
-      "rms_mv": 0.0,
-      "mean_net_err_mv": 0.0,
-      "min_mv": 0.0,
-      "max_mv": 0.0,
-      "power_uw": 0.0,
-      "power_err_uw": 0.0
-    },
-    "lowest_dark": {}
-  }
-  ```
-- **Payload:** measure, force, or reset one channel's dark.
-  ```json
-  {"duration_ms": 1000, "persist": false}
-  ```
-  ```json
-  {"dark_mv": 0.0, "rms_mv": 1.5, "persist": true}
-  ```
-  ```json
-  {"reset_lowest": true}
-  ```
-
-- **Notes:**
-  - `duration_ms` arms a sampler-owned dark capture using the internal
-    configurable photodiode window and returns immediately. Query
-    `pd/dark/<channel>` to see `pending:false` and the resulting dark window.
-  - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
-    `dark_mv`; if omitted, firmware uses
-    `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
-  - `duration_ms` and `dark_mv` are mutually exclusive. Durations must be
-    greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
-    `app/src/app_settings.h`.
-  - `reset_lowest:true` resets the lowest-dark record to the active dark.
-  - `persist` defaults false. Duration captures are rejected while attenuator
-    calibration or autolevel throughput owns the configurable window. Dark
-    commands do not check laser state, attenuator position, or routes.
-
-(pd-settings)=
-### `pd/settings`
-- **Topic:** `cmd/<device>/req/pd/settings/<yj|hk>`
-- **No payload -> one channel's photodiode settings:**
-  ```json
-  {
-    "channel": "yj",
-    "noisewarn_mv": 3.0,
-    "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 2.0e10,
-    "power": "auto",
-    "autooff_s": 300,
-    "off_in_s": null
-  }
-  ```
-- **Payload:** update one channel's photodiode settings.
-  ```json
-  {
-    "noisewarn_mv": 3.0,
-    "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 2.0e10,
-    "power": "auto",
-    "autooff_s": 300,
-    "persist": true
-  }
-  ```
-
-- **Current set fields:**
-  - `noisewarn_mv`
-  - `responsivity_a_per_w`
-  - `transimpedance_v_per_a`
-  - `power`
-  - `autooff_s`
-  - `persist`
-
-- **Notes:** not all settings need to be included when setting; failure on any
-  settable setting results in none being set. YJ and HK settings use separate
-  command keys and separate app NVS records. `power` is the relay intent for
-  this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
-  channel's automatic power-off delay used when firmware auto-enables the
-  relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
-  Dark and lowest-dark values are queried and updated through
-  `pd/dark/<channel>`.
-
-  `transimpedance_v_per_a` is the effective gain at the ADC input, combining
-  detector datasheet transimpedance with the divider and intervening analog gain.
-  Its allowed range is `1e7` to `1e12` V/A. Defaults are `2.0e10` V/A
-  for YJ and `9.5e8` V/A for HK; do not apply the divider again in power conversion.
-  `noisewarn_mv` is ADC-input RMS scatter in the fixed 500 ms window, including
-  real optical changes. The 10 mV default warning level corresponds nominally to 0.538 pW RMS
-  for YJ and 17.3 pW RMS for HK using the default responsivities.
-  Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
-
-(ip)=
-### `ip`
-- **No payload -> IP configuration:**
-  ```json
-  {
-    "src": "<source>",
-    "try_dhcp_first": true,
-    "prefer_dhcpdns": true,
-    "prefer_dhcpntp": true,
-    "manual": {
-      "ip": "<ip>",
-      "subnet": "<subnet>",
-      "gateway": "<gateway>",
-      "dns": "<ip>",
-      "ntp": "<ip>"
-    },
-    "active": {
-      "ready": true,
-      "ip": "<ip>"
-    },
-    "ntp": {
-      "src": "<source>",
-      "server": "<ip>"
-    }
-  }
-  ```
-- **Payload:** update IP configuration.
-  ```json
-  {
-    "ip": "<ip>",
-    "ntp": "<ip>",
-    "dns": "<ip>",
-    "subnet": "<subnet>",
-    "gateway": "<gateway>",
-    "try_dhcp_first": true,
-    "prefer_dhcpntp": true,
-    "prefer_dhcpdns": true,
-    "persist": true
-  }
-  ```
-
-- **Notes:**
-  - Unsupported features don’t error; supported changes are still applied and
-    partial status reports unsupported fields.
-  - IP precedence: runtime settings → compiled static defaults. The compiled
-    static defaults are also the last-resort service fallback.
-  - If `try_dhcp_first` is true and DHCP is compiled in, DHCP is tried before the
-    runtime static profile. Static fallback remains DHCP-overridable so a later
-    lease can replace it.
-  - Partial responses include keys indicating which settings are not supported.
-  - network-affecting changes are applied at runtime; ordinary changes do not
-    require reboot.
-  - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
-
-(mqtt)=
-### `mqtt`
-- **No payload -> MQTT broker configuration:**
-  ```json
-  {"broker":"<value>:<port>","dns_supported":true}
-  ```
-- **Payload:** update MQTT broker configuration.
-  ```json
-  {
-    "broker": "<ipv4-or-hostname>:<port>",
-    "persist": true
-  }
-  ```
-
-- **Notes:**
-  - Broker value must be one `<host-or-ip>:<port>` string.
-  - If DNS is not compiled in, hostname values are rejected.
-  - Hostname values must resolve before settings are updated. Numeric IPv4
-    broker values do not require DNS.
-  - Successful set updates runtime settings and triggers MQTT reconnect
-    behavior. If the new broker cannot connect, firmware restores the prior
-    broker and emits a best-effort `mqtt_broker_revert` warning.
-
-(serialguard)=
-### `serialguard`
-- **No payload -> serial guard configuration and current state:**
-  ```json
-  {"serialguard_s":30,"active":true,"remaining_s":12}
-  ```
-- **Payload:** update serial guard configuration.
-  ```json
-  {
-    "seconds": 30
-  }
-  ```
-  Supplying `persist` is rejected; serial guard is runtime-only and is not restored after reboot.
-
-- **Notes:**
-  - Any non-empty serial command activates or refreshes the guard.
-  - The `serialguard` command itself is allowed while the guard is active so an
-    operator can extend, shorten, or disable the current expiry.
-  - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
-    `serialguard off`.
-  - While active, MQTT requests that may change hardware or runtime state are
-    rejected before dispatch and logged. Safe read-only MQTT requests are
-    allowed according to the app command table.
-  - The guard is owned by the command-dispatch library and uses one
-    dispatcher-owned `k_work_delayable` item.
-  - `seconds:0` disables serial override.
-
-(time)=
-### `time`
-- **No payload -> firmware time:**
-  ```json
-  {
-    "utc": 0,
-    "uptime_s": 0
-  }
-  ```
-- **Payload:** set firmware time.
-  ```json
-  {"unix_ms":0}
-  ```
-
-- **Notes:** set time may be overwritten later by NTP if configured and responding.
-
-(temps)=
-### `temps`
-- **No payload -> temperature status:**
-  ```json
-  {
-    "ambient_c": 0.0,
-    "laserbank_c": 0.0,
-    "lasers": {
-      "<lasername>": 0.0
-    }
-  }
-  ```
-
-- **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
-  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
-  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
-  returns `{"error":"busy"}` instead of an ambient-only partial response.
-
-(status)=
-### `status`
-- **No payload or payload -> firmware status.**
-
-  Optional payload:
-  ```json
-  {
-    "ip": true,
-    "lasers": true,
-    "attens": true
-  }
-  ```
-
-  Response:
-  ```json
-  {
-    "fw": "<tag-or-short-git-hash>",
-    "boots": 0,
-    "board": "tib|cal_yj|cal_hk|as|unknown",
-    "board_ok": true,
-    "mems_switches": 8,
-    "relay_err": 0,
-    "ip": "<response of ip command query>",
-    "amb_c": 0.0,
-    "pd_on_s": 0,
-    "laserbank_on_s": 0,
-    "lasers": {
-      "<lasername>": {
-        "power_mw": 0.0,
-        "tec_on_s": 0,
-        "off_in_s": 0
-      }
-    },
-    "attens": {
-      "<attenname>": {
-        "value_db": 0.0
-      }
-    },
-    "lastcmd": {
-      "name": "<cmdname>",
-      "src": "mqtt",
-      "t_ms": 0
-    }
-  }
-  ```
-- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
-  `lastcmd` is restored from command-dispatch NVS storage when available.
-
-
-(reboot)=
-### `reboot`
-- **No payload:** schedule a non-cancelable reboot after the response window.
-  ```json
-  {"status":"ok","rebooting_in_ms":3000}
-  ```
-- **Payload:** erase persisted app settings except IP settings and boot count
-  immediately before reboot.
-  ```json
-  {"erase_non_ip_settings":true}
-  ```
-- **Serial form:**
-  ```text
-  reboot erase_non_ip_settings
-  ```
-- **Notes:** command dispatch owns the reboot delayable work item. Immediately
-  before reboot it calls the app reboot-prepare hook so firmware can put
-  hardware into a safer state and, when requested, erase non-IP persisted
-  settings. The erase preserves IP settings, boot count, and storage schema
-  metadata. Once a reboot is pending, later commands are rejected before app
-  handlers run.
 
 (mems-split)=
 ### `mems/split`
@@ -1821,6 +790,1218 @@ ownership are documented in `attenuator_calibration.md`.
     transmissions to the same value, or leave them unset, to disable relative
     split correction.
 
+(laser)=
+### `laser`
+- **Payload -> laser status:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
+    "name": "<lasername>",
+    "powered": true,
+    "ready": true,
+    "blocked_reason": null,
+    "tec_on_s": null,
+    "emit_on_s": null,
+    "emit_total_s": null,
+    "temp_c": 0.0,
+    "i_mA": 0.0,
+    "value": 0.0,
+    "power_mw": 0.0,
+    "nominal_nm": 0.0,
+    "tuned_nm": 0.0,
+    "tune_nm": 0.0,
+    "tec_ma": 0.0,
+    "diode_v": 0.0,
+    "tec_v": 0.0,
+    "off_in_s": null,
+    "oc_fault": false
+  }
+  ```
+- **Payload:** set one laser output level.
+  ```json
+  {
+    "name": "<lasername>",
+    "value": 0.0,
+    "autooff_s": 0
+  }
+  ```
+
+- **Notes:** `value` is a fraction from 0 to 1 of the nominal current range above threshold current. Setting a positive value powers
+  the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
+  request when `tune_nm` is nonzero, sets the laser current, and restarts the
+  auto-off timer. Setting value 0 writes zero current without STOP, retains driver/TEC
+  readiness, and preserves an existing auto-off deadline unless `autooff_s` is supplied.
+  It does not power up/start an idle driver or clear the stored `laser/tune` request.
+  Use `{"name":"1028y","stop":true}` for explicit shutdown: zero current, STOP,
+  and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, `value`
+  must be omitted or zero and `autooff_s` must be omitted. Laser auto-off and
+  measurement-owned expiry use this shutdown path. Zero-current time does not
+  count toward emission time. Identity and applied configuration remain valid
+  until bank power cycles or an explicit configuration/reset operation changes them. Laser output current is
+  never persisted by app settings. The Maiman
+  driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
+  `ready` reports whether the driver is prepared to operate without a blocking
+  SF8025 lock condition. `blocked_reason` is `null` when no blocking condition
+  is present, including a ready but idle laser; otherwise it reports a concise
+  cause such as `bank_off`, `tec_not_started`, `ld_overcurrent`, or
+  `interlock`. Active time fields are integer seconds while active and `null`
+  when inactive. The persisted lifetime
+  total remains available through `laser/settings`. `autooff_s` is optional and
+  non-persistent; if supplied, it overrides the default configured through
+  `laser/settings` for this start. If another laser-bank operation occupies the
+  shared Maiman Modbus bus past the command wait budget, laser commands return
+  `{"error":"busy"}`.
+
+(laser-tune)=
+### `laser/tune`
+- **Payload -> stored tuning request:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
+    "name": "<lasername>",
+    "tune_nm": 0.0
+  }
+  ```
+- **Payload:** set the stored tuning request.
+  ```json
+  {
+    "name": "<lasername>",
+    "tune_nm": 0.0
+  }
+  ```
+- **Notes:** Sets the wavelength tuning request used when running the laser.
+  The request is stored by firmware; it does not immediately write TEC
+  temperature or laser current. Future positive `laser` value commands apply
+  the stored offset relative to `laser/settings.wavelength_nm`. Reissuing a
+  positive `laser` value after changing value does not require retuning because
+  firmware reapplies the stored offset. Setting `laser` value 0 zeros current without issuing STOP
+  without clearing the stored tune request. Tuning is best-effort: large shifts
+  are clamped by the TEC temperature range and allowed current adjustment.
+
+
+For an already emitting laser with valid preparation, level changes write only
+required current/TEC setpoints. Startup and invalidated preparation retain the
+full identity/profile/control sequence. Failed control operations or confirmed
+controller faults revoke preparation. Diagnostic read failures retain setpoints;
+sustained communication loss faults operation separately from numerical estimates. See [laser operation and timing](api/maiman_laser.md).
+
+(laser-status)=
+### `laser/status`
+- **Payload -> detailed engineering status:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+
+Detailed engineering status derived from the Maiman status query used in
+`refrence_docs_examples/lasers.py`. Includes raw state, lock, and TEC-state
+registers, measured diode/TEC voltage and current, driver limits, PID, hard
+device-id verification, configured expected driver serial, `blocking_lock`,
+`blocked_reason`, and interlock flags. This command may be slower than
+the basic `laser` query because it reads many Modbus registers. A serial mismatch is
+reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
+The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
+
+
+(laser-settings)=
+### `laser/settings`
+- **Payload -> laser settings:**
+  ```json
+  {"name":"<lasername>"}
+  ```
+  ```json
+  {
+    "name": "<lasername>",
+    "settings": {
+      "model": "<string>",
+      "expected_serial": 0,
+      "nominal_current_ma": 0.0,
+      "max_current_ma": 0.0,
+      "current_set_calibration_pct": 0.0,
+      "fractional_noise": 0.03,
+      "constant_noise_mw": 0.435675,
+      "threshold_current_ma": 0.0,
+      "min_autolevel_current_ma": 0.0,
+      "efficiency_mw_per_ma": 0.0,
+      "wavelength_nm": 0.0,
+      "operating_temp_range_c": [0.0, 0.0],
+      "default_operating_temp_c": 0.0,
+      "thermistor_kohm": 0.0,
+      "isolation_db": 0.0,
+      "tec_max_current_a": 0.0,
+      "tec_pid": {
+        "p": 0,
+        "i": 0,
+        "d": 0
+      },
+      "disable_tec_at_autooff": true,
+      "ntc_t_coefficient_per_c": 0.0,
+      "dlambda_dT_nm_per_k": 0.0,
+      "dlambda_dA_nm_per_ma": 0.0,
+      "autooff_s": 0,
+      "tune_nm": 0.0,
+      "emit_total_s": 0
+    }
+  }
+  ```
+- **Payload:** update laser settings.
+  ```json
+  {
+    "name": "<lasername>",
+    "settings": {
+      "nominal_current_ma": 0.0,
+      "expected_serial": 0,
+      "min_autolevel_current_ma": 0.0,
+      "max_current_ma": 0.0,
+      "efficiency_mw_per_ma": 0.0,
+      "wavelength_nm": 0.0,
+      "current_set_calibration_pct": 0.0,
+      "fractional_noise": 0.03,
+      "constant_noise_mw": 0.435675,
+      "tec_max_current_a": 0.0,
+      "default_operating_temp_c": 0.0,
+      "operating_temp_range_c": [0.0, 0.0],
+      "tec_pid": {
+        "p": 0,
+        "i": 0,
+        "d": 0
+      },
+      "disable_tec_at_autooff": true,
+      "dlambda_dT_nm_per_k": 0.0,
+      "dlambda_dA_nm_per_ma": 0.0,
+      "autooff_s": 0
+    },
+    "persist": true
+  }
+  ```
+
+- **Notes:**
+  - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
+    request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
+    upward to the 0.1 mA register grid. Raising threshold also raises this floor
+    silently. Updates with no representable interval through nominal current
+    are rejected. Manual output and calibration keep their existing minimum rules.
+  - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
+    app-owned optical-power uncertainty settings. The estimator reads its
+    existing per-laser cache and computes `hypot(power_mw * fractional_noise,
+    constant_noise_mw)` before converting power and uncertainty to photon flux.
+    These fields do not program Maiman or stop emission by themselves; the
+    settings command still stops throughput monitoring.
+  - Defaults are 3% fractional plus a constant 1% of each diode's **compiled**
+    maximum modeled power. Constant defaults in mW: 1028 = 0.435675;
+    1270, both 1430 channels, and 1510 = 0.086320; 2330 = 0.029481.
+    The baseline does not change when current output or user property settings
+    change. `persist:true` saves both fields with that laser's policy.
+  - It is the user's responsibility to ensure the triple of
+    (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
+    aligned and in sync because these values form the baseline for wavelength
+    tuning.
+  - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
+    applied during driver preparation and TEC start. It is not the live tuned
+    TEC setpoint. Tuning may write a different live TEC setpoint when a positive
+    `laser` value command applies the stored `tune_nm`, but it does not overwrite
+    `default_operating_temp_c`.
+  - Changing `default_operating_temp_c` changes the baseline used by future tune
+    calculations. Existing `tune_nm` remains stored, but the next positive
+    `laser` value command may compute a different TEC/current point from the new
+    baseline.
+  - `operating_temp_range_c` programs the writable TEC minimum/maximum during
+    preparation. Firmware expands the old range if needed, moves the default
+    target, then narrows it. A range-only change stops emission and invalidates
+    preparation; it is programmed at the next start without powering an idle
+    bank for the edit. Combining it with a driver-backed change programs both
+    immediately. Absolute device limits are never written.
+  - Settings `autooff_s` is the default for later manual `laser` commands;
+    command `autooff_s` overrides one operation. Throughput uses `off_in_s` for
+    its own duration and disables the separate laser auto-off while controlling
+    it. Changing the stored default does not rearm an active deadline.
+  - Settings are checked when a laser is first talked to at each boot
+  - `persist` is optional and defaults to false. Without `persist:true`,
+    accepted changes apply to runtime and driver-backed state but are not saved
+    in app NVS for the next controller boot.
+  - After device-ID and serial checks pass, a mismatch between settings the
+    driver stores in its EEPROM and controller NVRAM will trigger a warning in
+    the log and the driver values will be programmed.
+  - `expected_serial` is the operator-confirmed Maiman driver serial for this
+    laser/diode association. It must be nonzero. A serial mismatch blocks
+    driver-backed writes until the operator confirms the physical association
+    and updates `expected_serial`; firmware does not learn or persist changed
+    serials by itself. A device-ID mismatch remains an identity fault.
+  - If the laser bank is off, firmware powers it, applies driver-backed settings,
+    verifies them as practical, and then restores the previous bank power state.
+    Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
+    `default_operating_temp_c`, `tec_max_current_a`, and `tec_pid`. If
+    `laser/bankpower` is `override_off`, driver-backed settings changes return
+    an error.
+  - it is **encouraged** to send only the settings that requested changed.
+  - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
+    adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
+  - Actual changes to threshold, nominal current, efficiency, wavelength,
+    wavelength coefficients, autolevel minimum, operating range, or driver-backed
+    settings stop emission before acceptance. The TEC follows
+    `disable_tec_at_autooff`. Failed shutdown rejects the update and preserves
+    any measurement-owned shutdown obligation for retry. No-op updates and
+    changes only to noise, default auto-off, or TEC auto-off policy do not stop
+    emission. Successful settings updates still relinquish the measurement;
+    that behavior for non-stopping edits and tuning remains a deferred ownership
+    audit in `human_review_required.md`.
+  - Failures before driver programming completes leave settings unchanged
+    in app settings and report an error; partially written driver registers are
+    reprogrammed at the next preparation. If programming succeeds but
+    restoring the previous bank power state fails, the successfully applied
+    settings are still retained and persisted when requested; the command still
+    reports the restore error because bank power needs operator attention.
+  - Updates require a nonempty `settings` object containing writable fields.
+    `persist` alone is invalid. `tec_pid` accepts only `p`, `i`, and `d`.
+    `current_set_calibration_pct` is the canonical calibration field.
+  - Read-only and unknown settings return an error before changing laser or
+    throughput state. Read-only fields include `model`, `thermistor_kohm`,
+    `isolation_db`, `ntc_t_coefficient_per_c`, and `emit_total_s`. Use `laser/tune`
+    to set `tune_nm`; `name` belongs outside the settings object as the selector.
+  - `ntc_t_coefficient_per_c` is `null` when the diode datasheet provides no
+    value (1270j, both 1430 channels, and 1510h). The Python client represents
+    this unavailable coefficient as NumPy `NaN`.
+  - Non-Driver settings:
+    - `min_autolevel_current_ma`
+    - `nominal_current_ma`
+    - `autooff_s`
+    - `dlambda_dT_nm_per_k`
+    - `dlambda_dA_nm_per_ma`
+    - `disable_tec_at_autooff`
+    - `wavelength_nm`
+    - `threshold_current_ma`
+    - `efficiency_mw_per_ma`
+  - Settings that are informational only (included for datasheet posterity):
+    - `isolation_db`
+  - Ranges:
+    - Operating temp range: limited to [15,40] strong advice to limit to 17,38
+    - current_set_calibration: 95 - 105 in steps of .01
+    - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
+
+
+(laserbank-power)=
+### `laser/bankpower`
+- **No payload -> laser-bank power state:**
+  ```json
+  {
+    "mode": "auto|override_on|override_off",
+    "powered": false
+  }
+  ```
+- **Payload or topic suffix -> laser-bank power state after update:**
+  ```json
+  {"mode":"auto|override_on|override_off"}
+  ```
+  Suffix requests use
+  `cmd/<device>/req/laser/bankpower/auto`,
+  `cmd/<device>/req/laser/bankpower/override_on`, or
+  `cmd/<device>/req/laser/bankpower/override_off`.
+
+- **Notes:** `override_off` is the compiled boot default. In `auto`, power to the laser bank is handled by the bank
+  heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
+  emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
+  while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an
+  error response that still includes the current `mode` and firmware-requested `powered` state. If another laser-bank
+  operation occupies the shared Maiman Modbus bus past the command wait budget,
+  mode changes return `{"error":"busy"}`.
+
+(laserbank-heater)=
+### `laser/bankheater`
+- **No payload -> laser-bank heater state:**
+  ```json
+  {
+    "mode": "auto|override_on|override_off",
+    "auto_state": "waiting_for_temps|warming_disabled_tec|disabled_tec_warm|tecs_running|holding|override_on|override_off",
+    "heater_on": false,
+    "bank_power": true,
+    "ambient_c": null,
+    "idle_tec_temps": 0,
+    "idle_tec_avg_c": null,
+    "last_error": 0,
+    "poll_age_s": 0
+  }
+  ```
+- **Payload or topic suffix -> laser-bank heater state after update:**
+  ```json
+  {"mode":"auto|override_on|override_off"}
+  ```
+  Suffix requests use
+  `cmd/<device>/req/laser/bankheater/auto`,
+  `cmd/<device>/req/laser/bankheater/override_on`, or
+  `cmd/<device>/req/laser/bankheater/override_off`.
+
+- **Notes:** `auto` is the default at boot. In `auto`, laser-bank
+  temperature-control work powers the bank so the Maiman temperature monitors
+  can initialize, polls TEC temperatures at a fixed interval, and drives the
+  laser-bank heater through housekeeping relay-power helpers.
+  `auto_state` summarizes the internal policy state without exposing the
+  control-loop booleans: `waiting_for_temps` means no fresh driver
+  temperatures are available; `warming_disabled_tec` means at least one idle TEC
+  probe is below the heater-on threshold; `disabled_tec_warm` means at least one
+  idle TEC probe is warm enough for heater turnoff; `tecs_running` means all
+  driver TECs are enabled; `holding` means no heater state change was requested
+  in the latest loop. `idle_tec_temps` counts fresh driver temperature readings
+  whose TEC is not started, and `idle_tec_avg_c` averages only those readings;
+  actively controlled TEC temperatures remain laser telemetry and are not used
+  for this aggregate. `ambient_c` and `idle_tec_avg_c` are `null` when
+  unavailable. `poll_age_s` is an integer age in seconds or `null` before the
+  first poll. The off threshold is 15 C when ambient is valid and above 15 C,
+  otherwise 20 C. If all laser temperatures are stale, auto mode turns the
+  heater off when ambient is invalid or at least 15 C. When valid ambient is
+  below 15 C, auto mode powers the bank so driver
+  temperature monitors can initialize and leaves heater state unchanged until
+  valid laser temperature data is available. If all TECs remain enabled for at
+  least one control interval, the heater is turned off.
+  `override_on` and `override_off` force the heater state and suspend the
+  automatic warmup policy. While a heater override is active, firmware emits
+  `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
+  If the off-board DS2408 relay expander is offline, set requests return an I/O
+  error because the heater relay cannot be driven.
+
+(laserbank-clearfaults)=
+### `laser/clearfaults`
+- **No payload -> clear result:**
+  ```json
+  {"off_ms":250}
+  ```
+
+This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
+fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
+The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
+off or no faults).
+If another laser-bank operation occupies the shared Maiman Modbus bus past the
+command wait budget, this command returns `{"error":"busy"}`.
+
+
+(atten)=
+(atten-coeff)=
+### `atten`
+- **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
+- **Topics:**
+  - `cmd/<device>/req/atten/<laser>`
+  - `cmd/<device>/req/atten/<laser>/coeff`
+  - Responses use the same key under `cmd/<device>/resp/...`.
+- **No payload to `atten/<laser>` -> attenuator setting:**
+  ```json
+  {
+    "db": 12.5,
+    "linear": 0.0562,
+    "v1_mv": 1234.0,
+    "v2_mv": 0.0,
+    "db1": 12.5,
+    "db2": 0.0,
+    "linear1": 0.0562,
+    "linear2": 1.0
+  }
+  ```
+- **Payload to `atten/<laser>`:** set total attenuation or one or both physical
+  attenuators. `value` is total linear transmission and `value_db` is total
+  attenuation in dB. The total fields are mutually exclusive with the physical
+  `value1*` and `value2*` fields.
+  ```json
+  {"value":0.25}
+  {"value_db":12.5}
+  {"value1":0.25,"value2_db":6.0}
+  {"value1_mv":1234.0,"value2":1.0}
+  ```
+  Each physical attenuator may use a different unit, but a single physical
+  attenuator may only use one unit per request. For example, `value1` and
+  `value2_db` is valid, while `value1` and `value1_db` in the same request is
+  rejected. Millivolt inputs are clamped to the firmware drive span, quantized
+  through the board-configured DAC transfer, and responses report the applied
+  DAC-side millivolts read back from the DAC.
+- **No payload to `coeff` -> model coefficients:**
+  ```json
+  {
+    "dac1": {
+      "fvoa_50pct_mv": 2529.45,
+      "slope_inv_fvoa_mv": 0.00158137,
+      "max_atten_db": 55.0,
+      "gain": 1.533,
+      "rms_db": 2.0,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    "dac2": {
+      "fvoa_50pct_mv": 2529.45,
+      "slope_inv_fvoa_mv": 0.00158137,
+      "max_atten_db": 55.0,
+      "gain": 1.533,
+      "rms_db": 2.0,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    }
+  }
+  ```
+- **Payload to `coeff`:** set the model coefficients for the two physical
+  attenuators that make up the logical attenuator. Both `dac1` and `dac2`
+  objects are required.
+  ```json
+  {
+    "dac1": {
+      "fvoa_50pct_mv": 3144.95,
+      "slope_inv_fvoa_mv": 0.00303104,
+      "max_atten_db": 48.36,
+      "max_calibrated_db": 45.0,
+      "gain": 1.533,
+      "rms_db": 2.0,
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
+    },
+    "dac2": {
+      "fvoa_50pct_mv": 3456.12,
+      "slope_inv_fvoa_mv": 0.00247498,
+      "max_atten_db": 61.95,
+      "max_calibrated_db": 55.0,
+      "gain": 1.533,
+      "rms_db": 2.0,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    },
+    "persist": true
+  }
+  ```
+- **Serial form for `coeff`:** send the JSON object after the key. The default
+  serial shorthand only builds a `value` payload, so it is not useful for
+  coefficient objects. The MQTT payload is the same JSON object without the
+  serial key prefix.
+  ```text
+  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"max_calibrated_db":45.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0,0.0,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"max_calibrated_db":55.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0,0.0,0.0]},"persist":true}
+  ```
+
+- **Notes:**
+  - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
+    or `2330k`. On calibration boards only, the LFC attenuator is addressed as
+    `atten/lfc` and `atten/lfc/coeff`.
+  - Laser aliases accepted by the laser profile table, such as `1028`, also
+    resolve to the matching TIB attenuator channel, but canonical command docs
+    use the full logical laser names.
+  - Each logical attenuator is a pair of physical FVOAs. Total set commands use
+    directional balancing: increases first use the less-attenuated device,
+    decreases first use the more-attenuated device, then share changes once
+    balanced. Both devices respect their modeled limits; an unchanged total
+    retains the existing physical allocation.
+  - `value` is a unitless linear transmission fraction in `(0, 1]`.
+    The same range applies to `value1` and `value2`; dB values must be nonnegative.
+    Both physical values are validated before either device is written. Hardware
+    failure during a pair update can still leave an earlier write applied.
+  - Compact value requests reject coefficient fields and `persist`;
+    coefficient requests accept only `dac1`, `dac2`, and optional `persist`.
+  - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
+    drive span. The firmware converts them to DAC codes using the
+    board-configured DAC reference transfer, then responses report the applied
+    DAC-side millivolts after code quantization and output-rail clipping.
+  - Coefficients are loaded from persistent app NVS during
+    `setup_attenuators()`. They define the erf coordinate
+    `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
+    ideal transmission `ideal_tx = (erf(4) - erf(delta)) / (2 * erf(4))`.
+    Runtime dB/linear set commands normalize against the modeled open
+    transmission at DAC 0, then apply the physical FVOA leakage floor
+    `floor_tx = 10^(-max_atten_db / 10)`. `correction_coeff` is an optional
+    six-term Chebyshev residual correction in model dB space. Query responses
+    always include it. In set payloads, omitting `correction_coeff` leaves the
+    currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` to
+    clear it intentionally.
+  - `max_calibrated_db` is required in each replacement coefficient object and
+    returned by coefficient queries. It is the corrected-curve operating endpoint,
+    separate from the leakage-floor parameter `max_atten_db`. Automatic fitting
+    uses the usable measured prefix through the first point above
+    `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB). The operating limit is the minimum
+    of 55 dB, the last supporting measurement, its model prediction and the floor.
+    Above the endpoint, the endpoint residual fades linearly
+    in base-model dB to zero at the existing floor; the polynomial is not extrapolated.
+  - Manual dB/linear and voltage commands retain full-range access. Values beyond
+    the calibrated endpoint are rough estimates. Autolevel uses individual
+    calibrated limits and switches to laser adjustment when they are exhausted.
+  - Records predating `max_calibrated_db` are rejected by size; other NVS settings
+    are preserved. The fitting update keeps the current record layout; recalibrate
+    to obtain its new fits.
+  - `persist` is optional and defaults to false. A non-persistent coefficient
+    update changes runtime behavior until reboot or a later coefficient command.
+  - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
+    in attenuation dB for fitting-support measurements at or below
+    `max_calibrated_db`, including negative reference-relative measurements. It defaults
+    to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
+    A manual model replacement omitting `rms_db` uses that default, rather than
+    inheriting confidence from the previous fit. An explicit zero is allowed.
+  - Accepted autocalibration installs the final model's unweighted residual RMS
+    with its coefficients and saves both when persistence is requested. Rejected
+    fits replace neither. No extra sweep or offline analysis is required.
+  - The pair transmission estimate uses
+    `sigma_db = hypot(hypot(dac1.rms_db, dac2.rms_db), hypot(electrical1, electrical2))`
+    and `sigma_T = T * ln(10)/10 * sigma_db`. For each device,
+    `electrical = abs(d_db_d_voltage_mv) * ATTENUATOR_FVOA_NOISE_RMS_MV / gain`.
+    This source constant defaults to 10 mV RMS after the amplifier, applied to
+    every FVOA; zero disables the electrical term. The full calibrated curve's
+    local slope predicts variation along the curve; stored `rms_db` estimates
+    its accuracy. The contributions and the two devices are assumed independent.
+    Calibration errors remain correlated across samples, and the combined
+    uncertainty is not temporal RMS. No bandwidth or averaging correction is
+    inferred from electrical RMS. Throughput includes this and laser uncertainty
+    in `tp_err`; `tp_pd_err` remains PD-only. The error propagation does not alter nominal transmission.
+  - There is no separate `attensettings` command; calibration coefficients live
+    on `atten/<laser>/coeff`.
+
+(atten-calibrate)=
+### `atten/calibrate`
+The implementation flow, bridge-normalization sequence, and retained-record
+ownership are documented in `attenuator_calibration.md`.
+Status queries return a coherent snapshot without waiting for numerical fitting.
+The state remains `running` during fitting; each completed physical fit becomes
+available without waiting for the other fit.
+
+- **No payload -> compact calibration state:**
+  ```json
+  {
+    "state": "inactive",
+    "mode": "none",
+    "physical": "dac1",
+    "fit": "none",
+    "n": 128,
+    "t_ms": 300,
+    "complete_pct": 0,
+    "point": "1/128",
+    "mv": 0.0,
+    "other_mv": 3300.0,
+    "error": 0,
+    "dac1": {
+      "valid": true,
+      "accepted": true,
+      "points": 12,
+      "fvoa_50pct_mv": 3144.95,
+      "slope_inv_fvoa_mv": 0.00303104,
+      "max_atten_db": 48.36,
+      "max_calibrated_db": 45.0,
+      "max_atten_sigma_db": 0.29,
+      "corr": 0.999,
+      "rms_db": 0.1,
+      "max_abs_db": 0.2,
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
+    },
+    "dac2": {"valid": false}
+  }
+  ```
+- **Record data query:** retained calibration acquisition records are available
+  as metadata plus fixed binary MQTT record chunks, independent of best-effort
+  telemetry:
+  ```
+  atten/calibrate/records/<dac1|dac2>
+  atten/calibrate/records/<dac1|dac2>/<chunk>
+  ```
+  The metadata query has no chunk suffix. The response is not JSON and is
+  MQTT-only because the serial response printer is string-oriented. The
+  metadata response starts with `<4s 15B>`: magic `HAC4`, version, kind
+  (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
+  overflow, record-size, records-per-chunk, record-count, record-chunk-count,
+  reference-valid, reference-record, and bridge-count. It is followed by
+  `bridge-count` little-endian `<2B>` bridge entries containing
+  `before_record` and `after_record` indices. The reference and bridge entries
+  name roles for retained raw records; they are not separate copied records.
+
+  Each numbered chunk response contains only raw records and no header. Chunk
+  `0` starts at record `0`; subsequent chunks use the fixed
+  `records-per-chunk` value reported by metadata. Version 3 uses record size
+  27 bytes, and each raw record has little-endian layout `<6f 3B>`:
+  `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
+  `event`, `classification`, and `segment`. Event codes are `0=point`,
+  `1=initial_probe`, and `2=bridge_probe`; classification codes are `0=ok`,
+  `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
+  `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
+  `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
+  NumPy raw record array with those firmware names. It also adds convenience
+  `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
+  default FVOA drive gain; those columns are host-side coordinates, not
+  additional firmware measurements. Bridge scale, scaled signal, transmission,
+  dB attenuation, fit inclusion, and residuals are derived from the raw records
+  and the accepted bridge boundaries after acquisition.
+- **Payload:** start automatic TIB calibration for the logical pair belonging to
+  a laser.
+  ```json
+  {
+    "laser": "1430yj",
+    "output": "yj_ao",
+    "fiber": "M",
+    "dwell_ms": 300,
+    "persist": true
+  }
+  ```
+- **Payload:** stop/cancel any calibration.
+  ```json
+  {"stop": true}
+  ```
+  `stop:true` takes priority over accompanying start fields, whose values are
+  ignored even if invalid. Unknown top-level fields are still rejected.
+
+- **Telemetry topic:** `dt/<device>/atten`
+- **Telemetry payload:** attenuator calibration emits one best-effort JSON
+  message per significant state transition, DAC setpoint, retained
+  measurement record, bridge measurement, and fit result. Calibration continues
+  if telemetry is dropped; authoritative acquisition data is queried through
+  `atten/calibrate/records`.
+  ```json
+  {
+    "event": "point",
+    "state": "running",
+    "mode": "tib_auto",
+    "physical": "dac1",
+    "attenuator": 2,
+    "complete_pct": 10,
+    "record_count": 4,
+    "segment": 0,
+    "sweep_mv": 1983.0,
+    "other_mv": 1764.0,
+    "laser_pct": 100.0,
+    "i": 4,
+    "classification": "ok",
+    "signal_mv": 124.0,
+    "signal_err_mv": 0.1,
+    "max_mv": 124.6
+  }
+  ```
+  Other `event` values include `start`, `physical_start`, `initial_probe_set`,
+  `point_set`, `bridge_probe_set`, `initial_probe`, `point`, `bridge_probe`,
+  `fit`, `complete`, `stop`, and `error`. Fit input and residual diagnostics
+  are retained in calibration state and queried through
+  `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
+  burst.
+
+- **Notes:**
+  - State names are `inactive`, `running`, `complete`, and `error`.
+    A canceled calibration returns to `inactive`. If automatic acquisition
+    completes but the fit is not accepted, state is `complete`, fit is `failed`,
+    coefficients are not persisted, and retained data remains available for lab
+    analysis. Fit state is `ok` when both physical attenuators are accepted,
+    `failed` after an unsuccessful fit, and `none` before a fit exists.
+    Accepted calibration coefficients are applied to runtime attenuator control;
+    they are persisted to NVS only when `persist` is requested.
+  - One static dataset is retained through stop, errors, rejected fits, and host
+    cleanup. Raw records, references, bridges, run identity, and completed fit
+    results are cleared only by an accepted new start or reboot. A status query
+    does not start a run. Rejected requests preserve the data; an accepted start
+    clears it before hardware setup, even if that setup subsequently fails.
+  - Acquisition completion stops the calibration-owned laser before fitting.
+    A failed stop reports an error and preserves both data and shutdown ownership
+    for an explicit retry. Stop also shuts down an active acquisition's source;
+    shutdown failure is returned as a command error.
+  - Fitting runs at the lowest application priority, without holding the
+    calibration mutex. Stop or a replacement start cancels at a numerical loop
+    boundary and waits for fitting to release the data. Cancellation before
+    installation prevents application/persistence; it does not undo an already
+    installed calibration. Status and records remain readable during fitting.
+  - Python downloads the record prefix described by each physical device's
+    initial metadata, allowing acquisition to append concurrently. Starting a
+    replacement run invalidates an in-progress multi-request download.
+  - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
+    selects the logical attenuator pair and outbound route input, while `fiber`
+    selects the photodiode route as in `measure_throughput`.
+  - TIB automatic calibration requires the selected photodiode to already be
+    powered and producing valid sampler data. It stops laser emission, sets
+    both physical attenuators to the maximum firmware DAC-drive voltage, sets
+    the photodiode internal configurable-window duration to `dwell_ms`, rounded
+    by the PD owner to whole samples. For each measurement, after both DAC writes
+    it sleeps 100 ms for FVOA settling, then resets that window and waits for its
+    full sample count. The settling wait is additional to `dwell_ms`; conversions
+    begun before reset are excluded. No extra conversion-time pad or private
+    calibration dark is used. Each point uses the photodiode configurable
+    window's configured dark-subtracted `mean_net_mv`; updating dark remains a
+    separate `pd/dark/<channel>` operation.
+  - Automatic calibration uses SNR for the dim edge and a separate headroom
+    target for companion searches. A measurement is usable when its raw window
+    maximum is below the manufacturer's **2000 mV photodiode saturation/linearity
+    limit**, expressed at the ADC input after the divider, and its
+    dark-subtracted signal is at least 5 sigma above the sample mean
+    uncertainty. This photodiode limit is not an output-voltage clamp: the
+    detector can produce voltages beyond it and beyond the ADC range. The ADC
+    clips at **2048 mV** full scale; its maximum reported code is **2047.9375 mV**.
+    Calibration rejects photodiode saturation before ADC clipping occurs.
+    Initial-reference and bridge searches select usable candidates
+    with raw window maxima below **1850 mV**, leaving headroom for subsequent
+    fluctuations. A usable record between 1850 and 2000 mV remains `ok` but is
+    too bright for search selection. Laser fallback and bridge-search recovery
+    use the same 1850 mV search target.
+    Low-but-clean points are retained and may be fit inputs. Saturated,
+    below-SNR, and ADC-error measurements are retained as records but are not
+    fit inputs.
+  - Automatic calibration does not use an FVOA datasheet voltage schedule
+    to choose calibration points. For each physical FVOA it binary-searches the
+    companion FVOA to find the lowest usable companion DAC below the peak target,
+    selects that measured initial-probe record as the open reference, linearly sweeps the
+    DUT from 0 mV to maximum drive in
+    `ATTEN_CAL_SWEEP_STEP_MV` increments, skips saturated bright-side sweep
+    records as diagnostics, and bridge-normalizes when the sweep reaches the
+    below-SNR dim edge. `ATTEN_CAL_SEARCH_MIN_STEP_MV` is the companion binary
+    search resolution, not the DUT sweep step. Bridge normalization holds the
+    DUT, selects the latest usable DUT point as the bridge-before record,
+    searches the companion FVOA, and records the accepted bridge probe as the
+    bridge-after record in the bridge table. The bridge ratio updates the
+    segment scale and its uncertainty. If there is no usable DUT point in the
+    current segment, the last accepted bridge-after record can anchor another
+    bridge when it is classified `ok` and matches the current segment and
+    companion DAC voltage. A single below-SNR point after a bridge is not by
+    itself a reason to finish the sweep; lacking both eligible anchors is an
+    acquisition error.
+  - Firmware does not try to classify or discard whole nonlinear regions. It
+    reports every retained acquisition record, and the fit uses only records
+    derived as fit candidates by classification and the minimum transmission limit,
+    restricted to the contiguous prefix including the first measured point above
+    55 dB. The extra point constrains the operating boundary in both fitting stages.
+    Valid sweep readings equal to or brighter than the measured reference remain
+    eligible. Their measured dB may be zero or negative; the model stays nonnegative.
+    External analysis can inspect all retained records regardless of fit success.
+  - Automatic calibration uses the sampler-owned internal photodiode
+    configurable window. It does not start a separate photodiode measurement or
+    a new calibration thread; the throughput monitor thread advances the state
+    machine.
+  - The automatic fit derives all normalized quantities from raw records after
+    acquisition. It divides each retained signal by the open reference and the
+    cumulative bridge segment scale, converts that relative transmission to dB,
+    and optimizes the attenuator model directly in dB output space while
+    keeping the coefficient names and meanings `fvoa_50pct_mv`,
+    `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
+    `max_atten_db` from the final three usable full-sweep points and holds it
+    fixed while optimizing the two shape parameters on that prefix. It then fits
+    the optional `correction_coeff` residual layer against the same data, trying
+    six leading Chebyshev terms, then five, down to one. Each candidate receives
+    its calibrated limit and continuation before checking the final curve on a
+    1 mV grid across the drive range, at retained fit voltages and at the calibrated
+    join. Values must be finite, nonnegative and ordered; analytic slopes must
+    be nonnegative. This numerical check can detect turns between measured points;
+    it is not a proof between grid locations. The first valid correction is kept,
+    with unused coefficient slots zeroed. The base-only model is the last fallback.
+    A single `atten_correction_rejected` warning identifies the selected term count
+    (`0` for base only, `-1` for no valid model) and the first failed check/location.
+    The same summary is logged locally. The y uncertainty comes from photodiode mean
+    uncertainty, bridge/segment-scale propagation, and the open-reference
+    uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
+    3 mV. `points` counts all fitting support, including the above-limit anchor.
+    Correlation and residual RMS/max score only those support points whose measured
+    attenuation is at or below `max_calibrated_db`, including negative
+    reference-relative measurements; a model prediction above the limit
+    does not remove a large error from these metrics. Fit details also include
+    calibrated limit and correction coefficients. Transmission/FVOA spans remain
+    in per-device fit telemetry, but are omitted from aggregate status to fit
+    the existing 1024-byte response buffers.
+    The final `rms_db` is retained with each accepted physical model for runtime
+    throughput uncertainty and optional NVS persistence.
+
+(pd)=
+### `pd`
+- **Topic:** `cmd/<device>/req/pd` or `cmd/<device>/req/pd/<yj|hk>`
+- **No payload -> photodiode values and the public monitoring window:**
+  ```json
+  {
+    "yj": {
+      "raw": 0,
+      "mv": 0.0,
+      "net_mv": 0.0,
+      "net_err_mv": 0.0,
+      "power_uw": 0.0,
+      "power_err_uw": 0.0,
+      "dark_mv": 0.0,
+      "dark_err_mv": 0.0,
+      "window": {
+        "duration_ms": 0,
+        "failed_samples": 0,
+        "mean_mv": 0.0,
+        "mean_net_mv": 0.0,
+        "rms_mv": 0.0,
+        "mean_net_err_mv": 0.0,
+        "min_mv": 0.0,
+        "max_mv": 0.0,
+        "power_uw": 0.0,
+        "power_err_uw": 0.0
+      },
+      "pd_powered": true,
+      "pd_on_s": 0
+    },
+    "hk": {}
+  }
+  ```
+- **Single-channel query:** `pd/yj` returns only the selected channel:
+  ```json
+  {"yj": {}}
+  ```
+
+- **Notes:**
+  - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
+    In auto power mode, a query enables the selected photodiode relay or relays.
+  - `raw`, `mv`, `net_mv`, `net_err_mv`, `power_uw`, and `power_err_uw` are the
+    latest successful conversion and its reading/offset error. An ADC failure
+    leaves this diagnostic state unchanged; throughput does not re-emit it.
+  - `window` is the fixed public diagnostic window, separate from throughput
+    and autolevel. Its duration is set by `PHOTODIODE_FIXED_WINDOW_MS` in
+    `app/src/photodiode.h`.
+  - The internal configurable window used by dark measurement and attenuator
+    calibration is not exposed through the command API.
+  - Dark measurement and forced dark updates are done through
+    `pd/dark/<channel>`, not through `pd` or `pd/settings`.
+
+(pddark)=
+### `pd/dark`
+- **Topic:** `cmd/<device>/req/pd/dark/<yj|hk>`
+- **No payload -> active and lowest dark windows:**
+  ```json
+  {
+    "channel": "yj",
+    "pending": false,
+    "duration_ms": 0,
+    "dark": {
+      "duration_ms": 0,
+      "failed_samples": 0,
+      "mean_mv": 0.0,
+      "mean_net_mv": 0.0,
+      "rms_mv": 0.0,
+      "mean_net_err_mv": 0.0,
+      "min_mv": 0.0,
+      "max_mv": 0.0,
+      "power_uw": 0.0,
+      "power_err_uw": 0.0
+    },
+    "lowest_dark": {}
+  }
+  ```
+- **Payload:** measure, force, or reset one channel's dark.
+  ```json
+  {"duration_ms": 1000, "persist": false}
+  ```
+  ```json
+  {"dark_mv": 0.0, "rms_mv": 1.5, "persist": true}
+  ```
+  ```json
+  {"reset_lowest": true}
+  ```
+
+- **Notes:**
+  - `duration_ms` arms a sampler-owned dark capture using the internal
+    configurable photodiode window and returns immediately. Query
+    `pd/dark/<channel>` to see `pending:false` and the resulting dark window.
+  - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
+    `dark_mv`; if omitted, firmware uses
+    `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
+  - `duration_ms` and `dark_mv` are mutually exclusive. Durations must be
+    greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
+    `app/src/app_settings.h`.
+  - `reset_lowest:true` resets the lowest-dark record to the active dark.
+  - `persist` defaults false. Duration captures are rejected during attenuator
+    calibration. They stop all throughput and its owned laser before capture;
+    stop failure aborts capture. Unrelated manual lasers and routes are unchanged.
+  - Captured `rms_mv` is single-reading scatter; `mean_net_err_mv` and
+    `pd.dark_err_mv` report dark-mean uncertainty. For a forced dark, supplied
+    `rms_mv` is offset uncertainty. Recapture dark after cadence/rate changes;
+    saved records do not encode the acquisition rate. See the
+    [uncertainty audit](photodiode_notes.md).
+
+(pd-settings)=
+### `pd/settings`
+- **Topic:** `cmd/<device>/req/pd/settings/<yj|hk>`
+- **No payload -> one channel's photodiode settings:**
+  ```json
+  {
+    "channel": "yj",
+    "noisewarn_mv": 3.0,
+    "responsivity_a_per_w": 0.93,
+    "transimpedance_v_per_a": 2.0e10,
+    "power": "auto",
+    "autooff_s": 300,
+    "off_in_s": null
+  }
+  ```
+- **Payload:** update one channel's photodiode settings.
+  ```json
+  {
+    "noisewarn_mv": 3.0,
+    "responsivity_a_per_w": 0.93,
+    "transimpedance_v_per_a": 2.0e10,
+    "power": "auto",
+    "autooff_s": 300,
+    "persist": true
+  }
+  ```
+
+- **Current set fields:**
+  - `noisewarn_mv`
+  - `responsivity_a_per_w`
+  - `transimpedance_v_per_a`
+  - `power`
+  - `autooff_s`
+  - `persist`
+
+- **Notes:** not all settings need to be included when setting; failure on any
+  settable setting results in none being set. YJ and HK settings use separate
+  command keys and separate app NVS records. `power` is the relay intent for
+  this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
+  channel's automatic power-off delay used when firmware auto-enables the
+  relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
+  Dark and lowest-dark values are queried and updated through
+  `pd/dark/<channel>`.
+
+  `transimpedance_v_per_a` is the effective gain at the ADC input, combining
+  detector datasheet transimpedance with the divider and intervening analog gain.
+  Its allowed range is `1e7` to `1e12` V/A. Defaults are `2.0e10` V/A
+  for YJ and `9.5e8` V/A for HK; do not apply the divider again in power conversion.
+  `noisewarn_mv` is ADC-input RMS scatter in the fixed 500 ms window, including
+  real optical changes. The 10 mV default warning level corresponds nominally to 0.538 pW RMS
+  for YJ and 17.3 pW RMS for HK using the default responsivities.
+  Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
+
+(measure-throughput)=
+### `measure_throughput`
+- **Payload:** start monitoring.
+  ```json
+  {
+    "autolevel": true,
+    "initial_level": 0.5,
+    "laser": "<lasername>",
+    "fiber": "M",
+    "output": "yj_ao",
+    "max_flux_ph_s": 1.0e12,
+    "off_in_s": 300,
+    "format": "binary"
+  }
+  ```
+- **Payload:** start monitoring an externally supplied/calibration input.
+  ```json
+  {
+    "autolevel": false,
+    "laser": "none",
+    "channel": "yj",
+    "input": "yj_cal",
+    "output": "yj_ao",
+    "fiber": "M",
+    "format": "binary"
+  }
+  ```
+- **Payload:** stop monitoring.
+  ```json
+  {
+    "stop": "yj"
+  }
+  ```
+
+`measure_throughput` is the only command that starts or stops photodiode
+streaming. It measures throughput by comparing the route-corrected optical power at the
+selected photodiode with the route- and attenuator-corrected laser power
+estimate.
+
+`autolevel:true` lets firmware adjust the selected laser output level percent
+and logical attenuator to keep the photodiode signal in the useful
+ADC/photodiode range. `autolevel:false` streams the selected photodiode level
+and derived values without adjusting laser level or attenuation during monitoring.
+For a named laser, passive monitoring can start before any laser command, with
+bank power off or on. It continues through bank power-on, controller preparation,
+TEC startup, and the first current command; no preliminary STOP or positive-current
+command is required. The source-current estimate starts at zero, and throughput
+is undefined (`null` in JSON, NaN in binary) while delivered source power is zero.
+PD measurements remain available throughout. These source estimates describe
+commanded state, not an optical measurement; actual control/communication faults
+still stop the stream.
+
+`initial_level` is an optional fraction from 0 to 1, accepted only with
+`autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
+calibrated attenuation, then sets this fraction of the threshold-to-nominal
+current range, bounded by `min_autolevel_current_ma` and nominal current.
+Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
+off. This applies to both compiled dimming priorities. Throughput ignores stored
+`tune_nm` and retains the live TEC target when already prepared; cold preparation
+still applies `default_operating_temp_c`.
+Stopping an autolevel operation also stops the laser it was using, even if
+manual laser level or attenuation changes have since disabled automatic adjustments.
+A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
+same source with `autolevel:false` retains an existing operation's laser
+shutdown obligation; replacing its source first stops that autolevel laser.
+Bank power, TECs, and unrelated lasers are left unchanged.
+Valid `stop` requests take priority over accompanying start fields, whose values
+are ignored even if invalid. Unknown top-level fields are still rejected.
+
+HK and YJ can both stream, with one measurement per photodiode channel and
+**only one autolevel owner**. A second autolevel start is rejected before changing
+routes or outputs. External instrument paths combine the light and influence
+both PDs; manually enabled additional lasers are not separated by this system.
+
+`stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
+attempts every owned laser shutdown. Failed shutdown disables streaming/control
+and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
+and operational source/relay faults use the same stop path. Numerical laser
+estimates continue to use confirmed setpoints; acquisition checks owner health
+separately. A single failed read warns; five seconds without a response while
+in use faults the owner. Recovery does not restart measurements. See
+[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime).
+
+Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
+JSON; Python and the notebook default to binary. Binary channel and wavelength
+identify the source, including both 1430 nm lasers, and a flag bit carries the
+actual autolevel state. No individual DAC values or laser percentages are streamed.
+
+For a known laser, `output` is required and `input` is inferred unless supplied.
+Optional `channel` must match that laser. Passive `laser:"none"` requires explicit
+`channel:"yj"` or `"hk"` and `autolevel:false`. Its `input` and `output` are an
+optional pair: omit both to leave launch switching untouched (for example,
+astrophysical illumination), or supply both to route external calibration light.
+An explicit launch must select that channel's AO or FEI output.
+
+The command validates launch and return routes before preparing the monitor.
+Preparation checks exclusions, quiesces the target stream, and stops an owned
+source if replacing it. The command then applies the optional launch route and
+**always** applies `yj_mm/sm -> yj_pd` or `hk_mm/sm -> hk_pd`. These use independent
+switches. Only then does the monitor enable PD power and start measurement.
+Route/start failure stops the prepared monitor and attempts its owned laser
+shutdown; routing failures can leave some MEMS switches changed and report that.
+Invalid input or an exclusion failure leaves an existing run untouched.
+
+All measurements divide detected power and its error by the selected return
+transmission. A known laser selects its route/laser override when present;
+unknown illumination uses the generic return defaults (MM 0.98, SM 0.60), without
+choosing another source's calibration. Passive PD voltage, corrected power,
+errors, and detector S/N remain available; source power, wavelength, launch
+transmission, and throughput are NaN/null because emission is unknown. No new
+persistent route key or telemetry field is introduced. A return-only example:
+```json
+{"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
+```
+
+Dark capture or active attenuator calibration rejects all starts. Taking a dark
+or starting calibration stops existing throughput; there is no automatic resume.
+
+`max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
+dynamic attenuator pair and **before** static route losses. Stream quantities
+use power: nW for detected/delivered light and µW for the estimated laser output
+before attenuation. No actual laser power readback exists.
+
+The stream is nominally **20 Hz per channel**: one fresh ADC conversion per
+50 ms, without overlapping or reused samples. It does not use the fixed 500 ms
+PD window. The monitor selects its previous/current source context using the
+monotonic acquisition start and last input-change time; the PD module owns no
+source context. `t_ms` is the estimated UTC conversion midpoint. A delayed consumer can skip
+intermediate readings; a failed ADC conversion produces no record or adjustment.
+Timestamps expose gaps. The latest diagnostic PD state remains available and
+its windows count failed conversions. ADC warnings are limited to one per
+channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
+
+**Telemetry topics:** `dt/<device>/yj_tput`, `dt/<device>/hk_tput`.
+
+**JSON fields:**
+```json
+{
+  "channel": "yj_m",
+  "laser": "1028y",
+  "autolevel": true,
+  "t_ms": 0,
+  "tp": 0.2,
+  "tp_err": 0.0100498756211,
+  "tp_pd_err": 0.001,
+  "pd_power_nw": 0.4,
+  "pd_power_err_nw": 0.002,
+  "delivered_power_nw": 2,
+  "delivered_power_err_nw": 0.1,
+  "laser_output_power_uw": 1000,
+  "laser_output_power_err_uw": 30,
+  "pd_route_tx": 0.5,
+  "laser_route_tx": 0.2,
+  "atten_tx": 0.01,
+  "pd_mv": 100,
+  "pd_net_mv": 90,
+  "pd_net_err_mv": 0.5,
+  "laser_current_ma": 50,
+  "atten_db": 20,
+  "wavelength_nm": 1028,
+  "pd_raw": 1600,
+  "pd_ontime_s": 1,
+  "laser_current_ontime_s": 2,
+  "flags": []
+}
+```
+
+`channel` is `yj_m`, `yj_s`, `hk_m`, or `hk_s`. On-times are integer seconds:
+PD relay continuous on-time and the laser module's current-emission on-time.
+Nonfinite values are JSON `null`; finite values use 12 significant digits.
+
+**Binary layout:** 179 bytes, little-endian, Python `struct` format
+`<8sQ18dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
+
+```text
+char[8] channel
+uint64 t_ms
+float64 tp
+float64 tp_err
+float64 tp_pd_err
+float64 pd_power_nw
+float64 pd_power_err_nw
+float64 delivered_power_nw
+float64 delivered_power_err_nw
+float64 laser_output_power_uw
+float64 laser_output_power_err_uw
+float64 pd_route_tx
+float64 laser_route_tx
+float64 atten_tx
+float64 pd_mv
+float64 pd_net_mv
+float64 pd_net_err_mv
+float64 laser_current_ma
+float64 atten_db
+float64 wavelength_nm
+int16 pd_raw
+uint64 pd_ontime_s
+uint64 laser_current_ontime_s
+uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
+```
+
+**Measurement and control interpretation:**
+
+- `tp = pd_power_nw / delivered_power_nw`. Signed net values are preserved.
+  Zero/invalid delivered power makes throughput NaN/null.
+- `pd_power_nw` is detected net power divided by PD route transmission.
+  `delivered_power_nw` is estimated laser output times dynamic attenuator and
+  outbound route transmissions. Laser output in µW is before both losses.
+- `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
+  includes laser calibration, attenuator-fit residual uncertainty, and modeled
+  FVOA electrical variation. Calibration errors are correlated between records
+  and must not be reduced by treating them as independent sample noise. The
+  combined error is not temporal RMS; electrical independence between FVOAs
+  does not imply independence over time. The error audit documents the assumptions
+  and omitted calibration terms.
+- `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
+  Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
+  a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
+  Calibration's ADC-rail classification remains separate.
+- PD responsivity and effective transimpedance already include the analog
+  divider. The nearest nominal wavelength correction is applied once; current
+  correction coefficients are all unity.
+- `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
+  transmission. Static attenuation belongs in the source route loss.
+- Route losses resolve explicit settings, then compiled TIB switch/static
+  defaults, then unity for unspecified pairs. Start latches the outbound
+  `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission
+  using the selected laser name. Restart to capture changed route settings.
+- Publish the completed measurement before choosing a move. A fresh low reading
+  (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
+  Raw overrange wins over low net signal. Startup uses the same direct path.
+  A sample that began before the previous move completed cannot select another
+  move. There is no rolling-window gate, five-observation bypass, or settling
+  holdoff. Physical response and filter lag remain visible in the data.
+- Flux is raised by reducing attenuation first, then increasing laser current.
+  Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
+  `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before
+  increasing attenuation; `TP_ATTEN_FIRST` (0) preserves the previous order.
+  Either mode holds settings in the useful band and tries the other actuator
+  when the preferred one cannot move. Current is bounded by the per-laser
+  autolevel minimum and nominal current; checks use the actual 0.1 mA register
+  grid, so a repeated setpoint cannot count as progress. The directional pair
+  allocator avoids loading all attenuation onto one device. Each FVOA is limited by its
+  `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
+- Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
+  `off_in_s` stops the monitor after the requested seconds, with zero disabling
+  expiry. Bank power/TECs remain under their existing owner.
+- Manual laser level and attenuation commands disable autolevel while streaming
+  continues with updated source context and the existing laser shutdown obligation.
+  They do not restart the measurement deadline. A zero laser level keeps PD readings
+  flowing, with throughput NaN/null until estimated source power is positive.
+  Laser tuning/settings commands stop the stream. A failed settings update
+  retains any owned laser shutdown for explicit stop retry. Display controls only affect UI.
+
+For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
+output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
+and `pcb.atten(...)` repeatedly. The same collector and live plot continue running.
+
+
 ## Python command helpers
 
 The `HispecFibPcb` command helpers query when only selectors are supplied and
@@ -1845,6 +2026,8 @@ pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss=0.5)
 pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss="3.0103 dB")
 pcb.laser("1028y")
 pcb.laser("1028y", value=0.25)
+pcb.laser("1028y", value=0)    # Temporary zero current; retains readiness/deadline.
+pcb.laser("1028y", stop=True) # Explicit shutdown, including configured TEC policy.
 pcb.laser_tune("1028y", tune_nm=0)
 pcb.laser_settings("1028y", autooff_s=300)
 pcb.laser_bankpower("auto")
@@ -1860,6 +2043,7 @@ pcb.mems_split("yj")               # AS board
 pcb.mems_split("yj", 0.25, 0.25, stop_in_s=30)
 pcb.temps()
 pcb.measure_throughput("1028y", output="yj_ao", collect=True)
+pcb.measure_throughput("none", channel="hk", fiber="S", autolevel=False, collect=True)
 ```
 
 Existing `mems()`, `mems_switch(...)`, `atten(...)`, `pd(...)`, `pd_dark(...)`,

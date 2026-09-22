@@ -24,10 +24,11 @@
 struct attenuator_calibration_fit_metrics {
 	bool valid;
 	bool accepted;
-	uint8_t points;
+	uint8_t points; /* Fitting-support count, including the first above-limit point. */
 	double fvoa_50pct_mv;
 	double slope_inv_fvoa_mv;
 	double max_atten_db;
+	double max_calibrated_db;
 	double max_atten_sigma_db;
 	double correlation;
 	double rms_db;
@@ -68,15 +69,15 @@ struct attenuator_calibration_auto_request {
 	bool persist;
 };
 
-/** Start automatic TIB calibration for the laser's logical attenuator pair. */
+/** Cancel previous fitting, then clear the single retained dataset and start acquisition. */
 int attenuator_calibration_start_auto(
 	const struct attenuator_calibration_auto_request *request,
 	struct attenuator_calibration_status *status);
 
-/** Cancel calibration and return inactive state. */
+/** Cancel fitting/sequencing and stop its source. Preserve records/results until next start. */
 int attenuator_calibration_stop(struct attenuator_calibration_status *status);
 
-/** Copy current calibration status. */
+/** Copy the last completed owner update without waiting for hardware I/O or fitting. */
 void attenuator_calibration_get_status(struct attenuator_calibration_status *status);
 
 /** Return true while calibration owns attenuator-control sequencing. */
@@ -100,8 +101,10 @@ int attenuator_calibration_write_record_chunk(void *payload,
 					      uint8_t chunk_index,
 					      size_t *written);
 
-/** Advance automatic calibration. Called only by the throughput monitor thread. */
-void attenuator_calibration_tick(const struct photodiode_status *pd_status,
-				 int64_t now_ms);
+/** Advance acquisition and fit at lowest application priority with no calibration
+ * mutex held over calculation. Called only by the throughput monitor thread;
+ * restores its priority before returning. Start/stop may cancel fitting.
+ */
+void attenuator_calibration_tick(const struct photodiode_status *pd_status);
 
 #endif /* HISPEC_ATTENUATOR_CALIBRATION_H */

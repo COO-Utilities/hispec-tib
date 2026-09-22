@@ -111,15 +111,15 @@ static int pd_parse_channel_from_key_base(const struct coo_cmd_request *cmd,
 static uint32_t pd_window_duration_ms(const struct photodiode_window_result *window)
 {
 	return window == NULL ? 0U :
-	       (uint32_t)window->sample_length * PUBLISH_INTERVAL_MS;
+	       (uint32_t)window->sample_length * PHOTODIODE_SAMPLE_INTERVAL_MS;
 }
 
 static int pd_append_float_field(char *payload, size_t payload_len, size_t *off,
-				 const char *name, double value, uint8_t precision)
+				 const char *name, double value)
 {
 	if (coo_json_append(payload, payload_len, off, ",\"%s\":", name) != 0 ||
-	    coo_json_append_float_or_null(payload, payload_len, off, value,
-					  precision) != 0) {
+	    (isfinite(value) ? coo_json_append(payload, payload_len, off, "%.12g", value) :
+	                      coo_json_append(payload, payload_len, off, "null")) != 0) {
 		return -ENOSPC;
 	}
 	return 0;
@@ -136,21 +136,21 @@ static int pd_append_window_json(char *payload, size_t payload_len, size_t *off,
 			    "{\"duration_ms\":%u,\"failed_samples\":%u",
 			    duration_ms, failed_samples) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mean_mv",
-				  valid ? window->mean_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->mean_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mean_net_mv",
-				  valid ? window->mean_net_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->mean_net_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "rms_mv",
-				  valid ? window->rms_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->rms_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mean_net_err_mv",
-				  valid ? window->mean_net_err_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->mean_net_err_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "min_mv",
-				  valid ? window->min_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->min_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "max_mv",
-				  valid ? window->max_mv : (double)NAN, 3) != 0 ||
+				  valid ? window->max_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "power_uw",
-				  valid ? window->power_uw : (double)NAN, 6) != 0 ||
+				  valid ? window->power_uw : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "power_err_uw",
-				  valid ? window->power_err_uw : (double)NAN, 6) != 0 ||
+				  valid ? window->power_err_uw : (double)NAN) != 0 ||
 	    coo_json_append(payload, payload_len, off, "}") != 0) {
 		return -ENOSPC;
 	}
@@ -173,21 +173,21 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 			    photodiode_channel_names[channel],
 			    status->raw) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "mv",
-				  status->mv, 3) != 0 ||
+				  status->mv) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "net_mv",
-				  status->net_mv, 3) != 0 ||
+				  status->net_mv) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "net_err_mv",
-				  status->net_err_mv, 3) != 0 ||
+				  status->net_err_mv) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "power_uw",
-				  status->power_uw, 6) != 0 ||
+				  status->power_uw) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "power_err_uw",
-				  status->power_err_uw, 6) != 0 ||
+				  status->power_err_uw) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "dark_mv",
 				  dark != NULL && dark->valid ?
-					  dark->mean_mv : (double)NAN, 3) != 0 ||
+					  dark->mean_mv : (double)NAN) != 0 ||
 	    pd_append_float_field(payload, payload_len, off, "dark_err_mv",
 				  dark != NULL && dark->valid ?
-					  dark->rms_mv : (double)NAN, 3) != 0 ||
+					  dark->mean_net_err_mv : (double)NAN) != 0 ||
 	    coo_json_append(payload, payload_len, off, ",\"window\":") != 0 ||
 	    pd_append_window_json(payload, payload_len, off, &status->fixed_window) != 0 ||
 	    coo_json_append(payload, payload_len, off,
@@ -395,9 +395,9 @@ int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		if (attenuator_calibration_active()) {
 			return coo_cmd_error(out, cmd, "attenuator calibration active");
 		}
-		if (throughput_monitor_autolevel_active(channel)) {
-			return coo_cmd_error(out, cmd,
-					     "dark measurement blocked by autolevel throughput monitor");
+		rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
+		if (rc != 0) {
+			return coo_cmd_error_rc(out, cmd, "dark capture: laser shutdown failed", rc);
 		}
 		pd_auto_enable_selected(include);
 		rc = photodiode_start_dark_capture(channel, duration_ms, persist, reset_lowest);

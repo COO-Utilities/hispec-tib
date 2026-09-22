@@ -60,6 +60,9 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define PHOTODIODE_PRIORITY 2
 
 #define THROUGHPUT_MONITOR_STACK_SIZE 4096
+/* Calibration temporarily lowers this thread to the lowest application priority
+ * for numerical fitting; acquisition and active autolevel retain this priority.
+ */
 #define THROUGHPUT_MONITOR_PRIORITY 3
 
 #define APP_BLOCKING_WORKQ_STACK_SIZE 3072

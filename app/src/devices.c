@@ -60,8 +60,8 @@ struct mems_router router;
 
 
 static const char *const tib_switch_names[8] = {
-	"yj_forward_retro", "yj_cal_laser", "yj_ao_fei",
-	"hk_forward_retro", "hk_cal_laser", "hk_ao_fei",
+	"yj_forward_retro", "yj_laser_cal", "yj_ao_fei",
+	"hk_forward_retro", "hk_laser_cal", "hk_ao_fei",
 	"yj_mm_sm", "hk_mm_sm",
 };
 
@@ -377,29 +377,29 @@ void devices_queue_boot_reset_telemetry(void)
 	  .steps = (steps_), .num_steps = ARRAY_SIZE(steps_) }
 
 static const struct mems_route_step tib_yj_1430_to_yj_ao[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_forward_retro", 'A'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_1430_to_yj_fei[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_forward_retro", 'A'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_cal_to_yj_ao[] = {
-	{"yj_cal_laser", 'A'},
+	{"yj_laser_cal", 'B'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_cal_to_yj_fei[] = {
-	{"yj_cal_laser", 'A'},
+	{"yj_laser_cal", 'B'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_laser_to_yj_ao[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_yj_laser_to_yj_fei[] = {
-	{"yj_cal_laser", 'B'},
+	{"yj_laser_cal", 'A'},
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_mm_to_yj_pd[] = {
@@ -409,29 +409,29 @@ static const struct mems_route_step tib_yj_sm_to_yj_pd[] = {
 	{"yj_mm_sm", 'B'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_ao[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_forward_retro", 'A'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_fei[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_forward_retro", 'A'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_cal_to_hk_ao[] = {
-	{"hk_cal_laser", 'A'},
+	{"hk_laser_cal", 'B'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_cal_to_hk_fei[] = {
-	{"hk_cal_laser", 'A'},
+	{"hk_laser_cal", 'B'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_laser_to_hk_ao[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_ao_fei", 'A'},
 };
 static const struct mems_route_step tib_hk_laser_to_hk_fei[] = {
-	{"hk_cal_laser", 'B'},
+	{"hk_laser_cal", 'A'},
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_mm_to_hk_pd[] = {
@@ -459,6 +459,69 @@ static const struct mems_route tib_routes[] = {
 	ROUTE_DEF("hk_mm", "hk_pd", tib_hk_mm_to_hk_pd),
 	ROUTE_DEF("hk_sm", "hk_pd", tib_hk_sm_to_hk_pd),
 };
+
+/* TIB path defaults are transmission, not the API's fraction lost. These
+ * constants stay in flash; only explicit overrides occupy RAM/NVS records.
+ * AO and FEI traverse the same switches, selecting different B3/R3 outputs.
+ * Static laser attenuation is included once here, never in the FVOA model.
+ */
+static const struct {
+	const char *route;
+	const char *laser;
+	double transmission;
+} default_route_losses[] = {
+	/* YJ B2 * B3 = 0.88 * 0.88 = 0.7744; 1028 adds 50 dB static:
+	 * 0.7744 * 10^(-50/10) = 7.744e-6.
+	 */
+	{"yj_laser_to_yj_ao", "1028y", 7.744e-6},
+	{"yj_laser_to_yj_fei", "1028y", 7.744e-6},
+
+	/* Same B2/B3 path; 1270 adds 40 dB: 0.7744 * 10^(-40/10). */
+	{"yj_laser_to_yj_ao", "1270j", 7.744e-5},
+	{"yj_laser_to_yj_fei", "1270j", 7.744e-5},
+	/* YJ B1 * B2 * B3 = 0.88^3 = 0.681472; 1430 adds 100 dB:
+	 * 0.681472 * 10^(-100/10) = 6.81472e-11.
+	 */
+	{"yj_1430_to_yj_ao", "1430yj", 6.81472e-11},
+	{"yj_1430_to_yj_fei", "1430yj", 6.81472e-11},
+
+	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 50 dB:
+	 * 0.571787 * 10^(-50/10) = 5.71787e-6.
+	 */
+	{"hk_1430_to_hk_ao", "1430hk", 5.71787e-6},
+	{"hk_1430_to_hk_fei", "1430hk", 5.71787e-6},
+
+	/* HK R2 * R3 = 0.83 * 0.83 = 0.6889; 1510 adds 33 dB:
+	 * 0.6889 * 10^(-33/10) = 3.45267885246e-4.
+	 */
+	{"hk_laser_to_hk_ao", "1510h", 3.45267885246e-4},
+	{"hk_laser_to_hk_fei", "1510h", 3.45267885246e-4},
+	/* Same R2/R3 path; 2330 adds 3 dB:
+	 * 0.6889 * 10^(-3/10) = 0.345267885246.
+	 */
+	{"hk_laser_to_hk_ao", "2330k", 0.345267885246},
+	{"hk_laser_to_hk_fei", "2330k", 0.345267885246},
+	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
+	 * These do not traverse the outbound blue/red FFSW switches.
+	 */
+	{"yj_mm_to_yj_pd", NULL, 0.98},
+	{"yj_sm_to_yj_pd", NULL, 0.60},
+	{"hk_mm_to_hk_pd", NULL, 0.98},
+	{"hk_sm_to_hk_pd", NULL, 0.60},
+};
+
+/* Pure board-default lookup. NULL table source matches any light on that return. */
+double devices_route_loss_default(const char *route, const char *laser)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(default_route_losses); ++i) {
+		if (strcmp(default_route_losses[i].route, route) == 0 &&
+		    (default_route_losses[i].laser == NULL ||
+		     (laser != NULL && strcmp(default_route_losses[i].laser, laser) == 0))) {
+			return default_route_losses[i].transmission;
+		}
+	}
+	return 1.0;
+}
 
 /* AS splitter routes define the switch order used by splitting_set().
  * Step 1 selects output 1, step 2 is held on the splitter branch, and
@@ -837,24 +900,13 @@ static bool configure_relay_gpio_outputs(void)
 
 static bool setup_modbus_client(void)
 {
-	struct modbus_iface_param modbus_cfg = {
-		.mode = MODBUS_MODE_RTU,
-		.serial = {
-			.baud = MODBUS_BAUD,
-			.parity = MODBUS_PARITY,
-			.stop_bits = MODBUS_STOPBITS,
-		},
-		.rx_timeout = MODBUS_RX_TIMEOUT_US,
-	};
-
 	int client_iface = modbus_iface_get_by_name(modbus_name);
 
 	if (client_iface < 0) {
 		LOG_ERR("Modbus interface %s not found", modbus_name);
 		return false;
 	}
-	if (modbus_init_client(client_iface, modbus_cfg) == 0 &&
-	    maiman_set_client_iface(client_iface) == 0) {
+	if (maiman_init_client(client_iface) == 0) {
 		LOG_INF("Modbus client initialized on %s iface=%d", modbus_name, client_iface);
 		return true;
 	}
@@ -966,6 +1018,7 @@ void setup_attenuators(void)
 		attenuators[attenuator_index].coeff1.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[0].fvoa_50pct_mv;
 		attenuators[attenuator_index].coeff1.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[0].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff1.max_atten_db = atten_settings.channel[attenuator_index].physical[0].max_atten_db;
+		attenuators[attenuator_index].coeff1.max_calibrated_db = atten_settings.channel[attenuator_index].physical[0].max_calibrated_db;
 		attenuators[attenuator_index].coeff1.gain = atten_settings.channel[attenuator_index].physical[0].gain;
 		attenuators[attenuator_index].coeff1.rms_db = atten_settings.channel[attenuator_index].physical[0].rms_db;
 		memcpy(attenuators[attenuator_index].coeff1.correction_coeff,
@@ -975,6 +1028,7 @@ void setup_attenuators(void)
 		attenuators[attenuator_index].coeff2.fvoa_50pct_mv = atten_settings.channel[attenuator_index].physical[1].fvoa_50pct_mv;
 		attenuators[attenuator_index].coeff2.slope_inv_fvoa_mv = atten_settings.channel[attenuator_index].physical[1].slope_inv_fvoa_mv;
 		attenuators[attenuator_index].coeff2.max_atten_db = atten_settings.channel[attenuator_index].physical[1].max_atten_db;
+		attenuators[attenuator_index].coeff2.max_calibrated_db = atten_settings.channel[attenuator_index].physical[1].max_calibrated_db;
 		attenuators[attenuator_index].coeff2.gain = atten_settings.channel[attenuator_index].physical[1].gain;
 		attenuators[attenuator_index].coeff2.rms_db = atten_settings.channel[attenuator_index].physical[1].rms_db;
 		memcpy(attenuators[attenuator_index].coeff2.correction_coeff,

@@ -24,8 +24,14 @@
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
+/* Per-device operating ceiling; fitting also includes the first point above it. */
+#define ATTENUATOR_CALIBRATED_MAX_DB 55.0
 /* Per-physical model residual RMS until an accepted calibration supplies it. */
 #define ATTENUATOR_DEFAULT_RMS_DB 2.0
+/* Electrical RMS at each FVOA control line, after the op amp, in mV.
+ * Assume independent devices; zero disables this runtime uncertainty term.
+ */
+#define ATTENUATOR_FVOA_NOISE_RMS_MV 10.0
 /* Low-order empirical correction in modeled dB space, fitted after base coeffs. */
 #define ATTENUATOR_MODEL_CORRECTION_TERMS 6U
 
@@ -33,8 +39,9 @@ struct attenuator_model_coeffs {
     double fvoa_50pct_mv;
     double slope_inv_fvoa_mv;
     double max_atten_db;
+    double max_calibrated_db; /* Corrected-curve endpoint; distinct from leakage. */
     double gain;
-    double rms_db; /* Residual model uncertainty in dB, shared across samples. */
+    double rms_db; /* RMS within max_calibrated_db, shared across readings. */
     float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
@@ -54,6 +61,7 @@ struct attenuator_dac_cfg {
     float ideal_full_scale_mv;
     float drive_limit_mv;
     float voltage;
+    bool valid; /* Successful DAC write/read; cleared on an I/O failure. */
     double attenuation_db;
 };
 
@@ -86,6 +94,11 @@ struct attenuator {
     struct attenuator_dac_cfg dac_cfg2;
     double attenuation_db;
 };
+
+/** Copy confirmed runtime state and calibration under the short state mutex.
+ * No I/O; device/configuration pointers in the copy refer to static hardware.
+ */
+void attenuator_snapshot(const struct attenuator *drv, struct attenuator *out);
 
 /** Initialize a DAC channel. May block on I2C through the DAC driver. */
 bool attenuator_init(struct attenuator *drv,
@@ -123,8 +136,8 @@ bool atten_model_eval(const struct attenuator_model_coeffs *coeffs,
  * @brief Propagate independent model/input uncertainties into dB uncertainty.
  *
  * The calibration fitter owns any minimum sigma floor. This helper only
- * combines the supplied measured dB uncertainty with voltage and finite-floor
- * model sensitivities from atten_model_eval().
+ * combines the supplied dB uncertainty (measurement or model residual) with
+ * voltage and finite-floor model sensitivities from atten_model_eval().
  */
 bool atten_model_db_sigma(const struct atten_model_eval *eval,
                           double measured_db_sigma,
@@ -184,12 +197,15 @@ bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_in
 /**
  * @brief Set total logical attenuation in dB.
  *
- * The first physical attenuator is driven to its modeled maximum before the
- * second attenuator is used. This overrides any prior individual physical
- * attenuator set point and may enqueue a warning if the requested attenuation
- * exceeds the modeled drive range.
+ * Add dB to the less-attenuated device first, remove dB from the more-attenuated
+ * device first, then share changes once balanced. Neither device moves against
+ * the requested total direction; an unchanged total retains the allocation.
+ * calibrated_only bounds each device by its calibrated range. Entering that
+ * range from manual settings may rebalance devices in opposite directions.
+ * May block on DAC I2C and enqueue a clamp warning. A partial failure retains
+ * confirmed writes and returns false; no automatic rollback is attempted.
  */
-bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
+bool attenuator_set_db(struct attenuator *drv, double attenuation_db, bool calibrated_only);
 
 /**
  * @brief Set total logical transmission as a linear fraction in (0, 1].
@@ -197,7 +213,7 @@ bool attenuator_set_db(struct attenuator *drv, double attenuation_db);
  * This converts the requested transmission to dB attenuation and delegates to
  * attenuator_set_db().
  */
-bool attenuator_set_linear(struct attenuator *drv, double linear);
+bool attenuator_set_linear(struct attenuator *drv, double linear, bool calibrated_only);
 
 /**
  * @brief Read back both DAC registers and return logical/physical state.
@@ -208,12 +224,16 @@ bool attenuator_set_linear(struct attenuator *drv, double linear);
 bool attenuator_get(struct attenuator *drv, struct attenuator_status *out);
 
 /**
- * @brief Read logical transmission and propagate each physical model residual RMS.
+ * @brief Estimate transmission uncertainty from model residuals and drive noise.
  *
- * This may block on I2C through attenuator_get(). The stored per-physical rms_db
- * values combine as hypot(rms1, rms2); sigma_T = T * ln(10)/10 * sigma_dB.
- * These are independent physical-model contributions, each correlated across
- * repeated measurements. Nominal transmission and hardware state are unchanged.
+ * This copies owner state without I/O; false means unknown DAC state or an
+ * unusable model. Each rms_db describes curve accuracy; electrical variation
+ * uses the local slope and ATTENUATOR_FVOA_NOISE_RMS_MV / gain in DAC-side mV.
+ * Independent contributions combine in quadrature in dB, then
+ * sigma_T = T * ln(10)/10 * sigma_dB. Calibration errors remain correlated
+ * across repeated measurements; device-independent electrical noise does not
+ * establish temporal independence. The total is uncertainty, not temporal RMS.
+ * Nominal transmission and hardware state are unchanged.
  */
 bool attenuator_estimate_transmission(struct attenuator *drv,
                                       struct attenuator_transmission_estimate *out);

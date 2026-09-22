@@ -38,6 +38,15 @@ int housekeeping_power_set(enum housekeeping_power_output output, bool enabled);
 /** Read one slow relay-box output's logical GPIO state. */
 int housekeeping_power_get(enum housekeeping_power_output output, bool *enabled);
 
+/** Copy confirmed output state without hardware I/O. Returns -ETIMEDOUT after
+ * five seconds without a DS2408 response, or the boot availability error.
+ * Only the short state mutex is taken; failed reads preserve confirmed state.
+ */
+int housekeeping_power_get_confirmed(enum housekeeping_power_output output, bool *enabled);
+
+/** Live shared relay-block health; state-only, zero when responsive. */
+int housekeeping_relay_error(void);
+
 /**
  * Return current continuous relay-output on-time.
  *
@@ -68,10 +77,11 @@ void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output outp
 int64_t housekeeping_photodiode_autooff_remaining_s(enum housekeeping_power_output output);
 
 /**
- * Start ambient-temperature cache refresh work.
+ * Start ambient-temperature and relay-state refresh work.
  *
  * The delayable work is submitted to @p work_q and may block briefly on
- * DS18B20 sensor I/O. Relay power helpers remain direct calls.
+ * DS18B20/DS2408 I/O. Relay health checks run at one-second cadence plus work
+ * execution time; five-second loss is an owner fault, not a hard deadline.
  */
 void housekeeping_start(struct k_work_q *work_q);
 

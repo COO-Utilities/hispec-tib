@@ -22,11 +22,12 @@
 struct app_laser_channel_settings;
 struct k_work_q;
 
-/* Optical-power estimate uncertainty: 3% of output plus a 1%-of-maximum
- * baseline derived from the compiled diode table when defaults are created.
- */
-#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.03
-#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.01
+// based on a quick test of 1028 into the PD with a ton of stattic attens
+// 0.1% fractional: leaves a few times margin above your brightest measured fractional RMS.
+// 0.003 mW constant: rounds tp ~0.0014–0.0021 mW scatter upward.
+// Together, approximately 0.70% uncertainty at level 0.01, 0.12% at 0.10, and 0.11% at 0.15.
+#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.001
+#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.0031
 
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
@@ -60,7 +61,7 @@ struct hispec_laser_driver_profile {
 struct hispec_laser_status {
 	enum hispec_laser_id id;
 	const char *name;
-	const laserprops_t *properties;
+	laserprops_t properties; /* Owned snapshot; no pointer into mutable settings. */
 	bool bank_powered;
 	bool serial_matches;
 	uint16_t expected_device_id;
@@ -166,8 +167,6 @@ int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out);
 /** @brief Return the stable command/API name for a laser channel. */
 const char *hispec_laser_name(enum hispec_laser_id id);
 
-/** @brief Return the fixed diode properties used for safety checks and estimates. */
-const laserprops_t *hispec_laser_properties(enum hispec_laser_id id);
 
 /** @brief Return the fixed Modbus address/serial profile for a channel. */
 int hispec_laser_get_driver_profile(enum hispec_laser_id id,
@@ -277,7 +276,8 @@ int hispec_laser_save_driver_settings(enum hispec_laser_id id);
 int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 
 /** @brief Read a best-effort snapshot of one laser channel. */
-int hispec_laser_get_status(enum hispec_laser_id id, struct hispec_laser_status *out);
+/* Compact status uses confirmed configuration; engineering reads full hardware registers. */
+int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hispec_laser_status *out);
 
 /** @brief Stop one channel's emission and write current 0 when possible. */
 int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec);
@@ -288,16 +288,31 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
 /**
  * @brief Set raw diode current in mA.
  *
- * A positive current powers and prepares the bank, starts the TEC if needed,
- * writes the current setpoint, and starts emission. A zero current stops
- * emission without exposing a public startup/shutdown primitive.
+ * Requests and confirmed estimates use 0.1 mA register steps, bounded by the
+ * configured maximum. An unchanged healthy setpoint needs no transaction and
+ * does not refresh communication health. An already started, prepared laser
+ * otherwise needs only a current write, including
+ * after a zero level. Preparation is retained until bank power changes or
+ * configuration is invalidated. Zero writes current without STOP and preserves
+ * the auto-off deadline. May block on Modbus; failed I/O
+ * invalidates the optical estimate without claiming that emission stopped.
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma);
 
-/** @brief Set output percent and configure auto-off deadline. */
+/** Round to Maiman current steps within inward-rounded bounds, or return NaN
+ * when no step exists. Pure calculation, no I/O or state changes. Control
+ * callers use this same conversion to predict moves and enforce flux limits.
+ */
+double hispec_laser_quantize_current_ma(double current_ma, double min_ma, double max_ma);
+
+/** Set output percent and configure auto-off, even for an unchanged setpoint.
+ * apply_tune=false changes current only and retains the existing TEC target;
+ * normal cold/unprepared startup still installs the configured default target.
+ * May block on Modbus. A no-op does not refresh communication health.
+ */
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
-					    uint32_t autooff_s);
+					    uint32_t autooff_s, bool apply_tune);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw);
@@ -328,9 +343,16 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
  */
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out);
-/** @brief Validate one complete app-owned laser channel settings record. */
+/** Validate a candidate and round/raise its autolevel minimum above threshold.
+ * No I/O or live-state changes; persist the normalized candidate if accepted.
+ */
 int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
-					   const struct app_laser_channel_settings *settings);
+					   struct app_laser_channel_settings *settings);
+/** Apply a validated/normalized policy. Model and envelope changes stop emission
+ * first; a failed stop rejects the update. Range-only edits invalidate preparation
+ * without powering an idle bank; driver-backed edits program immediately.
+ * May block on Modbus and requested NVS persistence.
+ */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
 					 bool persist);
@@ -349,11 +371,23 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
  * reads the same cached per-laser fractional_noise and constant_noise_mw as
  * its property settings: sigma_power = hypot(power * fractional_noise,
  * constant_noise_mw). This is model/calibration uncertainty, not independent
- * sample noise. Reads only module state under a mutex; it does not perform Modbus I/O, change
- * GPIO state, enqueue, publish, or persist settings.
+ * sample noise. Waits only for a short state copy, never for the I/O mutex.
+ * Returns -EINVAL before owner initialization or for invalid arguments, and
+ * never returns an operational I/O fault. Pending I/O leaves confirmed setpoints readable.
+ * Does not perform Modbus I/O, change GPIO, enqueue, publish, or persist.
  */
 int laser_estimate_flux(enum hispec_laser_id id,
 			struct hispec_laser_flux_estimate *out);
+
+/** Copy confirmed emission and operational health using only the state mutex.
+ * Unconfirmed startup state after bank power-on returns 0 with emitting=false,
+ * allowing passive capture throughout initial preparation. Failed control
+ * operations still return an error.
+ * Returns -ETIMEDOUT after five seconds without a response while started,
+ * -EIO for a control/controller fault, or -EINVAL for invalid/uninitialized use.
+ * Does no I/O, initialization, or publishing; use separately from estimates.
+ */
+int hispec_laser_output_status(enum hispec_laser_id id, bool *emitting);
 
 /** @brief Return current-emission on-time tracked by this module since boot. */
 double hispec_laser_current_on_time_s(enum hispec_laser_id id);

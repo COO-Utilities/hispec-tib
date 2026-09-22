@@ -33,8 +33,8 @@ The physical MEMS GPIO expander pin pairs are shared by profile shape:
 
 Switches:
 
-- `yj_cal_laser`
-- `hk_cal_laser`
+- `yj_laser_cal`
+- `hk_laser_cal`
 - `yj_ao_fei`
 - `hk_ao_fei`
 - `yj_forward_retro`

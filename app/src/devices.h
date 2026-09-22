@@ -21,19 +21,9 @@
 #include <zephyr/drivers/dac.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/modbus/modbus.h>
-#include <zephyr/drivers/uart.h>
 #include "mems_switching.h"
 #include "attenuator.h"
 
-#define MODBUS_BAUD 115200
-#define MODBUS_PARITY UART_CFG_PARITY_NONE
-#define MODBUS_STOPBITS UART_CFG_STOP_BITS_1
-/* Zephyr Modbus uses rx_timeout as the client response wait; its RTU frame
- * parser runs from Zephyr's system workqueue after the line goes idle. Keep app
- * blocking work off that queue so this short wait can fail fast without losing
- * physically received replies to workqueue starvation.
- */
-#define MODBUS_RX_TIMEOUT_US 75000U
 #define DAC_RESOLUTION 12
 
 #define NUM_ATTENUATORS 6
@@ -111,6 +101,12 @@ void devices_capture_boot_reset_cause(void);
  * message if the prior reset included watchdog expiration.
  */
 void devices_queue_boot_reset_telemetry(void);
+
+/** Compiled route transmission, or 1.0 for an unspecified path. Pure lookup;
+ * @p route is a non-null route name. NULL @p laser selects only generic defaults
+ * (MM/SM returns); known laser names also select launch/static attenuation.
+ */
+double devices_route_loss_default(const char *route, const char *laser);
 
 /** @brief Build MEMS switch objects and select the board-specific route table. */
 void setup_mems_switches_and_routes(void);

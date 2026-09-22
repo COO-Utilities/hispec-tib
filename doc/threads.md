@@ -40,7 +40,7 @@ main loop drains `outbound_queue`.
 
 `main()` starts `photodiode_thread()` only for the TIB profile after board
 detection and device setup. The thread waits for ADS1115 readiness. A `k_timer`
-provides the 20 ms sampling cadence and the timer callback only wakes the
+provides the 50 ms sampling cadence and the timer callback only wakes the
 photodiode thread; ADS1115 bus I/O remains in thread context. The thread samples
 YJ and HK channels and updates dark/noise/window state.
 
@@ -60,9 +60,8 @@ laser. Expiry and photodiode-power loss use the same shutdown path; purely
 passive streams leave manual laser output unchanged. These paths can block on
 Modbus; bank power and TECs remain unchanged.
 
-Both channels can stream and both control loops remain available for engineering
-use. Normal instrument light paths overlap outside this controller, so normal
-operation should enable only one autolevel loop.
+Both channels can stream; the firmware rejects a second autolevel owner because
+the light paths overlap outside this controller.
 
 The throughput monitor runs promptly when active because autolevel decisions
 should react on the same general timescale as photodiode sampling. It remains
@@ -148,9 +147,12 @@ because Zephyr Modbus client RX completion runs there. Command ingress over
 serial and MQTT is treated as equivalent at the command-executor layer. SNTP is
 intentionally lower than deferred logging.
 
-For throughput, the ADC thread also averages individually normalized readings
-in its existing fixed ring. Its reference update uses the runtime mutex and
-performs no laser/DAC I/O. The throughput thread owns source readback/reference
-updates and captures telemetry before selecting the next input. Only ordinary
-adjustments wait for a full `PHOTODIODE_FIXED_WINDOW_MS` since the prior change;
-initial acquisition and high/low-count bypasses retain the monitor cadence.
+For throughput, ADC completion gives one binary semaphore (maximum count one).
+The consumer copies latest per-channel state and publishes each acquisition at
+most once, then selects the next move. No data queue or normalized history is
+maintained. Slow hardware operations can cause missed output readings; the ADC
+continues and acquisition timestamps expose gaps. Laser estimates use a
+nonblocking owner-state read; known faults stop monitoring, contention skips
+control. The semaphore wait has a 50 ms timeout so expiry/calibration still run
+if acquisition stalls. Thread priorities are unchanged. See
+[photodiode_notes.md](photodiode_notes.md) for the 64 SPS timing budget.

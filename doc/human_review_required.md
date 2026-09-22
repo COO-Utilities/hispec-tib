@@ -5,32 +5,68 @@ source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
+
 ## Locked-down code
 
 ## PCB Validation
-- [ ] Validate the PCB Rev. 2 analog changes on hardware
-  - Confirm both REF3333-fed DAC references, all populated DAC/op-amp paths,
-    both 0-2 V ADC paths, the 20 Hz filters, ADC noise/stability, and sampler
-    timing before persisting new attenuator calibrations.
-  - The first Rev. 2 boot reached the ADS1115 configuration-register write,
-    where the STM32 I2C driver reported NACK (not timeout, arbitration loss, or
-    bus error). Check ADC VDD, ADDR-to-GND, PB8/PB9 continuity, pull-ups, and an
-    acknowledged `0x48` address before changing firmware address or bus speed.
-- [x] sort out FVOA ripple, is ok?
-  - seems to be ~2.8 mV or about 1785 effective levels at 5V, thats fine to proceed with real calibration
+- [ ] Bench-validate high-signal fit support after removing the upper transmission
+  exclusion. Valid readings at/above the measured reference now enter both fits
+  and signed residual statistics. Verify the open-region plots and installed RMS
+  in a fresh calibration; model, 55 dB boundary and reference selection are unchanged.
+- [ ] Run the notebook's `dac1_reversal` program after detector preparation:
+  alternate 2822.241211 / 2848.022461 mV with DAC2 at zero, retaining startup and
+  repeated visits. Compare final-30-second means, noise and drift before choosing
+  a device-failure threshold or attributing the asymmetry to the DAC1 capacitor.
+- [ ] After flashing, replay saved calibration records with the laser disabled
+  and confirm health polls and record/status downloads continue throughout both
+  fits without CRC/transport errors or false health timeouts. Fitting now uses
+  lowest application priority with no calibration mutex held over calculation.
+  Host replay matches pre-change coefficients/metrics; concurrent host checks
+  cover cancellation, replacement, shutdown failure and retained wire records.
+  Measure target fitting/cancellation time and verify laser shutdown before fit.
+  Confirm notebook stop/error cleanup retains records until the next start.
+- [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
+  longer emits `laser_output_fault`; hard faults and active interlock still do.
+  Host tests exercise the production status path; repeat with the controller.
+- [ ] After flashing UART-backed 1-Wire and USART2 FIFO, verify cold DS2408
+  discovery/startup outputs and the first DS18B20 acquisition. Repeat concurrent
+  1028y status reads, relay commands and temperature polling; check presence
+  failures, corrupted replies, USART2 overruns and faults. All Zephyr patches,
+  build hooks and Maiman cross-bus locks are removed; stock-driver ownership and
+  accepted 3.3 V reset timing are documented in architecture.md and hardware.md.
+  Host tests cover public timeout cancellation and initialization on the next
+  requested transaction. Verify response loss followed by a later request with
+  the controller; emission is unnecessary for these communication checks.
+  Repeat the original dark/calibration sequence under the agreed laser limits.
+- [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
+  startup, minimum-current fallback, and preference for lower attenuation.
+  Verify actual Maiman TEC bound expand/target/narrow ordering and rejection
+  recovery with the installed modules. Host tests cover register order and
+  failures; firmware builds do not establish optical response or hardware timing.
+- [ ] Bench-validate 55 dB fitting with the first above-limit support point and
+  correction refits from six terms down to one. Check selected terms, calibrated
+  residuals, individual autolevel limits and continuous residual-to-floor
+  continuation using `atten_scan`. Offline replay checks numerical behavior;
+  fresh acquisition and embedded fitting duration still need bench validation.
+- [ ] Verify compact calibration status with both six-term corrections. Numeric
+  formatting and omission of three aggregate span/transmission diagnostics keep
+  the 1024-byte buffers; those diagnostics remain in per-device fit telemetry.
+- [ ] Bench-validate zero-current versus `laser stop=true`, auto-off at zero, and
+  retained configuration across STOP. Capture the application Maiman timing logs
+  to verify 350 ms busy guards and assess the unchanged 75 ms ACK deadline; see
+  `doc/api/maiman_laser.md`. Retain log-drop warnings; application timings cannot
+  distinguish late device replies from delayed RX processing.
+- [ ] Bench-validate owner communication health and calibration repair: one-second
+  checks, five-second sustained-loss shutdown/recovery, relay auto-off during
+  restart, and six-term fits with no clipped reference/bridge anchors. Confirm
+  Modbus errors and ADC/MEMS timing after removing throughput-rate relay reads.
 - [ ] Keep an eye out MEMS loop and ADC loop timing overruns
-  - Scheduler and MEMS timing-log changes in `44084f1` eliminated this warning
-    pattern in follow-up lab testing; keep open for continued monitoring of
-    real active-toggle `late_rise`/`skipped_rise` warnings or ADC overruns.
   - debug build see `timinglog`
 
 
 ## Command/API Mismatches
 
 ### LLM Resolved; Human Review Requested
-- [ ] Verify photodiode throughput uses the nearest nominal-laser wavelength
-  correction coefficient table; all coefficients are intentionally `1.0` until
-  lab values are installed.
 - [ ] Verify Maiman driver serial mismatches report
   `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
   programming, and can be resolved only by operator-updating
@@ -38,47 +74,47 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Decisions To Make
-- Decide settling allowances and validate filtered-noise
-  uncertainty before changing acquisition timing or statistics. See
-  `photodiode_notes.md` for the firmware/notebook window analysis and historical
-  noise-model discrepancies.
+- Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
+  actuator response, illuminated PD noise, and dark-based error estimates.
+  No extra settling holdoff is used. 64 SPS builds but remains a hardware
+  evaluation option; the default is 250 SPS. See `photodiode_notes.md` for
+  the error budget and remaining physical calibration assumptions.
 
 ## TODOs
-- start atten with output 'M' fails with "attenuator calibration start failed" should fail with at least "bad argument" more specific desired.
-  - go through all commands and verify that invaid arguments are rejected with an informative error message. a minimum of "bad argument" and, where simple, low-code, and general a "<arg> invalid, see catalog" 
-- go through entire codebase and find all times reported in fractional sections or ms odds are the preponderance should become integer seconds
-- when the noise "resets" to 0 it makes it look like the noise has randomly gone away. This is actually MORE concerning than the discontinuities that the reset may be attempting to address. It should be allowed to briefly grow and those changes reverted or replaced with a temporarary nan until data to make a new reading is avaialble.
+- Investigate detector startup and illuminated settling separately. The September 21
+  19:05 UTC noise capture saved a clipped dark (mean 53.8 mV, RMS 319.5 mV), then
+  a stable dark trace near -2 mV. Notebook preparation now waits five seconds and
+  rejects unusable dark results before illumination; firmware dark acceptance and
+  the actual hardware stabilization time still need investigation. The same run
+  shows a long transition after 182 seconds of laser emission, so laser warmup alone
+  does not explain all settling. Keep the sampler-owned notification TODO below.
+- Investigate DAC1 reference/sweep disagreement before changing acquisition:
+  capture `cal_1028y_20260917T213847_376797Z.npz`, reference record 7 and first
+  sweep record 11 both command DUT 0 / companion 2810.156 mV, but raw peaks are
+  1767.688 / 2047.938 mV. The repeated sweep clips through DUT 2050 mV despite
+  warm PD context. Trace command/window timing; no reference-reselection loop.
+- Audit successful noise/default-autooff/TEC-autooff-policy settings, settings
+  no-ops, and `laser/tune` that release a throughput stream while leaving its
+  laser emitting. They can discard measurement shutdown responsibility. Model
+  and envelope edits now stop emission; failed settings updates retain the owned
+  shutdown for explicit retry. The other ownership cases are intentionally deferred.
+- Raw attenuator calibration records and completed fit results now survive
+  stop/error cleanup until a new start or reboot. Host lifecycle and binary-read
+  tests cover this; PCB/notebook validation remains in the item above.
+- Add sampler-owned illumination-change notification with settling duration.
+  Laser/attenuator changes report the event; readings and windows remain marked
+  settling until their acquisitions are clear of it. Consumers wait or skip.
+  Keep the current local 100 ms autocalibration wait until this shared change.
 
 - algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
 
-- investigate additionaly complexity of making "ok" only responses give get responses over serial this probably adds too much code as some might need waits/delays that come naturally if a user is at a serial console. but would be a quality of life user improvement
-- test `pd/dark/<channel>` measurement, forced dark with optional `rms_mv`,
-  lowest-dark reset, and dark-window persistence over reboot.
+- test `pd/dark/<channel>` measurement, forced dark with optional `rms_mv`, lowest-dark reset, and dark-window persistence over reboot.
 - Status needs to gain things we actually want.
 
-- `app/src/maiman.h`: compare Maiman behavior against the referenced validation/test scripts.
 
-- houskeeping laserbank and lasers ALL have several checks for a non-null work_q. This is just paranoia. The q is static and started by main and the 
-  program cant exist without it. Centralize and elimiinate this so that future readers to not wonder if it could be null. The app SHOULD break (though safely) if it is.
-- <xxx>_append_<yyy>_or_null are all coo_json scope and must be refactored there.
+- Lab-investigate safe laser-bank and external-relay shutdown on fatal faults.
+  The current fatal path halts and relies on watchdog reset; formal shutdown
+  safety is deferred pending hardware exploration.
 
-- should  yj_residual_rms_mv/hk_residual_rms_mv be renamed to *_smoothed_rms_mv
-
-- FIX (check ALL python helpers for comand drift):
-  - pcb.laserbank_heaster(mode='override_on')
-    Traceback (most recent call last):
-    File "/Users/jibailey/src/hispec-zephyr-mlang/.venv/lib/python3.13/site-packages/IPython/core/interactiveshell.py", line 3748, in run_code
-    exec(code_obj, self.user_global_ns, self.user_ns)
-      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<ipython-input-28-6f0710221e92>", line 1, in <module>
-      pcb.laserbank_heater(mode='override_on')
-      ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
-    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 2493, in laserbank_heater
-      return _dataclass_from(LaserBankHeater, self._request_json("laserbank/heater"))
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/tools/hispec_fibpcb.py", line 1568, in _dataclass_from
-      values = {name: mapping.get(name) for name in names if name in mapping}
-             ^^^^^^^^^^^^^
-TypeError: LaserBankHeater.__init__() missing 3 required positional arguments: 'ambient_valid', 'valid_temps', and 'stale_temps'
 
 ## Deferred Owner-Specified Capabilities

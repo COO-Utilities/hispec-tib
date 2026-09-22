@@ -52,22 +52,30 @@ static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
 					 int *mode_value)
 {
 	const char *suffix;
+	int payload_mode;
+	int parse_rc;
 
 	if (mode_value == NULL) {
 		return false;
 	}
 
-	suffix = coo_cmd_key_suffix_after(cmd != NULL ? cmd->key : NULL, key);
-	if (coo_json_match_string_choice(suffix, choices, choice_count,
-					 mode_value) == 0) {
-		return true;
-	}
-	if (coo_cmd_payload_empty(cmd)) {
+	if (cmd == NULL) {
 		return false;
 	}
-	return coo_json_extract_string_choice(cmd->payload, "mode",
-					      choices, choice_count,
-					      mode_value) == COO_JSON_EXTRACT_OK;
+	parse_rc = coo_cmd_payload_empty(cmd) ? COO_JSON_EXTRACT_MISSING :
+		coo_json_extract_string_choice(cmd->payload, "mode", choices,
+					      choice_count, &payload_mode);
+	if (parse_rc == COO_JSON_EXTRACT_ERR) {
+		return false;
+	}
+	if (strcmp(cmd->key, key) == 0) {
+		if (parse_rc != COO_JSON_EXTRACT_OK) return false;
+		*mode_value = payload_mode;
+		return true;
+	}
+	suffix = coo_cmd_key_suffix_after(cmd->key, key);
+	return coo_json_match_string_choice(suffix, choices, choice_count, mode_value) == 0 &&
+	       (parse_rc == COO_JSON_EXTRACT_MISSING || payload_mode == *mode_value);
 }
 
 int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -240,43 +248,11 @@ static int command_laser_id_from_payload(const struct coo_cmd_request *cmd,
 	return hispec_laser_id_from_name(name, id);
 }
 
-static int json_append_seconds_or_null(char *payload, size_t payload_len,
-				       size_t *off, bool active, double seconds)
-{
-	if (!active || seconds < 0.0 || seconds != seconds) {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "%lld",
-			       (long long)seconds);
-}
-
-static int json_append_i64_or_null(char *payload, size_t payload_len,
-				   size_t *off, bool active, int64_t seconds)
-{
-	if (!active) {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "%lld",
-			       (long long)seconds);
-}
-
-static int json_append_string_or_null(char *payload, size_t payload_len,
-				      size_t *off, const char *value)
-{
-	if (value == NULL || value[0] == '\0') {
-		return coo_json_append(payload, payload_len, off, "null");
-	}
-
-	return coo_json_append(payload, payload_len, off, "\"%s\"", value);
-}
-
 static int laser_append_compact_status(char *payload, size_t payload_len,
 				       const struct hispec_laser_status *status)
 {
 	size_t off = 0U;
-	const laserprops_t *props = status->properties;
+	const laserprops_t *props = &status->properties;
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"name\":\"%s\",\"powered\":%s,"
@@ -284,23 +260,23 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 			    status->name,
 			    status->bank_powered ? "true" : "false",
 			    status->ready_to_operate ? "true" : "false") != 0 ||
-	    json_append_string_or_null(payload, payload_len, &off,
-				       status->blocked_reason) != 0 ||
+	    coo_json_append_string_or_null(payload, payload_len, &off,
+					   status->blocked_reason) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"tec_on_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->tec_runtime_active,
-					status->tec_on_time_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->tec_runtime_active,
+					    status->tec_on_time_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"emit_on_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->current_runtime_active,
-					status->current_on_time_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->current_runtime_active,
+					    status->current_on_time_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"emit_total_s\":") != 0 ||
-	    json_append_seconds_or_null(payload, payload_len, &off,
-					status->current_runtime_active,
-					status->total_emitting_s) != 0 ||
+	    coo_json_append_seconds_or_null(payload, payload_len, &off,
+					    status->current_runtime_active,
+					    status->total_emitting_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"temp_c\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
@@ -337,9 +313,9 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 					  status->tec_voltage_v, 3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"off_in_s\":") != 0 ||
-	    json_append_i64_or_null(payload, payload_len, &off,
-				    status->autooff_active,
-				    status->off_in_s) != 0 ||
+	    coo_json_append_i64_or_null(payload, payload_len, &off,
+					status->autooff_active,
+					status->off_in_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"oc_fault\":%s}",
 			    status->lock_ld_overcurrent ? "true" : "false") != 0) {
@@ -361,7 +337,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
 
-	rc = hispec_laser_get_status(id, &status);
+	rc = hispec_laser_get_status(id, false, &status);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser status failed", rc);
 	}
@@ -378,31 +354,38 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	char name[16] = {0};
 	double value = 0.0;
 	uint32_t autooff_s;
-	int parse_rc;
+	bool stop = false, autooff_present = false;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
-	parse_rc = coo_json_extract_double(cmd->payload, "value", &value);
-	if (parse_rc != COO_JSON_EXTRACT_OK || !(value >= 0.0 && value <= 1.0)) {
-		return coo_cmd_error(out, cmd, "value must be 0..1");
+	if (coo_json_extract_optional_bool(cmd->payload, "stop", &stop, NULL) != 0) {
+		return coo_cmd_error(out, cmd, "invalid stop");
+	}
+	int parsed = coo_json_extract_double(cmd->payload, "value", &value);
+	if ((parsed != COO_JSON_EXTRACT_OK && !(stop && parsed == COO_JSON_EXTRACT_MISSING)) ||
+	    !(value >= 0.0 && value <= 1.0) || (stop && value != 0.0)) {
+		return coo_cmd_error(out, cmd, "value must be 0..1; stop requires zero or omitted value");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
-	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
-	}
+	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
 	autooff_s = settings.autooff_s;
-	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s",
-					  &autooff_s, NULL) != 0) {
-		return coo_cmd_error(out, cmd, "invalid autooff_s");
+	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
+	    (stop && autooff_present)) {
+		return coo_cmd_error(out, cmd, "invalid autooff_s; not allowed with stop");
 	}
 
-	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s);
-	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser value failed", rc);
+	throughput_monitor_note_laser_changed(id, false);
+	if (stop) {
+		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff);
+	} else if (value == 0.0 && !autooff_present) {
+		/* A momentary zero level preserves the existing shutdown deadline. */
+		rc = hispec_laser_set_current_ma(id, 0.0);
+	} else {
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true);
 	}
+	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser operation failed", rc);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -435,9 +418,9 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	}
 	parse_rc = coo_json_extract_double(cmd->payload, "tune_nm", &delta_nm);
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
-		return coo_cmd_error(out, cmd, "missing tune_nm");
+		return coo_cmd_error(out, cmd, "missing or invalid tune_nm");
 	}
-	throughput_monitor_note_laser_changed(id);
+	throughput_monitor_note_laser_changed(id, true);
 	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser tune failed", rc);
@@ -445,30 +428,28 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	return coo_cmd_ok(out, cmd);
 }
 
+/* Format a settings snapshot; unavailable datasheet values remain JSON null. */
 static int laser_settings_payload(char *payload, size_t payload_len,
 				  enum hispec_laser_id id,
 				  const struct app_laser_channel_settings *settings)
 {
 	const laserprops_t *p = &settings->properties;
-	int written;
+	size_t off = 0U;
 
-	written = snprintk(payload, payload_len,
+	if (coo_json_append(payload, payload_len, &off,
 		"{\"name\":\"%s\",\"settings\":{"
 		"\"model\":\"%s\",\"expected_serial\":%u,"
 		"\"nominal_current_ma\":%.3f,"
 		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
 		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
+		"\"min_autolevel_current_ma\":%.1f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
 		"\"isolation_db\":%.2f,\"tec_max_current_a\":%.3f,"
 		"\"tec_pid\":{\"p\":%u,\"i\":%u,\"d\":%u},"
 		"\"disable_tec_at_autooff\":%s,"
-		"\"ntc_t_coefficient_per_c\":%.6f,"
-		"\"dlambda_dT_nm_per_k\":%.6f,"
-		"\"dlambda_dA_nm_per_ma\":%.6f,"
-		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
-		"\"emit_total_s\":%llu}}",
+		"\"ntc_t_coefficient_per_c\":",
 		hispec_laser_name(id), p->model_number,
 		settings->expected_serial,
 		(double)p->nominal_current_ma,
@@ -477,6 +458,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		settings->fractional_noise, settings->constant_noise_mw,
 		(double)p->threshold_current_ma,
 		(double)p->efficiency_mw_per_ma,
+		settings->min_autolevel_current_ma,
 		(double)p->wavelength_nm,
 		(double)p->operating_temp_range_c.min_c,
 		(double)p->operating_temp_range_c.max_c,
@@ -485,15 +467,23 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->isolation_db,
 		(double)p->tec_max_current_a,
 		p->tec_pid.kp, p->tec_pid.ki, p->tec_pid.kd,
-		settings->disable_tec_at_autooff ? "true" : "false",
-		(double)p->ntc_t_coefficient_per_c,
+		settings->disable_tec_at_autooff ? "true" : "false") != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  p->ntc_t_coefficient_per_c, 6) != 0 ||
+	    coo_json_append(payload, payload_len, &off,
+		",\"dlambda_dT_nm_per_k\":%.6f,"
+		"\"dlambda_dA_nm_per_ma\":%.6f,"
+		"\"autooff_s\":%u,\"tune_nm\":%.4f,"
+		"\"emit_total_s\":%llu}}",
 		(double)p->dlambda_dT_nm_per_k,
 		(double)p->dlambda_dA_nm_per_ma,
 		settings->autooff_s,
 		(double)settings->tune_delta_nm,
-		(unsigned long long)settings->total_emitting_s);
+		(unsigned long long)settings->total_emitting_s) != 0) {
+		return -ENOSPC;
+	}
 
-	return written >= 0 && written < (int)payload_len ? 0 : -ENOSPC;
+	return 0;
 }
 
 int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
@@ -519,7 +509,7 @@ int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 
 static int laser_parse_settings_update(const char *json,
 				       struct app_laser_channel_settings *settings,
-				       bool *changed)
+				       bool *changed, char invalid[64])
 {
 	double range[2] = {0};
 	size_t range_len = 0U;
@@ -531,8 +521,17 @@ static int laser_parse_settings_update(const char *json,
 	if (json == NULL || settings == NULL || changed == NULL) {
 		return -EINVAL;
 	}
+	if (coo_json_validate_top_level_keys(json,
+		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,"
+		"wavelength_nm,current_set_calibration_pct,fractional_noise,constant_noise_mw,"
+		"default_operating_temp_c,operating_temp_range_c,tec_max_current_a,tec_pid,"
+		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
+		invalid, 64U) != 0) {
+		return -EINVAL;
+	}
 
 #define LASER_PARSE_FLOAT(key, field) do { \
+		strcpy(invalid, key); \
 		if (coo_json_extract_optional_double_range(json, key, &(field), \
 							  changed, -DBL_MAX, \
 							  DBL_MAX) != 0) \
@@ -542,13 +541,12 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma);
 	LASER_PARSE_FLOAT("max_current_ma", settings->properties.max_current_ma);
 	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma);
+	LASER_PARSE_FLOAT("min_autolevel_current_ma", settings->min_autolevel_current_ma);
 	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma);
 	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
 	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
 	LASER_PARSE_FLOAT("constant_noise_mw", settings->constant_noise_mw);
 	LASER_PARSE_FLOAT("current_set_calibration_pct",
-			  settings->current_set_calibration_pct);
-	LASER_PARSE_FLOAT("current_set_calibration_%",
 			  settings->current_set_calibration_pct);
 	LASER_PARSE_FLOAT("default_operating_temp_c", settings->properties.operating_temp_c);
 	LASER_PARSE_FLOAT("tec_max_current_a", settings->properties.tec_max_current_a);
@@ -557,6 +555,7 @@ static int laser_parse_settings_update(const char *json,
 
 #undef LASER_PARSE_FLOAT
 
+	strcpy(invalid, "operating_temp_range_c");
 	rc = coo_json_extract_double_array(json, "operating_temp_range_c",
 					   range, ARRAY_SIZE(range), &range_len);
 	if (rc == COO_JSON_EXTRACT_ERR) {
@@ -571,11 +570,15 @@ static int laser_parse_settings_update(const char *json,
 		*changed = true;
 	}
 
+	strcpy(invalid, "tec_pid");
 	rc = coo_json_extract_object(json, "tec_pid", pid_json, sizeof(pid_json));
 	if (rc == COO_JSON_EXTRACT_ERR) {
 		return -EINVAL;
 	}
 	if (rc == COO_JSON_EXTRACT_OK) {
+		if (coo_json_validate_top_level_keys(pid_json, "p,i,d", NULL, 0U) != 0) {
+			return -EINVAL;
+		}
 		if (coo_json_extract_optional_u16(pid_json, "p",
 						  &settings->properties.tec_pid.kp,
 						  changed) != 0 ||
@@ -589,17 +592,20 @@ static int laser_parse_settings_update(const char *json,
 		}
 	}
 
+	strcpy(invalid, "disable_tec_at_autooff");
 	if (coo_json_extract_optional_bool(json, "disable_tec_at_autooff",
 					   &settings->disable_tec_at_autooff,
 					   changed) != 0) {
 		return -EINVAL;
 	}
 
+	strcpy(invalid, "autooff_s");
 	if (coo_json_extract_optional_u32(json, "autooff_s",
 					  &settings->autooff_s, changed) != 0) {
 		return -EINVAL;
 	}
 
+	strcpy(invalid, "expected_serial");
 	parsed_serial = settings->expected_serial;
 	if (coo_json_extract_optional_u16(json, "expected_serial",
 					  &parsed_serial, &serial_changed) != 0) {
@@ -622,7 +628,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
 	char settings_json[MAX_PAYLOAD_LEN] = {0};
-	const char *json;
+	char invalid[64] = "settings";
 	bool changed = false;
 	bool persist = false;
 	int rc;
@@ -636,25 +642,29 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 
 	rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
-	if (rc == COO_JSON_EXTRACT_ERR) {
-		return coo_cmd_error(out, cmd, "invalid settings object");
+	if (rc != COO_JSON_EXTRACT_OK) {
+		return coo_cmd_error(out, cmd, "missing or invalid settings object");
 	}
-	json = rc == COO_JSON_EXTRACT_OK ? settings_json : cmd->payload;
 	if (coo_json_extract_optional_bool(cmd->payload, "persist",
 					   &persist, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid persist");
 	}
 
-	rc = laser_parse_settings_update(json, &settings, &changed);
+	rc = laser_parse_settings_update(settings_json, &settings, &changed, invalid);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "invalid laser settings", rc);
+		char message[112];
+
+		snprintk(message, sizeof(message), "settings.%s invalid or read-only, see catalog", invalid);
+		return coo_cmd_error(out, cmd, message);
 	}
 	if (!changed) {
 		return coo_cmd_error(out, cmd, "no laser settings fields supplied");
 	}
+	if (hispec_laser_validate_channel_settings(id, &settings) != 0) {
+		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
+	}
 
-	throughput_monitor_note_laser_changed(id);
-	rc = hispec_laser_update_channel_settings(id, &settings, persist);
+	rc = throughput_monitor_update_laser_settings(id, &settings, persist);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
 	}
@@ -685,7 +695,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
 	}
 
-	rc = hispec_laser_get_status(id, &s);
+	rc = hispec_laser_get_status(id, true, &s);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
 	}
@@ -700,8 +710,8 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 			    s.serial_matches ? "true" : "false",
 			    s.device_state, s.lock_status, s.tec_state,
 			    s.blocking_lock_status) != 0 ||
-	    json_append_string_or_null(payload, sizeof(payload), &off,
-				       s.blocked_reason) != 0 ||
+	    coo_json_append_string_or_null(payload, sizeof(payload), &off,
+					   s.blocked_reason) != 0 ||
 	    coo_json_append(payload, sizeof(payload), &off,
 			    ",\"op_started\":%s,\"ready\":%s,"
 			    "\"curr_set_internal\":%s,\"enable_internal\":%s,"

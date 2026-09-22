@@ -34,9 +34,10 @@ Runtime ownership is:
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
-  noise warnings, plus throughput normalization and fixed-window statistics.
+  noise warnings and diagnostic windows.
 - `photodiode_command.c`: command-schema validation for `pd` and `pd/settings`.
-- `throughput_command.c`: command-schema validation for `measure_throughput`.
+- `throughput_command.c`: validates `measure_throughput`, prepares ownership, applies
+  launch/return MEMS routes and resolves route-loss settings before starting.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
   and optional autolevel control.
 - `housekeeping.c`: slow ambient-temperature sampling delayable work,
@@ -217,12 +218,64 @@ non-blocking and best-effort. Runtime warnings use one shared scratch response;
 if that buffer or the outbound queue is busy, the warning is logged locally and
 dropped rather than blocking a timing-sensitive caller.
 
-Maiman register calls are blocking Modbus RTU transactions. Laser-bank power
+Maiman owns client initialization and blocking Modbus RTU transactions. USART2
+uses its native hardware FIFO with the interrupt-driven driver. Modbus parsing
+runs on the system workqueue; the dedicated Modbus workqueue is disabled.
+Device setup initializes the client. Only a transaction timeout disables it
+through the public Modbus API, synchronizing parser cancellation before releasing
+the laser I/O mutex. After successful disable, reinitialization is deferred until
+the next register request; neither initialization nor timeout cleanup sends a
+probe or replays a command. The Maiman write path
+holds the owner's I/O serialization through a yielding 350 ms quiet interval after
+LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
+
+Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
+through Zephyr's stock serial 1-Wire driver. UART polling does not mask interrupts
+for the waveform duration, although the STM32 driver briefly locks interrupts
+around transmit register access. Maiman does not acquire either 1-Wire bus lock.
+Housekeeping is the sole DS18B20 caller; runtime relay calls are serialized by
+housekeeping's I/O lock and the DS2408 driver's initialized mutex. DS18B20
+conversion sleeps on the blocking queue for up to 750 ms, outside the bus lock.
+
+The unmodified Zephyr revision pinned in `west.yml` leaves the serial 1-Wire
+driver's native bus mutex zero-initialized without initializing its wait queue.
+The current ownership avoids contention on that mutex: each bus has one configured
+slave, no other raw application bus caller, and no shell access. The pinned
+kernel's uncontended lock/unlock path tolerates this state, but it is not a
+properly initialized mutex and must not be relied on for contended access.
+Revisit this limitation before changing bus ownership or the Zephyr revision.
+Stock reset timing and the accepted DS2408 timing exception at 3.3 V are documented
+in [hardware.md](hardware.md#off-board-power-switch-for-photodiodes-and-laser-bank-aux-heater).
+
+Numerical attenuator fitting reuses the throughput thread after stopping the
+calibration-owned laser and releasing PD auto-off inhibition. It releases the
+calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
+this build), below Modbus RX (5), commands (6), housekeeping (7), and logging (13).
+It restores priority 3 with no mutex held
+before finalization. Other throughput work still waits for fitting to finish.
+Start/stop commands set a cancellation flag and wait on a completion semaphore
+without holding the calibration mutex. Numerical loops check cancellation;
+the command cannot clear/reuse the single static dataset until fitting returns.
+Only an accepted new start clears records, references, bridges, and fit results.
+Stop and error cleanup preserve them. No second record buffer is allocated.
+Calibration publishes a coherent command-status snapshot under a separate short
+mutex after start/stop/tick updates and before fitting. Status and active checks
+read that snapshot without waiting for acquisition I/O. The snapshot stays
+`running` throughout fitting and exposes each completed physical fit coherently.
+Record downloads take the calibration mutex only for their bounded copies and
+remain available during fitting. Canceled work cannot install coefficients;
+cancellation and installation serialize at finalization.
+Laser identity and applied configuration are retained for the bank-power interval;
+configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a
 fault-clear power-cycle interval. Background laser-bank temperature control,
 laser auto-off, and ambient-temperature refresh run on the app blocking
 workqueue rather than Zephyr's system workqueue because Zephyr Modbus client RX
 completion uses the system workqueue.
+`main()` starts the static app queue before binding its consumers. Housekeeping
+and laser auto-off are bound before command execution and throughput monitoring
+start; their startup functions assert the non-null queue precondition. Heater
+work is bound only when required TIB devices are ready.
 
 ## Implemented vs Intended
 
@@ -240,17 +293,63 @@ items are centralized in `human_review_required.md`.
 - Broad schedulers, plugin systems, and dynamic command registries are out of
   scope for current firmware.
 
-Throughput input alignment: `throughput_monitor.c` owns the cached laser,
-attenuator, and route estimate; `photodiode.c` latches the supplied conversion
-reference before each ADC conversion and owns normalized fixed-window means
-and uncertainties. The sampler performs no source hardware I/O. Source changes
-preserve per-reading references; measurement restart clears normalized history
-without resetting raw PD diagnostics. Publication uses the captured source
-snapshot and normalized window, with no post-adjustment estimator rereads.
+Laser, attenuator, and relay hardware operations serialize with module I/O mutexes.
+Their state mutexes protect only short copies/confirmed updates: no I/O,
+sleep, persistence, or telemetry runs under a state mutex. Readers see the last
+confirmed state during a pending operation. Numerical laser estimates and
+operational health are separate; transient read errors do not invalidate setpoints.
+Lock order is I/O then state; state readers never acquire the I/O mutex.
+Attenuator estimates use confirmed DAC voltages; explicit `attenuator_get`
+queries still read both registers. Settings/status copies own their mutable
+properties rather than borrowing pointers into another thread's state.
 
-At measurement start, route transmissions resolve from explicit settings first,
-then compiled TIB path defaults (switch products and planned static attenuation),
-then unity for unspecified route/laser pairs. Default totals stay in flash and
-do not consume override slots. The command applies the named input/output route;
-the monitor captures its effective losses for this run. Restart the measurement
+Throughput input alignment: laser and attenuator modules own confirmed device
+state. `throughput_monitor.c` retains previous/current source contexts and the
+last change time, selecting the nominal reference at acquisition start.
+`photodiode.c` owns only detector acquisition and its timestamps, waking throughput
+with one binary semaphore after each channel round. There is no throughput ring
+or frame queue. At 20 Hz, each fresh conversion is published once before any
+autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
+owners stop monitoring. Physical transition readings remain visible. See
+[the timing and error audit](photodiode_notes.md).
+
+Passive monitoring accepts a laser whose control state is unconfirmed after
+bank power-on, so acquisition can precede the first laser command. The laser
+owner distinguishes this from a control fault; throughput and calibration retain
+their shared health check, and calibration additionally requires emission.
+
+Throughput starts at maximum calibrated attenuation and an optional initial
+laser fraction (firmware default 0.5). Brightening reduces attenuation before
+raising current. Dimming uses `TP_AUTOLEVEL_DIM_PRIORITY`: laser first by default,
+or the previous attenuation-first behavior. Both use the same actuator paths,
+calibrated limits, and global laser current quantization. The laser owner owns
+the current grid and per-laser autolevel floor; throughput owns priority and
+ignores stored tuning while retaining the live TEC target.
+
+Laser settings commands quiesce the matching monitor before applying settings
+under its lock. Changes affecting the emission model or operating envelope stop
+emission in `lasers.c`. Failure retains measurement shutdown responsibility;
+success releases it. App-only range edits defer TEC programming to preparation.
+Noise/default-policy edits and tuning that relinquish a still-emitting source
+remain a separate ownership audit in `human_review_required.md`.
+
+At measurement start, the command resolves route transmissions from explicit
+settings first, then compiled path defaults in `devices.c`, then unity for an
+unspecified path. Defaults stay in flash and consume no override slots; settings
+owns override persistence. MM/SM return defaults are source-independent. Passive
+capture applies them too, but cannot infer emission or throughput. Known lasers
+may override returns with existing route/laser records.
+
+The command validates both routes, calls `throughput_monitor_prepare_start` to
+check exclusions and quiesce the target, applies launch (if requested) and return
+routes, then starts the monitor with resolved losses. The existing command
+executor serializes this sequence; the preparing phase retains PD auto-off inhibition.
+Failure after preparation uses the existing stop path. Restart the measurement
 to pick up changed route-loss settings.
+
+Owner communication checks reuse the laser auto-off and housekeeping work items
+on the existing app blocking queue. Throughput and calibration consume state-only
+health snapshots; neither polls relay hardware. See
+[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime)
+for the one-second check cadence, five-second fault timeout, inhibition ownership,
+and failure/recovery flow.

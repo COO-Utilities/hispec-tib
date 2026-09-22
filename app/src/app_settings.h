@@ -68,6 +68,7 @@ struct app_attenuator_physical_settings {
 	double slope_inv_fvoa_mv;
 	/* Maximum attenuation of one physical FVOA from residual leakage. */
 	double max_atten_db;
+	double max_calibrated_db;
 	/* External op-amp gain applied before the FVOA drive-voltage model. */
 	double gain;
 	/* Residual model RMS, installed/persisted together with these coefficients. */
@@ -121,6 +122,8 @@ struct app_laserbank_settings {
 /** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
 struct app_laser_channel_settings {
 	laserprops_t properties;
+	/* Throughput autolevel floor; manual current/level commands may go lower. */
+	double min_autolevel_current_ma;
 	double current_set_calibration_pct;
 	/* App-owned optical-power uncertainty; never programmed into Maiman. */
 	double fractional_noise;
@@ -285,7 +288,8 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
  * @brief Get effective route transmission, including compiled TIB defaults.
  *
  * Explicit RAM/NVS records override defaults, including transmission 1.0.
- * Unspecified route/laser pairs return 1.0. May wait on the settings mutex;
+ * NULL laser selects source-independent return defaults only, without consulting
+ * per-laser overrides. Unspecified paths return 1.0. May wait on the settings mutex;
  * performs no hardware or flash I/O. Throughput captures this value at start.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
