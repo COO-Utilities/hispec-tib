@@ -1,0 +1,10 @@
+numpy
+paho-mqtt>=2,<3
+scipy
+pandas
+matplotlib
+ipympl
+ipywidgets
+ipython
+ipykernel
+notebook

@@ -83,14 +83,52 @@ GET; a key with payload is a SET. See:
 
 Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
 
-## Throughput Lab Notebook
+## Python Quick Start
 
-Open `tools/throuput_monitor_lab.ipynb` with the workspace `.venv` kernel.
-For the interactive Matplotlib backend, install into that same environment:
+For local Python testing, install Python 3.11 or newer with `venv` support.
+On macOS/Linux, run these commands from the cloned repository directory
+(the directory containing this README):
 
 ```bash
-./.venv/bin/python -m pip install ipympl
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r tools/requirements.txt
+cd tools
+python -m notebook
 ```
+
+Open a lab notebook or create a Python notebook and import the helper:
+
+```python
+import hispec_fibpcb as hspcb
+```
+
+For a terminal IPython session, run this from `tools` with the environment active:
+
+```bash
+ipython -i -c "import hispec_fibpcb as hspcb"
+```
+
+Each clone gets its own `.venv`; it is ignored by Git and should not be copied
+between machines. For later sessions, activate it from the repository directory
+with `source .venv/bin/activate`, then `cd tools` and launch Jupyter or IPython.
+The notebook kernel uses this environment without global kernel registration.
+
+This minimal host-tool setup includes analysis, plotting, and interactive widgets.
+Optional oscilloscope integration requires additional instrument-specific packages.
+Connecting to a board requires a reachable MQTT broker and the device settings
+in the notebook. Importing the helper alone does not connect to hardware.
+
+The firmware build commands elsewhere in this README run from the parent Zephyr
+workspace and use its separate `.venv`. That existing environment can also install
+these packages with `./.venv/bin/python -m pip install -r hispec-tib/tools/requirements.txt`
+from the workspace directory. The clone-local setup above does not install Zephyr
+build tools.
+
+## Throughput Lab Notebook
+
+Open `tools/throuput_monitor_lab.ipynb` using the environment from the Python
+quick start above, which includes the `ipympl` interactive Matplotlib backend.
 
 The throughput section provides a fixed receive-log widget (500 records,
 updated at most twice per second), binary acquisition, a nonblocking six-panel
