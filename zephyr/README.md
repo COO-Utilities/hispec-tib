@@ -34,11 +34,6 @@ Revisit initialization if this ownership changes. Sensor conversion still
 sleeps outside the bus lock. Stock reset timing and the accepted DS2408 timing
 exception at 3.3 V are documented in [hardware.md](../doc/hardware.md).
 
-Host checks: `python tests/transport/check.py` exercises stock public lifecycle
-functions with forced queued/running parser interleavings;
-`python tests/throughput/check.py` checks Maiman's timeout policy, deferred
-initialization, original errors, timestamps and busy waits. Run both from this
-repository using the workspace venv.
 After the next flash, verify cold DS2408 discovery/startup outputs and the first
 DS18B20 acquisition, then repeat concurrent 1028y status reads, relay commands
 and temperature polling. Check presence failures, corrupted replies, USART2

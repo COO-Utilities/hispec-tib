@@ -5,6 +5,10 @@ source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
+Host-check, host-test, and offline-replay statements below record verification
+performed before the `check.py` harnesses were removed. They do not imply maintained
+automated coverage; the outstanding PCB validation tasks still apply.
+
 ## Locked-down code
 
 ## PCB Validation

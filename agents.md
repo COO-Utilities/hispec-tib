@@ -859,11 +859,27 @@ For a complex area, use this sequence:
 
 5. **Verify**
 
-  * build,
-  * run targeted checks,
+  * use relevant existing builds/tests or temporary, task-specific checks,
   * report limitations.
 
 Do not jump from scout directly to architecture.
+
+### Verification and test ownership
+
+Documentation, docstrings, and explicit owner instructions define intended behavior. Tests are supporting
+evidence and do not independently establish requirements.
+
+Do not add or expand permanent tests, check scripts, test harnesses, or verification infrastructure unless
+explicitly requested. A request to fix or implement behavior does not itself authorize these additions.
+
+Temporary, task-specific verification is welcome; report what it establishes and its limitations.
+
+When an existing test conflicts with an intended change, explain the conflict. Do not preserve obsolete
+behavior or change production code merely to satisfy the test. Existing checks do not automatically become
+mandatory work gates.
+
+If permanent tests are requested, use conventional tooling appropriate to the language and keep their purpose
+and assertions human-readable. Do not recreate deleted check tooling without an explicit request.
 
 ---
 
