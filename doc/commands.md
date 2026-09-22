@@ -147,31 +147,31 @@ not be needed for normal serial operation.
 ## Command Endpoints
 - [`help`](#help)
 - [`help/options`](#help-options)
-- [`mems/route`](#mems-route)
-- [`mems/route/loss`](#route-loss)
+- [`status`](#status)
+- [`temps`](#temps)
+- [`time`](#time)
+- [`ip`](#ip)
+- [`mqtt`](#mqtt)
+- [`serialguard`](#serialguard)
+- [`reboot`](#reboot)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
-- [`measure_throughput`](#measure-throughput)
+- [`mems/route`](#mems-route)
+- [`mems/route/loss`](#route-loss)
+- [`mems/split`](#mems-split)
 - [`laser`](#laser)
 - [`laser/tune`](#laser-tune)
 - [`laser/status`](#laser-status)
 - [`laser/settings`](#laser-settings)
 - [`laser/bankpower`](#laserbank-power)
-- [`laser/clearfaults`](#laserbank-clearfaults)
 - [`laser/bankheater`](#laserbank-heater)
+- [`laser/clearfaults`](#laserbank-clearfaults)
 - [`atten/<laser>`](#atten)
 - [`atten/<laser>/coeff`](#atten-coeff)
 - [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
 - [`pd/settings/<yj|hk>`](#pd-settings)
-- [`ip`](#ip)
-- [`mqtt`](#mqtt)
-- [`serialguard`](#serialguard)
-- [`time`](#time)
-- [`temps`](#temps)
-- [`status`](#status)
-- [`reboot`](#reboot)
-- [`mems/split`](#mems-split)
+- [`measure_throughput`](#measure-throughput)
 - Telemetry: `yj_tput`, `hk_tput`
 - Warnings: [`dt/<device>/warning`](#warning-publication)
 - Boot telemetry: [`dt/<device>/boot`](#boot-telemetry)
@@ -261,6 +261,324 @@ while serial guard is active and attenuator DAC-range clamping.
   board-selected MEMS route table. `routes` is the authoritative list of valid
   input/output pairs for `mems/route` and route-bearing commands. `lasers` is
   populated on TIB and empty on non-TIB board profiles.
+
+(status)=
+### `status`
+- **No payload or payload -> firmware status.**
+
+  Optional payload:
+  ```json
+  {
+    "ip": true,
+    "lasers": true,
+    "attens": true
+  }
+  ```
+
+  Response:
+  ```json
+  {
+    "fw": "<tag-or-short-git-hash>",
+    "boots": 0,
+    "board": "tib|cal_yj|cal_hk|as|unknown",
+    "board_ok": true,
+    "mems_switches": 8,
+    "relay_err": 0,
+    "ip": "<response of ip command query>",
+    "amb_c": 0.0,
+    "pd_on_s": 0,
+    "laserbank_on_s": 0,
+    "lasers": {
+      "<lasername>": {
+        "power_mw": 0.0,
+        "ready": false,
+        "tec_on_s": null,
+        "off_in_s": null
+      }
+    },
+    "attens": {
+      "<attenname>": {
+        "value_db": 0.0
+      }
+    },
+    "lastcmd": {
+      "name": "<cmdname>",
+      "src": "mqtt",
+      "t_ms": 0
+    }
+  }
+  ```
+- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
+  Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
+  when inactive or unavailable. `ready` reports whether the laser can operate.
+  `lastcmd` is restored from command-dispatch NVS storage when available.
+
+
+(temps)=
+### `temps`
+- **No payload -> temperature status:**
+  ```json
+  {
+    "ambient_c": 0.0,
+    "laserbank_c": 0.0,
+    "lasers": {
+      "<lasername>": 0.0
+    }
+  }
+  ```
+
+- **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
+  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
+  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
+  returns `{"error":"busy"}` instead of an ambient-only partial response.
+
+(time)=
+### `time`
+- **No payload -> firmware time:**
+  ```json
+  {
+    "utc": 0,
+    "uptime_s": 0
+  }
+  ```
+- **Payload:** set firmware time.
+  ```json
+  {"unix_ms":0}
+  ```
+
+- **Notes:** set time may be overwritten later by NTP if configured and responding.
+
+(ip)=
+### `ip`
+- **No payload -> IP configuration:**
+  ```json
+  {
+    "src": "<source>",
+    "try_dhcp_first": true,
+    "prefer_dhcpdns": true,
+    "prefer_dhcpntp": true,
+    "manual": {
+      "ip": "<ip>",
+      "subnet": "<subnet>",
+      "gateway": "<gateway>",
+      "dns": "<ip>",
+      "ntp": "<ip>"
+    },
+    "active": {
+      "ready": true,
+      "ip": "<ip>"
+    },
+    "ntp": {
+      "src": "<source>",
+      "server": "<ip>"
+    }
+  }
+  ```
+- **Payload:** update IP configuration.
+  ```json
+  {
+    "ip": "<ip>",
+    "ntp": "<ip>",
+    "dns": "<ip>",
+    "subnet": "<subnet>",
+    "gateway": "<gateway>",
+    "try_dhcp_first": true,
+    "prefer_dhcpntp": true,
+    "prefer_dhcpdns": true,
+    "persist": true
+  }
+  ```
+
+- **Notes:**
+  - Unsupported features don’t error; supported changes are still applied and
+    partial status reports unsupported fields.
+  - Supported address fields must contain valid dotted IPv4 addresses before
+    networking or saved settings change. `gateway`, `dns`, and `ntp` also accept
+    an empty string to clear the value; `ip` and `subnet` do not.
+  - IP precedence: runtime settings → compiled static defaults. The compiled
+    static defaults are also the last-resort service fallback.
+  - If `try_dhcp_first` is true and DHCP is compiled in, DHCP is tried before the
+    runtime static profile. Static fallback remains DHCP-overridable so a later
+    lease can replace it.
+  - Partial responses include keys indicating which settings are not supported.
+  - network-affecting changes are applied at runtime; ordinary changes do not
+    require reboot.
+  - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
+
+(mqtt)=
+### `mqtt`
+- **No payload -> MQTT broker configuration:**
+  ```json
+  {"broker":"<value>:<port>","dns_supported":true}
+  ```
+- **Payload:** update MQTT broker configuration.
+  ```json
+  {
+    "broker": "<ipv4-or-hostname>:<port>",
+    "persist": true
+  }
+  ```
+
+- **Notes:**
+  - Broker value must be one `<host-or-ip>:<port>` string.
+  - If DNS is not compiled in, hostname values are rejected.
+  - Hostname values must resolve before settings are updated. Numeric IPv4
+    broker values do not require DNS.
+  - Successful set updates runtime settings and triggers MQTT reconnect
+    behavior. If the new broker cannot connect, firmware restores the prior
+    broker and emits a best-effort `mqtt_broker_revert` warning.
+
+(serialguard)=
+### `serialguard`
+- **No payload -> serial guard configuration and current state:**
+  ```json
+  {"serialguard_s":30,"active":true,"remaining_s":12}
+  ```
+- **Payload:** update serial guard configuration.
+  ```json
+  {
+    "seconds": 30
+  }
+  ```
+  Supplying `persist` is rejected; serial guard is runtime-only and is not restored after reboot.
+
+- **Notes:**
+  - Any non-empty serial command activates or refreshes the guard.
+  - The `serialguard` command itself is allowed while the guard is active so an
+    operator can extend, shorten, or disable the current expiry.
+  - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
+    `serialguard off`.
+  - While active, MQTT requests that may change hardware or runtime state are
+    rejected before dispatch and logged. Safe read-only MQTT requests are
+    allowed according to the app command table.
+  - The guard is owned by the command-dispatch library and uses one
+    dispatcher-owned `k_work_delayable` item.
+  - `seconds:0` disables serial override.
+
+(reboot)=
+### `reboot`
+- **No payload:** schedule a non-cancelable reboot after the response window.
+  ```json
+  {"status":"ok","rebooting_in_ms":3000}
+  ```
+- **Payload:** erase persisted app settings except IP settings and boot count
+  immediately before reboot.
+  ```json
+  {"erase_non_ip_settings":true}
+  ```
+- **Serial form:**
+  ```text
+  reboot erase_non_ip_settings
+  ```
+- **Notes:** command dispatch owns the reboot delayable work item. Immediately
+  before reboot it calls the app reboot-prepare hook so firmware can put
+  hardware into a safer state and, when requested, erase non-IP persisted
+  settings. The erase preserves IP settings, boot count, and storage schema
+  metadata. Once a reboot is pending, later commands are rejected before app
+  handlers run.
+
+(mems)=
+### `mems`
+- **No payload -> all MEMS switch states:**
+  ```json
+  {
+    "<switchname>": {
+      "state": "A|B|?"
+    }
+  }
+  ```
+- **Notes:** The all-switch query is intentionally compact so the TIB
+  eight-switch response fits the fixed MQTT payload buffer. Static switches
+  report only `state`. A switch currently configured with a non-constant duty
+  request also includes `duty_cycle`. Use `mems/<switchname>` for
+  actual dwell timing and stop-in details.
+
+(mems-switchname)=
+### `mems/<switchname>`
+- **Topic:** `cmd/<device>/req/mems/<switchname>`
+- **No payload or payload -> one MEMS switch state.**
+
+  Static payload:
+  ```json
+  {"state":"A","force":false}
+  ```
+  or:
+  ```json
+  {"state":"B"}
+  ```
+  Toggle:
+  ```json
+  {
+    "state": "A",
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "off_in_s": 30
+  }
+  ```
+
+  Response:
+  ```json
+  {
+    "state": "A|B|?"
+  }
+  ```
+  For example, `mems/yj_laser_cal state=B` returns:
+  ```json
+  {"state":"B"}
+  ```
+  and `mems/yj_laser_cal state=A` returns:
+  ```json
+  {"state":"A"}
+  ```
+  Response while configured with a non-constant duty request:
+  ```json
+  {
+    "state": "A|B|?",
+    "duty_cycle": 0.5,
+    "cycle_ms": 400,
+    "a_ms": 200,
+    "b_ms": 200,
+    "stop_in_s": 30
+  }
+  ```
+- **Notes:**
+  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
+    responses always use uppercase `A`/`B`.
+  - `force:true` is valid only for static A/B requests. It queues one actuation
+    pulse even when the switch already reports that state. Repeated force
+    requests before the pulse fires coalesce to one pending pulse.
+  - `duty_cycle` is only valid with `state:"A"`.
+  - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
+  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
+    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
+    the firmware may quantize duty inside the requested cycle but does not
+    stretch the requested cycle beyond MEMS tick granularity.
+  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
+  - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
+  - Request `off_in_s` is integer seconds, with max 4 hours. Response
+    `stop_in_s` is remaining toggle time.
+  - Static switch requests persist as user intent. With
+    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
+    from that intent and resends the pulse shortly after startup. This reasserts
+    software intent; firmware still does not physically verify switch position
+    across reboot, switch replacement, or external actuation.
+  - Mixed-duty toggle requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
+    using its original commanded duration. Runtime remaining time is not
+    preserved across reboot.
+  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
+    constant A or B profiles.
+  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
+    and B states. The firmware keeps all A/B actuation pulses at least
+    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
+    `cycle_ms` if required.
+  - Static state changes can be delayed until the same pulse-spacing rule is
+    satisfied; status reports the last pulsed state until the delayed pulse
+    occurs. A delayed same-state `force:true` pulse is not separately reported
+    in status.
+  - If the actual cycle differs from requested, the firmware emits
+    `mems_timing_quantized` on `dt/<device>/warning`.
+
 
 (mems-route)=
 ### `mems/route`
@@ -369,358 +687,108 @@ its wavelength-dependent loss record. The return path uses keys such as
 these values feed the existing throughput and splitting calculations.
 
 
-(mems)=
-### `mems`
-- **No payload -> all MEMS switch states:**
+(mems-split)=
+### `mems/split`
+- **Topics:**
+  - `cmd/<device>/req/mems/split`
+  - `cmd/<device>/req/mems/split/yj` or `cmd/<device>/req/mems/split/hk`
+  - Responses use the same key under `cmd/<device>/resp/...`.
+  
+- **Payload to `mems/split` -> set splitter state:**
   ```json
   {
-    "<switchname>": {
-      "state": "A|B|?"
-    }
+    "channel": "yj",
+    "ratio1": 0.25,
+    "ratio2": 0.25,
+    "cycle_ms": 800,
+    "stop_in_s": 0
   }
   ```
-- **Notes:** The all-switch query is intentionally compact so the TIB
-  eight-switch response fits the fixed MQTT payload buffer. Static switches
-  report only `state`. A switch currently configured with a non-constant duty
-  request also includes `duty_cycle`. Use `mems/<switchname>` for
-  actual dwell timing and stop-in details.
-
-(mems-switchname)=
-### `mems/<switchname>`
-- **Topic:** `cmd/<device>/req/mems/<switchname>`
-- **No payload or payload -> one MEMS switch state.**
-
-  Static payload:
-  ```json
-  {"state":"A","force":false}
-  ```
-  or:
-  ```json
-  {"state":"B"}
-  ```
-  Toggle:
-  ```json
-  {
-    "state": "A",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "off_in_s": 30
-  }
-  ```
+- **No payload to `mems/split/yj` or `mems/split/hk` -> get splitter state.**
+- **Availability:** only available when the AS board strap is selected.
 
   Response:
   ```json
   {
-    "state": "A|B|?"
+    "channel": "yj",
+    "ratio_ask": [0.25, 0.25, 0.50],
+    "ratio_actual": [0.25, 0.25, 0.50],
+    "ratio_out": [0.25, 0.25, 0.50],
+    "split_transmission": [1.0, 1.0, 1.0],
+    "cycle_ms": 800,
+    "switches": [
+      {
+        "name": "yj_as1",
+        "state": "A",
+        "duty_cycle": 0.25,
+        "a_ms": 200,
+        "b_ms": 600
+      },
+      {
+        "name": "yj_as2",
+        "state": "B",
+        "duty_cycle": 1.0,
+        "a_ms": 0,
+        "b_ms": 800
+      },
+      {
+        "name": "yj_as3",
+        "state": "A",
+        "duty_cycle": 0.50,
+        "a_ms": 400,
+        "b_ms": 400
+      }
+    ],
+    "stop_in_s": 0
   }
   ```
-  For example, `mems/yj_laser_cal state=B` returns:
-  ```json
-  {"state":"B"}
-  ```
-  and `mems/yj_laser_cal state=A` returns:
-  ```json
-  {"state":"A"}
-  ```
-  Response while configured with a non-constant duty request:
-  ```json
-  {
-    "state": "A|B|?",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "a_ms": 200,
-    "b_ms": 200,
-    "stop_in_s": 30
-  }
-  ```
+
 - **Notes:**
-  - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
-    responses always use uppercase `A`/`B`.
-  - `force:true` is valid only for static A/B requests. It queues one actuation
-    pulse even when the switch already reports that state. Repeated force
-    requests before the pulse fires coalesce to one pending pulse.
-  - `duty_cycle` is only valid with `state:"A"`.
-  - Static `{"state":"A"}` and `{"state":"B"}` responses report only  `state`.
-  - `cycle_ms` is optional for mixed-duty toggling. If omitted, the firmware
-    uses the fastest safe A-B-A cycle for the requested duty cycle. If supplied,
-    the firmware may quantize duty inside the requested cycle but does not
-    stretch the requested cycle beyond MEMS tick granularity.
-  - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
-  - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - Request `off_in_s` is integer seconds, with max 4 hours. Response
-    `stop_in_s` is remaining toggle time.
-  - Static switch requests persist as user intent. With
-    `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
-    from that intent and resends the pulse shortly after startup. This reasserts
-    software intent; firmware still does not physically verify switch position
-    across reboot, switch replacement, or external actuation.
-  - Mixed-duty toggle requests persist as restart metadata. With
-    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
-    using its original commanded duration. Runtime remaining time is not
+  - This is intentionally not a general route/switch feature. It is the
+    system-level achromatic-splitter operation for the AS PCB.
+  - The implementation is anchored in `splitting_set()` and `splitting_get()`.
+  - The fixed routes are `yj_calin -> yj_split` and `hk_calin -> hk_split`,
+    defined in `setup_mems_switches_and_routes()`. `splitting_set()` gets the
+    route with `mems_router_get_route()`, then walks the route steps with
+    `mems_router_find_switch()` as `memsroute_set()` does.
+  - YJ and HK are set independently with `channel:"yj"` or `channel:"hk"`.
+  - Split requests persist as restart metadata. With
+    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored split
+    request using its original commanded duration. Runtime remaining time is not
     preserved across reboot.
-  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
-    constant A or B profiles.
-  - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
-    and B states. The firmware keeps all A/B actuation pulses at least
-    `1 / MEMS_SWITCH_MAX_TOGGLE_HZ` apart, quantizing
-    `cycle_ms` if required.
-  - Static state changes can be delayed until the same pulse-spacing rule is
-    satisfied; status reports the last pulsed state until the delayed pulse
-    occurs. A delayed same-state `force:true` pulse is not separately reported
-    in status.
+  - The user sets only `ratio1` and `ratio2`, both as floats from `0.0` to
+    `1.0`. They must sum to `<= 1.0`; `ratio3` is computed internally as the
+    remaining fraction.
+  - `ratio1` maps to the direct branch selected by SW1. The remaining light is
+    sent through the downstream branch. SW2 is held on the splitter branch.
+    SW3's selected-state dwell is `ratio1 + ratio2`, so its output-2
+    interval starts after SW1's output-1 deadtime.
+  - `cycle_ms` is optional. If omitted, the firmware uses the fastest period
+    that keeps every non-static MEMS actuation pulse within
+    `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
+    cycle except for MEMS tick quantization and quantizes the split ratios
+    inside that fixed cycle. `toggle_rate_hz` is rejected.
+  - `stop_in_s` is integer seconds, with max 4 hours. `0` disables the split
+    auto-stop.
+  - Split switch timing may take a few MEMS cycles to settle after a new
+    request; startup phase is not guaranteed cycle-exact.
+  - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
+    arrays ordered as `[ratio1, ratio2, ratio3]`.
+  - `ratio_ask` is the requested output split. `ratio_actual` is the MEMS duty
+    split after transmission correction and integer tick quantization.
+    `ratio_out` is the estimated optical output split after applying
+    `split_transmission`.
+  - Each switch report gives the selected route state, the selected-state
+    duty-cycle fraction, and the raw A/B dwell timing as `a_ms` and `b_ms`.
+    For a `state:"B"` split switch, `duty_cycle` is `b_ms / cycle_ms`.
   - If the actual cycle differs from requested, the firmware emits
     `mems_timing_quantized` on `dt/<device>/warning`.
-
-
-(measure-throughput)=
-### `measure_throughput`
-- **Payload:** start monitoring.
-  ```json
-  {
-    "autolevel": true,
-    "initial_level": 0.5,
-    "laser": "<lasername>",
-    "fiber": "M",
-    "output": "yj_ao",
-    "max_flux_ph_s": 1.0e12,
-    "off_in_s": 300,
-    "format": "binary"
-  }
-  ```
-- **Payload:** start monitoring an externally supplied/calibration input.
-  ```json
-  {
-    "autolevel": false,
-    "laser": "none",
-    "channel": "yj",
-    "input": "yj_cal",
-    "output": "yj_ao",
-    "fiber": "M",
-    "format": "binary"
-  }
-  ```
-- **Payload:** stop monitoring.
-  ```json
-  {
-    "stop": "yj"
-  }
-  ```
-
-`measure_throughput` is the only command that starts or stops photodiode
-streaming. It measures throughput by comparing the route-corrected optical power at the
-selected photodiode with the route- and attenuator-corrected laser power
-estimate.
-
-`autolevel:true` lets firmware adjust the selected laser output level percent
-and logical attenuator to keep the photodiode signal in the useful
-ADC/photodiode range. `autolevel:false` streams the selected photodiode level
-and derived values without adjusting laser level or attenuation during monitoring.
-`initial_level` is an optional fraction from 0 to 1, accepted only with
-`autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
-calibrated attenuation, then sets this fraction of the threshold-to-nominal
-current range, bounded by `min_autolevel_current_ma` and nominal current.
-Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
-off. This applies to both compiled dimming priorities. Throughput ignores stored
-`tune_nm` and retains the live TEC target when already prepared; cold preparation
-still applies `default_operating_temp_c`.
-Stopping an autolevel operation also stops the laser it was using, even if
-manual laser level or attenuation changes have since disabled automatic adjustments.
-A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
-same source with `autolevel:false` retains an existing operation's laser
-shutdown obligation; replacing its source first stops that autolevel laser.
-Bank power, TECs, and unrelated lasers are left unchanged.
-Valid `stop` requests take priority over accompanying start fields, whose values
-are ignored even if invalid. Unknown top-level fields are still rejected.
-
-HK and YJ can both stream, with one measurement per photodiode channel and
-**only one autolevel owner**. A second autolevel start is rejected before changing
-routes or outputs. External instrument paths combine the light and influence
-both PDs; manually enabled additional lasers are not separated by this system.
-
-`stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
-attempts every owned laser shutdown. Failed shutdown disables streaming/control
-and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
-and operational source/relay faults use the same stop path. Numerical laser
-estimates continue to use confirmed setpoints; acquisition checks owner health
-separately. A single failed read warns; five seconds without a response while
-in use faults the owner. Recovery does not restart measurements. See
-[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime).
-
-Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
-JSON; Python and the notebook default to binary. Binary channel and wavelength
-identify the source, including both 1430 nm lasers, and a flag bit carries the
-actual autolevel state. No individual DAC values or laser percentages are streamed.
-
-For a known laser, `output` is required and `input` is inferred unless supplied.
-Optional `channel` must match that laser. Passive `laser:"none"` requires explicit
-`channel:"yj"` or `"hk"` and `autolevel:false`. Its `input` and `output` are an
-optional pair: omit both to leave launch switching untouched (for example,
-astrophysical illumination), or supply both to route external calibration light.
-An explicit launch must select that channel's AO or FEI output.
-
-The command validates launch and return routes before preparing the monitor.
-Preparation checks exclusions, quiesces the target stream, and stops an owned
-source if replacing it. The command then applies the optional launch route and
-**always** applies `yj_mm/sm -> yj_pd` or `hk_mm/sm -> hk_pd`. These use independent
-switches. Only then does the monitor enable PD power and start measurement.
-Route/start failure stops the prepared monitor and attempts its owned laser
-shutdown; routing failures can leave some MEMS switches changed and report that.
-Invalid input or an exclusion failure leaves an existing run untouched.
-
-All measurements divide detected power and its error by the selected return
-transmission. A known laser selects its route/laser override when present;
-unknown illumination uses the generic return defaults (MM 0.98, SM 0.60), without
-choosing another source's calibration. Passive PD voltage, corrected power,
-errors, and detector S/N remain available; source power, wavelength, launch
-transmission, and throughput are NaN/null because emission is unknown. No new
-persistent route key or telemetry field is introduced. A return-only example:
-```json
-{"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
-```
-
-Dark capture or active attenuator calibration rejects all starts. Taking a dark
-or starting calibration stops existing throughput; there is no automatic resume.
-
-`max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
-dynamic attenuator pair and **before** static route losses. Stream quantities
-use power: nW for detected/delivered light and µW for the estimated laser output
-before attenuation. No actual laser power readback exists.
-
-The stream is nominally **20 Hz per channel**: one fresh ADC conversion per
-50 ms, without overlapping or reused samples. It does not use the fixed 500 ms
-PD window. The monitor selects its previous/current source context using the
-monotonic acquisition start and last input-change time; the PD module owns no
-source context. `t_ms` is the estimated UTC conversion midpoint. A delayed consumer can skip
-intermediate readings; a failed ADC conversion produces no record or adjustment.
-Timestamps expose gaps. The latest diagnostic PD state remains available and
-its windows count failed conversions. ADC warnings are limited to one per
-channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
-
-**Telemetry topics:** `dt/<device>/yj_tput`, `dt/<device>/hk_tput`.
-
-**JSON fields:**
-```json
-{
-  "channel": "yj_m",
-  "laser": "1028y",
-  "autolevel": true,
-  "t_ms": 0,
-  "tp": 0.2,
-  "tp_err": 0.0100498756211,
-  "tp_pd_err": 0.001,
-  "pd_power_nw": 0.4,
-  "pd_power_err_nw": 0.002,
-  "delivered_power_nw": 2,
-  "delivered_power_err_nw": 0.1,
-  "laser_output_power_uw": 1000,
-  "laser_output_power_err_uw": 30,
-  "pd_route_tx": 0.5,
-  "laser_route_tx": 0.2,
-  "atten_tx": 0.01,
-  "pd_mv": 100,
-  "pd_net_mv": 90,
-  "pd_net_err_mv": 0.5,
-  "laser_current_ma": 50,
-  "atten_db": 20,
-  "wavelength_nm": 1028,
-  "pd_raw": 1600,
-  "pd_ontime_s": 1,
-  "laser_current_ontime_s": 2,
-  "flags": []
-}
-```
-
-`channel` is `yj_m`, `yj_s`, `hk_m`, or `hk_s`. On-times are integer seconds:
-PD relay continuous on-time and the laser module's current-emission on-time.
-Nonfinite values are JSON `null`; finite values use 12 significant digits.
-
-**Binary layout:** 179 bytes, little-endian, Python `struct` format
-`<8sQ18dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
-
-```text
-char[8] channel
-uint64 t_ms
-float64 tp
-float64 tp_err
-float64 tp_pd_err
-float64 pd_power_nw
-float64 pd_power_err_nw
-float64 delivered_power_nw
-float64 delivered_power_err_nw
-float64 laser_output_power_uw
-float64 laser_output_power_err_uw
-float64 pd_route_tx
-float64 laser_route_tx
-float64 atten_tx
-float64 pd_mv
-float64 pd_net_mv
-float64 pd_net_err_mv
-float64 laser_current_ma
-float64 atten_db
-float64 wavelength_nm
-int16 pd_raw
-uint64 pd_ontime_s
-uint64 laser_current_ontime_s
-uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
-```
-
-**Measurement and control interpretation:**
-
-- `tp = pd_power_nw / delivered_power_nw`. Signed net values are preserved.
-  Zero/invalid delivered power makes throughput NaN/null.
-- `pd_power_nw` is detected net power divided by PD route transmission.
-  `delivered_power_nw` is estimated laser output times dynamic attenuator and
-  outbound route transmissions. Laser output in µW is before both losses.
-- `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
-  includes laser calibration, attenuator-fit residual uncertainty, and modeled
-  FVOA electrical variation. Calibration errors are correlated between records
-  and must not be reduced by treating them as independent sample noise. The
-  combined error is not temporal RMS; electrical independence between FVOAs
-  does not imply independence over time. The error audit documents the assumptions
-  and omitted calibration terms.
-- `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
-  Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
-  a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
-  Calibration's ADC-rail classification remains separate.
-- PD responsivity and effective transimpedance already include the analog
-  divider. The nearest nominal wavelength correction is applied once; current
-  correction coefficients are all unity.
-- `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
-  transmission. Static attenuation belongs in the source route loss.
-- Route losses resolve explicit settings, then compiled TIB switch/static
-  defaults, then unity for unspecified pairs. Start latches the outbound
-  `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission
-  using the selected laser name. Restart to capture changed route settings.
-- Publish the completed measurement before choosing a move. A fresh low reading
-  (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
-  Raw overrange wins over low net signal. Startup uses the same direct path.
-  A sample that began before the previous move completed cannot select another
-  move. There is no rolling-window gate, five-observation bypass, or settling
-  holdoff. Physical response and filter lag remain visible in the data.
-- Flux is raised by reducing attenuation first, then increasing laser current.
-  Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
-  `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before
-  increasing attenuation; `TP_ATTEN_FIRST` (0) preserves the previous order.
-  Either mode holds settings in the useful band and tries the other actuator
-  when the preferred one cannot move. Current is bounded by the per-laser
-  autolevel minimum and nominal current; checks use the actual 0.1 mA register
-  grid, so a repeated setpoint cannot count as progress. The directional pair
-  allocator avoids loading all attenuation onto one device. Each FVOA is limited by its
-  `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
-- Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
-  `off_in_s` stops the monitor after the requested seconds, with zero disabling
-  expiry. Bank power/TECs remain under their existing owner.
-- Manual laser level and attenuation commands disable autolevel while streaming
-  continues with updated source context and the existing laser shutdown obligation.
-  They do not restart the measurement deadline. A zero laser level keeps PD readings
-  flowing, with throughput NaN/null until estimated source power is positive.
-  Laser tuning/settings commands stop the stream. A failed settings update
-  retains any owned laser shutdown for explicit stop retry. Display controls only affect UI.
-
-For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
-output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
-and `pcb.atten(...)` repeatedly. The same collector and live plot continue running.
-
+  - If the attained ratio differs from the requested ratio because MEMS timing
+    is quantized, the firmware emits `split_ratio_quantized` on
+    `dt/<device>/warning`.
+  - The route-loss split tuple sets `split_transmission`. Set all three split
+    transmissions to the same value, or leave them unset, to disable relative
+    split correction.
 
 (laser)=
 ### `laser`
@@ -1040,21 +1108,6 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   operation occupies the shared Maiman Modbus bus past the command wait budget,
   mode changes return `{"error":"busy"}`.
 
-(laserbank-clearfaults)=
-### `laser/clearfaults`
-- **No payload -> clear result:**
-  ```json
-  {"off_ms":250}
-  ```
-
-This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
-fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
-The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
-off or no faults).
-If another laser-bank operation occupies the shared Maiman Modbus bus past the
-command wait budget, this command returns `{"error":"busy"}`.
-
-
 (laserbank-heater)=
 ### `laser/bankheater`
 - **No payload -> laser-bank heater state:**
@@ -1107,6 +1160,21 @@ command wait budget, this command returns `{"error":"busy"}`.
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
   If the off-board DS2408 relay expander is offline, set requests return an I/O
   error because the heater relay cannot be driven.
+
+(laserbank-clearfaults)=
+### `laser/clearfaults`
+- **No payload -> clear result:**
+  ```json
+  {"off_ms":250}
+  ```
+
+This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
+fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
+The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
+off or no faults).
+If another laser-bank operation occupies the shared Maiman Modbus bus past the
+command wait budget, this command returns `{"error":"busy"}`.
+
 
 (atten)=
 (atten-coeff)=
@@ -1675,323 +1743,255 @@ available without waiting for the other fit.
   for YJ and 17.3 pW RMS for HK using the default responsivities.
   Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
 
-(ip)=
-### `ip`
-- **No payload -> IP configuration:**
+(measure-throughput)=
+### `measure_throughput`
+- **Payload:** start monitoring.
   ```json
   {
-    "src": "<source>",
-    "try_dhcp_first": true,
-    "prefer_dhcpdns": true,
-    "prefer_dhcpntp": true,
-    "manual": {
-      "ip": "<ip>",
-      "subnet": "<subnet>",
-      "gateway": "<gateway>",
-      "dns": "<ip>",
-      "ntp": "<ip>"
-    },
-    "active": {
-      "ready": true,
-      "ip": "<ip>"
-    },
-    "ntp": {
-      "src": "<source>",
-      "server": "<ip>"
-    }
+    "autolevel": true,
+    "initial_level": 0.5,
+    "laser": "<lasername>",
+    "fiber": "M",
+    "output": "yj_ao",
+    "max_flux_ph_s": 1.0e12,
+    "off_in_s": 300,
+    "format": "binary"
   }
   ```
-- **Payload:** update IP configuration.
+- **Payload:** start monitoring an externally supplied/calibration input.
   ```json
   {
-    "ip": "<ip>",
-    "ntp": "<ip>",
-    "dns": "<ip>",
-    "subnet": "<subnet>",
-    "gateway": "<gateway>",
-    "try_dhcp_first": true,
-    "prefer_dhcpntp": true,
-    "prefer_dhcpdns": true,
-    "persist": true
-  }
-  ```
-
-- **Notes:**
-  - Unsupported features don’t error; supported changes are still applied and
-    partial status reports unsupported fields.
-  - Supported address fields must contain valid dotted IPv4 addresses before
-    networking or saved settings change. `gateway`, `dns`, and `ntp` also accept
-    an empty string to clear the value; `ip` and `subnet` do not.
-  - IP precedence: runtime settings → compiled static defaults. The compiled
-    static defaults are also the last-resort service fallback.
-  - If `try_dhcp_first` is true and DHCP is compiled in, DHCP is tried before the
-    runtime static profile. Static fallback remains DHCP-overridable so a later
-    lease can replace it.
-  - Partial responses include keys indicating which settings are not supported.
-  - network-affecting changes are applied at runtime; ordinary changes do not
-    require reboot.
-  - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
-
-(mqtt)=
-### `mqtt`
-- **No payload -> MQTT broker configuration:**
-  ```json
-  {"broker":"<value>:<port>","dns_supported":true}
-  ```
-- **Payload:** update MQTT broker configuration.
-  ```json
-  {
-    "broker": "<ipv4-or-hostname>:<port>",
-    "persist": true
-  }
-  ```
-
-- **Notes:**
-  - Broker value must be one `<host-or-ip>:<port>` string.
-  - If DNS is not compiled in, hostname values are rejected.
-  - Hostname values must resolve before settings are updated. Numeric IPv4
-    broker values do not require DNS.
-  - Successful set updates runtime settings and triggers MQTT reconnect
-    behavior. If the new broker cannot connect, firmware restores the prior
-    broker and emits a best-effort `mqtt_broker_revert` warning.
-
-(serialguard)=
-### `serialguard`
-- **No payload -> serial guard configuration and current state:**
-  ```json
-  {"serialguard_s":30,"active":true,"remaining_s":12}
-  ```
-- **Payload:** update serial guard configuration.
-  ```json
-  {
-    "seconds": 30
-  }
-  ```
-  Supplying `persist` is rejected; serial guard is runtime-only and is not restored after reboot.
-
-- **Notes:**
-  - Any non-empty serial command activates or refreshes the guard.
-  - The `serialguard` command itself is allowed while the guard is active so an
-    operator can extend, shorten, or disable the current expiry.
-  - Serial shorthand: `serialguard seconds=60`, `serialguard 60`, or
-    `serialguard off`.
-  - While active, MQTT requests that may change hardware or runtime state are
-    rejected before dispatch and logged. Safe read-only MQTT requests are
-    allowed according to the app command table.
-  - The guard is owned by the command-dispatch library and uses one
-    dispatcher-owned `k_work_delayable` item.
-  - `seconds:0` disables serial override.
-
-(time)=
-### `time`
-- **No payload -> firmware time:**
-  ```json
-  {
-    "utc": 0,
-    "uptime_s": 0
-  }
-  ```
-- **Payload:** set firmware time.
-  ```json
-  {"unix_ms":0}
-  ```
-
-- **Notes:** set time may be overwritten later by NTP if configured and responding.
-
-(temps)=
-### `temps`
-- **No payload -> temperature status:**
-  ```json
-  {
-    "ambient_c": 0.0,
-    "laserbank_c": 0.0,
-    "lasers": {
-      "<lasername>": 0.0
-    }
-  }
-  ```
-
-- **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
-  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
-  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
-  returns `{"error":"busy"}` instead of an ambient-only partial response.
-
-(status)=
-### `status`
-- **No payload or payload -> firmware status.**
-
-  Optional payload:
-  ```json
-  {
-    "ip": true,
-    "lasers": true,
-    "attens": true
-  }
-  ```
-
-  Response:
-  ```json
-  {
-    "fw": "<tag-or-short-git-hash>",
-    "boots": 0,
-    "board": "tib|cal_yj|cal_hk|as|unknown",
-    "board_ok": true,
-    "mems_switches": 8,
-    "relay_err": 0,
-    "ip": "<response of ip command query>",
-    "amb_c": 0.0,
-    "pd_on_s": 0,
-    "laserbank_on_s": 0,
-    "lasers": {
-      "<lasername>": {
-        "power_mw": 0.0,
-        "ready": false,
-        "tec_on_s": null,
-        "off_in_s": null
-      }
-    },
-    "attens": {
-      "<attenname>": {
-        "value_db": 0.0
-      }
-    },
-    "lastcmd": {
-      "name": "<cmdname>",
-      "src": "mqtt",
-      "t_ms": 0
-    }
-  }
-  ```
-- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
-  Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
-  when inactive or unavailable. `ready` reports whether the laser can operate.
-  `lastcmd` is restored from command-dispatch NVS storage when available.
-
-
-(reboot)=
-### `reboot`
-- **No payload:** schedule a non-cancelable reboot after the response window.
-  ```json
-  {"status":"ok","rebooting_in_ms":3000}
-  ```
-- **Payload:** erase persisted app settings except IP settings and boot count
-  immediately before reboot.
-  ```json
-  {"erase_non_ip_settings":true}
-  ```
-- **Serial form:**
-  ```text
-  reboot erase_non_ip_settings
-  ```
-- **Notes:** command dispatch owns the reboot delayable work item. Immediately
-  before reboot it calls the app reboot-prepare hook so firmware can put
-  hardware into a safer state and, when requested, erase non-IP persisted
-  settings. The erase preserves IP settings, boot count, and storage schema
-  metadata. Once a reboot is pending, later commands are rejected before app
-  handlers run.
-
-(mems-split)=
-### `mems/split`
-- **Topics:**
-  - `cmd/<device>/req/mems/split`
-  - `cmd/<device>/req/mems/split/yj` or `cmd/<device>/req/mems/split/hk`
-  - Responses use the same key under `cmd/<device>/resp/...`.
-  
-- **Payload to `mems/split` -> set splitter state:**
-  ```json
-  {
+    "autolevel": false,
+    "laser": "none",
     "channel": "yj",
-    "ratio1": 0.25,
-    "ratio2": 0.25,
-    "cycle_ms": 800,
-    "stop_in_s": 0
+    "input": "yj_cal",
+    "output": "yj_ao",
+    "fiber": "M",
+    "format": "binary"
   }
   ```
-- **No payload to `mems/split/yj` or `mems/split/hk` -> get splitter state.**
-- **Availability:** only available when the AS board strap is selected.
-
-  Response:
+- **Payload:** stop monitoring.
   ```json
   {
-    "channel": "yj",
-    "ratio_ask": [0.25, 0.25, 0.50],
-    "ratio_actual": [0.25, 0.25, 0.50],
-    "ratio_out": [0.25, 0.25, 0.50],
-    "split_transmission": [1.0, 1.0, 1.0],
-    "cycle_ms": 800,
-    "switches": [
-      {
-        "name": "yj_as1",
-        "state": "A",
-        "duty_cycle": 0.25,
-        "a_ms": 200,
-        "b_ms": 600
-      },
-      {
-        "name": "yj_as2",
-        "state": "B",
-        "duty_cycle": 1.0,
-        "a_ms": 0,
-        "b_ms": 800
-      },
-      {
-        "name": "yj_as3",
-        "state": "A",
-        "duty_cycle": 0.50,
-        "a_ms": 400,
-        "b_ms": 400
-      }
-    ],
-    "stop_in_s": 0
+    "stop": "yj"
   }
   ```
 
-- **Notes:**
-  - This is intentionally not a general route/switch feature. It is the
-    system-level achromatic-splitter operation for the AS PCB.
-  - The implementation is anchored in `splitting_set()` and `splitting_get()`.
-  - The fixed routes are `yj_calin -> yj_split` and `hk_calin -> hk_split`,
-    defined in `setup_mems_switches_and_routes()`. `splitting_set()` gets the
-    route with `mems_router_get_route()`, then walks the route steps with
-    `mems_router_find_switch()` as `memsroute_set()` does.
-  - YJ and HK are set independently with `channel:"yj"` or `channel:"hk"`.
-  - Split requests persist as restart metadata. With
-    `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored split
-    request using its original commanded duration. Runtime remaining time is not
-    preserved across reboot.
-  - The user sets only `ratio1` and `ratio2`, both as floats from `0.0` to
-    `1.0`. They must sum to `<= 1.0`; `ratio3` is computed internally as the
-    remaining fraction.
-  - `ratio1` maps to the direct branch selected by SW1. The remaining light is
-    sent through the downstream branch. SW2 is held on the splitter branch.
-    SW3's selected-state dwell is `ratio1 + ratio2`, so its output-2
-    interval starts after SW1's output-1 deadtime.
-  - `cycle_ms` is optional. If omitted, the firmware uses the fastest period
-    that keeps every non-static MEMS actuation pulse within
-    `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
-    cycle except for MEMS tick quantization and quantizes the split ratios
-    inside that fixed cycle. `toggle_rate_hz` is rejected.
-  - `stop_in_s` is integer seconds, with max 4 hours. `0` disables the split
-    auto-stop.
-  - Split switch timing may take a few MEMS cycles to settle after a new
-    request; startup phase is not guaranteed cycle-exact.
-  - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
-    arrays ordered as `[ratio1, ratio2, ratio3]`.
-  - `ratio_ask` is the requested output split. `ratio_actual` is the MEMS duty
-    split after transmission correction and integer tick quantization.
-    `ratio_out` is the estimated optical output split after applying
-    `split_transmission`.
-  - Each switch report gives the selected route state, the selected-state
-    duty-cycle fraction, and the raw A/B dwell timing as `a_ms` and `b_ms`.
-    For a `state:"B"` split switch, `duty_cycle` is `b_ms / cycle_ms`.
-  - If the actual cycle differs from requested, the firmware emits
-    `mems_timing_quantized` on `dt/<device>/warning`.
-  - If the attained ratio differs from the requested ratio because MEMS timing
-    is quantized, the firmware emits `split_ratio_quantized` on
-    `dt/<device>/warning`.
-  - The route-loss split tuple sets `split_transmission`. Set all three split
-    transmissions to the same value, or leave them unset, to disable relative
-    split correction.
+`measure_throughput` is the only command that starts or stops photodiode
+streaming. It measures throughput by comparing the route-corrected optical power at the
+selected photodiode with the route- and attenuator-corrected laser power
+estimate.
+
+`autolevel:true` lets firmware adjust the selected laser output level percent
+and logical attenuator to keep the photodiode signal in the useful
+ADC/photodiode range. `autolevel:false` streams the selected photodiode level
+and derived values without adjusting laser level or attenuation during monitoring.
+`initial_level` is an optional fraction from 0 to 1, accepted only with
+`autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
+calibrated attenuation, then sets this fraction of the threshold-to-nominal
+current range, bounded by `min_autolevel_current_ma` and nominal current.
+Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
+off. This applies to both compiled dimming priorities. Throughput ignores stored
+`tune_nm` and retains the live TEC target when already prepared; cold preparation
+still applies `default_operating_temp_c`.
+Stopping an autolevel operation also stops the laser it was using, even if
+manual laser level or attenuation changes have since disabled automatic adjustments.
+A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
+same source with `autolevel:false` retains an existing operation's laser
+shutdown obligation; replacing its source first stops that autolevel laser.
+Bank power, TECs, and unrelated lasers are left unchanged.
+Valid `stop` requests take priority over accompanying start fields, whose values
+are ignored even if invalid. Unknown top-level fields are still rejected.
+
+HK and YJ can both stream, with one measurement per photodiode channel and
+**only one autolevel owner**. A second autolevel start is rejected before changing
+routes or outputs. External instrument paths combine the light and influence
+both PDs; manually enabled additional lasers are not separated by this system.
+
+`stop:"yj"`, `stop:"hk"`, or `stop:"all"` stops the selected measurements and
+attempts every owned laser shutdown. Failed shutdown disables streaming/control
+and retains the laser identity for an explicit stop retry. Expiry, PD power loss,
+and operational source/relay faults use the same stop path. Numerical laser
+estimates continue to use confirmed setpoints; acquisition checks owner health
+separately. A single failed read warns; five seconds without a response while
+in use faults the owner. Recovery does not restart measurements. See
+[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime).
+
+Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
+JSON; Python and the notebook default to binary. Binary channel and wavelength
+identify the source, including both 1430 nm lasers, and a flag bit carries the
+actual autolevel state. No individual DAC values or laser percentages are streamed.
+
+For a known laser, `output` is required and `input` is inferred unless supplied.
+Optional `channel` must match that laser. Passive `laser:"none"` requires explicit
+`channel:"yj"` or `"hk"` and `autolevel:false`. Its `input` and `output` are an
+optional pair: omit both to leave launch switching untouched (for example,
+astrophysical illumination), or supply both to route external calibration light.
+An explicit launch must select that channel's AO or FEI output.
+
+The command validates launch and return routes before preparing the monitor.
+Preparation checks exclusions, quiesces the target stream, and stops an owned
+source if replacing it. The command then applies the optional launch route and
+**always** applies `yj_mm/sm -> yj_pd` or `hk_mm/sm -> hk_pd`. These use independent
+switches. Only then does the monitor enable PD power and start measurement.
+Route/start failure stops the prepared monitor and attempts its owned laser
+shutdown; routing failures can leave some MEMS switches changed and report that.
+Invalid input or an exclusion failure leaves an existing run untouched.
+
+All measurements divide detected power and its error by the selected return
+transmission. A known laser selects its route/laser override when present;
+unknown illumination uses the generic return defaults (MM 0.98, SM 0.60), without
+choosing another source's calibration. Passive PD voltage, corrected power,
+errors, and detector S/N remain available; source power, wavelength, launch
+transmission, and throughput are NaN/null because emission is unknown. No new
+persistent route key or telemetry field is introduced. A return-only example:
+```json
+{"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
+```
+
+Dark capture or active attenuator calibration rejects all starts. Taking a dark
+or starting calibration stops existing throughput; there is no automatic resume.
+
+`max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
+dynamic attenuator pair and **before** static route losses. Stream quantities
+use power: nW for detected/delivered light and µW for the estimated laser output
+before attenuation. No actual laser power readback exists.
+
+The stream is nominally **20 Hz per channel**: one fresh ADC conversion per
+50 ms, without overlapping or reused samples. It does not use the fixed 500 ms
+PD window. The monitor selects its previous/current source context using the
+monotonic acquisition start and last input-change time; the PD module owns no
+source context. `t_ms` is the estimated UTC conversion midpoint. A delayed consumer can skip
+intermediate readings; a failed ADC conversion produces no record or adjustment.
+Timestamps expose gaps. The latest diagnostic PD state remains available and
+its windows count failed conversions. ADC warnings are limited to one per
+channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
+
+**Telemetry topics:** `dt/<device>/yj_tput`, `dt/<device>/hk_tput`.
+
+**JSON fields:**
+```json
+{
+  "channel": "yj_m",
+  "laser": "1028y",
+  "autolevel": true,
+  "t_ms": 0,
+  "tp": 0.2,
+  "tp_err": 0.0100498756211,
+  "tp_pd_err": 0.001,
+  "pd_power_nw": 0.4,
+  "pd_power_err_nw": 0.002,
+  "delivered_power_nw": 2,
+  "delivered_power_err_nw": 0.1,
+  "laser_output_power_uw": 1000,
+  "laser_output_power_err_uw": 30,
+  "pd_route_tx": 0.5,
+  "laser_route_tx": 0.2,
+  "atten_tx": 0.01,
+  "pd_mv": 100,
+  "pd_net_mv": 90,
+  "pd_net_err_mv": 0.5,
+  "laser_current_ma": 50,
+  "atten_db": 20,
+  "wavelength_nm": 1028,
+  "pd_raw": 1600,
+  "pd_ontime_s": 1,
+  "laser_current_ontime_s": 2,
+  "flags": []
+}
+```
+
+`channel` is `yj_m`, `yj_s`, `hk_m`, or `hk_s`. On-times are integer seconds:
+PD relay continuous on-time and the laser module's current-emission on-time.
+Nonfinite values are JSON `null`; finite values use 12 significant digits.
+
+**Binary layout:** 179 bytes, little-endian, Python `struct` format
+`<8sQ18dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
+
+```text
+char[8] channel
+uint64 t_ms
+float64 tp
+float64 tp_err
+float64 tp_pd_err
+float64 pd_power_nw
+float64 pd_power_err_nw
+float64 delivered_power_nw
+float64 delivered_power_err_nw
+float64 laser_output_power_uw
+float64 laser_output_power_err_uw
+float64 pd_route_tx
+float64 laser_route_tx
+float64 atten_tx
+float64 pd_mv
+float64 pd_net_mv
+float64 pd_net_err_mv
+float64 laser_current_ma
+float64 atten_db
+float64 wavelength_nm
+int16 pd_raw
+uint64 pd_ontime_s
+uint64 laser_current_ontime_s
+uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
+```
+
+**Measurement and control interpretation:**
+
+- `tp = pd_power_nw / delivered_power_nw`. Signed net values are preserved.
+  Zero/invalid delivered power makes throughput NaN/null.
+- `pd_power_nw` is detected net power divided by PD route transmission.
+  `delivered_power_nw` is estimated laser output times dynamic attenuator and
+  outbound route transmissions. Laser output in µW is before both losses.
+- `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
+  includes laser calibration, attenuator-fit residual uncertainty, and modeled
+  FVOA electrical variation. Calibration errors are correlated between records
+  and must not be reduced by treating them as independent sample noise. The
+  combined error is not temporal RMS; electrical independence between FVOAs
+  does not imply independence over time. The error audit documents the assumptions
+  and omitted calibration terms.
+- `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
+  Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
+  a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
+  Calibration's ADC-rail classification remains separate.
+- PD responsivity and effective transimpedance already include the analog
+  divider. The nearest nominal wavelength correction is applied once; current
+  correction coefficients are all unity.
+- `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
+  transmission. Static attenuation belongs in the source route loss.
+- Route losses resolve explicit settings, then compiled TIB switch/static
+  defaults, then unity for unspecified pairs. Start latches the outbound
+  `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission
+  using the selected laser name. Restart to capture changed route settings.
+- Publish the completed measurement before choosing a move. A fresh low reading
+  (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
+  Raw overrange wins over low net signal. Startup uses the same direct path.
+  A sample that began before the previous move completed cannot select another
+  move. There is no rolling-window gate, five-observation bypass, or settling
+  holdoff. Physical response and filter lag remain visible in the data.
+- Flux is raised by reducing attenuation first, then increasing laser current.
+  Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
+  `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before
+  increasing attenuation; `TP_ATTEN_FIRST` (0) preserves the previous order.
+  Either mode holds settings in the useful band and tries the other actuator
+  when the preferred one cannot move. Current is bounded by the per-laser
+  autolevel minimum and nominal current; checks use the actual 0.1 mA register
+  grid, so a repeated setpoint cannot count as progress. The directional pair
+  allocator avoids loading all attenuation onto one device. Each FVOA is limited by its
+  `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
+- Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
+  `off_in_s` stops the monitor after the requested seconds, with zero disabling
+  expiry. Bank power/TECs remain under their existing owner.
+- Manual laser level and attenuation commands disable autolevel while streaming
+  continues with updated source context and the existing laser shutdown obligation.
+  They do not restart the measurement deadline. A zero laser level keeps PD readings
+  flowing, with throughput NaN/null until estimated source power is positive.
+  Laser tuning/settings commands stop the stream. A failed settings update
+  retains any owned laser shutdown for explicit stop retry. Display controls only affect UI.
+
+For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
+output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
+and `pcb.atten(...)` repeatedly. The same collector and live plot continue running.
+
 
 ## Python command helpers
 
