@@ -3008,3 +3008,100 @@ for kwargs in ({'stop':True,'value':.1},{'stop':True,'autooff_s':1},{'stop':'tru
     else: raise AssertionError(kwargs)
     assert len(sent)==count
 print('Python explicit stop and zero-level API checks passed')
+
+# MQTT reconnects restore delivery on the same client; no broker or PCB is used.
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from unittest import TestCase
+from unittest.mock import Mock, patch
+
+checks = TestCase()
+for automatic in (False, True):
+    transport = Mock()
+    subscriptions = set()
+    reply = b'{"status":"ok"}'
+
+    def subscribe(topic, qos):
+        assert not transport.on_connect.__self__.is_connected
+        subscriptions.add(topic)
+        return host.mqtt.MQTT_ERR_SUCCESS, len(subscriptions)
+
+    def publish(topic, payload, qos, properties):
+        # Model a broker that only delivers responses to subscribed clients.
+        if f'cmd/{pcb.device}/resp/#' in subscriptions:
+            transport.on_message(transport, None, SimpleNamespace(
+                topic=properties.ResponseTopic, payload=reply, properties=properties))
+        return SimpleNamespace(rc=host.mqtt.MQTT_ERR_SUCCESS)
+
+    def disconnected():
+        subscriptions.clear()  # The expired MQTT session loses its subscriptions.
+        transport.on_disconnect(transport, None, {}, 0, None)
+
+    transport.connect.return_value = host.mqtt.MQTT_ERR_SUCCESS
+    transport.subscribe.side_effect = subscribe
+    transport.publish.side_effect = publish
+    transport.loop_start.side_effect = lambda: transport.on_connect(transport, None, {}, 0, None)
+    transport.disconnect.side_effect = disconnected
+    with patch.object(host, '_mqtt_client', return_value=transport):
+        pcb = host.HispecFibPcb('unused.invalid', connect=True, auto_connect=automatic, logger=Mock())
+        expected = {f'cmd/{pcb.device}/resp/#', f'dt/{pcb.device}/#'}
+        assert pcb.is_connected and subscriptions == expected
+        assert isinstance(pcb._request_ok('status'), host.CommandOk)
+        disconnected()
+        assert not pcb.is_connected
+        transport.on_connect(transport, None, {}, 0, None)
+        assert subscriptions == expected
+        assert isinstance(pcb._request_ok('status'), host.CommandOk)
+        assert pcb._request_payload('status') == reply
+        pcb.connect()  # An already connected client does not reconnect or resubscribe.
+        assert transport.connect.call_count == 1 and transport.subscribe.call_count == 4
+
+        disconnected()
+        if not automatic:
+            with checks.assertRaisesRegex(host.HispecFibError, 'not connected'):
+                pcb._request_ok('status')
+        else:
+            waiting = Event()
+            original_wait = pcb._connected.wait
+
+            def wait_for_reconnect(timeout):
+                waiting.set()
+                return original_wait(timeout)
+
+            sent = transport.publish.call_count
+            with patch.object(pcb._connected, 'wait', side_effect=wait_for_reconnect):
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    request = pool.submit(pcb._request_ok, 'status')
+                    assert waiting.wait(1) and not request.done()
+                    assert transport.connect.call_count == 1 and transport.publish.call_count == sent
+                    transport.on_connect(transport, None, {}, 0, None)
+                    assert isinstance(request.result(timeout=1), host.CommandOk)
+
+        for failure in ((host.mqtt.MQTT_ERR_NO_CONN, None), OSError('socket closed')):
+            disconnected()
+            pcb.logger.error.reset_mock()
+            transport.subscribe.side_effect = [(host.mqtt.MQTT_ERR_SUCCESS, 1), failure]
+            transport.on_connect(transport, None, {}, 0, None)
+            assert not pcb.is_connected
+            pcb.logger.error.assert_called()
+            with checks.assertRaisesRegex(host.HispecFibError, 'timed out connecting'):
+                pcb.connect(timeout_s=0.01)
+        transport.subscribe.side_effect = subscribe
+        pcb.close()
+        assert not pcb.is_connected and not pcb._loop_started
+        pcb.connect()
+        assert pcb.is_connected and subscriptions == expected
+        assert isinstance(pcb._request_ok('status'), host.CommandOk)
+        assert transport.connect.call_count == 2
+        pcb.close()
+
+        transport.connect.side_effect = OSError('broker unavailable')
+        with checks.assertRaisesRegex(host.HispecFibError, 'broker unavailable'):
+            pcb.connect()
+        assert not pcb.is_connected and not pcb._loop_started
+        transport.connect.side_effect = None
+        transport.loop_start.side_effect = None  # No CONNACK ever arrives.
+        with checks.assertRaisesRegex(host.HispecFibError, 'timed out connecting'):
+            pcb.connect(timeout_s=0.01)
+        pcb.close()
+print('Python MQTT initial connection, reconnect delivery, waiting, failure and close/reopen checks passed')

@@ -3857,6 +3857,11 @@ class HispecFibPcb:
 
     ``device`` is the formal MQTT device name, for example ``"hsfib-tib"``.
     Board-profile names are intentionally not part of the public API.
+
+    ``connect=True`` connects during construction. With ``auto_connect=True``
+    (the default), commands connect or wait for reconnection when needed.
+    Once started, Paho's network loop reconnects independently of this option;
+    every connection restores reply and telemetry subscriptions.
     """
 
     def __init__(
@@ -3906,6 +3911,7 @@ class HispecFibPcb:
 
     @property
     def is_connected(self) -> bool:
+        """Whether MQTT connected and both subscription requests were queued."""
         return self._connected.is_set()
 
     @property
@@ -3914,22 +3920,27 @@ class HispecFibPcb:
             return tuple(self._warnings)
 
     def connect(self, timeout_s: float | None = None) -> None:
+        """Connect initially, or wait for the running MQTT loop to reconnect.
+
+        Wait up to ``timeout_s`` (default: the instance timeout) after the
+        initial socket connection for MQTT and subscription setup. In-flight
+        commands are not replayed if their replies are lost during an outage.
+        """
         if self.is_connected:
             return
         self._ensure_client()
-        self._connect_rc = None
-        try:
-            rc = self._client.connect(self.host, self.port, self.keepalive)
-        except OSError as exc:
-            raise HispecFibError(f"failed to connect to MQTT broker {self.host}:{self.port}: {exc}") from exc
-        if rc != mqtt.MQTT_ERR_SUCCESS:
-            raise HispecFibError(f"MQTT connect failed immediately with rc={rc}")
         if not self._loop_started:
+            self._connect_rc = None
+            try:
+                rc = self._client.connect(self.host, self.port, self.keepalive)
+            except OSError as exc:
+                raise HispecFibError(f"failed to connect to MQTT broker {self.host}:{self.port}: {exc}") from exc
+            if rc != mqtt.MQTT_ERR_SUCCESS:
+                raise HispecFibError(f"MQTT connect failed immediately with rc={rc}")
             self._client.loop_start()
             self._loop_started = True
         if not self._connected.wait(self.timeout_s if timeout_s is None else timeout_s):
             raise HispecFibError(f"timed out connecting to MQTT broker {self.host}:{self.port}")
-        self._subscribe_control_topics()
 
     def close(self) -> None:
         """Stop collected measurements/autolevel lasers, then disconnect, even on failure."""
@@ -5052,6 +5063,8 @@ class HispecFibPcb:
             self._throughput_monitors.discard(monitor)
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, *args: Any) -> None:
+        """Queue subscriptions on every connection without blocking Paho's loop."""
+        self._connected.clear()
         reason = args[1] if len(args) >= 3 else args[0] if args else 0
         self._connect_rc = reason
         try:
@@ -5059,6 +5072,11 @@ class HispecFibPcb:
         except Exception:
             ok = str(reason).lower() in ("success", "0")
         if ok:
+            try:
+                self._subscribe_control_topics()
+            except (HispecFibError, OSError) as exc:
+                self.logger.error("MQTT subscription setup failed: %s", exc)
+                return
             self._connected.set()
         else:
             self.logger.error("MQTT connect failed: %s", reason)
