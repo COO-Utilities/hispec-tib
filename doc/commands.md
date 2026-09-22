@@ -1278,7 +1278,8 @@ command wait budget, this command returns `{"error":"busy"}`.
 The implementation flow, bridge-normalization sequence, and retained-record
 ownership are documented in `attenuator_calibration.md`.
 Status queries return a coherent snapshot without waiting for numerical fitting.
-The state remains `running` during fitting; final metrics appear at completion.
+The state remains `running` during fitting; each completed physical fit becomes
+available without waiting for the other fit.
 
 - **No payload -> compact calibration state:**
   ```json
@@ -1404,6 +1405,23 @@ The state remains `running` during fitting; final metrics appear at completion.
     `failed` after an unsuccessful fit, and `none` before a fit exists.
     Accepted calibration coefficients are applied to runtime attenuator control;
     they are persisted to NVS only when `persist` is requested.
+  - One static dataset is retained through stop, errors, rejected fits, and host
+    cleanup. Raw records, references, bridges, run identity, and completed fit
+    results are cleared only by an accepted new start or reboot. A status query
+    does not start a run. Rejected requests preserve the data; an accepted start
+    clears it before hardware setup, even if that setup subsequently fails.
+  - Acquisition completion stops the calibration-owned laser before fitting.
+    A failed stop reports an error and preserves both data and shutdown ownership
+    for an explicit retry. Stop also shuts down an active acquisition's source;
+    shutdown failure is returned as a command error.
+  - Fitting runs at the lowest application priority, without holding the
+    calibration mutex. Stop or a replacement start cancels at a numerical loop
+    boundary and waits for fitting to release the data. Cancellation before
+    installation prevents application/persistence; it does not undo an already
+    installed calibration. Status and records remain readable during fitting.
+  - Python downloads the record prefix described by each physical device's
+    initial metadata, allowing acquisition to append concurrently. Starting a
+    replacement run invalidates an in-progress multi-request download.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.

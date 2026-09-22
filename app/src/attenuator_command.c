@@ -791,8 +791,9 @@ int atten_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	}
 	if (stop) {
 		/* Stop takes priority over accompanying start options. */
-		(void)attenuator_calibration_stop(&status);
-		return atten_calibration_status_reply(cmd, &status, COO_CMD_RESP_OK, out);
+		rc = attenuator_calibration_stop(&status);
+		return atten_calibration_status_reply(cmd, &status,
+			rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR, out);
 	}
 
 	parse_rc = coo_json_extract_string(cmd->payload, "laser",

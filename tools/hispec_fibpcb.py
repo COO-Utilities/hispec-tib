@@ -4580,6 +4580,12 @@ class HispecFibPcb:
         records_per_chunk = int(metadata["records_per_chunk"])
         start_index = int(chunk) * records_per_chunk
         count = len(payload) // record_size
+        expected = min(records_per_chunk, int(metadata["record_count"]) - start_index)
+        if count < expected or count > records_per_chunk:
+            raise HispecFibError("attenuator calibration record count does not match metadata")
+        # Acquisition may append after metadata was read. Return that metadata's
+        # prefix so the records still match its reference/bridge snapshot.
+        count = expected
         rows: list[tuple[Any, ...]] = []
         for i in range(count):
             values = _ATTEN_CAL_RECORD_BINARY.unpack_from(payload, i * record_size)
@@ -4630,6 +4636,12 @@ class HispecFibPcb:
         *,
         chunk: int | None = None,
     ) -> AttenuatorCalibrationDataset:
+        """Read retained records, including partial/stopped/failed acquisitions.
+
+        Firmware keeps one dataset until a new calibration starts or it reboots.
+        Each physical device is read through the prefix in its initial metadata;
+        do not start a replacement calibration during a multi-request download.
+        """
         physical = _require_choice("physical", physical, ("dac1", "dac2", "all"))  # type: ignore[assignment]
         if chunk is not None:
             if physical == "all":
@@ -4693,6 +4705,7 @@ class HispecFibPcb:
         return _decode_atten_cal_status(self._request_json("atten/calibrate", payload))
 
     def atten_calibrate_stop(self) -> AttenuatorCalibrationStatus:
+        """Cancel acquisition/fitting and stop its source without discarding data."""
         return _decode_atten_cal_status(self._request_json("atten/calibrate", {"stop": True}))
 
     def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:

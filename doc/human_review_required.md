@@ -17,11 +17,13 @@ LLMs Agents: Do NOT change heading names in this file.
   repeated visits. Compare final-30-second means, noise and drift before choosing
   a device-failure threshold or attributing the asymmetry to the DAC1 capacitor.
 - [ ] After flashing, replay saved calibration records with the laser disabled
-  and confirm health polls continue throughout both fits without false five-second
-  timeouts. Host replay compares coefficients/metrics with and without pauses;
-  actual scheduling gaps and fitting duration require target measurement.
-  Confirm Python calibration-status polling stays responsive through fitting;
-  status now reads a separate coherent snapshot instead of waiting for cal_lock.
+  and confirm health polls and record/status downloads continue throughout both
+  fits without CRC/transport errors or false health timeouts. Fitting now uses
+  lowest application priority with no calibration mutex held over calculation.
+  Host replay matches pre-change coefficients/metrics; concurrent host checks
+  cover cancellation, replacement, shutdown failure and retained wire records.
+  Measure target fitting/cancellation time and verify laser shutdown before fit.
+  Confirm notebook stop/error cleanup retains records until the next start.
 - [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
   longer emits `laser_output_fault`; hard faults and active interlock still do.
   Host tests exercise the production status path; repeat with the controller.
@@ -95,9 +97,9 @@ LLMs Agents: Do NOT change heading names in this file.
   laser emitting. They can discard measurement shutdown responsibility. Model
   and envelope edits now stop emission; failed settings updates retain the owned
   shutdown for explicit retry. The other ownership cases are intentionally deferred.
-- Retain raw attenuator calibration records and fit results through stop/error
-  cleanup until the next acquisition. A status-payload failure followed by the
-  notebook's stop cleanup currently clears the data needed to diagnose it.
+- Raw attenuator calibration records and completed fit results now survive
+  stop/error cleanup until a new start or reboot. Host lifecycle and binary-read
+  tests cover this; PCB/notebook validation remains in the item above.
 - Add sampler-owned illumination-change notification with settling duration.
   Laser/attenuator changes report the event; readings and windows remain marked
   settling until their acquisitions are clear of it. Consumers wait or skip.

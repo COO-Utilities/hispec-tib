@@ -229,7 +229,8 @@ static void photodiode_get_status(struct photodiode_status *s) {memset(s,0,sizeo
 static int housekeeping_power_get(enum housekeeping_power_output p,bool *on) {(void)p;*on=true;return 0;}
 static int attenuator_index_from_laser_id(enum hispec_laser_id id,uint8_t *i) {(void)id;*i=0;return 0;}
 static bool devices_attenuator_channel_available(uint8_t i) {(void)i;return true;}
-static int attenuator_calibration_stop(struct attenuator_calibration_status *s) {s->state="stopped";++stops;return 0;}
+static int cal_stop_error;
+static int attenuator_calibration_stop(struct attenuator_calibration_status *s) {s->state="inactive";++stops;return cal_stop_error;}
 static int attenuator_calibration_start_auto(const struct attenuator_calibration_auto_request *r,struct attenuator_calibration_status *s)
 {(void)r;s->state="running";++writes;return 0;}
 static int attenuator_calibration_format_status(char *p,size_t n,const struct attenuator_calibration_status *s)
@@ -350,6 +351,9 @@ int main(void) {
     assert(measure_throughput_set(&cmd,&out)==0 && out.msg_type==COO_CMD_RESP_OK && stops==1 && writes==0 && notes==0);
     request("atten/calibrate","{\"stop\":true,\"laser\":false,\"dwell_ms\":-1,\"persist\":42}");
     assert(atten_calibration_set(&cmd,&out)==0 && out.msg_type==COO_CMD_RESP_OK && stops==2 && writes==0);
+    cal_stop_error=-EIO;
+    assert(atten_calibration_set(&cmd,&out)==0 && out.msg_type==COO_CMD_RESP_ERROR);
+    cal_stop_error=0;stops=2;
     request("measure_throughput","{\"stop\":true}");error_response(measure_throughput_set(&cmd,&out),"invalid stop");
     request("atten/calibrate","{\"stop\":23}");error_response(atten_calibration_set(&cmd,&out),"invalid stop");
     request("measure_throughput","{\"laser\":\"1028y\",\"output\":\"yj_ao\",\"off_in_s\":-1}");

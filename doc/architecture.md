@@ -233,16 +233,24 @@ DS18B20 caller; relay calls remain serialized by housekeeping and the DS2408
 driver. DS18B20 conversion still sleeps on the blocking queue for up to 750 ms,
 outside the bus lock. Zephyr is unmodified; the accepted stock 1-Wire mutex
 limitation is documented in the [transport notes](../zephyr/README.md).
-Numerical attenuator fitting remains synchronous on throughput's priority-3
-thread, holding the calibration mutex. Its expensive loops check a local 10 ms
-budget between evaluations and sleep for 1 ms when due, allowing the priority-5
-Modbus RX workqueue and priority-7 blocking/health queue to run. A yield alone
-would not run those lower-priority threads. Priorities and the five-second health
-deadline are unchanged; other throughput work still waits for fitting to finish.
+Numerical attenuator fitting reuses the throughput thread after stopping the
+calibration-owned laser and releasing PD auto-off inhibition. It releases the
+calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
+this build), below Modbus RX (5), commands (6), housekeeping (7), and logging (13).
+There are no timed pauses in the math. It restores priority 3 with no mutex held
+before finalization. Other throughput work still waits for fitting to finish.
+Start/stop commands set a cancellation flag and wait on a completion semaphore
+without holding the calibration mutex. Numerical loops check cancellation;
+the command cannot clear/reuse the single static dataset until fitting returns.
+Only an accepted new start clears records, references, bridges, and fit results.
+Stop and error cleanup preserve them. No second record buffer is allocated.
 Calibration publishes a coherent command-status snapshot under a separate short
 mutex after start/stop/tick updates and before fitting. Status and active checks
-read that snapshot without waiting for the acquisition/fit mutex. The snapshot
-stays `running` throughout fitting and exposes final metrics together at completion.
+read that snapshot without waiting for acquisition I/O. The snapshot stays
+`running` throughout fitting and exposes each completed physical fit coherently.
+Record downloads take the calibration mutex only for their bounded copies and
+remain available during fitting. Canceled work cannot install coefficients;
+cancellation and installation serialize at finalization.
 Laser identity and applied configuration are retained for the bank-power interval;
 configuration, driver-started state, and nonzero-current accounting are separate. Laser-bank power
 commands can sleep while waiting for the Maiman modules to boot or for a

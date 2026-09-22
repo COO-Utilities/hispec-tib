@@ -940,15 +940,15 @@ print('Calibrated endpoint and rough-tail forward/inverse round trips passed')
 # Recorded DAC1's six-term candidate is valid at retained points but turns near
 # the open end. The five-term refit must survive the production curve checker.
 curve_validation_source += '#include <string.h>\n#define ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB 1.0e-4\n'
-fit_clock_source = r"""
-#define ATTEN_CAL_FIT_CPU_BUDGET_MS 10
-static int64_t fit_clock;
-static int fit_sleeps;
-static bool fit_pauses_enabled=true;
-static int64_t k_uptime_get(void){return fit_pauses_enabled?fit_clock++:0;}
-static void k_msleep(int ms){assert(ms==1);++fit_sleeps;fit_clock+=ms;}
-""" + block('attenuator_calibration.c', 'static void fit_pause_if_due(')
-curve_validation_source += fit_clock_source
+# Inject cancellation at successive real evaluation boundaries, without clocks.
+fit_cancel_source = r"""
+static int cal_fit_cancel,cancel_after=-1,cancel_reads;
+static int atomic_get(int *flag){
+ if(cancel_after>=0 && cancel_reads++>=cancel_after)*flag=1;
+ return *flag;
+}
+"""
+curve_validation_source += fit_cancel_source
 
 for marker in ('struct atten_cal_record {', 'struct atten_cal_fit_point {',
                'static bool fit_curve_valid('):
@@ -977,9 +977,8 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(exe)],check=True)
 print('Recorded between-sample correction failure and reduced-order curve validation passed')
 
-# Replay recorded acquisitions through the production fitter. Clock
-# reads simulate elapsed work; sleep is counted, not a host scheduling claim.
-# Both runs must have identical coefficients, metrics, acceptance and warnings.
+# Replay recorded acquisitions through the production fitter, including canceled
+# calculations followed by a clean repeat with identical results and warnings.
 fit_replay_source += '\n#include <errno.h>\n#define MAX(a,b) fmax(a,b)\n#define MIN(a,b) fmin(a,b)\n'
 cal_text = (ROOT/'app/src/attenuator_calibration.c').read_text()
 fit_replay_source += cal_text[cal_text.index('#define ATTEN_CAL_DEFAULT_DWELL_MS'):cal_text.index('enum atten_cal_state {')]
@@ -1011,12 +1010,12 @@ static void coo_cmd_runtime_emit(void *p,const struct coo_cmd_runtime_emit_args 
 static const char *physical_name(unsigned p){return p?"dac2":"dac1";}
 '''
 fit_replay_source += block('attenuator.c', 'bool atten_model_correction_basis(')
-for marker in ('static bool record_is_fit_candidate(', 'static int build_segment_scales_locked(',
-               'static int build_fit_points_locked(', 'static int estimate_max_atten_db(',
+for marker in ('static bool record_is_fit_candidate(', 'static int build_segment_scales(',
+               'static int build_fit_points(', 'static int estimate_max_atten_db(',
                'static int fit_point_weighted_eval(', 'static double fit_cost(',
                'static void fit_initial_guess(', 'static int fit_optimize_db(',
-               'static int solve_correction_normal_equation(', 'static int fit_correction_coeff_locked(',
-               'static int fit_one_physical_locked('):
+               'static int solve_correction_normal_equation(', 'static int fit_correction_coeff(',
+               'static int fit_one_physical('):
     fit_replay_source += block('attenuator_calibration.c', marker)
 fit_replay_source += r'''
 static void check_signed_support(void){
@@ -1028,7 +1027,7 @@ static void check_signed_support(void){
   .classification=ATTEN_CAL_CLASSIFICATION_OK,.signal_mv=100*tx[i-1],.signal_err_mv=1};
  cal.records[0][7].classification=ATTEN_CAL_CLASSIFICATION_SATURATED;
  cal.records[0][9].classification=ATTEN_CAL_CLASSIFICATION_BELOW_SNR;
- uint8_t count=0;assert(!build_fit_points_locked(0,cal_fit_points,&count) && count==6);
+ uint8_t count=0;assert(!build_fit_points(0,cal_fit_points,&count) && count==6);
  for(int i=0;i<6;i++)assert(cal_fit_points[i].record_index==i+1);
  assert(cal_fit_points[0].measured_db==0 && cal_fit_points[2].measured_db>0);
  assert(fabs(cal_fit_points[1].measured_db+10*log10(1.04))<1e-6);
@@ -1038,21 +1037,24 @@ fit_replay_main = r'''
 int main(void){
  check_signed_support();
  load_records();
- struct attenuator_calibration_fit_metrics baseline[2],paused[2];
+ struct attenuator_calibration_fit_metrics baseline[2],repeated[2];
  int baseline_rc[2];char baseline_warnings[4][160];
- fit_pauses_enabled=false;
- for(int i=0;i<2;i++)baseline_rc[i]=fit_one_physical_locked(i,&baseline[i]);
- assert(fit_sleeps==0);memcpy(baseline_warnings,warnings,sizeof(warnings));
- int baseline_warning_count=warning_count;warning_count=0;memset(warnings,0,sizeof(warnings));
- fit_pauses_enabled=true;
+ for(int i=0;i<2;i++)baseline_rc[i]=fit_one_physical(i,&baseline[i]);
+ memcpy(baseline_warnings,warnings,sizeof(warnings));
+ int baseline_warning_count=warning_count;
+ for(unsigned boundary=0;boundary<6;boundary++){
+  const int checks[]={0,1,30,100,1000,2500};
+  struct attenuator_calibration_fit_metrics canceled;
+  cancel_after=checks[boundary];cancel_reads=cal_fit_cancel=warning_count=0;
+  assert(fit_one_physical(0,&canceled)==-ECANCELED && cal_fit_cancel);
+  assert(warning_count==0); /* Cancellation is not a rejected curve. */
+ }
+ cancel_after=-1;cal_fit_cancel=warning_count=0;memset(warnings,0,sizeof(warnings));
  for(int i=0;i<2;i++){
-  int before=fit_sleeps;
-  assert(fit_one_physical_locked(i,&paused[i])==baseline_rc[i]);
-  assert(!memcmp(&baseline[i],&paused[i],sizeof(paused[i])) && fit_sleeps>before);
-  assert(paused[i].valid && paused[i].accepted);
-  printf("Replay dac%d: points=%u, rms_db=%.9g, identical with pauses (%d sleeps)\n",
-         i+1,paused[i].points,paused[i].rms_db,fit_sleeps-before);
-  const struct attenuator_calibration_fit_metrics *f=&paused[i];
+  assert(fit_one_physical(i,&repeated[i])==baseline_rc[i]);
+  assert(!memcmp(&baseline[i],&repeated[i],sizeof(repeated[i])));
+  assert(repeated[i].valid && repeated[i].accepted);
+  const struct attenuator_calibration_fit_metrics *f=&repeated[i];
   printf("FIT %d %u %.17g %.17g %.17g %.17g %.17g %.17g %.17g",i+1,f->points,
          f->fvoa_50pct_mv,f->slope_inv_fvoa_mv,f->max_atten_db,f->max_calibrated_db,
          f->correlation,f->rms_db,f->max_abs_db);
@@ -2765,126 +2767,70 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-lm','-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 
-# Real status publication/getters must not wait for the fitting owner or expose
-# partially written metrics. The actual tick holds cal_lock across this barrier.
+# Exercise real calibration lifecycle, handoff, cancellation and wire records
+# concurrently. Only fitting arithmetic and hardware are stubbed in this harness;
+# the replay above exercises the actual numerical loops and cancellation checks.
 source=r'''
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #define K_FOREVER 0
+#define K_LOWEST_APPLICATION_THREAD_PRIO 14
 #define ATTENUATOR_PHYSICAL_COUNT 2
 #define ATTENUATOR_CAL_RECORD_COUNT 128
 #define ATTENUATOR_MODEL_CORRECTION_TERMS 6
 #define ATTENUATOR_DRIVE_MAX_MV 3300
-#define ATTEN_CAL_DEFAULT_DWELL_MS 400
+#define PHOTODIODE_CHANNEL_COUNT 2
+#define COO_CMD_PAYLOAD_MAX 1024
 #define MIN(a,b) ((a)<(b)?(a):(b))
-enum hispec_laser_id {L0}; enum photodiode_channel {YJ};
+#define COO_CMD_RUNTIME_EMIT_WARNING 1
+#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
+#define LOG_INF(...) ((void)0)
+enum hispec_laser_id {L0,L1}; enum photodiode_channel {YJ,HK};
+enum housekeeping_power_output {P0,P1};
 struct photodiode_status {int unused;};
-''' + mutex_harness
+struct coo_cmd_runtime_emit_args {int type,delivery;const char *code,*msg;};
+static _Thread_local int held_locks,thread_priority=3;
+''' + mutex_harness.replace('(void)timeout; return pthread_mutex_lock(&m->mutex);',
+    '(void)timeout; int rc=pthread_mutex_lock(&m->mutex); if(!rc)held_locks++; return rc;').replace(
+    'assert(!pthread_mutex_unlock(&m->mutex));', 'held_locks--; assert(!pthread_mutex_unlock(&m->mutex));')
+cal_text=(ROOT/'app/src/attenuator_calibration.c').read_text()
+source+=cal_text[cal_text.index('#define ATTEN_CAL_DEFAULT_DWELL_MS'):cal_text.index('enum atten_cal_state {')]
 for name in ['atten_cal_state', 'atten_cal_mode', 'atten_cal_phase', 'atten_cal_measure_kind']:
     source+=block('attenuator_calibration.c', f'enum {name} {{')+';\n'
-for name in ['attenuator_calibration_fit_metrics', 'attenuator_calibration_status']:
+for name in ['attenuator_calibration_fit_metrics', 'attenuator_calibration_status', 'attenuator_calibration_auto_request']:
     source+=block('attenuator_calibration.h', f'struct {name} {{')
 for name in ['atten_cal_record', 'atten_cal_bridge', 'atten_cal_state_data']:
     source+=block('attenuator_calibration.c', f'struct {name} {{')
 source+=block('attenuator_calibration.c', 'static struct attenuator_calibration_status cal_status =')+';\n'
-source+='''
+source+=r'''
 static struct atten_cal_state_data cal;
 static struct k_mutex cal_lock,cal_status_lock;
-static const uint8_t initial_laser_levels_pct[]={100,50,5};
-'''
-for marker in ['static const char *state_name(', 'static const char *mode_name(',
-               'static const char *physical_name(', 'static uint8_t complete_percent_locked(',
-               'static void reset_locked(',
-               'static void publish_status_locked(struct attenuator_calibration_status *out)',
-               'void attenuator_calibration_get_status(', 'bool attenuator_calibration_active(']:
-    source+=block('attenuator_calibration.c', marker)
-source+='''
-static void auto_tick_locked(const struct photodiode_status *pd){
- (void)pd;
- cal.fit[0].valid=cal.fit[0].accepted=true;cal.fit[0].rms_db=0.25;
- io_barrier(); /* Fitting has written only one device and still owns cal_lock. */
- cal.fit[1]=cal.fit[0];cal.state=ATTEN_CAL_STATE_COMPLETE;
+static atomic_int cal_fit_cancel;
+#define atomic_get(p) atomic_load(p)
+#define atomic_set(p,v) atomic_store(p,v)
+#define atomic_clear(p) atomic_store(p,0)
+struct k_sem {pthread_mutex_t lock;pthread_cond_t cond;unsigned count;};
+static struct k_sem cal_fit_done={PTHREAD_MUTEX_INITIALIZER,PTHREAD_COND_INITIALIZER,0};
+static void k_sem_reset(struct k_sem *s){pthread_mutex_lock(&s->lock);s->count=0;pthread_mutex_unlock(&s->lock);}
+static void k_sem_give(struct k_sem *s){pthread_mutex_lock(&s->lock);s->count=1;pthread_cond_signal(&s->cond);pthread_mutex_unlock(&s->lock);}
+static int k_sem_take(struct k_sem *s,int timeout){
+ (void)timeout;assert(!held_locks);pthread_mutex_lock(&s->lock);
+ while(!s->count)pthread_cond_wait(&s->cond,&s->lock);
+ s->count=0;pthread_mutex_unlock(&s->lock);return 0;
 }
-'''
-source+=block('attenuator_calibration.c', 'void attenuator_calibration_tick(')
-source+=r'''
-static void *fit(void *unused){(void)unused;attenuator_calibration_tick(NULL);return NULL;}
-int main(void){
- struct attenuator_calibration_status s,reply;
- init_mutex(&cal_lock);init_mutex(&cal_status_lock);
- attenuator_calibration_get_status(&s);
- assert(!strcmp(s.state,"inactive")&&s.point_count==128&&!attenuator_calibration_active());
- k_mutex_lock(&cal_lock,K_FOREVER);
- reset_locked(ATTEN_CAL_STATE_RUNNING);cal.mode=ATTEN_CAL_MODE_TIB_AUTO;
- cal.dwell_ms=550;cal.record_count[0]=42;publish_status_locked(&reply);
- k_mutex_unlock(&cal_lock);
- pthread_t writer;alarm(5);atomic_store(&block_io,true);
- assert(!pthread_create(&writer,NULL,fit,NULL));wait_for_io();
- for(int i=0;i<1000;i++){
-  attenuator_calibration_get_status(&s);
-  assert(!strcmp(s.state,"running")&&attenuator_calibration_active());
-  assert(s.dwell_ms==550&&s.complete_pct==reply.complete_pct);
-  assert(!s.fit_metrics[0].valid&&!s.fit_metrics[1].valid);
- }
- atomic_store(&release_io,true);assert(!pthread_join(writer,NULL));alarm(0);
- attenuator_calibration_get_status(&s);
- assert(!strcmp(s.state,"complete")&&!strcmp(s.fit,"ok")&&s.complete_pct==100);
- assert(s.fit_metrics[0].rms_db==0.25&&s.fit_metrics[1].rms_db==0.25);
- assert(!attenuator_calibration_active());
- k_mutex_lock(&cal_lock,K_FOREVER);
- reset_locked(ATTEN_CAL_STATE_ERROR);cal.last_error=-5;publish_status_locked(NULL);
- k_mutex_unlock(&cal_lock);attenuator_calibration_get_status(&s);
- assert(!strcmp(s.state,"error")&&!strcmp(s.fit,"failed")&&s.last_error==-5);
- k_mutex_lock(&cal_lock,K_FOREVER);
- reset_locked(ATTEN_CAL_STATE_INACTIVE);publish_status_locked(&reply);
- k_mutex_unlock(&cal_lock);attenuator_calibration_get_status(&s);
- assert(!strcmp(s.state,"inactive")&&!s.last_error&&!s.fit_metrics[0].valid);
- assert(!memcmp(&s,&reply,sizeof(s)));
- puts("Calibration polling during a held fit lock, coherent completion, error and reset passed");
-}
-'''
-with tempfile.TemporaryDirectory() as tmp:
-    cfile,exe=Path(tmp)/'cal_status.c',Path(tmp)/'cal_status'
-    cfile.write_text(source)
-    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
-
-# Calibration lifetime uses its real start/stop/error paths, with transport stubs.
-source=r'''
-#include <assert.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <string.h>
-#include <errno.h>
-#include <stdio.h>
-#define K_FOREVER 0
-#define PHOTODIODE_CHANNEL_COUNT 2
-#define ATTEN_CAL_MIN_DWELL_MS 100
-#define ATTEN_CAL_DEFAULT_DWELL_MS 400
-#define ATTEN_CAL_MAX_DWELL_MS 2000
-#define ATTENUATOR_DRIVE_MAX_MV 3300
-#define MIN(a,b) ((a)<(b)?(a):(b))
-#define COO_CMD_RUNTIME_EMIT_WARNING 1
-#define COO_CMD_RUNTIME_EMIT_BEST_EFFORT 0
-#define ATTEN_CAL_MODE_TIB_AUTO 1
-#define ATTEN_CAL_PHASE_NONE 0
-#define ATTEN_CAL_PHASE_WAIT_WINDOW 1
-enum hispec_laser_id {L0,L1};enum photodiode_channel {YJ,HK};
-enum housekeeping_power_output {P0,P1};
-struct coo_cmd_runtime_emit_args {int type,delivery;const char *code,*msg;};
-struct attenuator_calibration_status {int state,error;};
-'''
-source+=block('attenuator_calibration.c','enum atten_cal_state {')+';\n'
-source+=block('attenuator_calibration.h','struct attenuator_calibration_auto_request {')
-source+=r'''
-static struct {int state,phase,mode,attenuator_index,physical_index,dwell_ms,laser_percent,last_error;
- bool persistent,shutdown_pending;enum photodiode_channel channel;enum hispec_laser_id laser;} cal;
-static int cal_lock,router,fail_stop=-1,fail_route,release_count,stop_count[2];
+static int block_physical=-1,cancel_between,cancel_before_install,fit_error,apply_error;
+static int router,fail_stop=-1,fail_route,release_count,stop_count[2],applied,fitted;
 static bool inhibited[2],powered[2]={true,true},emitting[2];
-static void k_mutex_lock(int *m,int t){(void)m;(void)t;}static void k_mutex_unlock(int *m){(void)m;}
+static void *k_current_get(void){return NULL;}
+static int k_thread_priority_get(void *t){(void)t;return thread_priority;}
+static void k_thread_priority_set(void *t,int p){
+ (void)t;assert(!held_locks);thread_priority=p;
+ if(p==3 && cancel_before_install)atomic_set(&cal_fit_cancel,1);
+}
 static void *command_runtime_get(void){return NULL;}
 static void coo_cmd_runtime_emit(void *r,const struct coo_cmd_runtime_emit_args *a){(void)r;(void)a;}
 static bool devices_attenuator_channel_available(int i){return i<2;}
@@ -2895,38 +2841,157 @@ static int throughput_monitor_stop(int c,void *s){(void)c;(void)s;return 0;}
 static int mems_router_apply_named_route(void *r,const char *a,const char *b,bool c,void *d,void *e){(void)r;(void)a;(void)b;(void)c;(void)d;(void)e;return fail_route?-EIO:0;}
 static bool set_physical_pair(int i,int p,int a,int b){(void)i;(void)p;(void)a;(void)b;return true;}
 static int hispec_laser_stop_output(enum hispec_laser_id id,bool tec){(void)tec;stop_count[id]++;if(fail_stop==(int)id)return -EIO;emitting[id]=false;return 0;}
-static void publish_status_locked(struct attenuator_calibration_status *s){if(s){s->state=cal.state;s->error=cal.last_error;}}
-static void reset_locked(enum atten_cal_state state){memset(&cal,0,sizeof(cal));cal.state=state;}
 static void atten_cal_emit_simple(const char *e){(void)e;}
 static void auto_start_next_physical_locked(void){assert(!emitting[1-cal.laser]);emitting[cal.laser]=true;cal.phase=ATTEN_CAL_PHASE_WAIT_WINDOW;}
+static void sys_put_le32(uint32_t v,uint8_t *p){for(int i=0;i<4;i++)p[i]=v>>(8*i);}
+static int fit_one_physical(uint8_t physical,struct attenuator_calibration_fit_metrics *out){
+ assert(thread_priority==K_LOWEST_APPLICATION_THREAD_PRIO && !held_locks);
+ assert(!emitting[0]&&!emitting[1]&&!inhibited[cal.channel]);fitted++;
+ if(physical==block_physical){
+  atomic_store(&entered_io,true);
+  while(!atomic_load(&release_io) && !atomic_get(&cal_fit_cancel))
+   nanosleep(&(struct timespec){.tv_nsec=1000000},NULL);
+ }
+ if(atomic_get(&cal_fit_cancel))return -ECANCELED;
+ *out=(struct attenuator_calibration_fit_metrics){.valid=true,.accepted=!fit_error,.rms_db=0.25};
+ return fit_error;
+}
+static void atten_cal_emit_fit(uint8_t physical,const struct attenuator_calibration_fit_metrics *f){
+ (void)f;if(physical==0 && cancel_between)atomic_set(&cal_fit_cancel,1);
+}
+static int apply_fit_to_settings_locked(void){assert(thread_priority==3);applied++;return apply_error;}
 '''
-for marker in ['static void auto_error_locked(', 'int attenuator_calibration_start_auto(', 'int attenuator_calibration_stop(']:
+for marker in ['static const char *state_name(', 'static const char *mode_name(',
+               'static const char *physical_name(', 'static uint8_t complete_percent_locked(',
+               'static void publish_status_locked(struct attenuator_calibration_status *out)',
+               'void attenuator_calibration_get_status(', 'bool attenuator_calibration_active(',
+               'static void auto_error_locked(', 'static void auto_finish_physical_locked(',
+               'static void auto_fit(', 'static void cancel_fit_locked(',
+               'int attenuator_calibration_start_auto(', 'int attenuator_calibration_stop(',
+               'static void put_le_float(', 'static void write_record_wire(',
+               'int attenuator_calibration_write_data_metadata(', 'int attenuator_calibration_write_record_chunk(']:
     source+=block('attenuator_calibration.c',marker)
+source+='static void auto_tick_locked(const struct photodiode_status *p){(void)p;auto_finish_physical_locked();}\n'
+source+=block('attenuator_calibration.c','void attenuator_calibration_tick(')
 source+=r'''
+static struct attenuator_calibration_auto_request request={.laser=L0,.channel=YJ,.route_input="laser",.output="out",.pd_input="mm",.pd_output="pd",.dwell_ms=550};
+static struct attenuator_calibration_status status;
+static uint8_t saved_records[2][1024],saved_meta[2][512];static size_t saved_len[2],saved_meta_len[2];
+static void save_records(void){
+ for(int i=0;i<2;i++){
+  assert(!attenuator_calibration_write_record_chunk(saved_records[i],1024,i,0,&saved_len[i]));
+  assert(!attenuator_calibration_write_data_metadata(saved_meta[i],512,i,&saved_meta_len[i]));
+ }
+}
+static void check_retained(void){
+ for(int i=0;i<2;i++){
+  uint8_t data[1024];size_t n;
+  assert(!attenuator_calibration_write_record_chunk(data,1024,i,0,&n));
+  assert(n==saved_len[i]&&!memcmp(data,saved_records[i],n));
+  assert(!attenuator_calibration_write_data_metadata(data,1024,i,&n));
+  assert(n==saved_meta_len[i]&&!memcmp(data+11,saved_meta[i]+11,n-11));
+ }
+}
+static void start_seeded(void){
+ assert(!attenuator_calibration_start_auto(&request,&status));
+ assert(cal.record_count[0]==0 && cal.record_count[1]==0 && !cal.fit[0].valid);
+ k_mutex_lock(&cal_lock,K_FOREVER);
+ for(int i=0;i<2;i++){
+  cal.record_count[i]=2;cal.reference_record_index_valid[i]=true;
+  cal.reference_record_index[i]=1;cal.bridge_count[i]=1;
+  cal.bridges[i][0]=(struct atten_cal_bridge){0,1};
+  cal.records[i][0]=(struct atten_cal_record){.sweep_mv=123,.signal_mv=456,.signal_err_mv=1,.laser_pct=5};
+  cal.records[i][1]=(struct atten_cal_record){.sweep_mv=789,.signal_mv=34,.signal_err_mv=2,.laser_pct=5};
+ }
+ cal.physical_index=1;publish_status_locked(NULL);k_mutex_unlock(&cal_lock);
+ atomic_store(&entered_io,false);atomic_store(&release_io,false);save_records();
+}
+static void *fit_thread(void *unused){(void)unused;attenuator_calibration_tick(NULL);assert(thread_priority==3 && !held_locks);return NULL;}
 int main(void){
- struct attenuator_calibration_auto_request r={.laser=L0,.channel=YJ,.route_input="laser",.output="out",.pd_input="mm",.pd_output="pd",.dwell_ms=550};
- struct attenuator_calibration_status status;
- assert(!attenuator_calibration_start_auto(&r,&status)&&inhibited[0]);
- int releases=release_count;assert(!attenuator_calibration_start_auto(&r,&status)&&release_count==releases);
- r.laser=L1;assert(!attenuator_calibration_start_auto(&r,&status)&&!emitting[0]&&emitting[1]);
- fail_stop=1;auto_error_locked(-ETIMEDOUT);
- assert(!inhibited[0]&&cal.shutdown_pending&&cal.laser==L1);
- assert(attenuator_calibration_stop(&status)==-EIO&&cal.shutdown_pending&&cal.laser==L1);
- fail_stop=-1;assert(!attenuator_calibration_stop(&status)&&!emitting[1]&&!cal.shutdown_pending);
- assert(!attenuator_calibration_start_auto(&r,&status));
- assert(!attenuator_calibration_stop(&status)&&!inhibited[0]);
- fail_stop=1;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&cal.shutdown_pending&&cal.laser==L1);
- fail_stop=-1;assert(!attenuator_calibration_stop(&status));
- powered[0]=false;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&!inhibited[0]);
- powered[0]=true;fail_route=1;assert(attenuator_calibration_start_auto(&r,&status)==-EIO&&!inhibited[0]);
- puts("Calibration inhibition, restart, source replacement and failed-stop identity passed");
+ init_mutex(&cal_lock);init_mutex(&cal_status_lock);alarm(10);
+ attenuator_calibration_get_status(&status);assert(!strcmp(status.state,"inactive"));
+ start_seeded();int releases=release_count;
+ assert(!attenuator_calibration_start_auto(&request,&status)&&release_count==releases);
+ request.laser=L1;
+ assert(!attenuator_calibration_start_auto(&request,&status)&&!emitting[0]&&emitting[1]);
+ assert(!attenuator_calibration_stop(&status)&&!emitting[1]);request.laser=L0;
+ /* Real getters and record endpoints must finish while the fitter is paused. */
+ for(block_physical=0;block_physical<2;block_physical++){
+  start_seeded();pthread_t worker;assert(!pthread_create(&worker,NULL,fit_thread,NULL));wait_for_io();
+  for(int i=0;i<20;i++){
+   attenuator_calibration_get_status(&status);assert(!strcmp(status.state,"running"));
+   assert(attenuator_calibration_active());check_retained();
+  }
+  int installs=applied;
+  assert(!attenuator_calibration_stop(&status));assert(!pthread_join(worker,NULL));
+  assert(!strcmp(status.state,"inactive")&&applied==installs&&!attenuator_calibration_active());
+  assert(cal.fit[0].valid==(block_physical==1));check_retained();
+  assert(!attenuator_calibration_stop(&status));check_retained();
+ }
+ /* Replacement must join the fitter before clearing or reusing its static records. */
+ block_physical=0;start_seeded();pthread_t worker;
+ assert(!pthread_create(&worker,NULL,fit_thread,NULL));wait_for_io();
+ int installs=applied,old_stops=stop_count[L0];request.laser=L1;
+ assert(!attenuator_calibration_start_auto(&request,&status));assert(!pthread_join(worker,NULL));
+ assert(cal.laser==L1&&cal.record_count[0]==0&&cal.record_count[1]==0&&applied==installs);
+ assert(stop_count[L0]==old_stops); /* Fitting already released the previous source. */
+ assert(!attenuator_calibration_stop(&status));assert(!emitting[1]);
+ block_physical=-1;
+ /* Completed and rejected fits retain bytes; installation failure does too. */
+ for(int outcome=0;outcome<3;outcome++){
+  fit_error=outcome==1?-ERANGE:0;apply_error=outcome==2?-EIO:0;
+  start_seeded();fit_thread(NULL);check_retained();
+  assert(cal.state==(outcome==2?ATTEN_CAL_STATE_ERROR:ATTEN_CAL_STATE_COMPLETE));
+  assert(!attenuator_calibration_stop(&status));check_retained();assert(cal.fit[0].valid);
+ }
+ fit_error=apply_error=0;
+ for(int at=0;at<2;at++){
+  cancel_between=at==0;cancel_before_install=at==1;start_seeded();installs=applied;
+  fit_thread(NULL);assert(cal.state==ATTEN_CAL_STATE_INACTIVE&&applied==installs);check_retained();
+ }
+ cancel_between=cancel_before_install=0;
+ start_seeded();int old_fitted=fitted;fail_stop=L1;fit_thread(NULL);
+ assert(cal.state==ATTEN_CAL_STATE_ERROR && cal.shutdown_pending && fitted==old_fitted);check_retained();
+ assert(attenuator_calibration_stop(&status)==-EIO);check_retained();
+ fail_stop=-1;assert(!attenuator_calibration_stop(&status));check_retained();
+ start_seeded();k_mutex_lock(&cal_lock,K_FOREVER);auto_error_locked(-ETIMEDOUT);k_mutex_unlock(&cal_lock);
+ check_retained();assert(!attenuator_calibration_stop(&status));check_retained();
+ struct attenuator_calibration_auto_request bad=request;bad.output="";
+ assert(attenuator_calibration_start_auto(&bad,&status)==-EINVAL);check_retained();
+ /* An accepted start clears the old data even when its hardware setup fails. */
+ fail_route=1;assert(attenuator_calibration_start_auto(&request,&status)==-EIO);
+ assert(!cal.record_count[0]&&!cal.record_count[1]&&cal.mode==ATTEN_CAL_MODE_TIB_AUTO);
+ fail_route=0;start_seeded();fail_stop=L1;
+ assert(attenuator_calibration_stop(&status)==-EIO&&cal.shutdown_pending);check_retained();
+ request.laser=L0;assert(attenuator_calibration_start_auto(&request,&status)==-EIO);
+ assert(cal.laser==L1);check_retained();
+ fail_stop=-1;assert(!attenuator_calibration_stop(&status));check_retained();
+ alarm(0);puts("Calibration priority, cancellation/replacement, shutdown, concurrent downloads and retention passed");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     cfile,exe=Path(tmp)/'cal_lifetime.c',Path(tmp)/'cal_lifetime'
     cfile.write_text(source)
-    subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(cfile),'-o',str(exe)],check=True)
+    subprocess.run(['cc','-pthread','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror',
+                    '-Wno-unused-function',str(cfile),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
+
+# A growing acquisition returns the metadata prefix, and missing bytes still fail.
+client=host.HispecFibPcb('localhost',connect=False)
+meta={'physical':'dac1','record_chunk_count':1,'record_count':2,
+      'record_size':host._ATTEN_CAL_RECORD_BINARY.size,'records_per_chunk':3}
+record=host._ATTEN_CAL_RECORD_BINARY.pack(123,3300,5,456,1,457,0,0,0)
+client._request_payload=lambda key: record*3
+client._atten_calibration_metadata=lambda physical: meta
+_,rows=client._atten_calibration_record_chunks('dac1')
+assert len(rows)==2 and list(rows.record)==[0,1]
+client._request_payload=lambda key: record
+try:
+    client._atten_calibration_record_chunks('dac1')
+    raise AssertionError('short record chunk was accepted')
+except host.HispecFibError:
+    pass
+print('Python live acquisition prefix and truncated-record rejection passed')
 
 # Stop keyword is serialized unambiguously and conflicts never reach MQTT.
 client=host.HispecFibPcb('localhost',connect=False)

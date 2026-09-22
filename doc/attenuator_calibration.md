@@ -44,7 +44,8 @@ The photodiode module owns ADC reads, current samples, moving windows, and dark
 snapshots. The calibration module owns sequencing, retained records, bridge
 normalization, fitting, and coefficient application. The throughput monitor
 thread advances calibration so no second photodiode worker or calibration
-worker exists.
+worker exists. It temporarily lowers its priority for numerical fitting and
+restores it before resuming control work.
 
 ## Start Sequence
 
@@ -60,12 +61,13 @@ flowchart TD
   PDOn -- no --> EACCES[return EACCES]
   PDOn -- yes --> PDValid{latest PD sample valid}
   PDValid -- no --> ENODATA[return ENODATA]
-  PDValid -- yes --> StopTP[stop throughput monitor]
+  PDValid -- yes --> Previous[cancel previous fitting and release prior source]
+  Previous --> Init[clear retained dataset for new run]
+  Init --> StopTP[stop throughput monitor]
   StopTP --> Routes[apply laser-output and fiber-PD routes]
   Routes --> MaxAtten[set both FVOAs to max DAC drive]
   MaxAtten --> LaserOff[stop laser output]
-  LaserOff --> Init[reset calibration state]
-  Init --> First[start dac1 acquisition]
+  LaserOff --> First[start dac1 acquisition]
 ```
 
 Automatic calibration does not power the photodiode or wait for a private
@@ -107,8 +109,9 @@ additional to `dwell_ms`: a 550 ms averaging window still collects 11 samples
 after the wait. Calibration reads the current window, not the last closed window.
 
 The sleep holds the calibration mutex and pauses its calling thread, normally
-the throughput monitor, delaying throughput processing and calibration
-status/stop access during that interval. The ADC sampler continues independently.
+the throughput monitor, delaying throughput processing and calibration stop
+access during that interval. Status reads use a separate snapshot. The ADC
+sampler continues independently.
 This wait applies to initial probes, ordinary sweep points, and bridge probes.
 The window supplies:
 
@@ -185,7 +188,8 @@ flowchart TD
   Bridge --> Sweep
   FinishPhysical --> Next{dac1 complete}
   Next -- yes --> StartDac2[start dac2]
-  Next -- no --> Fit[fit both physical FVOAs]
+  Next -- no --> Stop[stop laser and release PD inhibition]
+  Stop --> Fit[fit both physical FVOAs at lowest application priority]
 ```
 
 The initial probe protects the photodiode by starting with the companion FVOA
@@ -264,7 +268,10 @@ stateDiagram-v2
   Running --> WaitWindow: DAC pair set, settled, window reset
   WaitWindow --> WaitWindow: post-reset sample count not yet complete
   WaitWindow --> Running: measurement handled, next DAC pair set
-  WaitWindow --> Complete: both physical fits complete
+  WaitWindow --> Fitting: acquisition complete and laser stopped
+  Fitting --> Complete: fits complete
+  Fitting --> Inactive: cancellation
+  Fitting --> Error: apply error
   WaitWindow --> Error: sequencing or apply error
   Running --> Inactive: stop=true
   Complete --> Inactive: stop=true
@@ -306,6 +313,27 @@ record count, record chunk count, selected open-reference record, and bridge
 before/after record indices. Each numbered chunk contains only raw records.
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
+
+There is one static dataset, cleared in place when a new start is accepted or
+by reboot. Stop, acquisition errors, rejected fits, and notebook cleanup retain
+all acquired records, reference indices, bridge tables, run identity, and completed
+fit results. Invalid requests leave it intact. Once a new run is accepted, a setup
+failure belongs to that new run and leaves its empty or partial dataset available.
+Python downloads each physical device's prefix from its initial metadata; records
+appended afterward are left for the next download. A replacement start invalidates
+an in-progress multi-request download.
+
+Fitting reads the same immutable records with no calibration mutex held. The
+throughput thread uses `K_LOWEST_APPLICATION_THREAD_PRIO` (currently 14), so normal
+housekeeping, commands, Modbus parsing, and logging preempt calculation. There are
+no periodic fitting sleeps or CPU budgets. Each completed physical result is
+published under a short lock; raw record downloads and status remain available.
+Start/stop commands signal cancellation and wait on a semaphore without holding
+the mutex. Optimizer/evaluation loops check cancellation and unwind normally.
+The previous calculation must return before a new start clears the records.
+Priority returns to 3 outside any mutex before finalization, where cancellation
+and coefficient installation serialize. Canceled work cannot install results;
+already installed coefficients are not rolled back by a later stop.
 
 Saturation classification uses the raw window maximum reaching the 2000 mV
 usable-input limit, before dark subtraction. A partly clipped window can have a
@@ -379,17 +407,9 @@ full-sweep points, propagates that uncertainty into the weighted dB residuals, a
 then uses the restricted prefix to optimize only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
 
 The operating ceiling is `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB per physical FVOA).
-Fitting stays synchronous under the calibration mutex. The optimizer, correction
-assembly/candidate checks, full-curve validation and scoring loops check a local
-10 ms CPU budget between numerical evaluations and sleep for 1 ms when due.
-This lets lower-priority UART RX and communication-health work run without
-changing fit order, arithmetic, acceptance rules, priorities or health deadlines.
-The sleep holds no hardware I/O lock. Other work on the throughput thread still
-waits for the fit to finish; this is not asynchronous calibration.
-Status queries read the last completed owner update through a separate short
-mutex, so the fitter does not hold up Python polling. They retain `running` while
-fitting and publish both final fit results together when fitting completes.
-Start/stop and raw-record access still serialize with the calibration owner.
+Low-priority fitting and cancellation, described above, preserve fit order,
+arithmetic, acceptance rules, and health deadlines. Other work on the throughput
+thread waits for fitting to finish; status and raw-record access remain responsive.
 
 Acquisition still covers the complete voltage range. Both the base fit and the
 optional Chebyshev correction use the same retained prefix, including the first
@@ -523,6 +543,9 @@ same-channel restart. It checks relay and source operational health before using
 each completed window. Faults terminate acquisition and attempt laser shutdown;
 a failed shutdown retains its identity for an explicit stop/restart. Numerical
 fitting needs no PD power and releases inhibition when acquisition completes.
+Completion also stops the calibration-owned laser before entering fitting; a
+failed stop preserves measurements and shutdown responsibility and reports an
+error without fitting. An explicit stop during acquisition also stops that source.
 
 All six coefficients (`T0` through `T5`) participate in the basis, evaluator, and
 analytic derivatives; reduced-order fits zero the unused high-order slots.
