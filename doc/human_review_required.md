@@ -5,9 +5,6 @@ source TODOs, and behavior decisions.
 
 LLMs Agents: Do NOT change heading names in this file.
 
-Host-check, host-test, and offline-replay statements below record verification
-performed before the `check.py` harnesses were removed. They do not imply maintained
-automated coverage; the outstanding PCB validation tasks still apply.
 
 ## Locked-down code
 
@@ -36,7 +33,7 @@ automated coverage; the outstanding PCB validation tasks still apply.
   1028y status reads, relay commands and temperature polling; check presence
   failures, corrupted replies, USART2 overruns and faults. All Zephyr patches,
   build hooks and Maiman cross-bus locks are removed; stock-driver ownership and
-  accepted 3.3 V reset timing are documented in zephyr/README.md and hardware.md.
+  accepted 3.3 V reset timing are documented in architecture.md and hardware.md.
   Host tests cover public timeout cancellation and initialization on the next
   requested transaction. Verify response loss followed by a later request with
   the controller; emission is unnecessary for these communication checks.

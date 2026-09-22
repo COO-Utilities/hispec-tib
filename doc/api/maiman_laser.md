@@ -59,36 +59,43 @@ a failed acknowledgement, before allowing another transaction. This implements t
 approximately 300 ms busy interval described on page 22 of the repository SF8025
 manual, with 50 ms margin. The response timeout remains 75 ms.
 
-Relay and temperature 1-Wire transfers use separate UART peripherals with
-interrupts enabled. Maiman does not acquire their bus locks; its owner retains
-the existing I/O serialization through the response and 350 ms busy interval.
+Relay and temperature 1-Wire transfers use separate UART peripherals without
+masking interrupts for the waveform duration. The STM32 driver briefly locks
+interrupts around transmit register access. Maiman does not acquire their bus
+locks; its owner retains the existing I/O serialization through the response
+and 350 ms busy interval.
 USART2 uses the STM32 driver's native hardware FIFO and the stock interrupt-driven
 Modbus implementation. Zephyr requires no local patches or build hooks.
 
-Maiman owns one RTU client configuration (115200 baud, 8N1, 75 ms response wait).
+Maiman owns one RTU client configuration (115200 baud, 8N1, 75 ms response wait),
+initialized during device setup. Modbus parsing uses the system workqueue;
+the dedicated Modbus workqueue is disabled (it was added to zephyr later in development).
 After a Modbus read/write returns `-ETIMEDOUT`, it calls `modbus_disable()` before
 releasing the existing laser I/O mutex and before any controller busy wait. The
 public API disables RX/TX, stops the framing timer and synchronizes cancellation
-of the single shared parser work item. The operation retains its original timeout;
-it is never automatically replayed. CRC, short-frame, other errno and positive
-Modbus exception results retain the client without a lifecycle reset.
+of the single shared parser work item. Maiman returns failure and preserves
+`-ETIMEDOUT` in the driver's `last_error`; it never automatically replays the
+transaction. CRC, short-frame, other errno and positive Modbus exception results
+retain the client without a lifecycle reset.
 
-The client stays disabled until the next requested register operation, including
-a background poll, calls `modbus_init_client()`. This configures the local UART,
-GPIO and transaction state; it sends nothing and does not establish controller
-availability. Client RX remains disabled until transmission completes, when the
-stock interrupt-driven path drains idle FIFO bytes before enabling reception.
+After successful modbus disable, the client stays disabled until the next requested
+register operation, including a background poll, calls `modbus_init_client()`.
+This configures the local UART, GPIO and transaction state; it sends nothing
+and does not establish controller availability. Client RX remains disabled until
+transmission completes, when the stock interrupt-driven path drains idle FIFO
+bytes before enabling reception.
 No bank power cycle, fault clear or controller-property write is added. An init
 failure sends no request, incurs no controller busy wait, and can be retried by
 a later request. An unexpected disable failure is logged separately, preserves
 the transaction timeout, and blocks further bus use until device initialization
 at reboot. Initialization never updates successful-response timestamps or clears
-the driver's sticky error state.
+the driver's sticky error state. Successful transactions advance response
+timestamps; failed operations and elapsed time can worsen communication health.
 
-The former patch's frame freeze and cleanup after every successful transaction
-are removed. Late on-wire replies still have no transaction ID; timeout cleanup
-cancels software work and does not resolve that protocol ambiguity. See the
-[transport notes](../../zephyr/README.md) for ownership and regression checks.
+Late on-wire replies have no transaction ID; timeout cleanup cancels software
+work and does not resolve that protocol ambiguity. See
+[hardware control ownership](../architecture.md#hardware-control) and the
+[pending hardware checks](../human_review_required.md) for transport validation.
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed

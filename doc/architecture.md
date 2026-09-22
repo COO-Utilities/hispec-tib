@@ -219,20 +219,34 @@ if that buffer or the outbound queue is busy, the warning is logged locally and
 dropped rather than blocking a timing-sensitive caller.
 
 Maiman owns client initialization and blocking Modbus RTU transactions. USART2
-uses its native hardware FIFO with the interrupt-driven driver. Only a transaction
-timeout disables the client through the public Modbus API, synchronizing shared
-parser cancellation before releasing the existing laser I/O mutex. Initialization
-is deferred until the next register request; neither initialization nor timeout
-cleanup sends a probe or replays a command. The Maiman write path
+uses its native hardware FIFO with the interrupt-driven driver. Modbus parsing
+runs on the system workqueue; the dedicated Modbus workqueue is disabled.
+Device setup initializes the client. Only a transaction timeout disables it
+through the public Modbus API, synchronizing parser cancellation before releasing
+the laser I/O mutex. After successful disable, reinitialization is deferred until
+the next register request; neither initialization nor timeout cleanup sends a
+probe or replays a command. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
+
 Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
-through Zephyr's stock serial 1-Wire driver. Transfers poll with interrupts
-enabled, so Maiman no longer acquires either bus lock. Housekeeping is the sole
-DS18B20 caller; relay calls remain serialized by housekeeping and the DS2408
-driver. DS18B20 conversion still sleeps on the blocking queue for up to 750 ms,
-outside the bus lock. Zephyr is unmodified; the accepted stock 1-Wire mutex
-limitation is documented in the [transport notes](../zephyr/README.md).
+through Zephyr's stock serial 1-Wire driver. UART polling does not mask interrupts
+for the waveform duration, although the STM32 driver briefly locks interrupts
+around transmit register access. Maiman does not acquire either 1-Wire bus lock.
+Housekeeping is the sole DS18B20 caller; runtime relay calls are serialized by
+housekeeping's I/O lock and the DS2408 driver's initialized mutex. DS18B20
+conversion sleeps on the blocking queue for up to 750 ms, outside the bus lock.
+
+The unmodified Zephyr revision pinned in `west.yml` leaves the serial 1-Wire
+driver's native bus mutex zero-initialized without initializing its wait queue.
+The current ownership avoids contention on that mutex: each bus has one configured
+slave, no other raw application bus caller, and no shell access. The pinned
+kernel's uncontended lock/unlock path tolerates this state, but it is not a
+properly initialized mutex and must not be relied on for contended access.
+Revisit this limitation before changing bus ownership or the Zephyr revision.
+Stock reset timing and the accepted DS2408 timing exception at 3.3 V are documented
+in [hardware.md](hardware.md#off-board-power-switch-for-photodiodes-and-laser-bank-aux-heater).
+
 Numerical attenuator fitting reuses the throughput thread after stopping the
 calibration-owned laser and releasing PD auto-off inhibition. It releases the
 calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
