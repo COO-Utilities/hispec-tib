@@ -154,6 +154,7 @@ not be needed for normal serial operation.
 - [`mqtt`](#mqtt)
 - [`serialguard`](#serialguard)
 - [`reboot`](#reboot)
+- [`ota`](#ota)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
 - [`mems/route`](#mems-route)
@@ -476,6 +477,46 @@ while serial guard is active and attenuator DAC-range clamping.
   settings. The erase preserves IP settings, boot count, and storage schema
   metadata. Once a reboot is pending, later commands are rejected before app
   handlers run.
+
+(ota)=
+### `ota`
+- **No payload:** query running MCUboot identity and maintenance/trial state.
+  ```json
+  {"enabled":false,"active":false,"remaining_s":0,"image_hash":"<64 hex digits>","confirmed":true,"pending":false,"trial_remaining_s":0,"max_image_size":966656}
+  ```
+  `enabled` means the UDP maintenance window is open. `active` additionally
+  includes an operation finishing after close, a pending candidate, or an
+  unconfirmed/expired trial; it guards changes out of bank `override_off`.
+  `remaining_s` and `trial_remaining_s` are rounded-up seconds. `image_hash` is
+  MCUboot's SHA256 of the running header/body, not the whole-file SHA256 or the
+  Git build string. `max_image_size` is generated from the slot geometry and
+  sysbuild reservation for offset swapping and the trailer.
+- **Open:** `{"enable":true,"duration_s":600}`. Duration is 1..1800 seconds,
+  default 600. Repeating an open request resets that window's deadline.
+  Firmware must be confirmed, with no pending candidate or closing operation.
+  TIB also requires the operator to have stopped experiments, selected bank
+  `override_off`, and let bank power turn off. This command never powers down
+  an active bank on the operator's behalf.
+- **Close:** `{"enable":false}`. No duration is accepted when closing.
+  Closing or expiry stops UDP access and leaves bank mode unchanged. A pending
+  image remains pending; close is not a cancellation of a scheduled test boot.
+- **Confirm:** `{"confirm":true,"image_hash":"<exact running hash>"}`.
+  This writes only the running image's MCUboot confirmation flag. An incorrect
+  hash, or confirmation at/after the five-minute trial deadline, is rejected.
+  Repeating confirmation for an already confirmed matching image is harmless.
+  Confirmation leaves bank mode `override_off`; the operator restores `auto`.
+- **Serial:** `ota`, `ota enable=true duration_s=600`, `ota enable=false`,
+  `ota confirm=true image_hash=<hash>`. MQTT effects obey serial guard.
+- **Transfer:** image state/test and upload use SMP on IPv4 UDP port 1337 while
+  the window is open. Upload is unavailable during a trial or with a pending
+  image. Permanent secondary confirmation, image erase, and other SMP groups
+  are unavailable. Use `reboot` after selecting the candidate for a test boot.
+- **Trial:** UDP starts closed. TIB selects bank `override_off` before workers
+  or command ingress. The five-minute deadline starts at application boot,
+  independent of network availability and the earlier upload window. Without
+  confirmation, firmware requests the existing delayed reboot and stops feeding
+  IWDG; MCUboot reverts on reset. No powered-laser or Modbus response check is
+  part of confirmation. See [OTA operation](ota.md).
 
 (mems)=
 ### `mems`
@@ -1111,7 +1152,11 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   `cmd/<device>/req/laser/bankpower/override_on`, or
   `cmd/<device>/req/laser/bankpower/override_off`.
 
-- **Notes:** `override_off` is the compiled boot default. In `auto`, power to the laser bank is handled by the bank
+- **Notes:** `auto` is the ordinary confirmed-boot default. An unconfirmed OTA trial
+  selects `override_off` before workers start, and confirmation leaves it off.
+  During an OTA window, an in-flight close, a pending candidate, or a trial,
+  selecting `auto` or `override_on` is rejected in both payload and suffix forms.
+  In `auto`, power to the laser bank is handled by the bank
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
   while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an

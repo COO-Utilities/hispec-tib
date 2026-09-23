@@ -26,6 +26,8 @@ It dispatches one command and tries one non-blocking enqueue to
   delayable work on the app blocking workqueue, not from the command executor.
 - Persistent settings commands can block on Zephyr NVS writes.
 - `reboot` and `serialguard` use command-dispatch-owned delayable work.
+- `ota` opens/closes the UDP listener or writes the running MCUboot confirmation
+  flag. It can block on the OTA mutex or internal-flash I/O.
 - Command-dispatch lastcommand persistence can block on Zephyr NVS writes before
   an effect handler runs.
 
@@ -134,6 +136,7 @@ Current configured priorities:
 - Command executor: 6.
 - Serial thread: 6.
 - App blocking workqueue: 7.
+- MCUmgr SMP processing workqueue: 8 (upstream default 3).
 - Zephyr logging thread: 13.
 - SNTP thread: 14.
 
@@ -146,6 +149,13 @@ handlers. The system workqueue stays ahead of command and app blocking work
 because Zephyr Modbus client RX completion runs there. Command ingress over
 serial and MQTT is treated as equivalent at the command-executor layer. SNTP is
 intentionally lower than deferred logging.
+
+SMP processing uses priority 8 so upload flash work cannot preempt main's
+watchdog/MQTT loop, the system workqueue, command execution, or app blocking
+work. UDP reception only queues requests; Zephyr's SMP workqueue executes them.
+Progressive erase limits each upload operation to the needed sectors. Flash
+hardware can still stall instruction fetch independently of thread priority;
+maximum-image feed-gap and watchdog handoff measurements remain bench checks.
 
 For throughput, ADC completion gives one binary semaphore (maximum count one).
 The consumer copies latest per-channel state and publishes each acquisition at

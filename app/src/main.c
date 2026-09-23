@@ -186,6 +186,9 @@ static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
  * use an application callback in this build, because Zephyr's STM32 IWDG driver
  * only supports callbacks when early-wakeup interrupt support is enabled. Setup
  * writes hardware watchdog registers and can briefly wait for them to settle.
+ * MCUboot leaves IWDG running at 30 seconds across chainload; this image's fresh
+ * STM32 driver state permits installing/reprogramming our 15-second timeout.
+ * Uploads keep this main-loop budget. Trial expiry deliberately stops feeding.
  */
 static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 {
@@ -327,6 +330,11 @@ int main(void)
 	devices_queue_boot_reset_telemetry();
 
 	board_devices_ready = devices_ready();
+	rc = command_ota_init();
+	if (rc != 0) {
+		LOG_ERR("OTA boot state initialization failed (%d); refusing to boot", rc);
+		return rc;
+	}
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
@@ -439,7 +447,9 @@ int main(void)
 			}
 		}
 
-		wdt_feed(wdt, wdt_channel);
+		if (command_ota_poll()) {
+			wdt_feed(wdt, wdt_channel);
+		}
 
 		if (coo_mqtt_is_connected() && !mqtt_can_run) {
 			(void)mqtt_disconnect(&client_ctx, NULL);

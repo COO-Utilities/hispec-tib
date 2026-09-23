@@ -40,6 +40,7 @@ slots; the external API is documented as queries, effect requests, and actions.
 | `ip` | yes | yes |
 | `mqtt` | yes | yes |
 | `time` | yes | yes |
+| `ota` | yes | yes |
 | `mems/route` | yes | yes |
 | `mems/route/loss` | yes | yes |
 | `mems` | yes | yes |

@@ -76,19 +76,37 @@ APIs directly.
 3. `devices_detect_board_type()` reads four active-low strap GPIOs.
 4. `app_settings_note_board_type()` persists board type and clears other app
    settings if a different valid board type is detected after a prior boot.
-5. `devices_ready()` checks/profile-configures required devices.
-6. `setup_mems_switches_and_routes()` builds the active MEMS router.
-7. `setup_attenuators()` initializes profile-available logical attenuators and
-   loads persisted coefficients into runtime attenuator objects.
-8. Command runtime configures static command specs, persisted lastcommand
+5. Command runtime configures static command specs, persisted lastcommand
    storage, built-in reboot behavior, and serial console input.
-9. Executor and serial threads are created. Ambient-temperature delayable work
+6. `devices_ready()` checks/profile-configures required devices. OTA initialization
+   then reads MCUboot image identity and flags. An unconfirmed TIB trial selects
+   bank `override_off` before any workers or command ingress start.
+7. `setup_mems_switches_and_routes()` builds the active MEMS router.
+8. `setup_attenuators()` initializes profile-available logical attenuators and
+   loads persisted coefficients into runtime attenuator objects.
+9. The app blocking workqueue and executor are started. Ambient-temperature delayable work
    is started. On the TIB profile, main also starts the photodiode thread,
    throughput monitor thread, and laser-bank heater delayable work.
 10. SNTP, network, MQTT client, broker settings, and command subscription are
     initialized.
-11. The main loop feeds the watchdog, keeps MQTT connected when network is
+11. The main loop polls serial ingress and OTA window/trial expiry, feeds the watchdog unless the
+    trial has expired, keeps MQTT connected when network is
     ready, drains outbound messages, and processes MQTT events.
+
+MCUboot runs before this sequence, using the HSI clock and PB2 bank-off GPIO
+hog from its minimal overlay. Sysbuild places MCUboot in the 64 KiB boot
+partition and the application in slot 0. MCUboot starts/feeds IWDG at 30 seconds,
+then chainloads with it still running; application `watchdog_init()` installs
+the normal 15-second budget using fresh driver state.
+
+OTA maintenance policy belongs to `command.c`. One mutex serializes window,
+SMP admission/completion, and confirmation/deadline decisions. A single guard in
+the existing bank-mode command prevents leaving `override_off` while OTA is
+active. No additional laser/heater/settings inhibit is introduced. MCUboot
+trailers own pending/confirmed durability; OTA adds no application NVS records.
+The main loop reuses the dispatcher's delayed reboot on trial expiry and stops
+watchdog feeding if that reboot cannot complete. The UDP listener stays closed
+during a trial, preserving the old image for rollback. See [OTA](ota.md).
 
 ## Board Profiles
 

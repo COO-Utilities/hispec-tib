@@ -1791,6 +1791,29 @@ static bool runtime_reboot_pending(const struct coo_cmd_runtime *runtime)
 	return runtime != NULL && atomic_get(&runtime->reboot_pending) != 0;
 }
 
+int coo_cmd_runtime_schedule_reboot(struct coo_cmd_runtime *runtime,
+				    bool erase_non_ip_settings)
+{
+	int rc;
+
+	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
+		return -EALREADY;
+	}
+
+	runtime->reboot_erase_non_ip_settings = erase_non_ip_settings;
+	LOG_WRN("Reboot scheduled in %u ms%s",
+		runtime->reboot_delay_ms,
+		erase_non_ip_settings ? " after erasing non-IP settings" : "");
+	rc = k_work_schedule(&runtime->reboot_work,
+			     K_MSEC(runtime->reboot_delay_ms));
+	if (rc < 0) {
+		(void)atomic_clear(&runtime->reboot_pending);
+		runtime->reboot_erase_non_ip_settings = false;
+		return rc;
+	}
+	return 0;
+}
+
 static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_request *cmd,
 			      struct coo_cmd_response *out)
@@ -1804,20 +1827,10 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	if (runtime_parse_reboot_options(cmd, &erase_non_ip_settings) != 0) {
 		return coo_cmd_error(out, cmd, "invalid reboot options");
 	}
-	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
-		return coo_cmd_error(out, cmd, "reboot already pending");
-	}
-
-	runtime->reboot_erase_non_ip_settings = erase_non_ip_settings;
-	LOG_WRN("Reboot command accepted; rebooting in %u ms%s",
-		runtime->reboot_delay_ms,
-		erase_non_ip_settings ? " after erasing non-IP settings" : "");
-	rc = k_work_schedule(&runtime->reboot_work,
-			     K_MSEC(runtime->reboot_delay_ms));
-	if (rc < 0) {
-		(void)atomic_clear(&runtime->reboot_pending);
-		runtime->reboot_erase_non_ip_settings = false;
-		return coo_cmd_error(out, cmd, "failed to schedule reboot");
+	rc = coo_cmd_runtime_schedule_reboot(runtime, erase_non_ip_settings);
+	if (rc != 0) {
+		return coo_cmd_error(out, cmd, rc == -EALREADY ?
+				     "reboot already pending" : "failed to schedule reboot");
 	}
 
 	runtime_record_lastcommand(runtime, cmd);

@@ -9,6 +9,13 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate OTA before operational use: confirmed ST-Link baseline with
+  NVS preserved; normal and 966,656-byte image update/rollback; bank off throughout
+  trial with operator-only restoration after confirmation; all board profiles;
+  wrong/late confirmation and pending-slot protection; network loss, running
+  hangs, and power cuts during swap/revert. Measure IWDG feed gaps and the
+  30-second MCUboot to 15-second application handoff. Software build/offline
+  verification does not establish those hardware properties. See `ota.md`.
 - [ ] Bench-validate high-signal fit support after removing the upper transmission
   exclusion. Valid readings at/above the measured reference now enter both fits
   and signed residual statistics. Verify the open-region plots and installed RMS

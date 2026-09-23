@@ -10,9 +10,9 @@ photodiode, laser-bank, settings, network, SNTP, and telemetry behavior.
 The maintained build target for this audit is:
 
 ```bash
-./.venv/bin/west build \
+./.venv/bin/west build --sysbuild \
   --board=nucleo_h563zi/stm32h563xx \
-  --build-dir ./hispec-tib/app/build \
+  --build-dir ./hispec-tib/app/build-ota \
   ./hispec-tib/app
 ```
 
@@ -22,6 +22,13 @@ Use the workspace virtual environment for Python and west commands:
 ./.venv/bin/python
 ./.venv/bin/west
 ```
+
+Run `west update` after updating the manifest, then install
+`hispec-tib/tools/requirements.txt` and `bootloader/mcuboot/scripts/requirements.txt`
+with that Python. Sysbuild produces MCUboot plus the application. Provisioning
+uses the confirmed image; OTA uses `app/build-ota/app/zephyr/zephyr.signed.bin`.
+See [OTA operation and validation](doc/ota.md) for initial flashing, updates,
+rollback, watchdog behavior, and maximum-size fixtures.
 
 ## Hardware Profiles
 

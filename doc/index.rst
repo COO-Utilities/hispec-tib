@@ -16,6 +16,7 @@ Source-of-truth rules:
    :caption: Architecture and Runtime
 
    architecture.md
+   ota.md
    threads.md
    queues_and_work.md
    settings.md

@@ -13,6 +13,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
+#include "command.h"
 #include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "throughput_monitor.h"
@@ -95,6 +96,9 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			return coo_cmd_error(out, cmd, "mode must be auto, override_on, or override_off");
 		}
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
+		if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF && command_ota_active()) {
+			return coo_cmd_error(out, cmd, "OTA requires laser bank override_off");
+		}
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
 			if (rc == -EBUSY) {

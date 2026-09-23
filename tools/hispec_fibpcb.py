@@ -358,6 +358,20 @@ class TimeStatus(ResponseRepr):
 
 
 @dataclass(frozen=True, repr=False)
+class OtaStatus(ResponseRepr):
+    """MCUboot identity and runtime maintenance/trial state; times are seconds."""
+
+    enabled: bool
+    active: bool
+    remaining_s: int
+    image_hash: str
+    confirmed: bool
+    pending: bool
+    trial_remaining_s: int
+    max_image_size: int
+
+
+@dataclass(frozen=True, repr=False)
 class SerialGuardStatus(ResponseRepr):
     serialguard_s: int
     active: bool
@@ -4123,6 +4137,34 @@ class HispecFibPcb:
 
     def reboot(self) -> CommandOk:
         return self._request_ok("reboot")
+
+    def ota(self) -> OtaStatus:
+        """Read running firmware hash and OTA state through a fresh MQTT request."""
+        return _dataclass_from(OtaStatus, self._request_json("ota"))
+
+    def set_ota_window(self, enable: bool, *, duration_s: int = 600) -> OtaStatus:
+        """Open/close SMP upload access; the operator must first turn the TIB bank off.
+
+        Closing leaves the bank override unchanged. A pending image or trial
+        continues to guard bank mode even after the upload window closes.
+        """
+        if type(enable) is not bool:
+            raise ValueError("enable must be bool")
+        payload: dict[str, Any] = {"enable": enable}
+        if enable:
+            seconds = _require_nonnegative_u32("duration_s", duration_s)
+            if not 1 <= seconds <= 1800:
+                raise ValueError("duration_s must be in 1..1800")
+            payload["duration_s"] = seconds
+        return _dataclass_from(OtaStatus, self._request_json("ota", payload))
+
+    def confirm_image(self, image_hash: str) -> OtaStatus:
+        """Confirm exactly this running MCUboot image; never change bank power mode."""
+        if not isinstance(image_hash, str) or re.fullmatch(r"[0-9a-fA-F]{64}", image_hash) is None:
+            raise ValueError("image_hash must be 64 hexadecimal characters")
+        return _dataclass_from(OtaStatus, self._request_json(
+            "ota", {"confirm": True, "image_hash": image_hash.lower()},
+        ))
 
     def serialguard(self, seconds: int | None = None) -> SerialGuardStatus | CommandOk:
         if seconds is None:

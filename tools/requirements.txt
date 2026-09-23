@@ -8,3 +8,4 @@ ipywidgets
 ipython
 ipykernel
 notebook
+smpclient==7.3.0

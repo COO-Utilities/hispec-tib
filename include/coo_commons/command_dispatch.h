@@ -492,6 +492,16 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3);
 /** Poll buffered console characters and queue completed serial commands. */
 void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime);
 
+#if defined(CONFIG_COO_CMD_REBOOT)
+/**
+ * Schedule the existing delayed reboot and app preparation hook. Does not sleep
+ * or publish; returns -EALREADY if a reboot is already scheduled. OTA recovery
+ * passes false so it cannot erase settings.
+ */
+int coo_cmd_runtime_schedule_reboot(struct coo_cmd_runtime *runtime,
+				    bool erase_non_ip_settings);
+#endif
+
 /** Copy and queue one MQTT publish as a normalized command request. */
 void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,
 					 const struct mqtt_publish_param *pub);

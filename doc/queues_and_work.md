@@ -39,9 +39,19 @@ guard flag after the configured holdoff; no serial guard state is persisted.
 
 ## Reboot Delayable Work
 
-`command.c` owns the non-cancelable reboot work item used by the `reboot`
-command. The command schedules `sys_reboot(SYS_REBOOT_COLD)` after a short
-response window and rejects later app commands while reboot is pending.
+`lib/coo_commons/command_dispatch.c` owns the non-cancelable reboot work item
+used by `reboot` and OTA trial expiry. It calls the app reboot-prepare hook,
+then `sys_reboot(SYS_REBOOT_COLD)` after a short response window, and rejects
+later app commands while reboot is pending. Trial expiry also stops main-loop
+watchdog feeds, so a stalled workqueue cannot keep the unconfirmed image alive.
+
+## MCUmgr SMP Workqueue
+
+Zephyr owns the fixed-buffer SMP queue and its priority-8 processing thread.
+`command.c` admits image state/test and upload operations only during an OTA
+window. Its receive/done callbacks retain the bank-mode guard across an
+in-flight operation if the window closes, then refresh MCUboot pending state
+before releasing that guard. No app upload thread or scheduler is added.
 
 ## App Blocking Workqueue
 

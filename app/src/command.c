@@ -17,6 +17,12 @@
 #include <hispec_build_version.h>
 #include <time.h>
 #include <zephyr/net/net_ip.h>
+#include <zephyr/dfu/mcuboot.h>
+#include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h>
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+#include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_udp.h>
+#include <zephyr/storage/flash_map.h>
 
 #include "devices.h"
 #include "lasers.h"
@@ -80,6 +86,7 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         char *out, size_t out_len,
                                         void *user_data);
 static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
+static int ota_command(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #define CMD_HELP(_usage, _args, _values, _notes, _flags) \
     .help = &(const struct coo_cmd_help_entry){ \
@@ -137,6 +144,13 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
  * forms whose real dispatch is handled by a shorter prefix row.
  */
 static const struct coo_cmd_spec command_specs[] = {
+    CMD_SPEC("ota", ota_command, ota_command, COO_CMD_CLASS_DEFAULT, true,
+             "enable,duration_s,confirm,image_hash",
+             "ota [enable=<bool> duration_s=<s> | confirm=true image_hash=<sha256>]",
+             "no payload queries; confirmation requires the running image hash",
+             "duration_s: 1..1800 (default 600)",
+             "TIB requires bank override_off; confirmation leaves it off",
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true,
              "try_dhcp_first,prefer_dhcpdns,prefer_dhcpntp,ip,subnet,gateway,dns,ntp,persist",
              "ip [try_dhcp_first=<bool> prefer_dhcpdns=<bool> prefer_dhcpntp=<bool> ip=<IPv4> subnet=<IPv4> gateway=<IPv4> dns=<IPv4> ntp=<IPv4> persist=<bool>]",
@@ -466,6 +480,243 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
     }
     written = snprintk(out + off, out_len - off, "}");
     return (written < 0 || written >= (int)(out_len - off)) ? -ENOSPC : 0;
+}
+
+/* All OTA transitions are serialized here. SMP has one processing workqueue;
+ * its admission/done callbacks bracket an operation even if the UDP listener
+ * closes meanwhile. Keep the bank command guarded until that operation ends.
+ * MCUboot flash flags own durable state; pending is refreshed after each SMP
+ * operation. Window/trial bookkeeping never goes into application NVS.
+ */
+#define OTA_DEFAULT_SECONDS 600U
+#define OTA_MAX_SECONDS 1800U
+#define OTA_TRIAL_DEADLINE_MS (5 * 60 * 1000)
+
+K_MUTEX_DEFINE(ota_lock);
+static bool ota_enabled;
+static bool ota_inflight;
+static bool ota_pending;
+static bool ota_trial;
+static bool ota_reverting;
+static int64_t ota_window_deadline_ms;
+static uint8_t ota_image_hash[IMAGE_HASH_LEN];
+static char ota_image_hash_hex[IMAGE_HASH_LEN * 2 + 1];
+
+/* Caller holds ota_lock. Error/unknown swap state also retains the bank guard. */
+static void ota_read_pending(void)
+{
+    int type = mcuboot_swap_type();
+
+    ota_pending = type != BOOT_SWAP_TYPE_NONE && type != BOOT_SWAP_TYPE_REVERT;
+}
+
+/* Caller holds ota_lock; queued SMP requests still pass admission below. */
+static void ota_close(void)
+{
+    if (ota_enabled) {
+        ota_enabled = false;
+        (void)smp_udp_close();
+    }
+}
+
+bool command_ota_active(void)
+{
+    bool active;
+
+    k_mutex_lock(&ota_lock, K_FOREVER);
+    active = ota_enabled || ota_inflight || ota_pending || ota_trial || ota_reverting;
+    k_mutex_unlock(&ota_lock);
+    return active;
+}
+
+/* Runs on the SMP workqueue, never on its UDP receive thread. No bank I/O:
+ * admission is possible only after the command executor has checked off mode.
+ */
+static enum mgmt_cb_return ota_smp_event(uint32_t event, enum mgmt_cb_return prev_status,
+                                       int32_t *rc, uint16_t *group, bool *abort_more,
+                                       void *data, size_t data_size)
+{
+    const struct mgmt_evt_op_cmd_arg *arg = data;
+    enum mgmt_cb_return result = MGMT_CB_OK;
+
+    ARG_UNUSED(group);
+    ARG_UNUSED(abort_more);
+    ARG_UNUSED(data_size);
+    k_mutex_lock(&ota_lock, K_FOREVER);
+    if (event == MGMT_EVT_OP_CMD_RECV) {
+        bool image_operation = arg->group == MGMT_GROUP_ID_IMAGE &&
+            (arg->id == IMG_MGMT_ID_STATE ||
+             (arg->id == IMG_MGMT_ID_UPLOAD && arg->op == MGMT_OP_WRITE));
+
+        if (prev_status != MGMT_CB_OK || !image_operation || !ota_enabled ||
+            k_uptime_get() >= ota_window_deadline_ms || ota_trial || ota_reverting ||
+            (ota_pending && arg->id == IMG_MGMT_ID_UPLOAD)) {
+            *rc = MGMT_ERR_EBADSTATE;
+            result = MGMT_CB_ERROR_RC;
+        } else {
+            ota_inflight = true;
+        }
+    } else if (event == MGMT_EVT_OP_CMD_DONE && ota_inflight) {
+        /* A test request can persist its pending flag after the window closes.
+         * Refresh it before releasing the in-flight guard.
+         */
+        ota_read_pending();
+        ota_inflight = false;
+    }
+    k_mutex_unlock(&ota_lock);
+    return result;
+}
+
+static struct mgmt_callback ota_smp_callback = {
+    .callback = ota_smp_event,
+    .event_id = MGMT_EVT_OP_CMD_RECV | MGMT_EVT_OP_CMD_DONE,
+};
+
+int command_ota_init(void)
+{
+    int rc;
+
+    ota_trial = !boot_is_img_confirmed();
+    if (ota_trial && devices_board_type() == HISPEC_BOARD_TIB) {
+        rc = hispec_laser_bank_power_mode_set(HISPEC_LASER_BANK_POWER_OVERRIDE_OFF);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    rc = img_mgmt_read_info(0, NULL, ota_image_hash, NULL);
+    if (rc != 0) {
+        return -EIO;
+    }
+    (void)bin2hex(ota_image_hash, sizeof(ota_image_hash),
+                  ota_image_hash_hex, sizeof(ota_image_hash_hex));
+    ota_read_pending();
+    mgmt_callback_register(&ota_smp_callback);
+    return 0;
+}
+
+bool command_ota_poll(void)
+{
+    bool request_reboot = false;
+    bool feed;
+    int rc;
+
+    k_mutex_lock(&ota_lock, K_FOREVER);
+    if (ota_enabled && k_uptime_get() >= ota_window_deadline_ms) {
+        ota_close();
+    }
+    if (ota_trial && !ota_reverting && k_uptime_get() >= OTA_TRIAL_DEADLINE_MS) {
+        ota_reverting = true;
+        ota_close();
+        request_reboot = true;
+    }
+    feed = !ota_reverting;
+    k_mutex_unlock(&ota_lock);
+
+    if (request_reboot) {
+        LOG_WRN("Unconfirmed image trial expired; rebooting for MCUboot rollback");
+        rc = coo_cmd_runtime_schedule_reboot(command_runtime_get(), false);
+        if (rc != 0 && rc != -EALREADY) {
+            LOG_ERR("Rollback reboot scheduling failed (%d); watchdog will reset", rc);
+        }
+    }
+    return feed;
+}
+
+/* Shared MQTT/serial command. Serial guard and unknown-key validation happen in
+ * the existing dispatcher. Confirm writes only MCUboot's image-ok flag; it
+ * never restores bank auto mode. Hold ota_lock through that write so deadline
+ * expiry cannot schedule a competing rollback.
+ */
+static int ota_command(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+{
+    bool enable = false;
+    bool confirm = false;
+    uint32_t seconds = OTA_DEFAULT_SECONDS;
+    char hash_hex[sizeof(ota_image_hash_hex)];
+    uint8_t hash[sizeof(ota_image_hash)];
+    char payload[320];
+    const char *error = NULL;
+    const char *json = coo_cmd_payload_empty(cmd) ? "{}" : cmd->payload;
+    int enable_rc = coo_json_extract_bool(json, "enable", &enable);
+    int seconds_rc = coo_json_extract_u32(json, "duration_s", &seconds);
+    int confirm_rc = coo_json_extract_bool(json, "confirm", &confirm);
+    int hash_rc = coo_json_extract_string(json, "image_hash", hash_hex, sizeof(hash_hex));
+    int rc = 0;
+    int64_t now;
+
+    if (enable_rc == COO_JSON_EXTRACT_ERR || seconds_rc == COO_JSON_EXTRACT_ERR ||
+        confirm_rc == COO_JSON_EXTRACT_ERR || hash_rc == COO_JSON_EXTRACT_ERR) {
+        return coo_cmd_error(out, cmd, "invalid OTA field type or value");
+    }
+    if (cmd->msg_type == COO_CMD_EFFECT) {
+        if (enable_rc == COO_JSON_EXTRACT_OK) {
+            if (confirm_rc != COO_JSON_EXTRACT_MISSING || hash_rc != COO_JSON_EXTRACT_MISSING ||
+                (!enable && seconds_rc != COO_JSON_EXTRACT_MISSING) ||
+                seconds < 1U || seconds > OTA_MAX_SECONDS) {
+                return coo_cmd_error(out, cmd, "use enable with duration_s 1..1800 only when opening");
+            }
+        } else if (!confirm || confirm_rc != COO_JSON_EXTRACT_OK ||
+                   seconds_rc != COO_JSON_EXTRACT_MISSING || hash_rc != COO_JSON_EXTRACT_OK ||
+                   strlen(hash_hex) != IMAGE_HASH_LEN * 2 ||
+                   hex2bin(hash_hex, strlen(hash_hex), hash, sizeof(hash)) != sizeof(hash)) {
+            return coo_cmd_error(out, cmd, "confirmation requires confirm=true and a 64-digit image_hash");
+        }
+    }
+
+    k_mutex_lock(&ota_lock, K_FOREVER);
+    now = k_uptime_get();
+    if (ota_enabled && now >= ota_window_deadline_ms) {
+        ota_close();
+    }
+    if (cmd->msg_type == COO_CMD_EFFECT && enable_rc == COO_JSON_EXTRACT_OK) {
+        if (!enable) {
+            ota_close();
+        } else if (ota_trial || ota_reverting || ota_pending || (!ota_enabled && ota_inflight)) {
+            error = "OTA window requires confirmed firmware with no pending image or closing request";
+        } else if (devices_board_type() == HISPEC_BOARD_TIB &&
+                   (hispec_laser_bank_power_mode_get() != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF ||
+                    hispec_laser_bank_power_is_enabled())) {
+            error = "set laser bank override_off before opening OTA";
+        } else {
+            if (!ota_enabled) {
+                rc = smp_udp_open();
+            }
+            if (rc == 0) {
+                ota_enabled = true;
+                ota_window_deadline_ms = now + (int64_t)seconds * 1000;
+            }
+        }
+    } else if (cmd->msg_type == COO_CMD_EFFECT) {
+        if (memcmp(hash, ota_image_hash, sizeof(hash)) != 0) {
+            error = "image_hash does not match the running firmware";
+        } else if (ota_reverting || (ota_trial && now >= OTA_TRIAL_DEADLINE_MS)) {
+            error = "image confirmation deadline expired";
+        } else if (ota_trial) {
+            rc = boot_write_img_confirmed();
+            if (rc == 0) {
+                ota_trial = false;
+            }
+        }
+    }
+    now = k_uptime_get();
+    snprintk(payload, sizeof(payload),
+             "{\"enabled\":%s,\"active\":%s,\"remaining_s\":%u,"
+             "\"image_hash\":\"%s\",\"confirmed\":%s,\"pending\":%s,\"trial_remaining_s\":%u,"
+             "\"max_image_size\":%u}",
+             ota_enabled ? "true" : "false",
+             (ota_enabled || ota_inflight || ota_pending || ota_trial || ota_reverting) ? "true" : "false",
+             ota_enabled ? (uint32_t)MAX(0, (ota_window_deadline_ms - now + 999) / 1000) : 0U,
+             ota_image_hash_hex, ota_trial ? "false" : "true", ota_pending ? "true" : "false",
+             ota_trial ? (uint32_t)MAX(0, (OTA_TRIAL_DEADLINE_MS - now + 999) / 1000) : 0U,
+             (unsigned int)(PARTITION_SIZE(slot1_partition) - CONFIG_MCUBOOT_UPDATE_FOOTER_SIZE));
+    k_mutex_unlock(&ota_lock);
+    if (error != NULL) {
+        return coo_cmd_error(out, cmd, error);
+    }
+    if (rc != 0) {
+        return coo_cmd_error_rc(out, cmd, "OTA operation failed", rc);
+    }
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
 static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data)

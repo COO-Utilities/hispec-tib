@@ -47,6 +47,23 @@ int command_runtime_init(void);
 /** Return the app's configured command runtime for main-loop and warning use. */
 struct coo_cmd_runtime *command_runtime_get(void);
 
+/**
+ * Read MCUboot image state and register SMP admission. Call after device GPIO
+ * setup and before workers/ingress: a TIB trial sets the existing bank mode to
+ * override_off. Reads flash and may take the laser owner's lock/touch its GPIO.
+ */
+int command_ota_init(void);
+
+/**
+ * Main-loop maintenance: close expired UDP windows and schedule trial rollback.
+ * May take the OTA mutex/close a socket. False means stop watchdog feeding so
+ * a stalled rollback reboot is recovered by hardware. Never publishes MQTT.
+ */
+bool command_ota_poll(void);
+
+/** Bankpower command guard; takes the OTA mutex, without hardware I/O. */
+bool command_ota_active(void);
+
 extern struct k_msgq inbound_queue;
 extern struct k_msgq outbound_queue;
 

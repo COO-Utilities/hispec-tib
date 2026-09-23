@@ -51,6 +51,7 @@ comparison artifact, not a replacement for `commands.md`.
 | `mqtt` | `cmd/<device>/req/mqtt` | `cmd/<device>/resp/mqtt` | `mqtt [payload]` |
 | `time` | `cmd/<device>/req/time` | `cmd/<device>/resp/time` | `time [payload]` |
 | `reboot` | `cmd/<device>/req/reboot` | `cmd/<device>/resp/reboot` | `reboot` |
+| `ota` | `cmd/<device>/req/ota` | `cmd/<device>/resp/ota` | `ota [payload]` |
 | `serialguard` | `cmd/<device>/req/serialguard` | `cmd/<device>/resp/serialguard` | `serialguard [payload]` (dispatcher built-in) |
 | `mems/route` | `cmd/<device>/req/mems/route` | `cmd/<device>/resp/mems/route` | `mems/route [payload]` |
 | `mems/route/loss` | `cmd/<device>/req/mems/route/loss` | `cmd/<device>/resp/mems/route/loss` | `mems/route/loss <payload>` |
@@ -142,6 +143,17 @@ which slow resources it can touch, and known implementation-specific caveats.
   command table marks which MQTT queries may pass through the guard.
 - Serial shorthand is implemented in command dispatch:
   `serialguard off`, `serialguard 60`, and `serialguard seconds=60`.
+
+### `ota`
+
+- Owner: `ota_command()` and OTA initialization/poll/callbacks in `command.c`.
+- Side effects: controls SMP UDP access, confirms the exact running image,
+  selects existing bank off mode at trial startup, and schedules rollback reboot
+  on expiry. MCUboot flags own persistent image state; no new NVS record.
+- Blocking: OTA mutex, listener setup/close, and confirmation flash write.
+  Upload/erase work runs in Zephyr's SMP workqueue, not the command executor.
+- Bank mode changes share one OTA guard in `laserbank_power()`; closing and
+  confirmation do not restore `auto`.
 
 ### `mems/route` and `mems/route/loss`
 
