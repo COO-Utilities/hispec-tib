@@ -999,6 +999,17 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
     aligned and in sync because these values form the baseline for wavelength
     tuning.
+  - At zero stored wavelength tune, positive `laser.value` maps to
+    `threshold_current_ma + value * (nominal_current_ma - threshold_current_ma)`,
+    rounded to the 0.1 mA current grid; `value:0` instead requests zero current.
+    Estimated optical power is
+    `max(0, (current_ma - threshold_current_ma) * efficiency_mw_per_ma)` in mW.
+    Threshold therefore affects both the current mapping and the power model;
+    efficiency changes the power/throughput/flux scale, not the untuned current
+    mapping. Nominal current sets the level-1/autolevel ceiling and the wavelength
+    tuning reference; it is not merely a power-normalization parameter.
+    Changes to these model/envelope fields stop emission. Restart measurement
+    afterward; existing captures retain their original settings.
   - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
     applied during driver preparation and TEC start. It is not the live tuned
     TEC setpoint. Tuning may write a different live TEC setpoint when a positive
@@ -2064,3 +2075,35 @@ Existing `mems()`, `mems_switch(...)`, `atten(...)`, `pd(...)`, `pd_dark(...)`,
 and lab acquisition/dataset helpers retain their roles. Calibration and
 throughput use `laser` as their source setting; laser-specific commands use
 `name` as their selector. Restart throughput to capture new route-loss settings.
+
+Python commissioning helpers:
+
+- `parameter_table(settings)` displays nested dictionaries/dataclasses using
+  API field names and native values. It performs no I/O and is not an archive
+  encoding.
+- `pcb.read_route_losses(routes)` queries complete route/laser losses
+  as a DataFrame of transmission and dB values.
+- `pcb.get_some_signal(laser, target_mv=1000, use_atten_db=False)` finds a useful
+  manual signal. It uses an active collector for that laser, or temporarily
+  starts non-autolevel `measure_throughput` on the selected AO/FEI and M/S routes
+  (which can also be supplied as `output`/`fiber`). It doesn't create a plot but
+  its search appears in an existing live monitoring plot.
+  Selected FVOAs start at maximum drive and are opened in order; after their
+  travel is exhausted the laser level can change. `use_atten_db=True` uses
+  calibrated individual-FVOA dB; `attenuators=(1,)` or `(2,)` leaves the other
+  FVOA fixed. `initial_level=.5`, `vary_laser=False` holds a chosen laser level.
+  The default dwell is 0.5 s followed by three fresh records; at most 80 moves
+  are tried. Success is within 20% of the target without overrange. The result
+  gives achieved level/current, individual dB/mV, PD Net signal, and a reason
+  when the limits prevent success. Applied manual settings remain in place.
+  An existing monitor retains its normal stop/laser ownership; only a temporary
+  monitor is stopped on return. In Jupyter use
+  `await asyncio.to_thread(pcb.get_some_signal, laser, use_atten_db=True)` so an
+  existing widget can refresh during the blocking search.
+- A collector's `command_events` property is a DataFrame of command arguments,
+  `issue_utc_ms`, `ack_utc_ms`, success and error text. The acknowledgement time
+  is host receipt of the reply, not optical completion. Queries are retained;
+  timeouts have no acknowledgement timestamp. `samples_received` counts decoded
+  records, including those displaced from the finite buffer. Save the sample
+  DataFrame, event DataFrame and context directly with `pd.to_pickle`; there
+  is no commissioning archive codec or old-format migration.

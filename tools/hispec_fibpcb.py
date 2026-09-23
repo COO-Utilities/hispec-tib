@@ -20,7 +20,7 @@ import struct
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, Deque, Iterable, Literal, Mapping, Sequence
 
@@ -31,6 +31,32 @@ from paho.mqtt.properties import Properties
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def parameter_table(values: Any):
+    """Display nested settings with API field names and native values; no I/O.
+
+    This is a display aid. Save settings themselves with pandas.to_pickle;
+    ordinary dictionaries and dataclasses need no archive encoding.
+    """
+    import pandas as pd
+
+    rows = []
+
+    def visit(key, value):
+        if is_dataclass(value):
+            value = asdict(value)
+        if isinstance(value, Mapping):
+            for name, item in value.items():
+                visit(f"{key}.{name}" if key else str(name), item)
+        elif isinstance(value, (tuple, list)):
+            for index, item in enumerate(value):
+                visit(f"{key}.{index}", item)
+        else:
+            rows.append((key, value))
+
+    visit("", values)
+    return pd.DataFrame(rows, columns=["parameter", "value"]).set_index("parameter")
 
 DEVICE_NAMES = ("hsfib-tib", "hsfib-rcal", "hsfib-bcal", "hsfib-as")
 LASER_NAMES = ("1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k")
@@ -3186,6 +3212,7 @@ class _PendingRequest:
     event: threading.Event = field(default_factory=threading.Event)
     payload: bytes | None = None
     properties: Any = None
+    ack_utc_ms: int | None = None
 
 
 def _mqtt_client(client_id: str) -> mqtt.Client:
@@ -3548,6 +3575,9 @@ class ThroughputMonitor:
             raise HispecFibError("max_samples must be positive")
         self._messages: queue.Queue[bytes | None] = queue.Queue()
         self._samples: Deque[tuple[Any, ...]] = deque(maxlen=self.max_samples)
+        self._commands: list[dict[str, Any]] = []
+        self.measurement: dict[str, Any] = {}
+        self.samples_received = 0
         self._lock = threading.Lock()
         self._running = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"hispec-tput-{channel}", daemon=True)
@@ -3583,6 +3613,22 @@ class ThroughputMonitor:
     def clear(self) -> None:
         with self._lock:
             self._samples.clear()
+            self._commands.clear()
+            self.samples_received = 0
+
+    @property
+    def command_events(self):
+        """Command replies received during collection, including read-only queries.
+
+        UTC milliseconds are host receipt times, not optical transition times.
+        Missing replies have no acknowledgement timestamp. Reading this property
+        creates a DataFrame snapshot and never sends a PCB command.
+        """
+        import pandas as pd
+
+        with self._lock:
+            return pd.DataFrame(self._commands, columns=[
+                "command", "arguments", "issue_utc_ms", "ack_utc_ms", "ok", "error"])
 
     def enqueue_payload(self, payload: bytes) -> None:
         if self._running.is_set():
@@ -3661,7 +3707,7 @@ class ThroughputMonitor:
         pd_ax.set(title="Photodiode input", ylabel="ADC input (mV)")
         snr_ax.set(title="Signal / reported error", ylabel="S/N", yscale="log")
         drive_ax.set(title="Source and attenuation", ylabel="laser current (mA)")
-        atten_ax.set_ylabel("combined attenuation (dB)")
+        atten_ax.set_ylabel("attenuation (dB)")
         source_ax.set(title="Estimated laser optical output (before attenuation)", ylabel="power (µW)")
         power_ax.set(title="Route-corrected optical power", ylabel="power (nW)", yscale="log")
         log_axes = (tp_ax, snr_ax, power_ax)
@@ -3715,6 +3761,8 @@ class ThroughputMonitor:
             (pd_ax, "pd_net_mv", "pd_net_err_mv", "net reading", "C0"),
             (drive_ax, "laser_current_ma", None, "laser current", "C2"),
             (atten_ax, "atten_db", None, "combined attenuation", "C3"),
+            (atten_ax, "atten1_db", None, "FVOA1", "C4"),
+            (atten_ax, "atten2_db", None, "FVOA2", "C5"),
             (source_ax, "laser_output_power_uw", "laser_output_power_err_uw", "laser estimate", "C2"),
             (power_ax, "pd_power_nw", "pd_power_err_nw", "detected / PD route transmission", "C0"),
             (power_ax, "delivered_power_nw", "delivered_power_err_nw", "delivered (laser × attenuation × route)", "C1"),
@@ -3801,7 +3849,8 @@ class ThroughputMonitor:
         return fig, animation
 
     def _run(self) -> None:
-        while self._running.is_set():
+        # The sentinel follows queued telemetry, so stop retains every received record.
+        while True:
             payload = self._messages.get()
             if payload is None:
                 break
@@ -3812,6 +3861,7 @@ class ThroughputMonitor:
                 continue
             with self._lock:
                 self._samples.append(sample.as_tuple())
+                self.samples_received += 1
 
 
 class AttenuatorGridProbe:
@@ -4202,6 +4252,18 @@ class HispecFibPcb:
         if autooff_s is not None:
             payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
         return self._request_ok("laser", payload)
+
+    def read_route_losses(self, routes: Iterable[str]):
+        """Query complete route/laser losses as a DataFrame; no settings writes."""
+        import pandas as pd
+
+        rows = []
+        for route in routes:
+            for item in self.mems_route_loss(route).lasers:
+                transmission = 1.0 - float(item.value)
+                rows.append(dict(route=route, laser=item.name, transmission=transmission,
+                                 loss_db=-10 * math.log10(transmission) if transmission > 0 else math.inf))
+        return pd.DataFrame(rows, columns=["route", "laser", "transmission", "loss_db"])
 
     def laser_tune(self, name: str, tune_nm: float | None = None) -> LaserTune | CommandOk:
         _require_choice("name", name, LASER_NAMES)
@@ -4949,7 +5011,133 @@ class HispecFibPcb:
                 # A rejected start may leave an earlier same-channel run active.
                 monitor._stop_collection()
             raise
+        with self._throughput_lock:
+            for observer in self._throughput_monitors:
+                if observer.channel in ("all", channel):
+                    observer.measurement = dict(payload)
         return monitor if monitor is not None else CommandOk()
+
+    def get_some_signal(
+        self, laser: str, *, target_mv: float = 1000.0,
+        use_atten_db: bool = False, attenuators: Sequence[int] = (1, 2),
+        initial_level: float = 0.5, vary_laser: bool = True,
+        output: str | None = None, fiber: Literal["M", "S"] | None = None,
+        dwell_s: float = 0.5, max_steps: int = 80,
+    ) -> dict[str, Any]:
+        """Find useful PD Net signal, leaving the achieved manual settings applied.
+
+        Reuses an active collector for this laser, so its live plot sees the
+        search. Otherwise starts manual measure_throughput on the selected
+        AO/FEI and M/S routes and stops only that temporary monitor afterward.
+        Never creates a figure. A manual atten/laser write already disables
+        autolevel; an existing monitor retains its normal shutdown ownership.
+
+        Start selected FVOAs at maximum drive (or calibrated dB), then open
+        them in order before increasing laser level. Reverse/halve steps after
+        crossing the target. Accept +/-20% of target with no overrange samples.
+        Unselected FVOAs stay fixed. vary_laser=False holds initial_level.
+        Limits or the bounded iteration count return found=False and a reason;
+        communication failures raise normally. Blocks on commands and fresh
+        samples; use await asyncio.to_thread(...) in a running notebook widget.
+        """
+        _require_choice("laser", laser, LASER_NAMES)
+        target_mv = _require_float("target_mv", target_mv, 1.0, 1600.0)
+        dwell_s = _require_float("dwell_s", dwell_s, 0.15, 60.0)
+        initial_level = _require_float("initial_level", initial_level, 0.0, 1.0)
+        if not attenuators or len(set(attenuators)) != len(attenuators) or any(i not in (1, 2) for i in attenuators):
+            raise HispecFibError("attenuators must select 1, 2, or both in search order")
+        if max_steps < 1:
+            raise HispecFibError("max_steps must be positive")
+        channel = _LASER_TO_PD_CHANNEL[laser]
+        with self._throughput_lock:
+            monitor = next((m for m in self._throughput_monitors
+                            if m.channel == channel and m.measurement.get("laser") == laser), None)
+        owns_monitor = monitor is None
+        if owns_monitor:
+            routes = self.mems_route().active_routes
+            if output is None:
+                output = next((r.name for r in routes if r.name in (f"{channel}_ao", f"{channel}_fei")), None)
+            if output is None:
+                raise HispecFibError("Select an AO/FEI route first, or supply output")
+            if fiber is None:
+                returning = next(r for r in routes if r.name == f"{channel}_pd")
+                fiber = "M" if f"{channel}_mm" in returning.value else "S"
+            monitor = self.measure_throughput(laser, output=output, fiber=fiber,
+                autolevel=False, off_in_s=0, collect=True, max_samples=10000)
+        try:
+            settings = self.laser_settings(laser)
+            span = settings.nominal_current_ma - settings.threshold_current_ma
+            minimum_ma = math.ceil((settings.threshold_current_ma + 1e-9) * 10) / 10
+            minimum = (minimum_ma-settings.threshold_current_ma)/span
+            level = max(minimum, initial_level)
+            coeff = self.atten_coeff(laser) if use_atten_db else None
+            limits = {i: getattr(coeff, f"dac{i}").max_calibrated_db if use_atten_db
+                      else ATTENUATOR_DRIVE_MAX_MV for i in attenuators}
+            if any(limit <= 0 for limit in limits.values()):
+                raise HispecFibError("Calibrated search requires a positive calibrated range")
+            unit = "db" if use_atten_db else "mv"
+            drive = self.atten(laser, **{f"value{i}_{unit}": limits[i] for i in attenuators})
+            requested = dict(limits)
+            self.laser(laser, value=level, autooff_s=0)
+            steps = {i: 5.0 if use_atten_db else 150.0 for i in attenuators}
+            directions = dict.fromkeys(attenuators, 0)
+            last_atten = attenuators[0]
+            reason, found, net = "search step limit reached", False, math.nan
+            for iteration in range(max_steps):
+                # Require fresh conversion timestamps after the acknowledged move and dwell.
+                after_ms = time.time_ns() // 1_000_000 + int(dwell_s*1000)
+                deadline = time.monotonic() + dwell_s + self.timeout_s
+                while True:
+                    if not monitor._running.is_set() or not monitor.measurement:
+                        raise HispecFibError("Throughput monitor stopped during signal search")
+                    records = monitor.to_recarray()
+                    fresh = records[records.t_ms >= after_ms]
+                    if len(fresh) >= 3:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise HispecFibError("No fresh throughput samples during signal search")
+                    time.sleep(0.05)
+                fresh = fresh[-3:]
+                net = float(np.mean(fresh.pd_net_mv))
+                high = bool(np.any(fresh.pd_mv >= PD_ADC_USABLE_MV) or net > 1.2*target_mv)
+                if not math.isfinite(net):
+                    reason = "PD Net signal is unavailable"
+                    break
+                if not high and net >= 0.8*target_mv:
+                    found, reason = True, "target reached"
+                    break
+                if iteration + 1 == max_steps:
+                    break  # Report settings whose signal was actually measured.
+                # Commanded bounds avoid treating DAC quantization near the maximum
+                # calibrated dB as remaining actuator travel. Report actual readback below.
+                values = requested
+                order = (last_atten, *[i for i in attenuators if i != last_atten]) if high else attenuators
+                movable = next((i for i in order if
+                    (values[i] < limits[i]-1e-6 if high else values[i] > 1e-6)), None)
+                if movable is not None:
+                    direction = 1 if high else -1
+                    if directions[movable] and direction != directions[movable]:
+                        steps[movable] *= 0.5
+                    directions[movable] = direction
+                    value = float(np.clip(values[movable]+direction*steps[movable], 0, limits[movable]))
+                    drive = self.atten(laser, **{f"value{movable}_{unit}": value})
+                    requested[movable] = value
+                    last_atten = movable
+                    continue
+                next_level = max(minimum, level/2) if high else min(1.0, level*2)
+                if not vary_laser or abs(next_level-level)*span < 0.05:
+                    reason = "above target at dim limit" if high else "below target at bright limit"
+                    break
+                level = next_level
+                self.laser(laser, value=level, autooff_s=0)
+            actual = self.laser(laser)
+            return dict(laser=laser, found=found, reason=reason, pd_net_mv=net,
+                        level=actual.value, current_ma=actual.i_mA, steps=iteration+1,
+                        atten_db=drive.db, atten1_db=drive.db1, atten2_db=drive.db2,
+                        dac1_mv=drive.v1_mv, dac2_mv=drive.v2_mv)
+        finally:
+            if owns_monitor:
+                monitor.stop()
 
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
         """Stop measurement and its autolevel laser; preserve passive/manual output.
@@ -4957,7 +5145,12 @@ class HispecFibPcb:
         Bank power and TECs remain unchanged. See ThroughputMonitor.stop().
         """
         _require_choice("channel", channel, ("yj", "hk", "all"))
-        return self._request_ok("measure_throughput", {"stop": channel})
+        result = self._request_ok("measure_throughput", {"stop": channel})
+        with self._throughput_lock:
+            for observer in self._throughput_monitors:
+                if channel == "all" or observer.channel in ("all", channel):
+                    observer.measurement = {}
+        return result
 
     def start_throughput_monitor(
         self,
@@ -5002,6 +5195,9 @@ class HispecFibPcb:
         props.ResponseTopic = response_topic
         props.CorrelationData = corr
         data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        issue_utc_ms, error = time.time_ns() // 1_000_000, ""
+        with self._throughput_lock:
+            observers = tuple(self._throughput_monitors)
         try:
             info = self._client.publish(topic, payload=data, qos=0, properties=props)
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -5013,33 +5209,22 @@ class HispecFibPcb:
             if raw.lstrip().startswith(b"{"):
                 _decode_ok_or_raise(response_topic, raw)
             return raw
+        except BaseException as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             with self._pending_lock:
                 self._pending.pop(corr, None)
+            event = dict(command=key, arguments=json.loads(data) if data else {},
+                         issue_utc_ms=issue_utc_ms, ack_utc_ms=pending.ack_utc_ms,
+                         ok=not error, error=error)
+            for observer in observers:
+                with observer._lock:
+                    observer._commands.append(event)
 
     def _request(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
-        self._ensure_connected()
-        topic = f"cmd/{self.device}/req/{key}"
         response_topic = f"cmd/{self.device}/resp/{key}"
-        corr = next(self._corr_counter).to_bytes(8, "little", signed=False)
-        pending = _PendingRequest(topic=response_topic)
-        with self._pending_lock:
-            self._pending[corr] = pending
-        props = Properties(PacketTypes.PUBLISH)
-        props.ResponseTopic = response_topic
-        props.CorrelationData = corr
-        data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        try:
-            info = self._client.publish(topic, payload=data, qos=0, properties=props)
-            if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise HispecFibError(f"MQTT publish failed with rc={info.rc}")
-            if not pending.event.wait(self.timeout_s):
-                raise HispecFibError(f"timed out waiting for {response_topic}")
-            assert pending.payload is not None
-            return _decode_ok_or_raise(response_topic, pending.payload)
-        finally:
-            with self._pending_lock:
-                self._pending.pop(corr, None)
+        return _decode_ok_or_raise(response_topic, self._request_payload(key, payload))
 
     def _ensure_connected(self) -> None:
         if not self.is_connected:
@@ -5116,6 +5301,7 @@ class HispecFibPcb:
                 with self._pending_lock:
                     pending = self._pending.get(corr)
                 if pending is not None:
+                    pending.ack_utc_ms = time.time_ns() // 1_000_000
                     pending.payload = bytes(msg.payload)
                     pending.properties = msg.properties
                     pending.event.set()
