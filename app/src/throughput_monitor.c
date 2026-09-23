@@ -61,6 +61,10 @@ struct throughput_source_reference {
 	double laser_current_ma;
 	double atten_tx;
 	double atten_db;
+	double atten1_db;
+	double atten2_db;
+	double dac1_mv;
+	double dac2_mv;
 	double wavelength_nm;
 };
 
@@ -214,6 +218,7 @@ static int refresh_reference(struct throughput_state *state)
 		.delivered_power_nw = NAN, .delivered_power_err_nw = NAN,
 		.laser_output_power_uw = NAN, .laser_output_power_err_uw = NAN,
 		.laser_current_ma = NAN, .atten_tx = NAN, .atten_db = NAN, .wavelength_nm = NAN,
+		.atten1_db = NAN, .atten2_db = NAN, .dac1_mv = NAN, .dac2_mv = NAN,
 	};
 	struct attenuator_transmission_estimate atten;
 	struct hispec_laser_flux_estimate laser;
@@ -234,6 +239,13 @@ static int refresh_reference(struct throughput_state *state)
 			ref.laser_current_ma = laser.current_ma;
 			ref.atten_tx = atten.linear;
 			ref.atten_db = atten.attenuation_db;
+			/* Keep both modeled attenuation and confirmed DAC setpoints with the
+			 * same source context used to associate delayed ADC conversions.
+			 */
+			ref.atten1_db = atten.attenuation_db1;
+			ref.atten2_db = atten.attenuation_db2;
+			ref.dac1_mv = (double)atten.voltage1;
+			ref.dac2_mv = (double)atten.voltage2;
 			ref.wavelength_nm = laser.wavelength_nm;
 		}
 	}
@@ -376,6 +388,8 @@ static void publish_sample(const struct throughput_state *state,
 		{"pd_net_err_mv", overrange ? (double)NAN : pd->net_err_mv},
 		{"laser_current_ma", source->laser_current_ma}, {"atten_db", source->atten_db},
 		{"wavelength_nm", source->wavelength_nm},
+		{"atten1_db", source->atten1_db}, {"atten2_db", source->atten2_db},
+		{"dac1_mv", source->dac1_mv}, {"dac2_mv", source->dac2_mv},
 	};
 	memset(msg, 0, sizeof(*msg));
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);

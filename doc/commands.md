@@ -1903,6 +1903,10 @@ channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
   "laser_current_ma": 50,
   "atten_db": 20,
   "wavelength_nm": 1028,
+  "atten1_db": 12,
+  "atten2_db": 8,
+  "dac1_mv": 2447.314,
+  "dac2_mv": 2378.027,
   "pd_raw": 1600,
   "pd_ontime_s": 1,
   "laser_current_ontime_s": 2,
@@ -1914,8 +1918,8 @@ channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
 PD relay continuous on-time and the laser module's current-emission on-time.
 Nonfinite values are JSON `null`; finite values use 12 significant digits.
 
-**Binary layout:** 179 bytes, little-endian, Python `struct` format
-`<8sQ18dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
+**Binary layout:** 211 bytes, little-endian, Python `struct` format
+`<8sQ22dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
 
 ```text
 char[8] channel
@@ -1938,6 +1942,10 @@ float64 pd_net_err_mv
 float64 laser_current_ma
 float64 atten_db
 float64 wavelength_nm
+float64 atten1_db
+float64 atten2_db
+float64 dac1_mv
+float64 dac2_mv
 int16 pd_raw
 uint64 pd_ontime_s
 uint64 laser_current_ontime_s
@@ -1967,6 +1975,12 @@ uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
   correction coefficients are all unity.
 - `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
   transmission. Static attenuation belongs in the source route loss.
+- `atten1_db`/`atten2_db` describe the individual FVOAs in that same model.
+  `dac1_mv`/`dac2_mv` are their confirmed DAC-output setpoints (the `atten`
+  response's `v1_mv`/`v2_mv`), not independent voltage measurements. All four
+  use the sample's source context, including the previous context for a delayed
+  conversion. They are NaN/null for an unnamed source. Use DAC setpoints to
+  distinguish physical settings independently of calibration slope.
 - Route losses resolve explicit settings, then compiled TIB switch/static
   defaults, then unity for unspecified pairs. Start latches the outbound
   `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission

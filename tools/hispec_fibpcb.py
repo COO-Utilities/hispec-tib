@@ -81,7 +81,7 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ18dh2QB")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ22dh2QB")
 _THROUGHPUT_FLOAT_FIELDS = (
     "tp",
     "tp_err",
@@ -101,6 +101,10 @@ _THROUGHPUT_FLOAT_FIELDS = (
     "laser_current_ma",
     "atten_db",
     "wavelength_nm",
+    "atten1_db",
+    "atten2_db",
+    "dac1_mv",
+    "dac2_mv",
 )
 _ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
 _ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
@@ -3163,6 +3167,10 @@ class ThroughputSample(ResponseRepr):
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
+    atten1_db: float
+    atten2_db: float
+    dac1_mv: float
+    dac2_mv: float
     pd_raw: int
     pd_ontime_s: int
     laser_current_ontime_s: int
@@ -3509,13 +3517,13 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     return ThroughputSample(
         channel=channel,
         laser="",  # Channel plus payload wavelength identifies the source.
-        autolevel=bool(values[23] & 2),
+        autolevel=bool(values[-1] & 2),
         t_ms=int(values[1]),
-        **dict(zip(_THROUGHPUT_FLOAT_FIELDS, values[2:20])),
-        pd_raw=int(values[20]),
-        pd_ontime_s=int(values[21]),
-        laser_current_ontime_s=int(values[22]),
-        flags=("overrange",) if values[23] & 1 else (),
+        **dict(zip(_THROUGHPUT_FLOAT_FIELDS, values[2:-4])),
+        pd_raw=int(values[-4]),
+        pd_ontime_s=int(values[-3]),
+        laser_current_ontime_s=int(values[-2]),
+        flags=("overrange",) if values[-1] & 1 else (),
     )
 
 
