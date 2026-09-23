@@ -17,9 +17,7 @@
 #include <zephyr/console/console.h>
 #include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
-#if defined(CONFIG_COO_CMD_REBOOT)
 #include <zephyr/sys/reboot.h>
-#endif
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
@@ -38,9 +36,7 @@ static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime);
 static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 				   const struct coo_cmd_request *cmd,
 				   struct coo_cmd_response *out);
-#if defined(CONFIG_COO_CMD_REBOOT)
 static void reboot_work_handler(struct k_work *work);
-#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static void serial_guard_expire_work_handler(struct k_work *work);
 #endif
@@ -82,7 +78,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 
 	runtime->inbound_queue = cfg->inbound_queue;
 	runtime->outbound_queue = cfg->outbound_queue;
-	runtime->execute_handler = cfg->execute_handler;
 	runtime->mqtt_msg_id = cfg->mqtt_msg_id;
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
 				      cfg->serial_wrap_column :
@@ -92,14 +87,12 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->lastcommand_nvs = cfg->lastcommand_nvs;
 	runtime->lastcommand_nvs_id = cfg->lastcommand_nvs_id;
 	runtime->user_data = cfg->user_data;
-#if defined(CONFIG_COO_CMD_REBOOT)
 	runtime->reboot_delay_ms = cfg->reboot_delay_ms != 0U ?
 				   cfg->reboot_delay_ms :
 				   COO_CMD_REBOOT_DEFAULT_DELAY_MS;
 	runtime->reboot_prepare = cfg->reboot_prepare;
 	k_work_init_delayable(&runtime->reboot_work, reboot_work_handler);
 	(void)atomic_clear(&runtime->reboot_pending);
-#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	runtime->serial_guard_seconds = CONFIG_COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS;
 	k_work_init_delayable(&runtime->serial_guard_work,
@@ -899,12 +892,10 @@ static int runtime_normalize_serial_payload(const struct coo_cmd_spec *spec,
 						user_data, out, out_len);
 }
 
-int coo_cmd_make_response(struct coo_cmd_response *out,
-			  const struct coo_cmd_request *cmd,
-			  enum coo_cmd_msg_type msg_type,
-			  const char *payload,
-			  coo_cmd_format_response_topic_fn format_topic,
-			  void *user_data)
+int coo_cmd_reply(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  enum coo_cmd_msg_type msg_type,
+		  const char *payload)
 {
 	static const char overflow_msg[] = "{\"error\":\"response too large\"}";
 	bool payload_in_out;
@@ -937,11 +928,6 @@ int coo_cmd_make_response(struct coo_cmd_response *out,
 		   COO_CMD_OUT_SERIAL : COO_CMD_OUT_MQTT;
 	out->qos = MQTT_QOS_1_AT_LEAST_ONCE;
 
-	if (format_topic != NULL) {
-		(void)format_topic(cmd != NULL ? cmd->key : "",
-				   out->topic, sizeof(out->topic), user_data);
-	}
-
 	if (cmd != NULL && cmd->response_topic[0] != '\0' &&
 	    strlen(cmd->response_topic) < sizeof(out->topic)) {
 		strncpy(out->topic, cmd->response_topic, sizeof(out->topic) - 1U);
@@ -965,14 +951,6 @@ int coo_cmd_make_response(struct coo_cmd_response *out,
 	}
 	out->payload_len = strlen(out->payload);
 	return 0;
-}
-
-int coo_cmd_reply(struct coo_cmd_response *out,
-		  const struct coo_cmd_request *cmd,
-		  enum coo_cmd_msg_type msg_type,
-		  const char *payload)
-{
-	return coo_cmd_make_response(out, cmd, msg_type, payload, NULL, NULL);
 }
 
 int coo_cmd_ok(struct coo_cmd_response *out, const struct coo_cmd_request *cmd)
@@ -1369,7 +1347,6 @@ static const struct coo_cmd_help_entry builtin_help_entries[] = {
 			 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
 	},
 #endif
-#if defined(CONFIG_COO_CMD_REBOOT)
 	{
 		.key = "reboot",
 		.usage = "reboot [erase_non_ip_settings]",
@@ -1378,7 +1355,6 @@ static const struct coo_cmd_help_entry builtin_help_entries[] = {
 		.notes = "schedules a non-cancelable reboot after the response window",
 		.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
 	},
-#endif
 };
 
 static bool runtime_key_is_help(const char *key)
@@ -1398,12 +1374,7 @@ static bool runtime_key_is_serial_guard(const char *key)
 
 static bool runtime_key_is_reboot(const char *key)
 {
-#if defined(CONFIG_COO_CMD_REBOOT)
 	return key != NULL && strcmp(key, "reboot") == 0;
-#else
-	ARG_UNUSED(key);
-	return false;
-#endif
 }
 
 static void serial_line_end(void)
@@ -1731,7 +1702,6 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 }
 #endif
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 static int runtime_parse_reboot_options(const struct coo_cmd_request *cmd,
 					bool *erase_non_ip_settings)
 {
@@ -1846,7 +1816,6 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
-#endif
 
 static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 					   const struct coo_cmd_request *cmd,
@@ -1856,12 +1825,10 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 		return false;
 	}
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_reboot_pending(runtime) && !runtime_key_is_reboot(cmd->key)) {
 		(void)coo_cmd_error(out, cmd, "reboot pending");
 		return true;
 	}
-#endif
 
 	if (runtime_key_is_help(cmd->key)) {
 		if (runtime_validate_payload_keys("", cmd, out) != 0) {
@@ -1885,7 +1852,6 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 	}
 #endif
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_key_is_reboot(cmd->key)) {
 		if (runtime_validate_payload_keys("erase_non_ip_settings,value", cmd, out) != 0) {
 			return true;
@@ -1893,7 +1859,6 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 		(void)runtime_reboot_set(runtime, cmd, out);
 		return true;
 	}
-#endif
 
 	return false;
 }
@@ -1934,11 +1899,9 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 		return coo_cmd_invalid_response(out, cmd);
 	}
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_reboot_pending(runtime)) {
 		return coo_cmd_error(out, cmd, "reboot pending");
 	}
-#endif
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
 	LOG_INF("Dispatching: %s", cmd->key);
@@ -1993,13 +1956,7 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	while (1) {
 		/* K_FOREVER sleeps until ingress queues a complete command. */
 		k_msgq_get(runtime->inbound_queue, cmd, K_FOREVER);
-		if (runtime_handle_builtin_request(runtime, cmd, out)) {
-			/* Built-ins stay library-owned even when the app provides a
-			 * custom executor hook.
-			 */
-		} else if (runtime->execute_handler != NULL) {
-			(void)runtime->execute_handler(cmd, out);
-		} else {
+		if (!runtime_handle_builtin_request(runtime, cmd, out)) {
 			(void)runtime_execute_default(runtime, cmd, out);
 		}
 		if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {

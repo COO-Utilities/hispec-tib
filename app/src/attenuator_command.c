@@ -174,7 +174,7 @@ static int attenuator_status_reply(const struct coo_cmd_request *cmd,
 				   uint8_t attenuator_index)
 {
 	struct attenuator_status status = {0};
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	double linear1;
 	double linear2;
 
@@ -207,7 +207,7 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	enum attenuator_setting setting;
 	uint8_t attenuator_index;
 	int rc;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 
 	rc = attenuator_index_from_command(cmd, &setting, &attenuator_index);
 	if (rc == -EINVAL) {
@@ -259,7 +259,7 @@ static int parse_attenuator_coeff_object(const char *json,
 					 const char *key,
 					 struct attenuator_model_coeffs *out)
 {
-	char object_json[MAX_PAYLOAD_LEN] = {0};
+	char object_json[COO_CMD_PAYLOAD_MAX] = {0};
 	int rc;
 
 	if (json == NULL || key == NULL || out == NULL) {
@@ -640,7 +640,7 @@ static int atten_calibration_status_reply(
 	enum coo_cmd_msg_type type,
 	struct coo_cmd_response *out)
 {
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 
 	if (attenuator_calibration_format_status(payload, sizeof(payload), status) != 0) {
 		return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
@@ -734,7 +734,7 @@ int atten_calibration_records_get(const struct coo_cmd_request *cmd,
 				     "use atten/calibrate/records/<dac1|dac2>[/<chunk>]");
 	}
 
-	rc = coo_cmd_make_response(out, cmd, COO_CMD_RESP_OK, NULL, NULL, NULL);
+	rc = coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, NULL);
 	if (rc != 0) {
 		return rc;
 	}

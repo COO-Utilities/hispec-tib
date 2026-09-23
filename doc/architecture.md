@@ -17,10 +17,12 @@ scheduling.
 
 Runtime ownership is:
 
-- `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
+- `main.c`: boot order, watchdog, serial polling, network/MQTT loop, outbound queue draining.
 - `command.c`: app command queues, static command spec table, support
   predicates, custom request classification callbacks, reboot-prepare hook, and
-  app/cross-domain command handlers.
+  OTA policy, and app/cross-domain command handlers. It implements the narrow
+  `app_output_emit()` interface for warning/telemetry producers using the same
+  configured runtime and outbound queue; producers do not retrieve that runtime.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write, coefficient application, and
@@ -58,9 +60,8 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   help/serialguard/reboot commands, static longest-prefix spec lookup, default
   request classification/execution, serial guard policy, persisted
   lastcommand, topic formatting, response metadata, warning JSON, serial
-  payload normalization, and serial response printing helpers. Built-ins are
-  executor-owned so app execute hooks extend app commands without replacing
-  help, serialguard, or reboot behavior.
+  payload normalization, and serial response printing helpers. Queued built-ins
+  run before the app command table; serial `help` prints directly during ingress.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 
@@ -100,9 +101,11 @@ then chainloads with it still running; application `watchdog_init()` installs
 the normal 15-second budget using fresh driver state.
 
 OTA maintenance policy belongs to `command.c`. One mutex serializes window,
-SMP admission/completion, and confirmation/deadline decisions. A single guard in
-the existing bank-mode command prevents leaving `override_off` while OTA is
-active. No additional laser/heater/settings inhibit is introduced. MCUboot
+SMP admission/completion, and confirmation/deadline decisions. The bank-mode
+command adapter snapshots the OTA restriction under that mutex and passes it
+down to `laserbank_power()`, which parses the mode and rejects leaving
+`override_off`. The mutex is released before laser-owner I/O. No additional
+laser/heater/settings inhibit is introduced. MCUboot
 trailers own pending/confirmed durability; OTA adds no application NVS records.
 The main loop reuses the dispatcher's delayed reboot on trial expiry and stops
 watchdog feeding if that reboot cannot complete. The UDP listener stays closed
@@ -150,9 +153,13 @@ are wrapped as JSON fields, and command-table-selected human shorthands are
 translated into the same payload shapes as MQTT. The old payload `msg_type`
 convention is not part of current ingress classification.
 
+The main loop polls serial with nonblocking character reads; there is no serial
+thread. Serial and MQTT ingress share main-owned scratch buffers. Network waits
+also delay serial parsing and queued responses; see [blocking behavior](threads.md).
+
 The command executor runs exactly one request at a time from `inbound_queue`.
-Command dispatch handles library built-ins first, then calls the optional app
-execute hook or the default static spec-table executor for app commands.
+Command dispatch handles library built-ins first, then uses the static spec
+table for app commands.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response. Pure queries are not recorded as `lastcommand`; supported
 effect-capable requests are recorded before handler execution in
@@ -162,9 +169,10 @@ laser, photodiode, throughput, or laser-bank command handlers on other board
 profiles. Serial help marks those entries as unsupported instead of encoding
 board names in the common command-dispatch library.
 
-When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
-After the response window, command dispatch calls the app reboot-prepare hook
-and then `sys_reboot(SYS_REBOOT_COLD)`.
+`reboot` is always a dispatcher built-in. `CONFIG_COO_MQTT`, which builds command
+dispatch, selects Zephyr's `CONFIG_REBOOT` capability. After the default
+three-second response window, command dispatch calls the app reboot-prepare
+hook and then `sys_reboot(SYS_REBOOT_COLD)`.
 
 Command dispatch can persist one lastcommand record through Zephyr NVS when the
 app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a

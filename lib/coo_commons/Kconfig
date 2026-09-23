@@ -41,23 +41,19 @@ config COO_JSON
 	  Enable lightweight JSON helper wrappers used by command handling
 	  (keyed primitive extraction and key splitting).
 
-config COO_SCHEDULED_ACTIONS
-	bool "COO scheduled action helper"
-	default n
-	help
-	  Enable a small fixed-table wrapper around Zephyr delayable work for named
-	  firmware actions. This does not create a user-programmable scheduler.
-
 config COO_MQTT
 	bool "COO MQTT client wrapper"
 	depends on MQTT_LIB
 	select COO_NETWORK
+	select REBOOT
 	default n
 	help
 	  Enable COO MQTT client wrapper with automatic retry,
 	  subscription management, and optional TLS support.
 	  Provides a simplified interface over Zephyr's MQTT library
-	  with built-in connection management. Requires MQTT_LIB.
+	  with built-in connection management. Includes command dispatch and its
+	  delayed reboot command, which requires Zephyr's REBOOT capability.
+	  Requires MQTT_LIB.
 
 if COO_MQTT
 
@@ -113,15 +109,6 @@ config COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS
 	help
 	  Default number of seconds that MQTT effect commands remain blocked after
 	  serial activity. A serialguard command can change this until reboot.
-
-config COO_CMD_REBOOT
-	bool "Command dispatcher reboot command"
-	depends on REBOOT
-	default y
-	help
-	  Let the command dispatcher own a built-in reboot command, including
-	  command rejection after reboot is accepted and an optional application
-	  prepare callback immediately before sys_reboot().
 
 endif # COO_MQTT
 

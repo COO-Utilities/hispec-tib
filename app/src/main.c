@@ -23,9 +23,11 @@
 #include <time.h>
 
 #include <coo_commons/mqtt_client.h>
+#include <coo_commons/command_dispatch.h>
 #include <coo_commons/network.h>
 
 #include "app_identity.h"
+#include "app_output.h"
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
@@ -75,7 +77,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;
-static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
+static char mqtt_cmd_subscription[COO_CMD_TOPIC_MAX];
 
 static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
 static struct k_thread exec_thread_data;
@@ -468,15 +470,13 @@ int main(void)
 					snprintk(context, sizeof(context),
 						 "host=%s port=%u rc=%d",
 						 mqtt_cfg.host, mqtt_cfg.port, rc);
-					coo_cmd_runtime_emit(
-						command_runtime_get(),
-						&(const struct coo_cmd_runtime_emit_args){
-							.type = COO_CMD_RUNTIME_EMIT_WARNING,
-							.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-							.code = "mqtt_broker_revert",
-							.msg = "MQTT broker connection failed; reverting to prior broker",
-							.context = context,
-						});
+					app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+						.type = COO_CMD_RUNTIME_EMIT_WARNING,
+						.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+						.code = "mqtt_broker_revert",
+						.msg = "MQTT broker connection failed; reverting to prior broker",
+						.context = context,
+					});
 					LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
 						rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
 				mqtt_cfg = prior_mqtt_cfg;

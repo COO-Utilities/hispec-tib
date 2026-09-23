@@ -254,7 +254,7 @@ static void pd_auto_enable_selected(const bool include[PHOTODIODE_CHANNEL_COUNT]
 int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct photodiode_status status;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	bool include[PHOTODIODE_CHANNEL_COUNT];
 	size_t off = 0U;
 	bool appended = false;
@@ -294,7 +294,7 @@ static int pd_dark_response(const struct coo_cmd_request *cmd,
 			    struct coo_cmd_response *out)
 {
 	struct photodiode_status status;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	size_t off = 0U;
 
 	photodiode_get_status(&status);
@@ -460,7 +460,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct app_photodiode_settings settings;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	enum photodiode_channel channel;
 	int rc;
 

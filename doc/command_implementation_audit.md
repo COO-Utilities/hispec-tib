@@ -16,11 +16,12 @@ MQTT requests are accepted under:
 cmd/<device>/req/#
 ```
 
-The suffix after the request prefix is copied into `Command.key`.
-`coo_cmd_runtime_find_spec()` chooses the longest command-spec key that is
-either an exact match or followed by `/`; command dispatch then applies default
-support checks, handler selection, lastcommand recording, and built-in reboot
-pending rejection unless an app override execute callback is configured. The
+The suffix after the request prefix is copied into `coo_cmd_request.key`.
+`coo_cmd_runtime_find_spec()` chooses the longest matching command-spec key.
+Matching is exact unless the entry explicitly permits slash-delimited suffixes.
+Command dispatch applies support checks, payload validation, handler selection,
+lastcommand recording, and reboot-pending rejection. Built-ins run before the
+app table. The
 `<device>` component is board-profile dependent: `hsfib-tib`, `hsfib-rcal`,
 `hsfib-bcal`, or `hsfib-as`.
 
@@ -30,7 +31,7 @@ Dispatcher built-ins:
 | --- | --- | --- | --- |
 | `help` | yes | no | Serial prints directly; MQTT returns compact endpoints. |
 | `serialguard` | yes | yes | Present when `CONFIG_COO_CMD_SERIAL_GUARD` is enabled. |
-| `reboot` | no | yes | Present when `CONFIG_COO_CMD_REBOOT` is enabled. |
+| `reboot` | no | yes | Always built with command dispatch; uses Zephyr `CONFIG_REBOOT`. |
 
 Implemented app dispatch entries. The column names reflect internal C dispatch
 slots; the external API is documented as queries, effect requests, and actions.
@@ -61,11 +62,10 @@ slots; the external API is documented as queries, effect requests, and actions.
 
 ## Request Classification
 
-MQTT and serial are normalized to a shared `Command` and then classified by
-command dispatch using the app command spec table. The internal result still
-uses `MSG_GET` and `MSG_SET`, but those names are dispatch-slot names, not
-user-visible protocol verbs. Serial `help` is the exception: it prints directly
-from command dispatch before entering the inbound queue.
+MQTT and serial are normalized to a shared `struct coo_cmd_request` and then
+classified as `COO_CMD_QUERY` or `COO_CMD_EFFECT` using the app command spec table.
+Serial polling runs in main, sharing its ingress scratch storage with MQTT.
+Serial `help` is the exception to queueing: it prints directly during that poll.
 
 Empty/no-payload requests are queries except:
 
@@ -136,8 +136,8 @@ buffer and echoed exactly in responses.
 
 ## Blocking and Queueing Summary
 
-- Dispatcher built-ins run in command dispatch. Serial `help` prints directly;
-  MQTT `help`, `serialguard`, and `reboot` enqueue immediate responses.
+- Dispatcher built-ins run in the command executor. Serial `help` prints directly
+  during main-loop ingress; other built-ins return responses through the output queue.
 - App command handlers run in the single command executor thread.
 - App responses are enqueued to `outbound_queue` and published or printed later.
 - Attenuator commands can block on DAC I2C.
@@ -148,6 +148,7 @@ buffer and echoed exactly in responses.
 - `status` optional laser/attenuator sections can block on Modbus/DAC reads.
 - MEMS and split commands update router state and can enqueue warnings but do
   not publish directly.
-- Warning publication is best-effort through `outbound_queue`.
+- App warnings use `app_output_emit()` and the existing common emitter. Most
+  are best-effort; explicitly required messages retry after successful enqueue.
 - Throughput telemetry is best-effort and can be dropped under MQTT or queue
   backpressure.

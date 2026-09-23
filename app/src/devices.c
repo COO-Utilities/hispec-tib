@@ -13,7 +13,7 @@
 
 #include "devices.h"
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "drivers/dac/dac7x78.h"
 #include "maiman.h"
 #include "mems_switching.h"
@@ -360,13 +360,12 @@ void devices_queue_boot_reset_telemetry(void)
 	}
 	msg.payload_len = (size_t)written;
 
-	rc = coo_cmd_runtime_emit(command_runtime_get(),
-				  &(const struct coo_cmd_runtime_emit_args){
-					  .type = COO_CMD_RUNTIME_EMIT_DATA,
-					  .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
-					  .suffix = "boot",
-					  .out = &msg,
-				  });
+	rc = app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_DATA,
+		.delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+		.suffix = "boot",
+		.out = &msg,
+	});
 	if (rc != 0) {
 		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
 	}
@@ -860,15 +859,14 @@ static void emit_relay_gpio_offline_warning_once(int error)
 	k_mutex_unlock(&relay_gpio_lock);
 
 	snprintf(context, sizeof(context), "rc=%d", error);
-	coo_cmd_runtime_emit(command_runtime_get(),
-			     &(const struct coo_cmd_runtime_emit_args){
-				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-				     .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
-				     .out = &msg,
-				     .code = "relay_gpio_offline",
-				     .msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
-				     .context = context,
-			     });
+	app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING,
+		.delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+		.out = &msg,
+		.code = "relay_gpio_offline",
+		.msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+		.context = context,
+	});
 }
 
 static bool configure_relay_gpio_outputs(void)

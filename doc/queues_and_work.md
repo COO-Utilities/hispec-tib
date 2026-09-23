@@ -2,14 +2,14 @@
 
 ## `inbound_queue`
 
-Defined in `command.c` as a `k_msgq` of `struct Command` with depth
-`MAX_PENDING_COMMANDS` (2). MQTT and serial ingress use non-blocking puts. When
+Defined in `command.c` as a `k_msgq` of `struct coo_cmd_request` with depth 2.
+MQTT and serial ingress use non-blocking puts from the main thread. When
 the queue is full, MQTT and serial receive a busy/error response path instead of
 executing work in the ingress callback.
 
 ## `outbound_queue`
 
-Defined in `command.c` as a `k_msgq` of `struct OutMsg` with depth 8. It carries
+Defined in `command.c` as a `k_msgq` of `struct coo_cmd_response` with depth 8. It carries
 command responses, warnings, and telemetry to the main loop. The main loop is
 the only path that calls `mqtt_publish()`.
 
@@ -21,9 +21,11 @@ target so it is retried until MQTT is available. If the main loop observes
 queue remains full; it does not enqueue or publish another warning about the
 full queue.
 
-Throughput monitoring enqueues photodiode stream telemetry
-to `outbound_queue` with `K_NO_WAIT`; if the queue is full, the current sample
-is dropped.
+App warning and telemetry producers use `app_output_emit()`, which delegates to
+the common runtime emitter without exposing the app runtime. Throughput
+monitoring enqueues photodiode stream telemetry with `K_NO_WAIT`; if the queue
+is full, the current sample is dropped. Warning producers retain the local log
+when the guarded scratch buffer is busy or enqueue fails.
 
 Photodiode sampling is released by a `k_timer`; ADC I/O runs in the photodiode
 thread, not in the timer ISR. Its period is 50 ms. At round completion, a
@@ -41,7 +43,7 @@ guard flag after the configured holdoff; no serial guard state is persisted.
 
 `lib/coo_commons/command_dispatch.c` owns the non-cancelable reboot work item
 used by `reboot` and OTA trial expiry. It calls the app reboot-prepare hook,
-then `sys_reboot(SYS_REBOOT_COLD)` after a short response window, and rejects
+then `sys_reboot(SYS_REBOOT_COLD)` after the default three-second response window, and rejects
 later app commands while reboot is pending. Trial expiry also stops main-loop
 watchdog feeds, so a stalled workqueue cannot keep the unconfirmed image alive.
 
@@ -68,13 +70,6 @@ Current users:
   polling and relay GPIO.
 - `lasers.c` auto-off expiration, which can block on Maiman Modbus while
   stopping output.
-
-## Generic Scheduled Action Helper
-
-`lib/coo_commons/scheduled_action.c` provides an optional fixed-table wrapper
-around Zephyr `k_work_delayable` for future shared firmware actions. It does not
-allocate, create threads, or implement user-programmable scheduling. Callbacks
-run in Zephyr's system workqueue and must stay short.
 
 ## MEMS Router Work
 

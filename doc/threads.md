@@ -2,10 +2,10 @@
 
 ## Main Thread
 
-`main()` is the network and MQTT pump. It feeds the watchdog, reconnects MQTT
+`main()` polls serial and is the network and MQTT pump. It feeds the watchdog, reconnects MQTT
 when the network is ready, resubscribes after reconnect, drains `outbound_queue`,
 and calls `coo_mqtt_process()`. It can block in MQTT connect/process and sleeps
-20 ms when MQTT is disconnected. MQTT connect waits are bounded below the
+50 ms when MQTT is disconnected. MQTT connect waits are bounded below the
 watchdog interval so a dead broker does not starve the main loop long enough to
 reset the device.
 
@@ -31,12 +31,27 @@ It dispatches one command and tries one non-blocking enqueue to
 - Command-dispatch lastcommand persistence can block on Zephyr NVS writes before
   an effect handler runs.
 
-## Serial Thread
+## Serial Polling in Main
 
-`coo_cmd_runtime_serial_thread()` calls `console_getline()` and blocks until a complete
-line is available. Non-empty lines refresh serial guard and enqueue a normalized
-command. Serial output is not printed from this thread; it is printed when the
-main loop drains `outbound_queue`.
+`coo_cmd_runtime_serial_poll()` reads at most 64 characters per main-loop pass
+with `console_read()` and `K_NO_WAIT`. Zephyr buffers received characters in the
+128-byte `CONFIG_CONSOLE_GETCHAR_BUFSIZE` buffer. The runtime assembles a line
+of at most 127 characters, handles CR/LF and backspace, and rejects an overlong
+line when its terminator arrives. Non-empty complete lines refresh serial guard
+and enter the normalized command path. Serial `help` prints directly during
+this poll; other replies print when main drains `outbound_queue`.
+
+Serial parsing and guard activation therefore wait for main-loop progress.
+Connected MQTT polling can wait 100 ms, and reconnect operations can take
+seconds. UART interrupts continue receiving during those waits, but a full
+receive buffer drops characters. Whole-line overflow rejection cannot detect
+bytes already lost by that receive buffer. Pasted input and response latency
+are not guaranteed during network stalls. Serial polling, MQTT callbacks, and
+outbound draining share main-owned scratch buffers and must stay in that thread.
+
+Commit `daf40fb` (May 19, 2026) replaced the former priority-6 serial thread with
+this polling design, before OTA work. Current firmware has no separate serial
+thread; the command executor still processes both transports one request at a time.
 
 ## Photodiode Thread
 
@@ -134,7 +149,6 @@ Current configured priorities:
 - Main MQTT/outbound/watchdog thread: 4.
 - Zephyr system workqueue: 5.
 - Command executor: 6.
-- Serial thread: 6.
 - App blocking workqueue: 7.
 - MCUmgr SMP processing workqueue: 8 (upstream default 3).
 - Zephyr logging thread: 13.

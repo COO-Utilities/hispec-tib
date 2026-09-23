@@ -23,9 +23,7 @@ struct nvs_fs;
  * domain handlers. The helper owns reusable fixed-buffer MQTT/serial topic
  * handling, built-in command execution, bounded serial payload normalization,
  * optional lastcommand persistence, warning publication, and transport-shaped
- * response handling. Applications may still provide a custom execute callback
- * for app-owned commands; library built-ins run first so an app extension cannot
- * accidentally remove help, serialguard, or reboot behavior.
+ * response handling. Library built-ins run before the application command table.
  */
 
 #define COO_CMD_TOPIC_MAX 96
@@ -123,11 +121,6 @@ struct coo_cmd_response {
 	size_t corr_len;
 };
 
-struct coo_cmd_work {
-	struct k_work work;
-	struct coo_cmd_request cmd;
-};
-
 struct coo_cmd_runtime_emit_args {
 	enum coo_cmd_runtime_emit_type type;
 	enum coo_cmd_runtime_emit_delivery delivery;
@@ -142,11 +135,6 @@ struct coo_cmd_spec;
 
 typedef int (*coo_cmd_handler_fn)(const struct coo_cmd_request *cmd,
 				  struct coo_cmd_response *out);
-
-typedef int (*coo_cmd_format_response_topic_fn)(const char *key,
-						char *out,
-						size_t out_len,
-						void *user_data);
 
 typedef int (*coo_cmd_serial_shorthand_fn)(const char *key,
 					   const char *payload,
@@ -215,7 +203,7 @@ struct coo_cmd_spec {
 /**
  * @brief Runtime wiring for a simple command executor and output drain.
  *
- * The application owns the queues, optional app-command execute callback, and
+ * The application owns the queues, command table, and
  * MQTT message-id storage. The runtime owns the copied device identity, topic
  * formatting derived from it, library built-ins, and scratch buffers used to
  * keep large command payload storage off thread stacks. The runtime helpers do
@@ -229,7 +217,6 @@ struct coo_cmd_runtime {
 	char device_id[32];
 	char request_prefix[COO_CMD_TOPIC_MAX];
 	char warning_topic[COO_CMD_TOPIC_MAX];
-	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
 	void *user_data;
@@ -238,13 +225,11 @@ struct coo_cmd_runtime {
 	struct nvs_fs *lastcommand_nvs;
 	uint16_t lastcommand_nvs_id;
 	struct coo_cmd_lastcommand lastcommand;
-#if defined(CONFIG_COO_CMD_REBOOT)
 	struct k_work_delayable reboot_work;
 	atomic_t reboot_pending;
 	uint32_t reboot_delay_ms;
 	bool reboot_erase_non_ip_settings;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
-#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	struct k_work_delayable serial_guard_work;
 	atomic_t serial_guard_active;
@@ -255,6 +240,9 @@ struct coo_cmd_runtime {
 	bool serial_line_overflow;
 	size_t serial_line_len;
 	char serial_line[COO_CMD_SERIAL_LINE_MAX];
+	/* Main serial polling and MQTT callbacks share ingress_cmd. Its outbound
+	 * drain and ingress error paths share outbound_scratch in the same thread.
+	 */
 	struct coo_cmd_request ingress_cmd;
 	/* Executor-owned buffers keep large request/response payload storage off
 	 * the command thread stack.
@@ -274,17 +262,14 @@ struct coo_cmd_runtime_config {
 	const char *device_id;
 	struct k_msgq *inbound_queue;
 	struct k_msgq *outbound_queue;
-	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
 	const struct coo_cmd_spec *command_specs;
 	size_t command_spec_count;
 	struct nvs_fs *lastcommand_nvs;
 	uint16_t lastcommand_nvs_id;
-#if defined(CONFIG_COO_CMD_REBOOT)
 	uint32_t reboot_delay_ms;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
-#endif
 	void *user_data;
 };
 
@@ -419,28 +404,12 @@ int coo_cmd_serial_append_json_field(char *out, size_t out_len, size_t *off,
 				     bool comma);
 
 /**
- * @brief Build a response that preserves request routing metadata.
- *
- * When @p format_topic is non-NULL, it is called for the default response
- * topic. A request-provided response_topic overrides it when present and
- * fitting the fixed topic buffer. When @p format_topic is NULL, the already
- * normalized cmd->response_topic is used directly.
- *
- * MQTT correlation data is echoed exactly when it fits the request buffer.
- */
-int coo_cmd_make_response(struct coo_cmd_response *out,
-			  const struct coo_cmd_request *cmd,
-			  enum coo_cmd_msg_type msg_type,
-			  const char *payload,
-			  coo_cmd_format_response_topic_fn format_topic,
-			  void *user_data);
-
-/**
  * @brief Build a response using the request's normalized response topic.
  *
- * Applications that normalize cmd->response_topic before dispatch should use
- * this helper rather than repeating a local response-topic wrapper in each
- * command adapter.
+ * MQTT correlation data is echoed exactly when it fits the request buffer.
+ * Payload may already occupy out->payload. NULL clears the payload and sets
+ * routing metadata so a caller can then fill a binary response and its length.
+ * Does not enqueue, publish, or block.
  */
 int coo_cmd_reply(struct coo_cmd_response *out,
 		  const struct coo_cmd_request *cmd,
@@ -492,7 +461,6 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3);
 /** Poll buffered console characters and queue completed serial commands. */
 void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime);
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 /**
  * Schedule the existing delayed reboot and app preparation hook. Does not sleep
  * or publish; returns -EALREADY if a reboot is already scheduled. OTA recovery
@@ -500,7 +468,6 @@ void coo_cmd_runtime_serial_poll(struct coo_cmd_runtime *runtime);
  */
 int coo_cmd_runtime_schedule_reboot(struct coo_cmd_runtime *runtime,
 				    bool erase_non_ip_settings);
-#endif
 
 /** Copy and queue one MQTT publish as a normalized command request. */
 void coo_cmd_runtime_handle_mqtt_publish(struct coo_cmd_runtime *runtime,

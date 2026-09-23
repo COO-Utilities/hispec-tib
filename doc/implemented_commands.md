@@ -19,8 +19,7 @@ comparison artifact, not a replacement for `commands.md`.
   actions when the device reconnects.
 - MQTT and serial share the same schema-based request classification selected
   by the app command spec table and applied by command dispatch. The internal
-  names `MSG_GET` and `MSG_SET` are dispatch-slot names, not user-visible
-  protocol verbs.
+  classes are `COO_CMD_QUERY` and `COO_CMD_EFFECT`.
 - Empty/no-payload requests are queries except no-payload actions such as `reboot`
   and `laser/clearfaults`, plus laserbank topic-suffix actions.
 - Non-empty payload requests are effect/action requests except documented query
@@ -31,9 +30,9 @@ comparison artifact, not a replacement for `commands.md`.
   requests are recorded by command dispatch before handler execution and
   persisted in a fixed NVS record.
 - Serial supports raw JSON, `key=value` fields, and selected shorthand forms.
-- Dispatcher built-ins (`help`, and when enabled, `serialguard` and `reboot`)
-  are handled in `command_dispatch.c`. Serial `help` prints directly; MQTT
-  `help`, `serialguard`, and `reboot` enqueue one response to `outbound_queue`.
+- Dispatcher built-ins (`help`, `reboot`, and enabled `serialguard`) are handled
+  in `command_dispatch.c`. Serial `help` prints directly during main-loop
+  polling; other built-ins run in the executor and enqueue their responses.
 - App command handlers run in `coo_cmd_runtime_executor_thread()` and enqueue one
   response to `outbound_queue`.
 - App support predicates reject unsupported command families before their

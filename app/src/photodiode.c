@@ -19,7 +19,7 @@
 
 #include "photodiode.h"
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 
 
@@ -836,14 +836,13 @@ static void pd_emit_adc_error_warning(enum photodiode_channel channel, int rc)
 
     snprintk(context, sizeof(context), "channel=%s rc=%d",
              photodiode_channel_names[channel], rc);
-    coo_cmd_runtime_emit(command_runtime_get(),
-                         &(const struct coo_cmd_runtime_emit_args){
-                             .type = COO_CMD_RUNTIME_EMIT_WARNING,
-                             .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-                             .code = "photodiode_adc_error",
-                             .msg = "photodiode ADC sample discarded",
-                             .context = context,
-	                         });
+    app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+        .type = COO_CMD_RUNTIME_EMIT_WARNING,
+        .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+        .code = "photodiode_adc_error",
+        .msg = "photodiode ADC sample discarded",
+        .context = context,
+    });
 }
 
 static void pd_emit_dark_failed_warning(enum photodiode_channel channel)
@@ -856,14 +855,13 @@ static void pd_emit_dark_failed_warning(enum photodiode_channel channel)
 
 	snprintk(context, sizeof(context), "channel=%s",
 		 photodiode_channel_names[channel]);
-	coo_cmd_runtime_emit(command_runtime_get(),
-			     &(const struct coo_cmd_runtime_emit_args){
-				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-				     .code = "photodiode_dark_failed",
-				     .msg = "photodiode dark capture had no valid samples",
-				     .context = context,
-			     });
+	app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING,
+		.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+		.code = "photodiode_dark_failed",
+		.msg = "photodiode dark capture had no valid samples",
+		.context = context,
+	});
 }
 
 static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t raw,
@@ -967,14 +965,13 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 			 photodiode_channel_names[channel],
 			 (double)noise_rms,
 			 (double)settings->noise_warn_rms_mv);
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "photodiode_noise",
-					     .msg = "photodiode fixed-window RMS exceeded warning threshold",
-					     .context = context,
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "photodiode_noise",
+			.msg = "photodiode fixed-window RMS exceeded warning threshold",
+			.context = context,
+		});
 	}
 }
 

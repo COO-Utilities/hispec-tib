@@ -9,11 +9,11 @@
 #include <float.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
-#include "command.h"
 #include "laserbank_tempcontrol.h"
 #include "lasers.h"
 #include "throughput_monitor.h"
@@ -79,7 +79,8 @@ static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
 	       (parse_rc == COO_JSON_EXTRACT_MISSING || payload_mode == *mode_value);
 }
 
-int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out,
+		    bool require_override_off)
 {
 	enum hispec_laser_bank_power_mode mode;
 	char payload[128] = {0};
@@ -96,7 +97,7 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			return coo_cmd_error(out, cmd, "mode must be auto, override_on, or override_off");
 		}
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
-		if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF && command_ota_active()) {
+		if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF && require_override_off) {
 			return coo_cmd_error(out, cmd, "OTA requires laser bank override_off");
 		}
 		rc = hispec_laser_bank_power_mode_set(mode);
@@ -126,7 +127,7 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	uint32_t off_ms = 0U;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	int rc;
 
 	rc = hispec_laser_bank_clear_faults(HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS, &off_ms);
@@ -208,7 +209,7 @@ static int laserbank_tempcontrol_status_payload(char *payload, size_t payload_le
 int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum laserbank_heater_mode mode;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	int mode_value;
 
 	if (cmd != NULL &&
@@ -334,7 +335,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	enum hispec_laser_id id;
 	struct hispec_laser_status status = {0};
 	char name[16] = {0};
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
@@ -397,7 +398,7 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 {
 	enum hispec_laser_id id;
 	char name[16] = {0};
-	char payload[MAX_PAYLOAD_LEN];
+	char payload[COO_CMD_PAYLOAD_MAX];
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
 		return coo_cmd_error(out, cmd, "missing or invalid laser name");
@@ -495,7 +496,7 @@ int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
@@ -631,7 +632,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
-	char settings_json[MAX_PAYLOAD_LEN] = {0};
+	char settings_json[COO_CMD_PAYLOAD_MAX] = {0};
 	char invalid[64] = "settings";
 	bool changed = false;
 	bool persist = false;
@@ -691,7 +692,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 	enum hispec_laser_id id;
 	struct hispec_laser_status s = {0};
 	char name[16] = {0};
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	size_t off = 0U;
 	int rc;
 

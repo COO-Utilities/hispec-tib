@@ -81,14 +81,15 @@ the console.
 
 Top-level implementation path:
 
-1. `coo_cmd_runtime_serial_thread()` reads one console line.
+1. Main calls `coo_cmd_runtime_serial_poll()` to consume up to 64 buffered
+   characters without waiting and assemble complete console lines. Receive
+   buffering and network-wait limitations are described in `threads.md`.
 2. `coo_cmd_runtime_handle_serial_line()` splits the line into `<key>` and optional payload.
 3. `coo_cmd_normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
-4. Dispatcher built-ins handle `help` and, when enabled,
-   `serialguard`. Serial `help` prints directly and does not enter the command
-   queues.
-5. `coo_cmd_runtime_executor_thread()` dispatches app-owned commands through the
-   app command table.
+4. Serial `help` prints directly during ingress and does not enter the command
+   queues. Other normalized requests are enqueued to `inbound_queue`.
+5. `coo_cmd_runtime_executor_thread()` handles built-ins (`help`, `reboot`, and
+   enabled `serialguard`) before dispatching app commands through the static table.
 6. `coo_cmd_runtime_drain_outbound()` prints queued serial responses with
    `coo_cmd_print_serial_response_pretty()`. The simpler
    `coo_cmd_print_serial_response()` remains available as a fallback renderer.
@@ -182,7 +183,8 @@ not be needed for normal serial operation.
 (warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
-- **Top-level helper:** `coo_cmd_runtime_emit(command_runtime_get(), &args)`
+- **App producer interface:** `app_output_emit(&args)`, using the existing
+  common `coo_cmd_runtime_emit()` implementation and outbound queue.
 - **Queue behavior:** warnings are usually best-effort MQTT, but the runtime
   helper accepts an explicit delivery mode. Required warnings are retried by the
   outbound drain after successful enqueue; enqueue can still fail if the bounded

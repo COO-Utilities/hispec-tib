@@ -2,8 +2,11 @@
 
 ## Warning Flow
 
-Warnings are emitted with `coo_cmd_runtime_emit(command_runtime_get(), &args)`
-using `COO_CMD_RUNTIME_EMIT_WARNING`.
+App warnings are emitted with `app_output_emit(&args)` using
+`COO_CMD_RUNTIME_EMIT_WARNING`. The existing app queue owner supplies this
+interface through `app_output.h`, delegating to `coo_cmd_runtime_emit()`.
+Domain producers do not obtain the command runtime. Dispatcher-owned warnings
+use the common emitter directly.
 
 Behavior:
 
@@ -15,6 +18,9 @@ Behavior:
 - Drops best-effort MQTT warnings if the queue is full, MQTT is unavailable, or
   publish fails. Required warnings are retried by the outbound drain after
   successful enqueue, but enqueue can still fail if the bounded queue is full.
+- If a producer does not supply a response buffer, warning construction uses
+  the existing guarded scratch buffer. Contention returns `-EAGAIN`; the local
+  log is retained. Queue exhaustion returns `-ENOSPC` without waiting.
 - Warnings are intentionally not mirrored into sticky status fields. Operators
   can inspect logs or retry/query state after a warning.
 
@@ -27,7 +33,7 @@ dt/<device>/warning
 The `<device>` component follows the selected board strap: `hsfib-tib`,
 `hsfib-rcal`, `hsfib-bcal`, or `hsfib-as`.
 
-Current warning codes seen in code:
+Examples of warning codes:
 
 - `serial_guard_active`
 - `attenuator_clamped`
@@ -55,14 +61,14 @@ dt/<device>/hk_tput
 Payload format is selected by the command request and is specified in
 `commands.md`.
 
-Throughput telemetry is best-effort. It is queued through the command runtime
-emit helper with `K_NO_WAIT`. If the outbound queue is full, the current sample
+Throughput telemetry is best-effort. It is queued through `app_output_emit()`
+with `K_NO_WAIT`. If the outbound queue is full, the current sample
 is dropped. If MQTT is unavailable or publish fails after transfer, the sample
 is dropped.
 
 ## Command Responses
 
-Command responses are `struct OutMsg` records built by handlers and drained by
+Command responses are `struct coo_cmd_response` records built by handlers and drained by
 the main loop. MQTT response topic selection is:
 
 1. MQTT 5 `response_topic` property when present and fitting the fixed buffer.

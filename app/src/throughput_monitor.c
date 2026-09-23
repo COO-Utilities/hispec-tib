@@ -13,7 +13,7 @@
 #include "app_settings.h"
 #include "attenuator.h"
 #include "attenuator_calibration.h"
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 #include "housekeeping.h"
 
@@ -427,7 +427,7 @@ static void publish_sample(const struct throughput_state *state,
 		}
 	}
 	msg->payload_len = off;
-	(void)coo_cmd_runtime_emit(command_runtime_get(), &(const struct coo_cmd_runtime_emit_args){
+	(void)app_output_emit(&(const struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_DATA, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.suffix = topic_suffix, .out = msg,
 	});
@@ -442,7 +442,7 @@ static void warn_fault_stop(const struct throughput_state *state, const char *re
 	snprintk(context, sizeof(context), "channel=%s laser=%s rc=%d",
 		photodiode_channel_names[state->channel],
 		state->has_laser ? hispec_laser_name(state->laser) : "none", error);
-	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.code = "throughput_stopped", .msg = reason, .context = context,
 	});

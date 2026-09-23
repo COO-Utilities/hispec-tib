@@ -19,7 +19,7 @@ flowchart TD
   Devices --> TP[throughput_monitor]
   Devices --> Temp[temperature sensor]
   MQTT[MQTT ingress] --> InQ[inbound_queue]
-  Serial[serial console] --> InQ
+  Serial[main polls serial console] --> InQ
   InQ --> Exec[command executor]
   Exec --> MEMS
   Exec --> Atten
@@ -27,8 +27,9 @@ flowchart TD
   Exec --> PD
   Exec --> TP
   Exec --> OutQ[outbound_queue]
-  TP --> OutQ
-  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
+  TP --> AppEmit[app_output_emit]
+  AppEmit --> RuntimeEmit[coo_cmd_runtime_emit]
+  RuntimeEmit --> OutQ
   OutQ --> MainLoop[main loop]
   MainLoop --> Broker[MQTT publish]
   MainLoop --> Console[serial print]
@@ -47,34 +48,37 @@ flowchart TD
   SettingsOK -- no --> Stop
   SettingsOK -- yes --> Straps[read active-low board straps]
   Straps --> PersistBoard[persist or validate board type]
-  PersistBoard --> DevicesReady[check profile devices]
-  DevicesReady --> Router[setup MEMS switches/routes]
+  PersistBoard --> Runtime[configure command runtime and console input]
+  Runtime --> DevicesReady[check profile devices]
+  DevicesReady --> OTA[read boot image state and enforce trial bank off]
+  OTA --> Router[setup MEMS switches/routes]
   Router --> Attens[setup profile attenuators]
-  Attens --> Runtime[register scheduled actions]
-  Runtime --> Threads[start executor and serial threads]
-  Threads --> Work[start ambient delayable work]
+  Attens --> Work[start app blocking queue and ambient/auto-off work]
   Work --> TibActors{TIB profile}
   TibActors -- yes --> TibStart[start photodiode, throughput, and laser-bank work]
-  TibActors -- no --> SNTP[start SNTP runtime]
-  TibStart --> SNTP
+  TibActors -- no --> Executor[start command executor]
+  TibStart --> Executor
+  Executor --> SNTP[start SNTP runtime]
   SNTP --> Network[start network]
   Network --> MQTTInit[start MQTT client]
-  MQTTInit --> Loop[main MQTT/outbound loop]
+  MQTTInit --> Loop[main serial/MQTT/outbound loop]
 ```
 
 ## 3. Main Loop, Network, and MQTT Processing
 
 ```mermaid
 flowchart TD
-  Loop[main loop] --> Feed[feed watchdog]
-  Feed --> Ready{network ready}
-  Ready -- no --> Sleep[k_sleep 20 ms]
-  Ready -- yes --> Connected{MQTT connected}
-  Connected -- no --> Connect[coo_mqtt_connect]
-  Connected -- yes --> Drain[coo_cmd_runtime_drain_outbound]
-  Connect --> Subscribe[subscribe cmd/<device>/req/#]
-  Subscribe --> Drain
-  Drain --> Process[coo_mqtt_process poll/read]
+  Loop[main loop] --> Serial[poll up to 64 serial characters]
+  Serial --> Config[apply changed MQTT settings]
+  Config --> OTA[check OTA window and trial deadlines]
+  OTA --> FeedAllowed{trial not reverting}
+  FeedAllowed -- yes --> Feed[feed watchdog]
+  FeedAllowed -- no --> Maintain[maintain network/MQTT connection and subscription]
+  Feed --> Maintain
+  Maintain --> Drain[coo_cmd_runtime_drain_outbound]
+  Drain --> Connected{MQTT connected}
+  Connected -- yes --> Process[coo_mqtt_process poll/read]
+  Connected -- no --> Sleep[k_sleep 50 ms]
   Process --> Loop
   Sleep --> Loop
 ```
@@ -92,7 +96,7 @@ flowchart TD
   QueryAllowed -- no --> Reject[publish/enqueue serial guard error]
   QueryAllowed -- yes --> Enq{inbound_queue has space}
   Guard -- no --> Enq
-  Enq -- yes --> Queue[queue Command]
+  Enq -- yes --> Queue[queue coo_cmd_request]
   Enq -- no --> Busy[publish/enqueue busy error]
 ```
 
@@ -100,11 +104,16 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Console[console_getline] --> Line{non-empty line}
-  Line -- no --> Console
+  Console[main-loop nonblocking console_read, up to 64 characters] --> Assemble[assemble line, handle CR/LF and backspace]
+  Assemble --> Overflow{overlong line terminated}
+  Overflow -- yes --> LongError[enqueue serial line-too-long error]
+  Overflow -- no --> Line{complete non-empty line}
+  Line -- no --> Return[return to main loop]
   Line -- yes --> Guard[refresh serial guard]
   Guard --> Split[split key and payload]
-  Split --> Payload{payload form}
+  Split --> Help{help command}
+  Help -- yes --> Print[print help directly or enqueue argument error]
+  Help -- no --> Payload{payload form}
   Payload -- none --> Empty[empty JSON payload]
   Payload -- raw JSON --> Copy[copy payload]
   Payload -- key=value --> KV[build JSON object]
@@ -114,7 +123,7 @@ flowchart TD
   Short --> Classify
   Empty --> Classify
   Classify --> Queue{inbound_queue has space}
-  Queue -- yes --> Enqueue[queue Command]
+  Queue -- yes --> Enqueue[queue coo_cmd_request]
   Queue -- no --> Error[enqueue serial busy/error]
 ```
 
@@ -122,24 +131,30 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  Wait[k_msgq_get inbound_queue K_FOREVER] --> Override{app execute override}
-  Override -- yes --> AppExec[app execute handler]
-  Override -- no --> Reboot{reboot pending}
+  Wait[k_msgq_get inbound_queue K_FOREVER] --> Reboot{reboot pending and key is not reboot}
   Reboot -- yes --> Busy[reboot pending response]
-  Reboot -- no --> Dispatch[find longest command spec]
-  Dispatch --> Supported{supported on board}
+  Reboot -- no --> Builtin{library built-in}
+  Builtin -- yes --> RunBuiltin[validate and handle built-in]
+  Builtin -- no --> Recheck{reboot now pending}
+  Recheck -- yes --> Busy
+  Recheck -- no --> Dispatch[find longest matching command spec]
+  Dispatch --> Found{spec found}
+  Found -- no --> Unknown[unknown response]
+  Found -- yes --> Supported{supported on board}
   Supported -- no --> Unavailable[unavailable response]
-  Supported -- yes --> Record{effect-capable request}
+  Supported -- yes --> Validate{payload keys valid}
+  Validate -- no --> Invalid[argument error]
+  Validate -- yes --> HasHandler{handler for request class}
+  HasHandler -- no --> Unsupported[unsupported response]
+  HasHandler -- yes --> Record{effect request}
   Record -- yes --> Last[update persisted lastcommand]
-  Record -- no --> Found{handler exists for selected path}
-  Last --> Found
-  Found -- no entry --> Unknown[unknown response]
-  Found -- no handler --> Unsupported[unsupported response]
-  Found -- yes --> Handler[run handler]
-  Handler --> Response[struct OutMsg]
-  AppExec --> Out[enqueue outbound_queue]
+  Record -- no --> Handler[run handler]
+  Last --> Handler
+  Handler --> Response[struct coo_cmd_response]
+  RunBuiltin --> Response
+  Invalid --> Out[enqueue outbound_queue]
   Busy --> Out
-  Unknown --> Out[enqueue outbound_queue]
+  Unknown --> Out
   Unavailable --> Out
   Unsupported --> Out
   Response --> Out
@@ -151,13 +166,14 @@ flowchart TD
 ```mermaid
 flowchart TD
   Handler[command handler] --> OutQ[outbound_queue]
-  RuntimeEmit[coo_cmd_runtime_emit] --> OutQ
-  Throughput[throughput_monitor_thread] --> OutQ
+  Producer[app warnings and telemetry] --> AppEmit[app_output_emit]
+  AppEmit --> RuntimeEmit[coo_cmd_runtime_emit]
+  RuntimeEmit --> OutQ
   OutQ --> Drain[main loop drain]
   Drain --> Target{target}
   Target -- serial --> Print[print topic and payload]
   Target -- MQTT best effort --> MQTTBE{MQTT available and publish OK}
-  Target -- MQTT response --> MQTT{MQTT available and publish OK}
+  Target -- MQTT response or required data/warning --> MQTT{MQTT available and publish OK}
   MQTTBE -- no --> Drop[drop]
   MQTTBE -- yes --> Done[done]
   MQTT -- no --> Requeue[requeue if possible]
@@ -168,7 +184,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  SerialLine[serial command received] --> Note[runtime serial activity hook]
+  SerialLine[complete serial command parsed in main] --> Note[record serial guard activity]
   Note --> Active[set serial guard active]
   Active --> Schedule[schedule dispatcher k_work_delayable]
   MQTTCommand[MQTT command] --> Check{guard active}
@@ -185,12 +201,11 @@ flowchart TD
 ```mermaid
 flowchart TD
   Dispatch[command_dispatch.c] --> Guard[serial guard delayable work]
-  Command[command.c] --> Reboot[reboot delayable work]
-  Commons[coo_commons scheduled_action helper] --> Future[future fixed-table firmware actions]
+  Dispatch --> Reboot[reboot delayable work]
   Guard --> SysQ[Zephyr system workqueue]
   Reboot --> SysQ
-  Future --> SysQ
-  SysQ --> Expire[short owner callback]
+  SysQ --> Expire[guard expiry clears active flag]
+  SysQ --> Prepare[reboot calls app preparation hook, then sys_reboot]
 ```
 
 ## 10. Photodiode Sampling and Dark Calibration Flow
@@ -438,9 +453,12 @@ flowchart TD
   Install --> Setup[wdt_setup]
   Setup -- failure --> Stop
   Setup --> Loop[main loop]
-  Loop --> Feed[wdt_feed]
+  Loop --> OTA[command_ota_poll]
+  OTA --> Allowed{trial not reverting}
+  Allowed -- yes --> Feed[wdt_feed]
+  Allowed -- no --> Rollback[skip feed; delayed reboot or watchdog resets]
   Feed --> Loop
-  Feed -- failure --> Log[log watchdog feed failure]
+  Rollback --> Loop
 ```
 
 ## 19. Network and MQTT Reconfiguration Flow
@@ -464,7 +482,7 @@ flowchart TD
   ConnectedButBlocked -- yes --> DropConn[mqtt_disconnect]
   ConnectedButBlocked -- no --> DrainNoMqtt[drain outbound with MQTT unavailable]
   DropConn --> DrainNoMqtt
-  DrainNoMqtt --> Sleep[k_sleep 20 ms]
+  DrainNoMqtt --> Sleep[k_sleep 50 ms]
 
   NetReady -- yes --> Connected{MQTT connected}
   Connected -- no --> Connect[coo_mqtt_connect]

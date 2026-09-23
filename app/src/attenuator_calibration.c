@@ -52,7 +52,7 @@
 
 #include "app_settings.h"
 #include "attenuator.h"
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 #include "housekeeping.h"
 #include "mems_switching.h"
@@ -324,14 +324,12 @@ static void atten_cal_publish_telemetry(struct coo_cmd_response *msg)
 		return;
 	}
 	msg->payload_len = strlen(msg->payload);
-	(void)coo_cmd_runtime_emit(
-		command_runtime_get(),
-		&(const struct coo_cmd_runtime_emit_args){
-			.type = COO_CMD_RUNTIME_EMIT_DATA,
-			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-			.suffix = ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX,
-			.out = msg,
-		});
+	(void)app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_DATA,
+		.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+		.suffix = ATTEN_CAL_TELEMETRY_TOPIC_SUFFIX,
+		.out = msg,
+	});
 }
 
 /** Start a common telemetry JSON object populated with current calibration state. */
@@ -1740,11 +1738,11 @@ static int fit_correction_coeff(const struct atten_cal_fit_point *points,
 
 		snprintk(context, sizeof(context), "%s terms=%d first_failure: %s", name, selected, first_failure);
 		LOG_WRN("atten correction %s", context);
-		coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+		app_output_emit(&(struct coo_cmd_runtime_emit_args){
 			.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 			.code = "atten_correction_rejected",
 			.msg = selected < 0 ? "no valid attenuator fit" : (selected == 0 ?
-				"all corrections rejected; retaining base fit" : "full correction rejected; refitted with fewer terms"),
+			        "all corrections rejected; retaining base fit" : "full correction rejected; refitted with fewer terms"),
 			.context = context,
 		});
 	}
@@ -2161,22 +2159,20 @@ int attenuator_calibration_start_auto(
 	publish_status_locked(NULL);
 	k_mutex_unlock(&cal_lock);
 	if (replacing) {
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "atten_calibration_restart",
-					     .msg = "restarting attenuator calibration",
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "atten_calibration_restart",
+			.msg = "restarting attenuator calibration",
+		});
 	}
 	if (throughput_monitor_any_active()) {
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "throughput_stopped",
-					     .msg = "stopping throughput for attenuator calibration",
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "throughput_stopped",
+			.msg = "stopping throughput for attenuator calibration",
+		});
 	}
 	rc = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
 	if (rc != 0) goto failed_start;

@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <math.h>
 #include <string.h>
+#include <zephyr/data/json.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 #include <hispec_build_version.h>
@@ -27,6 +29,7 @@
 #include "devices.h"
 #include "lasers.h"
 #include "app_identity.h"
+#include "app_output.h"
 #include "app_settings.h"
 #include "attenuator.h"
 #include "attenuator_command.h"
@@ -47,9 +50,6 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define SERIAL_WRAP_COLUMN COO_CMD_SERIAL_WRAP_COLUMN
-#define COMMAND_REBOOT_DELAY_MS 3000U
-
 static uint16_t mqtt_msg_id = 1;
 
 /* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
@@ -58,7 +58,7 @@ static uint16_t mqtt_msg_id = 1;
  */
 K_MSGQ_DEFINE(inbound_queue,
               sizeof(struct coo_cmd_request),
-              MAX_PENDING_COMMANDS,      /* depth */
+              2,      /* depth */
               4);     /* 4‐byte align */
 
 /* Responses, warnings, and telemetry leave the executor through this bounded
@@ -87,6 +87,16 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         void *user_data);
 static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
 static int ota_command(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int command_laserbank_power(const struct coo_cmd_request *cmd,
+                                   struct coo_cmd_response *out);
+static int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #define CMD_HELP(_usage, _args, _values, _notes, _flags) \
     .help = &(const struct coo_cmd_help_entry){ \
@@ -266,7 +276,7 @@ static const struct coo_cmd_spec command_specs[] = {
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only app-owned laser policy/settings wrapper",
                         COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_SPEC_TIB_PREFIX("laser/bankpower", laserbank_power, laserbank_power,
+    CMD_SPEC_TIB_PREFIX("laser/bankpower", command_laserbank_power, command_laserbank_power,
                  COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
                  "laser/bankpower [mode=<auto|override_on|override_off>]",
                  "mode required for effect; suffix form laser/bankpower/<mode> also works",
@@ -519,14 +529,19 @@ static void ota_close(void)
     }
 }
 
-bool command_ota_active(void)
+/* Pass app policy down before mode parsing. OTA can become active only through
+ * this same executor or while already guarded by an in-flight/pending/trial
+ * state. Release ota_lock before the laser owner can block on hardware I/O.
+ */
+static int command_laserbank_power(const struct coo_cmd_request *cmd,
+                                   struct coo_cmd_response *out)
 {
-    bool active;
+    bool require_override_off;
 
     k_mutex_lock(&ota_lock, K_FOREVER);
-    active = ota_enabled || ota_inflight || ota_pending || ota_trial || ota_reverting;
+    require_override_off = ota_enabled || ota_inflight || ota_pending || ota_trial || ota_reverting;
     k_mutex_unlock(&ota_lock);
-    return active;
+    return laserbank_power(cmd, out, require_override_off);
 }
 
 /* Runs on the SMP workqueue, never on its UDP receive thread. No bank I/O:
@@ -614,7 +629,7 @@ bool command_ota_poll(void)
 
     if (request_reboot) {
         LOG_WRN("Unconfirmed image trial expired; rebooting for MCUboot rollback");
-        rc = coo_cmd_runtime_schedule_reboot(command_runtime_get(), false);
+        rc = coo_cmd_runtime_schedule_reboot(&command_runtime, false);
         if (rc != 0 && rc != -EALREADY) {
             LOG_ERR("Rollback reboot scheduling failed (%d); watchdog will reset", rc);
         }
@@ -758,15 +773,11 @@ int command_runtime_init(void)
         .inbound_queue = &inbound_queue,
         .outbound_queue = &outbound_queue,
         .mqtt_msg_id = &mqtt_msg_id,
-        .serial_wrap_column = SERIAL_WRAP_COLUMN,
         .command_specs = command_specs,
         .command_spec_count = ARRAY_SIZE(command_specs),
         .lastcommand_nvs = app_settings_nvs_fs(),
         .lastcommand_nvs_id = APP_SETTINGS_NVS_ID_LAST_COMMAND,
-#if defined(CONFIG_COO_CMD_REBOOT)
-        .reboot_delay_ms = COMMAND_REBOOT_DELAY_MS,
         .reboot_prepare = command_prepare_reboot,
-#endif
     };
     int rc;
 
@@ -783,6 +794,10 @@ struct coo_cmd_runtime *command_runtime_get(void)
     return &command_runtime;
 }
 
+int app_output_emit(const struct coo_cmd_runtime_emit_args *args)
+{
+    return coo_cmd_runtime_emit(&command_runtime, args);
+}
 
 
 
@@ -831,9 +846,9 @@ static int ip_status_payload(char *payload, size_t payload_len)
     return (written >= 0 && (size_t)written < payload_len) ? 0 : -ENOSPC;
 }
 
-int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-    char payload[MAX_PAYLOAD_LEN];
+    char payload[COO_CMD_PAYLOAD_MAX];
 
     if (ip_status_payload(payload, sizeof(payload)) != 0) {
         return coo_cmd_error(out, cmd, "ip response too large");
@@ -899,10 +914,10 @@ static int command_extract_ipv4(const char *json, const char *key,
     return rc;
 }
 
-int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_ip_settings ip_cfg;
-    char response[MAX_PAYLOAD_LEN];
+    char response[COO_CMD_PAYLOAD_MAX];
 #if defined(CONFIG_NET_DHCPV4)
     const bool dhcp_supported = true;
 #else
@@ -1075,12 +1090,12 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_ok(out, cmd);
 }
 
-int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
     char endpoint[160] = {0};
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
 #if defined(CONFIG_DNS_RESOLVER)
     const bool dns_supported = true;
 #else
@@ -1099,7 +1114,7 @@ int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
@@ -1141,11 +1156,11 @@ int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_ok(out, cmd);
 }
 
-int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct timespec ts = {0};
     uint64_t utc_ms;
-    char payload[MAX_PAYLOAD_LEN];
+    char payload[COO_CMD_PAYLOAD_MAX];
 
     if (sys_clock_gettime(SYS_CLOCK_REALTIME, &ts) != 0) {
         return coo_cmd_error(out, cmd, "clock read failed");
@@ -1159,7 +1174,7 @@ int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     uint64_t utc_ms = 0;
     struct timespec ts = {0};
@@ -1283,7 +1298,7 @@ static int help_options_append_routes(char *payload, size_t payload_len, size_t 
 static int help_options_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out)
 {
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
 
     if (coo_json_append(payload, sizeof(payload), &off,
@@ -1305,7 +1320,7 @@ static int help_options_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
     bool include_ip = false;
@@ -1313,7 +1328,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     bool include_attens = false;
     struct coo_cmd_lastcommand lastcommand;
     bool has_lastcommand;
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
     uint64_t pd_on_s;
 
@@ -1356,7 +1371,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
 
     if (include_ip) {
-        char ip_payload[MAX_PAYLOAD_LEN];
+        char ip_payload[COO_CMD_PAYLOAD_MAX];
 
         if (ip_status_payload(ip_payload, sizeof(ip_payload)) != 0 ||
             coo_json_append(payload, sizeof(payload), &off,
@@ -1452,11 +1467,11 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
     struct hispec_laser_channel_temperature channel_temp[HISPEC_LASER_COUNT] = {0};
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
     double bank_sum = 0.0;
     uint8_t bank_count = 0U;

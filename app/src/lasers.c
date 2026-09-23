@@ -13,7 +13,7 @@
 #include "lasers.h"
 
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 
 #include <errno.h>
@@ -228,7 +228,7 @@ static void laser_health_warning(enum hispec_laser_id id, const char *code,
 	char context[96];
 	snprintk(context, sizeof(context), "laser=%s node=%u rc=%d",
 		laser_profiles[id].name, laser_profiles[id].node_id, error);
-	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.code = code, .msg = message, .context = context,
 	});

@@ -4,7 +4,7 @@
  */
 
 #include "attenuator.h"
-#include "command.h"
+#include "app_output.h"
 #include "drivers/dac/dac7x78.h"
 
 #include <errno.h>
@@ -785,14 +785,13 @@ static bool attenuator_write_voltage(struct attenuator_dac_cfg *dac_cfg,
 		snprintk(context, sizeof(context),
 			 "channel=%u requested=%.3f clamped=%.3f",
 			 dac_cfg->cfg.channel_id, (double)unclamped_voltage, (double)voltage);
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "attenuator_clamped",
-					     .msg = "attenuator command exceeded drive range and was clamped",
-					     .context = context,
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "attenuator_clamped",
+			.msg = "attenuator command exceeded drive range and was clamped",
+			.context = context,
+		});
 	}
 
     code = attenuator_voltage_to_code(dac_cfg, voltage);
@@ -922,14 +921,13 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
     if (attenuation_db > max1 + max2) {
         snprintk(context, sizeof(context), "requested=%.3f clamped=%.3f",
                  attenuation_db, max1 + max2);
-        if (!calibrated_only) coo_cmd_runtime_emit(command_runtime_get(),
-            &(const struct coo_cmd_runtime_emit_args){
-                .type = COO_CMD_RUNTIME_EMIT_WARNING,
-                .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-                .code = "attenuator_clamped",
-                .msg = "attenuator command exceeded modeled range and was clamped",
-                .context = context,
-            });
+        if (!calibrated_only) app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+            .type = COO_CMD_RUNTIME_EMIT_WARNING,
+            .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+            .code = "attenuator_clamped",
+            .msg = "attenuator command exceeded modeled range and was clamped",
+            .context = context,
+        });
         attenuation_db = max1 + max2;
     }
     if (fabs(attenuation_db - drv->attenuation_db) <= ATTENUATOR_DB_EPSILON &&

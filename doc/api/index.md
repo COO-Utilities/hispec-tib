@@ -14,7 +14,6 @@ photodiode_monitoring.md
 attenuator_control.md
 maiman_laser.md
 settings.md
-scheduled_actions.md
 warnings.md
 sntp_time.md
 temperature.md
