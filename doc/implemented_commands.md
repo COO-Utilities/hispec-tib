@@ -145,14 +145,16 @@ which slow resources it can touch, and known implementation-specific caveats.
 
 ### `ota`
 
-- Owner: `ota_command()` and OTA initialization/poll/callbacks in `command.c`.
+- Owner: `runtime_ota_command()` in COO dispatch handles the command;
+  `lib/coo_commons/ota.c` owns lifecycle state, image operations, and SMP callbacks.
 - Side effects: controls SMP UDP access, confirms the exact running image,
   selects existing bank off mode at trial startup, and schedules rollback reboot
   on expiry. MCUboot flags own persistent image state; no new NVS record.
 - Blocking: OTA mutex, listener setup/close, and confirmation flash write.
   Upload/erase work runs in Zephyr's SMP workqueue, not the command executor.
-- Bank mode changes share one OTA guard in `laserbank_power()`; closing and
-  confirmation do not restore `auto`.
+- Dispatch-table permissions reject disallowed queries/effects before handlers
+  run. All bank-mode writes are blocked while active; queries remain allowed.
+  Startup bank preparation belongs to `main.c`; closing/confirmation never restore `auto`.
 
 ### `mems/route` and `mems/route/loss`
 

@@ -24,11 +24,9 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 
 /**
  * Query or set bank power mode, possibly blocking on the laser owner's I/O.
- * App dispatch supplies require_override_off for OTA; queries and selecting
- * override_off remain allowed. Does not change or persist OTA policy.
+ * Command dispatch checks OTA permission before calling this handler.
  */
-int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out,
-		    bool require_override_off);
+int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Clear laser-bank faults with a bounded laser-bank power cycle. */
 int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

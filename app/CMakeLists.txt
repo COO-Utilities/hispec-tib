@@ -33,9 +33,6 @@ target_include_directories(app PRIVATE
 
 add_dependencies(app hispec_build_version)
 
-# img_mgmt.h exposes MCUboot image types through this interface target.
-target_link_libraries(app PRIVATE MCUBOOT_BOOTUTIL)
-
 target_sources(app PRIVATE
         src/main.c
         src/app_identity.c

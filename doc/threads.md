@@ -27,7 +27,9 @@ It dispatches one command and tries one non-blocking enqueue to
 - Persistent settings commands can block on Zephyr NVS writes.
 - `reboot` and `serialguard` use command-dispatch-owned delayable work.
 - `ota` opens/closes the UDP listener or writes the running MCUboot confirmation
-  flag. It can block on the OTA mutex or internal-flash I/O.
+  flag through COO OTA. It can block on the OTA mutex or internal-flash I/O.
+- The executor checks table-based OTA permissions before handlers or lastcommand
+  writes, including for requests already queued when the window opens.
 - Command-dispatch lastcommand persistence can block on Zephyr NVS writes before
   an effect handler runs.
 

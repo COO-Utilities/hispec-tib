@@ -8,6 +8,7 @@ architecture and command audit pages.
 :maxdepth: 2
 
 command_interface.md
+ota.md
 devices.md
 mems_switching.md
 photodiode_monitoring.md

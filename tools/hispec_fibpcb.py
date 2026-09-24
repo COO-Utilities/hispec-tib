@@ -4145,8 +4145,9 @@ class HispecFibPcb:
     def set_ota_window(self, enable: bool, *, duration_s: int = 600) -> OtaStatus:
         """Open/close SMP upload access; the operator must first turn the TIB bank off.
 
-        Closing leaves the bank override unchanged. A pending image or trial
-        continues to guard bank mode even after the upload window closes.
+        Closing leaves the bank override unchanged. OTA restricts commands to
+        its allowlist, including blocking every bank-mode write. A pending image
+        or trial keeps those restrictions after the upload window closes.
         """
         if type(enable) is not bool:
             raise ValueError("enable must be bool")

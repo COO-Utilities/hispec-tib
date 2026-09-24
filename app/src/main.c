@@ -25,6 +25,7 @@
 #include <coo_commons/mqtt_client.h>
 #include <coo_commons/command_dispatch.h>
 #include <coo_commons/network.h>
+#include <coo_commons/ota.h>
 
 #include "app_identity.h"
 #include "app_output.h"
@@ -33,6 +34,7 @@
 #include "devices.h"
 #include "housekeeping.h"
 #include "laserbank_tempcontrol.h"
+#include "lasers.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
@@ -271,6 +273,21 @@ static void network_event_handler(bool connected)
 // queue is full it either wasn't needed in the first place or there is now a problem that vitally needs to be debugged. So careful thout about what actually CAN happen and design of flow and sizes based on that is appropriate
 
 
+/* Inspect the existing bank state only. The operator shuts down experiments
+ * and selects override_off before opening OTA; this callback performs no I/O.
+ */
+static int ota_check_ready(void *user_data)
+{
+	ARG_UNUSED(user_data);
+	if (devices_board_type() == HISPEC_BOARD_TIB &&
+	    (hispec_laser_bank_power_mode_get() != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF ||
+	     hispec_laser_bank_power_is_enabled())) {
+		LOG_WRN("Set laser bank override_off before opening OTA");
+		return -EPERM;
+	}
+	return 0;
+}
+
 int main(void)
 {
 	int rc;
@@ -283,6 +300,7 @@ int main(void)
 	struct coo_mqtt_broker_config mqtt_cfg;
 	struct coo_mqtt_broker_config prior_mqtt_cfg = {0};
 	struct coo_cmd_runtime *cmd_runtime;
+	struct coo_ota_status ota_status;
 	int64_t next_mqtt_connect_ms = 0;
 	bool board_devices_ready;
 
@@ -332,10 +350,21 @@ int main(void)
 	devices_queue_boot_reset_telemetry();
 
 	board_devices_ready = devices_ready();
-	rc = command_ota_init();
+	rc = coo_ota_init(ota_check_ready, NULL);
 	if (rc != 0) {
 		LOG_ERR("OTA boot state initialization failed (%d); refusing to boot", rc);
 		return rc;
+	}
+	/* Trial hardware preparation must precede every worker and command ingress.
+	 * Confirmation leaves this mode in place; only the operator restores auto.
+	 */
+	coo_ota_get_status(&ota_status);
+	if (!ota_status.confirmed && devices_board_type() == HISPEC_BOARD_TIB) {
+		rc = hispec_laser_bank_power_mode_set(HISPEC_LASER_BANK_POWER_OVERRIDE_OFF);
+		if (rc != 0) {
+			LOG_ERR("Trial bank shutdown failed (%d); refusing to boot", rc);
+			return rc;
+		}
 	}
 	setup_mems_switches_and_routes();
 	setup_attenuators();
@@ -449,7 +478,17 @@ int main(void)
 			}
 		}
 
-		if (command_ota_poll()) {
+		enum coo_ota_poll_result ota_result = coo_ota_poll();
+
+		if (ota_result == COO_OTA_REBOOT_REQUESTED) {
+			LOG_WRN("Unconfirmed image trial expired; rebooting for MCUboot rollback");
+			rc = coo_cmd_runtime_schedule_reboot(cmd_runtime, false);
+			if (rc != 0 && rc != -EALREADY) {
+				LOG_ERR("Rollback reboot scheduling failed (%d); watchdog will reset", rc);
+			}
+		}
+		/* Both expiry results withhold feeds, including when scheduling failed. */
+		if (ota_result == COO_OTA_CONTINUE) {
 			wdt_feed(wdt, wdt_channel);
 		}
 

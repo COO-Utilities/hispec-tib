@@ -75,10 +75,12 @@ GET; a key with payload is a SET. See:
 ## Runtime Shape
 
 - `main.c`: boot order, serial polling, watchdog feed, network/MQTT loop, outbound publish.
-- `command.c`: app command queues, command table, OTA policy, and command
+- `command.c`: app command queues, command table with OTA permissions, and command
   handlers. It supplies `app_output_emit()` for domain warnings/telemetry and
   uses `lib/coo_commons/command_dispatch.c` for MQTT/serial mechanics, serial
-  guard policy, and delayed reboot.
+  guard policy, the OTA command, and delayed reboot.
+- `lib/coo_commons/ota.c`: reusable MCUboot identity, maintenance windows, SMP
+  admission, confirmation, and trial deadlines. See [the integration API](doc/api/ota.md).
 - `devices.c`: board strap detection and board-profile setup.
 - `mems_switching.c`: MEMS switch state, routes, and toggler work.
 - `attenuator.c`: DAC-backed logical attenuator control and calibration.

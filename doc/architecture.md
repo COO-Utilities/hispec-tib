@@ -19,8 +19,8 @@ Runtime ownership is:
 
 - `main.c`: boot order, watchdog, serial polling, network/MQTT loop, outbound queue draining.
 - `command.c`: app command queues, static command spec table, support
-  predicates, custom request classification callbacks, reboot-prepare hook, and
-  OTA policy, and app/cross-domain command handlers. It implements the narrow
+  predicates, custom request classification callbacks, reboot-prepare hook, OTA
+  query/effect permissions, and app/cross-domain command handlers. It implements the narrow
   `app_output_emit()` interface for warning/telemetry producers using the same
   configured runtime and outbound queue; producers do not retrieve that runtime.
 - `devices.c`: board strap detection, profile setup, shared device objects.
@@ -100,16 +100,27 @@ partition and the application in slot 0. MCUboot starts/feeds IWDG at 30 seconds
 then chainloads with it still running; application `watchdog_init()` installs
 the normal 15-second budget using fresh driver state.
 
-OTA maintenance policy belongs to `command.c`. One mutex serializes window,
-SMP admission/completion, and confirmation/deadline decisions. The bank-mode
-command adapter snapshots the OTA restriction under that mutex and passes it
-down to `laserbank_power()`, which parses the mode and rejects leaving
-`override_off`. The mutex is released before laser-owner I/O. No additional
-laser/heater/settings inhibit is introduced. MCUboot
-trailers own pending/confirmed durability; OTA adds no application NVS records.
-The main loop reuses the dispatcher's delayed reboot on trial expiry and stops
-watchdog feeding if that reboot cannot complete. The UDP listener stays closed
-during a trial, preserving the old image for rollback. See [OTA](ota.md).
+OTA lifecycle state belongs to `lib/coo_commons/ota.c`. One mutex serializes
+window, SMP admission/completion, and confirmation/deadline decisions. COO
+command dispatch implements the shared `ota` command and checks each matched
+command's `ota_query_allowed` or `ota_effect_allowed` immediately before
+execution. Unmarked operations are blocked while an open window, in-flight
+request, pending candidate, or unconfirmed/reverting trial is active. Builtins
+carry the same metadata; serial guard remains a separate restriction.
+
+HISPEC supplies a readiness callback that checks the bank is already off before
+opening a window. `main.c` calls `coo_ota_init()` after device setup, then sets
+bank `override_off` for an unconfirmed TIB trial before workers or ingress.
+All bank-mode writes are blocked during OTA, including another `override_off`;
+queries remain available. The laser command handler has no OTA dependency.
+The existing off mode also prevents heater/settings paths from powering the bank.
+
+MCUboot trailers own pending/confirmed durability; OTA adds no application NVS
+records. `coo_ota_poll()` reports trial expiry once; main requests the existing
+delayed reboot and stops watchdog feeds while awaiting reset, including if
+scheduling fails. Confirmation leaves hardware state unchanged. The UDP listener
+stays closed during a trial, preserving the old image for rollback. See
+[OTA operation](ota.md) and [shared library integration](api/ota.md).
 
 ## Board Profiles
 

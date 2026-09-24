@@ -10,6 +10,26 @@ config COO_COMMONS
 
 if COO_COMMONS
 
+config COO_OTA
+	bool "COO MCUboot OTA maintenance and trials"
+	depends on BOOTLOADER_MCUBOOT && MCUMGR_GRP_IMG && MCUBOOT_IMG_MANAGER
+	depends on MCUMGR_TRANSPORT_UDP_IPV4 && !MCUMGR_TRANSPORT_UDP_AUTOMATIC_INIT
+	depends on MCUMGR_GRP_IMG_TOO_LARGE_SYSBUILD
+	depends on MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER = 1 && !MCUMGR_GRP_IMG_DIRECT_UPLOAD
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_SECONDARY
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_ANY
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT
+	depends on !MCUMGR_GRP_IMG_ALLOW_ERASE_PENDING
+	select MCUMGR_MGMT_NOTIFICATION_HOOKS
+	select MCUMGR_SMP_COMMAND_STATUS_HOOKS
+	default n
+	help
+	  Own one application's image identity, explicit UDP upload windows,
+	  exact-hash confirmation, and five-minute trial deadline. Requires
+	  MCUboot sysbuild image-size reservations and test-only image management.
+	  The application supplies hardware prerequisites and polls for rollback.
+	  COO MQTT command dispatch adds the ota command when this is enabled.
+
 config COO_NETWORK
 	bool "COO network utilities"
 	depends on NETWORKING

@@ -198,6 +198,11 @@ struct coo_cmd_spec {
 	const char *allowed_payload_keys;
 	const struct coo_cmd_help_entry *help;
 	bool mqtt_query_allowed_during_serial_guard;
+	/* Default false: OTA admits only explicitly permitted operations, checked
+	 * after dequeue and before the handler or last-command persistence.
+	 */
+	bool ota_query_allowed;
+	bool ota_effect_allowed;
 };
 
 /**

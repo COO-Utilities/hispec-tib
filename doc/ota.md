@@ -51,8 +51,11 @@ First stop calibration/monitoring and any other experiment. On TIB, explicitly
 select `laser/bankpower mode=override_off` and verify `powered:false`. OTA entry
 rejects a powered bank or another mode; it does not perform that shutdown.
 The existing off mode prevents heater/control/settings paths from powering
-the bank. One guard in the bank-mode command rejects changing out of off while
-OTA is active. No Modbus response is expected from unpowered laser drivers.
+the bank. COO dispatch enforces the [command allowlist](commands.md#commands-while-ota-is-active)
+while OTA is active, before handlers run. All bank-mode writes are blocked,
+including a repeated `override_off`; queries remain available. No Modbus
+response is expected from unpowered laser drivers. The reusable lifecycle and
+application integration are described in [the COO OTA API](api/ota.md).
 
 Validate locally without connecting:
 
@@ -102,7 +105,7 @@ The Python notebook API also provides `pcb.ota()`,
 ## Failure and rollback
 
 An upload window expires independently of the host. Closing it can leave an
-already-admitted request finishing; the bank guard remains until it finishes,
+already-admitted request finishing; command restrictions remain until it finishes,
 and remains longer if a test image became pending. Pending images cannot be
 overwritten or erased through SMP. A close does not cancel a pending test boot.
 If a host fails after marking the candidate pending, inspect `ota` and issue
@@ -201,8 +204,9 @@ behavior. Before relying on OTA:
    settings, and verify UDP is closed at startup on each board profile.
 2. Complete normal and maximum-size updates with exact-hash confirmation.
    Observe PB2/bank power through boot, swap, trial and confirmation. Exercise
-   payload/suffix bank-mode commands over both MQTT and serial; only off is
-   accepted while OTA is active. After confirmation, require operator `auto`.
+   the command allowlist over both MQTT and serial, including requests queued
+   before OTA entry. Bank queries succeed; every payload/suffix mode write is
+   rejected, including off. After confirmation, require operator `auto`.
 3. Repeat maximum-size trials without confirmation and with broker/network
    loss; verify the deadline, reset, baseline hash and NVS retention. Reject a
    wrong confirmation hash and an attempt at/after expiry.

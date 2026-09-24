@@ -89,7 +89,8 @@ Top-level implementation path:
 4. Serial `help` prints directly during ingress and does not enter the command
    queues. Other normalized requests are enqueued to `inbound_queue`.
 5. `coo_cmd_runtime_executor_thread()` handles built-ins (`help`, `reboot`, and
-   enabled `serialguard`) before dispatching app commands through the static table.
+   enabled `serialguard`/`ota`) before dispatching app commands through the static table.
+   Builtins and app commands both check table-based OTA permission before execution.
 6. `coo_cmd_runtime_drain_outbound()` prints queued serial responses with
    `coo_cmd_print_serial_response_pretty()`. The simpler
    `coo_cmd_print_serial_response()` remains available as a fallback renderer.
@@ -480,6 +481,33 @@ while serial guard is active and attenuator DAC-range clamping.
   metadata. Once a reboot is pending, later commands are rejected before app
   handlers run.
 
+(ota-permissions)=
+### Commands while OTA is active
+
+The dispatcher checks the matched table entry's `ota_query_allowed` or
+`ota_effect_allowed` after dequeue and before invoking the handler or recording
+an effect as `lastcommand`. Both permissions default to false. This covers
+requests queued before OTA entry as well as new MQTT/serial requests.
+
+| Commands | Queries | Effects |
+| --- | --- | --- |
+| `ota`, `serialguard` | allowed | allowed |
+| `reboot` | unsupported | allowed |
+| `help`, `help/options`, `status`, `temps` | allowed | disallowed |
+| `ip`, `mqtt`, `time`, `laser/bankpower` | allowed | disallowed |
+| All other application commands | disallowed | disallowed |
+
+A blocked operation returns `{"error":"command unavailable during OTA"}`.
+Unknown commands, invalid payloads, unsupported operations, and unavailable board
+features retain their usual errors. Serial guard can still reject MQTT effects,
+including `ota` effects; OTA permission does not override it. Serial `help` remains
+an immediate console operation, allowed during OTA.
+
+The restriction lasts through window close if an admitted SMP operation is still
+finishing, a candidate is pending, or the running image is an unconfirmed trial.
+Bank-mode writes are all blocked, even a repeated `override_off` in payload or
+suffix form. After successful confirmation the operator must select `auto`.
+
 (ota)=
 ### `ota`
 - **No payload:** query running MCUboot identity and maintenance/trial state.
@@ -488,7 +516,7 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
   `enabled` means the UDP maintenance window is open. `active` additionally
   includes an operation finishing after close, a pending candidate, or an
-  unconfirmed/expired trial; it guards changes out of bank `override_off`.
+  unconfirmed/expired trial; it activates the command permissions below.
   `remaining_s` and `trial_remaining_s` are rounded-up seconds. `image_hash` is
   MCUboot's SHA256 of the running header/body, not the whole-file SHA256 or the
   Git build string. `max_image_size` is generated from the slot geometry and
@@ -1157,7 +1185,8 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
 - **Notes:** `auto` is the ordinary confirmed-boot default. An unconfirmed OTA trial
   selects `override_off` before workers start, and confirmation leaves it off.
   During an OTA window, an in-flight close, a pending candidate, or a trial,
-  selecting `auto` or `override_on` is rejected in both payload and suffix forms.
+  all mode writes (including `override_off`) are rejected before the handler, in
+  both payload and suffix forms. Queries remain allowed.
   In `auto`, power to the laser bank is handled by the bank
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver

@@ -453,7 +453,7 @@ flowchart TD
   Install --> Setup[wdt_setup]
   Setup -- failure --> Stop
   Setup --> Loop[main loop]
-  Loop --> OTA[command_ota_poll]
+  Loop --> OTA[coo_ota_poll]
   OTA --> Allowed{trial not reverting}
   Allowed -- yes --> Feed[wdt_feed]
   Allowed -- no --> Rollback[skip feed; delayed reboot or watchdog resets]

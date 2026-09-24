@@ -79,8 +79,7 @@ static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
 	       (parse_rc == COO_JSON_EXTRACT_MISSING || payload_mode == *mode_value);
 }
 
-int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out,
-		    bool require_override_off)
+int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	enum hispec_laser_bank_power_mode mode;
 	char payload[128] = {0};
@@ -97,9 +96,6 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			return coo_cmd_error(out, cmd, "mode must be auto, override_on, or override_off");
 		}
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
-		if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF && require_override_off) {
-			return coo_cmd_error(out, cmd, "OTA requires laser bank override_off");
-		}
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
 			if (rc == -EBUSY) {
