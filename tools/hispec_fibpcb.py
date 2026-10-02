@@ -4952,6 +4952,8 @@ class HispecFibPcb:
         transimpedance_v_per_a combines detector datasheet transimpedance with
         the divider and intervening analog gain. noisewarn_mv is ADC-input RMS
         scatter in the fixed window, including any changing optical signal.
+        Warnings wait five seconds after reported input changes finish, then a
+        fresh 500 ms window; zero disables them. Reported RMS is not gated.
         """
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(

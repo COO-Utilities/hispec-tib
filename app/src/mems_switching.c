@@ -5,6 +5,7 @@
 
 #include "mems_switching.h"
 #include "app_settings.h"
+#include "photodiode.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -653,7 +654,11 @@ static void mems_switch_tick_locked(struct mems_switch *sw)
          * Nucleo MEMS drive stage is active-low at the PCAL pin, so the
          * external switch-control line pulses high.
          */
+        /* A queued route has no effect yet. Keep the warning gate active from
+         * actual actuation through pulse cleanup, even if cleanup is delayed. */
+        if (!sw->pulse_active) photodiode_noise_change_begin();
         if (gpio_pin_set_dt(gpio, 1) != 0) {
+            if (!sw->pulse_active) photodiode_noise_change_end();
             LOG_ERR("Pulse set failed on %s pin %u", sw->name,
                     (unsigned int)gpio->pin);
         }
@@ -719,6 +724,7 @@ static void mems_switch_clear_finished_pulse_elapsed_locked(struct mems_switch *
 
         (void)gpio_pin_set_dt(gpio, 0);
     }
+    photodiode_noise_change_end();
 
     if (time_reached_u32(now_ms, sw->pulse_clear_at_ms + MEMS_SWITCH_ROUTER_TICK_MS)) {
         mems_timing_note_cleanup_late(now_ms - sw->pulse_clear_at_ms);

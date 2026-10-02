@@ -40,6 +40,8 @@
  * P_rms = 0.010 V / (transimpedance_v_per_a * responsivity_a_per_w).
  * These are wavelength-dependent optical equivalents; real signal changes
  * within the window also contribute to this warning statistic.
+ * Warnings require five seconds without a reported input change followed by
+ * a fresh fixed window; diagnostic RMS remains available during changes.
  */
 #define PHOTODIODE_YJ_DEFAULT_NOISE_WARN_RMS_MV 10.0
 #define PHOTODIODE_HK_DEFAULT_NOISE_WARN_RMS_MV 10.0
@@ -113,6 +115,19 @@ void photodiode_get_status(struct photodiode_status *out);
 
 /** Wait for ADC completion (binary wakeup only, no queued readings). */
 int photodiode_wait_for_sample(k_timeout_t timeout);
+
+/** Inhibit both channels' noise warnings before an input-changing operation.
+ * Pair every begin with end, including failed/partial operations. Calls may
+ * overlap or nest. Uses a short spinlock; no sleeping, I/O, or publication.
+ * Sampling, measurement windows, and dark-capture eligibility are unaffected.
+ */
+void photodiode_noise_change_begin(void);
+
+/** Finish an input-changing operation and restart the five-second noise grace.
+ * Once all operations finish, warnings require a full diagnostic window of
+ * acquisitions begun after that grace. Same non-sleeping contract as begin.
+ */
+void photodiode_noise_change_end(void);
 
 /**
  * @brief Convert dark-subtracted ADC millivolts to optical power in uW.

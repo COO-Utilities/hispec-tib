@@ -16,6 +16,24 @@ is no converter-time pad or extra illuminated-stream settling window. Dark
 capture separately requires ten continuous seconds of PD on and relevant lasers
 off before resetting and collecting its at-most-two-second measurement window.
 
+Noise warnings use the fixed window only after an interval without commanded
+input changes. PD power, physical attenuator writes, laser-output changes, and
+actual MEMS pulses bracket their operations through the PD owner's begin/end
+notifications. Both channels defer assessment until all operations finish,
+five seconds pass, and ten new conversion attempts replace the diagnostic
+window. At least two readings must be valid. Further changes restart eligibility,
+including changes completed between samples. MEMS activity lasts through pulse
+cleanup; failed/partial writes also receive the grace period. Known no-ops do
+not restart it. Thresholds and the per-channel 60-second warning cooldown remain
+unchanged; `noisewarn_mv:0` disables the warning.
+
+This is warning qualification only: no samples are discarded or measurement
+windows reset by these notifications. Continuous adjustment can defer assessment
+indefinitely. Unexpected variation while controls are unchanged can still warn;
+the RMS does not identify whether its origin is electrical or optical. Five
+seconds is an operator-selected grace period, not a measured settling bound,
+and is independent of the ten-second dark-capture eligibility rule.
+
 The ADC owner stores detector readings, uncertainty, one monotonic acquisition
 start (`sample_ms`), and an estimated UTC midpoint (`t_ms`). It owns no laser,
 attenuator, wavelength, or expected-source context. The nominal PD power uses

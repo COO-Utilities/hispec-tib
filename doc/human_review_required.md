@@ -9,6 +9,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-check noise warnings after PD power, attenuator, laser-output, and
+  MEMS changes: both channels wait five seconds after activity plus a fresh
+  500 ms window. Verify actual settling and steady-input fault detection;
+  temporary host checks cover gate timing, overlap, no-ops, and failure exits.
 - [ ] Commissioning changes: bench-check continuous 10 s dark settling after PD
   power/laser transitions, forced-dark lowest gating, and measured reset_lowest
   persistence. Existing historical minima are unchanged. Verify no-light startup

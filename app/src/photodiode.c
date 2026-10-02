@@ -92,6 +92,7 @@ int photodiode_wait_for_sample(k_timeout_t timeout)
  */
 #define PD_ADC_I2C_WIRE_BITS_PER_SAMPLE 126U
 #define PD_NOISE_WARNING_COOLDOWN_MS 60000U
+#define PD_NOISE_QUIET_MS 5000U
 #define PD_WINDOW_DEFAULT_DURATION_MS PHOTODIODE_FIXED_WINDOW_MS
 #define PD_DARK_SETTLE_MS 10000
 #define PD_WINDOW_MAX_DURATION_MS APP_PD_DARK_DURATION_MAX_MS
@@ -150,6 +151,8 @@ struct photodiode_runtime_channel {
 	double power_err_uw;
 	int64_t next_adc_warning_ms;
 	int64_t next_noise_warning_ms;
+	uint32_t noise_generation;
+	uint16_t noise_fresh_samples;
 	struct pd_window_runtime configurable_window;
 	struct pd_window_runtime fixed_window;
 	int64_t configurable_start_ms; /* Exclude a conversion begun before window reset. */
@@ -160,6 +163,31 @@ struct photodiode_runtime_channel {
 
 static struct photodiode_runtime_channel pd_runtime[PHOTODIODE_CHANNEL_COUNT];
 static K_MUTEX_DEFINE(pd_runtime_lock);
+
+/* Hardware owners only report activity. Gate critical sections never acquire
+ * owner locks or do I/O. The sampler alone owns the per-channel fresh counts. */
+static struct k_spinlock pd_noise_lock;
+static uint32_t pd_noise_active_changes;
+static uint32_t pd_noise_generation;
+static int64_t pd_noise_quiet_until_ms;
+
+void photodiode_noise_change_begin(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&pd_noise_lock);
+	pd_noise_active_changes++;
+	pd_noise_generation++;
+	k_spin_unlock(&pd_noise_lock, key);
+}
+
+void photodiode_noise_change_end(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&pd_noise_lock);
+	__ASSERT_NO_MSG(pd_noise_active_changes > 0U);
+	pd_noise_active_changes--;
+	pd_noise_generation++;
+	pd_noise_quiet_until_ms = k_uptime_get() + PD_NOISE_QUIET_MS;
+	k_spin_unlock(&pd_noise_lock, key);
+}
 
 struct photodiode_loop_timing {
     uint64_t worst_loop_us;
@@ -976,7 +1004,24 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 		emit_adc_warning = true;
 	}
 
-	if (rc == 0 && runtime->fixed_window.current.valid) {
+	/* Gate warnings only: retain every attempt in the diagnostic window. The
+	 * generation also invalidates old eligibility if sampling slept through an
+	 * entire change/grace interval. Acquisition start excludes in-flight reads.
+	 */
+	k_spinlock_key_t noise_key = k_spin_lock(&pd_noise_lock);
+	if (runtime->noise_generation != pd_noise_generation) {
+		runtime->noise_generation = pd_noise_generation;
+		runtime->noise_fresh_samples = 0U;
+	}
+	if (pd_noise_active_changes > 0U || acquisition_ms <= pd_noise_quiet_until_ms) {
+		runtime->noise_fresh_samples = 0U;
+	} else if (runtime->noise_fresh_samples < runtime->fixed_window.target_samples) {
+		runtime->noise_fresh_samples++;
+	}
+	if (rc == 0 && runtime->fixed_window.current.valid &&
+	    runtime->noise_fresh_samples == runtime->fixed_window.target_samples &&
+	    runtime->fixed_window.current.sample_length -
+		    runtime->fixed_window.current.failed_samples >= 2U) {
 		noise_rms = runtime->fixed_window.current.rms_mv;
 		if (settings->noise_warn_rms_mv > 0.0 &&
 		    noise_rms > settings->noise_warn_rms_mv &&
@@ -986,6 +1031,7 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 			emit_noise_warning = true;
 		}
 	}
+	k_spin_unlock(&pd_noise_lock, noise_key);
 	k_mutex_unlock(&pd_runtime_lock);
 
 	if (commit_dark) {

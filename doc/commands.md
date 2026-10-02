@@ -1798,6 +1798,13 @@ unchanged so an OTA rollback can still read the existing calibration.
   `noisewarn_mv` is ADC-input RMS scatter in the fixed 500 ms window, including
   real optical changes. The 10 mV default warning level corresponds nominally to 0.538 pW RMS
   for YJ and 17.3 pW RMS for HK using the default responsivities.
+  Zero disables the noise warning. PD power, attenuator, laser-output, and
+  actual MEMS changes defer noise warnings on both channels until all changing
+  operations finish, five seconds elapse, and a fresh 500 ms window is acquired
+  (at least two valid samples). Further changes restart this wait. An eligible
+  window above threshold warns immediately, at most once per channel per
+  60 seconds. This affects warning eligibility only; samples, reported RMS,
+  throughput, and the separate ten-second dark-capture rule continue normally.
   Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
 
 (measure-throughput)=

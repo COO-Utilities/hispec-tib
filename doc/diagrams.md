@@ -209,7 +209,7 @@ flowchart TD
   Status --> PendingDark{dark capture pending and window complete}
   PendingDark -- yes --> DarkCommit[commit configurable window as dark]
   PendingDark -- no --> Warn
-  Status --> Warn{fixed-window RMS above threshold}
+  Status --> Warn{input changes finished + 5 s grace + fresh fixed window + RMS above threshold + cooldown elapsed}
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod

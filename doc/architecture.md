@@ -403,3 +403,10 @@ state discards partial capture and requires a fresh settle. Clipped or empty
 captures cannot replace the dark. Lowest-dark replacement is measured-only;
 zero-duration forced/default values cannot enter it, including combined commands.
 Existing stored minima and optional persistence behavior are preserved.
+
+Noise warning eligibility is separate from dark capture. Hardware owners call
+`photodiode_noise_change_begin()` and `photodiode_noise_change_end()` around
+input changes; overlapping operations share a spinlock-protected count and quiet deadline.
+The sampler defers both channels' noise warnings for five seconds after activity
+finishes, then replaces the fixed diagnostic window before checking RMS. These
+notifications do no I/O and do not change sampling, throughput, or calibration.

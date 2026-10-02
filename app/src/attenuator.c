@@ -5,6 +5,7 @@
 
 #include "attenuator.h"
 #include "command.h"
+#include "photodiode.h"
 #include "drivers/dac/dac7x78.h"
 
 #include <errno.h>
@@ -814,6 +815,7 @@ static bool attenuator_set_pair_staged(struct attenuator *drv,
     const struct attenuator_model_coeffs *coeff[2] = {&drv->coeff1, &drv->coeff2};
     struct attenuator_dac_cfg prepared[2];
     uint32_t code[2];
+    bool changing = false;
     for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
         if (!target[i].update) continue;
         if (!isfinite(target[i].value)) return false;
@@ -828,13 +830,17 @@ static bool attenuator_set_pair_staged(struct attenuator *drv,
         }
         prepared[i] = *dac[i];
         if (!attenuator_prepare_voltage(&prepared[i], coeff[i], voltage, &code[i])) return false;
+        changing |= !dac[i]->valid || code[i] != attenuator_voltage_to_code(dac[i], dac[i]->voltage);
     }
+    /* Bracket the whole prepared pair; keep notifications out of the I2C gap. */
+    if (changing) photodiode_noise_change_begin();
     for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
         if (!target[i].update) continue;
         /* Only this call changes hardware. It may block on I2C. */
         int rc = dac_write_value(dac[i]->dev, dac[i]->cfg.channel_id, code[i]);
         if (rc != 0) {
             dac[i]->valid = false;
+            if (changing) photodiode_noise_change_end();
             LOG_ERR("DAC write failed: %d", rc);
             return false;
         }
@@ -842,6 +848,7 @@ static bool attenuator_set_pair_staged(struct attenuator *drv,
         /* Retain confirmed writes if the following channel fails. */
         drv->attenuation_db = drv->dac_cfg1.attenuation_db + drv->dac_cfg2.attenuation_db;
     }
+    if (changing) photodiode_noise_change_end();
     return true;
 }
 

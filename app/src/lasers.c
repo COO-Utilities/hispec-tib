@@ -15,6 +15,7 @@
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
+#include "photodiode.h"
 
 #include <errno.h>
 #include <math.h>
@@ -613,6 +614,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		return 0;
 	}
 
+	if (was_enabled != enabled) photodiode_noise_change_begin();
 	if (!enabled && was_enabled) {
 		zero_rc = zero_all_driver_currents_locked(true);
 		if (zero_rc != 0) {
@@ -626,6 +628,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 	 */
 	rc = gpio_pin_set_dt(&laser_power_gpio, enabled ? 1 : 0);
 	if (rc != 0) {
+		if (was_enabled != enabled) photodiode_noise_change_end();
 		return rc;
 	}
 	/* Reasserting a GPIO level is not a bank power transition. */
@@ -670,6 +673,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		}
 	}
 
+	photodiode_noise_change_end();
 	return 0;
 }
 
@@ -1147,21 +1151,24 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 
 	laser_output_estimate[profile->id].prepared = false;
 	LOG_DBG("Laser %s applying configuration", profile->name);
+	/* Profile writes (and the OCP emergency stop) can change emitted flux. */
+	photodiode_noise_change_begin();
 	rc = check_ocp_limit_locked(profile, drv, props);
 	if (rc != 0) {
-		return rc;
+		goto out;
 	}
 
+	rc = -EIO;
 	if (!maiman_set_current_max(drv,
 		hispec_laser_quantize_current_ma(props->max_current_ma, 0.0, props->max_current_ma))) {
-		return -EIO;
+		goto out;
 	}
 	if (!maiman_set_current_set_calibration(drv,
 						settings->current_set_calibration_pct)) {
-		return -EIO;
+		goto out;
 	}
 	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a)) {
-		return -EIO;
+		goto out;
 	}
 	/* Expand before moving the target, then narrow. This also handles disjoint
 	 * old/new ranges without asking the controller to accept an invalid target.
@@ -1182,10 +1189,10 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	    (props->operating_temp_range_c.max_c < old_max &&
 	     !maiman_write_scaled(drv, REG_TEC_TEMPERATURE_MAX, DIVIDER_TEC_TEMPERATURE, true,
 		props->operating_temp_range_c.max_c))) {
-		return -EIO;
+		goto out;
 	}
 	if (!maiman_set_tec_pid(drv, props->tec_pid)) {
-		return -EIO;
+		goto out;
 	}
 	/* All HISPEC laser operation is continuous-wave. Normalize installed
 	 * drivers during profile programming so stale pulse-mode register values
@@ -1193,19 +1200,22 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 	 */
 	if (!maiman_set_frequency(drv, 0.0) ||
 	    !maiman_set_duration(drv, 0.0)) {
-		return -EIO;
+		goto out;
 	}
 
 	if (!maiman_set_internal_current_control(drv, true) ||
 	    !maiman_set_internal_enable_control(drv, true) ||
 	    !maiman_set_internal_tec_temperature_control(drv, true) ||
 	    !maiman_set_internal_tec_enable_control(drv, true) ||
-	    !maiman_deny_interlock(drv)) return -EIO;
+	    !maiman_deny_interlock(drv)) goto out;
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	laser_output_estimate[profile->id].tec_temperature_c = props->operating_temp_c;
 	laser_output_estimate[profile->id].prepared = true;
 	k_mutex_unlock(&laser_state_lock);
-	return 0;
+	rc = 0;
+out:
+	photodiode_noise_change_end();
+	return rc;
 }
 
 int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_eeprom)
@@ -1300,8 +1310,10 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id)
 	if (rc == 0) {
 		maiman_init(&drv, profile->node_id);
 		rc = verify_driver_locked(profile, &drv, NULL, laser_settings[profile->id].expected_serial);
-		if (rc == 0 && !maiman_reset_parameters(&drv)) {
-			rc = -EIO;
+		if (rc == 0) {
+			photodiode_noise_change_begin();
+			if (!maiman_reset_parameters(&drv)) rc = -EIO;
+			photodiode_noise_change_end();
 		}
 	}
 	/* Reset changes driver-owned registers even if its acknowledgement was lost. */
@@ -1347,7 +1359,12 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	}
 	/* Configuration is stable, but controller lock and TEC state are dynamic. */
 	if (!maiman_read_raw_tec_status(drv, &tec_state)) return -EIO;
-	if (!(tec_state & TEC_OPERATION_STATE_STARTED) && !maiman_start_tec(drv)) return -EIO;
+	if (!(tec_state & TEC_OPERATION_STATE_STARTED)) {
+		photodiode_noise_change_begin();
+		bool started = maiman_start_tec(drv);
+		photodiode_noise_change_end();
+		if (!started) return -EIO;
+	}
 	on_time_runtime_update_locked(laser_tec_runtime, ARRAY_SIZE(laser_tec_runtime), profile->id, true);
 	if (!maiman_read_u16(drv, REG_STATE_OF_DEVICE_COMMAND, &device_state) ||
 	    !maiman_read_u16(drv, REG_LOCK_STATUS, &lock_status)) return -EIO;
@@ -1567,6 +1584,9 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	maiman_init(&drv, profile->node_id);
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
 	LOG_DBG("Laser %s stop started=%u control=%u stop_tec=%u", profile->name, state->started, state->control, stop_tec);
+	bool changing = state->started || state->control != LASER_CONTROL_CONFIRMED ||
+		state->current_ma != 0.0 || (stop_tec && laser_tec_runtime[profile->id].active);
+	if (changing) photodiode_noise_change_begin();
 	if (state->started || state->control != LASER_CONTROL_CONFIRMED || state->current_ma != 0.0) {
 		bool zeroed = maiman_set_current(&drv, 0.0);
 		if (zeroed) {
@@ -1577,6 +1597,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 		}
 		bool stopped = maiman_stop_device(&drv);
 		if (!zeroed || !stopped) {
+			photodiode_noise_change_end();
 			laser_note_communication_locked(profile->id, &drv);
 			invalidate_output_locked(profile->id);
 			return -EIO;
@@ -1585,6 +1606,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 
 	if (stop_tec && laser_tec_runtime[profile->id].active) {
 		if (!maiman_stop_tec(&drv)) {
+			photodiode_noise_change_end();
 			laser_note_communication_locked(profile->id, &drv);
 			invalidate_output_locked(profile->id);
 			return -EIO;
@@ -1594,6 +1616,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	}
 	laser_note_communication_locked(profile->id, &drv);
 	commit_current_runtime_locked(profile->id, true);
+	if (changing) photodiode_noise_change_end();
 	LOG_INF("Laser %s stopped", profile->name);
 	return 0;
 }
@@ -1636,6 +1659,7 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 	const laserprops_t *props;
 	maiman_driver_t drv = {0};
 	bool running;
+	bool changing = false;
 	int rc;
 
 	rc = profile_for_id(id, &profile);
@@ -1663,6 +1687,11 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma)
 		goto out;
 	}
 
+	changing = current_ma > 0.0 ||
+		(bank_power_requested_enabled &&
+		 (current_ma != laser_output_estimate[id].current_ma ||
+		  laser_output_estimate[id].control != LASER_CONTROL_CONFIRMED));
+	if (changing) photodiode_noise_change_begin();
 	LOG_DBG("Laser %s level current_ma=%.3f started=%u configured=%u", profile->name,
 		current_ma, laser_output_estimate[id].started, laser_output_estimate[id].prepared);
 	if (current_ma == 0.0) {
@@ -1721,6 +1750,7 @@ out:
 	laser_note_communication_locked(id, &drv);
 	LOG_DBG("Laser %s level result rc=%d started=%u current_ma=%.3f control=%u", profile->name, rc,
 		laser_output_estimate[id].started, laser_output_estimate[id].current_ma, laser_output_estimate[id].control);
+	if (changing) photodiode_noise_change_end();
 	k_mutex_unlock(&laser_io_lock);
 	laser_autooff_reschedule();
 	return rc;
@@ -1858,7 +1888,9 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 		return -ERANGE;
 	}
 
-
+	bool changing = !output_ready_locked(id) ||
+		temperature_c != laser_output_estimate[id].tec_temperature_c;
+	if (changing) photodiode_noise_change_begin();
 	rc = prepare_to_operate_locked(profile, &drv);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
 		LOG_WRN("Laser %s TEC setpoint write failed temp=%.3fC",
@@ -1875,6 +1907,7 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 		invalidate_output_locked(id);
 	}
 	laser_note_communication_locked(id, &drv);
+	if (changing) photodiode_noise_change_end();
 	k_mutex_unlock(&laser_io_lock);
 
 	return rc;
@@ -1897,9 +1930,13 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid)
 		maiman_init(&drv, profile->node_id);
 		rc = verify_driver_locked(profile, &drv, NULL, laser_settings[profile->id].expected_serial);
 	}
-	if (rc == 0 && !maiman_set_tec_pid(&drv, pid)) {
-		laser_output_estimate[id].prepared = false;
-		rc = -EIO;
+	if (rc == 0) {
+		photodiode_noise_change_begin();
+		if (!maiman_set_tec_pid(&drv, pid)) {
+			laser_output_estimate[id].prepared = false;
+			rc = -EIO;
+		}
+		photodiode_noise_change_end();
 	}
 	if (rc != 0) {
 		invalidate_output_locked(id);
@@ -2511,6 +2548,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			k_mutex_unlock(&laser_io_lock);
 			return 0;
 		}
+		photodiode_noise_change_begin();
 		if (running) {
 			maiman_init(&drv, profile->node_id);
 		} else {
@@ -2545,6 +2583,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			invalidate_output_locked(id);
 		}
 		laser_note_communication_locked(id, &drv);
+		photodiode_noise_change_end();
 		k_mutex_unlock(&laser_io_lock);
 		laser_autooff_reschedule();
 		return rc;

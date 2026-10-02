@@ -310,6 +310,12 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 		return -EIO;
 	}
 
+	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	bool changing = power_output_is_photodiode(output) &&
+		(power_on_time[output].active != enabled ||
+		 k_uptime_get() >= relay_response_deadline_ms);
+	k_mutex_unlock(&housekeeping_state_lock);
+	if (changing) photodiode_noise_change_begin();
 	/* Logical GPIO value; devicetree flags own DS2408 relay polarity. */
 	rc = gpio_pin_set_dt(gpio, enabled ? 1 : 0);
 	relay_note_response_locked(rc);
@@ -318,6 +324,7 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 		power_on_time_update_locked(output, enabled);
 		k_mutex_unlock(&housekeeping_state_lock);
 	}
+	if (changing) photodiode_noise_change_end();
 	return rc;
 }
 
