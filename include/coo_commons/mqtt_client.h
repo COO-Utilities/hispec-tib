@@ -132,12 +132,14 @@ void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data);
  * @brief Process MQTT events
  *
  * Must be called regularly in the main loop. Polls the MQTT socket,
- * handles incoming messages, and sends keep-alive packets.
+ * handles incoming messages, and sends keep-alive packets. An optional native
+ * eventfd (negative disables it) wakes polling for queued output; output_pending
+ * prevents sleeping again when the bounded drain left work queued.
  *
  * @param client Pointer to connected MQTT client
  * @return 0 on success, negative error code on failure (e.g., disconnection)
  */
-int coo_mqtt_process(struct mqtt_client *client);
+int coo_mqtt_process(struct mqtt_client *client, int wake_fd, bool output_pending);
 
 /**
  * @brief Main MQTT event loop

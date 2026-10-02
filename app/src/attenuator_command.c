@@ -27,10 +27,12 @@
 enum attenuator_setting {
 	ATTENUATOR_SETTING_COEFF = 0,
 	ATTENUATOR_SETTING_COMPACT,
+	ATTENUATOR_SETTING_POLICY,
 };
 
 static const struct coo_json_string_choice attenuator_setting_choices[] = {
 	{ "coeff", ATTENUATOR_SETTING_COEFF },
+	{ "settings", ATTENUATOR_SETTING_POLICY },
 };
 
 static const struct coo_json_string_choice attenuator_cal_fiber_choices[] = {
@@ -226,6 +228,14 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	}
 
 	switch (setting) {
+	case ATTENUATOR_SETTING_POLICY: {
+		struct app_attenuator_fit_policy policy;
+		app_settings_get_attenuator_fit(attenuator_index, &policy);
+		snprintk(payload, sizeof(payload),
+			 "{\"dac1\":{\"max_fit_residual_db\":%.9g},\"dac2\":{\"max_fit_residual_db\":%.9g}}",
+			 policy.max_fit_residual_db[0], policy.max_fit_residual_db[1]);
+		break;
+	}
 	case ATTENUATOR_SETTING_COEFF:
 	{
 		size_t off = 0U;
@@ -417,34 +427,6 @@ static int attenuator_extract_physical_value(
 	return 0;
 }
 
-static bool attenuator_set_physical_value(struct attenuator *drv,
-					  uint8_t physical_index,
-					  const struct attenuator_physical_value *request)
-{
-	double db;
-
-	if (drv == NULL || request == NULL) {
-		return false;
-	}
-
-	switch (request->mode) {
-	case ATTENUATOR_PHYSICAL_VALUE_NONE:
-		return true;
-	case ATTENUATOR_PHYSICAL_VALUE_LINEAR:
-		if (request->value <= 0.0 || request->value > 1.0) {
-			return false;
-		}
-		db = -10.0 * log10(request->value);
-		return attenuator_set_physical_db(drv, physical_index, db);
-	case ATTENUATOR_PHYSICAL_VALUE_DB:
-		return attenuator_set_physical_db(drv, physical_index, request->value);
-	case ATTENUATOR_PHYSICAL_VALUE_MV:
-		return attenuator_set_physical_voltage(drv, physical_index, (float)request->value);
-	default:
-		return false;
-	}
-}
-
 static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
 					struct coo_cmd_response *out,
 					uint8_t attenuator_index)
@@ -520,12 +502,17 @@ static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
 					     "{\"error\":\"attenuator apply failed\"}");
 		}
 	} else {
-		for (uint8_t i = 0U; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
-			if (!attenuator_set_physical_value(&attenuators[attenuator_index],
-							   i, &physical[i])) {
-				return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
-						     "{\"error\":\"physical attenuator apply failed; earlier writes may have succeeded\"}");
-			}
+		struct attenuator_target target[ATTENUATOR_PHYSICAL_COUNT];
+		for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+			target[i] = (struct attenuator_target){
+				.update = physical[i].mode != ATTENUATOR_PHYSICAL_VALUE_NONE,
+				.voltage_mv = physical[i].mode == ATTENUATOR_PHYSICAL_VALUE_MV,
+				.value = physical[i].mode == ATTENUATOR_PHYSICAL_VALUE_LINEAR ?
+					-10.0 * log10(physical[i].value) : physical[i].value,
+			};
+		}
+		if (!attenuator_set_pair(&attenuators[attenuator_index], target)) {
+			return coo_cmd_error(out, cmd, "physical attenuator apply failed; earlier writes may have succeeded");
 		}
 	}
 
@@ -557,7 +544,7 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	}
 
 	rc = coo_json_validate_top_level_keys(cmd->payload,
-		setting == ATTENUATOR_SETTING_COEFF ? "dac1,dac2,persist" :
+		setting != ATTENUATOR_SETTING_COMPACT ? "dac1,dac2,persist" :
 		"value,value_db,value1,value2,value1_db,value2_db,value1_mv,value2_mv",
 		invalid, sizeof(invalid));
 	if (rc != 0) {
@@ -568,6 +555,26 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	}
 
 	switch (setting) {
+	case ATTENUATOR_SETTING_POLICY: {
+		struct app_attenuator_fit_policy policy;
+		bool persist = false;
+		if (attenuator_calibration_active()) return coo_cmd_error(out, cmd, "attenuator calibration active");
+		app_settings_get_attenuator_fit(attenuator_index, &policy);
+		if (coo_json_extract_optional_bool(cmd->payload, "persist", &persist, NULL) != 0)
+			return coo_cmd_error(out, cmd, "invalid persist");
+		for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+			char object[128];
+			int found = coo_json_extract_object(cmd->payload, i == 0 ? "dac1" : "dac2", object, sizeof(object));
+			if (found == COO_JSON_EXTRACT_MISSING) continue;
+			if (found != COO_JSON_EXTRACT_OK ||
+			    coo_json_validate_top_level_keys(object, "max_fit_residual_db", NULL, 0) != 0 ||
+			    coo_json_extract_double(object, "max_fit_residual_db", &policy.max_fit_residual_db[i]) != COO_JSON_EXTRACT_OK)
+				return coo_cmd_error(out, cmd, "dac1/dac2 requires max_fit_residual_db");
+		}
+		int rc = app_settings_update_attenuator_fit(attenuator_index, &policy, persist);
+		if (rc != 0) return coo_cmd_error_rc(out, cmd, "fit policy update failed", rc);
+		return atten_setting_get(cmd, out);
+	}
 	case ATTENUATOR_SETTING_COEFF: {
 		struct app_attenuator_channel_settings stored_coeffs = {0};
 		struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];

@@ -6,13 +6,15 @@ Each channel produces one fresh ADS1115 conversion every **50 ms (20 Hz)**.
 Successive stream records never reuse ADC conversions. The fixed 500 ms rolling
 window remains available for PD diagnostics and the configurable window for
 dark capture and attenuator calibration; neither feeds throughput or autolevel.
-The ADS1115 remains at **250 SPS**, selected by devicetree, with sequential YJ/HK
-conversions. Selecting **64 SPS** requires no algorithm or window changes:
+The current devicetree selects **64 SPS**, with sequential YJ/HK conversions.
+This documents the existing rate; the commissioning patch does not change it:
 two conversions take about 31.3 ms before I2C and scheduling overhead, compared
 with about 8.1 ms at 250 SPS. Calibration asks the PD owner to round its
 window to whole samples, resets it after each input change, and waits for that
 many conversion attempts. A conversion begun before reset is excluded. There
-is no converter-time pad or additional settling window.
+is no converter-time pad or extra illuminated-stream settling window. Dark
+capture separately requires ten continuous seconds of PD on and relevant lasers
+off before resetting and collecting its at-most-two-second measurement window.
 
 The ADC owner stores detector readings, uncertainty, one monotonic acquisition
 start (`sample_ms`), and an estimated UTC midpoint (`t_ms`). It owns no laser,
@@ -342,3 +344,22 @@ zero levels keep PD collection alive, with undefined throughput at zero source p
 The [Maiman interface notes](api/maiman_laser.md#bench-transaction-timing-diagnostics)
 describe application transaction and quiet-interval logs, and their measurement
 limits, for the next bench capture.
+
+## Commissioning temporal-noise comparison
+
+`throughput_noise` separates single-reading shot noise, measured dark RMS, and
+postamp electrical RMS times each signed firmware local slope. For PD net voltage
+V and effective gain G, shot RMS is `sqrt(2*q*V*G*ENBW)` in volts. Electrical RMS
+is `abs(V)*ln(10)/10*abs(dA/dVdrive)*drive_rms`. Sum independent temporal variances;
+exclude static calibration/offset uncertainty and do not add quantization again
+when the measured dark already contains it. ENBW describes the full acquisition
+response, not half the publication frequency. Until scope measurement, 10 mV
+per drive and the notebook bandwidths remain labelled scenarios.
+
+A shared relative-power reference predicts neighboring-current mean levels without
+claiming absolute optical calibration. Conditional excess-variance allocations
+and nonnegative least-squares slope fits are self-assessment bounds, not proof of
+electrical noise or mechanical defects. The paired scope investigation measures
+both drives, their complex cross spectrum and local drive→PD responses at each
+operating point. The analog response is already present in those measurements;
+only a separately justified ADC response belongs in a TIB-sample prediction.

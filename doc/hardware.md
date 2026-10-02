@@ -29,6 +29,11 @@ See status.md for software details
 - Microcontroller reference manual STM32H563ZI.pdf
 - https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
 
+The 32768 Hz LSE crystal clocks RTC and native LPTIM4 uptime (4096 kernel ticks/s).
+The application does not enable automatic STOP states. LSI remains the independent
+watchdog source. RTC has no battery/supercap backup in this setup; no valid time
+retention is assumed through removal of board power.
+
 Must edit default solder bridges to use i2c2:
 • HSE not used: PF0/PH0 and PF1/PH1 are used as GPIOs instead of clocks. The configuration must be:
 – SB48 and SB50 ON
@@ -148,16 +153,16 @@ For board files:
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 250 SPS, ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
+- The current overlay selects 64 SPS (ADS1115 rate index 3), ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
   input range leaves 48 mV of headroom below the ADC's numerical rail.
 - PD 50 Ohm coax is fed to the ADC as a single-ended input.
 - Input circuitry uses filtering and a precision divider to map 0-10 V PD
   output to 0-2 V with 20 Hz bandwidth.
 - Sample each at 20 Hz, muxing between the two within a 50 ms period. Each
-  throughput record uses one fresh conversion. The overlay retains 250 SPS;
-  selecting 64 SPS permits two conversions in about 31.3 ms before I2C and
-  scheduling overhead. Confirm runtime margin and noise on hardware before
-  changing that default. Timing allowances derive from the selected rate.
+  throughput record uses one fresh conversion. At 64 SPS, two conversions take
+  about 31.3 ms before I2C and scheduling overhead. This documents the existing
+  overlay setting; commissioning changes did not change the ADC rate. Confirm
+  runtime margin and noise on hardware. Timing allowances derive from that rate.
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - ADC runs at 3.3v
 - Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)

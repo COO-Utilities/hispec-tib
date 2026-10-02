@@ -14,6 +14,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <zephyr/net/net_ip.h>
 
 enum sntp_sync_source {
@@ -31,6 +32,13 @@ struct sntp_sync_status {
 	uint64_t last_sync_utc_ms;
 	int64_t last_sync_uptime_ms;
 };
+
+/** Set fractional running UTC and whole-second RTC, without NVS writes.
+ * Serializes manual/SNTP updates; may briefly block in the RTC driver. */
+int sntp_sync_set_time(const struct timespec *utc);
+
+/** Restore the available RTC calendar at boot; does not mark SNTP synced. */
+void sntp_sync_restore_rtc(void);
 
 /** @brief Initialize SNTP status and start first sync when enabled. */
 void sntp_sync_init(void);

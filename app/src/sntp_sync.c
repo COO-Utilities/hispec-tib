@@ -1,6 +1,6 @@
 /**
  * @file sntp_sync.c
- * @brief Low-priority SNTP sync, retry, and hourly resync logic.
+ * @brief Low-priority SNTP sync, retry, RTC restoration, and minute resync logic.
  *
  * The SNTP thread chooses manual or DHCP NTP source, calls sntp_simple(),
  * updates Zephyr's realtime clock on success, and records status for `time`
@@ -16,6 +16,8 @@
 #include <string.h>
 #include <time.h>
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/rtc.h>
+#include <zephyr/sys/timeutil.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
@@ -30,7 +32,7 @@ LOG_MODULE_REGISTER(sntp_sync, LOG_LEVEL_INF);
 
 #define SNTP_SYNC_TIMEOUT_MS 3000U
 #define SNTP_SYNC_RETRY_INTERVAL_MS 30000U
-#define SNTP_SYNC_RESYNC_INTERVAL_MS 3600000U
+#define SNTP_SYNC_RESYNC_INTERVAL_MS 60000U
 #define SNTP_SYNC_INITIAL_DELAY_MS 1000U
 #define SNTP_SYNC_STACK_SIZE 1400
 #define SNTP_SYNC_THREAD_PRIORITY 14
@@ -42,6 +44,44 @@ struct sntp_sync_runtime {
 };
 
 static struct sntp_sync_runtime g_sntp;
+
+static const struct device *const calendar_rtc = DEVICE_DT_GET(DT_NODELABEL(rtc));
+static K_MUTEX_DEFINE(clock_set_lock);
+
+int sntp_sync_set_time(const struct timespec *utc)
+{
+	struct rtc_time calendar = {0};
+	if (utc == NULL || utc->tv_nsec < 0 || utc->tv_nsec >= NSEC_PER_SEC ||
+	    gmtime_r(&utc->tv_sec, rtc_time_to_tm(&calendar)) == NULL ||
+	    calendar.tm_year < 100 || calendar.tm_year > 199) return -EINVAL;
+	k_mutex_lock(&clock_set_lock, K_FOREVER);
+	/* Running UTC keeps SNTP fractions. The native STM32 RTC setter stores
+	 * whole seconds; a subsecond warm-reboot offset is corrected by SNTP. */
+	int rc = sys_clock_settime(SYS_CLOCK_REALTIME, utc);
+	if (rc == 0) {
+		int rtc_rc = device_is_ready(calendar_rtc) ? rtc_set_time(calendar_rtc, &calendar) : -ENODEV;
+		if (rtc_rc != 0) LOG_WRN("UTC updated but RTC calendar write failed (%d)", rtc_rc);
+	}
+	k_mutex_unlock(&clock_set_lock);
+	return rc;
+}
+
+void sntp_sync_restore_rtc(void)
+{
+	struct rtc_time calendar = {0};
+	int rc = device_is_ready(calendar_rtc) ? rtc_get_time(calendar_rtc, &calendar) : -ENODEV;
+	if (rc != 0) {
+		LOG_INF("RTC unavailable (%d); awaiting SNTP/manual time", rc);
+		return;
+	}
+	struct timespec utc = {
+		.tv_sec = timeutil_timegm(rtc_time_to_tm(&calendar)),
+		.tv_nsec = calendar.tm_nsec,
+	};
+	/* Restore without rewriting the running calendar or claiming SNTP sync.
+	 * No battery/supercap is assumed; a power loss may invalidate the RTC. */
+	(void)sys_clock_settime(SYS_CLOCK_REALTIME, &utc);
+}
 
 static void sntp_sync_thread(void *p1, void *p2, void *p3);
 
@@ -188,7 +228,7 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 
 	ts.tv_sec = (time_t)sntp_time->seconds;
 	ts.tv_nsec = (long)(((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32);
-	rc = sys_clock_settime(SYS_CLOCK_REALTIME, &ts);
+	rc = sntp_sync_set_time(&ts);
 	if (rc != 0) {
 		return rc;
 	}
@@ -197,7 +237,6 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 	if (utc_ms_out != NULL) {
 		*utc_ms_out = utc_ms;
 	}
-	app_settings_note_time_utc_ms(utc_ms);
 
 	return 0;
 }

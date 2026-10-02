@@ -389,6 +389,11 @@ int laser_estimate_flux(enum hispec_laser_id id,
  */
 int hispec_laser_output_status(enum hispec_laser_id id, bool *emitting);
 
+/** Last zero-current/bank transition in uptime ms, or negative if emitting or
+ * control is faulted. State-only; no I/O. An unused driver after bank startup
+ * follows output_status's passive, non-emitting interpretation. */
+int64_t hispec_laser_off_since_ms(enum hispec_laser_id id);
+
 /** @brief Return current-emission on-time tracked by this module since boot. */
 double hispec_laser_current_on_time_s(enum hispec_laser_id id);
 

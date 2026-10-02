@@ -379,6 +379,9 @@ int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	if (duration_supplied && dark_supplied) {
 		return coo_cmd_error(out, cmd, "duration_ms conflicts with dark_mv");
 	}
+	if (dark_supplied && reset_lowest) {
+		return coo_cmd_error(out, cmd, "reset_lowest requires a measured dark");
+	}
 	if (rms_supplied && !dark_supplied) {
 		return coo_cmd_error(out, cmd, "rms_mv requires dark_mv");
 	}

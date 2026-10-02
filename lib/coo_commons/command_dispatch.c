@@ -21,6 +21,9 @@
 #include <zephyr/sys/reboot.h>
 #endif
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/clock.h>
+#include <zephyr/zvfs/eventfd.h>
+#include <time.h>
 
 LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
@@ -33,7 +36,7 @@ LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 static void serial_reset_line(struct coo_cmd_runtime *runtime);
 static int runtime_init_serial_console(struct coo_cmd_runtime *runtime);
 static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
-				     const struct coo_cmd_response *out);
+				     struct coo_cmd_response *out);
 static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime);
 static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 				   const struct coo_cmd_request *cmd,
@@ -60,7 +63,7 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 
 	if (runtime == NULL || cfg == NULL || cfg->device_id == NULL ||
 	    cfg->device_id[0] == '\0' || cfg->inbound_queue == NULL ||
-	    cfg->outbound_queue == NULL || cfg->mqtt_msg_id == NULL ||
+	    cfg->outbound_queue == NULL || cfg->reply_queue == NULL || cfg->mqtt_msg_id == NULL ||
 	    strlen(cfg->device_id) >= sizeof(runtime->device_id)) {
 		return -EINVAL;
 	}
@@ -82,6 +85,10 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 
 	runtime->inbound_queue = cfg->inbound_queue;
 	runtime->outbound_queue = cfg->outbound_queue;
+	runtime->reply_queue = cfg->reply_queue;
+	/* Native, nonblocking eventfd wakes the network owner without a thread. */
+	runtime->output_event_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
+	if (runtime->output_event_fd < 0) return -errno;
 	runtime->execute_handler = cfg->execute_handler;
 	runtime->mqtt_msg_id = cfg->mqtt_msg_id;
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
@@ -97,6 +104,7 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 				   cfg->reboot_delay_ms :
 				   COO_CMD_REBOOT_DEFAULT_DELAY_MS;
 	runtime->reboot_prepare = cfg->reboot_prepare;
+	runtime->reboot_work_q = cfg->reboot_work_q;
 	k_work_init_delayable(&runtime->reboot_work, reboot_work_handler);
 	(void)atomic_clear(&runtime->reboot_pending);
 #endif
@@ -930,6 +938,7 @@ int coo_cmd_make_response(struct coo_cmd_response *out,
 	out->topic[0] = '\0';
 	out->payload_len = 0U;
 	out->corr_len = 0U;
+	out->ack_utc_ms = 0U;
 	memset(out->correlation_data, 0, sizeof(out->correlation_data));
 
 	out->msg_type = msg_type;
@@ -1241,14 +1250,16 @@ static void runtime_emit_scratch_release(struct coo_cmd_runtime *runtime)
 }
 
 static int runtime_emit_queue(struct coo_cmd_runtime *runtime,
-			      const struct coo_cmd_response *out)
+                              const struct coo_cmd_response *out)
 {
-	if (runtime == NULL || runtime->outbound_queue == NULL || out == NULL) {
-		return -EINVAL;
-	}
-	if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+	if (runtime == NULL || out == NULL) return -EINVAL;
+	bool best_effort = out->target == COO_CMD_OUT_MQTT_BEST_EFFORT;
+	struct k_msgq *queue = best_effort ? runtime->outbound_queue : runtime->reply_queue;
+	if (k_msgq_put(queue, out, K_NO_WAIT) != 0) {
+		atomic_inc(best_effort ? &runtime->dropped_best_effort : &runtime->dropped_replies);
 		return -ENOSPC;
 	}
+	(void)zvfs_eventfd_write(runtime->output_event_fd, 1);
 	return 0;
 }
 
@@ -1271,6 +1282,7 @@ static int runtime_emit_data(struct coo_cmd_runtime *runtime,
 	out->target = runtime_emit_target(args->delivery);
 	out->qos = 0U;
 	out->corr_len = 0U;
+	out->ack_utc_ms = 0U;
 	rc = coo_cmd_format_data_topic(runtime->device_id, args->suffix,
 				       out->topic, sizeof(out->topic));
 	if (rc != 0) {
@@ -1812,7 +1824,7 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	LOG_WRN("Reboot command accepted; rebooting in %u ms%s",
 		runtime->reboot_delay_ms,
 		erase_non_ip_settings ? " after erasing non-IP settings" : "");
-	rc = k_work_schedule(&runtime->reboot_work,
+	rc = k_work_schedule_for_queue(runtime->reboot_work_q, &runtime->reboot_work,
 			     K_MSEC(runtime->reboot_delay_ms));
 	if (rc < 0) {
 		(void)atomic_clear(&runtime->reboot_pending);
@@ -1890,6 +1902,7 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 			 uint16_t *message_id)
 {
 	struct mqtt_publish_param param;
+	char ack_utc[21];
 
 	if (client == NULL || out == NULL || message_id == NULL) {
 		return -EINVAL;
@@ -1903,6 +1916,11 @@ int coo_cmd_publish_mqtt(struct mqtt_client *client,
 	param.message.payload.len = out->payload_len;
 	param.prop.correlation_data.data = (uint8_t *)out->correlation_data;
 	param.prop.correlation_data.len = out->corr_len;
+	if (out->ack_utc_ms != 0U) {
+		snprintk(ack_utc, sizeof(ack_utc), "%llu", (unsigned long long)out->ack_utc_ms);
+		param.prop.user_prop[0].name = (struct mqtt_utf8){.utf8 = (uint8_t *)"ack_utc_ms", .size = 10};
+		param.prop.user_prop[0].value = (struct mqtt_utf8){.utf8 = (uint8_t *)ack_utc, .size = strlen(ack_utc)};
+	}
 	param.message_id = (*message_id)++;
 	param.dup_flag = 0U;
 	param.retain_flag = 0U;
@@ -1989,9 +2007,7 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 		} else {
 			(void)runtime_execute_default(runtime, cmd, out);
 		}
-		if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
-			LOG_WRN("Outbound queue full; dropping command response");
-		}
+		runtime_enqueue_response(runtime, out);
 	}
 }
 
@@ -2036,14 +2052,13 @@ static enum coo_cmd_msg_type runtime_classify(struct coo_cmd_runtime *runtime,
 }
 
 static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
-				     const struct coo_cmd_response *out)
+                                     struct coo_cmd_response *out)
 {
-	if (runtime == NULL || runtime->outbound_queue == NULL || out == NULL) {
-		return;
-	}
-
-	if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
-		LOG_WRN("Outbound queue full; dropping immediate command response");
+	struct timespec utc;
+	(void)sys_clock_gettime(SYS_CLOCK_REALTIME, &utc);
+	out->ack_utc_ms = (uint64_t)utc.tv_sec * 1000U + utc.tv_nsec / 1000000U;
+	if (runtime_emit_queue(runtime, out) != 0) {
+		LOG_WRN("Reply queue full; dropping command response");
 	}
 }
 
@@ -2387,8 +2402,12 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 		runtime->outbound_full_warning_seen = false;
 	}
 
-	while (budget-- > 0 &&
-	       k_msgq_get(runtime->outbound_queue, out, K_NO_WAIT) == 0) {
+	while (budget-- > 0) {
+		struct k_msgq *queue = runtime->reply_queue;
+		if (k_msgq_get(queue, out, K_NO_WAIT) != 0) {
+			queue = runtime->outbound_queue;
+			if (k_msgq_get(queue, out, K_NO_WAIT) != 0) break;
+		}
 		const bool best_effort = (out->target == COO_CMD_OUT_MQTT_BEST_EFFORT);
 
 		if (out->target == COO_CMD_OUT_SERIAL) {
@@ -2398,24 +2417,32 @@ void coo_cmd_runtime_drain_outbound(struct coo_cmd_runtime *runtime,
 
 		if (!mqtt_available) {
 			if (best_effort) {
+				atomic_inc(&runtime->dropped_best_effort);
 				LOG_DBG("Dropping best-effort MQTT msg while MQTT unavailable");
 				continue;
 			}
-			if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+			if (k_msgq_put(queue, out, K_NO_WAIT) != 0) {
+				atomic_inc(&runtime->dropped_replies);
 				LOG_WRN("Dropping MQTT msg (queue full while requeueing)");
 			}
 			continue;
 		}
 
 		if (coo_cmd_publish_mqtt(client, out, runtime->mqtt_msg_id) != 0) {
+			atomic_inc(&runtime->publish_failures);
 			if (best_effort) {
+				atomic_inc(&runtime->dropped_best_effort);
 				LOG_WRN("Best-effort MQTT publish failed; dropping msg");
 				continue;
 			}
-			LOG_WRN("MQTT publish failed; will retry");
-			if (k_msgq_put(runtime->outbound_queue, out, K_NO_WAIT) != 0) {
+			LOG_WRN("MQTT publish failed; reconnect before retry");
+			if (k_msgq_put(queue, out, K_NO_WAIT) != 0) {
+				atomic_inc(&runtime->dropped_replies);
 				LOG_WRN("Dropping MQTT msg (queue full after publish failure)");
 			}
+			/* Pending replies must not spin main at priority 4 on a failed
+			 * socket. The disconnect callback invokes normal reconnect/backoff. */
+			(void)mqtt_abort(client);
 			break;
 		}
 	}

@@ -221,28 +221,7 @@ static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 	return 0;
 }
 
-//TODO needs documentation
-static void apply_last_known_time(void)
-{
-	struct timespec ts = {0};
-	uint64_t utc_ms;
-	int rc;
 
-	if (!app_settings_get_last_known_utc_ms(&utc_ms)) {
-		return;
-	}
-
-	ts.tv_sec = (time_t)(utc_ms / 1000ULL);
-	ts.tv_nsec = (long)((utc_ms % 1000ULL) * 1000000ULL);
-	rc = sys_clock_settime(SYS_CLOCK_REALTIME, &ts);
-	if (rc != 0) {
-		LOG_WRN("Failed to restore last known UTC time (%d)", rc);
-		return;
-	}
-
-	LOG_INF("Restored last known UTC time from settings: %llu ms",
-		(unsigned long long)utc_ms);
-}
 
 // TODO, why isn't also triggering a mqtt reconnect here?
 static void network_event_handler(bool connected)
@@ -315,10 +294,10 @@ int main(void)
 
 	//TODO move to right after app settings. this needs to ensure that loading does not depend on detecting board type.
 
-	apply_last_known_time();
+	sntp_sync_restore_rtc();
 	app_settings_increment_boot_count();
 
-	rc = command_runtime_init();
+	rc = command_runtime_init(&app_blocking_workq);
 	if (rc != 0) {
 		LOG_ERR("Command runtime init failed (%d)", rc);
 		return rc;
@@ -330,8 +309,9 @@ int main(void)
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
-	//TODO the zephyr api specifies that k_work_queue_init must be called first and it is not, check this for all work
-	// queueus
+	/* Reboot preparation shares this queue: Modbus RX must remain free on
+	 * the system queue while shutdown waits for driver replies. */
+	k_work_queue_init(&app_blocking_workq);
 	k_work_queue_start(&app_blocking_workq,
 			   app_blocking_workq_stack,
 			   K_THREAD_STACK_SIZEOF(app_blocking_workq_stack),
@@ -492,7 +472,9 @@ int main(void)
 					       coo_mqtt_is_connected() && mqtt_can_run);
 
 		if (coo_mqtt_is_connected()) {
-			rc = coo_mqtt_process(&client_ctx);
+			rc = coo_mqtt_process(&client_ctx, cmd_runtime->output_event_fd,
+				k_msgq_num_used_get(cmd_runtime->reply_queue) != 0U ||
+				k_msgq_num_used_get(cmd_runtime->outbound_queue) != 0U);
 			if (rc != 0) {
 				(void)mqtt_disconnect(&client_ctx, NULL);
 				mqtt_subscribed = false;

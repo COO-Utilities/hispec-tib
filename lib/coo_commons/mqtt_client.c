@@ -13,6 +13,7 @@
 #include <coo_commons/mqtt_client.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/zvfs/eventfd.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/sys/util.h>
 #include <errno.h>
@@ -31,7 +32,7 @@ static struct sockaddr_storage broker;
 static struct coo_mqtt_broker_config active_broker_cfg;
 
 /* Socket descriptor */
-static struct zsock_pollfd fds[1];
+static struct zsock_pollfd fds[2];
 static int nfds;
 
 /* MQTT connectivity status flag */
@@ -388,11 +389,15 @@ static void mqtt_event_handler(struct mqtt_client *const client, const struct mq
 }
 
 /** Poll the MQTT socket for received data */
-static int poll_mqtt_socket(struct mqtt_client *client, int timeout)
+static int poll_mqtt_socket(struct mqtt_client *client, int timeout, int wake_fd)
 {
 	int rc;
 
 	prepare_fds(client);
+	if (wake_fd >= 0) {
+		fds[1] = (struct zsock_pollfd){.fd = wake_fd, .events = ZSOCK_POLLIN};
+		nfds = 2;
+	}
 
 	if (nfds <= 0) {
 		return -EINVAL;
@@ -427,24 +432,29 @@ int coo_mqtt_subscribe(struct mqtt_client *client)
 	return rc;
 }
 
-int coo_mqtt_process(struct mqtt_client *client)
+int coo_mqtt_process(struct mqtt_client *client, int wake_fd, bool output_pending)
 {
 	int rc;
 	int keepalive_ms = mqtt_keepalive_time_left(client);
 	int timeout_ms = keepalive_ms;
-	bool waited_for_keepalive;
+
 
 	if (timeout_ms < 0 || timeout_ms > MSECS_PROCESS_POLL_TIMEOUT) {
 		timeout_ms = MSECS_PROCESS_POLL_TIMEOUT;
 	}
-	waited_for_keepalive = (keepalive_ms >= 0 && timeout_ms == keepalive_ms);
+	if (output_pending) timeout_ms = 0;
 
-	rc = poll_mqtt_socket(client, timeout_ms);
+	rc = poll_mqtt_socket(client, timeout_ms, wake_fd);
 	if (rc < 0) {
 		return rc;
 	}
 
 	if (rc > 0) {
+		if (wake_fd >= 0 && (fds[1].revents & ZSOCK_POLLIN)) {
+			zvfs_eventfd_t wakes;
+			(void)zvfs_eventfd_read(wake_fd, &wakes);
+		}
+		if (fds[0].revents & (ZSOCK_POLLHUP | ZSOCK_POLLERR | ZSOCK_POLLNVAL)) return -ENOTCONN;
 		if (fds[0].revents & ZSOCK_POLLIN) {
 			/* MQTT data received */
 			rc = mqtt_input(client);
@@ -458,8 +468,9 @@ int coo_mqtt_process(struct mqtt_client *client)
 				return -ENOTCONN;
 			}
 		}
-	} else if (waited_for_keepalive) {
-		/* Socket poll reached the MQTT keepalive deadline. */
+	}
+	if (mqtt_keepalive_time_left(client) == 0) {
+		/* Continuous input/output wakeups must not starve keepalive. */
 		rc = mqtt_live(client);
 		if (rc == -EAGAIN) {
 			return 0;
@@ -482,7 +493,7 @@ void coo_mqtt_run(struct mqtt_client *client)
 
 	/* Thread will primarily remain in this loop */
 	while (mqtt_connected) {
-		rc = coo_mqtt_process(client);
+		rc = coo_mqtt_process(client, -1, false);
 		if (rc != 0) {
 			break;
 		}
@@ -509,7 +520,7 @@ int coo_mqtt_connect(struct mqtt_client *client)
 	}
 
 	/* Poll MQTT socket for CONNACK */
-	rc = poll_mqtt_socket(client, MSECS_NET_POLL_TIMEOUT);
+	rc = poll_mqtt_socket(client, MSECS_NET_POLL_TIMEOUT, -1);
 	if (rc < 0) {
 		mqtt_abort(client);
 		return rc;

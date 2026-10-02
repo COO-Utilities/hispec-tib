@@ -9,6 +9,32 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Commissioning changes: bench-check continuous 10 s dark settling after PD
+  power/laser transitions, forced-dark lowest gating, and measured reset_lowest
+  persistence. Existing historical minima are unchanged. Verify no-light startup
+  and reboot laser STOP with Modbus RX free to run on the system queue.
+- [ ] Measure LSE uptime/UTC drift, SNTP updates, RTC reboot restoration, 20 Hz
+  cadence, and command ACK alignment under both streaming channels and command
+  load. Offline builds cannot validate crystal accuracy, physical timing, output
+  loss or watchdog behavior. Check queue counters and runtime stack margins.
+- [ ] Validate per-FVOA residual limits and the constrained 65 dB leakage floor
+  with new 1028/1270/1430 captures. Saved-data replay checks numerical behavior;
+  it does not create high-attenuation calibration support. Check the ~0.18 ms
+  serial pair-write wire estimate with actual bus/actuator response if needed.
+  Offline verification (2026-10-01): normal Nucleo build and an isolated merge
+  with `ota-flash` 155b447 plus MCUboot sysbuild passed. Host OTA dry-run verified
+  the signed image without network I/O. Separate policy NVS records retain
+  schema 13/calibration layout; OTA admission, bank-off/trial, watchdog, and
+  boot-uptime deadline paths were retained. Actual OTA/rollback is untested.
+  Temporary C checks exercised dark gates, forced-dark protection, paired-write
+  failure and output queues/ACK stamping. Sixty-four saved/partial/noisy-tail
+  fit replays checked peak rejection, supported endpoints and forward/inverse
+  curves. Python checks covered clock brackets, signal search, saved-data plots,
+  conditional noise analysis and scope acquisition doubles; no hardware was used.
+- [ ] Execute the scope investigation only with fresh bench authorization and
+  verified probe floors/patch/actuator identities. Temporal-noise and excess-
+  variance results remain conditional on explicit bandwidth and independence.
+
 - [ ] Bench-validate high-signal fit support after removing the upper transmission
   exclusion. Valid readings at/above the measured reference now enter both fits
   and signed residual statistics. Verify the open-region plots and installed RMS
@@ -50,7 +76,8 @@ LLMs Agents: Do NOT change heading names in this file.
   fresh acquisition and embedded fitting duration still need bench validation.
 - [ ] Verify compact calibration status with both six-term corrections. Numeric
   formatting and omission of three aggregate span/transmission diagnostics keep
-  the 1024-byte buffers; those diagnostics remain in per-device fit telemetry.
+  compact fit replies; command capacity is now 1152 bytes for the added stream
+  fields. Those diagnostics remain in per-device fit telemetry.
 - [ ] Bench-validate zero-current versus `laser stop=true`, auto-off at zero, and
   retained configuration across STOP. Capture the application Maiman timing logs
   to verify 350 ms busy guards and assess the unchanged 75 ms ACK deadline; see
@@ -76,16 +103,16 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Decisions To Make
 - Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
   actuator response, illuminated PD noise, and dark-based error estimates.
-  No extra settling holdoff is used. 64 SPS builds but remains a hardware
-  evaluation option; the default is 250 SPS. See `photodiode_notes.md` for
+  No extra illuminated-stream settling holdoff is used. The existing overlay
+  selects 64 SPS; runtime margin/noise still need bench verification. See `photodiode_notes.md` for
   the error budget and remaining physical calibration assumptions.
 
 ## TODOs
 - Investigate detector startup and illuminated settling separately. The September 21
   19:05 UTC noise capture saved a clipped dark (mean 53.8 mV, RMS 319.5 mV), then
-  a stable dark trace near -2 mV. Notebook preparation now waits five seconds and
-  rejects unusable dark results before illumination; firmware dark acceptance and
-  the actual hardware stabilization time still need investigation. The same run
+  a stable dark trace near -2 mV. Firmware now requires ten continuous seconds
+  of PD on and relevant lasers off before collecting a dark, and rejects clipped
+  captures. Verify the physical stabilization time; the code does not establish it. The same run
   shows a long transition after 182 seconds of laser emission, so laser warmup alone
   does not explain all settling. Keep the sampler-owned notification TODO below.
 - Investigate DAC1 reference/sweep disagreement before changing acquisition:

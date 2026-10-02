@@ -63,6 +63,9 @@ K_MSGQ_DEFINE(outbound_queue,
               8,
               4);
 
+/* Replies cannot be displaced by a stream burst. */
+K_MSGQ_DEFINE(reply_queue, sizeof(struct coo_cmd_response), 4, 4);
+
 extern struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 extern struct mems_router router;
 // extern struct attenuator attenuators[NUM_ATTENUATORS];
@@ -163,7 +166,7 @@ static const struct coo_cmd_spec command_specs[] = {
       CMD_HELP("time [unix_ms=<utc-ms>]",
                "unix_ms required for effect",
                "unsigned millisecond Unix epoch",
-               "sets Zephyr realtime clock and records last known UTC",
+               "sets running UTC and RTC calendar; does not persist stale UTC in NVS",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
     CMD_SPEC("temps", temps_get, NULL, COO_CMD_CLASS_DEFAULT, true, "",
              "temps", "none", NULL, "cached housekeeping temperature status",
@@ -299,6 +302,12 @@ static const struct coo_cmd_spec command_specs[] = {
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
                   "sets or queries total or per-physical attenuator transmission",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    CMD_HELP_ONLY("atten/<name>/settings", NULL,
+                  "atten/<name>/settings [dac1={max_fit_residual_db} dac2={max_fit_residual_db} persist=<bool>]",
+                  "partial per-FVOA updates; finite positive maximum absolute calibrated-region residual in dB",
+                  "default: 2 dB per FVOA; persist defaults false",
+                  "policy only; no DAC writes; rejected while calibration is active",
+                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/coeff", NULL,
 	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,gain,correction_coeff} dac2={...} persist=<bool>]",
 	                  "dac1 and dac2 coefficient objects are required for effect",
@@ -313,7 +322,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("pd/dark/<channel>", command_tib_supported,
                   "pd/dark/<channel> [duration_ms=<ms>|dark_mv=<mV> rms_mv=<mV> reset_lowest=<bool> persist=<bool>]",
-                  "channel required in key; duration_ms arms dark capture, dark_mv forces dark; persist defaults false",
+                  "channel required in key; duration_ms waits for 10s PD-on/laser-off then captures; reset_lowest requires measured dark; persist defaults false",
                   "channel: yj,hk",
                   "TIB-only photodiode dark measurement and forced dark update",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
@@ -500,12 +509,13 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data)
     }
 }
 
-int command_runtime_init(void)
+int command_runtime_init(struct k_work_q *blocking_work_q)
 {
     const struct coo_cmd_runtime_config cfg = {
         .device_id = app_mqtt_device_id(),
         .inbound_queue = &inbound_queue,
         .outbound_queue = &outbound_queue,
+        .reply_queue = &reply_queue,
         .mqtt_msg_id = &mqtt_msg_id,
         .serial_wrap_column = SERIAL_WRAP_COLUMN,
         .command_specs = command_specs,
@@ -515,6 +525,7 @@ int command_runtime_init(void)
 #if defined(CONFIG_COO_CMD_REBOOT)
         .reboot_delay_ms = COMMAND_REBOOT_DELAY_MS,
         .reboot_prepare = command_prepare_reboot,
+        .reboot_work_q = blocking_work_q,
 #endif
     };
     int rc;
@@ -925,10 +936,9 @@ int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     ts.tv_sec = utc_ms / 1000ULL;
     ts.tv_nsec = (utc_ms % 1000ULL) * 1000000ULL;
 
-    if (sys_clock_settime(SYS_CLOCK_REALTIME, &ts) != 0) {
+    if (sntp_sync_set_time(&ts) != 0) {
         return coo_cmd_error(out, cmd, "clock set failed");
     }
-    app_settings_note_time_utc_ms(utc_ms);
 
     return coo_cmd_ok(out, cmd);
 }

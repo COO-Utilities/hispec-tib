@@ -77,6 +77,11 @@ struct app_attenuator_physical_settings {
 	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
+/** Fit acceptance policy; separate NVS record preserves calibration layout. */
+struct app_attenuator_fit_policy {
+	double max_fit_residual_db[APP_ATTENUATOR_PHYSICAL_COUNT];
+};
+
 /** Persisted/runtime calibration for one logical attenuator channel. */
 struct app_attenuator_channel_settings {
 	struct app_attenuator_physical_settings physical[APP_ATTENUATOR_PHYSICAL_COUNT];
@@ -184,13 +189,13 @@ struct app_settings_snapshot {
 	struct app_ip_settings ip;
 	struct app_mqtt_settings mqtt;
 	struct app_attenuator_settings attenuator;
+	struct app_attenuator_fit_policy attenuator_fit[APP_ATTENUATOR_CHANNEL_COUNT];
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
 	struct app_route_loss_settings route_loss;
 	struct app_mems_settings mems;
 	uint32_t boot_count;
-	uint64_t last_known_utc_ms;
 	uint32_t mqtt_revision;
 };
 
@@ -227,6 +232,11 @@ void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
 void app_settings_get_mqtt(struct app_mqtt_settings *out);
 /** @brief Replace MQTT settings, increment reconnect revision, and optionally persist. */
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
+/** Copy acceptance policy under the settings mutex; no I/O. */
+void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out);
+/** Validate/update policy only; optional NVS write, never changes DAC outputs. */
+int app_settings_update_attenuator_fit(uint8_t channel, const struct app_attenuator_fit_policy *policy, bool persist);
+
 /** @brief Copy the current attenuator calibration snapshot. */
 void app_settings_get_attenuator(struct app_attenuator_settings *out);
 /**
@@ -313,10 +323,7 @@ uint32_t app_settings_get_mqtt_revision(void);
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */
 void app_settings_increment_boot_count(void);
-/** @brief Return true and copy the last persisted UTC time if one is known. */
-bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms);
-/** @brief Store a known-good UTC time for boot-time clock initialization. */
-void app_settings_note_time_utc_ms(uint64_t utc_ms);
+
 /** @brief Return app NVS storage for command-dispatch owned records, or NULL if unavailable. */
 struct nvs_fs *app_settings_nvs_fs(void);
 

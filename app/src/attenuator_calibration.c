@@ -1275,8 +1275,10 @@ static int build_fit_points(uint8_t physical,
  * Estimate the physical FVOA leakage floor from the final retained fit points.
  *
  * Acquisition sweeps monotonically toward higher DUT attenuation. The final
- * usable points therefore describe the finite transmission floor that remains
- * when the FVOA is effectively shut. This is not optimized as a third
+ * usable points estimate the finite transmission floor only if the optical
+ * path probes that far. Constrain the estimate to at least 65 dB so a dim path's
+ * last usable readings cannot bend the floor into its measured region. This
+ * constraint supplies no additional calibrated range. It is not a third
  * Gauss-Newton parameter; it is fixed before the two-shape-parameter fit so the
  * embedded optimizer stays small and reproducible.
  */
@@ -1315,7 +1317,10 @@ static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
 		return -ERANGE;
 	}
 
-	*max_atten_db = mean;
+	/* An unprobed high-attenuation tail is not evidence for a low leakage
+	 * floor. 65 dB is a model constraint, not additional measured support.
+	 * Keep measured tail scatter for weighting; inspect its effect on fits. */
+	*max_atten_db = MAX(mean, 65.0);
 	*max_atten_sigma_db = sigma;
 	return 0;
 }
@@ -1887,7 +1892,10 @@ static int fit_one_physical(uint8_t physical,
 	out->fvoa_span_mv = max_x - min_x;
 	memcpy(out->correction_coeff, coeffs.correction_coeff,
 	       sizeof(out->correction_coeff));
-	out->accepted = isfinite(out->correlation) &&
+	struct app_attenuator_fit_policy policy;
+	app_settings_get_attenuator_fit(cal.attenuator_index, &policy);
+	out->accepted = max_abs_db <= policy.max_fit_residual_db[physical] &&
+			isfinite(out->correlation) &&
 			out->correlation >= ATTEN_CAL_MIN_FIT_CORR &&
 			isfinite(out->fvoa_50pct_mv) &&
 			out->fvoa_50pct_mv > 0.0 &&

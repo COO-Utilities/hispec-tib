@@ -67,6 +67,7 @@ struct laser_output_estimate_state {
 	double tec_temperature_c;
 	enum laser_control_state control; /* Control state, separate from read freshness. */
 	int64_t response_deadline_ms;
+	int64_t off_since_ms; /* Last transition to zero current/bank off, for dark settling. */
 	int64_t next_warning_ms;
 	bool communication_fault;
 	/* Identity and successfully written configuration survive STOP and transport
@@ -190,6 +191,10 @@ static void output_estimate_set_locked(enum hispec_laser_id id,
 	}
 
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	if (laser_output_estimate[id].current_ma != current_ma ||
+	    laser_output_estimate[id].control == LASER_CONTROL_FAULT) {
+		laser_output_estimate[id].off_since_ms = k_uptime_get();
+	}
 	laser_output_estimate[id].current_ma = current_ma;
 	laser_output_estimate[id].tec_temperature_c = tec_temperature_c;
 	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
@@ -287,6 +292,21 @@ int hispec_laser_output_status(enum hispec_laser_id id, bool *emitting)
 	}
 	k_mutex_unlock(&laser_state_lock);
 	return rc;
+}
+
+int64_t hispec_laser_off_since_ms(enum hispec_laser_id id)
+{
+	if (id < 0 || id >= HISPEC_LASER_COUNT) return -EINVAL;
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	const struct laser_output_estimate_state *state = &laser_output_estimate[id];
+	int64_t since = state->off_since_ms;
+	if (!laser_runtime_initialized || state->control == LASER_CONTROL_FAULT ||
+	    (bank_power_requested_enabled &&
+	     (laser_current_runtime[id].active || state->current_ma > 0.0))) {
+		since = -EBUSY;
+	}
+	k_mutex_unlock(&laser_state_lock);
+	return since;
 }
 
 static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
@@ -403,6 +423,10 @@ static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
 						       ARRAY_SIZE(laser_current_runtime),
 						       id);
 	laser_settings[id].total_emitting_s = total;
+	if (laser_output_estimate[id].current_ma > 0.0 ||
+	    laser_output_estimate[id].control == LASER_CONTROL_FAULT) {
+		laser_output_estimate[id].off_since_ms = k_uptime_get();
+	}
 	laser_output_estimate[id].current_ma = 0.0;
 	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
 	laser_output_estimate[id].started = false;
@@ -612,6 +636,7 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		laser_output_estimate[i].prepared = false;
+		laser_output_estimate[i].off_since_ms = k_uptime_get();
 		laser_output_estimate[i].device_id = 0;
 		laser_output_estimate[i].serial = 0;
 		laser_output_estimate[i].started = false;

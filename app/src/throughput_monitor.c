@@ -66,6 +66,8 @@ struct throughput_source_reference {
 	double dac1_mv;
 	double dac2_mv;
 	double wavelength_nm;
+	double atten1_slope_db_per_fvoa_mv;
+	double atten2_slope_db_per_fvoa_mv;
 };
 
 /* Preparing retains the PD inhibition while command-owned routes change. */
@@ -219,6 +221,7 @@ static int refresh_reference(struct throughput_state *state)
 		.laser_output_power_uw = NAN, .laser_output_power_err_uw = NAN,
 		.laser_current_ma = NAN, .atten_tx = NAN, .atten_db = NAN, .wavelength_nm = NAN,
 		.atten1_db = NAN, .atten2_db = NAN, .dac1_mv = NAN, .dac2_mv = NAN,
+		.atten1_slope_db_per_fvoa_mv = NAN, .atten2_slope_db_per_fvoa_mv = NAN,
 	};
 	struct attenuator_transmission_estimate atten;
 	struct hispec_laser_flux_estimate laser;
@@ -246,6 +249,8 @@ static int refresh_reference(struct throughput_state *state)
 			ref.atten2_db = atten.attenuation_db2;
 			ref.dac1_mv = (double)atten.voltage1;
 			ref.dac2_mv = (double)atten.voltage2;
+			ref.atten1_slope_db_per_fvoa_mv = atten.slope1_db_per_fvoa_mv;
+			ref.atten2_slope_db_per_fvoa_mv = atten.slope2_db_per_fvoa_mv;
 			ref.wavelength_nm = laser.wavelength_nm;
 		}
 	}
@@ -390,6 +395,8 @@ static void publish_sample(const struct throughput_state *state,
 		{"wavelength_nm", source->wavelength_nm},
 		{"atten1_db", source->atten1_db}, {"atten2_db", source->atten2_db},
 		{"dac1_mv", source->dac1_mv}, {"dac2_mv", source->dac2_mv},
+		{"atten1_slope_db_per_fvoa_mv", source->atten1_slope_db_per_fvoa_mv},
+		{"atten2_slope_db_per_fvoa_mv", source->atten2_slope_db_per_fvoa_mv},
 	};
 	memset(msg, 0, sizeof(*msg));
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);

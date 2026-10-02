@@ -43,9 +43,10 @@ enum app_nvs_id {
 	APP_NVS_ID_IP = 0x0005,
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
-	APP_NVS_ID_LAST_KNOWN_UTC_MS = 0x0008,
+	APP_NVS_ID_LAST_KNOWN_UTC_UNUSED = 0x0008, /* Reserved for OTA rollback. */
 	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
+	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
@@ -225,6 +226,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+				s->attenuator_fit[ch].max_fit_residual_db[physical] = 2.0;
 				/* Default centers the nominal 0-3300 mV DAC span near the
 				 * FVOA half-shutter point until lab-measured coefficients
 				 * are stored.
@@ -899,14 +901,18 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
 		s->boot_count = value;
 	}
-	if (app_nvs_read_exact(APP_NVS_ID_LAST_KNOWN_UTC_MS, &s->last_known_utc_ms,
-			       sizeof(s->last_known_utc_ms), "last known UTC") &&
-	    s->last_known_utc_ms == 0U) {
-		LOG_WRN("Ignoring invalid stored last known UTC");
-	}
 	app_nvs_load_ip(s);
 	app_nvs_load_mqtt(s);
 	app_nvs_load_attenuator(s);
+	for (uint8_t channel = 0; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
+		struct app_attenuator_fit_policy policy;
+		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &policy,
+				      sizeof(policy), "attenuator fit policy") &&
+		    isfinite(policy.max_fit_residual_db[0]) && policy.max_fit_residual_db[0] > 0.0 &&
+		    isfinite(policy.max_fit_residual_db[1]) && policy.max_fit_residual_db[1] > 0.0) {
+			s->attenuator_fit[channel] = policy;
+		}
+	}
 	app_nvs_load_photodiode(s);
 	app_nvs_load_laserbank(s);
 	app_nvs_load_laser(s);
@@ -932,7 +938,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	if (!keep_boot_count) {
 		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
 	}
-	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_MS, &first_rc);
+	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_UNUSED, &first_rc);
 	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
 	if (!keep_ip) {
 		delete_setting_record(APP_NVS_ID_IP, &first_rc);
@@ -942,6 +948,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(attenuator_nvs_id(channel), &first_rc);
+		delete_setting_record(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(pd_nvs_id(channel), &first_rc);
@@ -1141,6 +1148,27 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	if (persist) {
 		app_nvs_persist_mqtt(mqtt);
 	}
+}
+
+void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || out == NULL) return;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.attenuator_fit[channel];
+	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_update_attenuator_fit(uint8_t channel,
+		const struct app_attenuator_fit_policy *policy, bool persist)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || policy == NULL) return -EINVAL;
+	for (uint8_t i = 0; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		if (!isfinite(policy->max_fit_residual_db[i]) || policy->max_fit_residual_db[i] <= 0.0) return -EINVAL;
+	}
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.attenuator_fit[channel] = *policy;
+	k_mutex_unlock(&g_settings.lock);
+	return persist ? app_nvs_write(APP_NVS_ID_ATTEN_FIT_CH0 + channel, policy, sizeof(*policy)) : 0;
 }
 
 void app_settings_get_attenuator(struct app_attenuator_settings *out)
@@ -1447,43 +1475,6 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
-}
-
-bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms)
-{
-	uint64_t value;
-
-	if (utc_ms == NULL) {
-		return false;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	value = g_settings.snapshot.last_known_utc_ms;
-	k_mutex_unlock(&g_settings.lock);
-
-	if (value == 0U) {
-		return false;
-	}
-
-	*utc_ms = value;
-	return true;
-}
-
-void app_settings_note_time_utc_ms(uint64_t utc_ms)
-{
-	if (utc_ms == 0U) {
-		return;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	if (utc_ms == g_settings.snapshot.last_known_utc_ms) {
-		k_mutex_unlock(&g_settings.lock);
-		return;
-	}
-	g_settings.snapshot.last_known_utc_ms = utc_ms;
-	k_mutex_unlock(&g_settings.lock);
-
-	(void)app_nvs_write(APP_NVS_ID_LAST_KNOWN_UTC_MS, &utc_ms, sizeof(utc_ms));
 }
 
 struct nvs_fs *app_settings_nvs_fs(void)

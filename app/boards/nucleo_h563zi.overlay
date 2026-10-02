@@ -151,7 +151,7 @@
 			reg = <0>;
 			zephyr,gain = "ADC_GAIN_1";
 			zephyr,reference = "ADC_REF_INTERNAL";
-			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 3)>;  // 250 sps 4 is 125
+			zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 3)>;  /* ADS1115 rate index 3: 64 SPS. */
 			zephyr,resolution = <16>;
 			zephyr,input-positive = <0>;
 		};
@@ -310,4 +310,16 @@
 		status = "okay";
 		de-gpios = <&gpiod 4 GPIO_ACTIVE_HIGH>; /* CN9 D54 / USART_B_RTS */
 	};
+};
+
+/* LSE already clocks the RTC. Use the same crystal for native uptime. */
+&lptim4 {
+	clocks = <&rcc STM32_CLOCK(APB3, 13)>,
+		 <&rcc STM32_SRC_LSE LPTIM4_SEL(3)>;
+	st,prescaler = <1>;
+};
+
+/* PM is required by the LPTIM driver, not a request for automatic STOP. */
+&cpu0 {
+	/delete-property/ cpu-power-states;
 };

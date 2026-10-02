@@ -181,21 +181,23 @@ int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
  *
  * The command returns immediately after arming the capture. The sampler commits
  * the completed configurable window as dark when the requested sample count is
- * reached. No laser, route, or attenuator policy is checked here.
+ * reached, after 10 continuous seconds with PD power on and relevant lasers
+ * off. No settling samples enter the capture. A state interruption discards
+ * the window and restarts settling. Manual emitters reject the request.
  */
 int photodiode_start_dark_capture(enum photodiode_channel channel,
 				  uint32_t duration_ms,
 				  bool persist,
 				  bool reset_lowest);
 
-/** @brief Force one channel's dark result to a user-supplied value. */
+/** @brief Force a dark value; reset_lowest is rejected without mutation. */
 int photodiode_force_dark(enum photodiode_channel channel,
 			  double mean_mv,
 			  double rms_mv,
 			  bool persist,
 			  bool reset_lowest);
 
-/** @brief Reset the lowest-dark record to the active dark for one channel. */
+/** Reset lowest dark to the active measured dark; forced/default darks fail. */
 int photodiode_reset_lowest_dark(enum photodiode_channel channel,
 				 bool persist);
 

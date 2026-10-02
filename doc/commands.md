@@ -58,6 +58,9 @@ Draft 0.1
   - **On responses (device → publisher):**
     - `correlation_data`: copied from the request when it is 16 bytes or less
     - `qos`: response QoS
+    - user property `ack_utc_ms`: board UTC milliseconds captured centrally after
+      command completion, before enqueueing, including error replies. It is not
+      the host receipt time or a claim that optical settling is complete.
 - Commands have serial port duals. Serial commands use a simpler line format
   for interactive bring-up and debugging.
 - Board-specific commands are rejected before their domain handler runs when
@@ -343,10 +346,20 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 - **Payload:** set firmware time.
   ```json
-  {"unix_ms":0}
+  {"unix_ms":1790812800000}
   ```
 
-- **Notes:** set time may be overwritten later by NTP if configured and responding.
+- **Notes:** UTC is milliseconds since the Unix epoch; uptime uses the LSE-backed
+  native LPTIM clock and is unaffected by UTC corrections. Manual time and SNTP
+  share one setter, retaining fractional seconds in running UTC and writing whole
+  calendar seconds to RTC. A valid retained RTC seeds boot UTC; the RTC has no
+  backup supply, so power loss can leave it invalid. Boot restoration can be less
+  than one second behind until SNTP. No last-known UTC is restored from NVS.
+  Successful SNTP syncs repeat every 60 s and failures retry after 30 s.
+  Startup first tries after one second; reconnect wakes the thread immediately. Manual time may subsequently be overwritten by SNTP.
+  `pcb.time(offset_tolerance_ms=50)` warns only if the board time lies outside the
+  host issue/receipt bracket by more than the tolerance; round-trip latency is
+  therefore not mistaken for clock error. `None` disables this host warning.
 
 (ip)=
 ### `ip`
@@ -1568,7 +1581,7 @@ available without waiting for the other fit.
     and optimizes the attenuator model directly in dB output space while
     keeping the coefficient names and meanings `fvoa_50pct_mv`,
     `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
-    `max_atten_db` from the final three usable full-sweep points and holds it
+    `max_atten_db = max(mean(final three retained usable points), 65 dB)` and holds it
     fixed while optimizing the two shape parameters on that prefix. It then fits
     the optional `correction_coeff` residual layer against the same data, trying
     six leading Chebyshev terms, then five, down to one. Each candidate receives
@@ -1590,9 +1603,32 @@ available without waiting for the other fit.
     does not remove a large error from these metrics. Fit details also include
     calibrated limit and correction coefficients. Transmission/FVOA spans remain
     in per-device fit telemetry, but are omitted from aggregate status to fit
-    the existing 1024-byte response buffers.
+    the bounded response buffers (1152 bytes in this build).
+    The floor constraint is not measured support: the calibrated endpoint remains
+    bounded by 55 dB, the last supporting measurement and the model at that point.
+    The measured tail scatter still supplies floor-parameter weighting. The full
+    corrected curve, endpoint continuation and inverse must remain monotonic.
+    A fit is rejected if any absolute residual in the calibrated region exceeds
+    that device's `max_fit_residual_db`. Raw records remain available with acquisition
+    complete and fit failed. Both fits must pass before either is installed.
     The final `rms_db` is retained with each accepted physical model for runtime
     throughput uncertainty and optional NVS persistence.
+
+### `atten/<laser>/settings`
+
+Query the two physical fit acceptance limits with no payload. Set either or both:
+
+```json
+{"dac1":{"max_fit_residual_db":2.0},"dac2":{"max_fit_residual_db":2.0},"persist":true}
+```
+
+Each limit is finite and strictly positive; defaults are 2 dB. Unknown nested
+fields are errors. Updates are rejected while calibration is active. Replies
+contain `dac1` and `dac2` objects with `max_fit_residual_db`; no DAC is moved.
+`pcb.atten_settings(laser, dac1={"max_fit_residual_db":1.0}, persist=True)` uses the
+same schema. Omitted devices retain their limit. Persistence uses separate NVS
+records at 0x0140–0x0145, leaving calibration/dark records and settings schema 13
+unchanged so an OTA rollback can still read the existing calibration.
 
 (pd)=
 ### `pd`
@@ -1685,16 +1721,26 @@ available without waiting for the other fit.
   - `duration_ms` arms a sampler-owned dark capture using the internal
     configurable photodiode window and returns immediately. Query
     `pd/dark/<channel>` to see `pending:false` and the resulting dark window.
+    Collection starts only after 10 continuous seconds of PD power on and
+    relevant lasers off; already elapsed settling time is credited. This wait
+    is additional to the requested duration (maximum 2,000 ms). Interruptions
+    discard the partial window and restart settling. Clipped/all-invalid
+    captures are rejected without replacing the previous dark.
   - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
     `dark_mv`; if omitted, firmware uses
     `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
   - `duration_ms` and `dark_mv` are mutually exclusive. Durations must be
     greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
     `app/src/app_settings.h`.
-  - `reset_lowest:true` resets the lowest-dark record to the active dark.
+  - `reset_lowest:true` resets the lowest-dark record to the active **measured**
+    dark, or the new result when combined with a duration capture. Forced/default
+    darks cannot be promoted, including after persistence/reboot. Combining
+    `dark_mv` and `reset_lowest:true` is rejected before either value changes.
+    Existing minima and optional persistence are otherwise unchanged.
   - `persist` defaults false. Duration captures are rejected during attenuator
     calibration. They stop all throughput and its owned laser before capture;
-    stop failure aborts capture. Unrelated manual lasers and routes are unchanged.
+    stop failure aborts capture. A relevant manual laser still emitting rejects
+    capture; unrelated routes remain unchanged.
   - Captured `rms_mv` is single-reading scatter; `mean_net_err_mv` and
     `pd.dark_err_mv` report dark-mean uncertainty. For a forced dark, supplied
     `rms_mv` is offset uncertainty. Recapture dark after cadence/rate changes;
@@ -1918,6 +1964,8 @@ channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
   "atten2_db": 8,
   "dac1_mv": 2447.314,
   "dac2_mv": 2378.027,
+  "atten1_slope_db_per_fvoa_mv": 0.012,
+  "atten2_slope_db_per_fvoa_mv": 0.018,
   "pd_raw": 1600,
   "pd_ontime_s": 1,
   "laser_current_ontime_s": 2,
@@ -1929,8 +1977,8 @@ channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
 PD relay continuous on-time and the laser module's current-emission on-time.
 Nonfinite values are JSON `null`; finite values use 12 significant digits.
 
-**Binary layout:** 211 bytes, little-endian, Python `struct` format
-`<8sQ22dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
+**Binary layout:** 227 bytes, little-endian, Python `struct` format
+`<8sQ24dh2QB`. The channel is zero-padded ASCII. Float values are IEEE-754 doubles.
 
 ```text
 char[8] channel
@@ -1957,11 +2005,18 @@ float64 atten1_db
 float64 atten2_db
 float64 dac1_mv
 float64 dac2_mv
+float64 atten1_slope_db_per_fvoa_mv
+float64 atten2_slope_db_per_fvoa_mv
 int16 pd_raw
 uint64 pd_ontime_s
 uint64 laser_current_ontime_s
 uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 ```
+
+The two signed local slopes are in dB per **post-amplifier** drive mV and are
+also present in JSON. They are evaluated by the firmware model at confirmed DAC
+settings; unavailable values are null/NaN. These slopes allow host temporal-noise
+estimates without evaluating another attenuator model.
 
 **Measurement and control interpretation:**
 
@@ -2091,19 +2146,38 @@ Python commissioning helpers:
   Selected FVOAs start at maximum drive and are opened in order; after their
   travel is exhausted the laser level can change. `use_atten_db=True` uses
   calibrated individual-FVOA dB; `attenuators=(1,)` or `(2,)` leaves the other
-  FVOA fixed. `initial_level=.5`, `vary_laser=False` holds a chosen laser level.
-  The default dwell is 0.5 s followed by three fresh records; at most 80 moves
+  FVOA fixed; `attenuators=()` holds both. `initial_level=.5`, `vary_laser=False` holds a chosen laser level.
+  The default dwell is 0.5 s followed by three fresh records after the board ACK,
+  with confirmed current/DAC matches and a monotonic deadline; at most 80 moves
   are tried. Success is within 20% of the target without overrange. The result
   gives achieved level/current, individual dB/mV, PD Net signal, and a reason
-  when the limits prevent success. Applied manual settings remain in place.
+  when the limits prevent success. Successful manual settings remain in place;
+  unsuccessful searches and exceptions stop the selected laser.
   An existing monitor retains its normal stop/laser ownership; only a temporary
   monitor is stopped on return. In Jupyter use
   `await asyncio.to_thread(pcb.get_some_signal, laser, use_atten_db=True)` so an
   existing widget can refresh during the blocking search.
 - A collector's `command_events` property is a DataFrame of command arguments,
-  `issue_utc_ms`, `ack_utc_ms`, success and error text. The acknowledgement time
-  is host receipt of the reply, not optical completion. Queries are retained;
+  `issue_utc_ms` (host), `ack_utc_ms` (board), `receipt_utc_ms` (host),
+  `ack_clock="board_utc"`, success and error text. Board completion precedes output
+  queue/network delay and does not imply optical settling. Queries are retained;
   timeouts have no acknowledgement timestamp. `samples_received` counts decoded
   records, including those displaced from the finite buffer. Save the sample
   DataFrame, event DataFrame and context directly with `pd.to_pickle`; there
   is no commissioning archive codec or old-format migration.
+
+The commissioning notebook draws command changes as thin colored board-time lines
+and live confirmed-setting changes as short ticks. Historical captures whose ACKs
+were host receipts need an explicit host-to-board offset before drawing those
+lines. The six live panels retain linear throughput and add a separate fixed
+−100 to +10 dB trace, with fixed full current and attenuation limits.
+
+`throughput_noise(records, enbw_hz=..., transimpedance_v_per_a=..., dark_rms_mv=...)`
+is a pure array/DataFrame calculation. It returns expected PD net mV and photon,
+detector, individual FVOA, electrical and combined single-reading RMS in mV;
+DataFrame attrs retain units, bandwidth and provenance. The default 10 mV drive
+RMS is an explicitly labelled assumption. Static laser-power, attenuation-fit
+and dark-mean errors are excluded. Old saved frames without slopes can supply
+`historical_model_rms_db=(rms1,rms2)` for an aggregate electrical estimate from
+firmware's propagated error; individual drives remain unidentified. A forced
+zero-duration dark is not a measured detector noise reference.

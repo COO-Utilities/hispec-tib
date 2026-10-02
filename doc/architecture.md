@@ -146,7 +146,9 @@ board names in the common command-dispatch library.
 
 When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
 After the response window, command dispatch calls the app reboot-prepare hook
-and then `sys_reboot(SYS_REBOOT_COLD)`.
+and then `sys_reboot(SYS_REBOOT_COLD)`. The delayed reboot runs on the existing
+app blocking workqueue, so laser STOP can wait for Modbus completion on the system
+workqueue. System priority 5, command 6 and app blocking 7 remain unchanged.
 
 Command dispatch can persist one lastcommand record through Zephyr NVS when the
 app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
@@ -200,12 +202,46 @@ the main loop disconnects and tries the new broker once; if that connection
 fails, firmware restores the prior broker setting and emits a best-effort
 `mqtt_broker_revert` warning.
 
+Native STM32 LPTIM4, clocked by 32768 Hz LSE, supplies kernel uptime at 4096 ticks/s
+(244 microseconds/tick). The RTC uses LSE too. PM is enabled solely for the native
+driver dependency; CPU power states are removed from the application tree so
+there is no automatic STOP. LSI remains enabled for the independent watchdog.
+PD timing diagnostics use native 64-bit kernel uptime ticks, with 244 microsecond
+granularity. The LPTIM driver's 32-bit cycle API scales its counter to the CPU
+frequency and has a discontinuity when its underlying accumulated count wraps;
+using kernel ticks avoids that diagnostic artifact without another counter. Millisecond timer rounding is below one
+tick, apart from Zephyr's ordinary minimum timeout alignment.
+
+A valid RTC calendar restores boot UTC. One serialized setter handles both manual
+UTC and full-fraction SNTP, then updates RTC whole seconds. No fractional retention
+or NVS last-time fallback is used; the old NVS ID remains reserved. Success syncs
+repeat at 60 s; failures retry at 30 s, with an initial one-second attempt and
+immediate attempts when network changes wake the SNTP thread.
+
 SNTP is independent of manual `time` commands. Manual time setting updates
 Zephyr's realtime clock; it does not mark SNTP state as manual. If SNTP is configured
 and later succeeds, it will update the clock again, and failures remain visible
 through `time`, `ip`, and status paths that report SNTP state.
 SNTP network waits run in a low-priority SNTP thread, not on the system
 workqueue and not in the command, MQTT, MEMS, or ADC timing paths.
+
+Output uses eight best-effort slots and four reserved reply slots. Producers use
+`K_NO_WAIT`; dropped telemetry/replies and publish failures have separate runtime
+atomic counters. Main drains replies first with a bounded budget. A native
+nonblocking eventfd wakes the existing MQTT socket poll when output is enqueued;
+queued work uses a zero poll timeout. There is no extra network thread. Keepalive
+is checked even with continuous socket/output events, and a failed reply publish
+aborts the connection before the normal reconnect path rather than spinning main.
+Command completion centrally adds MQTT5 `ack_utc_ms` before enqueueing; at present
+epoch lengths this property costs 28 bytes (35 for a 20-digit uint64), plus at
+most one property-length varint byte. It does not alter response JSON.
+
+Command payload capacity is 1152 bytes, MQTT buffers 1280. Throughput binary is
+227 bytes; even a pessimistic JSON frame with 24 worst-length double strings and
+uint64 timestamps is below 1152 bytes. Eventfd capacity 2 and fd capacity 10 allow
+the existing socket service plus output wakeup, MQTT/DNS/SNTP and OTA SMP resources.
+Buffer increases also change lastcommand record size, so a rollback may lose that
+diagnostic record; the app calibration/dark schema is unchanged.
 
 ## Hardware Control
 
@@ -353,3 +389,17 @@ health snapshots; neither polls relay hardware. See
 [communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime)
 for the one-second check cadence, five-second fault timeout, inhibition ownership,
 and failure/recovery flow.
+
+Paired attenuator writes compute both inversions, quantization and forward estimates
+before writing either DAC. The I2C mutex covers the consecutive writes; each
+successful write updates confirmed state even if the second fails. Two address +
+three-byte writes cost 72 SCL bits, about 0.18 ms at 400 kHz, excluding software,
+START/STOP setup and bus contention. This is not simultaneous latching.
+
+Dark capture stays asynchronous on the PD sampler. It credits already elapsed
+PD-on/relevant-lasers-off time, requires ten continuous seconds, then resets the
+measurement window and excludes conversions started before the reset. A changed
+state discards partial capture and requires a fresh settle. Clipped or empty
+captures cannot replace the dark. Lowest-dark replacement is measured-only;
+zero-duration forced/default values cannot enter it, including combined commands.
+Existing stored minima and optional persistence behavior are preserved.

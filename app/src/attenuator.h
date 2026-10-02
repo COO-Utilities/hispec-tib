@@ -82,6 +82,8 @@ struct attenuator_transmission_estimate {
     double attenuation_db2;
     float voltage1;
     float voltage2;
+    double slope1_db_per_fvoa_mv;
+    double slope2_db_per_fvoa_mv;
 };
 
 /**
@@ -94,6 +96,17 @@ struct attenuator {
     struct attenuator_dac_cfg dac_cfg2;
     double attenuation_db;
 };
+
+/** One requested physical output, in dB unless voltage_mv is true. */
+struct attenuator_target {
+    double value;
+    bool voltage_mv;
+    bool update;
+};
+
+/** Precompute both outputs, then write consecutively under the I/O mutex.
+ * May sleep on I2C. A partial failure retains confirmed earlier writes. */
+bool attenuator_set_pair(struct attenuator *drv, const struct attenuator_target target[ATTENUATOR_PHYSICAL_COUNT]);
 
 /** Copy confirmed runtime state and calibration under the short state mutex.
  * No I/O; device/configuration pointers in the copy refer to static hardware.
