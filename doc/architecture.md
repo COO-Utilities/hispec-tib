@@ -148,7 +148,7 @@ When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
 After the response window, command dispatch calls the app reboot-prepare hook
 and then `sys_reboot(SYS_REBOOT_COLD)`. The delayed reboot runs on the existing
 app blocking workqueue, so laser STOP can wait for Modbus completion on the system
-workqueue. System priority 5, command 6 and app blocking 7 remain unchanged.
+workqueue. System priority is 2, command 6 and app blocking 7.
 
 Command dispatch can persist one lastcommand record through Zephyr NVS when the
 app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
@@ -265,6 +265,27 @@ probe or replays a command. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
 
+Preemptible application priorities (smaller numbers run first):
+
+| Priority | Owner | Purpose |
+|---|---|---|
+| 0 | MEMS router | Splitter toggle timing and pulse cleanup |
+| 1 | Photodiode | Independent 50 ms acquisition cadence |
+| 2 | System workqueue | Native Modbus RX parsing/completion, short system work |
+| 3 | Throughput | Streaming, autolevel, calibration acquisition |
+| 4 | Main/MQTT | Network service and queued outbound publication |
+| 6 | Command executor | Foreground commands, potentially blocking I/O |
+| 7 | App blocking workqueue | Housekeeping, heater, auto-off and reboot preparation |
+| 13 | Logging | Deferred log output |
+| 14 | Calibration fitting | Numerical fitting after acquisition/shutdown |
+
+Networking's cooperative priorities and system-workqueue yielding are unchanged.
+The Modbus caller sleeps while awaiting its 75 ms reply; that deadline and UART
+cleanup policy are unchanged. PD never takes the laser I/O mutex. A synchronous
+laser operation in the shared throughput thread can delay both streams while PD
+continues sampling; the semaphore coalesces those acquisitions, without replay.
+The 4096 Hz LPTIM timebase does not change the 240 MHz core clock.
+
 Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
 through Zephyr's stock serial 1-Wire driver. UART polling does not mask interrupts
 for the waveform duration, although the STM32 driver briefly locks interrupts
@@ -286,7 +307,7 @@ in [hardware.md](hardware.md#off-board-power-switch-for-photodiodes-and-laser-ba
 Numerical attenuator fitting reuses the throughput thread after stopping the
 calibration-owned laser and releasing PD auto-off inhibition. It releases the
 calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
-this build), below Modbus RX (5), commands (6), housekeeping (7), and logging (13).
+this build), below Modbus RX (2), commands (6), housekeeping (7), and logging (13).
 It restores priority 3 with no mutex held
 before finalization. Other throughput work still waits for fitting to finish.
 Start/stop commands set a cancellation flag and wait on a completion semaphore
@@ -294,6 +315,29 @@ without holding the calibration mutex. Numerical loops check cancellation;
 the command cannot clear/reuse the single static dataset until fitting returns.
 Only an accepted new start clears records, references, bridges, and fit results.
 Stop and error cleanup preserve them. No second record buffer is allocated.
+
+The Cortex-M33 single-precision FPU is enabled with Zephyr shared FP context.
+PD window storage/mean/RMS and runtime FVOA dB/slope/local uncertainty use float.
+FVOA inversion prepares open normalization, leakage floor and the calibrated
+correction endpoint once, then makes 24 value-only voltage bisections. Its erfc
+form preserves the shutter tail in float. Public dB results promote to double
+before summation and linear transmission/error conversion. Throughput, single-PD
+dark subtraction and final uncertainty propagation remain double. Calibration
+keeps double coefficients, Jacobians, weights, solves and residual metrics; only
+its final grid, retained-point and continuation-join validation uses the deployed
+float evaluator. No persistent calibration or telemetry layout changes.
+
+Offline Cortex-M33 instruction replay (SDK 14.3, 2026-10-02) gives 7,023,042
+to 26,731 instructions for a corrected 30 dB inverse, and 280,255 to 4,470
+for the full-model versus runtime dB/slope evaluation at 2600 mV. Complete PD
+window recomputations, including double uncertainty/power arithmetic, fall from
+15,375 to 7,409 instructions (10 samples) and 28,909 to 8,621 (40 samples).
+These are instruction counts, not measured target cycles or wall times. Merely
+enabling the FPU changes the retained double forward evaluation by only 0.23%.
+Shared FP context adds 64 bytes of saved S16–S31 registers per thread object,
+plus a 72-byte hardware frame on an active FP thread's stack. Stack sizes are
+unchanged; DWT timings and runtime margins require the flashed board.
+
 Calibration publishes a coherent command-status snapshot under a separate short
 mutex after start/stop/tick updates and before fitting. Status and active checks
 read that snapshot without waiting for acquisition I/O. The snapshot stays

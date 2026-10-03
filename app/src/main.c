@@ -41,8 +41,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
 /* TODO Enumerate and describe thread priorities across the whole app, and what their responsibilities are here
  *
- * Throughput/autolevel should run promptly when active, but it can write DACs
- * and lasers, so keep MEMS and photodiode sampling ahead of it.
+ * Preemptible application order: MEMS 0, photodiode 1, system/Modbus RX 2,
+ * throughput 3, main/MQTT 4, commands 6, blocking work 7, logging 13, fit 14.
+ * Throughput/autolevel can write DACs and lasers; MEMS pulse cleanup, PD
+ * sampling, and Modbus completion must be able to preempt its numerical work.
 
 
  * Zephyr Modbus parses client RX frames on the system workqueue. App-owned
@@ -57,7 +59,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define EXECUTOR_PRIORITY 6
 
 #define PHOTODIODE_STACK_SIZE 2048 //1400
-#define PHOTODIODE_PRIORITY 2
+#define PHOTODIODE_PRIORITY 1
 
 #define THROUGHPUT_MONITOR_STACK_SIZE 4096
 /* Calibration temporarily lowers this thread to the lowest application priority

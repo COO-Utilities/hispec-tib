@@ -1637,8 +1637,14 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
 			}
 			*failed_mv = CLAMP(mv, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 			*eval = (struct atten_model_eval){.db = NAN, .d_db_d_voltage_mv = NAN};
-			if (!atten_model_eval(coeffs, *failed_mv, eval) ||
-			    eval->d_db_d_voltage_mv < 0.0 ||
+			/* Validate the actual float control curve; fitting and metrics above
+			 * still use the double model and its full coefficient derivatives.
+			 */
+			float db, slope;
+			if (!atten_model_eval_runtime(coeffs, *failed_mv, &db, &slope)) return false;
+			eval->db = (double)db;
+			eval->d_db_d_voltage_mv = (double)slope;
+			if (eval->d_db_d_voltage_mv < 0.0 ||
 			    eval->db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db ||
 			    (pass == 2U && i == 1U &&
 			     fabs(eval->db - coeffs->max_calibrated_db) > ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB)) {

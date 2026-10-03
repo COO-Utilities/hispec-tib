@@ -15,7 +15,8 @@
 LOG_MODULE_REGISTER(mems_switching, LOG_LEVEL_DBG);
 
 #define MEMS_ROUTER_STACK_SIZE 1024
-#define MEMS_ROUTER_PRIORITY 1
+/* Keep splitter toggles and pulse cleanup above PD and system/Modbus work. */
+#define MEMS_ROUTER_PRIORITY 0
 #define MEMS_TIMING_STATS_INTERVAL_MS 10000U
 
 BUILD_ASSERT((MEMS_SWITCH_ELECTRICAL_PULSE_MS % MEMS_SWITCH_ROUTER_TICK_MS) == 0U,

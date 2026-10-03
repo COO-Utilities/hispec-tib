@@ -16,6 +16,13 @@ is no converter-time pad or extra illuminated-stream settling window. Dark
 capture separately requires ten continuous seconds of PD on and relevant lasers
 off before resetting and collecting its at-most-two-second measurement window.
 
+Rolling windows store voltage and net voltage as float and use FPU arithmetic
+for sums, mean and RMS. Each ADC voltage is exactly representable; the net value
+is rounded only after double dark subtraction. Results promote into the existing
+double public fields. Noise floors, dark-offset uncertainty, final `hypot`, and
+power conversion remain double. The four windows save 1280 bytes of static RAM;
+sample validity, window sizes and acquisition timestamps are unchanged.
+
 Noise warnings use the fixed window only after an interval without commanded
 input changes. PD power, physical attenuator writes, laser-output changes, and
 actual MEMS pulses bracket their operations through the PD owner's begin/end
@@ -96,6 +103,13 @@ is applied. Source or external optical motion during a conversion remains visibl
 | Laser owner fault | Check operational health separately from the numerical estimate; stop affected acquisition | One failed read warns. Five seconds without a response while emitting faults; control/controller faults remain immediate. Failed shutdown retains its explicit retry obligation. |
 | Actuator failure | Stop monitoring; preserve confirmed owner state after partial writes | Do not normalize subsequent readings using an assumed successful move. |
 | Serialization | Binary doubles; JSON 12 significant digits, nonfinite values null | Preserve tiny powers/errors through Python, record arrays, and CSV. Binary and JSON share field order in firmware. |
+
+Each FVOA's runtime dB, local slope and dB uncertainty are evaluated in float.
+Both dB values and uncertainties promote before the double sum, linear
+transmission conversion and combined error. Linear attenuation commands,
+throughput normalization/error arithmetic, and calibration fitting remain double.
+Final fit validation checks the float curve, including its continuation join,
+with the existing 0.0001 dB monotonicity/join tolerance.
 
 Responsivity, effective gain, wavelength correction, route calibration, drift,
 shot noise at illuminated levels, and dynamic actuator/filter mismatch have no

@@ -9,6 +9,20 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] After flashing the FPU/runtime-float and priority changes, measure DWT
+  call durations and stack margins; stacks have not been reduced. Verify MEMS 0
+  splitter toggle/cleanup timing, PD 1 cadence and Modbus/system 2 completion
+  under both-channel streaming and MQTT/command load. Repeat the failing notebook
+  operation and at least 100 transactions. Exercise missing/corrupt replies,
+  disconnection and later recovery without emission where possible; record PD
+  cadence and shared-throughput stream gaps during synchronous laser waits.
+  Builds and numerical replay do not establish target timing or fault recovery.
+  Offline verification: normal and isolated OTA builds passed; all six installed
+  FVOAs passed every DAC code, paired transmission error stayed below 14.17 ppm,
+  and three of 33,006 inverse requests moved by one code (repeatably). All 88
+  saved/partial/noisy fit replays retained exact double coefficients/metrics.
+  PD replay covered 127,100 window phases, invalid samples and ADC extremes;
+  maximum saved-capture net-mean change was 0.00055 mV.
 - [ ] Bench-check noise warnings after PD power, attenuator, laser-output, and
   MEMS changes: both channels wait five seconds after activity plus a fresh
   500 ms window. Verify actual settling and steady-input fault detection;

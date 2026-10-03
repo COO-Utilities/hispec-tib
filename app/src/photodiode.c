@@ -124,8 +124,11 @@ struct pd_window_runtime {
 	uint16_t target_samples;
 	uint16_t index;
 	uint16_t filled;
-	double mv[PD_WINDOW_MAX_SAMPLES];
-	double net_mv[PD_WINDOW_MAX_SAMPLES];
+	/* ADC counts are exact in float; round only after double dark subtraction.
+	 * Window arithmetic uses the FPU, then promotes into public double results.
+	 */
+	float mv[PD_WINDOW_MAX_SAMPLES];
+	float net_mv[PD_WINDOW_MAX_SAMPLES];
 	int16_t raw[PD_WINDOW_MAX_SAMPLES];
 	bool good[PD_WINDOW_MAX_SAMPLES];
 	struct photodiode_window_result current;
@@ -627,10 +630,11 @@ static void pd_window_recompute(struct pd_window_runtime *window,
 				int64_t now_ms)
 {
 	struct photodiode_window_result next;
-	double sum_mv = 0.0;
-	double sum_net_mv = 0.0;
-	double mean;
-	double m2 = 0.0;
+	float sum_mv = 0.0f;
+	float sum_net_mv = 0.0f;
+	float mean;
+	float m2 = 0.0f;
+	float min_mv = NAN, max_mv = NAN;
 	uint16_t good_count = 0U;
 	uint16_t failed = 0U;
 
@@ -649,12 +653,12 @@ static void pd_window_recompute(struct pd_window_runtime *window,
 			continue;
 		}
 		if (good_count == 0U) {
-			next.min_mv = window->mv[i];
-			next.max_mv = window->mv[i];
+			min_mv = window->mv[i];
+			max_mv = window->mv[i];
 			next.max_raw = window->raw[i];
 		} else {
-			next.min_mv = MIN(next.min_mv, window->mv[i]);
-			next.max_mv = MAX(next.max_mv, window->mv[i]);
+			min_mv = MIN(min_mv, window->mv[i]);
+			max_mv = MAX(max_mv, window->mv[i]);
 			next.max_raw = MAX(next.max_raw, window->raw[i]);
 		}
 		sum_mv += window->mv[i];
@@ -669,9 +673,9 @@ static void pd_window_recompute(struct pd_window_runtime *window,
 		return;
 	}
 
-	mean = sum_mv / (double)good_count;
+	mean = sum_mv / (float)good_count;
 	for (uint16_t i = 0U; i < window->filled; ++i) {
-		double delta;
+		float delta;
 
 		if (!window->good[i]) {
 			continue;
@@ -681,10 +685,13 @@ static void pd_window_recompute(struct pd_window_runtime *window,
 	}
 
 	next.valid = true;
+	next.min_mv = min_mv;
+	next.max_mv = max_mv;
 	next.mean_mv = mean;
-	next.mean_net_mv = sum_net_mv / (double)good_count;
-	next.rms_mv = sqrt(m2 / (double)good_count);
-	next.mean_net_err_mv = next.rms_mv / sqrt((double)good_count);
+	next.mean_net_mv = sum_net_mv / (float)good_count;
+	float rms_mv = sqrtf(m2 / (float)good_count);
+	next.rms_mv = rms_mv;
+	next.mean_net_err_mv = rms_mv / sqrtf((float)good_count);
 	if (settings != NULL) {
 		next.mean_net_err_mv = hypot(
 			MAX(next.rms_mv, pd_read_noise_mv(&settings->dark)) / sqrt((double)good_count),
@@ -712,8 +719,8 @@ static void pd_window_add_sample(struct pd_window_runtime *window,
 	slot = window->index;
 	window->good[slot] = rc == 0;
 	window->raw[slot] = raw;
-	window->mv[slot] = rc == 0 ? mv : (double)NAN;
-	window->net_mv[slot] = rc == 0 ? net_mv : (double)NAN;
+	window->mv[slot] = rc == 0 ? (float)mv : NAN;
+	window->net_mv[slot] = rc == 0 ? (float)net_mv : NAN;
 	window->index = (uint16_t)((slot + 1U) % window->target_samples);
 	if (window->filled < window->target_samples) {
 		window->filled++;

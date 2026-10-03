@@ -45,7 +45,7 @@ struct attenuator_model_coeffs {
     float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
 };
 
-/** Forward model result and local dB sensitivities for one physical FVOA. */
+/** Double forward model and coefficient sensitivities for calibration fitting. */
 struct atten_model_eval {
     double tx;
     double db;
@@ -128,10 +128,19 @@ int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index);
  * where delta = slope_inv_fvoa_mv * (gain * voltage - fvoa_50pct_mv).
  * max_atten_db adds a physical leakage floor in normalized transmission space.
  * The voltage is DAC output millivolts before the external FVOA-drive op amp.
- * This helper does not perform DAC I/O.
+ * Uses the float runtime evaluator and promotes its result to double. This
+ * helper does not perform DAC I/O.
  */
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       float voltage);
+
+/** Checked single-precision runtime dB and optional local slope in dB/DAC mV.
+ * Uses a temporary float copy of the double model coefficients; invalid or
+ * unrepresentable inputs return false. No I/O, sleep, publish, or persistence.
+ * Calibration validates the deployed curve here but fits with atten_model_eval.
+ */
+bool atten_model_eval_runtime(const struct attenuator_model_coeffs *coeffs,
+                              float mv, float *db, float *slope_db_per_mv);
 
 /**
  * @brief Evaluate the physical attenuator model and its local dB derivatives.
@@ -173,9 +182,11 @@ bool atten_model_correction_basis(double base_db,
 /**
  * @brief Convert modeled attenuation in dB to a physical attenuator voltage.
  *
- * This is the inverse of attenuator_model_voltage_to_db(). Returns false when
- * the inverse slope is zero or the requested attenuation is outside the model
- * domain.
+ * Inverts the float runtime curve with 24 value-only voltage bisections after
+ * preparing its normalization and correction endpoint once. Targets remain
+ * double; endpoint comparisons allow four float ULPs (at least 1e-6 dB).
+ * Returns false for invalid coefficients/targets or targets outside the model
+ * domain. No I/O, sleep, publication, or persistence.
  */
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
                                     double attenuation_db, float *voltage);

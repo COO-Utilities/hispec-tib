@@ -9,10 +9,10 @@
 #include "drivers/dac/dac7x78.h"
 
 #include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <string.h>
 #include <zephyr/sys/util.h>
-#include <zsl/probability.h>
 #include <zsl/zsl.h>
 
 LOG_MODULE_REGISTER(attenuator, LOG_LEVEL_INF);
@@ -99,30 +99,6 @@ static double attenuator_model_voltage_to_delta(const struct attenuator_model_co
     double fvoa_drive_mv = coeffs->gain * (double) voltage;
 
     return coeffs->slope_inv_fvoa_mv * (fvoa_drive_mv - coeffs->fvoa_50pct_mv);
-}
-
-static double attenuator_model_raw_linear(const struct attenuator_model_coeffs *coeffs,
-                                          float voltage)
-{
-    double transmission;
-
-    if (coeffs == NULL) {
-        return 0.0;
-    }
-
-    transmission = attenuator_model_delta_to_raw_linear(attenuator_model_voltage_to_delta(coeffs, voltage), NULL);
-    if (!isfinite(transmission) || transmission <= 0.0) {
-        return 0.0;
-    }
-    if (transmission > 1.0) {
-        return 1.0;
-    }
-    return transmission;
-}
-
-static double attenuator_model_open_linear(const struct attenuator_model_coeffs *coeffs)
-{
-    return attenuator_model_raw_linear(coeffs, 0.0f);
 }
 
 static double attenuator_model_floor_linear(const struct attenuator_model_coeffs *coeffs)
@@ -307,6 +283,157 @@ static double attenuator_model_correction_db(const struct attenuator_model_coeff
         d_corr_d_base_db, d_corr_d_max_atten_db);
 }
 
+/* Temporary working coefficients, never cached across calls or persisted.
+ * Keep the fitter's full double evaluator above/below separate from this
+ * runtime path: control needs dB and optionally a voltage slope, not fit
+ * Jacobians or a per-device conversion back to linear transmission.
+ */
+#define RUNTIME_CORRECTION_START_DB 0.043648054024500883f
+struct atten_runtime_model {
+    const float *correction;
+    float f50, slope, gain;
+    float floor_db, floor_tx, raw0;
+    float correction_end_db, tail_slope;
+    bool corrected;
+};
+
+/* erfc(delta)-erfc(4) preserves the shutter tail in single precision;
+ * subtracting erf(delta) from erf(4) would collapse it prematurely to zero.
+ */
+static float atten_runtime_raw(float delta)
+{
+    return CLAMP((erfcf(delta) - erfcf(4.0f)) / (2.0f * erff(4.0f)), 0.0f, 1.0f);
+}
+
+static float atten_runtime_chebyshev(const struct atten_runtime_model *model,
+                                     float base_db, float *derivative)
+{
+    float span = model->floor_db - RUNTIME_CORRECTION_START_DB;
+    float t = (base_db - RUNTIME_CORRECTION_START_DB) / span;
+
+    if (derivative != NULL) *derivative = 0.0f;
+    if (!model->corrected || !(t > 0.0f) || !(t < 1.0f)) return 0.0f;
+
+    float x = 2.0f * t - 1.0f;
+    float previous = 1.0f, term = x;
+    float previous_derivative = 0.0f, d_term = 2.0f;
+    float shape = model->correction[0], d_shape_dt = 0.0f;
+    /* The same enveloped T0..T5 recurrence as the double fit model. Skip
+     * derivative work for inversion's value-only evaluations.
+     */
+    for (uint8_t i = 1U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        shape += model->correction[i] * term;
+        float next = 2.0f * x * term - previous;
+        if (derivative != NULL) {
+            d_shape_dt += model->correction[i] * d_term;
+            float next_derivative = 4.0f * term + 2.0f * x * d_term - previous_derivative;
+            previous_derivative = d_term;
+            d_term = next_derivative;
+        }
+        previous = term;
+        term = next;
+    }
+    if (derivative != NULL) {
+        *derivative = ((1.0f - 2.0f * t) * shape + t * (1.0f - t) * d_shape_dt) / span;
+    }
+    return t * (1.0f - t) * shape;
+}
+
+static bool atten_runtime_prepare(const struct attenuator_model_coeffs *coeffs,
+                                  struct atten_runtime_model *model)
+{
+    if (coeffs == NULL) return false;
+    *model = (struct atten_runtime_model){
+        .correction = coeffs->correction_coeff,
+        .f50 = (float)coeffs->fvoa_50pct_mv,
+        .slope = (float)coeffs->slope_inv_fvoa_mv,
+        .gain = (float)coeffs->gain,
+        .floor_db = (float)coeffs->max_atten_db,
+    };
+    float limit = (float)coeffs->max_calibrated_db;
+    if (!isfinite(model->f50) || !isfinite(model->slope) || model->slope <= 0.0f ||
+        !isfinite(model->gain) || model->gain <= 0.0f ||
+        !isfinite(model->floor_db) || model->floor_db <= 0.0f ||
+        !isfinite(limit) || limit < 0.0f || limit > model->floor_db) return false;
+    for (uint8_t i = 0U; i < ATTENUATOR_MODEL_CORRECTION_TERMS; ++i) {
+        if (!isfinite(model->correction[i])) return false;
+        model->corrected |= model->correction[i] != 0.0f;
+    }
+    model->floor_tx = powf(10.0f, -model->floor_db / 10.0f);
+    float delta0 = -model->slope * model->f50;
+    if (!isfinite(delta0)) return false;
+    model->raw0 = atten_runtime_raw(delta0);
+    if (!(model->floor_tx > 0.0f) || !(model->floor_tx < 1.0f) ||
+        !(model->raw0 > 0.0f) || !isfinite(model->raw0)) return false;
+
+    model->correction_end_db = model->floor_db;
+    if (model->corrected && limit > 0.0f && limit < model->floor_db) {
+        float lo = 0.0f, hi = model->floor_db;
+        /* Recover Bc + C(Bc) = limit once per call, including the entire
+         * inverse. Stop when float endpoints no longer admit a midpoint.
+         */
+        for (uint8_t i = 0U; i < 48U; ++i) {
+            float mid = 0.5f * (lo + hi);
+            if (mid == lo || mid == hi) break;
+            float db = mid + atten_runtime_chebyshev(model, mid, NULL);
+            if (!isfinite(db)) return false;
+            if (db < limit) lo = mid;
+            else hi = mid;
+        }
+        model->correction_end_db = 0.5f * (lo + hi);
+        float derivative;
+        (void)atten_runtime_chebyshev(model, model->correction_end_db, &derivative);
+        float span = model->floor_db - model->correction_end_db;
+        if (!(1.0f + derivative > 0.0f) || !(span > 0.0f)) return false;
+        model->tail_slope = -(limit - model->correction_end_db) / span;
+        if (!isfinite(model->tail_slope)) return false;
+    }
+    return true;
+}
+
+static bool atten_runtime_eval(const struct atten_runtime_model *model, float mv,
+                               float *db, float *slope_db_per_mv)
+{
+    float delta = model->slope * (model->gain * mv - model->f50);
+    if (!isfinite(mv) || !isfinite(delta)) return false;
+    float raw = atten_runtime_raw(delta);
+    float ideal = raw / model->raw0;
+    if (!isfinite(ideal)) return false;
+    float tx = model->floor_tx + (1.0f - model->floor_tx) * CLAMP(ideal, 0.0f, 1.0f);
+    if (!isfinite(tx) || !(tx > 0.0f)) return false;
+    if (slope_db_per_mv != NULL) *slope_db_per_mv = 0.0f;
+    if (tx >= 1.0f) {
+        *db = 0.0f;
+        return true;
+    }
+    float base_db = -10.0f * log10f(tx);
+    float correction, derivative = 0.0f;
+    if (base_db > model->correction_end_db) {
+        correction = model->tail_slope * (base_db - model->floor_db);
+        derivative = model->tail_slope;
+    } else {
+        correction = atten_runtime_chebyshev(model, base_db,
+            slope_db_per_mv != NULL ? &derivative : NULL);
+    }
+    *db = base_db + correction;
+    if (!isfinite(*db) || *db < 0.0f) return false;
+    if (slope_db_per_mv != NULL && ideal > 0.0f && ideal < 1.0f && raw < 1.0f) {
+        float d_raw = -expf(-delta * delta) / (sqrtf((float)M_PI) * erff(4.0f));
+        *slope_db_per_mv = (1.0f + derivative) * (-10.0f / logf(10.0f)) *
+            (1.0f - model->floor_tx) / tx * d_raw * model->slope * model->gain / model->raw0;
+        if (!isfinite(*slope_db_per_mv)) return false;
+    }
+    return true;
+}
+
+bool atten_model_eval_runtime(const struct attenuator_model_coeffs *coeffs,
+                              float mv, float *db, float *slope_db_per_mv)
+{
+    struct atten_runtime_model model;
+    return db != NULL && atten_runtime_prepare(coeffs, &model) &&
+           atten_runtime_eval(&model, mv, db, slope_db_per_mv);
+}
+
 int attenuator_index_from_laser_id(enum hispec_laser_id laser, uint8_t *index)
 {
     if (index == NULL || laser < 0 || laser >= HISPEC_LASER_COUNT) {
@@ -398,14 +525,14 @@ bool attenuator_init(struct attenuator *drv,
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
                                       float voltage)
 {
-    struct atten_model_eval eval;
+    float db;
 
     if (coeffs == NULL) {
         return 0.0;
     }
 
-    if (atten_model_eval(coeffs, voltage, &eval)) {
-        return eval.db;
+    if (atten_model_eval_runtime(coeffs, voltage, &db, NULL)) {
+        return (double)db;
     }
 
     return isfinite(coeffs->max_atten_db) && coeffs->max_atten_db > 0.0 ?
@@ -562,113 +689,48 @@ bool atten_model_db_sigma(const struct atten_model_eval *eval,
 bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
                                     double attenuation_db, float *voltage)
 {
-    const double erf_scale = ZSL_ERF(MODEL_ERF_SCALE);
-    double floor_tx;
-    double open_tx;
-    double target_relative;
-    double target_ideal;
-    double target_tx;
-    double erf_arg;
-    double delta;
+    struct atten_runtime_model model;
+    float lo_mv = 0.0f, hi_mv = ATTENUATOR_DRIVE_MAX_MV;
+    float lo_db, hi_db;
 
-    if (coeffs == NULL || voltage == NULL || coeffs->slope_inv_fvoa_mv == 0.0 ||
-        coeffs->gain <= 0.0 ||
-        attenuation_db < 0.0) {
+    if (voltage == NULL || !isfinite(attenuation_db) || attenuation_db < 0.0 ||
+        !atten_runtime_prepare(coeffs, &model) ||
+        !atten_runtime_eval(&model, lo_mv, &lo_db, NULL) ||
+        !atten_runtime_eval(&model, hi_mv, &hi_db, NULL) || !(hi_db > lo_db)) {
         return false;
     }
-
-    if (attenuation_db <= ATTENUATOR_DB_EPSILON) {
-        *voltage = 0.0f;
+    /* Public targets remain double. Allow only endpoint rounding, with a
+     * four-ULP float tolerance scaled to the modeled attenuation in dB.
+     */
+    float lo_epsilon = MAX(1.0e-6f, 4.0f * FLT_EPSILON * MAX(1.0f, fabsf(lo_db)));
+    float hi_epsilon = MAX(1.0e-6f, 4.0f * FLT_EPSILON * MAX(1.0f, fabsf(hi_db)));
+    if (attenuation_db < (double)lo_db - (double)lo_epsilon ||
+        attenuation_db > (double)hi_db + (double)hi_epsilon) return false;
+    if (attenuation_db <= (double)lo_db + (double)lo_epsilon) {
+        *voltage = lo_mv;
         return true;
     }
-
-    if (attenuator_model_correction_active(coeffs)) {
-        float lo_mv = 0.0f;
-        float hi_mv = ATTENUATOR_DRIVE_MAX_MV;
-        double lo_db = attenuator_model_voltage_to_db(coeffs, lo_mv);
-        double hi_db = attenuator_model_voltage_to_db(coeffs, hi_mv);
-
-        if (!isfinite(lo_db) || !isfinite(hi_db) || !(hi_db > lo_db)) {
-            return false;
-        }
-        if (attenuation_db < lo_db - ATTENUATOR_DB_EPSILON ||
-            attenuation_db > hi_db + ATTENUATOR_DB_EPSILON) {
-            return false;
-        }
-        if (attenuation_db <= lo_db + ATTENUATOR_DB_EPSILON) {
-            *voltage = lo_mv;
-            return true;
-        }
-        if (attenuation_db >= hi_db - ATTENUATOR_DB_EPSILON) {
-            *voltage = hi_mv;
-            return true;
-        }
-
-        for (uint8_t i = 0U; i < ATTENUATOR_MODEL_INVERSE_STEPS; ++i) {
-            float mid_mv = 0.5f * (lo_mv + hi_mv);
-            double mid_db = attenuator_model_voltage_to_db(coeffs, mid_mv);
-
-            if (!isfinite(mid_db)) {
-                return false;
-            }
-            if (mid_db < attenuation_db) {
-                lo_mv = mid_mv;
-            } else {
-                hi_mv = mid_mv;
-            }
-        }
-        *voltage = 0.5f * (lo_mv + hi_mv);
+    if (attenuation_db >= (double)hi_db - (double)hi_epsilon) {
+        *voltage = hi_mv;
         return true;
     }
-
-    open_tx = attenuator_model_open_linear(coeffs);
-    if (!(open_tx > MODEL_MIN_TX) || !isfinite(open_tx)) {
-        return false;
+    /* Both corrected and base curves use the same bounded voltage search.
+     * Normalization, floor, and correction endpoint were prepared just once.
+     */
+    for (uint8_t i = 0U; i < ATTENUATOR_MODEL_INVERSE_STEPS; ++i) {
+        float mid_mv = 0.5f * (lo_mv + hi_mv);
+        float mid_db;
+        if (!atten_runtime_eval(&model, mid_mv, &mid_db, NULL)) return false;
+        if ((double)mid_db < attenuation_db) lo_mv = mid_mv;
+        else hi_mv = mid_mv;
     }
-
-    floor_tx = attenuator_model_floor_linear(coeffs);
-    if (!(floor_tx > 0.0)) {
-        return false;
-    }
-    target_relative = pow(10.0, -attenuation_db / 10.0);
-    if (!isfinite(target_relative) || target_relative <= floor_tx) {
-        return false;
-    }
-    if (target_relative >= 1.0) {
-        *voltage = 0.0f;
-        return true;
-    }
-
-    target_ideal = (target_relative - floor_tx) / (1.0 - floor_tx);
-    if (!isfinite(target_ideal) || target_ideal <= 0.0) {
-        return false;
-    }
-    if (target_ideal > 1.0) {
-        target_ideal = 1.0;
-    }
-
-    target_tx = open_tx * target_ideal;
-    if (!(target_tx > MODEL_MIN_TX) || !isfinite(target_tx)) {
-        return false;
-    }
-    if (target_tx > 1.0) {
-        target_tx = 1.0;
-    }
-
-    erf_arg = erf_scale - 2.0 * erf_scale * target_tx;
-    if (erf_arg <= -1.0 || erf_arg >= 1.0) {
-        return false;
-    }
-
-    delta = zsl_prob_erf_inv(&erf_arg);
-    *voltage = (float) ((delta / coeffs->slope_inv_fvoa_mv + coeffs->fvoa_50pct_mv) / coeffs->gain);
-
+    *voltage = 0.5f * (lo_mv + hi_mv);
     return true;
 }
 
 static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *coeffs)
 {
-    double max_db;
+    float max_db;
 
     if (coeffs == NULL || !isfinite(coeffs->fvoa_50pct_mv) ||
         !isfinite(coeffs->slope_inv_fvoa_mv) ||
@@ -688,8 +750,8 @@ static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *c
         return false;
     }
 
-    max_db = attenuator_model_voltage_to_db(coeffs, ATTENUATOR_DRIVE_MAX_MV);
-    return isfinite(max_db) && max_db > ATTENUATOR_DB_EPSILON;
+    return atten_model_eval_runtime(coeffs, ATTENUATOR_DRIVE_MAX_MV, &max_db, NULL) &&
+           (double)max_db > ATTENUATOR_DB_EPSILON;
 }
 
 bool attenuator_model_coefficients_valid(
@@ -1046,8 +1108,8 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
                                       struct attenuator_transmission_estimate *out)
 {
     struct attenuator snapshot;
-    struct atten_model_eval eval1, eval2;
-    double sigma_db1, sigma_db2;
+    float db1, db2, slope1, slope2;
+    float sigma_db1, sigma_db2;
 
     if (drv == NULL || out == NULL) {
         return false;
@@ -1059,21 +1121,25 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
     /* Derive dB from confirmed voltages and the same coefficient snapshot;
      * boot may have installed calibration since the last register readback.
      */
-    if (!atten_model_eval(&snapshot.coeff1, snapshot.dac_cfg1.voltage, &eval1) ||
-        !atten_model_eval(&snapshot.coeff2, snapshot.dac_cfg2.voltage, &eval2) ||
-        !atten_model_db_sigma(&eval1, snapshot.coeff1.rms_db,
-                             ATTENUATOR_FVOA_NOISE_RMS_MV / snapshot.coeff1.gain,
-                             0.0, &sigma_db1) ||
-        !atten_model_db_sigma(&eval2, snapshot.coeff2.rms_db,
-                             ATTENUATOR_FVOA_NOISE_RMS_MV / snapshot.coeff2.gain,
-                             0.0, &sigma_db2)) {
+    if (!atten_model_eval_runtime(&snapshot.coeff1, snapshot.dac_cfg1.voltage, &db1, &slope1) ||
+        !atten_model_eval_runtime(&snapshot.coeff2, snapshot.dac_cfg2.voltage, &db2, &slope2)) {
         return false;
     }
-    out->attenuation_db1 = eval1.db;
-    out->attenuation_db2 = eval2.db;
+    float rms1 = (float)snapshot.coeff1.rms_db, rms2 = (float)snapshot.coeff2.rms_db;
+    if (!isfinite(rms1) || rms1 < 0.0f || !isfinite(rms2) || rms2 < 0.0f) return false;
+    slope1 /= (float)snapshot.coeff1.gain;
+    slope2 /= (float)snapshot.coeff2.gain;
+    sigma_db1 = hypotf(rms1, slope1 * (float)ATTENUATOR_FVOA_NOISE_RMS_MV);
+    sigma_db2 = hypotf(rms2, slope2 * (float)ATTENUATOR_FVOA_NOISE_RMS_MV);
+    if (!isfinite(sigma_db1) || !isfinite(sigma_db2)) return false;
+    /* Promote before adding the two dB values or converting tiny linear
+     * transmissions/errors. Throughput arithmetic remains double throughout.
+     */
+    out->attenuation_db1 = (double)db1;
+    out->attenuation_db2 = (double)db2;
     out->attenuation_db = out->attenuation_db1 + out->attenuation_db2;
-    out->slope1_db_per_fvoa_mv = eval1.d_db_d_voltage_mv / snapshot.coeff1.gain;
-    out->slope2_db_per_fvoa_mv = eval2.d_db_d_voltage_mv / snapshot.coeff2.gain;
+    out->slope1_db_per_fvoa_mv = (double)slope1;
+    out->slope2_db_per_fvoa_mv = (double)slope2;
     out->linear = pow(10.0, -out->attenuation_db / 10.0);
     /* Fit residuals are model uncertainty, not independent ADC noise: these
      * contributions remain correlated across repeated measurements.
@@ -1082,7 +1148,7 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
      * noise. The combined uncertainty is not a temporal RMS prediction.
      */
     out->linear_err = out->linear * (log(10.0) / 10.0) *
-                     hypot(sigma_db1, sigma_db2);
+                     hypot((double)sigma_db1, (double)sigma_db2);
     out->voltage1 = snapshot.dac_cfg1.voltage;
     out->voltage2 = snapshot.dac_cfg2.voltage;
     return true;
