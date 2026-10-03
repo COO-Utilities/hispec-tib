@@ -34,10 +34,18 @@ The application does not enable automatic STOP states. LSI remains the independe
 watchdog source. RTC has no battery/supercap backup in this setup; no valid time
 retention is assumed through removal of board power.
 
-Must edit default solder bridges to use i2c2:
-• HSE not used: PF0/PH0 and PF1/PH1 are used as GPIOs instead of clocks. The configuration must be:
-– SB48 and SB50 ON
-– SB49 OFF
+The application assumes the MB1404 "HSE not used" solder-bridge configuration:
+
+- SB48 and SB50 ON (PH0/PH1 connected to the morpho header)
+- SB49 OFF (ST-LINK MCO disconnected)
+- SB3 and SB4 OFF (X3 crystal disconnected; these are OFF by default)
+
+This physically disconnects the onboard HSE sources, so firmware keeps HSE
+disabled and uses HSI/PLL for the 240 MHz CPU clock. On the H563ZI, HSE uses
+PH0/PH1; I2C2 uses the separate PF1/PF0 pins. The earlier claim that I2C2 itself
+requires disabling HSE was incorrect. UM3115's generic "PF0/PH0" notation does
+not mean those are the same pins on this MCU. See UM3115, Clock sources, and
+[the H563ZI schematic, sheets 3/5](https://www.st.com/resource/en/schematic_pack/mb1404-h563zi-c01-schematic.pdf).
 
 
 ## MEMS Switches

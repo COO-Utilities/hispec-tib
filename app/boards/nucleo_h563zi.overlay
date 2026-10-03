@@ -49,9 +49,9 @@
 	};
 };
 
-/* The HISPEC-FIB PCB uses PF1/PF0 as I2C2 SCL/SDA. On MB1404 this requires
- * the "HSE not used" solder-bridge configuration documented in hardware.md,
- * so the application must not inherit Zephyr's default ST-LINK HSE bypass.
+/* The "HSE not used" solder bridges documented in hardware.md disconnect
+ * ST-LINK MCO (SB49 OFF) and X3 (SB3/SB4 OFF). Do not inherit HSE bypass.
+ * H563ZI HSE uses PH0/PH1; these are distinct from I2C2's PF1/PF0.
  */
 &clk_hse {
 	status = "disabled";
