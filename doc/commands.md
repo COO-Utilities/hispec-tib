@@ -355,7 +355,8 @@ while serial guard is active and attenuator DAC-range clamping.
   calendar seconds to RTC. A valid retained RTC seeds boot UTC; the RTC has no
   backup supply, so power loss can leave it invalid. Boot restoration can be less
   than one second behind until SNTP. No last-known UTC is restored from NVS.
-  Successful SNTP syncs repeat every 60 s and failures retry after 30 s.
+  SNTP includes Zephyr's estimated one-way response delay when applying server
+  time. Successful syncs repeat every 60 s and failures retry after 30 s.
   Startup first tries after one second; reconnect wakes the thread immediately. Manual time may subsequently be overwritten by SNTP.
   `pcb.time(offset_tolerance_ms=50)` warns only if the board time lies outside the
   host issue/receipt bracket by more than the tolerance; round-trip latency is

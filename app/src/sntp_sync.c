@@ -226,8 +226,12 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 		return -EINVAL;
 	}
 
-	ts.tv_sec = (time_t)sntp_time->seconds;
-	ts.tv_nsec = (long)(((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32);
+	/* Zephyr returns server transmit time and a separate estimated one-way
+	 * response delay. Advance to receive time, carrying fractional overflow. */
+	uint64_t ns = (((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32) +
+		      (uint64_t)sntp_time->rsp_delay_us * NSEC_PER_USEC;
+	ts.tv_sec = (time_t)(sntp_time->seconds + ns / NSEC_PER_SEC);
+	ts.tv_nsec = (long)(ns % NSEC_PER_SEC);
 	rc = sntp_sync_set_time(&ts);
 	if (rc != 0) {
 		return rc;

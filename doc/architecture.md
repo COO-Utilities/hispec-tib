@@ -213,8 +213,10 @@ using kernel ticks avoids that diagnostic artifact without another counter. Mill
 tick, apart from Zephyr's ordinary minimum timeout alignment.
 
 A valid RTC calendar restores boot UTC. One serialized setter handles both manual
-UTC and full-fraction SNTP, then updates RTC whole seconds. No fractional retention
-or NVS last-time fallback is used; the old NVS ID remains reserved. Success syncs
+UTC and full-fraction SNTP, then updates RTC whole seconds. SNTP adds Zephyr's
+estimated one-way response delay to the server transmit timestamp before setting
+UTC. No fractional retention or NVS last-time fallback is used; the old NVS ID
+remains reserved. Success syncs
 repeat at 60 s; failures retry at 30 s, with an initial one-second attempt and
 immediate attempts when network changes wake the SNTP thread.
 
