@@ -35,6 +35,17 @@ LLMs Agents: Do NOT change heading names in this file.
   cadence, and command ACK alignment under both streaming channels and command
   load. Offline builds cannot validate crystal accuracy, physical timing, output
   loss or watchdog behavior. Check queue counters and runtime stack margins.
+  Bench verification (2026-10-03, firmware 5489c84): periodic LPTIM gained
+  4.40 ms/min idle and 4.37 ms/min with both PD streams and command load.
+  RTC remained continuous across three normal SNTP updates (UTC corrections
+  3.84–4.14 ms). 200 zero-current commands interspersed with 733 cross-node
+  status queries produced no communication errors or board warnings; both
+  20 Hz streams had 46–52 ms UTC intervals and no overrange samples. Laser
+  settings were unchanged and PD settings restored. The remaining ~80 ms
+  host-time warning matched the Mac's offset against both NIST and Apple NTP.
+  Normal Nucleo build and 23 temporary RTC-guard boundary/error checks passed.
+  Full autocal/notebook and long-run queue/stack validation remain; the original
+  Modbus failure was not reproduced or proven fixed by these changes.
 - [ ] Validate per-FVOA residual limits and the constrained 65 dB leakage floor
   with new 1028/1270/1430 captures. Saved-data replay checks numerical behavior;
   it does not create high-attenuation calibration support. Check the ~0.18 ms
