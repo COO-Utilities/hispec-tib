@@ -2146,7 +2146,7 @@ Python commissioning helpers:
   encoding.
 - `pcb.read_route_losses(routes)` queries complete route/laser losses
   as a DataFrame of transmission and dB values.
-- `pcb.get_some_signal(laser, target_mv=1000, use_atten_db=False)` finds a useful
+- `pcb.get_some_signal(laser, min_mv=800, max_mv=1200, use_atten_db=False)` finds a useful
   manual signal. It uses an active collector for that laser, or temporarily
   starts non-autolevel `measure_throughput` on the selected AO/FEI and M/S routes
   (which can also be supplied as `output`/`fiber`). It doesn't create a plot but
@@ -2157,13 +2157,17 @@ Python commissioning helpers:
   FVOA fixed; `attenuators=()` holds both. `initial_level=.5`, `vary_laser=False` holds a chosen laser level.
   The default dwell is 0.5 s followed by three fresh records after the board ACK,
   with confirmed current/DAC matches and a monotonic deadline; at most 80 moves
-  are tried. Success is within 20% of the target without overrange. The result
-  gives achieved level/current, individual dB/mV, PD Net signal, and a reason
+  are tried. Success means the three-record mean PD Net signal is inside the
+  inclusive `[min_mv, max_mv]` bounds, with no raw sample at/above 2000 mV.
+  Bounds must be finite and satisfy `0 < min_mv < max_mv <= 2000`; they are
+  validated before any I/O. Set both explicitly at each notebook test call,
+  e.g. `min_mv=100, max_mv=200` for a weaker-signal test. The result records
+  `min_mv`/`max_mv`, achieved level/current, individual dB/mV, PD Net signal, and a reason
   when the limits prevent success. Successful manual settings remain in place;
   unsuccessful searches and exceptions stop the selected laser.
   An existing monitor retains its normal stop/laser ownership; only a temporary
   monitor is stopped on return. In Jupyter use
-  `await asyncio.to_thread(pcb.get_some_signal, laser, use_atten_db=True)` so an
+  `await asyncio.to_thread(pcb.get_some_signal, laser, min_mv=800, max_mv=1200, use_atten_db=True)` so an
   existing widget can refresh during the blocking search.
 - A collector's `command_events` property is a DataFrame of command arguments,
   `issue_utc_ms` (host), `ack_utc_ms` (board), `receipt_utc_ms` (host),

@@ -5138,7 +5138,7 @@ class HispecFibPcb:
         return monitor if monitor is not None else CommandOk()
 
     def get_some_signal(
-        self, laser: str, *, target_mv: float = 1000.0,
+        self, laser: str, *, min_mv: float = 800.0, max_mv: float = 1200.0,
         use_atten_db: bool = False, attenuators: Sequence[int] = (1, 2),
         initial_level: float = 0.5, vary_laser: bool = True,
         output: str | None = None, fiber: Literal["M", "S"] | None = None,
@@ -5154,7 +5154,9 @@ class HispecFibPcb:
 
         Start selected FVOAs at maximum drive (or calibrated dB), then open
         them in order before increasing laser level. Reverse/halve steps after
-        crossing the target. Accept +/-20% of target with no overrange samples.
+        crossing the requested range. Accept the three-sample mean PD Net
+        signal in [min_mv, max_mv], inclusive, with no raw overrange samples.
+        Bounds must satisfy 0 < min_mv < max_mv <= PD_ADC_USABLE_MV (2000 mV).
         Unselected FVOAs stay fixed; attenuators=() holds both.
         vary_laser=False holds initial_level. Failed searches stop this laser.
         Limits or the bounded iteration count return found=False and a reason;
@@ -5162,7 +5164,10 @@ class HispecFibPcb:
         samples; use await asyncio.to_thread(...) in a running notebook widget.
         """
         _require_choice("laser", laser, LASER_NAMES)
-        target_mv = _require_float("target_mv", target_mv, 1.0, 1600.0)
+        min_mv = _require_float("min_mv", min_mv, 0.0, PD_ADC_USABLE_MV)
+        max_mv = _require_float("max_mv", max_mv, 0.0, PD_ADC_USABLE_MV)
+        if not 0 < min_mv < max_mv:
+            raise HispecFibError("Signal bounds must satisfy 0 < min_mv < max_mv")
         dwell_s = _require_float("dwell_s", dwell_s, 0.15, 60.0)
         initial_level = _require_float("initial_level", initial_level, 0.0, 1.0)
         if len(set(attenuators)) != len(attenuators) or any(i not in (1, 2) for i in attenuators):
@@ -5230,12 +5235,12 @@ class HispecFibPcb:
                     time.sleep(0.05)
                 fresh = fresh[-3:]
                 net = float(np.mean(fresh.pd_net_mv))
-                high = bool(np.any(fresh.pd_mv >= PD_ADC_USABLE_MV) or net > 1.2*target_mv)
+                high = bool(np.any(fresh.pd_mv >= PD_ADC_USABLE_MV) or net > max_mv)
                 if not math.isfinite(net):
                     reason = "PD Net signal is unavailable"
                     break
-                if not high and net >= 0.8*target_mv:
-                    found, reason = True, "target reached"
+                if not high and net >= min_mv:
+                    found, reason = True, "inside requested range"
                     break
                 if iteration + 1 == max_steps:
                     break  # Report settings whose signal was actually measured.
@@ -5257,7 +5262,7 @@ class HispecFibPcb:
                     continue
                 next_level = max(minimum, level/2) if high else min(1.0, level*2)
                 if not vary_laser or abs(next_level-level)*span < 0.05:
-                    reason = "above target at dim limit" if high else "below target at bright limit"
+                    reason = "above range at dim limit" if high else "below range at bright limit"
                     break
                 level = next_level
                 self.laser(laser, value=level, autooff_s=0)
@@ -5268,7 +5273,7 @@ class HispecFibPcb:
                         level=actual.value, current_ma=actual.i_mA, steps=iteration+1,
                         atten_db=drive.db, atten1_db=drive.db1, atten2_db=drive.db2,
                         dac1_mv=drive.v1_mv, dac2_mv=drive.v2_mv,
-                        target_mv=target_mv, tolerance_fraction=0.2, freshness="board_ack_and_confirmed_state")
+                        min_mv=min_mv, max_mv=max_mv, freshness="board_ack_and_confirmed_state")
         except BaseException:
             self.laser(laser, stop=True)
             raise
