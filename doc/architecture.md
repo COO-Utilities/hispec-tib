@@ -203,8 +203,14 @@ fails, firmware restores the prior broker setting and emits a best-effort
 `mqtt_broker_revert` warning.
 
 Native STM32 LPTIM4, clocked by 32768 Hz LSE, supplies kernel uptime at 4096 ticks/s
-(244 microseconds/tick). The RTC uses LSE too. PM is enabled solely for the native
-driver dependency; CPU power states are removed from the application tree so
+(244 microseconds/tick). The timer runs periodically (`CONFIG_TICKLESS_KERNEL=n`)
+with a fixed eight-LSE-cycle period. This avoids the workload-dependent uptime
+gain measured with tickless reloads: idle tests gained 37–42 ms/minute, while
+periodic tests gained about 4.4 ms/minute under idle/streaming and command loads.
+The exact faulty tickless transition remains unproven. The measured cost of
+periodic mode is about 0.9 percentage points of additional timer-ISR CPU time
+(excluding exception entry/exit), at 4096 interrupts/s. The RTC uses LSE too.
+PM is enabled solely for the native driver dependency; CPU power states are removed from the application tree so
 there is no automatic STOP. LSI remains enabled for the independent watchdog.
 PD timing diagnostics use native 64-bit kernel uptime ticks, with 244 microsecond
 granularity. The LPTIM driver's 32-bit cycle API scales its counter to the CPU
@@ -213,7 +219,12 @@ using kernel ticks avoids that diagnostic artifact without another counter. Mill
 tick, apart from Zephyr's ordinary minimum timeout alignment.
 
 A valid RTC calendar restores boot UTC. One serialized setter handles both manual
-UTC and full-fraction SNTP, then updates RTC whole seconds. SNTP adds Zephyr's
+UTC and full-fraction SNTP. It reads the RTC and writes whole calendar seconds only
+when the RTC is unreadable or differs from the requested UTC by more than 1.25 s
+in either direction. This guard accommodates the setter's <1 s quantization plus
+250 ms margin and avoids stopping a healthy calendar under the RTC driver's
+spinlock on every sync. RTC write failure remains a warning; running UTC still
+updates. The RTC is a warm-boot seed, not the source of running UTC. SNTP adds Zephyr's
 estimated one-way response delay to the server transmit timestamp before setting
 UTC. No fractional retention or NVS last-time fallback is used; the old NVS ID
 remains reserved. Success syncs

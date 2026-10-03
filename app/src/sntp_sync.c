@@ -36,6 +36,7 @@ LOG_MODULE_REGISTER(sntp_sync, LOG_LEVEL_INF);
 #define SNTP_SYNC_INITIAL_DELAY_MS 1000U
 #define SNTP_SYNC_STACK_SIZE 1400
 #define SNTP_SYNC_THREAD_PRIORITY 14
+#define RTC_RESYNC_THRESHOLD_NS (1250LL * NSEC_PER_MSEC)
 
 struct sntp_sync_runtime {
 	struct k_mutex lock;
@@ -55,11 +56,27 @@ int sntp_sync_set_time(const struct timespec *utc)
 	    gmtime_r(&utc->tv_sec, rtc_time_to_tm(&calendar)) == NULL ||
 	    calendar.tm_year < 100 || calendar.tm_year > 199) return -EINVAL;
 	k_mutex_lock(&clock_set_lock, K_FOREVER);
-	/* Running UTC keeps SNTP fractions. The native STM32 RTC setter stores
-	 * whole seconds; a subsecond warm-reboot offset is corrected by SNTP. */
+	/* Running UTC keeps every SNTP/manual correction, including fractions. */
 	int rc = sys_clock_settime(SYS_CLOCK_REALTIME, utc);
 	if (rc == 0) {
-		int rtc_rc = device_is_ready(calendar_rtc) ? rtc_set_time(calendar_rtc, &calendar) : -ENODEV;
+		struct rtc_time retained = {0};
+		int rtc_rc = -ENODEV;
+		if (device_is_ready(calendar_rtc)) {
+			rtc_rc = rtc_get_time(calendar_rtc, &retained);
+			int64_t delta_ns = 0;
+			if (rtc_rc == 0) {
+				delta_ns = ((int64_t)timeutil_timegm(rtc_time_to_tm(&retained)) -
+					    (int64_t)utc->tv_sec) * NSEC_PER_SEC +
+					   retained.tm_nsec - utc->tv_nsec;
+			}
+			/* Calendar writes stop the RTC under the driver spinlock and discard
+			 * fractions. Allow that <1 s quantization plus 250 ms margin, rather
+			 * than repeatedly resetting a healthy warm-boot clock at each sync. */
+			if (rtc_rc != 0 || delta_ns > RTC_RESYNC_THRESHOLD_NS ||
+			    delta_ns < -RTC_RESYNC_THRESHOLD_NS) {
+				rtc_rc = rtc_set_time(calendar_rtc, &calendar);
+			}
+		}
 		if (rtc_rc != 0) LOG_WRN("UTC updated but RTC calendar write failed (%d)", rtc_rc);
 	}
 	k_mutex_unlock(&clock_set_lock);

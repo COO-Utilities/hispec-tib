@@ -33,7 +33,8 @@ struct sntp_sync_status {
 	int64_t last_sync_uptime_ms;
 };
 
-/** Set fractional running UTC and whole-second RTC, without NVS writes.
+/** Set fractional running UTC; refresh RTC if unreadable or >1.25 s away.
+ * RTC writes store whole seconds; no NVS writes.
  * Serializes manual/SNTP updates; may briefly block in the RTC driver. */
 int sntp_sync_set_time(const struct timespec *utc);
 

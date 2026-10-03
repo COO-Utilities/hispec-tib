@@ -351,10 +351,12 @@ while serial guard is active and attenuator DAC-range clamping.
 
 - **Notes:** UTC is milliseconds since the Unix epoch; uptime uses the LSE-backed
   native LPTIM clock and is unaffected by UTC corrections. Manual time and SNTP
-  share one setter, retaining fractional seconds in running UTC and writing whole
-  calendar seconds to RTC. A valid retained RTC seeds boot UTC; the RTC has no
-  backup supply, so power loss can leave it invalid. Boot restoration can be less
-  than one second behind until SNTP. No last-known UTC is restored from NVS.
+  share one setter, retaining fractional seconds in running UTC. RTC calendar
+  writes store whole seconds and occur only when its time is unreadable or more
+  than 1.25 s from the requested UTC. This avoids repeated calendar resets for
+  subsecond corrections. A valid retained RTC seeds boot UTC; the RTC has no
+  backup supply, so power loss can leave it invalid. Boot restoration carries the
+  retained RTC's offset until SNTP. No last-known UTC is restored from NVS.
   SNTP includes Zephyr's estimated one-way response delay when applying server
   time. Successful syncs repeat every 60 s and failures retry after 30 s.
   Startup first tries after one second; reconnect wakes the thread immediately. Manual time may subsequently be overwritten by SNTP.
