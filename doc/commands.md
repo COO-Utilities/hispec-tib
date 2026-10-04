@@ -2065,8 +2065,10 @@ estimates without evaluating another attenuator model.
   (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
   Raw overrange wins over low net signal. Startup uses the same direct path.
   A sample that began before the previous move completed cannot select another
-  move. There is no rolling-window gate, five-observation bypass, or settling
-  holdoff. Physical response and filter lag remain visible in the data.
+  move. Brightening waits until a low sample was acquired at least two 50 ms
+  intervals after the last input change; high/overrange dimming remains immediate.
+  There is no rolling-window gate or blanked stream interval. Physical response
+  and filter lag remain visible in the data.
 - Flux is raised by reducing attenuation first, then increasing laser current.
   Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
   `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before

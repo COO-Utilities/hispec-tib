@@ -50,6 +50,11 @@ LLMs Agents: Do NOT change heading names in this file.
   with new 1028/1270/1430 captures. Saved-data replay checks numerical behavior;
   it does not create high-attenuation calibration support. Check the ~0.18 ms
   serial pair-write wire estimate with actual bus/actuator response if needed.
+  Oct 3 captures: all six fits passed on `1047f74-dirty`; the first three
+  `5dfd966-dirty` runs rejected DAC2, while repeats passed 1270, rejected
+  1028 DAC2, and rejected 1430 DAC1. Rejected curves validated numerically but
+  exceeded the 2 dB residual limit; bridge anchors near SNR 5 warrant fixed-point
+  repeat measurements before attributing the change to firmware or hardware.
   Offline verification (2026-10-01): normal Nucleo build and an isolated merge
   with `ota-flash` 155b447 plus MCUboot sysbuild passed. Host OTA dry-run verified
   the signed image without network I/O. Separate policy NVS records retain
@@ -95,6 +100,7 @@ LLMs Agents: Do NOT change heading names in this file.
   Repeat the original dark/calibration sequence under the agreed laser limits.
 - [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
   startup, minimum-current fallback, and preference for lower attenuation.
+  Validate the laser-first default and two-sample low-side guard with live captures.
   Verify actual Maiman TEC bound expand/target/narrow ordering and rejection
   recovery with the installed modules. Host tests cover register order and
   failures; firmware builds do not establish optical response or hardware timing.

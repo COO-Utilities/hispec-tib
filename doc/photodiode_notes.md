@@ -67,8 +67,11 @@ Normal and startup control use that fresh reading: below 20% useful net input,
 request three times the flux; above 80%, request one third. Raw input at/above
 2000 mV takes precedence over a low dark-subtracted value. A conversion that
 began before completion of the preceding control move can still be published,
-but cannot trigger another move. There is no additional settling window or
-blanked stream interval. Only one channel may own autolevel; both PDs may stream.
+but cannot trigger another move. A low reading can brighten only if its
+acquisition began at least two sample intervals (100 ms) after the last input
+change; high and raw-overrange readings can dim immediately. This is an initial
+control guard, not a measured settling time. No stream interval is blanked.
+Only one channel may own autolevel; both PDs may stream.
 
 Both PCB input traces have nominal 20 Hz low-pass filters after the 0–10 V to
 0–2 V divider. For a single-pole model, the time constant is 7.96 ms and settling

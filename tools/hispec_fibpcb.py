@@ -4184,7 +4184,7 @@ class HispecFibPcb:
             return _dataclass_from(MqttConfig, self._request_json("mqtt"))
         return self._request_ok("mqtt", {"broker": broker, "persist": persist})
 
-    def time(self, unix_ms: int | None = None, *, offset_tolerance_ms: float | None = 50.0) -> TimeStatus | CommandOk:
+    def time(self, unix_ms: int | None = None, *, offset_tolerance_ms: float | None = 200.0) -> TimeStatus | CommandOk:
         """Read/set UTC; warn only for offset outside the host round-trip bracket.
 
         A None tolerance disables the warning. This compares clocks, not optical

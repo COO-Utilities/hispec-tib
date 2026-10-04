@@ -29,7 +29,7 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 #define TP_LASER_FIRST 1
 /* Both policies brighten with attenuation first. Select only the dimming order. */
 #ifndef TP_AUTOLEVEL_DIM_PRIORITY
-#define TP_AUTOLEVEL_DIM_PRIORITY TP_ATTEN_FIRST
+#define TP_AUTOLEVEL_DIM_PRIORITY TP_LASER_FIRST
 #endif
 #if TP_AUTOLEVEL_DIM_PRIORITY != TP_ATTEN_FIRST && TP_AUTOLEVEL_DIM_PRIORITY != TP_LASER_FIRST
 #error "TP_AUTOLEVEL_DIM_PRIORITY must be TP_ATTEN_FIRST or TP_LASER_FIRST"
@@ -263,8 +263,8 @@ static int refresh_reference(struct throughput_state *state)
 }
 
 /* One decision per fresh reading. A dark-subtracted low reading cannot override
- * a raw overrange reading. Startup and ordinary operation use the same 50 ms
- * path: no rolling-window gate, observation counter, or settling holdoff.
+ * a raw overrange reading. Dimming stays immediate; brightening waits for a
+ * reading acquired at least two sample intervals after the last input change.
  * Returns 1 after an input change, 0 without a change, or a hardware error.
  */
 static int autolevel_adjust(struct throughput_state *state,
@@ -281,6 +281,10 @@ static int autolevel_adjust(struct throughput_state *state,
 	struct app_laser_channel_settings settings;
 
 	if ((!high && !low) || !isfinite(source->atten_tx)) {
+		return 0;
+	}
+	if (low && pd->sample_ms - state->input_changed_ms <
+	    2 * PHOTODIODE_SAMPLE_INTERVAL_MS) {
 		return 0;
 	}
 	int rc = hispec_laser_get_channel_settings(state->laser, &settings);
