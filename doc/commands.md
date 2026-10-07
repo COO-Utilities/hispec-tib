@@ -2145,6 +2145,17 @@ throughput use `laser` as their source setting; laser-specific commands use
 
 Python commissioning helpers:
 
+- `HispecFibPcb(..., on_command=callback)` or `pcb.on_command = callback`
+  delivers the same command-event dictionary used by throughput collectors,
+  without starting a measurement. The callback runs after request completion,
+  including board errors and timeouts, on the requesting thread; concurrent
+  requests can call it concurrently. Treat the event as read-only; do not issue commands
+  from it. Exceptions are logged without changing the request result. Set it
+  to `None` to detach; the client keeps no additional history.
+  `temp_test.ipynb` uses this hook for file logging and thermal captures while
+  manual notebook cells continue to operate the same client. Its PD readbacks
+  use explicit override modes, and its temperature queries never enable bank
+  power. Heater-on shading is sampled state, not exact relay transition timing.
 - `parameter_table(settings)` displays nested dictionaries/dataclasses using
   API field names and native values. It performs no I/O and is not an archive
   encoding.

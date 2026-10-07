@@ -3996,6 +3996,12 @@ class HispecFibPcb:
     (the default), commands connect or wait for reconnection when needed.
     Once started, Paho's network loop reconnects independently of this option;
     every connection restores reply and telemetry subscriptions.
+
+    ``on_command`` receives the existing command-event dictionary after a
+    request finishes, including errors/timeouts. It runs on the requesting
+    thread, may be called concurrently, and should return promptly without
+    issuing commands or modifying the event. Callback exceptions are logged,
+    preserving the request result. The client does not retain a separate history.
     """
 
     def __init__(
@@ -4011,6 +4017,7 @@ class HispecFibPcb:
         connect: bool = False,
         logger: logging.Logger | None = None,
         warning_history: int = 200,
+        on_command: Callable[[dict[str, Any]], None] | None = None,
     ):
         if not re.fullmatch(r"hsfib-[A-Za-z0-9_-]+", device):
             raise HispecFibError("device must be a formal MQTT name such as hsfib-tib")
@@ -4021,6 +4028,7 @@ class HispecFibPcb:
         self.timeout_s = float(timeout_s)
         self.auto_connect = bool(auto_connect)
         self.logger = logger or LOGGER
+        self.on_command = on_command
         self._client_id = client_id or f"hispec-fibpcb-{device}-{int(time.time())}"
         self._client: Any = None
         self._connected = threading.Event()
@@ -5340,6 +5348,7 @@ class HispecFibPcb:
         issue_utc_ms, error = time.time_ns() // 1_000_000, ""
         with self._throughput_lock:
             observers = tuple(self._throughput_monitors)
+        on_command = self.on_command
         try:
             info = self._client.publish(topic, payload=data, qos=0, properties=props)
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -5364,6 +5373,11 @@ class HispecFibPcb:
             for observer in observers:
                 with observer._lock:
                     observer._commands.append(event)
+            if on_command is not None:
+                try:
+                    on_command(event)
+                except Exception:
+                    self.logger.exception("command-event callback failed for %s", key)
 
     def _request(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         response_topic = f"cmd/{self.device}/resp/{key}"
