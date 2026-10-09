@@ -181,7 +181,7 @@ auto, no bank-off request, and visible partial failures. No live notebook execut
 
 ## G. A small PCB power convenience method
 
-Status: approved; implementation pending.
+Status: implemented; fake-client helper verification recorded in commit.
 
 Approved new host API:
 

@@ -1144,6 +1144,16 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
 
 
+Python convenience: `pcb.laser_bank_power_mw(names=None)` reads selected lasers'
+existing engineering status sequentially (all six by default) and sums
+`diode_v * curr_meas_ma + abs(tec_v * tec_ma)` in mW. It estimates electrical
+power delivered to diode/TEC outputs, excluding driver losses, heater and other
+bank input power; the readings are not simultaneous. Confirmed unpowered drivers
+and an empty selection contribute zero. Missing/nonfinite powered readings or
+nonzero powered `read_rc` make the whole total NaN; request exceptions propagate.
+Names/duplicates are rejected before any request. It makes no writes or power
+changes and introduces no firmware endpoint.
+
 (laserbank-power)=
 ### `laser/bankpower`
 - **No payload -> laser-bank power state:**

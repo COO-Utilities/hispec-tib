@@ -4497,6 +4497,33 @@ class HispecFibPcb:
             pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))),
         )
 
+    def laser_bank_power_mw(self, names: Sequence[str] | None = None) -> float:
+        """Sum measured electrical power delivered to selected diode/TEC outputs.
+
+        Defaults to all six lasers. Sequential engineering reads are not a
+        simultaneous snapshot. Excludes driver losses, heater and other bank
+        input consumption. Confirmed unpowered drivers contribute zero; missing
+        or invalid powered readings make the whole total NaN. Request errors
+        propagate. No writes, power changes, TEC starts or persistence.
+        """
+        names = tuple(LASER_NAMES if names is None else names)
+        for name in names:
+            _require_choice("name", name, LASER_NAMES)
+        if len(set(names)) != len(names):
+            raise HispecFibError("laser names must not contain duplicates")
+        total = 0.0
+        for name in names:
+            status = self.laser_status(name)
+            if status.powered is False:
+                continue
+            values = (status.diode_v, status.curr_meas_ma, status.tec_v, status.tec_ma)
+            if (status.powered is not True or status.read_rc != 0 or
+                    any(value is None or not math.isfinite(value) for value in values)):
+                total = math.nan
+                continue
+            total += status.diode_v * status.curr_meas_ma + abs(status.tec_v * status.tec_ma)
+        return total
+
     def laser_bankpower(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
         if mode is None:
             return _dataclass_from(LaserBankPower, self._request_json("laser/bankpower"))

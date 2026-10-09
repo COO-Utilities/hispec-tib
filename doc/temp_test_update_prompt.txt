@@ -71,7 +71,7 @@ Future live-run design, requiring explicit approval before flow changes:
   records even if fitting/plotting fails. Preserve the owner's simplified workflow.
 
 The owner's bank diode/TEC power quick check is useful guidance. Use the approved
-pcb.laser_bank_power_mw(...) helper once G is implemented: measured diode current,
+pcb.laser_bank_power_mw(...) helper: measured diode current,
 sequential engineering reads, no writes, whole-total NaN for unusable powered
 readings, and exclusions for controller losses/heater/other input power. Retain
 other user-added checks and avoid any helper framework or new firmware endpoint.
