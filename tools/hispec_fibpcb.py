@@ -4502,7 +4502,9 @@ class HispecFibPcb:
 
         Auto heats if any fresh idle TEC probe is below 19 C and stops once all
         fresh idle probes exceed 21 C. Active TECs are excluded. All-active and
-        missing-probe behavior are described in doc/commands.md.
+        missing-probe behavior are described in doc/commands.md. Overrides force
+        output while continuing powered-bank temperature observation; they do
+        not power the bank. Cached readings age out normally when it is off.
         """
         if mode is None:
             return _dataclass_from(LaserBankHeater, self._request_json("laser/bankheater"))

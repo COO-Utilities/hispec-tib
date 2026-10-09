@@ -1216,7 +1216,11 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   valid laser temperature data is available. If all TECs remain enabled for at
   least one control interval, the heater is turned off.
   `override_on` and `override_off` force the heater state and suspend the
-  automatic warmup policy. While a heater override is active, firmware emits
+  automatic warmup policy. The forced relay state is enforced before polling.
+  Both overrides continue the existing opportunistic temperature polling and
+  cache summaries when the bank is powered, without powering the bank themselves.
+  Bank-off readings age out through the normal 20-second freshness rule.
+  While a heater override is active, firmware emits
   `laserbank_heater_override` on `dt/<device>/warning` every 20 minutes.
   If the off-board DS2408 relay expander is offline, set requests return an I/O
   error because the heater relay cannot be driven.

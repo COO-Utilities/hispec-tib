@@ -51,7 +51,9 @@ void laserbank_tempcontrol_start(struct k_work_q *work_q);
 /** Copy the latest temperature-control loop state. */
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);
 
-/** Set heater mode. Auto runs the warmup policy; override modes force the relay. */
+/** Set heater mode. Auto runs warmup; overrides force the relay before the
+ * existing opportunistic observation of an already-powered bank. Overrides do
+ * not power the bank. May reschedule the same work and persist when requested. */
 int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 					  bool persist);
 

@@ -123,7 +123,7 @@ hardware. No new start wait or immediate post-START verification is included.
 
 ## D. Keep temperature observation during heater override
 
-Status: approved; implementation pending.
+Status: implemented; offline verification recorded in commit.
 
 Owner: `laserbank_tempcontrol.c` using existing polling and cache.
 

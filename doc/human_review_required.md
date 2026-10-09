@@ -9,6 +9,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-check heater override-on/off temperature observation with the bank
+  powered and unpowered, including shared-bus contention and return to auto.
+  Overrides enforce relay output before polling and never wake the bank;
+  temporary heater-cycle cases and the Nucleo build pass offline.
 - [ ] Bench-validate LD-only/TEC-only autonomous-stop detection and counter
   freezing in the existing auto-off worker. Check shared-bus timing/contention,
   failed/partial reads and foreground STOP races; no automatic restart was added.

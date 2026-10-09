@@ -498,15 +498,17 @@ flowchart TD
   Mode -- override_off --> ForceOff[set heater off]
   ForceOn --> OverrideWarn[rate-limited override warning]
   ForceOff --> OverrideWarn
-  OverrideWarn --> Wait
+  OverrideWarn --> ReadTemps
 
   Mode -- auto --> EnteredAuto{just entered auto and bank off}
   EnteredAuto -- yes --> PowerBank[power bank on]
-  EnteredAuto -- no --> ReadTemps[read Maiman TEC temperatures]
+  EnteredAuto -- no --> ReadTemps[poll existing powered-bank TEC temperatures]
   PowerBank --> ReadTemps
   ReadTemps --> Cache[refresh per-laser temperature cache]
   Cache --> Summarize[summarize idle TEC probes and heater state]
-  Summarize --> AllStale{all temperatures stale}
+  Summarize --> AutoPolicy{heater mode auto}
+  AutoPolicy -- no --> Wait
+  AutoPolicy -- yes --> AllStale{all temperatures stale}
   AllStale -- yes --> AmbientCold{valid ambient below 15 C}
   AmbientCold -- yes --> KeepPower[best-effort bank power on]
   AmbientCold -- no --> HeaterOff[set heater off]

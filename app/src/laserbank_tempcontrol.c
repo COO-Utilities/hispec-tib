@@ -277,7 +277,6 @@ static void run_heater_control_cycle(void)
 		k_mutex_lock(&control_lock, K_FOREVER);
 		maybe_emit_override_warning(settings.heater_mode, now_ms);
 		k_mutex_unlock(&control_lock);
-		return;
 	}
 
 	if (entered_auto && !hispec_laser_bank_power_is_enabled()) {
@@ -326,6 +325,13 @@ static void run_heater_control_cycle(void)
 	summarize_temperature_state(now_ms);
 	all_stale = control.status.waiting_for_temps;
 	k_mutex_unlock(&control_lock);
+
+	/* Overrides enforce output first but keep existing powered-bank observation.
+	 * They must never enter automatic bank wake or heater threshold decisions.
+	 */
+	if (settings.heater_mode != LASERBANK_HEATER_MODE_AUTO) {
+		return;
+	}
 
 	if (all_stale) {
 		if (ambient.valid && ambient.ambient_c < LASERBANK_PROBE_WAKE_AMBIENT_C) {
