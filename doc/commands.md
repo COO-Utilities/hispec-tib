@@ -955,10 +955,12 @@ device-id verification, configured expected driver serial, `blocking_lock`,
 the basic `laser` query because it reads many Modbus registers. A serial mismatch is
 reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
 The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
-`ntc_coeff_pct_per_c` is the actual controller thermistor coefficient translated
-to resistance %/°C at 25°C. It is `null` when unavailable, including bank power
-off; it never substitutes the configured value. `laser/settings` reports the
-PCB-owned configured coefficient in the same units.
+`max_current_ma`, `current_cal_pct`, `tec_curr_lim_a`, `pid` and
+`ntc_coeff_pct_per_c` are controller readbacks whenever powered, including before
+first start; all are `null` while off. `laser/settings` always reports PCB
+configuration. The NTC readback translates controller B to resistance %/°C at
+25°C. `tec_temp_set_c` is the live target, not the configured startup default.
+With `powered:false`, raw zeros/false are placeholders. Failed reads return errors.
 
 
 (laser-settings)=
@@ -975,7 +977,7 @@ PCB-owned configured coefficient in the same units.
       "expected_serial": 0,
       "nominal_current_ma": 0.0,
       "max_current_ma": 0.0,
-      "current_set_calibration_pct": 0.0,
+      "current_cal_pct": 0.0,
       "fractional_noise": 0.03,
       "constant_noise_mw": 0.435675,
       "threshold_current_ma": 0.0,
@@ -986,7 +988,7 @@ PCB-owned configured coefficient in the same units.
       "default_operating_temp_c": 0.0,
       "thermistor_kohm": 0.0,
       "isolation_db": 0.0,
-      "tec_max_current_a": 0.0,
+      "tec_curr_lim_a": 0.0,
       "tec_pid": {
         "p": 0,
         "i": 0,
@@ -1013,10 +1015,10 @@ PCB-owned configured coefficient in the same units.
       "max_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
-      "current_set_calibration_pct": 0.0,
+      "current_cal_pct": 0.0,
       "fractional_noise": 0.03,
       "constant_noise_mw": 0.435675,
-      "tec_max_current_a": 0.0,
+      "tec_curr_lim_a": 0.0,
       "ntc_coeff_pct_per_c": -4.486271,
       "default_operating_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
@@ -1091,9 +1093,8 @@ PCB-owned configured coefficient in the same units.
   - `persist` is optional and defaults to false. Without `persist:true`,
     accepted changes apply to runtime and driver-backed state but are not saved
     in app NVS for the next controller boot.
-  - After device-ID and serial checks pass, a mismatch between settings the
-    driver stores in its EEPROM and controller NVRAM will trigger a warning in
-    the log and the driver values will be programmed.
+  - Preparation writes the PCB-owned profile; it does not compare all controller
+    settings or issue a general settings-mismatch warning.
   - `expected_serial` is the operator-confirmed Maiman driver serial for this
     laser/diode association. It must be nonzero. A serial mismatch blocks
     driver-backed writes until the operator confirms the physical association
@@ -1101,8 +1102,8 @@ PCB-owned configured coefficient in the same units.
     serials by itself. A device-ID mismatch remains an identity fault.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
     verifies them as practical, and then restores the previous bank power state.
-    Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
-    `default_operating_temp_c`, `tec_max_current_a`, `tec_pid`, and
+    Driver-backed settings include `max_current_ma`, `current_cal_pct`,
+    `default_operating_temp_c`, `tec_curr_lim_a`, `tec_pid`, and
     `ntc_coeff_pct_per_c`. If
     `laser/bankpower` is `override_off`, driver-backed settings changes return
     an error.
@@ -1126,7 +1127,7 @@ PCB-owned configured coefficient in the same units.
     reports the restore error because bank power needs operator attention.
   - Updates require a nonempty `settings` object containing writable fields.
     `persist` alone is invalid. `tec_pid` accepts only `p`, `i`, and `d`.
-    `current_set_calibration_pct` is the canonical calibration field.
+    `current_cal_pct` is the canonical calibration field.
   - Read-only and unknown settings return an error before changing laser or
     throughput state. Read-only fields include `model`, `thermistor_kohm`,
     `isolation_db`, and `emit_total_s`. Use `laser/tune`
@@ -1154,7 +1155,7 @@ PCB-owned configured coefficient in the same units.
     - `isolation_db`
   - Ranges:
     - Operating temp range: limited to [15,40] strong advice to limit to 17,38
-    - current_set_calibration: 95 - 105 in steps of .01
+    - `current_cal_pct`: 95 - 105 in steps of .01
     - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
 
 

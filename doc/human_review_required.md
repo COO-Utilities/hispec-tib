@@ -158,6 +158,8 @@ LLMs Agents: Do NOT change heading names in this file.
   `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
   programming, and can be resolved only by operator-updating
   `laser/settings.expected_serial`.
+  Compact/engineering mismatch snapshots and strict programming identity pass
+  temporary native checks and the Nucleo build; hardware validation remains.
 
 
 ## Decisions To Make

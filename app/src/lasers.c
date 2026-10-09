@@ -1241,10 +1241,10 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 		goto out;
 	}
 	if (!maiman_set_current_set_calibration(drv,
-						settings->current_set_calibration_pct)) {
+						settings->current_cal_pct)) {
 		goto out;
 	}
-	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a) ||
+	if (!maiman_set_tec_current_limit(drv, props->tec_curr_lim_a) ||
 	    !maiman_write_scaled(drv, REG_NTC_COEFFICIENT, DIVIDER_NTC_COEFFICIENT,
 		false, ntc_b_from_coeff(props->ntc_coeff_pct_per_c))) {
 		goto out;
@@ -1526,7 +1526,7 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->level_percent = LASERPROP_NA;
 	out->current_measured_ma = LASERPROP_NA;
 	out->current_min_ma = LASERPROP_NA;
-	out->current_max_ma = LASERPROP_NA;
+	out->max_current_ma = LASERPROP_NA;
 	out->current_max_limit_ma = LASERPROP_NA;
 	out->current_protection_threshold_ma = LASERPROP_NA;
 	out->voltage_v = LASERPROP_NA;
@@ -1540,9 +1540,9 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->tec_temperature_measured_c = LASERPROP_NA;
 	out->pcb_temperature_c = LASERPROP_NA;
 	out->tec_current_measured_a = LASERPROP_NA;
-	out->tec_current_limit_a = LASERPROP_NA;
+	out->tec_curr_lim_a = LASERPROP_NA;
 	out->tec_voltage_v = LASERPROP_NA;
-	out->current_set_calibration_pct = LASERPROP_NA;
+	out->current_cal_pct = LASERPROP_NA;
 	out->ntc_coeff_pct_per_c = LASERPROP_NA;
 	out->estimated_power_mw = LASERPROP_NA;
 	out->estimated_wavelength_nm = LASERPROP_NA;
@@ -1586,7 +1586,6 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 				(double)out->current_on_time_s;
 	out->tune_delta_nm = laser_settings[id].tune_delta_nm;
 	out->autooff_s = laser_settings[id].autooff_s;
-	out->current_set_calibration_pct = laser_settings[id].current_set_calibration_pct;
 	if (laser_autooff_deadline_ms[id] > 0) {
 		int64_t remaining_ms = laser_autooff_deadline_ms[id] - k_uptime_get();
 
@@ -1622,6 +1621,11 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 		rc = verify_driver_locked(profile, &drv, &out->serial_number, laser_settings[id].expected_serial);
 		out->device_id = laser_output_estimate[id].device_id;
 	}
+	/* A valid driver with an unexpected serial remains readable for diagnosis.
+	 * Start/program paths retain strict identity checks; device-ID faults do not.
+	 */
+	if (rc == -EADDRNOTAVAIL && out->device_id == profile->expected_device_id &&
+	    out->serial_number != 0U) rc = 0;
 	if (rc != 0) goto out_unlock;
 	out->expected_serial = laser_settings[id].expected_serial;
 	out->serial_matches = out->expected_serial != 0U &&
@@ -1698,13 +1702,13 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 		if (!maiman_get_current(&drv, &out->current_set_ma)) read_ok = false;
 		out->current_measured_ma = maiman_get_current_measured(&drv);
 		out->current_min_ma = maiman_get_current_min(&drv);
-		out->current_max_ma = maiman_get_current_max(&drv);
+		out->max_current_ma = maiman_get_current_max(&drv);
 		out->current_max_limit_ma = maiman_get_current_max_limit(&drv);
 		out->current_protection_threshold_ma = maiman_get_current_protection_threshold(&drv);
-		out->current_set_calibration_pct = maiman_get_current_set_calibration(&drv);
+		out->current_cal_pct = maiman_get_current_set_calibration(&drv);
 		out->tec_temperature_set_c = maiman_get_tec_temperature_value(&drv);
 		out->pcb_temperature_c = maiman_get_pcb_temperature_measured(&drv);
-		out->tec_current_limit_a = maiman_get_tec_current_limit(&drv);
+		out->tec_curr_lim_a = maiman_get_tec_current_limit(&drv);
 		out->ntc_coeff_pct_per_c = ntc_coeff_from_b(maiman_get_ntc_b25_100_coefficient(&drv));
 		if (!maiman_get_tec_pid(&drv, &out->tec_pid)) read_ok = false;
 	}
@@ -2153,10 +2157,10 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(settings->min_autolevel_current_ma) || settings->min_autolevel_current_ma < 0.0 ||
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !float_is_valid(props->wavelength_nm) ||
-	    !float_is_valid(settings->current_set_calibration_pct) ||
+	    !float_is_valid(settings->current_cal_pct) ||
 	    !float_is_valid(settings->fractional_noise) || settings->fractional_noise < 0.0 ||
 	    !float_is_valid(settings->constant_noise_mw) || settings->constant_noise_mw < 0.0 ||
-	    !float_is_valid(props->tec_max_current_a) ||
+	    !float_is_valid(props->tec_curr_lim_a) ||
 	    !float_is_valid(props->dlambda_dT_nm_per_k) ||
 	    !float_is_valid(props->dlambda_dA_nm_per_ma) ||
 	    props->threshold_current_ma < 0.0 ||
@@ -2169,10 +2173,10 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    props->efficiency_mw_per_ma > 100.0 ||
 	    props->wavelength_nm < 1.0 ||
 	    props->wavelength_nm > 10000.0 ||
-	    settings->current_set_calibration_pct < 95.0 ||
-	    settings->current_set_calibration_pct > 105.0 ||
-	    props->tec_max_current_a <= 0.0 ||
-	    props->tec_max_current_a > profile->properties->tec_max_current_a ||
+	    settings->current_cal_pct < 95.0 ||
+	    settings->current_cal_pct > 105.0 ||
+	    props->tec_curr_lim_a <= 0.0 ||
+	    props->tec_curr_lim_a > profile->properties->tec_curr_lim_a ||
 	    props->dlambda_dT_nm_per_k < -10.0 ||
 	    props->dlambda_dT_nm_per_k > 10.0 ||
 	    props->dlambda_dA_nm_per_ma < -10.0 ||
@@ -2225,9 +2229,9 @@ static bool laser_driver_settings_differ(const struct app_laser_channel_settings
 {
 	return a->properties.max_current_ma != b->properties.max_current_ma ||
 	       a->properties.ntc_coeff_pct_per_c != b->properties.ntc_coeff_pct_per_c ||
-	       a->current_set_calibration_pct != b->current_set_calibration_pct ||
+	       a->current_cal_pct != b->current_cal_pct ||
 	       a->properties.operating_temp_c != b->properties.operating_temp_c ||
-	       a->properties.tec_max_current_a != b->properties.tec_max_current_a ||
+	       a->properties.tec_curr_lim_a != b->properties.tec_curr_lim_a ||
 	       a->properties.tec_pid.kp != b->properties.tec_pid.kp ||
 	       a->properties.tec_pid.ki != b->properties.tec_pid.ki ||
 	       a->properties.tec_pid.kd != b->properties.tec_pid.kd;

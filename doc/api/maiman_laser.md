@@ -52,8 +52,9 @@ programming until next preparation; combined driver-backed edits program now.
 preparation translates it to rounded integer Maiman B and writes register 0x008A
 after the TEC current limit, before target/bounds/PID programming. Failed writes
 leave preparation false. Explicit coefficient edits use the existing settings
-stop/power/program flow. Reads translate the actual controller B back to the same
-units; an unavailable readback is not replaced by the configured value. No boot
+stop/power/program flow. Engineering status reads controller configuration before
+or after preparation; bank-off readbacks are null. Reads translate controller B
+back to the same units. No boot
 programming or EEPROM SAVE is added. App NVS owns optional persistence; see
 [settings](../settings.md) and [the thermal comparison](../temp_test_result.md).
 

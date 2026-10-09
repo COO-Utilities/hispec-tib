@@ -60,8 +60,9 @@ Profile preparation synchronizes the PCB value at the first explicit start after
 bank power-up, and driver-backed settings updates program it immediately through
 the existing stop/power flow. `persist:true` saves app NVS intent; it adds no
 controller EEPROM SAVE operation. START/STOP retain their existing controller
-persistence behavior. Engineering status reports translated actual readback,
-which can differ from intent until preparation.
+persistence behavior. Settings queries always report PCB configuration;
+engineering status reports controller readbacks while powered and null while off.
+Before preparation, readbacks can differ from configuration.
 
 ## Board-Type Reset Policy
 

@@ -220,6 +220,12 @@ readback. Remove old spellings without aliases. Convert internally using
 `alpha_pct = -100 * B / 298.15²`; writes round B to integer kelvin and normalize the
 accepted coefficient to the representable value. Reject invalid/nonrepresentable values.
 
+Follow-up: settings always report PCB configuration; engineering configuration
+readbacks are actual while powered (including before first start), all null while
+off. Canonical shared names are `max_current_ma`, `current_cal_pct` and
+`tec_curr_lim_a`. Serial mismatches return readable status with a start/program
+blocker; device-ID/read failures remain errors. No NVS layout change.
+
 Put archived B=3988 equivalents (−4.486271 %/°C) in every diode-property row, with
 comments identifying the observed controller default, datasheet and unit report values
 (or missing coefficient). Readbacks are settings, not measured thermistor calibration.

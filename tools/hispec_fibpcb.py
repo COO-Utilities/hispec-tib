@@ -502,7 +502,7 @@ class LaserSettings(ResponseRepr):
     expected_serial: int
     nominal_current_ma: float
     max_current_ma: float
-    current_set_calibration_pct: float
+    current_cal_pct: float
     fractional_noise: float
     constant_noise_mw: float
     threshold_current_ma: float
@@ -513,7 +513,7 @@ class LaserSettings(ResponseRepr):
     default_operating_temp_c: float
     thermistor_kohm: float
     isolation_db: float
-    tec_max_current_a: float
+    tec_curr_lim_a: float
     tec_pid: TecPid
     disable_tec_at_autooff: bool
     ntc_coeff_pct_per_c: float
@@ -556,10 +556,10 @@ class LaserEngineeringStatus(ResponseRepr):
     i_mA: float | None
     curr_meas_ma: float | None
     curr_min_ma: float | None
-    curr_max_ma: float | None
+    max_current_ma: float | None
     drv_max_ma: float | None
     ocp_ma: float | None
-    curr_cal_pct: float | None
+    current_cal_pct: float | None
     diode_v: float | None
     tec_temp_set_c: float | None
     tec_temp_c: float | None
@@ -567,7 +567,7 @@ class LaserEngineeringStatus(ResponseRepr):
     tec_ma: float | None
     tec_curr_lim_a: float | None
     tec_v: float | None
-    pid: tuple[int, int, int]
+    pid: tuple[int, int, int] | None
     ntc_coeff_pct_per_c: float | None
 
 
@@ -4397,12 +4397,12 @@ class HispecFibPcb:
         min_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
         wavelength_nm: float | None = None,
-        current_set_calibration_pct: float | None = None,
+        current_cal_pct: float | None = None,
         fractional_noise: float | None = None,
         constant_noise_mw: float | None = None,
         default_operating_temp_c: float | None = None,
         operating_temp_range_c: tuple[float, float] | None = None,
-        tec_max_current_a: float | None = None,
+        tec_curr_lim_a: float | None = None,
         tec_pid: TecPid | tuple[int, int, int] | None = None,
         ntc_coeff_pct_per_c: float | None = None,
         disable_tec_at_autooff: bool | None = None,
@@ -4433,12 +4433,12 @@ class HispecFibPcb:
             min_autolevel_current_ma=min_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
             wavelength_nm=wavelength_nm,
-            current_set_calibration_pct=current_set_calibration_pct,
+            current_cal_pct=current_cal_pct,
             fractional_noise=fractional_noise,
             constant_noise_mw=constant_noise_mw,
             default_operating_temp_c=default_operating_temp_c,
             operating_temp_range_c=operating_temp_range_c,
-            tec_max_current_a=tec_max_current_a,
+            tec_curr_lim_a=tec_curr_lim_a,
             ntc_coeff_pct_per_c=ntc_coeff_pct_per_c,
             disable_tec_at_autooff=disable_tec_at_autooff,
             dlambda_dT_nm_per_k=dlambda_dT_nm_per_k,
@@ -4474,7 +4474,7 @@ class HispecFibPcb:
                 expected_serial=int(settings["expected_serial"]),
                 nominal_current_ma=float(settings["nominal_current_ma"]),
                 max_current_ma=float(settings["max_current_ma"]),
-                current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
+                current_cal_pct=float(settings["current_cal_pct"]),
                 fractional_noise=float(settings["fractional_noise"]),
                 constant_noise_mw=float(settings["constant_noise_mw"]),
                 threshold_current_ma=float(settings["threshold_current_ma"]),
@@ -4488,7 +4488,7 @@ class HispecFibPcb:
                 default_operating_temp_c=float(settings["default_operating_temp_c"]),
                 thermistor_kohm=float(settings["thermistor_kohm"]),
                 isolation_db=float(settings["isolation_db"]),
-                tec_max_current_a=float(settings["tec_max_current_a"]),
+                tec_curr_lim_a=float(settings["tec_curr_lim_a"]),
                 tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
                 disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
                 ntc_coeff_pct_per_c=_float_or_nan(settings["ntc_coeff_pct_per_c"]),
@@ -4506,7 +4506,7 @@ class HispecFibPcb:
         return _dataclass_from(
             LaserEngineeringStatus,
             data,
-            pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))),
+            pid=None if data["pid"] is None else tuple(int(v) for v in data["pid"]),
         )
 
     def laser_bank_power_mw(self, names: Sequence[str] | None = None) -> float:

@@ -41,7 +41,7 @@ typedef struct laserprops_t {
     double operating_temp_c;
     double thermistor_kohm;
     double isolation_db;
-    double tec_max_current_a;
+    double tec_curr_lim_a;
     tec_pid_t tec_pid;
     double ntc_coeff_pct_per_c; /* Resistance coefficient, %/C at 25 C. */
     double dlambda_dT_nm_per_k;
@@ -60,7 +60,7 @@ static const laserprops_t LASER_1028 = {
     .nominal_current_ma = 250.0,
     .max_current_ma = 250.0,
     .dne_current_ma = 275.0,
-    .tec_max_current_a = 1.2,
+    .tec_curr_lim_a = 1.2,
     .tec_pid = TEC_PID_DFB,
     .wavelength_nm = 1028.01,
     .test_monitor_current_ua = 23.3,
@@ -81,7 +81,7 @@ static const laserprops_t LASER_2330 = {
     .nominal_current_ma = 120.0,
     .max_current_ma = 120.0,
     .dne_current_ma = 137.0,
-    .tec_max_current_a = 1.2,
+    .tec_curr_lim_a = 1.2,
     .tec_pid = TEC_PID_DFB,
     .wavelength_nm = 2329.81,
     .test_monitor_current_ua = LASERPROP_NA,
@@ -102,7 +102,7 @@ static const laserprops_t LASER_1270 = {
     .nominal_current_ma = 60.0,
     .max_current_ma = 60.0,
     .dne_current_ma = 75.0,
-    .tec_max_current_a = 1.0,
+    .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
     .wavelength_nm = 1270.0,
     .test_monitor_current_ua = LASERPROP_NA,
@@ -123,7 +123,7 @@ static const laserprops_t LASER_1430 = {
     .nominal_current_ma = 60.0,
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
-    .tec_max_current_a = 1.0,
+    .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
     .wavelength_nm = 1430.0,
     .test_monitor_current_ua = LASERPROP_NA,
@@ -144,7 +144,7 @@ static const laserprops_t LASER_1510 = {
     .nominal_current_ma = 60.0,
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
-    .tec_max_current_a = 1.0,
+    .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
     .wavelength_nm = 1510.0,
     .test_monitor_current_ua = LASERPROP_NA,

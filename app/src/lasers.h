@@ -116,7 +116,7 @@ struct hispec_laser_status {
 	double level_percent;
 	double current_measured_ma;
 	double current_min_ma;
-	double current_max_ma;
+	double max_current_ma;
 	double current_max_limit_ma;
 	double current_protection_threshold_ma;
 	double voltage_v;
@@ -133,9 +133,9 @@ struct hispec_laser_status {
 	double tec_temperature_measured_c;
 	double pcb_temperature_c;
 	double tec_current_measured_a;
-	double tec_current_limit_a;
+	double tec_curr_lim_a;
 	double tec_voltage_v;
-	double current_set_calibration_pct;
+	double current_cal_pct;
 	double ntc_coeff_pct_per_c;
 	tec_pid_t tec_pid;
 	double estimated_power_mw;
@@ -299,8 +299,11 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 int hispec_laser_save_driver_settings(enum hispec_laser_id id);
 int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 
-/** @brief Read a best-effort snapshot of one laser channel. */
-/* Compact status uses confirmed configuration; engineering reads full hardware registers. */
+/** Read one channel. Engineering values are controller readbacks, or unavailable
+ * while bank-off; compact status uses retained setpoints. A serial mismatch is
+ * reported in status and blocks start/programming; read/device-ID errors fail.
+ * May block on Modbus and enqueue existing fault warnings, never programs settings.
+ */
 int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hispec_laser_status *out);
 
 /** @brief Stop one channel's emission and write current 0 when possible. */

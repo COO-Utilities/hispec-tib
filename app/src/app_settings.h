@@ -129,12 +129,12 @@ struct app_laser_channel_settings {
 	laserprops_t properties;
 	/* Throughput autolevel floor; manual current/level commands may go lower. */
 	double min_autolevel_current_ma;
-	double current_set_calibration_pct;
+	double current_cal_pct;
 	/* App-owned optical-power uncertainty; never programmed into Maiman. */
 	double fractional_noise;
 	double constant_noise_mw;
-	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
-	 * as an operator-settable laser calibration value.
+	/* Operator-confirmed driver/diode association. Status may report a different
+	 * serial, but does not learn it or authorize writes to the replacement.
 	 */
 	uint16_t expected_serial;
 	bool disable_tec_at_autooff;
