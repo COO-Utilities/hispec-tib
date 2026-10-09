@@ -1162,7 +1162,7 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   `cmd/<device>/req/laser/bankpower/override_on`, or
   `cmd/<device>/req/laser/bankpower/override_off`.
 
-- **Notes:** `override_off` is the compiled boot default. In `auto`, power to the laser bank is handled by the bank
+- **Notes:** `auto` is the compiled boot default. Power to the laser bank is handled by the bank
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
   while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an

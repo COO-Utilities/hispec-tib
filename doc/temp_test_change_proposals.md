@@ -166,7 +166,7 @@ and the Python `temps()` docstring.
 
 ## F. Remove notebook bank cycling at low power
 
-Status: approved; implementation pending.
+Status: implemented; fake-client notebook verification recorded in commit.
 
 Keep existing firmware bank `auto` policy and ambient behavior. Replace the notebook's
 bank-off/auto pair with `laser(name, stop=True)` for all six channels. Respect

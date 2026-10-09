@@ -3,7 +3,8 @@ Update tools/temp_test.ipynb for archived replay and later telescope commissioni
 Read agents.md first. Read the current notebook including markdown, outputs,
 operator simplifications, and added quick checks before editing. Read
 doc/temp_test_result.md, doc/temp_test_figures/results.json, and
-doc/temp_test_change_proposals.md. Do not assume any pending proposal was approved.
+doc/temp_test_change_proposals.md. A–H were explicitly approved; consult each
+item's implementation status and do not expand the approved API/flow changes.
 The owner requires explicit approval for execution-flow or API changes. Produce
 a concrete bounded notebook diff/plan for such changes before implementing them.
 
@@ -21,10 +22,15 @@ Requested preamble:
   and 0.73/0.79°C detrended ambient load divots. Mark estimates and hypotheses.
 - State that the archives used the old heater policy. New behavior is on below
   19°C at any fresh idle probe and off above 21°C at every fresh idle probe,
-  retaining existing stale/all-active/override behavior unless separately approved.
+  retaining existing stale/all-active behavior. Heater overrides enforce their relay
+  state but continue opportunistic observation of an already-powered bank; no wake.
+  temps().laserbank_c includes valid idle probes only and is unavailable if all
+  TECs are active or the bank is off.
 - Explain that active TEC setpoints do not measure enclosure temperature, and
   that an acknowledgement alone does not prove continuing emission. Existing
-  engineering status and warnings are the evidence for an autonomous stop.
+  engineering status and warnings corroborate an autonomous stop. Compact
+  output_state is stopped, running, stopped_fault or unknown; ready describes
+  public-start blockers rather than a request to prepare the TEC manually.
 
 Requested archived workflow:
 - Default to opening the two existing pickle archives. Do not use Run All to
@@ -44,6 +50,12 @@ Requested archived workflow:
 Future live-run design, requiring explicit approval before flow changes:
 - Keep each phase an explicit operator action. No automatic advance from passive
   cooling to darks, load, or shutdown based on temperature or analysis success.
+- Preserve the approved apply_low_power helper: stop throughput/calibration, call
+  laser(name, stop=True) for all six, zero FVOAs, switch PDs off in RAM, then set
+  heater auto. Keep bank power/mode unchanged and respect disable_tec_at_autooff.
+  Show per-operation failures and continue best effort; never cycle bank power
+  as low-power procedure or fallback. This action deliberately restores heater
+  auto each time; keep it separate from passive capture setup.
 - Observe first. Capture setup must not silently reset heater overrides, write
   diode settings, apply a load, or clear controller faults.
 - Show current firmware and actual settings, fresh idle-probe temperatures, heater
@@ -58,11 +70,11 @@ Future live-run design, requiring explicit approval before flow changes:
 - Make the end-test action explicitly describe its hardware effects and save raw
   records even if fitting/plotting fails. Preserve the owner's simplified workflow.
 
-The owner's bank diode/TEC power quick check is useful guidance. A proposed
-pcb.laser_bank_power_mw(...) helper and its precise semantics are in proposal G.
-Add/use it only after explicit API approval. Otherwise retain a small clear
-notebook calculation using measured engineering values and label the exclusions.
-Do not introduce a new helper framework or change the firmware response schema.
+The owner's bank diode/TEC power quick check is useful guidance. Use the approved
+pcb.laser_bank_power_mw(...) helper once G is implemented: measured diode current,
+sequential engineering reads, no writes, whole-total NaN for unusable powered
+readings, and exclusions for controller losses/heater/other input power. Retain
+other user-added checks and avoid any helper framework or new firmware endpoint.
 
 Calibration notes should explain that relative idle residuals cannot separate
 sensor bias and thermal gradients. Link the replacement procedure and alternatives
