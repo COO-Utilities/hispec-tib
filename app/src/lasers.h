@@ -14,6 +14,7 @@
 #define HISPEC_LASERS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "laser_properties.h"
@@ -57,29 +58,6 @@ struct hispec_laser_driver_profile {
 	uint16_t expected_device_id;
 	const laserprops_t *properties;
 };
-
-/** Caller-owned failure evidence, populated only from existing transactions.
- * Zero-initialize before use; pass NULL when no reply diagnostics are needed.
- * This record is not cached and adds no controller reads, waits or persistence.
- */
-struct hispec_laser_diagnostics {
-	const char *stage;
-	int io_rc;
-	uint16_t device_state;
-	uint16_t tec_state;
-	uint16_t lock_status;
-	bool device_valid;
-	bool tec_valid;
-	bool locks_valid;
-	double temperature_c;
-	bool temperature_valid;
-};
-
-/** Format available failure evidence for command errors and queued warnings.
- * No I/O, state changes, publication or persistence; output is bounded by len.
- */
-void hispec_laser_format_failure(char *message, size_t len, enum hispec_laser_id id,
-	const char *operation, int rc, const struct hispec_laser_diagnostics *diagnostics);
 
 struct hispec_laser_status {
 	enum hispec_laser_id id;
@@ -306,8 +284,13 @@ int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
  */
 int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hispec_laser_status *out);
 
+/* Operation helpers below accept optional bounded failure text: pass NULL/0
+ * to omit returned text. Buffers are cleared on entry; text uses only existing
+ * transactions. Return codes, sequencing and queued warnings remain.
+ */
+
 /** @brief Stop one channel's emission and write current 0 when possible. */
-int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec, struct hispec_laser_diagnostics *diagnostics);
+int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec, char *error, size_t error_len);
 
 /** @brief Stop every channel's emission and write driver current 0 when possible. */
 int hispec_laser_stop_all_outputs(bool stop_tecs);
@@ -324,7 +307,7 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
  * the auto-off deadline. May block on Modbus; failed I/O
  * invalidates the optical estimate without claiming that emission stopped.
  */
-int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, struct hispec_laser_diagnostics *diagnostics);
+int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, char *error, size_t error_len);
 
 /** Round to Maiman current steps within inward-rounded bounds, or return NaN
  * when no step exists. Pure calculation, no I/O or state changes. Control
@@ -339,13 +322,13 @@ double hispec_laser_quantize_current_ma(double current_ma, double min_ma, double
  */
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
-					    uint32_t autooff_s, bool apply_tune, struct hispec_laser_diagnostics *diagnostics);
+					    uint32_t autooff_s, bool apply_tune, char *error, size_t error_len);
 
 /** @brief Set estimated output power in mW using the diode efficiency model. */
-int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, struct hispec_laser_diagnostics *diagnostics);
+int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *error, size_t error_len);
 
 /** @brief Set output as 0-100 percent of nominal current above threshold. */
-int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, struct hispec_laser_diagnostics *diagnostics);
+int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, char *error, size_t error_len);
 
 /**
  * @brief Set the TEC temperature setpoint after preparing the driver.
@@ -384,10 +367,10 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
  */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
-					 bool persist, struct hispec_laser_diagnostics *diagnostics);
+					 bool persist, char *error, size_t error_len);
 /** @brief Store the wavelength tune offset applied by future positive laser starts. */
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
-				   bool persist, struct hispec_laser_diagnostics *diagnostics);
+				   bool persist, char *error, size_t error_len);
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
@@ -438,6 +421,6 @@ double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
  */
 int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 				 const struct hispec_laser_tune_request *request,
-				 struct hispec_laser_tune_result *result, struct hispec_laser_diagnostics *diagnostics);
+				 struct hispec_laser_tune_result *result, char *error, size_t error_len);
 
 #endif /* HISPEC_LASERS_H */

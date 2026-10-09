@@ -48,6 +48,16 @@ LOG_MODULE_REGISTER(lasers, CONFIG_LASERS_LOG_LEVEL);
 static K_MUTEX_DEFINE(laser_io_lock);
 static K_MUTEX_DEFINE(laser_state_lock);
 
+/* Raw observations shared by status/stop detection and local error formatting.
+ * Validity denotes a successful existing read; this is never persisted or exported.
+ */
+struct laser_controller_observation {
+	uint16_t device_state, tec_state, lock_status;
+	bool device_valid, tec_valid, locks_valid;
+	double temperature_c;
+	bool temperature_valid;
+};
+
 struct on_time_runtime {
 	bool active;
 	int64_t started_ms;
@@ -159,11 +169,12 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 BUILD_ASSERT(ARRAY_SIZE(laser_profiles) == HISPEC_LASER_COUNT,
 	     "Laser profile table must match hispec_laser_id");
 
-static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec, struct hispec_laser_diagnostics *diagnostics);
+static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec, char *error, size_t error_len);
 static int profile_for_id(enum hispec_laser_id id,
 			  const struct hispec_laser_driver_profile **profile);
 static void observe_controller_locked(enum hispec_laser_id id,
-	const struct hispec_laser_diagnostics *diagnostics);
+	const struct laser_controller_observation *observed,
+	const char *stage, const maiman_driver_t *drv);
 static int64_t next_autooff_deadline_locked(void);
 static void hispec_laser_service_autooff(void);
 static void laser_autooff_reschedule(void);
@@ -234,53 +245,66 @@ static void output_estimate_set_locked(enum hispec_laser_id id,
 static void laser_health_warning(enum hispec_laser_id id, const char *code,
                                  const char *message, int error);
 
-void hispec_laser_format_failure(char *message, size_t len, enum hispec_laser_id id,
-	const char *operation, int rc, const struct hispec_laser_diagnostics *diagnostics)
+static void laser_failure_detail(char *error, size_t len, int rc,
+	const char *stage, const maiman_driver_t *drv,
+	const struct laser_controller_observation *observed)
 {
+	/* Nested STOP/programming failures retain the original detail through restore. */
+	if (len == 0 || error[0] != '\0') return;
+	int io_rc = drv != NULL ? drv->last_error : 0;
 	const char *reason = "operation failed; controller state uncertain";
 	if (rc == -EPERM) reason = "laser bank power override_off";
 	else if (rc == -EADDRNOTAVAIL) reason = "driver identity mismatch";
 	else if (rc == -ERANGE || rc == -EINVAL) reason = "invalid setting or limit";
-	else if (diagnostics != NULL && diagnostics->io_rc != 0)
-		reason = diagnostics->io_rc < 0 ? "transport failure" : "controller Modbus exception";
-	else if (diagnostics != NULL && diagnostics->locks_valid &&
-		 (diagnostics->lock_status & LOCK_STATE_BLOCKING_MASK) != 0U)
+	else if (io_rc != 0)
+		reason = io_rc < 0 ? "transport failure" : "controller Modbus exception";
+	else if (observed != NULL && observed->locks_valid &&
+		 (observed->lock_status & LOCK_STATE_BLOCKING_MASK) != 0U)
 		reason = "controller lock blocks operation; TEC limits cover cold and hot";
-	snprintk(message, len, "%s %s: %s", hispec_laser_name(id), operation, reason);
-	if (diagnostics == NULL) return;
-	size_t off = strnlen(message, len);
-	snprintk(message + off, len - off, " stage=%s io_rc=%d",
-		diagnostics->stage != NULL ? diagnostics->stage : "unknown", diagnostics->io_rc);
-	if (diagnostics->device_valid) {
-		off = strnlen(message, len);
-		snprintk(message + off, len - off, " state=0x%04x", diagnostics->device_state);
+	snprintk(error, len, "%s stage=%s io_rc=%d", reason, stage, io_rc);
+	if (observed == NULL) return;
+	size_t off;
+	if (observed->device_valid) {
+		off = strnlen(error, len);
+		snprintk(error + off, len - off, " state=0x%04x", observed->device_state);
 	}
-	if (diagnostics->tec_valid) {
-		off = strnlen(message, len);
-		snprintk(message + off, len - off, " tec=0x%04x", diagnostics->tec_state);
+	if (observed->tec_valid) {
+		off = strnlen(error, len);
+		snprintk(error + off, len - off, " tec=0x%04x", observed->tec_state);
 	}
-	if (diagnostics->locks_valid) {
-		off = strnlen(message, len);
-		snprintk(message + off, len - off, " locks=0x%04x", diagnostics->lock_status);
+	if (observed->locks_valid) {
+		off = strnlen(error, len);
+		snprintk(error + off, len - off, " locks=0x%04x", observed->lock_status);
 	}
-	if (diagnostics->temperature_valid) {
-		off = strnlen(message, len);
-		snprintk(message + off, len - off, " temp=%.2fC", diagnostics->temperature_c);
+	if (observed->temperature_valid) {
+		off = strnlen(error, len);
+		snprintk(error + off, len - off, " temp=%.2fC", observed->temperature_c);
 	}
 }
 
-static void invalidate_output_locked(enum hispec_laser_id id,
-	const struct hispec_laser_diagnostics *diagnostics)
+static void invalidate_output_locked(enum hispec_laser_id id, const char *detail)
 {
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	bool newly_faulted = laser_output_estimate[id].control != LASER_CONTROL_FAULT;
 	laser_output_estimate[id].control = LASER_CONTROL_FAULT;
 	k_mutex_unlock(&laser_state_lock);
-	if (newly_faulted) {
-		char message[256];
-		hispec_laser_format_failure(message, sizeof(message), id, "control", -EIO, diagnostics);
-		laser_health_warning(id, "laser_output_fault", message, -EIO);
+	if (newly_faulted) laser_health_warning(id, "laser_output_fault",
+		detail != NULL ? detail : "control failed; controller state uncertain", -EIO);
+}
+
+/* The fallback buffer lives only on the failure path, not in each nested setter. */
+static void laser_control_failure_locked(enum hispec_laser_id id,
+	char *error, size_t error_len, int rc, const char *stage,
+	const maiman_driver_t *drv, const struct laser_controller_observation *observed)
+{
+	char local_error[256];
+	if (error_len == 0) {
+		error = local_error;
+		error_len = sizeof(local_error);
+		error[0] = '\0';
 	}
+	laser_failure_detail(error, error_len, rc, stage, drv, observed);
+	invalidate_output_locked(id, error);
 }
 
 /* Queue owner-level diagnostics independently of maiman transaction verbosity.
@@ -631,7 +655,7 @@ static int zero_all_driver_currents_locked(bool stop_tecs)
 	int first_rc = 0;
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		int rc = stop_output_locked(&laser_profiles[i], stop_tecs, NULL);
+		int rc = stop_output_locked(&laser_profiles[i], stop_tecs, NULL, 0);
 
 		if (first_rc == 0) {
 			first_rc = rc;
@@ -935,12 +959,12 @@ static void read_temperature_channel_locked(uint8_t index,
 	}
 
 	laser_note_communication_locked((enum hispec_laser_id)index, &drv);
-	const struct hispec_laser_diagnostics diagnostics = {
-		.stage = "temperature poll: TEC observation", .io_rc = drv.last_error,
+	const struct laser_controller_observation observed = {
 		.tec_state = tec_state, .tec_valid = state_ok,
 		.temperature_c = tec_temp, .temperature_valid = temp_ok,
 	};
-	observe_controller_locked((enum hispec_laser_id)index, &diagnostics);
+	observe_controller_locked((enum hispec_laser_id)index, &observed,
+		"temperature poll: TEC observation", &drv);
 	channel->valid = temp_ok && state_ok;
 	channel->tec_temperature_c = tec_temp;
 	channel->tec_enabled = state_ok && tec_started;
@@ -1321,7 +1345,7 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 	}
 
 	/* Stop is checked before rewriting diode limits; failures preserve uncertainty. */
-	rc = stop_output_locked(profile, false, NULL);
+	rc = stop_output_locked(profile, false, NULL, 0);
 	if (rc != 0 || !maiman_allow_interlock(&drv)) {
 		rc = rc != 0 ? rc : -EIO;
 		goto out;
@@ -1417,11 +1441,10 @@ static bool output_ready_locked(enum hispec_laser_id id)
 }
 
 static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *profile,
-				     maiman_driver_t *drv, struct hispec_laser_diagnostics *diagnostics)
+				     maiman_driver_t *drv, struct laser_controller_observation *observed, const char **stage)
 {
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
-	uint16_t device_state, tec_state, lock_status;
-	if (diagnostics != NULL) diagnostics->stage = "prepare bank/identity/profile";
+	*stage = "prepare bank/identity/profile";
 	int rc = ensure_bank_powered_locked();
 
 	if (rc != 0) return rc;
@@ -1438,33 +1461,24 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 		if (rc != 0) return rc;
 	}
 	/* Configuration is stable, but controller lock and TEC state are dynamic. */
-	if (diagnostics != NULL) diagnostics->stage = "prepare TEC";
-	if (!maiman_read_raw_tec_status(drv, &tec_state)) return -EIO;
-	if (diagnostics != NULL) {
-		diagnostics->tec_state = tec_state;
-		diagnostics->tec_valid = true;
-	}
-	if (!(tec_state & TEC_OPERATION_STATE_STARTED)) {
+	*stage = "prepare TEC";
+	if (!maiman_read_raw_tec_status(drv, &observed->tec_state)) return -EIO;
+	observed->tec_valid = true;
+	if (!(observed->tec_state & TEC_OPERATION_STATE_STARTED)) {
 		photodiode_noise_change_begin();
 		bool started = maiman_start_tec(drv);
 		photodiode_noise_change_end();
 		if (!started) return -EIO;
 	}
 	on_time_runtime_update_locked(laser_tec_runtime, ARRAY_SIZE(laser_tec_runtime), profile->id, true);
-	if (diagnostics != NULL) diagnostics->stage = "prepare controller locks";
-	if (!maiman_read_u16(drv, REG_STATE_OF_DEVICE_COMMAND, &device_state)) return -EIO;
-	if (diagnostics != NULL) {
-		diagnostics->device_state = device_state;
-		diagnostics->device_valid = true;
-	}
-	if (!maiman_read_u16(drv, REG_LOCK_STATUS, &lock_status)) return -EIO;
-	if (diagnostics != NULL) {
-		diagnostics->lock_status = lock_status;
-		diagnostics->locks_valid = true;
-	}
-	if (effective_blocking_lock_status(lock_status, device_state) != 0U) return -EIO;
+	*stage = "prepare controller locks";
+	if (!maiman_read_u16(drv, REG_STATE_OF_DEVICE_COMMAND, &observed->device_state)) return -EIO;
+	observed->device_valid = true;
+	if (!maiman_read_u16(drv, REG_LOCK_STATUS, &observed->lock_status)) return -EIO;
+	observed->locks_valid = true;
+	if (effective_blocking_lock_status(observed->lock_status, observed->device_state) != 0U) return -EIO;
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
-	state->started = (device_state & OPERATION_STATE_STARTED) != 0U;
+	state->started = (observed->device_state & OPERATION_STATE_STARTED) != 0U;
 	k_mutex_unlock(&laser_state_lock);
 	return 0;
 }
@@ -1496,13 +1510,14 @@ static void observe_output_locked(enum hispec_laser_id id, bool operation_starte
  * Account after output classification, while established emission is still known.
  */
 static void observe_controller_locked(enum hispec_laser_id id,
-	const struct hispec_laser_diagnostics *diagnostics)
+	const struct laser_controller_observation *observed,
+	const char *stage, const maiman_driver_t *drv)
 {
-	bool ld_stopped = diagnostics->device_valid &&
-		(diagnostics->device_state & OPERATION_STATE_STARTED) == 0U;
-	bool tec_stopped = diagnostics->tec_valid &&
-		(diagnostics->tec_state & TEC_OPERATION_STATE_STARTED) == 0U;
-	if (diagnostics->device_valid) observe_output_locked(id, !ld_stopped);
+	bool ld_stopped = observed->device_valid &&
+		(observed->device_state & OPERATION_STATE_STARTED) == 0U;
+	bool tec_stopped = observed->tec_valid &&
+		(observed->tec_state & TEC_OPERATION_STATE_STARTED) == 0U;
+	if (observed->device_valid) observe_output_locked(id, !ld_stopped);
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	bool expected_started = laser_output_estimate[id].started;
 	if (ld_stopped) on_time_runtime_update_locked(laser_current_runtime,
@@ -1510,7 +1525,9 @@ static void observe_controller_locked(enum hispec_laser_id id,
 	if (tec_stopped) on_time_runtime_update_locked(laser_tec_runtime,
 		ARRAY_SIZE(laser_tec_runtime), id, false);
 	k_mutex_unlock(&laser_state_lock);
-	if (expected_started && (ld_stopped || tec_stopped)) invalidate_output_locked(id, diagnostics);
+	if (expected_started && (ld_stopped || tec_stopped)) {
+		laser_control_failure_locked(id, NULL, 0, -EIO, stage, drv, observed);
+	}
 }
 
 static void status_defaults(const struct hispec_laser_driver_profile *profile,
@@ -1631,17 +1648,14 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 	out->serial_matches = out->expected_serial != 0U &&
 			      out->serial_number == out->expected_serial;
 
-	struct hispec_laser_diagnostics observed = {
-		.stage = "status: controller observation",
-	};
+	struct laser_controller_observation observed = {0};
 	observed.device_valid = maiman_read_u16(&drv, REG_STATE_OF_DEVICE_COMMAND, &out->device_state);
 	observed.tec_valid = maiman_read_raw_tec_status(&drv, &out->tec_state);
 	observed.locks_valid = maiman_read_u16(&drv, REG_LOCK_STATUS, &out->lock_status);
 	observed.device_state = out->device_state;
 	observed.tec_state = out->tec_state;
 	observed.lock_status = out->lock_status;
-	observed.io_rc = drv.last_error;
-	observe_controller_locked(id, &observed);
+	observe_controller_locked(id, &observed, "status: controller observation", &drv);
 	/* Counters may have just ended; report this observation, not the pre-read copy. */
 	out->current_runtime_active = laser_current_runtime[id].active;
 	out->tec_runtime_active = laser_tec_runtime[id].active;
@@ -1678,13 +1692,8 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 		fault_locks &= (uint16_t)~LOCK_STATE_INTERLOCK;
 	}
 	if (!drv.io_failed && (!out->serial_matches || fault_locks != 0U)) {
-		const struct hispec_laser_diagnostics diagnostics = {
-			.stage = "status: controller fault or unexpected stop",
-			.device_state = out->device_state, .device_valid = true,
-			.tec_state = out->tec_state, .tec_valid = true,
-			.lock_status = out->lock_status, .locks_valid = true,
-		};
-		invalidate_output_locked(id, &diagnostics);
+		laser_control_failure_locked(id, NULL, 0, -EIO,
+			"status: controller fault", &drv, &observed);
 	}
 	/* Unprepared start programs DENY_INTERLOCK before checking locks. TEC
 	 * startup and automatic bank power are likewise handled by the endpoint.
@@ -1738,11 +1747,9 @@ out_unlock:
 	return rc;
 }
 
-static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec, struct hispec_laser_diagnostics *diagnostics)
+static int stop_output_locked(const struct hispec_laser_driver_profile *profile, bool stop_tec, char *error, size_t error_len)
 {
-	struct hispec_laser_diagnostics local_diagnostics = {0};
-	if (diagnostics == NULL) diagnostics = &local_diagnostics;
-	if (diagnostics != NULL) diagnostics->stage = "zero current/STOP";
+	if (error_len != 0) error[0] = '\0';
 	maiman_driver_t drv = {0};
 
 	ensure_laser_runtime_settings_locked();
@@ -1762,6 +1769,7 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	if (changing) photodiode_noise_change_begin();
 	if (state->started || state->control != LASER_CONTROL_CONFIRMED || state->current_ma != 0.0) {
 		bool zeroed = maiman_set_current(&drv, 0.0);
+		maiman_driver_t zero_result = drv;
 		if (zeroed) {
 			on_time_runtime_update_locked(laser_current_runtime, ARRAY_SIZE(laser_current_runtime), profile->id, false);
 			k_mutex_lock(&laser_state_lock, K_FOREVER);
@@ -1776,8 +1784,8 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 		if (!zeroed || !stopped) {
 			photodiode_noise_change_end();
 			laser_note_communication_locked(profile->id, &drv);
-			if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
-			invalidate_output_locked(profile->id, diagnostics);
+			laser_control_failure_locked(profile->id, error, error_len, -EIO,
+				zeroed ? "STOP" : "zero current", zeroed ? &drv : &zero_result, NULL);
 			return -EIO;
 		}
 	}
@@ -1786,8 +1794,8 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 		if (!maiman_stop_tec(&drv)) {
 			photodiode_noise_change_end();
 			laser_note_communication_locked(profile->id, &drv);
-			if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
-			invalidate_output_locked(profile->id, diagnostics);
+			laser_control_failure_locked(profile->id, error, error_len, -EIO,
+				"TEC STOP", &drv, NULL);
 			return -EIO;
 		}
 		on_time_runtime_update_locked(laser_tec_runtime, ARRAY_SIZE(laser_tec_runtime),
@@ -1800,8 +1808,9 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	return 0;
 }
 
-int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec, struct hispec_laser_diagnostics *diagnostics)
+int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec, char *error, size_t error_len)
 {
+	if (error_len != 0) error[0] = '\0';
 	const struct hispec_laser_driver_profile *profile;
 	int rc;
 
@@ -1811,7 +1820,7 @@ int hispec_laser_stop_output(enum hispec_laser_id id, bool stop_tec, struct hisp
 	}
 
 	k_mutex_lock(&laser_io_lock, K_FOREVER);
-	rc = stop_output_locked(profile, stop_tec, diagnostics);
+	rc = stop_output_locked(profile, stop_tec, error, error_len);
 	k_mutex_unlock(&laser_io_lock);
 	if (rc == 0) {
 		laser_autooff_reschedule();
@@ -1832,14 +1841,14 @@ int hispec_laser_stop_all_outputs(bool stop_tecs)
 	return rc;
 }
 
-int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, struct hispec_laser_diagnostics *diagnostics)
+int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, char *error, size_t error_len)
 {
-	struct hispec_laser_diagnostics local_diagnostics = {0};
-	if (diagnostics == NULL) diagnostics = &local_diagnostics;
-	if (diagnostics != NULL) diagnostics->stage = "validate/current write/START";
+	if (error_len != 0) error[0] = '\0';
+	const char *stage = "validate/current write/START";
 	const struct hispec_laser_driver_profile *profile;
 	const laserprops_t *props;
 	maiman_driver_t drv = {0};
+	struct laser_controller_observation observed = {0};
 	bool running;
 	bool changing = false;
 	int rc;
@@ -1880,7 +1889,7 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, stru
 	LOG_DBG("Laser %s level current_ma=%.3f started=%u configured=%u", profile->name,
 		current_ma, laser_output_estimate[id].started, laser_output_estimate[id].prepared);
 	if (current_ma == 0.0) {
-		if (diagnostics != NULL) diagnostics->stage = "zero current write";
+		stage = "zero current write";
 		maiman_init(&drv, profile->node_id);
 		if (bank_power_requested_enabled && !maiman_set_current(&drv, 0.0)) {
 			rc = -EIO;
@@ -1902,13 +1911,13 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, stru
 	if (running) {
 		maiman_init(&drv, profile->node_id);
 	} else {
-		rc = prepare_to_operate_locked(profile, &drv, diagnostics);
+		rc = prepare_to_operate_locked(profile, &drv, &observed, &stage);
 		if (rc != 0) {
 			goto out;
 		}
 	}
 
-	if (diagnostics != NULL) diagnostics->stage = "current write/START";
+	stage = "current write/START";
 
 	/* A running bank needs one current write, for increasing or decreasing
 	 * current. No profile writes, repeated enable, or invented settling delay.
@@ -1936,8 +1945,7 @@ out:
 		k_mutex_lock(&laser_state_lock, K_FOREVER);
 		laser_output_estimate[id].output_state = LASER_OUTPUT_UNKNOWN;
 		k_mutex_unlock(&laser_state_lock);
-		if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
-		invalidate_output_locked(id, diagnostics);
+		laser_control_failure_locked(id, error, error_len, rc, stage, &drv, &observed);
 	}
 	laser_note_communication_locked(id, &drv);
 	LOG_DBG("Laser %s level result rc=%d started=%u current_ma=%.3f control=%u", profile->name, rc,
@@ -1948,8 +1956,9 @@ out:
 	return rc;
 }
 
-int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, struct hispec_laser_diagnostics *diagnostics)
+int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *error, size_t error_len)
 {
+	if (error_len != 0) error[0] = '\0';
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props = &settings.properties;
 	double current_ma;
@@ -1959,7 +1968,7 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, struct 
 	}
 
 	if (power_mw == 0.0) {
-		return hispec_laser_set_current_ma(id, 0.0, diagnostics);
+		return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 	}
 	if (!float_is_positive(props->efficiency_mw_per_ma)) {
 		return -EINVAL;
@@ -1970,11 +1979,12 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, struct 
 		return -ERANGE;
 	}
 
-	return hispec_laser_set_current_ma(id, current_ma, diagnostics);
+	return hispec_laser_set_current_ma(id, current_ma, error, error_len);
 }
 
-int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, struct hispec_laser_diagnostics *diagnostics)
+int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, char *error, size_t error_len)
 {
+	if (error_len != 0) error[0] = '\0';
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props = &settings.properties;
 	double current_range_ma;
@@ -1985,7 +1995,7 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, str
 	}
 
 	if (percent == 0.0) {
-		return hispec_laser_set_current_ma(id, 0.0, diagnostics);
+		return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 	}
 
 	current_range_ma = props->nominal_current_ma - props->threshold_current_ma;
@@ -1997,13 +2007,14 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, str
 		props->threshold_current_ma + current_range_ma * (percent / 100.0),
 		0.0, MIN(props->nominal_current_ma, props->max_current_ma));
 
-	return hispec_laser_set_current_ma(id, current_ma, diagnostics);
+	return hispec_laser_set_current_ma(id, current_ma, error, error_len);
 }
 
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
-					    uint32_t autooff_s, bool apply_tune, struct hispec_laser_diagnostics *diagnostics)
+					    uint32_t autooff_s, bool apply_tune, char *error, size_t error_len)
 {
+	if (error_len != 0) error[0] = '\0';
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props;
 	int rc;
@@ -2033,9 +2044,9 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 		};
 		struct hispec_laser_tune_result result = {0};
 
-		rc = hispec_laser_tune_wavelength(id, &request, &result, diagnostics);
+		rc = hispec_laser_tune_wavelength(id, &request, &result, error, error_len);
 	} else {
-		rc = hispec_laser_set_output_percent(id, percent, diagnostics);
+		rc = hispec_laser_set_output_percent(id, percent, error, error_len);
 	}
 
 	if (rc == 0) {
@@ -2083,7 +2094,9 @@ int hispec_laser_set_tec_temperature_c(enum hispec_laser_id id, double temperatu
 	bool changing = !output_ready_locked(id) ||
 		temperature_c != laser_output_estimate[id].tec_temperature_c;
 	if (changing) photodiode_noise_change_begin();
-	rc = prepare_to_operate_locked(profile, &drv, NULL);
+	struct laser_controller_observation observed = {0};
+	const char *stage;
+	rc = prepare_to_operate_locked(profile, &drv, &observed, &stage);
 	if (rc == 0 && !maiman_set_tec_temperature(&drv, temperature_c)) {
 		LOG_WRN("Laser %s TEC setpoint write failed temp=%.3fC",
 			profile->name, (double)temperature_c);
@@ -2256,11 +2269,10 @@ int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *requested_settings,
-					 bool persist, struct hispec_laser_diagnostics *diagnostics)
+					 bool persist, char *error, size_t error_len)
 {
-	struct hispec_laser_diagnostics local_diagnostics = {0};
-	if (diagnostics == NULL) diagnostics = &local_diagnostics;
-	if (diagnostics != NULL) diagnostics->stage = "settings validation/profile";
+	if (error_len != 0) error[0] = '\0';
+	const char *stage = "settings validation/profile";
 	const struct hispec_laser_driver_profile *profile;
 	struct app_laser_channel_settings normalized = *requested_settings;
 	const struct app_laser_channel_settings *settings = &normalized;
@@ -2308,7 +2320,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 	 * updates this never powers an idle bank merely to program settings.
 	 */
 	if (stop_emission) {
-		rc = stop_output_locked(profile, settings->disable_tec_at_autooff, diagnostics);
+		rc = stop_output_locked(profile, settings->disable_tec_at_autooff, error, error_len);
 		if (rc != 0) {
 			goto out_unlock;
 		}
@@ -2326,7 +2338,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 			goto out_unlock;
 		}
 
-		rc = stop_output_locked(profile, settings->disable_tec_at_autooff, diagnostics);
+		rc = stop_output_locked(profile, settings->disable_tec_at_autooff, error, error_len);
 		if (rc != 0) {
 			goto restore_power;
 		}
@@ -2334,16 +2346,18 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		maiman_init(&drv, profile->node_id);
 		rc = verify_driver_locked(profile, &drv, NULL, settings->expected_serial);
 		if (rc == 0) {
-			diagnostics->stage = "program driver profile";
+			stage = "program driver profile";
 			rc = apply_runtime_profile_locked(profile, &drv, settings);
 		}
 		settings_applied = rc == 0;
+		if (rc != 0) laser_failure_detail(error, error_len, rc, stage, &drv, NULL);
 
 restore_power:
 		if (!was_powered) {
 			power_restore_rc = bank_power_set_locked(false, NULL, false);
 			if (rc == 0) {
 				rc = power_restore_rc;
+				stage = "restore bank power";
 			}
 		}
 	} else {
@@ -2364,8 +2378,7 @@ out_unlock:
 	}
 	if (apply_driver) {
 		if (rc != 0) {
-			if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
-			invalidate_output_locked(id, diagnostics);
+			laser_control_failure_locked(id, error, error_len, rc, stage, &drv, NULL);
 		}
 	}
 
@@ -2381,8 +2394,9 @@ out_unlock:
 }
 
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
-				   bool persist, struct hispec_laser_diagnostics *diagnostics)
+				   bool persist, char *error, size_t error_len)
 {
+	if (error_len != 0) error[0] = '\0';
 	struct app_laser_channel_settings settings;
 	int rc;
 
@@ -2397,7 +2411,7 @@ int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 	 * commands, not immediately written to TEC/current registers here.
 	 */
 	settings.tune_delta_nm = delta_nm;
-	return hispec_laser_update_channel_settings(id, &settings, persist, diagnostics);
+	return hispec_laser_update_channel_settings(id, &settings, persist, error, error_len);
 }
 
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id)
@@ -2427,7 +2441,7 @@ static void hispec_laser_service_autooff(void)
 		k_mutex_unlock(&laser_state_lock);
 
 		if (expired) {
-			(void)hispec_laser_stop_output((enum hispec_laser_id)i, stop_tec, NULL);
+			(void)hispec_laser_stop_output((enum hispec_laser_id)i, stop_tec, NULL, 0);
 		}
 	}
 }
@@ -2456,16 +2470,13 @@ static void laser_autooff_work_handler(struct k_work *work)
 		if (bank_power_requested_enabled && state->started &&
 		    state->control != LASER_CONTROL_UNCONFIRMED) {
 			maiman_driver_t drv;
-			struct hispec_laser_diagnostics observed = {
-				.stage = "background: controller observation",
-			};
+			struct laser_controller_observation observed = {0};
 			maiman_init(&drv, laser_profiles[i].node_id);
 			observed.tec_valid = maiman_read_raw_tec_status(&drv, &observed.tec_state);
 			observed.device_valid = maiman_read_u16(&drv,
 				REG_STATE_OF_DEVICE_COMMAND, &observed.device_state);
-			observed.io_rc = drv.last_error;
 			laser_note_communication_locked(i, &drv);
-			observe_controller_locked(i, &observed);
+			observe_controller_locked(i, &observed, "background: controller observation", &drv);
 		}
 		k_mutex_unlock(&laser_io_lock);
 	}
@@ -2586,11 +2597,10 @@ double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
 
 int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 				 const struct hispec_laser_tune_request *request,
-				 struct hispec_laser_tune_result *result, struct hispec_laser_diagnostics *diagnostics)
+				 struct hispec_laser_tune_result *result, char *error, size_t error_len)
 {
-	struct hispec_laser_diagnostics local_diagnostics = {0};
-	if (diagnostics == NULL) diagnostics = &local_diagnostics;
-	if (diagnostics != NULL) diagnostics->stage = "tune validation/apply";
+	if (error_len != 0) error[0] = '\0';
+	const char *stage = "tune validation/apply";
 	const struct hispec_laser_driver_profile *profile;
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props = &settings.properties;
@@ -2644,7 +2654,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		result->estimated_wavelength_nm = props->wavelength_nm;
 		result->wavelength_error_nm = request->wavelength_nm - props->wavelength_nm;
 		if (request->apply) {
-			return hispec_laser_set_current_ma(id, 0.0, diagnostics);
+			return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 		}
 		return 0;
 	}
@@ -2732,10 +2742,11 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	result->current_clamped = current_clamped;
 
 	if (request->apply && target_current_ma == 0.0) {
-		return hispec_laser_set_current_ma(id, 0.0, diagnostics);
+		return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 	}
 	if (request->apply) {
 		maiman_driver_t drv = {0};
+		struct laser_controller_observation observed = {0};
 
 		/* Applying a tune point writes TEC/current registers; use bounded wait. */
 		rc = laser_io_lock_with_timeout(K_MSEC(LASER_COMMAND_LOCK_TIMEOUT_MS));
@@ -2764,9 +2775,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		if (running) {
 			maiman_init(&drv, profile->node_id);
 		} else {
-			rc = prepare_to_operate_locked(profile, &drv, diagnostics);
+			rc = prepare_to_operate_locked(profile, &drv, &observed, &stage);
 		}
-		if (rc == 0 && diagnostics != NULL) diagnostics->stage = "tune TEC/current/START";
+		if (rc == 0) stage = "tune TEC/current/START";
 		if (rc == 0 &&
 		    (((!running || temperature_changed) &&
 		      !maiman_set_tec_temperature(&drv, target_temp_c)) ||
@@ -2796,8 +2807,7 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			k_mutex_lock(&laser_state_lock, K_FOREVER);
 			laser_output_estimate[id].output_state = LASER_OUTPUT_UNKNOWN;
 			k_mutex_unlock(&laser_state_lock);
-			if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
-			invalidate_output_locked(id, diagnostics);
+			laser_control_failure_locked(id, error, error_len, rc, stage, &drv, &observed);
 		}
 		laser_note_communication_locked(id, &drv);
 		photodiode_noise_change_end();

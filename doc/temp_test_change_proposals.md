@@ -57,6 +57,10 @@ failure from a controller refusal when the available evidence permits it;
 otherwise report the ambiguity. Thermal descriptions must cover too cold and
 too hot. Preserve existing diagnostic codes and best-effort warning delivery.
 
+Follow-up: bounded text replaces the public diagnostics record/formatter.
+Controller observations remain private; existing MQTT errors and warnings carry
+the evidence. Nested STOP/programming failures retain their detail through restore.
+
 Format Python exception text with its topic, firmware error and available `rc`.
 Retain the existing `.topic` and `.response` attributes and exception class.
 Example shape: `laser: 1510h start: controller thermal block ... (rc=-5)`;

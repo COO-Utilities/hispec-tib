@@ -174,12 +174,12 @@ within the measurement limits above.
 
 ## Laser command failure evidence
 
-Command-capable laser helpers accept an optional zero-initialized, caller-owned
-`hispec_laser_diagnostics` record. Existing reads populate validity-tagged bits
-and the failed stage/transaction error; no diagnostic reads or delays are added.
-Command replies and the existing one-shot output warning use bounded formatting.
-Other owners may pass NULL and still receive their existing warning. This record
-is not a stored last-error state and does not change return codes or sequencing.
+Laser operation helpers accept optional bounded failure text (`error`, `error_len`);
+pass NULL/0 to omit returned text. The laser owner formats existing controller
+evidence; command handlers include it in MQTT errors. Nested failures retain their
+detail through power restoration. Existing one-shot warnings remain best-effort.
+Controller observations stay private. No extra reads, waits or last-error cache.
+Return codes and hardware sequencing are unchanged.
 
 Compact `output_state` combines acknowledged output operations and positive LD
 observations. Its four values are documented in commands.md. It does not clear

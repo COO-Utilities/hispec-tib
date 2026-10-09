@@ -47,11 +47,17 @@ static int laser_cmd_error_rc(struct coo_cmd_response *out,
 
 static int laser_cmd_failure(struct coo_cmd_response *out,
 	const struct coo_cmd_request *cmd, enum hispec_laser_id id,
-	const char *operation, int rc, const struct hispec_laser_diagnostics *diagnostics)
+	const char *operation, int rc, const char *detail)
 {
 	char message[256];
 	if (rc == -EBUSY) return coo_cmd_busy_response(out, cmd);
-	hispec_laser_format_failure(message, sizeof(message), id, operation, rc, diagnostics);
+	/* Copy detail before response construction clears the reused payload buffer. */
+	const char *reason = detail != NULL && detail[0] != '\0' ? detail :
+		rc == -EPERM ? "laser bank power override_off" :
+		rc == -EADDRNOTAVAIL ? "driver identity mismatch" :
+		rc == -ERANGE || rc == -EINVAL ? "invalid setting or limit" :
+		"operation failed; controller state uncertain";
+	snprintk(message, sizeof(message), "%s %s: %s", hispec_laser_name(id), operation, reason);
 	return coo_cmd_error_rc(out, cmd, message, rc);
 }
 
@@ -359,7 +365,6 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
@@ -389,14 +394,14 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	throughput_monitor_note_laser_changed(id, false);
 	if (stop) {
-		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, &diagnostics);
+		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
 	} else if (value == 0.0 && !autooff_present) {
 		/* A momentary zero level preserves the existing shutdown deadline. */
-		rc = hispec_laser_set_current_ma(id, 0.0, &diagnostics);
+		rc = hispec_laser_set_current_ma(id, 0.0, out->payload, sizeof(out->payload));
 	} else {
-		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, &diagnostics);
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, out->payload, sizeof(out->payload));
 	}
-	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : value == 0.0 ? "zero current" : "set level/start", rc, &diagnostics);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : value == 0.0 ? "zero current" : "set level/start", rc, out->payload);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -418,7 +423,6 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 
 int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	char name[16] = {0};
 	double delta_nm = 0.0;
@@ -433,9 +437,9 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 		return coo_cmd_error(out, cmd, "missing or invalid tune_nm");
 	}
 	throughput_monitor_note_laser_changed(id, true);
-	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true, &diagnostics);
+	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true, out->payload, sizeof(out->payload));
 	if (rc != 0) {
-		return laser_cmd_failure(out, cmd, id, "set tune", rc, &diagnostics);
+		return laser_cmd_failure(out, cmd, id, "set tune", rc, out->payload);
 	}
 	return coo_cmd_ok(out, cmd);
 }
@@ -637,7 +641,6 @@ static int laser_parse_settings_update(const char *json,
 
 int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
@@ -678,9 +681,9 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
 	}
 
-	rc = throughput_monitor_update_laser_settings(id, &settings, persist, &diagnostics);
+	rc = throughput_monitor_update_laser_settings(id, &settings, persist, out->payload, sizeof(out->payload));
 	if (rc != 0) {
-		return laser_cmd_failure(out, cmd, id, "update settings", rc, &diagnostics);
+		return laser_cmd_failure(out, cmd, id, "update settings", rc, out->payload);
 	}
 	return coo_cmd_ok(out, cmd);
 }
