@@ -1,0 +1,74 @@
+Update tools/temp_test.ipynb for archived replay and later telescope commissioning.
+
+Read agents.md first. Read the current notebook including markdown, outputs,
+operator simplifications, and added quick checks before editing. Read
+doc/temp_test_result.md, doc/temp_test_figures/results.json, and
+doc/temp_test_change_proposals.md. Do not assume any pending proposal was approved.
+The owner requires explicit approval for execution-flow or API changes. Produce
+a concrete bounded notebook diff/plan for such changes before implementing them.
+
+For this work, only archived replay is allowed. Do not connect to MQTT or a PCB,
+reuse a live notebook client, change hardware settings, flash, start/stop a capture,
+or execute live cells. Preserve existing raw archives and user-added checks.
+
+Requested preamble:
+- Explain the five explicit phases: observe cooldown; observe heater behavior;
+  take cold darks when the operator is satisfied; apply high load when satisfied;
+  end the test and save the records.
+- Summarize the October 7–9 findings with links and plots from doc/temp_test_figures/.
+  Include original measured duty versus provisional 19–21°C forecasts, the
+  −2.51875 mV cold YJ dark, idle TEC differences, thermal-lag limitation at −15°C,
+  and 0.73/0.79°C detrended ambient load divots. Mark estimates and hypotheses.
+- State that the archives used the old heater policy. New behavior is on below
+  19°C at any fresh idle probe and off above 21°C at every fresh idle probe,
+  retaining existing stale/all-active/override behavior unless separately approved.
+- Explain that active TEC setpoints do not measure enclosure temperature, and
+  that an acknowledgement alone does not prove continuing emission. Existing
+  engineering status and warnings are the evidence for an autonomous stop.
+
+Requested archived workflow:
+- Default to opening the two existing pickle archives. Do not use Run All to
+  initialize hardware. Reuse simple existing plotting/analysis cells where possible.
+- Use issue UTC for time weighting. Show gaps and sample errors. Do not connect
+  lines or integrate heater state across intervals above 20 s. Report contributing
+  duration, load definition and stale exclusions for every heater-duty result.
+- Reconstruct successful load commands; do not count failed starts as operating
+  lasers. Corroborate with actual TEC/LD state where available.
+- Preserve the original datasets and attach derived results separately. Avoid
+  new managers, background workers, state frameworks or permanent check harnesses.
+- Support reviewing warnings and nearby engineering snapshots directly from the
+  archive. Keep a visible note about the recorded 2330k autonomous stops.
+- Keep plots from the prior test clearly labeled as prior results, distinct from
+  replay-derived plots and any future commissioning acquisition.
+
+Future live-run design, requiring explicit approval before flow changes:
+- Keep each phase an explicit operator action. No automatic advance from passive
+  cooling to darks, load, or shutdown based on temperature or analysis success.
+- Observe first. Capture setup must not silently reset heater overrides, write
+  diode settings, apply a load, or clear controller faults.
+- Show current firmware and actual settings, fresh idle-probe temperatures, heater
+  state/duty, ambient, individual TEC state, acquisition gaps and visible warnings.
+- At stable −10°C and 0°C collect multiple complete heater cycles and temperature
+  extrema; add a −15°C capacity check. Use a separate ambient reference if available.
+- Repeat short-settled and prepowered YJ darks at matched temperatures. Retain the
+  existing normal PD settling behavior and record actual timing.
+- Under load, verify actual op_started, tec_started and curr_meas_ma through the
+  existing engineering status. Do not relabel i_mA or power_mw as measurements.
+- Use separate FVOA-only and laser-only steps to test the ambient-sensor hypothesis.
+- Make the end-test action explicitly describe its hardware effects and save raw
+  records even if fitting/plotting fails. Preserve the owner's simplified workflow.
+
+The owner's bank diode/TEC power quick check is useful guidance. A proposed
+pcb.laser_bank_power_mw(...) helper and its precise semantics are in proposal G.
+Add/use it only after explicit API approval. Otherwise retain a small clear
+notebook calculation using measured engineering values and label the exclusions.
+Do not introduce a new helper framework or change the firmware response schema.
+
+Calibration notes should explain that relative idle residuals cannot separate
+sensor bias and thermal gradients. Link the replacement procedure and alternatives
+in the report. No automatic calibration writes, range changes, or PID tuning.
+
+Deliver a preserved, readable notebook, synchronized supporting documentation,
+and an archived-only replay verification report once the required notebook-flow
+approval is obtained. Keep new PowerPoint output uncommitted. Do not overwrite
+the raw captures or silently commit unrelated notebook edits.

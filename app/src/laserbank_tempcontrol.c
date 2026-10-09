@@ -24,10 +24,10 @@
 
 LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
-#define LASERBANK_WARM_MIN_C 19.0
-#define LASERBANK_COLD_OFF_C 21.0
+#define LASERBANK_WARM_MIN_C 19.0 // Warm to at least this temp
+#define LASERBANK_COLD_OFF_C 21.0 // don't warm past this temp
 /* Preserve the existing no-probe fallback independently of the idle-probe band. */
-#define LASERBANK_PROBE_WAKE_AMBIENT_C 15.0
+#define LASERBANK_PROBE_WAKE_AMBIENT_C 15.0 // temp at which the bank needs to be on to make sure diodes stay warm enough to turn on.
 
 struct laserbank_cached_channel {
 	bool valid;
