@@ -136,7 +136,7 @@ struct hispec_laser_status {
 	double tec_current_limit_a;
 	double tec_voltage_v;
 	double current_set_calibration_pct;
-	double ntc_t_coefficient_per_c;
+	double ntc_coeff_pct_per_c;
 	tec_pid_t tec_pid;
 	double estimated_power_mw;
 	double estimated_wavelength_nm;
@@ -367,14 +367,16 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid);
  */
 int hispec_laser_get_channel_settings(enum hispec_laser_id id,
 				      struct app_laser_channel_settings *out);
-/** Validate a candidate and round/raise its autolevel minimum above threshold.
+/** Validate a candidate, round/raise its autolevel minimum above threshold,
+ * and normalize the %/C NTC coefficient to representable internal integer B.
  * No I/O or live-state changes; persist the normalized candidate if accepted.
  */
 int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
 					   struct app_laser_channel_settings *settings);
 /** Apply a validated/normalized policy. Model and envelope changes stop emission
  * first; a failed stop rejects the update. Range-only edits invalidate preparation
- * without powering an idle bank; driver-backed edits program immediately.
+ * without powering an idle bank; driver-backed edits, including the PCB-owned
+ * NTC coefficient, program immediately through the existing stop/power flow.
  * May block on Modbus and requested NVS persistence.
  */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,

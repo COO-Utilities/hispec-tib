@@ -48,6 +48,15 @@ A programming failure leaves preparation false and prevents a subsequent START
 until preparation succeeds. Range-only settings changes stop emission and defer
 programming until next preparation; combined driver-backed edits program now.
 
+`ntc_coeff_pct_per_c` is PCB-owned resistance change in %/°C at 25°C. Profile
+preparation translates it to rounded integer Maiman B and writes register 0x008A
+after the TEC current limit, before target/bounds/PID programming. Failed writes
+leave preparation false. Explicit coefficient edits use the existing settings
+stop/power/program flow. Reads translate the actual controller B back to the same
+units; an unavailable readback is not replaced by the configured value. No boot
+programming or EEPROM SAVE is added. App NVS owns optional persistence; see
+[settings](../settings.md) and [the thermal comparison](../temp_test_result.md).
+
 At 115200 baud, the former ordinary path's six reads and sixteen writes require
 about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One
 current write requires about 1.65 + 1.00 = 2.65 ms. These are transport estimates,

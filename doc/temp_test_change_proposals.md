@@ -1,4 +1,4 @@
-# Freezer-test software follow-up for explicit approval
+# Freezer-test approved software follow-up
 
 9 October 2026. The owner approved A–H as eight commits, one per item. Status below records implementation.
 The owner requires explicit approval for execution-flow and API changes.
@@ -62,9 +62,9 @@ Retain the existing `.topic` and `.response` attributes and exception class.
 Example shape: `laser: 1510h start: controller thermal block ... (rc=-5)`;
 actual wording must describe observed evidence rather than guessing a cause.
 
-Why merited: the current `laser operation failed` string hides even the existing
+Why merited: the previous `laser operation failed` string hid even the existing
 return code from a normal notebook exception display. This is an incremental
-diagnostic improvement, but text consumed by users changes and needs approval.
+diagnostic improvement included in the explicit A–H approval.
 
 Verification: temporary synthetic error-response checks and representative
 blocked/transport paths; confirm unchanged request count, waits, response fields,
@@ -97,7 +97,7 @@ Status: implemented, including C2; offline verification recorded in commit.
 
 Owner: the existing laser auto-off worker in `lasers.c`.
 
-The worker currently checks TEC-started state during established operation.
+The worker previously checked only TEC-started state during established operation.
 Extend that same opportunistic check to LD-started state. If either is confirmed
 stopped after established operation, set the existing control-fault latch and
 emit its existing one-shot warning with the observed reason. Preserve the current
@@ -106,9 +106,9 @@ obligation. Do not poll extra drivers when the existing active predicate is fals
 Do not add a second scheduler or retry/restart a stopped diode.
 
 Why merited: foreground status already detects both kinds of stop, whereas the
-background check can miss LD-only shutdown until a status command. This proposal
+background check could miss LD-only shutdown until a status command. This change
 adds a controller read on active checks and therefore changes execution flow and
-bus load. It needs separate approval and contention/timing verification.
+bus load. It was explicitly approved; target contention/timing verification remains.
 
 The approved C commit includes the counter refinement formerly called **C2**: when readback
 positively confirms a stopped LD or TEC, stop that component's existing on-time
@@ -134,10 +134,10 @@ Bank `override_off` still prevents reads from unpowered drivers and must invalid
 or age out values normally. Preserve the current cadence, warning policy and
 all existing mode names. Do not add separate observation controls.
 
-Why merited: the current override branch returns before polling, making the
+Why merited: the previous override branch returned before polling, making the
 heater cache stale precisely when observing passive cooling. Existing bank and
 heater modes already provide the requested independent control. This rearranges
-the cycle and adds override-mode I/O, so it needs explicit approval.
+the cycle and adds override-mode I/O, included in the explicit A–H approval.
 
 Verification: both heater overrides with bank on/off, transition back to auto,
 bus contention, stale readings, and override output enforcement. Update the
@@ -211,7 +211,9 @@ framework is proposed.
 
 ## H. Synchronize thermistor coefficients in datasheet units
 
-Status: approved; implementation pending.
+Status: implemented; offline conversion/profile/NVS/API checks and build passed.
+The thermal comparison and replacement procedure are updated; the refreshed
+presentation remains uncommitted. Hardware validation is in the review ledger.
 
 Use `ntc_coeff_pct_per_c` (%/°C at 25°C) for both configured settings and engineering
 readback. Remove old spellings without aliases. Convert internally using

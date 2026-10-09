@@ -370,6 +370,13 @@ and laser auto-off are bound before command execution and throughput monitoring
 start; their startup functions assert the non-null queue precondition. Heater
 work is bound only when required TIB devices are ready.
 
+Laser thermistor intent is an ordinary PCB-owned channel setting in %/°C at
+25°C. `lasers.c` converts it to/from internal Maiman B, normalizes integer-B
+rounding and programs it during existing profile preparation or explicit
+driver-backed settings updates. Status reads do not program profiles; MCU startup
+does not add controller writes. `app_settings.c` persists the coefficient in a
+separate per-channel NVS record without changing existing calibration records.
+
 ## Implemented vs Intended
 
 Implemented behavior is detailed in `implemented_commands.md`. Intended command

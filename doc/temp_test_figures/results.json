@@ -5368,5 +5368,177 @@
       ],
       "off_minutes": 6.839
     }
+  },
+  "thermal_settings_comparison": {
+    "archive_successful_engineering_records": {
+      "temp_20261007T190615_212906Z.log": 264,
+      "temp_20261008T172437_042289Z.log": 9
+    },
+    "channels": [
+      {
+        "name": "1028y",
+        "observations": 44,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            20,
+            1000,
+            1000
+          ]
+        ],
+        "ocp_ma": [
+          261.5,
+          265.5
+        ],
+        "current_max_ma": [
+          250.0
+        ],
+        "tec_current_limit_a": [
+          1.2
+        ]
+      },
+      {
+        "name": "1270j",
+        "observations": 45,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            100,
+            1000,
+            0
+          ]
+        ],
+        "ocp_ma": [
+          66.3,
+          68.6
+        ],
+        "current_max_ma": [
+          60.0
+        ],
+        "tec_current_limit_a": [
+          1.0
+        ]
+      },
+      {
+        "name": "1430yj",
+        "observations": 43,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            100,
+            1000,
+            0
+          ]
+        ],
+        "ocp_ma": [
+          66.1,
+          68.3
+        ],
+        "current_max_ma": [
+          60.0
+        ],
+        "tec_current_limit_a": [
+          1.0
+        ]
+      },
+      {
+        "name": "1430hk",
+        "observations": 42,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            100,
+            1000,
+            0
+          ]
+        ],
+        "ocp_ma": [
+          65.0,
+          68.2
+        ],
+        "current_max_ma": [
+          60.0
+        ],
+        "tec_current_limit_a": [
+          1.0
+        ]
+      },
+      {
+        "name": "1510h",
+        "observations": 52,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            100,
+            1000,
+            0
+          ]
+        ],
+        "ocp_ma": [
+          67.8,
+          70.1
+        ],
+        "current_max_ma": [
+          60.0
+        ],
+        "tec_current_limit_a": [
+          1.0
+        ]
+      },
+      {
+        "name": "2330k",
+        "observations": 47,
+        "archived_b_k": 3988,
+        "coefficient_pct_per_c": -4.486271186149909,
+        "pid": [
+          [
+            20,
+            1000,
+            1000
+          ]
+        ],
+        "ocp_ma": [
+          131.3,
+          134.3
+        ],
+        "current_max_ma": [
+          120.0
+        ],
+        "tec_current_limit_a": [
+          1.2
+        ]
+      }
+    ],
+    "conversion": {
+      "reference_c": 25,
+      "reference_k": 298.15,
+      "archived_b_k": 3988,
+      "archived_coefficient_pct_per_c": -4.486271186149909,
+      "flc_datasheet_coefficient_pct_per_c": -4.4,
+      "flc_implied_b_k": 3911.3105899999996,
+      "flc_rounded_internal_b_k": 3911,
+      "b_disagreement_pct": -1.9307923771313942,
+      "sensitivity_at_c": {
+        "15": -0.19015162088305715,
+        "25": 0.0,
+        "40": 0.3104860964968452
+      }
+    },
+    "source_sha256": {
+      "FLPD-1028-50-DFB-BTF.pdf": "d96826d10bb69659b3c104eb70a1c3eeff952253b7894edfbc6db3e35db0334b",
+      "FLPD-2330-03-DFB-BTF.pdf": "652d93625cc55e8ea638e0b379fcc6d5edeeece421a23e03601311adece7ab28",
+      "FLPD-1028-50-DFB-BTF_#BF69016_testreport.pdf": "cbe20ad446e192a1c6350a3143139225d9f1546af7b01276ef681b52492089a1",
+      "FLPD-2330-03-DFB-BTF_#D4520009_testreport.pdf": "247f35b0df49a8570f20fa1b10a83645e76ef6a0353a985740e8198ae295b945",
+      "1270-nm-laser-diode-Model-1-Datasheet.pdf": "2cc7c547b9229d49e9333585ec83585ea7f617feb5cd32edec256aad72b41d28",
+      "1430-nm-laser-diode-Model-1-Datasheet.pdf": "e49f1c1b36dc8cfbb794aaf1df945e4dca5be1d6bf0318a80e5cec906d2f25f4",
+      "1510-nm-laser-diode-Model-1-Datasheet.pdf": "a167cf2132c9b9ab36756b28937a093226d9867a4d7d03d34a4e6a40840d65a8",
+      "maiman sf8025.pdf": "75b6c8cb5f013e5bdc99c4ee147b7531733d39539e820ac408d1f48aaffea350"
+    },
+    "qualification": "Readbacks are controller settings, not measured thermistor calibration. Sensitivity assumes equal R25 and a constant-B thermistor. 2330 datasheet coefficient units are ambiguous; percent interpretation is inferred."
   }
 }

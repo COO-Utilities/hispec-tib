@@ -955,6 +955,10 @@ device-id verification, configured expected driver serial, `blocking_lock`,
 the basic `laser` query because it reads many Modbus registers. A serial mismatch is
 reported as `serial_ok:false` and `blocked_reason:"driver_identity_mismatch"`.
 The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
+`ntc_coeff_pct_per_c` is the actual controller thermistor coefficient translated
+to resistance %/°C at 25°C. It is `null` when unavailable, including bank power
+off; it never substitutes the configured value. `laser/settings` reports the
+PCB-owned configured coefficient in the same units.
 
 
 (laser-settings)=
@@ -989,7 +993,7 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
         "d": 0
       },
       "disable_tec_at_autooff": true,
-      "ntc_t_coefficient_per_c": 0.0,
+      "ntc_coeff_pct_per_c": -4.486271,
       "dlambda_dT_nm_per_k": 0.0,
       "dlambda_dA_nm_per_ma": 0.0,
       "autooff_s": 0,
@@ -1013,6 +1017,7 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
       "fractional_noise": 0.03,
       "constant_noise_mw": 0.435675,
       "tec_max_current_a": 0.0,
+      "ntc_coeff_pct_per_c": -4.486271,
       "default_operating_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
       "tec_pid": {
@@ -1080,7 +1085,9 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     command `autooff_s` overrides one operation. Throughput uses `off_in_s` for
     its own duration and disables the separate laser auto-off while controlling
     it. Changing the stored default does not rearm an active deadline.
-  - Settings are checked when a laser is first talked to at each boot
+  - Driver identity is checked at first contact after bank power-up. Profile
+    preparation synchronizes PCB-owned driver settings at the first explicit
+    start after bank power-up; merely reading status does not program them.
   - `persist` is optional and defaults to false. Without `persist:true`,
     accepted changes apply to runtime and driver-backed state but are not saved
     in app NVS for the next controller boot.
@@ -1095,7 +1102,8 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
     verifies them as practical, and then restores the previous bank power state.
     Driver-backed settings include `max_current_ma`, `current_set_calibration_pct`,
-    `default_operating_temp_c`, `tec_max_current_a`, and `tec_pid`. If
+    `default_operating_temp_c`, `tec_max_current_a`, `tec_pid`, and
+    `ntc_coeff_pct_per_c`. If
     `laser/bankpower` is `override_off`, driver-backed settings changes return
     an error.
   - it is **encouraged** to send only the settings that requested changed.
@@ -1121,11 +1129,17 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
     `current_set_calibration_pct` is the canonical calibration field.
   - Read-only and unknown settings return an error before changing laser or
     throughput state. Read-only fields include `model`, `thermistor_kohm`,
-    `isolation_db`, `ntc_t_coefficient_per_c`, and `emit_total_s`. Use `laser/tune`
+    `isolation_db`, and `emit_total_s`. Use `laser/tune`
     to set `tune_nm`; `name` belongs outside the settings object as the selector.
-  - `ntc_t_coefficient_per_c` is `null` when the diode datasheet provides no
-    value (1270j, both 1430 channels, and 1510h). The Python client represents
-    this unavailable coefficient as NumPy `NaN`.
+  - `ntc_coeff_pct_per_c` is writable resistance change in %/°C at 25°C.
+    It must be finite and negative, mapping to a rounded internal Maiman B in
+    1–65535 K. The constant-B conversion is `B = round(-coefficient * 298.15² / 100)`.
+    Accepted settings are normalized to `-100 * B / 298.15²`; query to see the
+    representable value. All six compiled defaults are −4.486271 %/°C, retaining
+    the archived controller B=3988 equivalents rather than claiming measured
+    thermistor calibration. No raw-B host field or old-key alias is exposed.
+    Changes follow ordinary stop-before-profile-update and optional app NVS
+    persistence. No new EEPROM SAVE or MCU-startup programming is added.
   - Non-Driver settings:
     - `min_autolevel_current_ma`
     - `nominal_current_ma`

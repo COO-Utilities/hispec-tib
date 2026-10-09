@@ -3,7 +3,7 @@
  * @brief Runtime defaults and direct-NVS persistence for app-owned settings.
  *
  * Public update helpers copy into the protected runtime snapshot. When
- * persistence is requested they write one numeric Zephyr NVS ID and may block
+ * persistence is requested they write fixed numeric Zephyr NVS records and may block
  * on flash I/O. The app owns this fixed NVS ID map; no string setting names
  * are stored in flash.
  *
@@ -50,6 +50,7 @@ enum app_nvs_id {
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
+	APP_NVS_ID_LASER_NTC_CH0 = 0x0380,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
 	APP_NVS_ID_MEMS = 0x0500,
 };
@@ -62,8 +63,10 @@ BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY
 	     "photodiode NVS ID block overlaps laser policy block");
 BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_TOTAL_CH0,
 	     "laser policy NVS ID block overlaps laser total block");
-BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
-	     "laser total NVS ID block overlaps route-loss block");
+BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_NTC_CH0,
+	     "laser total NVS ID block overlaps NTC block");
+BUILD_ASSERT(APP_NVS_ID_LASER_NTC_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
+	     "laser NTC NVS ID block overlaps route-loss block");
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
 	     "route-loss NVS ID block overlaps MEMS settings");
 BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
@@ -174,6 +177,12 @@ static uint16_t laser_policy_nvs_id(uint8_t channel)
 static uint16_t laser_total_nvs_id(uint8_t channel)
 {
 	return APP_NVS_ID_LASER_TOTAL_CH0 + channel;
+}
+
+/* Separate coefficient record leaves existing channel policy/calibration intact. */
+static uint16_t laser_ntc_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_LASER_NTC_CH0 + channel;
 }
 
 static uint16_t route_loss_nvs_id(uint8_t index)
@@ -548,6 +557,8 @@ static void app_nvs_persist_laser_channel(uint8_t channel,
 
 	laser_policy_from_settings(&stored, laser);
 	(void)app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
+	(void)app_nvs_write(laser_ntc_nvs_id(channel), &laser->properties.ntc_coeff_pct_per_c,
+			    sizeof(laser->properties.ntc_coeff_pct_per_c));
 	(void)app_nvs_write(laser_total_nvs_id(channel),
 			    &laser->total_emitting_s,
 			    sizeof(laser->total_emitting_s));
@@ -839,6 +850,7 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 		struct app_nvs_laser_policy policy;
 		struct app_laser_channel_settings laser;
 		double total_emitting_s;
+		double ntc_coefficient;
 
 		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
 				       sizeof(policy), "laser policy")) {
@@ -849,6 +861,17 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 				s->laser.channel[channel] = laser;
 			} else {
 				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
+			}
+		}
+
+		if (app_nvs_read_exact(laser_ntc_nvs_id(channel), &ntc_coefficient,
+				       sizeof(ntc_coefficient), "laser NTC")) {
+			laser = s->laser.channel[channel];
+			laser.properties.ntc_coeff_pct_per_c = ntc_coefficient;
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
+				s->laser.channel[channel] = laser;
+			} else {
+				LOG_WRN("Ignoring invalid stored laser NTC channel %u", channel);
 			}
 		}
 
@@ -955,6 +978,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	}
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
+		delete_setting_record(laser_ntc_nvs_id(channel), &first_rc);
 		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {

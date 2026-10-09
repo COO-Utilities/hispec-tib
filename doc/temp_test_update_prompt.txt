@@ -78,7 +78,15 @@ other user-added checks and avoid any helper framework or new firmware endpoint.
 
 Calibration notes should explain that relative idle residuals cannot separate
 sensor bias and thermal gradients. Link the replacement procedure and alternatives
-in the report. No automatic calibration writes, range changes, or PID tuning.
+in the report and the supplied diode datasheets/unit reports. H is implemented:
+the only public coefficient is ntc_coeff_pct_per_c (%/C at 25 C), PCB-owned and
+optionally persisted. Engineering readback uses the same units, with no configured
+fallback when unavailable. Firmware translates/rounds internally and synchronizes
+at first explicit start after bank power-up or a driver-backed settings update;
+status reads and MCU startup do not program it. Retain the archived B=3988
+equivalent defaults. Distinguish FLC's −4.4 %/C comparison, Aero's missing slope,
+R25 tolerance, and possible PID/protection issues from measured calibration.
+No automatic calibration writes, range changes, or PID tuning.
 
 Deliver a preserved, readable notebook, synchronized supporting documentation,
 and an archived-only replay verification report once the required notebook-flow

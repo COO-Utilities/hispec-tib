@@ -377,6 +377,22 @@ static const laserprops_t *runtime_props_locked(enum hispec_laser_id id)
 	return &laser_settings[id].properties;
 }
 
+/* Datasheet-facing resistance coefficient at 25 C. Constant-B approximation;
+ * register B is internal only. Rounded settings report the representable value.
+ */
+static double ntc_coeff_from_b(double b_k)
+{
+	return isfinite(b_k) && b_k >= 1.0 && b_k <= UINT16_MAX ?
+		-100.0 * b_k / (298.15 * 298.15) : (double)NAN;
+}
+
+static double ntc_b_from_coeff(double coefficient)
+{
+	if (!isfinite(coefficient) || coefficient >= 0.0) return NAN;
+	double b_k = round(-coefficient * (298.15 * 298.15) / 100.0);
+	return isfinite(b_k) && b_k >= 1.0 && b_k <= UINT16_MAX ? b_k : (double)NAN;
+}
+
 static bool float_is_valid(double value)
 {
 	return isfinite(value);
@@ -1228,7 +1244,9 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 						settings->current_set_calibration_pct)) {
 		goto out;
 	}
-	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a)) {
+	if (!maiman_set_tec_current_limit(drv, props->tec_max_current_a) ||
+	    !maiman_write_scaled(drv, REG_NTC_COEFFICIENT, DIVIDER_NTC_COEFFICIENT,
+		false, ntc_b_from_coeff(props->ntc_coeff_pct_per_c))) {
 		goto out;
 	}
 	/* Expand before moving the target, then narrow. This also handles disjoint
@@ -1525,7 +1543,7 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->tec_current_limit_a = LASERPROP_NA;
 	out->tec_voltage_v = LASERPROP_NA;
 	out->current_set_calibration_pct = LASERPROP_NA;
-	out->ntc_t_coefficient_per_c = LASERPROP_NA;
+	out->ntc_coeff_pct_per_c = LASERPROP_NA;
 	out->estimated_power_mw = LASERPROP_NA;
 	out->estimated_wavelength_nm = LASERPROP_NA;
 }
@@ -1569,7 +1587,6 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 	out->tune_delta_nm = laser_settings[id].tune_delta_nm;
 	out->autooff_s = laser_settings[id].autooff_s;
 	out->current_set_calibration_pct = laser_settings[id].current_set_calibration_pct;
-	out->ntc_t_coefficient_per_c = out->properties.ntc_t_coefficient_per_c;
 	if (laser_autooff_deadline_ms[id] > 0) {
 		int64_t remaining_ms = laser_autooff_deadline_ms[id] - k_uptime_get();
 
@@ -1688,7 +1705,7 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 		out->tec_temperature_set_c = maiman_get_tec_temperature_value(&drv);
 		out->pcb_temperature_c = maiman_get_pcb_temperature_measured(&drv);
 		out->tec_current_limit_a = maiman_get_tec_current_limit(&drv);
-		out->ntc_t_coefficient_per_c = maiman_get_ntc_b25_100_coefficient(&drv);
+		out->ntc_coeff_pct_per_c = ntc_coeff_from_b(maiman_get_ntc_b25_100_coefficient(&drv));
 		if (!maiman_get_tec_pid(&drv, &out->tec_pid)) read_ok = false;
 	}
 	out->level_percent = level_percent_for_current(&out->properties, out->current_set_ma);
@@ -2128,6 +2145,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	}
 
 	props = &settings->properties;
+	double ntc_b = ntc_b_from_coeff(props->ntc_coeff_pct_per_c);
+	if (!isfinite(ntc_b)) return -ERANGE;
 	if (!float_is_valid(props->nominal_current_ma) ||
 	    !float_is_valid(props->max_current_ma) ||
 	    !float_is_valid(props->threshold_current_ma) ||
@@ -2183,6 +2202,7 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 		return -ERANGE;
 	}
 	settings->min_autolevel_current_ma = minimum;
+	settings->properties.ntc_coeff_pct_per_c = ntc_coeff_from_b(ntc_b);
 	return 0;
 }
 
@@ -2204,6 +2224,7 @@ static bool laser_driver_settings_differ(const struct app_laser_channel_settings
 					 const struct app_laser_channel_settings *b)
 {
 	return a->properties.max_current_ma != b->properties.max_current_ma ||
+	       a->properties.ntc_coeff_pct_per_c != b->properties.ntc_coeff_pct_per_c ||
 	       a->current_set_calibration_pct != b->current_set_calibration_pct ||
 	       a->properties.operating_temp_c != b->properties.operating_temp_c ||
 	       a->properties.tec_max_current_a != b->properties.tec_max_current_a ||

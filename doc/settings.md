@@ -38,6 +38,9 @@ Current app NVS records include:
   association check, plus `fractional_noise`, `constant_noise_mw`, and
   `min_autolevel_current_ma`.
 - One laser total-emitting counter record per laser channel.
+- One laser thermistor-coefficient record per channel (`ntc_coeff_pct_per_c`,
+  double in %/°C at 25°C, NVS IDs 0x0380–0x0385). Missing or invalid values
+  retain the compiled coefficient. Reset deletes this record with channel policy.
 - One route-loss table-entry record per configured route/laser output, up to
   the fixed route-loss table limit.
 - One MEMS intent record containing per-switch static state intent, per-switch
@@ -49,6 +52,16 @@ the exact-size check and that channel uses compiled policy defaults. Reapply
 desired laser overrides after updating firmware. Emission counters, attenuator
 calibration, routes, networking, and other records remain valid; there is no
 migration or wholesale reset.
+
+The thermistor-coefficient addition uses a separate eight-byte record and keeps
+schema 13 and the existing laser-policy/calibration layout unchanged. The PCB
+owns the configured coefficient; Maiman EEPROM retains driver-side values.
+Profile preparation synchronizes the PCB value at the first explicit start after
+bank power-up, and driver-backed settings updates program it immediately through
+the existing stop/power flow. `persist:true` saves app NVS intent; it adds no
+controller EEPROM SAVE operation. START/STOP retain their existing controller
+persistence behavior. Engineering status reports translated actual readback,
+which can differ from intent until preparation.
 
 ## Board-Type Reset Policy
 

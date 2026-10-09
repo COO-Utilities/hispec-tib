@@ -516,7 +516,7 @@ class LaserSettings(ResponseRepr):
     tec_max_current_a: float
     tec_pid: TecPid
     disable_tec_at_autooff: bool
-    ntc_t_coefficient_per_c: float
+    ntc_coeff_pct_per_c: float
     dlambda_dT_nm_per_k: float
     dlambda_dA_nm_per_ma: float
     autooff_s: int
@@ -568,7 +568,7 @@ class LaserEngineeringStatus(ResponseRepr):
     tec_curr_lim_a: float | None
     tec_v: float | None
     pid: tuple[int, int, int]
-    ntc_t_coeff: float | None
+    ntc_coeff_pct_per_c: float | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -4404,6 +4404,7 @@ class HispecFibPcb:
         operating_temp_range_c: tuple[float, float] | None = None,
         tec_max_current_a: float | None = None,
         tec_pid: TecPid | tuple[int, int, int] | None = None,
+        ntc_coeff_pct_per_c: float | None = None,
         disable_tec_at_autooff: bool | None = None,
         dlambda_dT_nm_per_k: float | None = None,
         dlambda_dA_nm_per_ma: float | None = None,
@@ -4417,7 +4418,12 @@ class HispecFibPcb:
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
         still applies; restart measurement after changing calibration.
-        An unavailable ntc_t_coefficient_per_c is returned as NumPy NaN.
+        ntc_coeff_pct_per_c is resistance change in %/C at 25 C, using a
+        constant-B approximation. Firmware rounds to integer B internally and
+        returns the representable coefficient. This PCB-owned setting follows
+        ordinary stop-before-profile-update and optional app NVS persistence;
+        profile preparation syncs it after bank power-up, not at MCU startup.
+        Engineering status separately reports actual readback in the same units.
         """
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
@@ -4433,6 +4439,7 @@ class HispecFibPcb:
             default_operating_temp_c=default_operating_temp_c,
             operating_temp_range_c=operating_temp_range_c,
             tec_max_current_a=tec_max_current_a,
+            ntc_coeff_pct_per_c=ntc_coeff_pct_per_c,
             disable_tec_at_autooff=disable_tec_at_autooff,
             dlambda_dT_nm_per_k=dlambda_dT_nm_per_k,
             dlambda_dA_nm_per_ma=dlambda_dA_nm_per_ma,
@@ -4443,6 +4450,11 @@ class HispecFibPcb:
         for key in ("fractional_noise", "constant_noise_mw", "min_autolevel_current_ma"):
             if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
                 raise HispecFibError(f"{key} must be finite and nonnegative")
+        if ntc_coeff_pct_per_c is not None:
+            b_k = -float(ntc_coeff_pct_per_c) * (298.15 * 298.15) / 100.0
+            if (not math.isfinite(b_k) or ntc_coeff_pct_per_c >= 0.0 or
+                    not 1 <= math.floor(b_k + 0.5) <= 0xFFFF):
+                raise HispecFibError("ntc_coeff_pct_per_c must be negative and fit integer controller B")
         if tec_pid is not None:
             if isinstance(tec_pid, TecPid):
                 settings["tec_pid"] = {"p": tec_pid.p, "i": tec_pid.i, "d": tec_pid.d}
@@ -4479,7 +4491,7 @@ class HispecFibPcb:
                 tec_max_current_a=float(settings["tec_max_current_a"]),
                 tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
                 disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
-                ntc_t_coefficient_per_c=_float_or_nan(settings["ntc_t_coefficient_per_c"]),
+                ntc_coeff_pct_per_c=_float_or_nan(settings["ntc_coeff_pct_per_c"]),
                 dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
                 dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
                 autooff_s=int(settings["autooff_s"]),
