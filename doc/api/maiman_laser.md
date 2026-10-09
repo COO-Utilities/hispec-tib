@@ -159,3 +159,12 @@ Successful response timestamps remain the actual API completion time, never the 
 of the quiet interval. Neither elapsed time nor the guard turns a timeout into a
 successful acknowledgement. Use these records to assess the 75 ms ACK deadline
 within the measurement limits above.
+
+## Laser command failure evidence
+
+Command-capable laser helpers accept an optional zero-initialized, caller-owned
+`hispec_laser_diagnostics` record. Existing reads populate validity-tagged bits
+and the failed stage/transaction error; no diagnostic reads or delays are added.
+Command replies and the existing one-shot output warning use bounded formatting.
+Other owners may pass NULL and still receive their existing warning. This record
+is not a stored last-error state and does not change return codes or sequencing.

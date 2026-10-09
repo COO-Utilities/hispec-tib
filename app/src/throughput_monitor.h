@@ -90,6 +90,6 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop
  * owned laser identity for stop retry; success relinquishes the stopped stream.
  */
 int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
-	const struct app_laser_channel_settings *settings, bool persist);
+	const struct app_laser_channel_settings *settings, bool persist, struct hispec_laser_diagnostics *diagnostics);
 
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */

@@ -1,9 +1,9 @@
 # Freezer-test software follow-up for explicit approval
 
-9 October 2026. These are reviewable proposals, not implemented changes.
+9 October 2026. The owner approved A–H as eight commits, one per item. Status below records implementation.
 The owner requires explicit approval for execution-flow and API changes.
 The separately approved 19–21°C heater band is implemented with its documentation;
-the following items remain outside that approval.
+the follow-up below is separately approved. Hardware execution and flashing are not authorized by it.
 
 ## Evidence and scope
 
@@ -38,11 +38,13 @@ The exact transient trip temperature and lock bit were not captured. A late
 clear lock read does not erase the observed autonomous stop. The notebook log
 captured the warnings, but they were easy to miss in its display arrangement.
 
-No additional compact status fields, replacement state machine, persistence,
-automatic retry, automatic TEC ramp, or optical-estimate zero/null semantics are
-proposed. `i_mA` remains set current; `power_mw` remains its model estimate.
+B adds one compact output-state field, and H adds one PCB-owned persisted thermistor
+coefficient. No replacement safety state machine, automatic retry, automatic TEC
+ramp, or optical-estimate zero/null semantics are included. `i_mA` remains set current; `power_mw` remains its model estimate.
 
 ## A. Improve existing diagnostics without changing sequencing
+
+Status: implemented; offline verification recorded in commit.
 
 Owners: `lasers.c`, `laser_command.c`, and `_decode_ok_or_raise()` in
 `tools/hispec_fibpcb.py`. Update `doc/commands.md` and relevant docstrings together.
@@ -69,30 +71,29 @@ blocked/transport paths; confirm unchanged request count, waits, response fields
 and exception type. Firmware build. Hardware error examples only in a later
 authorized session.
 
-## B. Reflect the existing latched fault in readiness
+## B. Clarify public-start readiness and output state
 
-Owner: `lasers.c` status construction. No new public fields.
+Status: approved; implementation pending.
 
-Preserve `ready` and `blocked_reason`, but make `ready` false while the existing
-control-fault latch is set. Preserve a currently observed specific blocking
-reason when present. When current controller conditions look usable but the
-latch remains, report `blocked_reason="control_fault"`. Prioritize an observed
-thermal/electrical lock over the generic `tec_not_started` explanation, while
-retaining bank-off and identity checks first. Keep the existing latch-clear
-conditions; a passive status read must not clear a fault.
+`ready` and `blocked_reason` describe known barriers to the public start operation,
+not manual controller preparation or historical faults. Bank auto can power an idle
+bank; explicit override-off blocks start. Applicable controller locks and identity
+failures remain blockers. A recoverable stop can therefore be ready with no blocking
+reason. No diagnostic read clears the existing safety latch.
 
-Why merited: compact readiness currently depends on current controller bits,
-which can recover after an autonomous stop. The application already knows that
-control faulted. Returning a ready state that ignores that latch is misleading.
-This is a semantic API change and a new reason value, requiring explicit approval.
-It does not change the meaning of set current or estimated optical power.
+Add one compact `output_state`: `stopped`, `running`, `stopped_fault`, or `unknown`.
+Intentional STOP, acknowledged zero current and confirmed bank-off are stopped.
+Running means established nonzero output operation, not measured optical emission.
+Stopped-fault requires positive evidence of an unexpected stop after nonzero operation;
+uncertain writes/observations do not establish operation from retained setpoints.
+The member adds at most 31 bytes. Existing estimates and shutdown obligations remain.
 
-Verification: temporary cases for fault present/current locks clear, thermal
-block with TEC stopped, bank off, serial mismatch, normal readiness, and existing
-successful recovery. Check both compact and engineering output and document the
-reason priority.
+Verification: zero/full stop, auto/override bank modes, current locks versus stop
+history, autonomous stop, ambiguous writes, explicit recovery and payload size.
 
 ## C. Detect an LD-only stop in the existing background check
+
+Status: approved; implementation pending.
 
 Owner: the existing laser auto-off worker in `lasers.c`.
 
@@ -109,17 +110,20 @@ background check can miss LD-only shutdown until a status command. This proposal
 adds a controller read on active checks and therefore changes execution flow and
 bus load. It needs separate approval and contention/timing verification.
 
-Counter refinement is a separately selectable part, **C2**: when readback
+The approved C commit includes the counter refinement formerly called **C2**: when readback
 positively confirms a stopped LD or TEC, stop that component's existing on-time
 counter. Retain setpoints and shutdown deadlines. Failed reads leave operation
 uncertain and must not stop accounting as though shutdown were confirmed.
-Inspect the counter owners before patching to preserve these distinctions.
+Apply it at foreground status, temperature polls and background observations;
+preserve each component independently and retain accumulated durations.
 
 Verification: temporary active/TEC-off/LD-off/read-failure/foreground-stop-race
 cases and counter cases. Build, followed by authorized timing/stop tests on
 hardware. No new start wait or immediate post-START verification is included.
 
 ## D. Keep temperature observation during heater override
+
+Status: approved; implementation pending.
 
 Owner: `laserbank_tempcontrol.c` using existing polling and cache.
 
@@ -141,6 +145,8 @@ heater diagram, command docs, notebook guidance and Python docstring together.
 
 ## E. Use idle probes for `temps().laserbank_c`
 
+Status: approved; implementation pending.
+
 Owners: the existing temperature command and its direct temperature-read owner.
 
 Keep the existing response shape. Compute `laserbank_c` from successfully read
@@ -158,30 +164,26 @@ Verification: mixed idle/active channels, all active, bank off, partial failures
 and ordinary idle behavior. Update temperature command documentation, examples,
 and the Python `temps()` docstring.
 
-## F. Power the laser bank by default at startup
+## F. Remove notebook bank cycling at low power
 
-Owners: current boot path and laser bank power owner, after confirming actual
-startup ordering and stored heater-mode handling.
+Status: approved; implementation pending.
 
-Proposed behavior: after board-profile selection and normal laser initialization,
-request bank power on in the existing `auto` bank mode, independently of heater
-mode. This powers monitoring electronics only; it does not request emission or
-TEC regulation. Preserve the explicit bank override-off command. Do not introduce
-a new setting or change boot behavior for board profiles without the laser bank.
+Keep existing firmware bank `auto` policy and ambient behavior. Replace the notebook's
+bank-off/auto pair with `laser(name, stop=True)` for all six channels. Respect
+`disable_tec_at_autooff`; no new boot-time bank power-on or settings rewrite.
+Keep other low-power actions and reset heater mode to auto on every transition,
+as selected by the owner. Report partial failures and continue best effort without
+using a bank power cycle as fallback. Preserve capture/save behavior and quick checks.
+Update notebook guidance and the archived-replay/commissioning prompt together.
 
-Why merited: the present heater auto-entry can power the bank, but heater override
-can bypass that path. Keeping the idle bank powered improves thermal continuity
-and monitoring, as the owner requested. Boot sequencing is a flow change and
-requires separate approval. Idle input-power cost was not measured in these
-archives and should be checked.
-
-Verification: inspect the complete boot path before the bounded patch; test the
-applicable board profile with each persisted heater mode, initialization failures,
-and bank override-off. Document startup behavior and retain owner boot TODOs.
+Verification: recording fake-client helper execution; six stop requests, heater
+auto, no bank-off request, and visible partial failures. No live notebook execution.
 
 ## G. A small PCB power convenience method
 
-Proposed new host API, subject to approval:
+Status: approved; implementation pending.
+
+Approved new host API:
 
 ```python
 pcb.laser_bank_power_mw(names: Sequence[str] | None = None) -> float
@@ -207,23 +209,39 @@ zero/off, invalid readings, empty selection, duplicate/unknown names and failure
 Document these semantics alongside existing host methods. No permanent test
 framework is proposed.
 
-## H. Correct the engineering thermistor unit label
+## H. Synchronize thermistor coefficients in datasheet units
 
-The existing engineering `ntc_t_coeff` is populated from the controller's B25/100
-readback, while the similarly named diode property uses a coefficient per °C.
-Propose replacing only the engineering field with `ntc_b25_100_k`, updating its
-Python dataclass, serializer, docs and consumers together. Leave the diode
-property's per-°C coefficient as a separate quantity. No alias or register write.
-This is a naming/schema change requiring approval; it can be deferred without
-blocking the heater patch or the report.
+Status: approved; implementation pending.
 
-Verification: search all consumers, confirm archived engineering readback units
-against the driver, and use a temporary parsing check. Do not rewrite archives.
+Use `ntc_coeff_pct_per_c` (%/°C at 25°C) for both configured settings and engineering
+readback. Remove old spellings without aliases. Convert internally using
+`alpha_pct = -100 * B / 298.15²`; writes round B to integer kelvin and normalize the
+accepted coefficient to the representable value. Reject invalid/nonrepresentable values.
+
+Put archived B=3988 equivalents (−4.486271 %/°C) in every diode-property row, with
+comments identifying the observed controller default, datasheet and unit report values
+(or missing coefficient). Readbacks are settings, not measured thermistor calibration.
+PCB settings own this value and persistence. A small per-channel NVS record preserves
+existing policy/calibration records. Use existing stop-before-update and profile
+preparation: synchronize alongside other parameters at the first explicit start after
+bank power-up and on explicit driver-backed settings updates, not at MCU startup.
+No new driver EEPROM save operation or raw-B host representation.
+
+Extend the thermal comparison and replacement-diode procedure in the result report;
+refresh the uncommitted presentation. Compare compiled values, archive readbacks,
+datasheets and unit reports with source/qualification. Cover coefficient/R25,
+limits and PID differences without automatically changing ranges, PID or current
+limits. Explain relative-probe versus independently referenced calibration options
+and why B adjustment cannot independently correct R25/offset. No QE or optical-power
+coefficient edits or new discussion are included.
+
+Verification: conversion/quantization, validation, persistence/reset, programming
+order/failures, API parsing and payload size; build; archive/source checks and visual
+presentation review. Raw captures stay unchanged.
 
 ## Approval and validation boundary
 
-Approve items individually (including C2 separately), or select a subset.
-All remain unimplemented. Each approved item should be a bounded patch with
-updated documentation and relevant temporary checks. Live commissioning,
-flashing, diode settings writes, and automated target ramps are separate actions
-and are not implied by accepting this document.
+A–H are approved for implementation, one coherent commit each; C includes C2.
+Each commit updates its documentation and uses temporary task-specific verification.
+Live commissioning, flashing, controller writes during this development session,
+and automated ramps remain separate actions. The presentation remains uncommitted.

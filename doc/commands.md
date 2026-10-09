@@ -899,6 +899,14 @@ these values feed the existing throughput and splitting calculations.
   are clamped by the TEC temperature range and allowed current adjustment.
 
 
+Laser errors include channel identity, requested operation, return code and available
+failure-stage/controller evidence in the existing `error` text. Controller lock
+bits are observations, not proof of a particular transient; TEC limits can block
+both too-cold and too-hot operation. No additional reads are made for diagnostics.
+The standard busy response, error fields and warning codes remain unchanged.
+Python `HispecFibPCBError` text includes topic and available `rc`; `.topic` and
+`.response` retain the original structured diagnostics.
+
 For an already emitting laser with valid preparation, level changes write only
 required current/TEC setpoints. Startup and invalidated preparation retain the
 full identity/profile/control sequence. Failed control operations or confirmed

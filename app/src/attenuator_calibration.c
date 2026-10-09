@@ -634,7 +634,7 @@ static void auto_error_locked(int error)
 	/* Acquisition faults stop the calibration-owned source. A failed stop
 	 * leaves its identity available for the user's explicit stop/restart.
 	 */
-	cal.shutdown_pending = hispec_laser_stop_output(cal.laser, false) != 0;
+	cal.shutdown_pending = hispec_laser_stop_output(cal.laser, false, NULL) != 0;
 	atten_cal_emit_simple("error");
 }
 
@@ -646,7 +646,7 @@ static bool auto_set_laser_level_locked(uint8_t level_index)
 	}
 	cal.laser_level_index = level_index;
 	cal.laser_percent = initial_laser_levels_pct[level_index];
-	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U, true) != 0) {
+	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U, true, NULL) != 0) {
 		auto_error_locked(-EIO);
 		return false;
 	}
@@ -804,7 +804,7 @@ static void auto_finish_physical_locked(void)
 		auto_start_next_physical_locked();
 		return;
 	}
-	int rc = hispec_laser_stop_output(cal.laser, false);
+	int rc = hispec_laser_stop_output(cal.laser, false, NULL);
 	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	if (rc != 0) {
 		/* Preserve the data and shutdown responsibility without retrying STOP. */
@@ -2129,7 +2129,7 @@ int attenuator_calibration_start_auto(
 	replacing = cal.state == ATTEN_CAL_STATE_RUNNING;
 	cancel_fit_locked();
 	if (cal.shutdown_pending) {
-		rc = hispec_laser_stop_output(cal.laser, false);
+		rc = hispec_laser_stop_output(cal.laser, false, NULL);
 		if (rc != 0) {
 			publish_status_locked(status);
 			k_mutex_unlock(&cal_lock);
@@ -2143,7 +2143,7 @@ int attenuator_calibration_start_auto(
 		 * Retain that identity if shutdown fails; do not start a second source.
 		 */
 		if (cal.laser != request->laser) {
-			rc = hispec_laser_stop_output(cal.laser, false);
+			rc = hispec_laser_stop_output(cal.laser, false, NULL);
 			if (rc != 0) {
 				cal.shutdown_pending = true;
 				cal.state = ATTEN_CAL_STATE_ERROR;
@@ -2216,7 +2216,7 @@ int attenuator_calibration_start_auto(
 		goto failed_start;
 	}
 
-	rc = hispec_laser_stop_output(request->laser, false);
+	rc = hispec_laser_stop_output(request->laser, false, NULL);
 	if (rc != 0) {
 		stop_failed = true;
 		goto failed_start;
@@ -2238,7 +2238,7 @@ failed_start:
 	/* No retry of a failed stop here. Earlier setup failures still release a
 	 * possibly emitting source, then keep any failed shutdown for explicit retry.
 	 */
-	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false) != 0;
+	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false, NULL) != 0;
 	atten_cal_emit_simple("error");
 	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
@@ -2253,7 +2253,7 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 	if (cal.state == ATTEN_CAL_STATE_RUNNING || cal.shutdown_pending) {
 		cal.phase = ATTEN_CAL_PHASE_NONE;
 		housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
-		int rc = hispec_laser_stop_output(cal.laser, false);
+		int rc = hispec_laser_stop_output(cal.laser, false, NULL);
 		cal.shutdown_pending = rc != 0;
 		if (rc != 0) {
 			cal.state = ATTEN_CAL_STATE_ERROR;

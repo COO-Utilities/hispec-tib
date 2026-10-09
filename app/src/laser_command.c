@@ -45,6 +45,16 @@ static int laser_cmd_error_rc(struct coo_cmd_response *out,
 	return coo_cmd_error_rc(out, cmd, msg, rc);
 }
 
+static int laser_cmd_failure(struct coo_cmd_response *out,
+	const struct coo_cmd_request *cmd, enum hispec_laser_id id,
+	const char *operation, int rc, const struct hispec_laser_diagnostics *diagnostics)
+{
+	char message[256];
+	if (rc == -EBUSY) return coo_cmd_busy_response(out, cmd);
+	hispec_laser_format_failure(message, sizeof(message), id, operation, rc, diagnostics);
+	return coo_cmd_error_rc(out, cmd, message, rc);
+}
+
 static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
 					 const char *key,
 					 const struct coo_json_string_choice *choices,
@@ -339,7 +349,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	rc = hispec_laser_get_status(id, false, &status);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser status failed", rc);
+		return laser_cmd_failure(out, cmd, id, "status read", rc, NULL);
 	}
 	if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
 		return coo_cmd_error(out, cmd, "laser response too large");
@@ -349,6 +359,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
@@ -369,7 +380,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "value must be 0..1; stop requires zero or omitted value");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
-	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	autooff_s = settings.autooff_s;
 	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
 	    (stop && autooff_present)) {
@@ -378,14 +389,14 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	throughput_monitor_note_laser_changed(id, false);
 	if (stop) {
-		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff);
+		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, &diagnostics);
 	} else if (value == 0.0 && !autooff_present) {
 		/* A momentary zero level preserves the existing shutdown deadline. */
-		rc = hispec_laser_set_current_ma(id, 0.0);
+		rc = hispec_laser_set_current_ma(id, 0.0, &diagnostics);
 	} else {
-		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true);
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, &diagnostics);
 	}
-	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser operation failed", rc);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : value == 0.0 ? "zero current" : "set level/start", rc, &diagnostics);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -407,6 +418,7 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 
 int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	char name[16] = {0};
 	double delta_nm = 0.0;
@@ -421,9 +433,9 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 		return coo_cmd_error(out, cmd, "missing or invalid tune_nm");
 	}
 	throughput_monitor_note_laser_changed(id, true);
-	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
+	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true, &diagnostics);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser tune failed", rc);
+		return laser_cmd_failure(out, cmd, id, "set tune", rc, &diagnostics);
 	}
 	return coo_cmd_ok(out, cmd);
 }
@@ -499,7 +511,7 @@ int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+		return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	}
 	if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
 		return coo_cmd_error(out, cmd, "laser settings response too large");
@@ -624,6 +636,7 @@ static int laser_parse_settings_update(const char *json,
 
 int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	struct hispec_laser_diagnostics diagnostics = {0};
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
@@ -638,7 +651,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+		return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	}
 
 	rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
@@ -664,9 +677,9 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
 	}
 
-	rc = throughput_monitor_update_laser_settings(id, &settings, persist);
+	rc = throughput_monitor_update_laser_settings(id, &settings, persist, &diagnostics);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
+		return laser_cmd_failure(out, cmd, id, "update settings", rc, &diagnostics);
 	}
 	return coo_cmd_ok(out, cmd);
 }
@@ -697,7 +710,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 
 	rc = hispec_laser_get_status(id, true, &s);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
+		return laser_cmd_failure(out, cmd, id, "engineering status read", rc, NULL);
 	}
 	if (coo_json_append(payload, sizeof(payload), &off,
 			    "{\"name\":\"%s\",\"read_rc\":%d,\"powered\":%s,"

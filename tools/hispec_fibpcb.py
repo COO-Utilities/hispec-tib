@@ -3432,7 +3432,10 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
         return CommandOk()
     data = _loads(payload)
     if isinstance(data, Mapping) and "error" in data and not _is_atten_cal_status(data):
-        raise HispecFibPCBError(str(data["error"]), topic=topic, response=_to_object(data))
+        message = f"{topic}: {data['error']}"
+        if "rc" in data:
+            message += f" (rc={data['rc']})"
+        raise HispecFibPCBError(message, topic=topic, response=_to_object(data))
     if data == {"status": "ok"}:
         return CommandOk()
     return data

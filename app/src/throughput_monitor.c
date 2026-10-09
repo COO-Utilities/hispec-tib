@@ -165,7 +165,7 @@ static int stop_locked(enum photodiode_channel channel)
 	state->phase = TP_INACTIVE;
 	state->autolevel = false;
 	if (state->stop_laser) {
-		int rc = hispec_laser_stop_output(state->laser, false);
+		int rc = hispec_laser_stop_output(state->laser, false, NULL);
 
 		if (rc != 0) {
 			LOG_ERR("Throughput stopped; laser %s shutdown failed (%d), retry stop",
@@ -335,7 +335,7 @@ static int autolevel_adjust(struct throughput_state *state,
 		}
 		double percent = MIN(100.0, 100.0 * (next_ma - props->threshold_current_ma) /
 			(props->nominal_current_ma - props->threshold_current_ma));
-		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false);
+		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false, NULL);
 		if (rc != 0) {
 			return rc;
 		}
@@ -590,7 +590,7 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	monitors[channel].phase = TP_PREPARING;
 	monitors[channel].autolevel = false;
 	if (stop_previous) {
-		rc = hispec_laser_stop_output(monitors[channel].laser, false);
+		rc = hispec_laser_stop_output(monitors[channel].laser, false, NULL);
 		if (rc != 0) {
 			/* Keep failed shutdown responsibility for a later explicit stop. */
 			housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
@@ -670,7 +670,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		if (rc == 0) {
 			stage = "initial laser current";
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false);
+				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false, NULL);
 		}
 		if (rc != 0) {
 			goto failed;
@@ -785,7 +785,7 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop
 }
 
 int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
-	const struct app_laser_channel_settings *settings, bool persist)
+	const struct app_laser_channel_settings *settings, bool persist, struct hispec_laser_diagnostics *diagnostics)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
@@ -795,7 +795,7 @@ int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
 			monitors[i].autolevel = false;
 		}
 	}
-	int rc = hispec_laser_update_channel_settings(laser, settings, persist);
+	int rc = hispec_laser_update_channel_settings(laser, settings, persist, diagnostics);
 	if (rc == 0) {
 		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			if (monitors[i].has_laser && monitors[i].laser == laser) {
