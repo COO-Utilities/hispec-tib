@@ -145,7 +145,7 @@ heater diagram, command docs, notebook guidance and Python docstring together.
 
 ## E. Use idle probes for `temps().laserbank_c`
 
-Status: approved; implementation pending.
+Status: implemented; offline verification recorded in commit.
 
 Owners: the existing temperature command and its direct temperature-read owner.
 

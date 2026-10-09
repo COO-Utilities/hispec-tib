@@ -4224,6 +4224,12 @@ class HispecFibPcb:
         return result
 
     def temps(self) -> TempsStatus:
+        """Fresh temperatures without enabling bank power.
+
+        laserbank_c averages valid idle TEC probes only; it is None if the bank
+        is off, all TECs are active or no idle reading is usable. Individual
+        temperatures include active TECs. This does not use the heater cache.
+        """
         data = self._request_json("temps")
         return TempsStatus(
             ambient_c=data.get("ambient_c"),

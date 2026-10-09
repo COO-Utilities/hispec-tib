@@ -331,8 +331,13 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 
 - **Notes:** Laser diode TEC temperatures are included when the laser bank is powered and the relevant driver registers
-  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is the average of valid laser TEC
-  temperatures. On TIB, if the shared Maiman Modbus bus is busy, this command
+  can be read. Unavailable values are returned as JSON `null`. `laserbank_c` is
+  the mean of valid idle probes whose TEC is stopped; actively regulated TEC
+  temperatures are excluded. It is `null` when every TEC is active, the bank is
+  off, or no valid idle probe exists. Individual readings include active TECs.
+  This remains a fresh foreground read, not the heater cache, and does not power
+  the bank. For example, an idle probe at 19 C and an active TEC at 25 C give
+  `laserbank_c:19`, while both individual readings remain present. On TIB, if the shared Maiman Modbus bus is busy, this command
   returns `{"error":"busy"}` instead of an ambient-only partial response.
 
 (time)=

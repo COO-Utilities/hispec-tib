@@ -1229,7 +1229,7 @@ int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
         }
         if (laser_rc == 0) {
             for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-                if (channel_temp[i].valid) {
+                if (channel_temp[i].valid && !channel_temp[i].tec_enabled) {
                     bank_sum += (double)channel_temp[i].tec_temperature_c;
                     bank_count++;
                 }
