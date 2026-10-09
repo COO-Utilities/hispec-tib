@@ -24,8 +24,10 @@
 
 LOG_MODULE_REGISTER(laserbank_tempcontrol, LOG_LEVEL_INF);
 
-#define LASERBANK_WARM_MIN_C 15.0
-#define LASERBANK_COLD_OFF_C 20.0
+#define LASERBANK_WARM_MIN_C 19.0
+#define LASERBANK_COLD_OFF_C 21.0
+/* Preserve the existing no-probe fallback independently of the idle-probe band. */
+#define LASERBANK_PROBE_WAKE_AMBIENT_C 15.0
 
 struct laserbank_cached_channel {
 	bool valid;
@@ -136,21 +138,15 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 	return 0;
 }
 
-static void summarize_temperature_state(const struct housekeeping_temperature_status *ambient,
-					int64_t now_ms)
+static void summarize_temperature_state(int64_t now_ms)
 {
 	bool all_enabled = true;
 	bool have_fresh_temp = false;
 	uint8_t idle_count = 0U;
+	bool all_idle_warm = true;
 	double idle_sum_c = 0.0;
-	double off_threshold = LASERBANK_COLD_OFF_C;
 
-	control.status.any_disabled_below_15c = false;
-	control.status.any_disabled_above_off_threshold = false;
-
-	if (ambient != NULL && ambient->valid && ambient->ambient_c > LASERBANK_WARM_MIN_C) {
-		off_threshold = LASERBANK_WARM_MIN_C;
-	}
+	control.status.any_disabled_below_on_threshold = false;
 
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
 		struct laserbank_cached_channel *channel = &control.channel[i];
@@ -166,10 +162,12 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 			idle_count++;
 			idle_sum_c += channel->tec_temperature_c;
 			if (channel->tec_temperature_c < LASERBANK_WARM_MIN_C) {
-				control.status.any_disabled_below_15c = true;
+				control.status.any_disabled_below_on_threshold = true;
 			}
-			if (channel->tec_temperature_c > off_threshold) {
-				control.status.any_disabled_above_off_threshold = true;
+			/* A warmer probe must not end heating before the coldest idle
+			 * diode has crossed the upper threshold. Stale probes are excluded. */
+			if (channel->tec_temperature_c <= LASERBANK_COLD_OFF_C) {
+				all_idle_warm = false;
 			}
 		}
 	}
@@ -189,6 +187,7 @@ static void summarize_temperature_state(const struct housekeeping_temperature_st
 
 	control.status.waiting_for_temps = !have_fresh_temp;
 	control.status.idle_tec_temp_count = idle_count;
+	control.status.all_disabled_above_off_threshold = idle_count > 0U && all_idle_warm;
 	control.status.idle_tec_temp_avg_c =
 		idle_count > 0U ? idle_sum_c / (double)idle_count : (double)NAN;
 }
@@ -301,7 +300,7 @@ static void run_heater_control_cycle(void)
 	if (rc == -EBUSY) {
 		(void)housekeeping_power_get_confirmed(HOUSEKEEPING_POWER_BANK_HEATER,
 					     &control.status.heater_on);
-		summarize_temperature_state(&ambient, now_ms);
+		summarize_temperature_state(now_ms);
 		k_mutex_unlock(&control_lock);
 		return;
 	}
@@ -324,12 +323,12 @@ static void run_heater_control_cycle(void)
 	(void)housekeeping_power_get_confirmed(HOUSEKEEPING_POWER_BANK_HEATER,
 				     &control.status.heater_on);
 
-	summarize_temperature_state(&ambient, now_ms);
+	summarize_temperature_state(now_ms);
 	all_stale = control.status.waiting_for_temps;
 	k_mutex_unlock(&control_lock);
 
 	if (all_stale) {
-		if (ambient.valid && ambient.ambient_c < LASERBANK_WARM_MIN_C) {
+		if (ambient.valid && ambient.ambient_c < LASERBANK_PROBE_WAKE_AMBIENT_C) {
 			(void)hispec_laser_bank_power_set(true, NULL);
 		} else {
 			apply_heater(false);
@@ -338,10 +337,10 @@ static void run_heater_control_cycle(void)
 	}
 
 	k_mutex_lock(&control_lock, K_FOREVER);
-	if (control.status.any_disabled_below_15c) {
+	if (control.status.any_disabled_below_on_threshold) {
 		k_mutex_unlock(&control_lock);
 		apply_heater(true);
-	} else if (control.status.any_disabled_above_off_threshold ||
+	} else if (control.status.all_disabled_above_off_threshold ||
 		   (control.status.all_tecs_enabled &&
 		    control.status.all_tecs_enabled_ms >=
 			    LASERBANK_TEMPCONTROL_POLL_INTERVAL_MS)) {

@@ -506,12 +506,14 @@ flowchart TD
   PowerBank --> ReadTemps
   ReadTemps --> Cache[refresh per-laser temperature cache]
   Cache --> Summarize[summarize idle TEC probes and heater state]
-  Summarize --> AllStaleCold{all stale and ambient below warm minimum}
-  AllStaleCold -- yes --> KeepPower[best-effort bank power on]
-  AllStaleCold -- no --> HeaterPolicy
-  KeepPower --> HeaterPolicy{heater policy}
-  HeaterPolicy -- any disabled below 15 C --> HeaterOn[set heater on]
-  HeaterPolicy -- disabled above threshold --> HeaterOff[set heater off]
+  Summarize --> AllStale{all temperatures stale}
+  AllStale -- yes --> AmbientCold{valid ambient below 15 C}
+  AmbientCold -- yes --> KeepPower[best-effort bank power on]
+  AmbientCold -- no --> HeaterOff[set heater off]
+  KeepPower --> Wait
+  AllStale -- no --> HeaterPolicy{heater policy}
+  HeaterPolicy -- any fresh idle probe below 19 C --> HeaterOn[set heater on]
+  HeaterPolicy -- all fresh idle probes above 21 C --> HeaterOff
   HeaterPolicy -- all TECs enabled long enough --> HeaterOff
   HeaterPolicy -- otherwise --> Wait
   HeaterOn --> Wait

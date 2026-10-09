@@ -149,10 +149,10 @@ static const char *laserbank_tempcontrol_auto_state(
 	if (status->waiting_for_temps) {
 		return "waiting_for_temps";
 	}
-	if (status->any_disabled_below_15c) {
+	if (status->any_disabled_below_on_threshold) {
 		return "warming_disabled_tec";
 	}
-	if (status->any_disabled_above_off_threshold) {
+	if (status->all_disabled_above_off_threshold) {
 		return "disabled_tec_warm";
 	}
 	if (status->all_tecs_enabled) {

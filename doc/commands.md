@@ -1167,16 +1167,19 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
   `auto_state` summarizes the internal policy state without exposing the
   control-loop booleans: `waiting_for_temps` means no fresh driver
   temperatures are available; `warming_disabled_tec` means at least one idle TEC
-  probe is below the heater-on threshold; `disabled_tec_warm` means at least one
-  idle TEC probe is warm enough for heater turnoff; `tecs_running` means all
+  probe is below 19 C; `disabled_tec_warm` means every fresh idle TEC probe
+  is above 21 C, allowing heater turnoff; `tecs_running` means all
   driver TECs are enabled; `holding` means no heater state change was requested
   in the latest loop. `idle_tec_temps` counts fresh driver temperature readings
   whose TEC is not started, and `idle_tec_avg_c` averages only those readings;
   actively controlled TEC temperatures remain laser telemetry and are not used
   for this aggregate. `ambient_c` and `idle_tec_avg_c` are `null` when
   unavailable. `poll_age_s` is an integer age in seconds or `null` before the
-  first poll. The off threshold is 15 C when ambient is valid and above 15 C,
-  otherwise 20 C. If all laser temperatures are stale, auto mode turns the
+  first poll. The heater turns on below 19 C and off only when all fresh idle
+  probes exceed 21 C, retaining its previous state between these thresholds.
+  This band is independent of ambient temperature. Stale probes do not contribute
+  to either threshold decision; partial coverage cannot establish that every diode
+  is warm. If all laser temperatures are stale, auto mode turns the
   heater off when ambient is invalid or at least 15 C. When valid ambient is
   below 15 C, auto mode powers the bank so driver
   temperature monitors can initialize and leaves heater state unchanged until

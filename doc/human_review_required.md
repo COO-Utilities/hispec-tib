@@ -9,6 +9,12 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Validate the freezer-test heater band on hardware: heater on below 19 C
+  at any fresh idle probe, off only when all fresh idle probes exceed 21 C.
+  Measure minimum temperature after turn-on, duty, and relay cycling at -10 C
+  and 0 C, with a -15 C capacity check. Archived captures used the old 15/20 C
+  policy; predictions do not validate the new band. Preserve the existing
+  all-TECs-active shutoff, override behavior, and 15 C no-probe ambient fallback.
 - [ ] After flashing the FPU/runtime-float and priority changes, measure DWT
   call durations and stack margins; stacks have not been reduced. Verify MEMS 0
   splitter toggle/cleanup timing, PD 1 cadence and Modbus/system 2 completion

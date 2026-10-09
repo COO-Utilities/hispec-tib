@@ -4487,6 +4487,12 @@ class HispecFibPcb:
         return _dataclass_from(LaserBankPower, self._request_json(f"laser/bankpower/{mode}"))
 
     def laser_bankheater(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankHeater:
+        """Read cached heater state or set its persisted mode.
+
+        Auto heats if any fresh idle TEC probe is below 19 C and stops once all
+        fresh idle probes exceed 21 C. Active TECs are excluded. All-active and
+        missing-probe behavior are described in doc/commands.md.
+        """
         if mode is None:
             return _dataclass_from(LaserBankHeater, self._request_json("laser/bankheater"))
         _require_choice("mode", mode, OVERRIDE_MODES)

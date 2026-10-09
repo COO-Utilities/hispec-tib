@@ -31,8 +31,8 @@ struct laserbank_tempcontrol_status {
 	uint8_t idle_tec_temp_count;
 	double idle_tec_temp_avg_c;
 	bool waiting_for_temps;
-	bool any_disabled_below_15c;
-	bool any_disabled_above_off_threshold;
+	bool any_disabled_below_on_threshold;
+	bool all_disabled_above_off_threshold;
 	bool all_tecs_enabled;
 	uint32_t all_tecs_enabled_ms;
 	int last_error;
