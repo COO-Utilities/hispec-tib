@@ -315,8 +315,14 @@ failed control enters the fault path. A successful STOP confirms stopped state,
 while a zero-current write preserves unconfirmed or faulted state while powered.
 Autolevel and calibration still require healthy, confirmed emission.
 
-The existing laser auto-off work probes the checked TEC-state register of started (including zero-current)
-channels once per second, including channels whose shutdown failed. It does not
+The existing laser auto-off work reads checked TEC and LD operation-state registers
+of established started channels (including zero current) once per second, including
+channels whose shutdown failed. A nonblocking bus attempt and a second eligibility
+check prevent added reads of inactive or concurrently stopped channels. A positive
+unexpected stop latches the existing fault and emits its one-shot warning; no restart
+is attempted. Foreground status and heater temperature observations use the same
+component-stop accounting: only confirmed stopped components end their counters,
+while failed reads retain accounting, setpoints, deadlines and shutdown ownership. It does not
 depend on heater mode, setpoint changes, or the 20 Hz measurement loop. Heater
 control retains its ten-second cadence. Housekeeping's existing ambient work
 reads the DS2408 port once per second and publishes all three logical outputs.

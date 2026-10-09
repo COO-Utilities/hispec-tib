@@ -176,3 +176,10 @@ observations. Its four values are documented in commands.md. It does not clear
 the existing control-fault latch or gate throughput/dark acquisition. Internal
 stop intent distinguishes an observed stop after a failed intentional shutdown
 from an autonomous stop after established nonzero operation. No extra reads.
+
+The existing one-second auto-off worker now reads LD operation state as well as
+TEC state during its eligible nonblocking checks. Foreground status, temperature
+polls and background observations share confirmed-stop accounting. Each positive
+component stop freezes its own accumulated on-time; failed component reads leave
+that component's counter unchanged. This does not persist/reset the current runtime,
+erase setpoints, release deadlines, restart output or add a post-START wait.

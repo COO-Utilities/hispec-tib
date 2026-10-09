@@ -914,6 +914,13 @@ these values feed the existing throughput and splitting calculations.
   are clamped by the TEC temperature range and allowed current adjustment.
 
 
+The existing background check observes both LD and TEC state during established
+operation. A confirmed unexpected stop latches the existing warning/fault; no
+automatic restart is attempted. Component on-time counters stop on positive
+stopped readback, including foreground status and temperature observations.
+Unavailable reads do not establish shutdown; requested setpoints and shutdown
+deadlines remain retained until the existing explicit shutdown/recovery paths.
+
 Laser errors include channel identity, requested operation, return code and available
 failure-stage/controller evidence in the existing `error` text. Controller lock
 bits are observations, not proof of a particular transient; TEC limits can block

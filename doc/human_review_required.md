@@ -9,6 +9,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate LD-only/TEC-only autonomous-stop detection and counter
+  freezing in the existing auto-off worker. Check shared-bus timing/contention,
+  failed/partial reads and foreground STOP races; no automatic restart was added.
+  Temporary worker/counter cases and the Nucleo build pass offline.
 - [ ] Validate freezer-follow-up output state/readiness on hardware: intentional
   zero/STOP versus autonomous LD stop, recovered locks with stopped_fault, and
   ambiguous writes with unknown. Public readiness no longer requires manual TEC

@@ -93,7 +93,7 @@ history, autonomous stop, ambiguous writes, explicit recovery and payload size.
 
 ## C. Detect an LD-only stop in the existing background check
 
-Status: approved; implementation pending.
+Status: implemented, including C2; offline verification recorded in commit.
 
 Owner: the existing laser auto-off worker in `lasers.c`.
 
