@@ -453,9 +453,17 @@ class RouteLoss(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class LaserStatus(ResponseRepr):
+    """Public-start readiness and observed/acknowledged output abstraction.
+
+    Zero-current and full STOP are both stopped. Running is not an optical
+    measurement; i_mA and power_mw remain setpoint/model estimates. A historical
+    unexpected stop can coexist with ready=True and blocked_reason=None.
+    """
+
     name: str
     powered: bool
     ready: bool
+    output_state: Literal["stopped", "running", "stopped_fault", "unknown"]
     blocked_reason: str | None
     tec_on_s: int | None
     emit_on_s: int | None

@@ -9,6 +9,10 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Validate freezer-follow-up output state/readiness on hardware: intentional
+  zero/STOP versus autonomous LD stop, recovered locks with stopped_fault, and
+  ambiguous writes with unknown. Public readiness no longer requires manual TEC
+  preparation or clearing a recoverable historical fault. Offline checks/build pass.
 - [ ] Validate the freezer-test heater band on hardware: heater on below 19 C
   at any fresh idle probe, off only when all fresh idle probes exceed 21 C.
   Measure minimum temperature after turn-on, duty, and relay cycling at -10 C

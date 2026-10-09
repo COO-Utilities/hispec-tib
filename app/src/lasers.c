@@ -63,6 +63,17 @@ enum laser_control_state {
 	LASER_CONTROL_FAULT,
 };
 
+enum laser_output_state {
+	LASER_OUTPUT_STOPPED,
+	LASER_OUTPUT_RUNNING,
+	LASER_OUTPUT_STOPPED_FAULT,
+	LASER_OUTPUT_UNKNOWN,
+};
+
+static const char *const laser_output_state_names[] = {
+	"stopped", "running", "stopped_fault", "unknown",
+};
+
 struct laser_output_estimate_state {
 	double current_ma;
 	double tec_temperature_c;
@@ -77,6 +88,8 @@ struct laser_output_estimate_state {
 	uint16_t device_id;
 	uint16_t serial;
 	bool started; /* Separate from nonzero-current emission accounting. */
+	enum laser_output_state output_state;
+	bool output_stop_requested; /* Distinguish a failed intentional stop from an autonomous stop. */
 };
 
 // TODO remove all "hispec_" fromm this file, identify and carry out consolidation with overlapping non underscore names
@@ -199,6 +212,9 @@ static void output_estimate_set_locked(enum hispec_laser_id id,
 	laser_output_estimate[id].current_ma = current_ma;
 	laser_output_estimate[id].tec_temperature_c = tec_temperature_c;
 	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
+	laser_output_estimate[id].output_state = current_ma > 0.0 ?
+		LASER_OUTPUT_RUNNING : LASER_OUTPUT_STOPPED;
+	laser_output_estimate[id].output_stop_requested = current_ma == 0.0;
 	/* This helper publishes a completed control operation. Install its grace
 	 * atomically with emission state so a reader cannot see new current with
 	 * an old/zero response deadline before transport accounting runs.
@@ -471,6 +487,8 @@ static void commit_current_runtime_locked(enum hispec_laser_id id, bool persist)
 	laser_output_estimate[id].current_ma = 0.0;
 	laser_output_estimate[id].control = LASER_CONTROL_CONFIRMED;
 	laser_output_estimate[id].started = false;
+	laser_output_estimate[id].output_state = LASER_OUTPUT_STOPPED;
+	laser_output_estimate[id].output_stop_requested = true;
 	laser_autooff_deadline_ms[id] = LASER_AUTOFF_NO_DEADLINE;
 	laser_current_runtime[id].active = false;
 	laser_current_runtime[id].started_ms = 0;
@@ -683,6 +701,8 @@ static int bank_power_set_locked(bool enabled, bool *transitioned, bool force_wr
 		laser_output_estimate[i].device_id = 0;
 		laser_output_estimate[i].serial = 0;
 		laser_output_estimate[i].started = false;
+		laser_output_estimate[i].output_state = enabled ? LASER_OUTPUT_UNKNOWN : LASER_OUTPUT_STOPPED;
+		laser_output_estimate[i].output_stop_requested = !enabled;
 		laser_output_estimate[i].control = enabled ?
 			LASER_CONTROL_UNCONFIRMED : LASER_CONTROL_CONFIRMED;
 		if (!enabled) {
@@ -1080,20 +1100,14 @@ static uint16_t effective_blocking_lock_status(uint16_t lock_status,
 	return blocking;
 }
 
-static const char *laser_blocked_reason(bool bank_powered,
-					bool serial_matches,
-					uint16_t device_state,
-					uint16_t tec_state,
+static const char *laser_blocked_reason(bool bank_blocked, bool serial_matches,
 					uint16_t blocking_lock_status)
 {
-	if (!bank_powered) {
+	if (bank_blocked) {
 		return "bank_off";
 	}
 	if (!serial_matches) {
 		return "driver_identity_mismatch";
-	}
-	if ((tec_state & TEC_OPERATION_STATE_STARTED) == 0U) {
-		return "tec_not_started";
 	}
 	if ((blocking_lock_status & LOCK_STATE_LD_OVERCURRENT) != 0U) {
 		return "ld_overcurrent";
@@ -1434,6 +1448,28 @@ static int prepare_to_operate_locked(const struct hispec_laser_driver_profile *p
 	return 0;
 }
 
+/* Caller holds io_lock. Confirmed LD-off establishes an output stop; a
+ * controller that remains enabled at acknowledged zero current is also stopped
+ * to the public API. No state observation clears the safety/control latch.
+ */
+static void observe_output_locked(enum hispec_laser_id id, bool operation_started)
+{
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	struct laser_output_estimate_state *state = &laser_output_estimate[id];
+	if (!operation_started) {
+		bool unexpected = !state->output_stop_requested &&
+			(state->output_state == LASER_OUTPUT_RUNNING ||
+			 state->output_state == LASER_OUTPUT_STOPPED_FAULT || laser_current_runtime[id].active);
+		state->output_state = unexpected ? LASER_OUTPUT_STOPPED_FAULT : LASER_OUTPUT_STOPPED;
+	} else if (state->output_state == LASER_OUTPUT_STOPPED_FAULT) {
+		state->output_state = LASER_OUTPUT_UNKNOWN;
+	} else if (state->output_state == LASER_OUTPUT_UNKNOWN &&
+		   state->control == LASER_CONTROL_CONFIRMED && laser_current_runtime[id].active) {
+		state->output_state = LASER_OUTPUT_RUNNING;
+	}
+	k_mutex_unlock(&laser_state_lock);
+}
+
 static void status_defaults(const struct hispec_laser_driver_profile *profile,
 			    struct hispec_laser_status *out)
 {
@@ -1442,6 +1478,7 @@ static void status_defaults(const struct hispec_laser_driver_profile *profile,
 	out->name = profile->name;
 	out->properties = *profile->properties;
 	out->expected_device_id = profile->expected_device_id;
+	out->output_state = "unknown";
 	out->current_set_ma = LASERPROP_NA;
 	out->level_percent = LASERPROP_NA;
 	out->current_measured_ma = LASERPROP_NA;
@@ -1516,7 +1553,10 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 	}
 	out->bank_powered = bank_power_requested_enabled;
 	if (!out->bank_powered) {
-		out->blocked_reason = laser_blocked_reason(false, true, 0U, 0U, 0U);
+		out->blocked_reason = laser_blocked_reason(
+			bank_power_mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF, true, 0U);
+		out->ready_to_operate = out->blocked_reason == NULL;
+		out->output_state = "stopped";
 		rc = 0;
 		goto out_unlock;
 	}
@@ -1586,13 +1626,16 @@ int hispec_laser_get_status(enum hispec_laser_id id, bool engineering, struct hi
 		};
 		invalidate_output_locked(id, &diagnostics);
 	}
-	out->ready_to_operate = !drv.io_failed && out->serial_matches && out->tec_started &&
-				out->blocking_lock_status == 0U;
-	out->blocked_reason = laser_blocked_reason(out->bank_powered,
-						   out->serial_matches,
-						   out->device_state,
-						   out->tec_state,
-						   out->blocking_lock_status);
+	/* Unprepared start programs DENY_INTERLOCK before checking locks. TEC
+	 * startup and automatic bank power are likewise handled by the endpoint.
+	 */
+	uint16_t start_locks = out->blocking_lock_status;
+	if (!laser_output_estimate[id].prepared) start_locks &= (uint16_t)~LOCK_STATE_INTERLOCK;
+	out->blocked_reason = laser_blocked_reason(
+		bank_power_mode == HISPEC_LASER_BANK_POWER_OVERRIDE_OFF, out->serial_matches, start_locks);
+	out->ready_to_operate = !drv.io_failed && out->blocked_reason == NULL;
+	if (!drv.io_failed) observe_output_locked(id, out->operation_started);
+	out->output_state = laser_output_state_names[laser_output_estimate[id].output_state];
 
 	out->current_set_ma = laser_output_estimate[id].current_ma;
 	out->tec_temperature_set_c = laser_output_estimate[id].tec_temperature_c;
@@ -1652,6 +1695,9 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 	maiman_init(&drv, profile->node_id);
 	struct laser_output_estimate_state *state = &laser_output_estimate[profile->id];
 	LOG_DBG("Laser %s stop started=%u control=%u stop_tec=%u", profile->name, state->started, state->control, stop_tec);
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	state->output_stop_requested = true;
+	k_mutex_unlock(&laser_state_lock);
 	bool changing = state->started || state->control != LASER_CONTROL_CONFIRMED ||
 		state->current_ma != 0.0 || (stop_tec && laser_tec_runtime[profile->id].active);
 	if (changing) photodiode_noise_change_begin();
@@ -1661,9 +1707,13 @@ static int stop_output_locked(const struct hispec_laser_driver_profile *profile,
 			on_time_runtime_update_locked(laser_current_runtime, ARRAY_SIZE(laser_current_runtime), profile->id, false);
 			k_mutex_lock(&laser_state_lock, K_FOREVER);
 			state->current_ma = 0.0;
+			state->output_state = LASER_OUTPUT_STOPPED;
 			k_mutex_unlock(&laser_state_lock);
 		}
 		bool stopped = maiman_stop_device(&drv);
+		k_mutex_lock(&laser_state_lock, K_FOREVER);
+		state->output_state = zeroed || stopped ? LASER_OUTPUT_STOPPED : LASER_OUTPUT_UNKNOWN;
+		k_mutex_unlock(&laser_state_lock);
 		if (!zeroed || !stopped) {
 			photodiode_noise_change_end();
 			laser_note_communication_locked(profile->id, &drv);
@@ -1751,6 +1801,9 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, stru
 		return -ERANGE;
 	}
 	current_ma = hispec_laser_quantize_current_ma(current_ma, 0.0, props->max_current_ma);
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	laser_output_estimate[id].output_stop_requested = current_ma == 0.0;
+	k_mutex_unlock(&laser_state_lock);
 	running = output_ready_locked(id);
 	/* A no-op is not communication and must not extend the response deadline.
 	 * An unprepared/faulted driver still needs the ordinary recovery path.
@@ -1821,6 +1874,9 @@ int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, stru
 
 out:
 	if (rc != 0) {
+		k_mutex_lock(&laser_state_lock, K_FOREVER);
+		laser_output_estimate[id].output_state = LASER_OUTPUT_UNKNOWN;
+		k_mutex_unlock(&laser_state_lock);
 		if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
 		invalidate_output_locked(id, diagnostics);
 	}
@@ -2633,6 +2689,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			k_mutex_unlock(&laser_io_lock);
 			return 0;
 		}
+		k_mutex_lock(&laser_state_lock, K_FOREVER);
+		laser_output_estimate[id].output_stop_requested = false;
+		k_mutex_unlock(&laser_state_lock);
 		photodiode_noise_change_begin();
 		if (running) {
 			maiman_init(&drv, profile->node_id);
@@ -2666,6 +2725,9 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 			laser_output_estimate[id].started = true;
 			k_mutex_unlock(&laser_state_lock);
 		} else {
+			k_mutex_lock(&laser_state_lock, K_FOREVER);
+			laser_output_estimate[id].output_state = LASER_OUTPUT_UNKNOWN;
+			k_mutex_unlock(&laser_state_lock);
 			if (diagnostics != NULL) diagnostics->io_rc = drv.last_error;
 			invalidate_output_locked(id, diagnostics);
 		}

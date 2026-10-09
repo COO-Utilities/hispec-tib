@@ -313,7 +313,7 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
   Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
-  when inactive or unavailable. `ready` reports whether the laser can operate.
+  when inactive or unavailable. `ready` has the public-start blocker meaning documented under `laser`.
   `lastcmd` is restored from command-dispatch NVS storage when available.
 
 
@@ -858,11 +858,26 @@ these values feed the existing throughput and splitting calculations.
   until bank power cycles or an explicit configuration/reset operation changes them. Laser output current is
   never persisted by app settings. The Maiman
   driver may retain its own current register, so firmware writes 0 whenever emission is disabled or the bank is turned off.
-  `ready` reports whether the driver is prepared to operate without a blocking
-  SF8025 lock condition. `blocked_reason` is `null` when no blocking condition
-  is present, including a ready but idle laser; otherwise it reports a concise
-  cause such as `bank_off`, `tec_not_started`, `ld_overcurrent`, or
-  `interlock`. Active time fields are integer seconds while active and `null`
+  `ready` reports whether a start attempt has a known public-endpoint blocker.
+  The endpoint handles automatic bank power and TEC preparation; neither a
+  stopped TEC nor a recoverable historical control fault requires a separate
+  user action. An unpowered bank in `auto` can therefore be ready, without
+  claiming its currently unreadable controller is healthy. Explicit bank
+  override-off, identity failures and applicable hard locks block start.
+  `blocked_reason` is null when none is known; otherwise it names the blocker
+  (`bank_off`, `driver_identity_mismatch`, `ld_overcurrent`, `ld_overheat`,
+  `external_ntc_interlock`, `tec_error`, `tec_selfheat`, or `interlock`, in that
+  priority order). An unprepared start programs the firmware-owned interlock
+  policy; a lock it resolves is not a public-start blocker. Engineering raw
+  state/lock fields remain available. Readiness does not guarantee start success.
+  Compact `output_state` is `stopped`, `running`, `stopped_fault` or `unknown`.
+  Stopped includes acknowledged zero current, STOP or bank power-off; running
+  means established nonzero controller operation, not measured optical output.
+  Stopped-fault requires an observed unexpected output stop; failed writes are
+  uncertain rather than evidence of running. A ready laser may be stopped by
+  a past fault. Acknowledged intentional shutdown and explicit successful recovery
+  update output state without changing existing safety-latch clearing rules.
+  `i_mA` and `power_mw` retain their setpoint/model-estimate meanings. Active time fields are integer seconds while active and `null`
   when inactive. The persisted lifetime
   total remains available through `laser/settings`. `autooff_s` is optional and
   non-persistent; if supplied, it overrides the default configured through

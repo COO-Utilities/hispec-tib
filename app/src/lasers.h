@@ -111,6 +111,7 @@ struct hispec_laser_status {
 	bool ready_to_operate;
 	uint16_t blocking_lock_status;
 	const char *blocked_reason;
+	const char *output_state; /* Operator output abstraction, independent of readiness. */
 	double current_set_ma;
 	double level_percent;
 	double current_measured_ma;

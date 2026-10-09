@@ -99,7 +99,9 @@ work and does not resolve that protocol ambiguity. See
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed
-controller faults invalidate operational readiness without erasing confirmed configuration. Diagnostic failures warn and invalidate
+controller faults invalidate internal operational health without erasing confirmed configuration.
+Public status readiness separately describes known blockers to the explicit start
+endpoint; stopped TECs and recoverable fault history are not public blockers. Diagnostic failures warn and invalidate
 only that observation; five seconds without a response while started (including
 zero current) faults operation. Successful communication restores availability, but measurements
 remain stopped and a control fault requires a successful control operation.
@@ -168,3 +170,9 @@ and the failed stage/transaction error; no diagnostic reads or delays are added.
 Command replies and the existing one-shot output warning use bounded formatting.
 Other owners may pass NULL and still receive their existing warning. This record
 is not a stored last-error state and does not change return codes or sequencing.
+
+Compact `output_state` combines acknowledged output operations and positive LD
+observations. Its four values are documented in commands.md. It does not clear
+the existing control-fault latch or gate throughput/dark acquisition. Internal
+stop intent distinguishes an observed stop after a failed intentional shutdown
+from an autonomous stop after established nonzero operation. No extra reads.

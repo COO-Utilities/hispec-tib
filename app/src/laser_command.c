@@ -266,10 +266,10 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"name\":\"%s\",\"powered\":%s,"
-			    "\"ready\":%s,\"blocked_reason\":",
+			    "\"ready\":%s,\"output_state\":\"%s\",\"blocked_reason\":",
 			    status->name,
 			    status->bank_powered ? "true" : "false",
-			    status->ready_to_operate ? "true" : "false") != 0 ||
+			    status->ready_to_operate ? "true" : "false", status->output_state) != 0 ||
 	    coo_json_append_string_or_null(payload, payload_len, &off,
 					   status->blocked_reason) != 0 ||
 	    coo_json_append(payload, payload_len, &off,

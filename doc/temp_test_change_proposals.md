@@ -73,7 +73,7 @@ authorized session.
 
 ## B. Clarify public-start readiness and output state
 
-Status: approved; implementation pending.
+Status: implemented; offline verification recorded in commit.
 
 `ready` and `blocked_reason` describe known barriers to the public start operation,
 not manual controller preparation or historical faults. Bank auto can power an idle
