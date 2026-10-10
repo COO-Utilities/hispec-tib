@@ -2,8 +2,9 @@
  * @file laser_properties.h
  * @brief Fixed diode property table used for estimates and safety limits.
  *
- * NTC defaults below are archived controller settings, not measured diode
- * thermistor calibrations. App-owned coefficients are translated to Maiman B
+ * NTC defaults match internal LD register B=3988 K on all six drivers, read
+ * 2026-10-09. These are controller settings, not measured thermistor slopes.
+ * App-owned coefficients are translated to internal LD Maiman B
  * during existing profile preparation, without boot-time programming.
  * These values are compile-time defaults. Maiman EEPROM owns driver-side
  * persisted parameters; app settings persist accepted property overrides and
@@ -71,7 +72,8 @@ static const laserprops_t LASER_1028 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 30.0,
-    .ntc_coeff_pct_per_c = -4.486271186149909, // observed controller default -4.486271 %/C (B=3988 K); sheet -4.4 %/C; BF69016 report: not supplied.
+    /* Internal B=3988 K; sheet -4.4 %/C; BF69016 report has no slope. */
+    .ntc_coeff_pct_per_c = -4.486271186149909,
 };
 
 static const laserprops_t LASER_2330 = {
@@ -92,7 +94,10 @@ static const laserprops_t LASER_2330 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 30.0,
-    .ntc_coeff_pct_per_c = -4.486271186149909, // observed controller default -4.486271 %/C (B=3988 K); sheet -4.4 (%/C inferred, printed 1/C); D4520009 report: not supplied.
+    /* Internal B=3988 K; sheet -4.4 (%/C inferred, printed 1/C).
+     * D4520009 report has no slope measurement.
+     */
+    .ntc_coeff_pct_per_c = -4.486271186149909,
 };
 
 static const laserprops_t LASER_1270 = {
@@ -113,7 +118,8 @@ static const laserprops_t LASER_1270 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    .ntc_coeff_pct_per_c = -4.486271186149909, // observed controller default -4.486271 %/C (B=3988 K); Aero1270 sheet: not supplied; unit report: unavailable.
+    /* Internal B=3988 K; Aero1270 sheet has no slope; no unit report. */
+    .ntc_coeff_pct_per_c = -4.486271186149909,
 };
 
 static const laserprops_t LASER_1430 = {
@@ -134,7 +140,10 @@ static const laserprops_t LASER_1430 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    .ntc_coeff_pct_per_c = -4.486271186149909, // observed defaults for both 1430 channels -4.486271 %/C (B=3988 K); Aero1430 sheet: not supplied; unit reports: unavailable.
+    /* Internal B=3988 K on both 1430 drivers; sheet has no slope.
+     * Unit reports are unavailable.
+     */
+    .ntc_coeff_pct_per_c = -4.486271186149909,
 };
 
 static const laserprops_t LASER_1510 = {
@@ -155,7 +164,8 @@ static const laserprops_t LASER_1510 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    .ntc_coeff_pct_per_c = -4.486271186149909, // observed controller default -4.486271 %/C (B=3988 K); Aero1510 sheet: not supplied; unit report: unavailable.
+    /* Internal B=3988 K; Aero1510 sheet has no slope; no unit report. */
+    .ntc_coeff_pct_per_c = -4.486271186149909,
 };
 
 #endif // LASER_PROPERTIES_H

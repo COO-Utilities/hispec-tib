@@ -215,41 +215,66 @@ framework is proposed.
 
 ## H. Synchronize thermistor coefficients in datasheet units
 
-Status: implemented; offline conversion/profile/NVS/API checks and build passed.
-The thermal comparison and replacement procedure are updated; the refreshed
-presentation remains uncommitted. Hardware validation is in the review ledger.
+Status: implemented, including the owner-authorized correction from unused
+external NTC 0x008A to internal LD NTC 0x007F for programming and readback.
+All six actual internal registers read B=3988 K on 2026-10-09, matching the
+retained defaults. Archived 3988 reads sampled external 0x008A and remain
+qualified as such; internal values were not archived. No external NTC is installed.
 
-Use `ntc_coeff_pct_per_c` (%/°C at 25°C) for both configured settings and engineering
-readback. Remove old spellings without aliases. Convert internally using
-`alpha_pct = -100 * B / 298.15²`; writes round B to integer kelvin and normalize the
-accepted coefficient to the representable value. Reject invalid/nonrepresentable values.
+`ntc_coeff_pct_per_c` uses resistance %/°C at 25°C for configured settings and
+engineering readback. Internally `alpha_pct = -100 * B / 298.15²`; writes round B
+to integer kelvin and normalize the accepted coefficient. Invalid or
+nonrepresentable values are rejected. One representation is exposed.
 
-Follow-up: settings always report PCB configuration; engineering configuration
-readbacks are actual while powered (including before first start), all null while
-off. Canonical shared names are `max_current_ma`, `current_cal_pct` and
-`tec_curr_lim_a`. Serial mismatches return readable status with a start/program
-blocker; device-ID/read failures remain errors. No NVS layout change.
+Settings always report PCB configuration. Engineering configuration readbacks
+are actual while powered, including before first start, and null while off.
+Shared names remain `max_current_ma`, `current_cal_pct` and `tec_curr_lim_a`.
+Serial mismatches return readable status with a start/program blocker;
+device-ID/read failures remain errors. The correction changes no schema or NVS
+layout, readiness meaning, sequencing or calibration values.
 
-Put archived B=3988 equivalents (−4.486271 %/°C) in every diode-property row, with
-comments identifying the observed controller default, datasheet and unit report values
-(or missing coefficient). Readbacks are settings, not measured thermistor calibration.
-PCB settings own this value and persistence. A small per-channel NVS record preserves
-existing policy/calibration records. Use existing stop-before-update and profile
-preparation: synchronize alongside other parameters at the first explicit start after
-bank power-up and on explicit driver-backed settings updates, not at MCU startup.
-No new driver EEPROM save operation or raw-B host representation.
+PCB settings own coefficient intent and persistence in the existing separate
+eight-byte per-channel NVS record. Existing profile preparation synchronizes it
+after the TEC current limit, before target/bounds/PID, at the first explicit
+start after bank power-up and on explicit driver-backed settings updates.
+MCU startup adds no programming or controller EEPROM SAVE. Defaults describe
+programmed internal values; they are not measured thermistor slopes.
 
-Extend the thermal comparison and replacement-diode procedure in the result report;
-refresh the uncommitted presentation. Compare compiled values, archive readbacks,
-datasheets and unit reports with source/qualification. Cover coefficient/R25,
-limits and PID differences without automatically changing ranges, PID or current
-limits. Explain relative-probe versus independently referenced calibration options
-and why B adjustment cannot independently correct R25/offset. No QE or optical-power
-coefficient edits or new discussion are included.
+The report and uncommitted review deck quantify relative R25-only, coefficient-only
+and joint fits, including heating/cooling differences, under the owner's common
+idle-temperature assumption. Nominal R25 variation can explain the mean offsets
+within supplied ±5% limits. The cold span cannot separate absolute R25/B errors.
+The report compares diode sheets, two unit reports, controller limits and PID
+profiles and provides relative/independently referenced replacement procedures.
+It changes no PID, temperature/current limit, QE or optical-power coefficient.
 
-Verification: conversion/quantization, validation, persistence/reset, programming
-order/failures, API parsing and payload size; build; archive/source checks and visual
-presentation review. Raw captures stay unchanged.
+### Completed bounded debugger investigation
+
+The owner authorized TEC-only 1270j trials and then the internal-register
+correction. Internal B was read on all six; LD 0x0088 and TEC 0x007E calibration
+both read 100%. At digital targets 18/25/32°C, factory 100% matched reported
+temperature within about 0.02°C. A reversible 99% trial lowered reported
+temperature by approximately 0.17/0.26/0.31°C, including during cooling.
+This approximately scales the Celsius regulation target; controller circuitry
+remains unconfirmed. Near-equilibrium zero TEC telemetry is compatible with the
+coarse 100 mA / 0.1 V readback resolution.
+
+Retain factory 100%. There is no observed regulation error to correct. Keep
+`current_cal_pct` for LD and add no TEC setting or calibration-field rename.
+0x007E remains an engineering adjustment to investigate if future settled
+readback misses its digital target. Its demonstrated target shift does not
+calibrate physical R25 or establish electrical current accuracy.
+
+Emission stayed off. The trial restored and verified TEC calibration, original
+target/interlock permission, all LD/TEC states, PCB settings and bank/heater
+policy. No NTC coefficient, external sensor, LD current, explicit EEPROM SAVE
+or firmware flash was written by the agent. User breakpoints/session remain.
+Raw evidence and limitations are in [the report](temp_test_result.md#two-calibration-addresses-and-the-live-test).
+
+Verification: register-address/source checks, conversion/model sanity checks,
+restoration assertions, unchanged archive hashes, Nucleo build and visual review
+of the presentation. Post-flash profile synchronization/failure paths and
+independent physical temperature/resistance calibration remain hardware checks.
 
 ## Approval and validation boundary
 

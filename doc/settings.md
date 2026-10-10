@@ -62,7 +62,9 @@ the existing stop/power flow. `persist:true` saves app NVS intent; it adds no
 controller EEPROM SAVE operation. START/STOP retain their existing controller
 persistence behavior. Settings queries always report PCB configuration;
 engineering status reports controller readbacks while powered and null while off.
-Before preparation, readbacks can differ from configuration.
+Before preparation, readbacks can differ from configuration. The coefficient
+uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
+is unused; the mapping correction changes no NVS layout or configured values.
 
 ## Board-Type Reset Policy
 

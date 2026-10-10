@@ -535,7 +535,7 @@ double maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv)
 {
 	double value;
 
-	if (maiman_read_scaled(drv, REG_NTC_COEFFICIENT,
+	if (maiman_read_scaled(drv, REG_INTERNAL_LD_NTC_SENSOR,
 			       DIVIDER_NTC_COEFFICIENT, false, &value)) {
 		return value;
 	}

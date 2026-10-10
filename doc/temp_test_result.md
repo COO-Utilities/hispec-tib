@@ -1,7 +1,8 @@
 # Laser-bank freezer test, 7–9 October 2026
 
-Analysis date: 9 October 2026. All times below are UTC. This report uses the
-archived notebook captures only. No hardware was contacted during analysis.
+Analysis date: 9 October 2026. All times below are UTC. Thermal fits use the
+archived notebook captures. A separate live debugger investigation is identified below;
+no controller settings were changed.
 
 ## Results
 
@@ -204,11 +205,83 @@ describes variation over the interval, not uncertainty on a calibration constant
 
 ![Probe differences during the initial idle periods](temp_test_figures/idle_probe_differences.png)
 
-The median instantaneous spread was 1.58°C in run 1 and 0.92°C in run 2, with
-maxima 2.38 and 2.40°C. Residuals change through the heater cycle and between
-runs. This is useful replacement-diode baseline information, but sensor bias and
-real thermal gradients cannot be separated. Applying negative residuals as
-calibration corrections would erase some real physical differences.
+The median instantaneous spread was 1.58°C in run 1 and 0.92°C in run 2,
+with maxima 2.38 and 2.40°C. The following fit adopts the owner's useful working
+assumption that idle diodes share a physical temperature. It quantifies the
+resistor/coefficient explanations before testing that assumption.
+
+### Constraints on R25 and coefficient
+
+For each target, use the mean of the **other five** idle readings as a reference.
+This avoids including the target in its own reference. Fits use the original
+initial-idle cutoffs above, finite readings, and duration weights for contiguous
+fresh intervals no longer than 20 s: 102.15 minutes in run 1 and 59.46 in run 2.
+The reference spans approximately 15–19°C. Its absolute calibration is assumed.
+
+The actual internal coefficient was not archived. For comparison, normalize the
+reference and target to 10 kΩ at 25°C and B=3911 K, the rounded equivalent of the
+FLC −4.4 %/°C sheet value. These are **equivalent errors under that model**,
+including controller conversion/calibration effects, not measured resistances.
+A different common B scales inferred R25 errors but leaves the relative B-only
+ratios below unchanged. Separate Oct 9 reads found internal B=3988 K on all six.
+Using that common B changes the R25-only bounds to approximately 9.66–10.44 kΩ,
+still within ±5%; it does not establish their values during the archive. Neither
+model identifies physical resistor error separately from controller electronics.
+
+| Diode | R25-only error %, run 1 / 2 | Coefficient-magnitude change %, run 1 / 2 | Heating minus cooling residual °C, run 1 / 2 |
+| --- | ---: | ---: | ---: |
+| 1028y | -2.21 / -2.29 | -5.63 / -5.49 | +0.32 / +0.21 |
+| 1270j | +2.85 / +2.47 | +7.84 / +6.38 | +0.34 / +0.15 |
+| 1430yj | -3.32 / -2.55 | -8.34 / -6.01 | +0.50 / +0.30 |
+| 1430hk | -1.22 / -0.86 | -3.18 / -2.12 | +0.06 / +0.04 |
+| 1510h | +4.29 / +3.10 | +10.33 / +7.03 | -0.65 / -0.37 |
+| 2330k | -0.15 / +0.29 | -0.76 / +0.39 | -0.49 / -0.29 |
+
+R25-only fits imply approximately **9.67–10.43 kΩ**, entirely within the supplied
+9.5–10.5 kΩ specifications. Thus nominal resistor variation can explain the mean
+offsets without requiring a slope change. FLC's two reports record 10,000 Ω
+without measurement uncertainty, so the equivalent deviations are also candidates
+for conversion/calibration error rather than proof those units changed resistance.
+
+Coefficient-only fits require −8.34% to +10.33% slope-magnitude changes in run 1,
+and −6.01% to +7.03% in run 2. For 1270j this would imply approximately
+−4.74 / −4.68 %/°C; for 1510h, −4.85 / −4.71 %/°C under the stated model.
+These describe the change needed *if R25 is exact and the proxy is correct*.
+They are not settings recommendations. A B change produces no correction at
+25°C, while an R25 error remains there, providing a useful discriminator in a
+future warm equilibrium measurement.
+
+![R25-only and coefficient-only explanations of the idle offsets](temp_test_figures/idle_thermistor_constraints.png)
+
+At the same reference temperature, heating and cooling branches differ by up
+to 0.65°C in run 1 and 0.37°C in run 2. The table compares residuals in matched
+0.25°C reference bins, weighting the common branch duration; local five-minute
+slopes above +0.005°C/min or below −0.005°C/min identify the branches. Matched
+coverage is approximately 39–40 and 17–18 minutes per diode. A fixed R25/B model
+cannot explain this direction dependence. It is evidence to check settling,
+thermal lag/gradients and the proxy assumption before applying a static trim.
+
+Allowing both parameters reduces residuals but yields the following joint fits:
+
+| Diode | Joint R25 error %, run 1 / 2 | Joint coefficient-magnitude change %, run 1 / 2 | Fit RMSE °C, run 1 / 2 |
+| --- | ---: | ---: | ---: |
+| 1028y | -5.76 / -7.50 | +10.06 / +13.65 | 0.19 / 0.12 |
+| 1270j | +0.19 / -4.59 | +7.32 / +18.14 | 0.24 / 0.11 |
+| 1430yj | -9.99 / -11.01 | +19.39 / +22.61 | 0.32 / 0.18 |
+| 1430hk | -2.20 / -1.14 | +2.72 / +0.70 | 0.05 / 0.03 |
+| 1510h | +16.10 / +17.52 | -30.10 / -33.37 | 0.46 / 0.24 |
+| 2330k | +4.03 / +8.45 | -11.29 / -19.71 | 0.29 / 0.16 |
+
+The large joint corrections for 1430yj and 1510h exceed the nominal R25 tolerance,
+and several channels change appreciably between runs. Over a narrow cold span,
+slope and offset trade against one another and fit thermal history. These results
+constrain plausible explanations but do not support adopting the joint fit.
+
+For reproducibility, let `x=1/T_proxy−1/298.15` and `z=1/T_target−1/298.15`
+(temperatures in kelvin). Fit `z=c+b*x`. R25-only fixes `b=1`, with
+`R25/10000=exp(3911*c)`; coefficient-only fixes `c=0`, with required B ratio `b`.
+The joint fit estimates both. Full values, input hashes and plotted points are
+in [results.json](temp_test_figures/results.json).
 
 ### Datasheets, controller limits, and settings
 
@@ -234,7 +307,7 @@ FLC unit reports:
 | [FLPD-2330-03-DFB-BTF](datasheets/FLPD-2330-03-DFB-BTF.pdf), p. 2 | R25 9.5–10.5 kΩ, coefficient printed −4.4 with units 1/°C; operating 10–40°C, diode maximum 120 mA, TEC maximum 1.2 A |
 | [D4520009 report](datasheets/FLPD-2330-03-DFB-BTF_%23D4520009_testreport.pdf), p. 1 | R25 10,000 Ω at 25°C; threshold 24.9 mA; bias/maximum 120 mA; test operating temperature 25°C; no coefficient/B measurement |
 | [Aero 1270](datasheets/1270-nm-laser-diode-Model-1-Datasheet.pdf), [1430](datasheets/1430-nm-laser-diode-Model-1-Datasheet.pdf), [1510](datasheets/1510-nm-laser-diode-Model-1-Datasheet.pdf), p. 1, rev. 08/23 | R25 9.5–10.5 kΩ; no thermistor slope; operating current typical 60 mA, maximum 70 mA; TEC maximum 1 A; case operating −20 to +60°C |
-| Maiman, printed pp. 15–16, 20 (PDF pp. 16–17, 21) | Default/DFB PID examples, oscillation cautions, writable internal thermistor B25/100 and temperature bounds; no independent R25/offset calibration register documented |
+| Maiman, printed pp. 15–16, 19–20 (PDF pp. 16–17, 20–21) | PID examples, oscillation cautions, separate internal/external B registers, and an ambiguously named TEC calibration register; its effect needs live testing |
 
 The 2330 sheet's −4.4 is interpreted as **%/°C**, consistent with the 1028 sheet
 and a 10 kΩ NTC. That interpretation is an inference: the printed 1/°C label
@@ -243,57 +316,115 @@ vendor confirmation before using it as a replacement calibration specification.
 FLC's case rating is −5 to +70°C. Case temperature, controlled diode temperature and PCB ambient are distinct;
 the Aero case range does not widen the Maiman controlled-temperature range.
 
-#### Coefficient disagreement and implemented units
+#### Internal versus external coefficient: corrected mapping
 
-All **273 successful archived engineering snapshots** (264 in run 1, nine in run
-2) read internal B = **3988 K**. These are programmed settings, not measurements
-of the six thermistors. At 25°C the constant-B relation is
-`alpha_pct = −100 × B / 298.15²`, giving **−4.486271 %/°C**.
+The system uses the **internal LD thermistor**. No external NTC is installed.
+All 273 successful archived engineering snapshots read **3988 K from external
+register 0x008A**, equivalent to −4.486271 %/°C at 25°C. They do not establish
+the internal coefficient during those runs. Internal LD B is **0x007F**. The
+SF manual's service-address equivalents are `0B0E` and `0A1F`, respectively.
 
-| Channel | Prior compiled coefficient metadata | Archived controller, translated | Diode sheet / unit report |
+Separate debugger reads on Oct 9 returned **B=3988 K from actual internal 0x007F
+on all six drivers**, with correct identities and successful readback. The probe
+redirected the encoded address before Modbus transmit; it did not substitute a
+value into the status response. This confirms the current programmed internal
+values, not a measurement of the thermistors' physical slopes.
+
+| Channel | Prior code metadata | Archived external B | Oct 9 internal B / vendor evidence |
 | --- | --- | --- | --- |
-| 1028y | −0.044 per °C = −4.4 %/°C | −4.486271 %/°C | Sheet −4.4 %/°C; BF69016 slope absent |
-| 2330k | −0.044 per °C = −4.4 %/°C | −4.486271 %/°C | Sheet −4.4 %/°C inferred; D4520009 slope absent |
-| 1270j | Unavailable | −4.486271 %/°C | Sheet slope absent; unit report unavailable |
-| 1430yj / 1430hk | Unavailable | −4.486271 %/°C | Sheet slope absent; unit reports unavailable |
-| 1510h | Unavailable | −4.486271 %/°C | Sheet slope absent; unit report unavailable |
+| 1028y | −4.4 %/°C | 3988 K, unused | 3988 K; sheet −4.4 %/°C; BF69016 slope absent |
+| 2330k | −4.4 %/°C | 3988 K, unused | 3988 K; sheet −4.4 %/°C inferred; D4520009 slope absent |
+| 1270j / 1510h | Unavailable | 3988 K, unused | Both 3988 K; sheet slopes absent |
+| 1430yj / 1430hk | Unavailable | 3988 K, unused | Both 3988 K; sheet slopes absent |
 
-The old FLC metadata **did not program the controller coefficient**. Its units
-differed from engineering status, which exposed raw B under a misleading name.
-The metadata/readback mismatch therefore did not itself change the regulation
-loop. It cannot establish the cause of previously observed instability.
+H originally connected public `ntc_coeff_pct_per_c` programming and readback to
+the unused external register. The correction selects **0x007F in both paths**,
+retaining the existing unit conversion, settings, persistence and programming
+flow. Defaults remain −4.486271 %/°C because they match the six actual internal
+readbacks. The external register remains available under its existing raw service
+names but has no role in the laser coefficient setting. No NTC coefficient was
+written during the live investigation; the corrected firmware was built, not
+flashed. No public field, flow or calibration value changed.
 
-H replaces that ambiguity with **one public field, `ntc_coeff_pct_per_c`**, in
-resistance %/°C at 25°C, for configured settings and actual engineering readback.
-Firmware translates internally and rounds to integer B; accepted settings report
-the representable coefficient. The PCB owns the configured value and optional
-NVS persistence. Defaults retain the archived B=3988 equivalents for every
-channel, with source qualifications beside the property rows. The generic FLC
-−4.4 value is a comparison, not an automatic replacement setting.
+The old FLC metadata did not program either coefficient. Today's programmed
+internal B=3988 is 1.97% above the rounded generic-sheet equivalent B=3911
+(or the sheet equivalent is 1.93% below the programmed value). Changing 3988 to
+3911 with equal R25 would shift conversion by approximately −0.19°C at 15°C,
+zero at 25°C and +0.31°C at 40°C. This compares **programmed conversion with a
+generic specification**; it does not establish actual thermistor disagreement
+or explain the observed regulation instability. No B or PID adjustment follows
+from it without an independent reference.
 
-Synchronization occurs through existing profile preparation at the first explicit
-start after bank power-up, and through explicit driver-backed settings updates.
-It does not add MCU-startup programming. A coefficient update follows the existing
-stop/power/program/restore flow; a failed profile write leaves preparation false.
-Engineering readback reports actual conversion or unavailable, never a configured
-fallback. `persist:true` writes a separate eight-byte per-channel app NVS record,
-preserving the existing policy/calibration records. No new controller EEPROM
-SAVE is added; existing START/STOP controller persistence remains.
+#### Two calibration addresses and the live test
 
-The FLC −4.4 %/°C slope corresponds to B = 3911.31 K, rounded to **3911 K**:
-**1.93% below** the archived setting, a slope-magnitude difference of
-**0.08627 percentage points per °C**. Assuming identical R25 and a true B=3988
-thermistor, using 3911 instead would shift the reported value by about **−0.19°C
-at 15°C**, **0 at 25°C**, and **+0.31°C at 40°C**. This is model sensitivity, not
-a measured error or a calibration recommendation. A coefficient difference can
-affect inferred temperature/small-signal loop gain, but this scale alone does not
-explain the multi-degree cold-start excursions.
+| Calibration | Modbus / service address | Current exposure | Manual evidence |
+| --- | --- | --- | --- |
+| LD current | 0x0088 / `030E` | `current_cal_pct` | Current set calibration, 100.00% default, 95–105%, 0.01% steps |
+| TEC calibration | 0x007E / `0A1E` | Getter only; no public setting | Table calls it current set calibration; specification says TEC temperature set calibration, same range/steps |
 
-All supplied sheets allow R25 ±5%, corresponding to roughly **±1.1°C near 25°C**
-with the nominal conversion. The two FLC reports record 10,000 Ω, without an
-uncertainty or slope. One resistance point cannot verify the coefficient. R25
-tolerance and spatial gradients may exceed the modeled coefficient effect;
-the idle residuals cannot determine which dominates.
+The owner flashed and attached matching firmware `cbe6624d130d-dirty`, boot 122,
+before the controlled trial. Initial bank policy was auto/on, heater off, all six
+TECs idle, ambient 21.62°C and idle mean 27.45°C. Differing sensor locations and
+thermal history prevent using that ambient-to-idle difference as a calibration
+offset. The 1270j controller identity was device 0x1113, serial 8228, matching
+configuration. Both calibration registers read 100.00%.
+
+Changing 0x007E to 99% while the TEC was stopped left its temperature readback
+approximately unchanged (27.20–27.22°C). The TEC-only trial then compared
+100%, 99% and restored 100% at three digital targets. Emission stayed off and
+measured LD current was zero in every captured sample. PID, current limits and
+both NTC coefficients stayed unchanged. The table uses the final three samples
+of each short plateau; these are controller readbacks, without an independent
+physical-temperature reference.
+
+| Digital target °C | Reported at 100% °C | Reported at 99% °C | Restored 100% °C | 99% minus 100% °C |
+| ---: | ---: | ---: | ---: | ---: |
+| 18 | 18.010 | 17.837 | 18.023 | −0.173 |
+| 25 | 25.013 | 24.753 | 25.003 | −0.260 |
+| 32 | 32.003 | 31.690 | 32.003 | −0.313 |
+
+At factory 100%, the reported temperature matches each target within about
+0.02°C. The 99% trial introduced an offset. Its effect approximately follows
+`reported_temperature_c = digital_target_c × calibration_pct / 100` over these
+three targets, with maximum prediction difference 0.017°C in the plateau means.
+This is an empirical description, not a claim about internal electronics.
+
+The initial 25°C result alone could also reflect reduced heating power. The
+cooling-side 18°C comparison is important: reducing cooling drive alone should
+warm the diode, whereas 99% lowered the reading there too. This argues against
+merely scaling Peltier drive current. A reference/sense-current contribution
+inside the controller remains possible; this test does not identify its circuit.
+The TEC current register has 0.1 A resolution and voltage 0.1 V. Near equilibrium,
+zero readings do not establish zero drive. The cooling trial read 100 mA and
+0.2 V, while 32°C samples included −0.1 V.
+
+**Disposition: retain factory 100%.** There is no observed digital-setpoint
+regulation error needing correction, and no evidence here of an LD current
+calibration problem. An electrical current-accuracy claim would require an
+independent measurement. Keep `current_cal_pct` unchanged and add no TEC setting
+or calibration-field rename. Treat 0x007E as an engineering adjustment to
+investigate if a future settled reading misses its target. An R25/absolute
+thermistor error is a separate question: agreement between the controller's
+target and its own readback does not establish physical temperature accuracy.
+
+The temporary probes used the owner's existing serialized Modbus path, changing
+encoded requests at `mbc_send_cmd`. FC16 responses acknowledged each register
+write. The original FC3 read validator then rejected those instrumented
+write-trigger queries, producing expected query errors; those errors are not
+failed controller writes. Debugger pauses also coincided with isolated PD ADC
+discard warnings. No permanent instrumentation, external NTC writes, LD START
+or LD-current writes, reset, reflash, automatic ramp or explicit EEPROM SAVE
+was added. Controller state commands retain their own persistence behavior.
+
+TEC START initially acknowledged but remained stopped with the physical
+interlock permission enabled. The trial used the same DENY_INTERLOCK prerequisite
+as normal profile preparation, then restored the original permission. Final
+verification confirmed TEC calibration 100% (raw 0x2710 from 0x007E), the original
+18°C digital target, all six LDs/TECs stopped, unchanged PID/current limits,
+LD calibration, PCB settings and bank/heater policy, and no reboot. Temporary
+breakpoints are gone; the user's five breakpoints and running attached session
+remain. Raw queries, traces and debugger evidence are in
+[the Oct 9 capture](../tools/temp_data/ntc_calibration_20261009.json).
 
 #### Other coded/controller/vendor differences
 
@@ -329,56 +460,52 @@ settling traces and autonomous-stop warnings. No automatic ramp is added.
 
 ### Replacement-diode procedure
 
-1. Record the replacement model/serial, R25 and coefficient specification, diode
-   and TEC current limits, permitted temperatures and controller revision. Match
-   the controller serial to the physical diode association. Save configured
-   settings, actual engineering readback and this idle-probe baseline.
-2. First perform the simple relative check: emission and TEC regulation off,
-   bank powered for reads, same heater/load conditions as this baseline. Compare
-   each probe minus the simultaneous idle-bank mean after comparable settling.
-   An outlier merits reference testing; do not negate these residuals into offsets.
-3. For an absolute check, place an independently calibrated contact reference
-   near the diode mount and establish uniform passive equilibrium with emission
-   and active TEC regulation off. Check driver self-heating and gradients. A
-   proposed initial criterion is drift below 0.02°C/min for 10 minutes, accompanied
-   by spatial checks; it is not a vendor acceptance specification.
-4. Repeat at safe points such as 18, 25 and 35°C when the replacement permits.
-   Record reference uncertainty, mount/reference position, current coefficient,
-   reported temperatures and raw resistance if obtainable by an approved service
-   measurement. Repeat placement or swap reference positions to check gradients.
-5. If raw resistance is available, fit `ln(R)` against `1/T_reference_K` to
-   estimate internal B and R25 separately. Convert the fitted slope to the single
-   public coefficient in %/°C at 25°C. With temperature readback alone, resistance
-   can only be inferred using the known controller conversion and assumed R25;
-   document that assumption rather than claiming an independent resistance test.
-   Two points constrain a simple model and a third checks it. One point at 25°C
-   cannot identify slope, and coefficient-only control cannot fix R25 bias there.
-6. If a slope correction is independently supported, review it with the operator,
-   apply `pcb.laser_settings(name, ntc_coeff_pct_per_c=value, persist=False)`,
-   and query both configured and actual coefficients. This stops emission and
-   programs the profile through the normal flow. Recheck the reference points
-   after integer-B rounding. Persist only after acceptance. An R25 error requires
-   vendor/controller calibration or a suitable thermistor; do not absorb it into
-   the coefficient or protection bounds. These are future live actions; none
-   were performed during this implementation.
-7. Verify cold/hot start and restart, actual current, TEC settling and absence of
-   autonomous stops. Repeat the relative idle baseline under matched conditions,
-   preserving new raw records and serial history.
+1. Save diode model/serial, controller identity, actual internal B (0x007F),
+   LD/TEC calibration registers (0x0088/0x007E), target, PID and protection/current
+   limits. Record sheet R25/slope and the unit report. Use firmware with the corrected
+   internal mapping before relying on `ntc_coeff_pct_per_c` for this task.
+2. With emission and TEC regulation off and the bank powered, record all idle
+   probes through comparable equilibria. Use the other-five mean as the relative
+   reference and compare the replacement with this baseline. Hold heater/load
+   conditions fixed and retain heating/cooling branches separately.
+3. Fit R25-only, coefficient-only and joint explanations as above, using each
+   driver's actual conversion. A shift at 25°C favors R25/conversion offset;
+   a repeatable change in slope across temperatures favors B. The existing cold
+   span cannot reliably separate both. A fixed correction should agree across
+   runs and heating/cooling branches before adoption.
+4. For an absolute result, later measure thermistor resistance at multiple known
+   equilibria with a multimeter and suitable contact reference. Service isolation
+   must avoid loading the live sense circuit. Fit `ln(R)` versus `1/T_K` for R25
+   and B. Alternatively use temperature readbacks against the contact reference,
+   with known controller conversion; that method also includes controller
+   electronics errors. Retain factory 0x007E unless settled regulation itself
+   fails to match its digital target. A proposed settling check is
+   drift below 0.02°C/min for 10 minutes plus spatial checks. Safe example points
+   are 18, 25 and 35°C, subject to diode/controller limits.
+5. Review a supported correction before writing. The 10 kΩ resistor is physically
+   fixed. B adjusts slope; it cannot fix R25 bias at 25°C. Today's 0x007E trial
+   introduced target/readback error, so it is not an established solution for
+   physical R25 error. Use independent references to evaluate a setpoint
+   correction, vendor calibration or a matched replacement thermistor. Keep
+   protection bounds independent of display/calibration changes.
+6. After an approved API/mapping correction, apply accepted calibration without
+   persistence, verify actual readback and repeat the equilibrium points. Check
+   cold/hot starts, TEC settling and autonomous stops before explicitly accepting
+   persistence. Preserve raw records and serial history.
 
 | Avenue | Benefit | Limitation / prerequisite |
 | --- | --- | --- |
-| Relative idle baseline | Fast, no writes; flags a replacement anomaly | Cannot separate gradients and sensor bias or fix controller interlocks |
-| Multi-temperature reference plus coefficient setting | Can correct a demonstrated slope error through the normal API | Needs uniform equilibrium and known conversion; cannot independently correct R25 at 25°C |
-| Reference-derived display correction | Can improve displayed temperature when repeatable | Would need a separately approved API/interpretation change; hardware interlocks still use controller conversion |
-| Vendor calibration / matched thermistor | Can address R25 and conversion at the source | No independent R25/offset register documented here; needs vendor support or replacement |
-| Wavelength thermometry | Potential independent diode-temperature indicator | Needs unit-specific wavelength versus temperature/current calibration; nominal wavelength is insufficient |
+| Other idle diodes as reference | Immediate relative R25/B constraints, no extra instrument | Common-temperature/known-conversion assumption; no common absolute error detection |
+| Multi-temperature contact reference | Tests absolute readback and any demonstrated trim | Reference uncertainty, placement and thermal gradients enter the result |
+| Multimeter plus reference, later | Separates physical R25/B from controller electronics | Needs suitable service access/isolation and temperature equilibrium |
+| Controller calibration | Engineering option if settled readback misses the digital target | Factory 100% already matches here; absolute R25 compensation needs separate validation |
+| Vendor calibration / matched thermistor | Addresses a physical R25 error at source | Service/replacement effort, then repeat the baseline |
+| Wavelength thermometry | Independent diode-temperature indicator | Requires unit-specific wavelength versus temperature/current calibration |
 
-Absolute calibration is **not possible from these archives alone**. Full
-in-controller calibration is not established by the documented coefficient-only
-interface. If an independently referenced R25 bias remains, record the residual
-uncertainty and obtain vendor guidance. The manual's serial-register notation
-differs from the Modbus map: current firmware uses 0x008A for B. Do not copy
-printed service addresses into the driver blindly.
+The archive supports useful **relative constraints under the common-temperature
+assumption**, but not an absolute calibration or a unique R25/B decomposition.
+The documented controller coefficient uses the internal register; external NTC
+register 0x008A has no role in this system.
 
 ## PCB ambient response to load changes
 
@@ -432,6 +559,7 @@ These are analysis products, not new firmware telemetry or host APIs.
 | Run 1 log | `41d47c20c10bfcff05c6f61eab06222109dec3fd733bb705b699a9d745e21d7a` |
 | Run 2 pickle | `37205445a1dad8a099d2b81ba6de8a0691176bab752ae7640c365886b7374fa7` |
 | Run 2 log | `59f44057cab69426b219cc886b79c35ca3c1826cf62f6cf4012777698e2b9ca5` |
+| Oct 9 debugger capture | `3f95e7428cea342ad2ddd745f0e2dc27baf89294cf2aab6d340efd13e4df4137` |
 
 Software footnote: the archive records a 2330k output-fault warning a few seconds
 after an acknowledged start, followed by both TEC and LD stopped. The brief
@@ -443,8 +571,11 @@ eligible background checks detect LD-only stops and freeze confirmed stopped
 component counters; heater overrides continue observation; temps() uses idle
 probes; notebook low-power transitions stop channels without bank cycling; the
 PCB power helper uses measured output currents; H synchronizes the thermistor
-coefficient in datasheet units. Temporary native/fake-client/archive checks and
-the Nucleo build passed. No hardware, flashing or live notebook execution was
-used. Target timing, physical synchronization and thermal/start behavior remain
+coefficient in datasheet units; the follow-up corrects internal register selection.
+Original A–H verification used temporary native/fake-client/archive checks and
+the Nucleo build. The separate Oct 9 live investigation above adds register
+readbacks and bounded TEC-only trials. The mapping correction passes the Nucleo
+build and has not been flashed; no live notebook was executed by the agent.
+Target timing, post-flash synchronization and thermal/start behavior remain
 in [human_review_required.md](human_review_required.md). The refreshed editable
 presentation is intentionally uncommitted.

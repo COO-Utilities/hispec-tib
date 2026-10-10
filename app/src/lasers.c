@@ -1269,7 +1269,7 @@ static int apply_runtime_profile_locked(const struct hispec_laser_driver_profile
 		goto out;
 	}
 	if (!maiman_set_tec_current_limit(drv, props->tec_curr_lim_a) ||
-	    !maiman_write_scaled(drv, REG_NTC_COEFFICIENT, DIVIDER_NTC_COEFFICIENT,
+	    !maiman_write_scaled(drv, REG_INTERNAL_LD_NTC_SENSOR, DIVIDER_NTC_COEFFICIENT,
 		false, ntc_b_from_coeff(props->ntc_coeff_pct_per_c))) {
 		goto out;
 	}

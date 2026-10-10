@@ -63,10 +63,12 @@
 #define REG_TEC_VOLTAGE                     0x0078
 #define REG_STATE_OF_TEC_COMMAND            0x007A
 #define REG_TEC_CURRENT_SET_CALIBRATION     0x007E
+/* Internal LD thermistor B (K), used for TEC temperature conversion. */
 #define REG_INTERNAL_LD_NTC_SENSOR          0x007F
 
 #define REG_RS_SETTING                      0x0080
 #define REG_CURRENT_SET_CALIBRATION         0x0088
+/* Optional external NTC B (K); that sensor is absent in HISPEC. */
 #define REG_NTC_COEFFICIENT                 0x008A
 #define REG_TEC_P_COEFFICIENT               0x0091
 #define REG_TEC_I_COEFFICIENT               0x0092
@@ -197,6 +199,7 @@ double maiman_get_current_max(maiman_driver_t *drv);
 double maiman_get_current_max_limit(maiman_driver_t *drv);
 double maiman_get_current_protection_threshold(maiman_driver_t *drv);
 double maiman_get_current_set_calibration(maiman_driver_t *drv);
+/* Reads internal LD thermistor B (K) over Modbus; -1 on read failure. */
 double maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
 double maiman_get_tec_current_measured(maiman_driver_t *drv);
 double maiman_get_tec_current_limit(maiman_driver_t *drv);

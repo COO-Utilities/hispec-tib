@@ -76,17 +76,20 @@ sequential engineering reads, no writes, whole-total NaN for unusable powered
 readings, and exclusions for controller losses/heater/other input power. Retain
 other user-added checks and avoid any helper framework or new firmware endpoint.
 
-Calibration notes should explain that relative idle residuals cannot separate
-sensor bias and thermal gradients. Link the replacement procedure and alternatives
-in the report and the supplied diode datasheets/unit reports. H is implemented:
-the only public coefficient is ntc_coeff_pct_per_c (%/C at 25 C), PCB-owned and
-optionally persisted. Engineering readback uses the same units, with no configured
-fallback when unavailable. Firmware translates/rounds internally and synchronizes
-at first explicit start after bank power-up or a driver-backed settings update;
-status reads and MCU startup do not program it. Retain the archived B=3988
-equivalent defaults. Distinguish FLC's −4.4 %/C comparison, Aero's missing slope,
-R25 tolerance, and possible PID/protection issues from measured calibration.
-No automatic calibration writes, range changes, or PID tuning.
+Calibration notes should use the report's all-six quantitative R25-only,
+coefficient-only and joint constraints with the other-five idle reference and
+explicit common-temperature assumption. Retain heating/cooling disagreements,
+the narrow cold span and the later multimeter/reference options. The actual
+internal B was not archived: those 3988 K reads sampled unused external 0x008A.
+Separate Oct 9 debugger reads found internal 0x007F B=3988 K on all six; coefficient
+programming/readback now use 0x007F. Defaults remain unchanged and are controller
+configuration, not measured slopes. Explain R25/B fit constraints and the
+independent-reference procedure. TEC 0x007E at factory 100% matched 18/25/32°C
+targets; retain it and add no TEC field or LD calibration rename. No automatic
+calibration writes, range changes or PID tuning.
+Keep `ntc_coeff_pct_per_c` in %/C at 25 C and distinguish PCB settings from
+actual powered readback (null while off). Retain existing coefficient conversion,
+first-start/settings-update synchronization and optional app NVS persistence.
 
 Deliver a preserved, readable notebook, synchronized supporting documentation,
 and an archived-only replay verification report once the required notebook-flow

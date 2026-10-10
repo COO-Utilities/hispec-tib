@@ -376,6 +376,9 @@ rounding and programs it during existing profile preparation or explicit
 driver-backed settings updates. Status reads do not program profiles; MCU startup
 does not add controller writes. `app_settings.c` persists the coefficient in a
 separate per-channel NVS record without changing existing calibration records.
+Coefficient I/O uses internal LD NTC register 0x007F. External NTC 0x008A is
+unused. Live internal reads on all six drivers returned B=3988 K, matching the
+retained defaults; see [the report](temp_test_result.md).
 
 ## Implemented vs Intended
 

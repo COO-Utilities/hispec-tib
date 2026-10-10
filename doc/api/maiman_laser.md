@@ -49,14 +49,22 @@ until preparation succeeds. Range-only settings changes stop emission and defer
 programming until next preparation; combined driver-backed edits program now.
 
 `ntc_coeff_pct_per_c` is PCB-owned resistance change in %/°C at 25°C. Profile
-preparation translates it to rounded integer Maiman B and writes register 0x008A
-after the TEC current limit, before target/bounds/PID programming. Failed writes
+preparation translates it to rounded integer Maiman B and writes the internal LD
+NTC register 0x007F after the TEC current limit, before target/bounds/PID programming.
+External NTC register 0x008A is unused in this system. Failed writes
 leave preparation false. Explicit coefficient edits use the existing settings
 stop/power/program flow. Engineering status reads controller configuration before
 or after preparation; bank-off readbacks are null. Reads translate controller B
-back to the same units. No boot
-programming or EEPROM SAVE is added. App NVS owns optional persistence; see
+back to the same units. The six internal registers read B=3988 K on 2026-10-09,
+matching the retained defaults. No boot programming or EEPROM SAVE is added.
+App NVS owns optional persistence; see
 [settings](../settings.md) and [the thermal comparison](../temp_test_result.md).
+
+Raw service names `NTC_COEFFICIENT` and `NTC_B25_100_COEFFICIENT` select external
+0x008A; `INTERNAL_LD_NTC_SENSOR` selects internal 0x007F. They retain their
+literal register meanings. LD `current_cal_pct` uses 0x0088. TEC calibration
+0x007E remains an engineering getter; the Oct 9 trial supports retaining factory
+100% and adding no setting or rename.
 
 At 115200 baud, the former ordinary path's six reads and sixteen writes require
 about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One

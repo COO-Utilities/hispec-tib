@@ -959,7 +959,9 @@ The set diode current is `i_mA`; measured TEC current is `tec_ma`, both in mA.
 `ntc_coeff_pct_per_c` are controller readbacks whenever powered, including before
 first start; all are `null` while off. `laser/settings` always reports PCB
 configuration. The NTC readback translates controller B to resistance %/°C at
-25°C. `tec_temp_set_c` is the live target, not the configured startup default.
+25°C. Coefficient I/O uses internal LD NTC register 0x007F. External NTC 0x008A
+is unused.
+`tec_temp_set_c` is the live target, not the configured startup default.
 With `powered:false`, raw zeros/false are placeholders. Failed reads return errors.
 
 
@@ -1137,8 +1139,10 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     1–65535 K. The constant-B conversion is `B = round(-coefficient * 298.15² / 100)`.
     Accepted settings are normalized to `-100 * B / 298.15²`; query to see the
     representable value. All six compiled defaults are −4.486271 %/°C, retaining
-    the archived controller B=3988 equivalents rather than claiming measured
-    thermistor calibration. No raw-B host field or old-key alias is exposed.
+    B=3988 K read from all six **internal LD** registers on 2026-10-09.
+    Programming and engineering readback both use 0x007F. These values describe
+    controller configuration, not measured thermistor slopes. No raw-B host field
+    or old-key alias is exposed.
     Changes follow ordinary stop-before-profile-update and optional app NVS
     persistence. No new EEPROM SAVE or MCU-startup programming is added.
   - Non-Driver settings:

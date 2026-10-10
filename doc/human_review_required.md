@@ -9,13 +9,13 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
-- [ ] Bench-validate PCB-owned `ntc_coeff_pct_per_c` synchronization: first
-  explicit start after bank power-up, explicit settings edits, failed profile
-  writes, persistence/reboot and reset. Compare configured versus actual readback
-  in %/C; defaults preserve the archived B=3988 equivalents. Temporary native
-  conversion/profile/NVS checks, Python payload checks and the Nucleo build pass.
-  Datasheet −4.4 %/C and PID/current-limit differences remain comparisons, not
-  automatic tuning or a measured thermistor calibration. No hardware was touched.
+- [ ] Validate H's corrected internal LD coefficient I/O after flashing: both
+  programming and readback use 0x007F, replacing unused external 0x008A.
+  Oct 9 live reads returned B=3988 K on all six, matching retained defaults;
+  Nucleo build passes. Check synchronization, failed writes, persistence/reset
+  and powered/off readback. 1270j TEC calibration 100% matched three targets;
+  reversible 99% trials and verified restoration require no new setting or LD
+  rename. Independent R25/slope calibration remains unmeasured. See the report.
 - [ ] Bench-check heater override-on/off temperature observation with the bank
   powered and unpowered, including shared-bus contention and return to auto.
   Overrides enforce relay output before polling and never wake the bank;
@@ -171,8 +171,9 @@ LLMs Agents: Do NOT change heading names in this file.
 - Decide whether a controlled PID comparison is merited for Aero DFB diodes
   using 100/1000/0 rather than Maiman's 20/1000/1000 DFB example. FLC already
   uses that example. Confirm the 2330 sheet's ambiguous coefficient units with
-  the vendor before adopting −4.4 %/C as calibration. Defaults retain archived
-  coefficients; the report does not establish an instability cause.
+  the vendor before adopting −4.4 %/C as calibration. All six internal B registers
+  now read 3988 K, matching the retained defaults. Physical R25/slope calibration
+  remains open; the report does not establish an instability cause.
 - Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
   actuator response, illuminated PD noise, and dark-based error estimates.
   No extra illuminated-stream settling holdoff is used. The existing overlay
