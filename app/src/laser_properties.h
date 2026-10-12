@@ -31,6 +31,7 @@ typedef struct {
 typedef struct laserprops_t {
     const char *name;
     const char *model_number;
+    const char *serial_number;
     double nominal_current_ma;
     double max_current_ma;
     double dne_current_ma;
@@ -57,6 +58,7 @@ static const tec_pid_t TEC_PID_DFB = {20, 1000, 1000};
 static const laserprops_t LASER_1028 = {
     .name = "1028",
     .model_number = "FLPD-1028-50-DFB-BTF",
+    .serial_number = "BF69016",
     .threshold_current_ma = 14.5,
     .nominal_current_ma = 250.0,
     .max_current_ma = 250.0,
@@ -72,13 +74,14 @@ static const laserprops_t LASER_1028 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 30.0,
-    /* Internal B=3988 K; sheet -4.4 %/C; BF69016 report has no slope. */
-    .ntc_coeff_pct_per_c = -4.486271186149909,
+    // sheet -4.4 (%/C inferred, printed 1/C). Test report has no slope measurement.
+    .ntc_coeff_pct_per_c = -4.4,
 };
 
 static const laserprops_t LASER_2330 = {
     .name = "2330",
     .model_number = "FLPD-2330-03-DFB-BTF",
+    .serial_number = "D4520009",
     .threshold_current_ma = 24.9,
     .nominal_current_ma = 120.0,
     .max_current_ma = 120.0,
@@ -94,78 +97,100 @@ static const laserprops_t LASER_2330 = {
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 30.0,
-    /* Internal B=3988 K; sheet -4.4 (%/C inferred, printed 1/C).
-     * D4520009 report has no slope measurement.
-     */
-    .ntc_coeff_pct_per_c = -4.486271186149909,
+    // sheet -4.4 (%/C inferred, printed 1/C). Test report has no slope measurement.
+    .ntc_coeff_pct_per_c = -4.4,
 };
 
 static const laserprops_t LASER_1270 = {
     .name = "1270",
     .model_number = "1270LD-1-0-0",
-    .threshold_current_ma = 8.0,
-    .nominal_current_ma = 60.0,
-    .max_current_ma = 60.0,
+    .serial_number = "8881AFR",
+    .threshold_current_ma = 13.0,
+    .nominal_current_ma = 52.0,
+    .max_current_ma = 65.0,
     .dne_current_ma = 75.0,
     .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
-    .wavelength_nm = 1270.0,
-    .test_monitor_current_ua = LASERPROP_NA,
-    .efficiency_mw_per_ma = 0.192,
+    .wavelength_nm = 1270.52,
+    .test_monitor_current_ua = 90,
+    .efficiency_mw_per_ma = 0.26,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    /* Internal B=3988 K; Aero1270 sheet has no slope; no unit report. */
-    .ntc_coeff_pct_per_c = -4.486271186149909,
+    // Internal B=3900 K on both 1430 drivers; per email communication
+    .ntc_coeff_pct_per_c = -100.0 * 3900.0 / (298.15*298.15)
 };
 
-static const laserprops_t LASER_1430 = {
+static const laserprops_t LASER_1430YJ = {
     .name = "1430",
     .model_number = "1430LD-1-0-0",
-    .threshold_current_ma = 8.0,
-    .nominal_current_ma = 60.0,
+    .serial_number = "8897ACR",
+    .threshold_current_ma = 8.0, //8897ACR=8mA 8895ACR=7mA
+    .nominal_current_ma = 49.0,  //8897ACR=8mA 8895ACR=7mA
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
     .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
-    .wavelength_nm = 1430.0,
-    .test_monitor_current_ua = LASERPROP_NA,
-    .efficiency_mw_per_ma = 0.192,
+    .wavelength_nm = 1429.64, //8897ACR=1429.64 8895ACR=1429.56
+    .test_monitor_current_ua = 143, //8897ACR=143 8895ACR=159
+    .efficiency_mw_per_ma = 0.24,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    /* Internal B=3988 K on both 1430 drivers; sheet has no slope.
-     * Unit reports are unavailable.
-     */
-    .ntc_coeff_pct_per_c = -4.486271186149909,
+    // Internal B=3900 K on both 1430 drivers; per email communication
+    .ntc_coeff_pct_per_c = -100.0 * 3900.0 / (298.15*298.15)
+};
+
+static const laserprops_t LASER_1430HK = {
+    .name = "1430",
+    .model_number = "1430LD-1-0-0",
+    .serial_number = "8895ACR",
+    .threshold_current_ma = 7.0, //8897ACR=8mA 8895ACR=7mA
+    .nominal_current_ma = 49,
+    .max_current_ma = 60.0,
+    .dne_current_ma = 72.0,
+    .tec_curr_lim_a = 1.0,
+    .tec_pid = TEC_PID_DEFAULT,
+    .wavelength_nm = 1429.56, //8897ACR=1429.64 8895ACR=1429.56
+    .test_monitor_current_ua = 159, //8897ACR=143 8895ACR=159
+    .efficiency_mw_per_ma = 0.24,
+    .dlambda_dA_nm_per_ma = 0.003,
+    .dlambda_dT_nm_per_k = 0.08,
+    .operating_temp_range_c = {17.0, 38.0},
+    .operating_temp_c = 25.0,
+    .thermistor_kohm = 10.0,
+    .isolation_db = 25.0,
+    // Internal B=3900 K on both 1430 drivers; per email communication
+    .ntc_coeff_pct_per_c = -100.0 * 3900.0 / (298.15*298.15)
 };
 
 static const laserprops_t LASER_1510 = {
     .name = "1510",
     .model_number = "1510LD-1-0-0",
-    .threshold_current_ma = 8.0,
-    .nominal_current_ma = 60.0,
+    .serial_number = "8882ACT",
+    .threshold_current_ma = 6.0,
+    .nominal_current_ma = 47.0,
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
     .tec_curr_lim_a = 1.0,
     .tec_pid = TEC_PID_DEFAULT,
-    .wavelength_nm = 1510.0,
-    .test_monitor_current_ua = LASERPROP_NA,
-    .efficiency_mw_per_ma = 0.192,
+    .wavelength_nm = 1509.33,
+    .test_monitor_current_ua = 475,
+    .efficiency_mw_per_ma = 0.24,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
     .operating_temp_c = 25.0,
     .thermistor_kohm = 10.0,
     .isolation_db = 25.0,
-    /* Internal B=3988 K; Aero1510 sheet has no slope; no unit report. */
-    .ntc_coeff_pct_per_c = -4.486271186149909,
+    // Internal B=3900 K on both 1430 drivers; per email communication
+    .ntc_coeff_pct_per_c = -100.0 * 3900.0 / (298.15*298.15)
 };
 
 #endif // LASER_PROPERTIES_H
