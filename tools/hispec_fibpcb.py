@@ -3748,7 +3748,8 @@ class ThroughputMonitor:
         Use ``%matplotlib widget`` in Jupyter and retain the animation reference.
         An all-channel collector requires a channel selection. Shaded bands show
         reported uncertainties, not confidence intervals adjusted for filtering.
-        Throughput has an autoscaled linear trace and an independent fixed dB trace.
+        Throughput has a locally autoscaled linear trace bounded below by zero
+        and an independent fixed dB trace.
         Current and attenuation use run settings (or supplied limits for an
         attached collector); no PCB commands are issued by this plot. Detector S/N uses
         the individual PD reading/error; total throughput S/N includes calibration error.
@@ -3924,6 +3925,8 @@ class ThroughputMonitor:
                         ax.update_datalim(vertices[np.all(np.isfinite(vertices), axis=1)])
             for ax in (*axes, atten_ax):
                 ax.autoscale_view()
+            if tp_ax.get_autoscaley_on() and tp_ax.get_ylim()[0] < 0:
+                tp_ax.set_ylim(0, max(tp_ax.get_ylim()[1], 1e-12), auto=True)
 
         animation = FuncAnimation(fig, update, interval=interval_s * 1000,
                                   cache_frame_data=False)
