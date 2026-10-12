@@ -1386,11 +1386,11 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 	}
 
 	*transmission = devices_route_loss_default(route, laser);
-	/* An unknown source uses source-independent defaults, never another laser's
-	 * override. The persisted route/laser key format remains unchanged.
+	/* Passive illumination has its own "none" override. Named sources never
+	 * inherit that broadband record; the persisted route/source format is shared.
 	 */
 	if (laser == NULL) {
-		return 0;
+		laser = "none";
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);

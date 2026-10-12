@@ -440,8 +440,10 @@ At measurement start, the command resolves route transmissions from explicit
 settings first, then compiled path defaults in `devices.c`, then unity for an
 unspecified path. Defaults stay in flash and consume no override slots; settings
 owns override persistence. MM/SM return defaults are source-independent. Passive
-capture applies them too, but cannot infer emission or throughput. Known lasers
-may override returns with existing route/laser records.
+capture selects an explicit route/`none` override before these defaults, but
+cannot infer emission or throughput. Known lasers use independent route/laser
+records and never inherit a broadband `none` override. The bounded settings
+table holds 40 records with the existing per-record RAM/NVS format.
 
 The command validates both routes, calls `throughput_monitor_prepare_start` to
 check exclusions and quiesce the target, applies launch (if requested) and return

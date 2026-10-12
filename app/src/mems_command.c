@@ -73,7 +73,7 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
 }
 
 static const char *const route_loss_laser_names[] = {
-    "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k",
+    "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k", "none",
 };
 
 static const struct coo_json_string_choice mems_switch_state_choices[] = {
@@ -394,10 +394,10 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
     }
 
     if (split_rc == 0 && laser_rc == 0) {
-        return coo_cmd_error(out, cmd, "route_loss uses split or laser value");
+        return coo_cmd_error(out, cmd, "route_loss uses split or source value");
     }
     if (laser_rc == -EALREADY) {
-        return coo_cmd_error(out, cmd, "supply exactly one laser loss per request");
+        return coo_cmd_error(out, cmd, "supply exactly one source loss per request");
     }
     if (split_rc == -ERANGE || laser_rc == -ERANGE) {
         return coo_cmd_error(out, cmd, "route_loss out of range");

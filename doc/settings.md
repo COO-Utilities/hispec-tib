@@ -41,8 +41,9 @@ Current app NVS records include:
 - One laser thermistor-coefficient record per channel (`ntc_coeff_pct_per_c`,
   double in %/°C at 25°C, NVS IDs 0x0380–0x0385). Missing or invalid values
   retain the compiled coefficient. Reset deletes this record with channel policy.
-- One route-loss table-entry record per configured route/laser output, up to
-  the fixed route-loss table limit.
+- One route-loss table-entry record per configured route/source or split output,
+  up to 40 records. This covers both TIB channel ledgers (32 entries) and six AS
+  split outputs. Broadband/passive records use source `none` in the same format.
 - One MEMS intent record containing per-switch static state intent, per-switch
   direct-toggle restart metadata, and per-channel split restart metadata.
 
@@ -117,6 +118,9 @@ silently reused on another.
   paths use transmission 0.98/0.60. Other route/laser pairs use 1.0. Defaults
   are constants in flash and occupy no RAM/NVS override slots. Explicit
   records replace defaults, including transmission 1.0 (API loss 0).
+  Passive measurements select an explicit `none` record before return defaults;
+  named lasers do not inherit `none`. CAL launch records can be stored for the
+  broadband source without implying that its source power is known.
   Throughput captures effective route losses at start; restart to pick up a
   changed override. The NVS layout and schema are unchanged.
 - MEMS switch intent defaults to absent. A switch with no stored intent defaults

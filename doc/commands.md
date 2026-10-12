@@ -669,7 +669,8 @@ while serial guard is active and attenuator DAC-range clamping.
       "1430yj": 0.07,
       "1430hk": 0.0,
       "1510h": 0.0,
-      "2330k": 0.0
+      "2330k": 0.0,
+      "none": 0.4
     }
   }
   ```
@@ -681,8 +682,8 @@ while serial guard is active and attenuator DAC-range clamping.
   }
   ```
 
-Route-loss records are app settings keyed by route name and laser name or split.
-Each set request accepts exactly one top-level laser field, or one `split` tuple.
+Route-loss records are app settings keyed by route name and source name or split.
+Each set request accepts exactly one top-level named laser, `none`, or `split` tuple.
 The `lasers` object is a query response only. `persist` requires a loss value.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
@@ -690,6 +691,15 @@ transmission must remain positive. Missing records use the nominal TIB defaults
 in `devices.c`, documented in [hardware.md](hardware.md#tib-route-loss-defaults),
 for known laser AO/FEI paths and source-independent MM/SM returns; other route/laser pairs report zero loss. Explicit
 records replace the complete default, including an explicit zero loss.
+
+`none` stores a broadband/passive source record, for example
+`{"route":"yj_cal_to_yj_ao","none":"0.5 dB","persist":false}`.
+It appears in the existing `lasers` query map. A passive return measurement uses
+its route's `none` override, falling back to the compiled MM/SM default. Named
+lasers use only their own overrides and never inherit `none`. A CAL launch loss
+can be stored and queried, but passive capture still has no known source power
+from which to calculate throughput. The fixed table holds 40 records, including
+split outputs; records keep the existing NVS format.
 
 Strings ending in `dB`, `db`, or `DB` accept nonnegative finite loss in dB in the
 same field. Firmware stores transmission: `tx = 1 - loss` for numeric inputs,
@@ -1993,11 +2003,12 @@ Invalid input or an exclusion failure leaves an existing run untouched.
 
 All measurements divide detected power and its error by the selected return
 transmission. A known laser selects its route/laser override when present;
-unknown illumination uses the generic return defaults (MM 0.98, SM 0.60), without
-choosing another source's calibration. Passive PD voltage, corrected power,
+unknown illumination selects the route's explicit `none` override, or the generic
+return default (MM 0.98, SM 0.60) when absent. Passive PD voltage, corrected power,
 errors, and detector S/N remain available; source power, wavelength, launch
 transmission, and throughput are NaN/null because emission is unknown. No new
-persistent route key or telemetry field is introduced. A return-only example:
+telemetry field is introduced. The `none` source uses the existing route-loss
+record format. A return-only example:
 ```json
 {"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
 ```

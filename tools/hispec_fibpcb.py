@@ -4319,6 +4319,8 @@ class HispecFibPcb:
         For example, loss=0.5 and loss="3.0103 dB" describe half the light lost.
         Split tuples use the same representations for each output. Prefer dB
         strings when a fractional value would lose precision near an endpoint.
+        Use laser="none" for a broadband/passive source record. Named lasers
+        keep independent records and do not inherit this override.
         """
         if laser is None and loss is None and split is None and not persist:
             data = self._request_json("mems/route/loss", {"route": route})
@@ -4330,14 +4332,14 @@ class HispecFibPcb:
         payload: dict[str, Any] = {"route": route, "persist": persist}
         if split is not None:
             if laser is not None or loss is not None:
-                raise HispecFibError("route loss uses either split or a laser value")
+                raise HispecFibError("route loss uses either split or a source value")
             if len(split) != 3:
                 raise HispecFibError("split route loss must contain three values")
             payload["split"] = list(split)
         else:
             if laser is None or loss is None:
                 raise HispecFibError("laser and loss are required for non-split route loss")
-            _require_choice("laser", laser, LASER_NAMES)
+            _require_choice("laser", laser, (*LASER_NAMES, "none"))
             if not isinstance(loss, str):
                 loss = _require_float("loss", loss, 0.0, 1.0)
                 if loss == 1.0:
