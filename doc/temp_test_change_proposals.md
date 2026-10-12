@@ -217,9 +217,7 @@ framework is proposed.
 
 Status: implemented, including the owner-authorized correction from unused
 external NTC 0x008A to internal LD NTC 0x007F for programming and readback.
-All six actual internal registers read B=3988 K on 2026-10-09, matching the
-retained defaults. Archived 3988 reads sampled external 0x008A and remain
-qualified as such; internal values were not archived. No external NTC is installed.
+No external NTC is installed.
 
 `ntc_coeff_pct_per_c` uses resistance %/°C at 25°C for configured settings and
 engineering readback. Internally `alpha_pct = -100 * B / 298.15²`; writes round B
@@ -237,8 +235,9 @@ PCB settings own coefficient intent and persistence in the existing separate
 eight-byte per-channel NVS record. Existing profile preparation synchronizes it
 after the TEC current limit, before target/bounds/PID, at the first explicit
 start after bank power-up and on explicit driver-backed settings updates.
-MCU startup adds no programming or controller EEPROM SAVE. Defaults describe
-programmed internal values; they are not measured thermistor slopes.
+MCU startup adds no programming or controller EEPROM SAVE. Compiled defaults
+use vendor values: −4.4 %/°C for FLC and B=3900 K for Aero; they are not
+unit-specific thermistor measurements.
 
 The report and uncommitted review deck quantify relative R25-only, coefficient-only
 and joint fits, including heating/cooling differences, under the owner's common

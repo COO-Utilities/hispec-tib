@@ -11,8 +11,7 @@ LLMs Agents: Do NOT change heading names in this file.
 ## PCB Validation
 - [ ] Validate H's corrected internal LD coefficient I/O after flashing: both
   programming and readback use 0x007F, replacing unused external 0x008A.
-  Oct 9 live reads returned B=3988 K on all six, matching retained defaults;
-  Nucleo build passes. Check synchronization, failed writes, persistence/reset
+  Check synchronization of vendor-based defaults, failed writes, persistence/reset
   and powered/off readback. 1270j TEC calibration 100% matched three targets;
   reversible 99% trials and verified restoration require no new setting or LD
   rename. Independent R25/slope calibration remains unmeasured. See the report.
@@ -171,8 +170,7 @@ LLMs Agents: Do NOT change heading names in this file.
 - Decide whether a controlled PID comparison is merited for Aero DFB diodes
   using 100/1000/0 rather than Maiman's 20/1000/1000 DFB example. FLC already
   uses that example. Confirm the 2330 sheet's ambiguous coefficient units with
-  the vendor before adopting −4.4 %/C as calibration. All six internal B registers
-  now read 3988 K, matching the retained defaults. Physical R25/slope calibration
+  the vendor before adopting −4.4 %/C as calibration. Physical R25/slope calibration
   remains open; the report does not establish an instability cause.
 - Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
   actuator response, illuminated PD noise, and dark-based error estimates.

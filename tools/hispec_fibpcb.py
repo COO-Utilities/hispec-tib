@@ -499,6 +499,7 @@ class TecPid(ResponseRepr):
 class LaserSettings(ResponseRepr):
     name: str
     model: str
+    ld_serial: str
     expected_serial: int
     nominal_current_ma: float
     max_current_ma: float
@@ -4414,6 +4415,8 @@ class HispecFibPcb:
     ) -> LaserSettings | CommandOk:
         """Query or update per-laser policy, optionally persisting it to app NVS.
 
+        ld_serial is the read-only manufacturer diode serial. expected_serial
+        is the separately configured numeric Maiman driver serial.
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
@@ -4471,6 +4474,7 @@ class HispecFibPcb:
             return LaserSettings(
                 name=str(data["name"]),
                 model=str(settings["model"]),
+                ld_serial=str(settings["ld_serial"]),
                 expected_serial=int(settings["expected_serial"]),
                 nominal_current_ma=float(settings["nominal_current_ma"]),
                 max_current_ma=float(settings["max_current_ma"]),

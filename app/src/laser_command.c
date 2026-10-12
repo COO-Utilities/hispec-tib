@@ -444,7 +444,9 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	return coo_cmd_ok(out, cmd);
 }
 
-/* Format a settings snapshot; unavailable datasheet values remain JSON null. */
+/* Format a settings snapshot; ld_serial is compiled diode identity, not driver readback.
+ * Unavailable datasheet values remain JSON null. No I/O or state changes.
+ */
 static int laser_settings_payload(char *payload, size_t payload_len,
 				  enum hispec_laser_id id,
 				  const struct app_laser_channel_settings *settings)
@@ -454,7 +456,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 
 	if (coo_json_append(payload, payload_len, &off,
 		"{\"name\":\"%s\",\"settings\":{"
-		"\"model\":\"%s\",\"expected_serial\":%u,"
+		"\"model\":\"%s\",\"ld_serial\":\"%s\",\"expected_serial\":%u,"
 		"\"nominal_current_ma\":%.3f,"
 		"\"max_current_ma\":%.3f,\"current_cal_pct\":%.3f,"
 		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
@@ -466,7 +468,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"tec_pid\":{\"p\":%u,\"i\":%u,\"d\":%u},"
 		"\"disable_tec_at_autooff\":%s,"
 		"\"ntc_coeff_pct_per_c\":",
-		hispec_laser_name(id), p->model_number,
+		hispec_laser_name(id), p->model_number, p->ld_serial,
 		settings->expected_serial,
 		(double)p->nominal_current_ma,
 		(double)p->max_current_ma,

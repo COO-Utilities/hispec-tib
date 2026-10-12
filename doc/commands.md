@@ -976,12 +976,13 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     "name": "<lasername>",
     "settings": {
       "model": "<string>",
+      "ld_serial": "<string>",
       "expected_serial": 0,
       "nominal_current_ma": 0.0,
       "max_current_ma": 0.0,
       "current_cal_pct": 0.0,
-      "fractional_noise": 0.03,
-      "constant_noise_mw": 0.435675,
+      "fractional_noise": 0.001,
+      "constant_noise_mw": 0.13505925,
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
@@ -997,7 +998,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
         "d": 0
       },
       "disable_tec_at_autooff": true,
-      "ntc_coeff_pct_per_c": -4.486271,
+      "ntc_coeff_pct_per_c": -4.4,
       "dlambda_dT_nm_per_k": 0.0,
       "dlambda_dA_nm_per_ma": 0.0,
       "autooff_s": 0,
@@ -1018,10 +1019,10 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "efficiency_mw_per_ma": 0.0,
       "wavelength_nm": 0.0,
       "current_cal_pct": 0.0,
-      "fractional_noise": 0.03,
-      "constant_noise_mw": 0.435675,
+      "fractional_noise": 0.001,
+      "constant_noise_mw": 0.13505925,
       "tec_curr_lim_a": 0.0,
-      "ntc_coeff_pct_per_c": -4.486271,
+      "ntc_coeff_pct_per_c": -4.4,
       "default_operating_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
       "tec_pid": {
@@ -1050,9 +1051,10 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     constant_noise_mw)` before converting power and uncertainty to photon flux.
     These fields do not program Maiman or stop emission by themselves; the
     settings command still stops throughput monitoring.
-  - Defaults are 3% fractional plus a constant 1% of each diode's **compiled**
-    maximum modeled power. Constant defaults in mW: 1028 = 0.435675;
-    1270, both 1430 channels, and 1510 = 0.086320; 2330 = 0.029481.
+  - Defaults are 0.1% fractional plus a constant 0.31% of each diode's **compiled**
+    maximum modeled power. Constant defaults in mW: 1028 = 0.13505925;
+    1270 = 0.041912; 1430yj = 0.038688; 1430hk = 0.039432;
+    1510 = 0.040176; 2330 = 0.00913911.
     The baseline does not change when current output or user property settings
     change. `persist:true` saves both fields with that laser's policy.
   - It is the user's responsibility to ensure the triple of
@@ -1102,6 +1104,10 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     driver-backed writes until the operator confirms the physical association
     and updates `expected_serial`; firmware does not learn or persist changed
     serials by itself. A device-ID mismatch remains an identity fault.
+  - `ld_serial` is the read-only manufacturer diode serial from the compiled
+    property table. It is independent of the numeric Maiman driver serial and
+    is not stored in app NVS. The two 1430 diodes have distinct properties:
+    `1430yj` uses `8897ACR`; `1430hk` uses `8895ACR`.
   - If the laser bank is off, firmware powers it, applies driver-backed settings,
     verifies them as practical, and then restores the previous bank power state.
     Driver-backed settings include `max_current_ma`, `current_cal_pct`,
@@ -1131,17 +1137,17 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `persist` alone is invalid. `tec_pid` accepts only `p`, `i`, and `d`.
     `current_cal_pct` is the canonical calibration field.
   - Read-only and unknown settings return an error before changing laser or
-    throughput state. Read-only fields include `model`, `thermistor_kohm`,
+    throughput state. Read-only fields include `model`, `ld_serial`, `thermistor_kohm`,
     `isolation_db`, and `emit_total_s`. Use `laser/tune`
     to set `tune_nm`; `name` belongs outside the settings object as the selector.
   - `ntc_coeff_pct_per_c` is writable resistance change in %/°C at 25°C.
     It must be finite and negative, mapping to a rounded internal Maiman B in
     1–65535 K. The constant-B conversion is `B = round(-coefficient * 298.15² / 100)`.
     Accepted settings are normalized to `-100 * B / 298.15²`; query to see the
-    representable value. All six compiled defaults are −4.486271 %/°C, retaining
-    B=3988 K read from all six **internal LD** registers on 2026-10-09.
-    Programming and engineering readback both use 0x007F. These values describe
-    controller configuration, not measured thermistor slopes. No raw-B host field
+    representable value. Compiled FLC defaults are −4.4 %/°C (rounded B=3911 K);
+    all four Aero channels use vendor B=3900 K, equivalent to −4.387276 %/°C.
+    These are vendor-based defaults, not unit-specific thermistor measurements.
+    Programming and engineering readback both use 0x007F. No raw-B host field
     or old-key alias is exposed.
     Changes follow ordinary stop-before-profile-update and optional app NVS
     persistence. No new EEPROM SAVE or MCU-startup programming is added.

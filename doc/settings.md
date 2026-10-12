@@ -91,11 +91,16 @@ silently reused on another.
   RMS. Manual replacement without RMS returns to that default.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
-- Laser optical-power uncertainty defaults to `fractional_noise=0.03` and
-  `constant_noise_mw=0.01 * (max_current_ma - threshold_current_ma) * efficiency_mw_per_ma`,
+- Laser optical-power uncertainty defaults to `fractional_noise=0.001` and
+  `constant_noise_mw=0.0031 * (max_current_ma - threshold_current_ma) * efficiency_mw_per_ma`,
   using `default_laser_props` from the compiled table, never mutable settings.
-  The resulting floors are 0.435675 mW (1028), 0.086320 mW (1270, both 1430,
-  1510), and 0.029481 mW (2330). These app-only fields do not program Maiman.
+  The resulting floors are 0.13505925 mW (1028), 0.041912 mW (1270),
+  0.038688 mW (1430yj), 0.039432 mW (1430hk), 0.040176 mW (1510), and
+  0.00913911 mW (2330). These app-only fields do not program Maiman.
+- Laser `ld_serial` is the compiled manufacturer diode identity, distinct from
+  the numeric expected Maiman driver serial. It is read-only and not persisted.
+- Laser NTC defaults use vendor values: −4.4 %/°C for FLC and B=3900 K for Aero.
+  Valid persisted property and NTC overrides continue to replace compiled defaults.
 - Laser expected serials default to the initial known driver/diode association.
   Operators may update the value through `laser/settings` after confirming a
   replacement driver is physically associated with the intended diode.

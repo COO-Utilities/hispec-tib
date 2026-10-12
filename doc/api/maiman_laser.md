@@ -55,8 +55,8 @@ External NTC register 0x008A is unused in this system. Failed writes
 leave preparation false. Explicit coefficient edits use the existing settings
 stop/power/program flow. Engineering status reads controller configuration before
 or after preparation; bank-off readbacks are null. Reads translate controller B
-back to the same units. The six internal registers read B=3988 K on 2026-10-09,
-matching the retained defaults. No boot programming or EEPROM SAVE is added.
+back to the same units. Compiled defaults use vendor values: −4.4 %/°C for FLC
+and B=3900 K for Aero. No boot programming or EEPROM SAVE is added.
 App NVS owns optional persistence; see
 [settings](../settings.md) and [the thermal comparison](../temp_test_result.md).
 

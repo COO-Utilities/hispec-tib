@@ -135,8 +135,8 @@ struct app_nvs_laser_policy {
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
 	&LASER_1028,
 	&LASER_1270,
-	&LASER_1430,
-	&LASER_1430,
+	&LASER_1430YJ,
+	&LASER_1430HK,
 	&LASER_1510,
 	&LASER_2330,
 };

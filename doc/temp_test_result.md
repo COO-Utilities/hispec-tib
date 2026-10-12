@@ -223,10 +223,8 @@ reference and target to 10 kΩ at 25°C and B=3911 K, the rounded equivalent of 
 FLC −4.4 %/°C sheet value. These are **equivalent errors under that model**,
 including controller conversion/calibration effects, not measured resistances.
 A different common B scales inferred R25 errors but leaves the relative B-only
-ratios below unchanged. Separate Oct 9 reads found internal B=3988 K on all six.
-Using that common B changes the R25-only bounds to approximately 9.66–10.44 kΩ,
-still within ±5%; it does not establish their values during the archive. Neither
-model identifies physical resistor error separately from controller electronics.
+ratios below unchanged. This model does not identify physical resistor error
+separately from controller electronics.
 
 | Diode | R25-only error %, run 1 / 2 | Coefficient-magnitude change %, run 1 / 2 | Heating minus cooling residual °C, run 1 / 2 |
 | --- | ---: | ---: | ---: |
@@ -306,7 +304,7 @@ FLC unit reports:
 | [BF69016 report](datasheets/FLPD-1028-50-DFB-BTF_%23BF69016_testreport.pdf), p. 1 | R25 10,000 Ω at 25°C; threshold 14.5 mA; bias/maximum 250 mA; test operating temperature 25°C; no coefficient/B measurement |
 | [FLPD-2330-03-DFB-BTF](datasheets/FLPD-2330-03-DFB-BTF.pdf), p. 2 | R25 9.5–10.5 kΩ, coefficient printed −4.4 with units 1/°C; operating 10–40°C, diode maximum 120 mA, TEC maximum 1.2 A |
 | [D4520009 report](datasheets/FLPD-2330-03-DFB-BTF_%23D4520009_testreport.pdf), p. 1 | R25 10,000 Ω at 25°C; threshold 24.9 mA; bias/maximum 120 mA; test operating temperature 25°C; no coefficient/B measurement |
-| [Aero 1270](datasheets/1270-nm-laser-diode-Model-1-Datasheet.pdf), [1430](datasheets/1430-nm-laser-diode-Model-1-Datasheet.pdf), [1510](datasheets/1510-nm-laser-diode-Model-1-Datasheet.pdf), p. 1, rev. 08/23 | R25 9.5–10.5 kΩ; no thermistor slope; operating current typical 60 mA, maximum 70 mA; TEC maximum 1 A; case operating −20 to +60°C |
+| [Aero 1270](datasheets/1270-nm-laser-diode-Model-1-Datasheet.pdf), [1430](datasheets/1430-nm-laser-diode-Model-1-Datasheet.pdf), [1510](datasheets/1510-nm-laser-diode-Model-1-Datasheet.pdf), p. 1, rev. 08/23, vendor annotations | R25 9.5–10.5 kΩ; B=3900 K; model-sheet operating current typical 60 mA, maximum 70 mA; TEC maximum 1 A; case operating −20 to +60°C |
 | Maiman, printed pp. 15–16, 19–20 (PDF pp. 16–17, 20–21) | PID examples, oscillation cautions, separate internal/external B registers, and an ambiguously named TEC calibration register; its effect needs live testing |
 
 The 2330 sheet's −4.4 is interpreted as **%/°C**, consistent with the 1028 sheet
@@ -318,42 +316,16 @@ the Aero case range does not widen the Maiman controlled-temperature range.
 
 #### Internal versus external coefficient: corrected mapping
 
-The system uses the **internal LD thermistor**. No external NTC is installed.
-All 273 successful archived engineering snapshots read **3988 K from external
-register 0x008A**, equivalent to −4.486271 %/°C at 25°C. They do not establish
-the internal coefficient during those runs. Internal LD B is **0x007F**. The
-SF manual's service-address equivalents are `0B0E` and `0A1F`, respectively.
+The system uses the **internal LD thermistor** at **0x007F** for coefficient
+programming and readback. No external NTC is installed; external register
+0x008A is unused. The SF manual's service-address equivalents are `0B0E` for
+internal LD B and `0A1F` for external B.
 
-Separate debugger reads on Oct 9 returned **B=3988 K from actual internal 0x007F
-on all six drivers**, with correct identities and successful readback. The probe
-redirected the encoded address before Modbus transmit; it did not substitute a
-value into the status response. This confirms the current programmed internal
-values, not a measurement of the thermistors' physical slopes.
-
-| Channel | Prior code metadata | Archived external B | Oct 9 internal B / vendor evidence |
-| --- | --- | --- | --- |
-| 1028y | −4.4 %/°C | 3988 K, unused | 3988 K; sheet −4.4 %/°C; BF69016 slope absent |
-| 2330k | −4.4 %/°C | 3988 K, unused | 3988 K; sheet −4.4 %/°C inferred; D4520009 slope absent |
-| 1270j / 1510h | Unavailable | 3988 K, unused | Both 3988 K; sheet slopes absent |
-| 1430yj / 1430hk | Unavailable | 3988 K, unused | Both 3988 K; sheet slopes absent |
-
-H originally connected public `ntc_coeff_pct_per_c` programming and readback to
-the unused external register. The correction selects **0x007F in both paths**,
-retaining the existing unit conversion, settings, persistence and programming
-flow. Defaults remain −4.486271 %/°C because they match the six actual internal
-readbacks. The external register remains available under its existing raw service
-names but has no role in the laser coefficient setting. No NTC coefficient was
-written during the live investigation; the corrected firmware was built, not
-flashed. No public field, flow or calibration value changed.
-
-The old FLC metadata did not program either coefficient. Today's programmed
-internal B=3988 is 1.97% above the rounded generic-sheet equivalent B=3911
-(or the sheet equivalent is 1.93% below the programmed value). Changing 3988 to
-3911 with equal R25 would shift conversion by approximately −0.19°C at 15°C,
-zero at 25°C and +0.31°C at 40°C. This compares **programmed conversion with a
-generic specification**; it does not establish actual thermistor disagreement
-or explain the observed regulation instability. No B or PID adjustment follows
-from it without an independent reference.
+Compiled defaults use vendor values: −4.4 %/°C for FLC (rounded B=3911 K) and
+B=3900 K for Aero. These are not unit-specific thermistor measurements.
+The existing unit conversion, app persistence and profile-programming flow
+remain unchanged. The external register remains available under its raw service
+names but has no role in the laser coefficient setting.
 
 #### Two calibration addresses and the live test
 

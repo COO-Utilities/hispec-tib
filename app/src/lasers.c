@@ -138,7 +138,7 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "yj1430",
 		.node_id = 4U,
 		.expected_device_id = 0x1113,
-		.properties = &LASER_1430,
+		.properties = &LASER_1430YJ,
 	},
 	[HISPEC_LASER_1430_HK] = {
 		.id = HISPEC_LASER_1430_HK,
@@ -146,7 +146,7 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 		.modbus_name = "hk1430",
 		.node_id = 3U,
 		.expected_device_id = 0x1113,
-		.properties = &LASER_1430,
+		.properties = &LASER_1430HK,
 	},
 	[HISPEC_LASER_1510_H] = {
 		.id = HISPEC_LASER_1510_H,
