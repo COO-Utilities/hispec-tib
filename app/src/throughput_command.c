@@ -267,19 +267,20 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 
 	/* Both paths are validated before disturbing an existing measurement. */
 	char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
-	const char *source = request.has_laser ? laser_name : NULL;
+	const char *source = request.has_laser ? laser_name : "generic";
 	if (snprintk(route, sizeof(route), "%s_to_%s", return_route->key.input_name,
 		return_route->key.output_name) >= (int)sizeof(route)) {
 		return coo_cmd_error(out, cmd, "return route key too long");
 	}
 	(void)app_settings_get_route_loss(route, source, &request.pd_route_tx);
-	request.laser_route_tx = NAN;
-	if (request.has_laser) {
+	request.launch_route_tx = NAN;
+	/* A selected passive launch has a path transmission even with unknown emission. */
+	if (launch_route != NULL) {
 		if (snprintk(route, sizeof(route), "%s_to_%s", launch_route->key.input_name,
 			launch_route->key.output_name) >= (int)sizeof(route)) {
 			return coo_cmd_error(out, cmd, "launch route key too long");
 		}
-		(void)app_settings_get_route_loss(route, source, &request.laser_route_tx);
+		(void)app_settings_get_route_loss(route, source, &request.launch_route_tx);
 	}
 	rc = throughput_monitor_prepare_start(&request);
 	if (rc != 0) {

@@ -47,7 +47,8 @@ struct app_mqtt_settings {
 #define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
-#define APP_ROUTE_LOSS_RECORD_COUNT 18
+/* Two TIB channels, 16 launch/return source pairs each. AS has its own PCB/NVS. */
+#define APP_ROUTE_LOSS_RECORD_COUNT 32
 #define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
 #define APP_ROUTE_LOSS_LASER_MAX_LEN 16
 #define APP_LASER_CHANNEL_COUNT 6
@@ -75,6 +76,11 @@ struct app_attenuator_physical_settings {
 	double rms_db;
 	/* Optional empirical dB residual correction; all zeros means disabled. */
 	float correction_coeff[ATTENUATOR_MODEL_CORRECTION_TERMS];
+};
+
+/** Fit acceptance policy; separate NVS record preserves calibration layout. */
+struct app_attenuator_fit_policy {
+	double max_fit_residual_db[APP_ATTENUATOR_PHYSICAL_COUNT];
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */
@@ -124,12 +130,12 @@ struct app_laser_channel_settings {
 	laserprops_t properties;
 	/* Throughput autolevel floor; manual current/level commands may go lower. */
 	double min_autolevel_current_ma;
-	double current_set_calibration_pct;
+	double current_cal_pct;
 	/* App-owned optical-power uncertainty; never programmed into Maiman. */
 	double fractional_noise;
 	double constant_noise_mw;
-	/* Last accepted Maiman driver serial. Used as a replacement diagnostic, not
-	 * as an operator-settable laser calibration value.
+	/* Operator-confirmed driver/diode association. Status may report a different
+	 * serial, but does not learn it or authorize writes to the replacement.
 	 */
 	uint16_t expected_serial;
 	bool disable_tec_at_autooff;
@@ -142,7 +148,7 @@ struct app_laser_settings {
 	struct app_laser_channel_settings channel[APP_LASER_CHANNEL_COUNT];
 };
 
-/** User-provided optical route transmission keyed by route and laser names. */
+/** User-provided optical route transmission keyed by route and source or split output. */
 struct app_route_loss_record {
 	bool configured;
 	char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
@@ -184,13 +190,13 @@ struct app_settings_snapshot {
 	struct app_ip_settings ip;
 	struct app_mqtt_settings mqtt;
 	struct app_attenuator_settings attenuator;
+	struct app_attenuator_fit_policy attenuator_fit[APP_ATTENUATOR_CHANNEL_COUNT];
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
 	struct app_route_loss_settings route_loss;
 	struct app_mems_settings mems;
 	uint32_t boot_count;
-	uint64_t last_known_utc_ms;
 	uint32_t mqtt_revision;
 };
 
@@ -227,6 +233,11 @@ void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
 void app_settings_get_mqtt(struct app_mqtt_settings *out);
 /** @brief Replace MQTT settings, increment reconnect revision, and optionally persist. */
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
+/** Copy acceptance policy under the settings mutex; no I/O. */
+void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out);
+/** Validate/update policy only; optional NVS write, never changes DAC outputs. */
+int app_settings_update_attenuator_fit(uint8_t channel, const struct app_attenuator_fit_policy *policy, bool persist);
+
 /** @brief Copy the current attenuator calibration snapshot. */
 void app_settings_get_attenuator(struct app_attenuator_settings *out);
 /**
@@ -288,9 +299,10 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
  * @brief Get effective route transmission, including compiled TIB defaults.
  *
  * Explicit RAM/NVS records override defaults, including transmission 1.0.
- * NULL laser selects source-independent return defaults only, without consulting
- * per-laser overrides. Unspecified paths return 1.0. May wait on the settings mutex;
- * performs no hardware or flash I/O. Throughput captures this value at start.
+ * Callers supply a named laser, "generic", or split-output key. Only an exact
+ * source override applies; named lasers never inherit a stored generic override.
+ * Unspecified paths return 1.0. May wait on the settings mutex; performs no
+ * hardware or flash I/O. Throughput captures this value at start.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission);
@@ -313,10 +325,7 @@ uint32_t app_settings_get_mqtt_revision(void);
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */
 void app_settings_increment_boot_count(void);
-/** @brief Return true and copy the last persisted UTC time if one is known. */
-bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms);
-/** @brief Store a known-good UTC time for boot-time clock initialization. */
-void app_settings_note_time_utc_ms(uint64_t utc_ms);
+
 /** @brief Return app NVS storage for command-dispatch owned records, or NULL if unavailable. */
 struct nvs_fs *app_settings_nvs_fs(void);
 

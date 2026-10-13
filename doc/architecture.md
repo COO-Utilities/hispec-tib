@@ -146,7 +146,9 @@ board names in the common command-dispatch library.
 
 When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
 After the response window, command dispatch calls the app reboot-prepare hook
-and then `sys_reboot(SYS_REBOOT_COLD)`.
+and then `sys_reboot(SYS_REBOOT_COLD)`. The delayed reboot runs on the existing
+app blocking workqueue, so laser STOP can wait for Modbus completion on the system
+workqueue. System priority is 2, command 6 and app blocking 7.
 
 Command dispatch can persist one lastcommand record through Zephyr NVS when the
 app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
@@ -200,12 +202,59 @@ the main loop disconnects and tries the new broker once; if that connection
 fails, firmware restores the prior broker setting and emits a best-effort
 `mqtt_broker_revert` warning.
 
+Native STM32 LPTIM4, clocked by 32768 Hz LSE, supplies kernel uptime at 4096 ticks/s
+(244 microseconds/tick). The timer runs periodically (`CONFIG_TICKLESS_KERNEL=n`)
+with a fixed eight-LSE-cycle period. This avoids the workload-dependent uptime
+gain measured with tickless reloads: idle tests gained 37–42 ms/minute, while
+periodic tests gained about 4.4 ms/minute under idle/streaming and command loads.
+The exact faulty tickless transition remains unproven. The measured cost of
+periodic mode is about 0.9 percentage points of additional timer-ISR CPU time
+(excluding exception entry/exit), at 4096 interrupts/s. The RTC uses LSE too.
+PM is enabled solely for the native driver dependency; CPU power states are removed from the application tree so
+there is no automatic STOP. LSI remains enabled for the independent watchdog.
+PD timing diagnostics use native 64-bit kernel uptime ticks, with 244 microsecond
+granularity. The LPTIM driver's 32-bit cycle API scales its counter to the CPU
+frequency and has a discontinuity when its underlying accumulated count wraps;
+using kernel ticks avoids that diagnostic artifact without another counter. Millisecond timer rounding is below one
+tick, apart from Zephyr's ordinary minimum timeout alignment.
+
+A valid RTC calendar restores boot UTC. One serialized setter handles both manual
+UTC and full-fraction SNTP. It reads the RTC and writes whole calendar seconds only
+when the RTC is unreadable or differs from the requested UTC by more than 1.25 s
+in either direction. This guard accommodates the setter's <1 s quantization plus
+250 ms margin and avoids stopping a healthy calendar under the RTC driver's
+spinlock on every sync. RTC write failure remains a warning; running UTC still
+updates. The RTC is a warm-boot seed, not the source of running UTC. SNTP adds Zephyr's
+estimated one-way response delay to the server transmit timestamp before setting
+UTC. No fractional retention or NVS last-time fallback is used; the old NVS ID
+remains reserved. Success syncs
+repeat at 60 s; failures retry at 30 s, with an initial one-second attempt and
+immediate attempts when network changes wake the SNTP thread.
+
 SNTP is independent of manual `time` commands. Manual time setting updates
 Zephyr's realtime clock; it does not mark SNTP state as manual. If SNTP is configured
 and later succeeds, it will update the clock again, and failures remain visible
 through `time`, `ip`, and status paths that report SNTP state.
 SNTP network waits run in a low-priority SNTP thread, not on the system
 workqueue and not in the command, MQTT, MEMS, or ADC timing paths.
+
+Output uses eight best-effort slots and four reserved reply slots. Producers use
+`K_NO_WAIT`; dropped telemetry/replies and publish failures have separate runtime
+atomic counters. Main drains replies first with a bounded budget. A native
+nonblocking eventfd wakes the existing MQTT socket poll when output is enqueued;
+queued work uses a zero poll timeout. There is no extra network thread. Keepalive
+is checked even with continuous socket/output events, and a failed reply publish
+aborts the connection before the normal reconnect path rather than spinning main.
+Command completion centrally adds MQTT5 `ack_utc_ms` before enqueueing; at present
+epoch lengths this property costs 28 bytes (35 for a 20-digit uint64), plus at
+most one property-length varint byte. It does not alter response JSON.
+
+Command payload capacity is 1152 bytes, MQTT buffers 1280. Throughput binary is
+227 bytes; even a pessimistic JSON frame with 24 worst-length double strings and
+uint64 timestamps is below 1152 bytes. Eventfd capacity 2 and fd capacity 10 allow
+the existing socket service plus output wakeup, MQTT/DNS/SNTP and OTA SMP resources.
+Buffer increases also change lastcommand record size, so a rollback may lose that
+diagnostic record; the app calibration/dark schema is unchanged.
 
 ## Hardware Control
 
@@ -229,6 +278,27 @@ probe or replays a command. The Maiman write path
 holds the owner's I/O serialization through a yielding 350 ms quiet interval after
 LD START/STOP and EEPROM SAVE/RESET attempts, including acknowledgement failures.
 
+Preemptible application priorities (smaller numbers run first):
+
+| Priority | Owner | Purpose |
+|---|---|---|
+| 0 | MEMS router | Splitter toggle timing and pulse cleanup |
+| 1 | Photodiode | Independent 50 ms acquisition cadence |
+| 2 | System workqueue | Native Modbus RX parsing/completion, short system work |
+| 3 | Throughput | Streaming, autolevel, calibration acquisition |
+| 4 | Main/MQTT | Network service and queued outbound publication |
+| 6 | Command executor | Foreground commands, potentially blocking I/O |
+| 7 | App blocking workqueue | Housekeeping, heater, auto-off and reboot preparation |
+| 13 | Logging | Deferred log output |
+| 14 | Calibration fitting | Numerical fitting after acquisition/shutdown |
+
+Networking's cooperative priorities and system-workqueue yielding are unchanged.
+The Modbus caller sleeps while awaiting its 75 ms reply; that deadline and UART
+cleanup policy are unchanged. PD never takes the laser I/O mutex. A synchronous
+laser operation in the shared throughput thread can delay both streams while PD
+continues sampling; the semaphore coalesces those acquisitions, without replay.
+The 4096 Hz LPTIM timebase does not change the 240 MHz core clock.
+
 Relay and temperature 1-Wire waveforms use UART12 and UART9, respectively,
 through Zephyr's stock serial 1-Wire driver. UART polling does not mask interrupts
 for the waveform duration, although the STM32 driver briefly locks interrupts
@@ -250,7 +320,7 @@ in [hardware.md](hardware.md#off-board-power-switch-for-photodiodes-and-laser-ba
 Numerical attenuator fitting reuses the throughput thread after stopping the
 calibration-owned laser and releasing PD auto-off inhibition. It releases the
 calibration mutex and temporarily uses `K_LOWEST_APPLICATION_THREAD_PRIO` (14 in
-this build), below Modbus RX (5), commands (6), housekeeping (7), and logging (13).
+this build), below Modbus RX (2), commands (6), housekeeping (7), and logging (13).
 It restores priority 3 with no mutex held
 before finalization. Other throughput work still waits for fitting to finish.
 Start/stop commands set a cancellation flag and wait on a completion semaphore
@@ -258,6 +328,29 @@ without holding the calibration mutex. Numerical loops check cancellation;
 the command cannot clear/reuse the single static dataset until fitting returns.
 Only an accepted new start clears records, references, bridges, and fit results.
 Stop and error cleanup preserve them. No second record buffer is allocated.
+
+The Cortex-M33 single-precision FPU is enabled with Zephyr shared FP context.
+PD window storage/mean/RMS and runtime FVOA dB/slope/local uncertainty use float.
+FVOA inversion prepares open normalization, leakage floor and the calibrated
+correction endpoint once, then makes 24 value-only voltage bisections. Its erfc
+form preserves the shutter tail in float. Public dB results promote to double
+before summation and linear transmission/error conversion. Throughput, single-PD
+dark subtraction and final uncertainty propagation remain double. Calibration
+keeps double coefficients, Jacobians, weights, solves and residual metrics; only
+its final grid, retained-point and continuation-join validation uses the deployed
+float evaluator. No persistent calibration or telemetry layout changes.
+
+Offline Cortex-M33 instruction replay (SDK 14.3, 2026-10-02) gives 7,023,042
+to 26,731 instructions for a corrected 30 dB inverse, and 280,255 to 4,470
+for the full-model versus runtime dB/slope evaluation at 2600 mV. Complete PD
+window recomputations, including double uncertainty/power arithmetic, fall from
+15,375 to 7,409 instructions (10 samples) and 28,909 to 8,621 (40 samples).
+These are instruction counts, not measured target cycles or wall times. Merely
+enabling the FPU changes the retained double forward evaluation by only 0.23%.
+Shared FP context adds 64 bytes of saved S16–S31 registers per thread object,
+plus a 72-byte hardware frame on an active FP thread's stack. Stack sizes are
+unchanged; DWT timings and runtime margins require the flashed board.
+
 Calibration publishes a coherent command-status snapshot under a separate short
 mutex after start/stop/tick updates and before fitting. Status and active checks
 read that snapshot without waiting for acquisition I/O. The snapshot stays
@@ -276,6 +369,16 @@ completion uses the system workqueue.
 and laser auto-off are bound before command execution and throughput monitoring
 start; their startup functions assert the non-null queue precondition. Heater
 work is bound only when required TIB devices are ready.
+
+Laser thermistor intent is an ordinary PCB-owned channel setting in %/°C at
+25°C. `lasers.c` converts it to/from internal Maiman B, normalizes integer-B
+rounding and programs it during existing profile preparation or explicit
+driver-backed settings updates. Status reads do not program profiles; MCU startup
+does not add controller writes. `app_settings.c` persists the coefficient in a
+separate per-channel NVS record without changing existing calibration records.
+Coefficient I/O uses internal LD NTC register 0x007F. External NTC 0x008A is
+unused. Compiled defaults use vendor values: −4.4 %/°C for FLC and B=3900 K
+for Aero. Accepted app NVS overrides retain their existing precedence.
 
 ## Implemented vs Intended
 
@@ -333,12 +436,14 @@ success releases it. App-only range edits defer TEC programming to preparation.
 Noise/default-policy edits and tuning that relinquish a still-emitting source
 remain a separate ownership audit in `human_review_required.md`.
 
-At measurement start, the command resolves route transmissions from explicit
-settings first, then compiled path defaults in `devices.c`, then unity for an
-unspecified path. Defaults stay in flash and consume no override slots; settings
-owns override persistence. MM/SM return defaults are source-independent. Passive
-capture applies them too, but cannot infer emission or throughput. Known lasers
-may override returns with existing route/laser records.
+At measurement start, the command resolves an exact route/source override,
+then a compiled source default in `devices.c`, then the route's compiled generic
+default, then unity. Defaults stay in flash and consume no override slots;
+settings owns override persistence. Passive capture explicitly selects `generic`
+for its CAL launch and MM/SM return. It reports a selected launch transmission
+but cannot infer emission or throughput. Named sources never inherit a stored
+generic override. The table holds 32 records per PCB; AS split records live on
+their own PCB. Schema 14 clears older app NVS settings without migration.
 
 The command validates both routes, calls `throughput_monitor_prepare_start` to
 check exclusions and quiesce the target, applies launch (if requested) and return
@@ -353,3 +458,24 @@ health snapshots; neither polls relay hardware. See
 [communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime)
 for the one-second check cadence, five-second fault timeout, inhibition ownership,
 and failure/recovery flow.
+
+Paired attenuator writes compute both inversions, quantization and forward estimates
+before writing either DAC. The I2C mutex covers the consecutive writes; each
+successful write updates confirmed state even if the second fails. Two address +
+three-byte writes cost 72 SCL bits, about 0.18 ms at 400 kHz, excluding software,
+START/STOP setup and bus contention. This is not simultaneous latching.
+
+Dark capture stays asynchronous on the PD sampler. It credits already elapsed
+PD-on/relevant-lasers-off time, requires ten continuous seconds, then resets the
+measurement window and excludes conversions started before the reset. A changed
+state discards partial capture and requires a fresh settle. Clipped or empty
+captures cannot replace the dark. Lowest-dark replacement is measured-only;
+zero-duration forced/default values cannot enter it, including combined commands.
+Existing stored minima and optional persistence behavior are preserved.
+
+Noise warning eligibility is separate from dark capture. Hardware owners call
+`photodiode_noise_change_begin()` and `photodiode_noise_change_end()` around
+input changes; overlapping operations share a spinlock-protected count and quiet deadline.
+The sampler defers both channels' noise warnings for five seconds after activity
+finishes, then replaces the fixed diagnostic window before checking RMS. These
+notifications do no I/O and do not change sampling, throughput, or calibration.

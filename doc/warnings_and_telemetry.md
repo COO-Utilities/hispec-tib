@@ -33,7 +33,9 @@ Current warning codes seen in code:
 - `attenuator_clamped`
 - `photodiode_adc_error` (at most once per channel every 10 seconds; every
   failed sample is still counted in photodiode windows)
-- `photodiode_noise`
+- `photodiode_noise` (both channels defer assessment during reported input
+  changes and for five seconds afterward, then require a fresh 500 ms window
+  with at least two valid samples; at most once per channel per 60 seconds)
 - `mems_timing_quantized`
 - `split_ratio_quantized`
 - `laserbank_heater_override`

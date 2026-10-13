@@ -17,3 +17,4 @@ __pycache__/
 /app/build/
 /doc/_doxygen/
 /app/build-timing/
+/app/build-ota/

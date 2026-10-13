@@ -29,7 +29,7 @@ LOG_MODULE_REGISTER(throughput_monitor, LOG_LEVEL_INF);
 #define TP_LASER_FIRST 1
 /* Both policies brighten with attenuation first. Select only the dimming order. */
 #ifndef TP_AUTOLEVEL_DIM_PRIORITY
-#define TP_AUTOLEVEL_DIM_PRIORITY TP_ATTEN_FIRST
+#define TP_AUTOLEVEL_DIM_PRIORITY TP_LASER_FIRST
 #endif
 #if TP_AUTOLEVEL_DIM_PRIORITY != TP_ATTEN_FIRST && TP_AUTOLEVEL_DIM_PRIORITY != TP_LASER_FIRST
 #error "TP_AUTOLEVEL_DIM_PRIORITY must be TP_ATTEN_FIRST or TP_LASER_FIRST"
@@ -61,7 +61,13 @@ struct throughput_source_reference {
 	double laser_current_ma;
 	double atten_tx;
 	double atten_db;
+	double atten1_db;
+	double atten2_db;
+	double dac1_mv;
+	double dac2_mv;
 	double wavelength_nm;
+	double atten1_slope_db_per_fvoa_mv;
+	double atten2_slope_db_per_fvoa_mv;
 };
 
 /* Preparing retains the PD inhibition while command-owned routes change. */
@@ -86,7 +92,7 @@ struct throughput_state {
 	int64_t next_gap_warning_ms;
 	/* Route calibration is run configuration; driver state stays with its owner. */
 	double pd_route_tx;
-	double laser_route_tx;
+	double launch_route_tx;
 	/* Autolevel's laser must still stop after manual level changes disable adjustments. */
 	bool stop_laser;
 };
@@ -159,7 +165,7 @@ static int stop_locked(enum photodiode_channel channel)
 	state->phase = TP_INACTIVE;
 	state->autolevel = false;
 	if (state->stop_laser) {
-		int rc = hispec_laser_stop_output(state->laser, false);
+		int rc = hispec_laser_stop_output(state->laser, false, NULL, 0);
 
 		if (rc != 0) {
 			LOG_ERR("Throughput stopped; laser %s shutdown failed (%d), retry stop",
@@ -214,6 +220,8 @@ static int refresh_reference(struct throughput_state *state)
 		.delivered_power_nw = NAN, .delivered_power_err_nw = NAN,
 		.laser_output_power_uw = NAN, .laser_output_power_err_uw = NAN,
 		.laser_current_ma = NAN, .atten_tx = NAN, .atten_db = NAN, .wavelength_nm = NAN,
+		.atten1_db = NAN, .atten2_db = NAN, .dac1_mv = NAN, .dac2_mv = NAN,
+		.atten1_slope_db_per_fvoa_mv = NAN, .atten2_slope_db_per_fvoa_mv = NAN,
 	};
 	struct attenuator_transmission_estimate atten;
 	struct hispec_laser_flux_estimate laser;
@@ -228,12 +236,21 @@ static int refresh_reference(struct throughput_state *state)
 		if (rc == 0) {
 			ref.laser_output_power_uw = laser.power_mw * 1.0e3;
 			ref.laser_output_power_err_uw = laser.power_err_mw * 1.0e3;
-			ref.delivered_power_nw = laser.power_mw * 1.0e6 * atten.linear * state->laser_route_tx;
+			ref.delivered_power_nw = laser.power_mw * 1.0e6 * atten.linear * state->launch_route_tx;
 			ref.delivered_power_err_nw = hypot(laser.power_err_mw * atten.linear,
-				laser.power_mw * atten.linear_err) * 1.0e6 * state->laser_route_tx;
+				laser.power_mw * atten.linear_err) * 1.0e6 * state->launch_route_tx;
 			ref.laser_current_ma = laser.current_ma;
 			ref.atten_tx = atten.linear;
 			ref.atten_db = atten.attenuation_db;
+			/* Keep both modeled attenuation and confirmed DAC setpoints with the
+			 * same source context used to associate delayed ADC conversions.
+			 */
+			ref.atten1_db = atten.attenuation_db1;
+			ref.atten2_db = atten.attenuation_db2;
+			ref.dac1_mv = (double)atten.voltage1;
+			ref.dac2_mv = (double)atten.voltage2;
+			ref.atten1_slope_db_per_fvoa_mv = atten.slope1_db_per_fvoa_mv;
+			ref.atten2_slope_db_per_fvoa_mv = atten.slope2_db_per_fvoa_mv;
 			ref.wavelength_nm = laser.wavelength_nm;
 		}
 	}
@@ -246,8 +263,8 @@ static int refresh_reference(struct throughput_state *state)
 }
 
 /* One decision per fresh reading. A dark-subtracted low reading cannot override
- * a raw overrange reading. Startup and ordinary operation use the same 50 ms
- * path: no rolling-window gate, observation counter, or settling holdoff.
+ * a raw overrange reading. Dimming stays immediate; brightening waits for a
+ * reading acquired at least two sample intervals after the last input change.
  * Returns 1 after an input change, 0 without a change, or a hardware error.
  */
 static int autolevel_adjust(struct throughput_state *state,
@@ -264,6 +281,10 @@ static int autolevel_adjust(struct throughput_state *state,
 	struct app_laser_channel_settings settings;
 
 	if ((!high && !low) || !isfinite(source->atten_tx)) {
+		return 0;
+	}
+	if (low && pd->sample_ms - state->input_changed_ms <
+	    2 * PHOTODIODE_SAMPLE_INTERVAL_MS) {
 		return 0;
 	}
 	int rc = hispec_laser_get_channel_settings(state->laser, &settings);
@@ -314,7 +335,7 @@ static int autolevel_adjust(struct throughput_state *state,
 		}
 		double percent = MIN(100.0, 100.0 * (next_ma - props->threshold_current_ma) /
 			(props->nominal_current_ma - props->threshold_current_ma));
-		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false);
+		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false, NULL, 0);
 		if (rc != 0) {
 			return rc;
 		}
@@ -371,11 +392,15 @@ static void publish_sample(const struct throughput_state *state,
 		{"delivered_power_err_nw", source->delivered_power_err_nw},
 		{"laser_output_power_uw", source->laser_output_power_uw},
 		{"laser_output_power_err_uw", source->laser_output_power_err_uw},
-		{"pd_route_tx", state->pd_route_tx}, {"laser_route_tx", state->laser_route_tx},
+		{"pd_route_tx", state->pd_route_tx}, {"launch_route_tx", state->launch_route_tx},
 		{"atten_tx", source->atten_tx}, {"pd_mv", pd->mv}, {"pd_net_mv", pd->net_mv},
 		{"pd_net_err_mv", overrange ? (double)NAN : pd->net_err_mv},
 		{"laser_current_ma", source->laser_current_ma}, {"atten_db", source->atten_db},
 		{"wavelength_nm", source->wavelength_nm},
+		{"atten1_db", source->atten1_db}, {"atten2_db", source->atten2_db},
+		{"dac1_mv", source->dac1_mv}, {"dac2_mv", source->dac2_mv},
+		{"atten1_slope_db_per_fvoa_mv", source->atten1_slope_db_per_fvoa_mv},
+		{"atten2_slope_db_per_fvoa_mv", source->atten2_slope_db_per_fvoa_mv},
 	};
 	memset(msg, 0, sizeof(*msg));
 	channel_fiber_name(channel_fiber, sizeof(channel_fiber), state->channel, state->fiber);
@@ -565,7 +590,7 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	monitors[channel].phase = TP_PREPARING;
 	monitors[channel].autolevel = false;
 	if (stop_previous) {
-		rc = hispec_laser_stop_output(monitors[channel].laser, false);
+		rc = hispec_laser_stop_output(monitors[channel].laser, false, NULL, 0);
 		if (rc != 0) {
 			/* Keep failed shutdown responsibility for a later explicit stop. */
 			housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);
@@ -610,7 +635,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	/* The command resolved losses for both independent routes before starting. */
 	next.pd_route_tx = request->pd_route_tx;
-	next.laser_route_tx = request->laser_route_tx;
+	next.launch_route_tx = request->launch_route_tx;
 
 	next.phase = TP_PREPARING;
 	next.autolevel = request->autolevel;
@@ -645,7 +670,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		if (rc == 0) {
 			stage = "initial laser current";
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false);
+				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false, NULL, 0);
 		}
 		if (rc != 0) {
 			goto failed;
@@ -760,7 +785,7 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop
 }
 
 int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
-	const struct app_laser_channel_settings *settings, bool persist)
+	const struct app_laser_channel_settings *settings, bool persist, char *error, size_t error_len)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
@@ -770,7 +795,7 @@ int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
 			monitors[i].autolevel = false;
 		}
 	}
-	int rc = hispec_laser_update_channel_settings(laser, settings, persist);
+	int rc = hispec_laser_update_channel_settings(laser, settings, persist, error, error_len);
 	if (rc == 0) {
 		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			if (monitors[i].has_laser && monitors[i].laser == laser) {

@@ -73,7 +73,7 @@ static int memsroute_append_sources_for_output(char *buf, size_t buf_len, size_t
 }
 
 static const char *const route_loss_laser_names[] = {
-    "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k",
+    "1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k", "generic",
 };
 
 static const struct coo_json_string_choice mems_switch_state_choices[] = {
@@ -292,6 +292,21 @@ static bool route_loss_route_is_split(const char *route)
     return false;
 }
 
+/* Generic losses describe TIB CAL launch and PD return paths. AS/CAL boards
+ * retain their existing named-source storage and AS split-output calibration.
+ */
+static bool route_loss_supports_generic(const char *route)
+{
+    return strcmp(route, "yj_cal_to_yj_ao") == 0 ||
+           strcmp(route, "yj_cal_to_yj_fei") == 0 ||
+           strcmp(route, "hk_cal_to_hk_ao") == 0 ||
+           strcmp(route, "hk_cal_to_hk_fei") == 0 ||
+           strcmp(route, "yj_mm_to_yj_pd") == 0 ||
+           strcmp(route, "yj_sm_to_yj_pd") == 0 ||
+           strcmp(route, "hk_mm_to_hk_pd") == 0 ||
+           strcmp(route, "hk_sm_to_hk_pd") == 0;
+}
+
 static int route_loss_append_loss(char *payload, size_t payload_len, size_t *offset,
                                 double tx)
 {
@@ -342,6 +357,10 @@ static int route_loss_query_response(const struct coo_cmd_request *cmd,
     for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
         double tx = 1.0;
 
+        if (strcmp(route_loss_laser_names[i], "generic") == 0 &&
+            !route_loss_supports_generic(route)) {
+            continue;
+        }
         (void)app_settings_get_route_loss(route, route_loss_laser_names[i], &tx);
         if (i > 0U &&
             coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
@@ -394,10 +413,10 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
     }
 
     if (split_rc == 0 && laser_rc == 0) {
-        return coo_cmd_error(out, cmd, "route_loss uses split or laser value");
+        return coo_cmd_error(out, cmd, "route_loss uses split or source value");
     }
     if (laser_rc == -EALREADY) {
-        return coo_cmd_error(out, cmd, "supply exactly one laser loss per request");
+        return coo_cmd_error(out, cmd, "supply exactly one source loss per request");
     }
     if (split_rc == -ERANGE || laser_rc == -ERANGE) {
         return coo_cmd_error(out, cmd, "route_loss out of range");
@@ -429,6 +448,9 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
 
     if (laser_rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "missing route_loss value");
+    }
+    if (strcmp(laser, "generic") == 0 && !route_loss_supports_generic(route)) {
+        return coo_cmd_error(out, cmd, "generic loss requires TIB CAL launch or PD return");
     }
     parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
     if (parse_rc == -ENOSPC) {

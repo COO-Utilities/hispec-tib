@@ -209,7 +209,7 @@ flowchart TD
   Status --> PendingDark{dark capture pending and window complete}
   PendingDark -- yes --> DarkCommit[commit configurable window as dark]
   PendingDark -- no --> Warn
-  Status --> Warn{fixed-window RMS above threshold}
+  Status --> Warn{input changes finished + 5 s grace + fresh fixed window + RMS above threshold + cooldown elapsed}
   Warn -- yes --> Emit[coo_cmd_runtime_emit photodiode_noise]
   Warn -- no --> SleepPeriod
   Emit --> SleepPeriod
@@ -498,20 +498,24 @@ flowchart TD
   Mode -- override_off --> ForceOff[set heater off]
   ForceOn --> OverrideWarn[rate-limited override warning]
   ForceOff --> OverrideWarn
-  OverrideWarn --> Wait
+  OverrideWarn --> ReadTemps
 
   Mode -- auto --> EnteredAuto{just entered auto and bank off}
   EnteredAuto -- yes --> PowerBank[power bank on]
-  EnteredAuto -- no --> ReadTemps[read Maiman TEC temperatures]
+  EnteredAuto -- no --> ReadTemps[poll existing powered-bank TEC temperatures]
   PowerBank --> ReadTemps
   ReadTemps --> Cache[refresh per-laser temperature cache]
   Cache --> Summarize[summarize idle TEC probes and heater state]
-  Summarize --> AllStaleCold{all stale and ambient below warm minimum}
-  AllStaleCold -- yes --> KeepPower[best-effort bank power on]
-  AllStaleCold -- no --> HeaterPolicy
-  KeepPower --> HeaterPolicy{heater policy}
-  HeaterPolicy -- any disabled below 15 C --> HeaterOn[set heater on]
-  HeaterPolicy -- disabled above threshold --> HeaterOff[set heater off]
+  Summarize --> AutoPolicy{heater mode auto}
+  AutoPolicy -- no --> Wait
+  AutoPolicy -- yes --> AllStale{all temperatures stale}
+  AllStale -- yes --> AmbientCold{valid ambient below 15 C}
+  AmbientCold -- yes --> KeepPower[best-effort bank power on]
+  AmbientCold -- no --> HeaterOff[set heater off]
+  KeepPower --> Wait
+  AllStale -- no --> HeaterPolicy{heater policy}
+  HeaterPolicy -- any fresh idle probe below 19 C --> HeaterOn[set heater on]
+  HeaterPolicy -- all fresh idle probes above 21 C --> HeaterOff
   HeaterPolicy -- all TECs enabled long enough --> HeaterOff
   HeaterPolicy -- otherwise --> Wait
   HeaterOn --> Wait

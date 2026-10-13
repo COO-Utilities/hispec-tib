@@ -6,13 +6,40 @@ Each channel produces one fresh ADS1115 conversion every **50 ms (20 Hz)**.
 Successive stream records never reuse ADC conversions. The fixed 500 ms rolling
 window remains available for PD diagnostics and the configurable window for
 dark capture and attenuator calibration; neither feeds throughput or autolevel.
-The ADS1115 remains at **250 SPS**, selected by devicetree, with sequential YJ/HK
-conversions. Selecting **64 SPS** requires no algorithm or window changes:
+The current devicetree selects **64 SPS**, with sequential YJ/HK conversions.
+This documents the existing rate; the commissioning patch does not change it:
 two conversions take about 31.3 ms before I2C and scheduling overhead, compared
 with about 8.1 ms at 250 SPS. Calibration asks the PD owner to round its
 window to whole samples, resets it after each input change, and waits for that
 many conversion attempts. A conversion begun before reset is excluded. There
-is no converter-time pad or additional settling window.
+is no converter-time pad or extra illuminated-stream settling window. Dark
+capture separately requires ten continuous seconds of PD on and relevant lasers
+off before resetting and collecting its at-most-two-second measurement window.
+
+Rolling windows store voltage and net voltage as float and use FPU arithmetic
+for sums, mean and RMS. Each ADC voltage is exactly representable; the net value
+is rounded only after double dark subtraction. Results promote into the existing
+double public fields. Noise floors, dark-offset uncertainty, final `hypot`, and
+power conversion remain double. The four windows save 1280 bytes of static RAM;
+sample validity, window sizes and acquisition timestamps are unchanged.
+
+Noise warnings use the fixed window only after an interval without commanded
+input changes. PD power, physical attenuator writes, laser-output changes, and
+actual MEMS pulses bracket their operations through the PD owner's begin/end
+notifications. Both channels defer assessment until all operations finish,
+five seconds pass, and ten new conversion attempts replace the diagnostic
+window. At least two readings must be valid. Further changes restart eligibility,
+including changes completed between samples. MEMS activity lasts through pulse
+cleanup; failed/partial writes also receive the grace period. Known no-ops do
+not restart it. Thresholds and the per-channel 60-second warning cooldown remain
+unchanged; `noisewarn_mv:0` disables the warning.
+
+This is warning qualification only: no samples are discarded or measurement
+windows reset by these notifications. Continuous adjustment can defer assessment
+indefinitely. Unexpected variation while controls are unchanged can still warn;
+the RMS does not identify whether its origin is electrical or optical. Five
+seconds is an operator-selected grace period, not a measured settling bound,
+and is independent of the ten-second dark-capture eligibility rule.
 
 The ADC owner stores detector readings, uncertainty, one monotonic acquisition
 start (`sample_ms`), and an estimated UTC midpoint (`t_ms`). It owns no laser,
@@ -40,8 +67,11 @@ Normal and startup control use that fresh reading: below 20% useful net input,
 request three times the flux; above 80%, request one third. Raw input at/above
 2000 mV takes precedence over a low dark-subtracted value. A conversion that
 began before completion of the preceding control move can still be published,
-but cannot trigger another move. There is no additional settling window or
-blanked stream interval. Only one channel may own autolevel; both PDs may stream.
+but cannot trigger another move. A low reading can brighten only if its
+acquisition began at least two sample intervals (100 ms) after the last input
+change; high and raw-overrange readings can dim immediately. This is an initial
+control guard, not a measured settling time. No stream interval is blanked.
+Only one channel may own autolevel; both PDs may stream.
 
 Both PCB input traces have nominal 20 Hz low-pass filters after the 0–10 V to
 0–2 V divider. For a single-pole model, the time constant is 7.96 ms and settling
@@ -65,10 +95,10 @@ is applied. Source or external optical motion during a conversion remains visibl
 | One net reading | `sigma_net = hypot(sigma_read, sigma_dark)` | Offset error is shared between records, not independent noise to average away. |
 | Diagnostic window | `hypot(max(window.rms_mv,sigma_read)/sqrt(N_good), sigma_dark)` | Includes optical variation in window RMS; the dark floor does not shrink with that window. |
 | PD power | `net_mV * 1e6 / (effective_V_per_A * responsivity_A_per_W)` nW, with wavelength coefficient | Clip negative power to zero, retain signed net voltage, and propagate NaN voltage. Error uses the same scale. Validated effective gain already contains the divider. |
-| Laser power | Current-based calibration with `hypot(P*fractional_noise, constant_noise_mw)` | Defaults 3% plus a floor of 1% of nominal maximum power; this is an estimate, not an optical reading. |
+| Laser power | Current-based calibration with `hypot(P*fractional_noise, constant_noise_mw)` | Defaults 0.1% plus a floor of 0.31% of compiled maximum modeled power; this is an estimate, not an optical reading. |
 | Attenuator | `sigma_T = T*ln(10)/10*hypot(hypot(rms1_db,rms2_db),hypot(electrical1_db,electrical2_db))` | Stored residual RMS estimates curve accuracy; electrical terms use the full local slope times `ATTENUATOR_FVOA_NOISE_RMS_MV / gain` (default 10 mV RMS after the amplifier). Assume independent contributions and devices. First-order symmetric error is approximate for large dB scatter. |
-| Delivered power | `L*T*laser_route_tx`; quadrature of laser and attenuator errors | Source calibration terms remain correlated across stream records. |
-| Route correction | Divide detected power **and its error** by `pd_route_tx`; multiply known source by `laser_route_tx` | Command applies launch and independent MM/SM return, latching losses at start. Passive light uses generic return defaults. No route-loss uncertainty terms are stored. |
+| Delivered power | `L*T*launch_route_tx`; quadrature of laser and attenuator errors | Source calibration terms remain correlated across stream records. |
+| Route correction | Divide detected power **and its error** by `pd_route_tx`; multiply known source by `launch_route_tx` | Command applies launch and independent MM/SM return, latching losses at start. Passive light uses generic overrides or compiled defaults. A selected passive launch has a transmission but unknown emission. No route-loss uncertainty terms are stored. |
 | Unknown illumination | PD voltage, corrected nW/error and detector S/N remain defined; source/throughput fields are NaN/null | No known emitted power or wavelength is inferred from a passive MM/SM return. Nominal responsivity is used; any source-spectrum correction belongs above the PD owner. |
 | Throughput | `tp = detected_corrected/delivered`; `tp_pd_err = sigma_detected/delivered`; `tp_err = hypot(tp_pd_err, tp*sigma_delivered/delivered)` | Derivative form works at zero PD power; source must be finite and positive. |
 | Overrange | Raw ADC input ≥2000 mV sets `overrange`; retain numerical PD/TP value as nominal lower bound | PD and throughput errors become NaN/null, S/N suppressed. Source calibration error is still reported. The ADC rail remains 2047.9375 mV. |
@@ -76,6 +106,13 @@ is applied. Source or external optical motion during a conversion remains visibl
 | Laser owner fault | Check operational health separately from the numerical estimate; stop affected acquisition | One failed read warns. Five seconds without a response while emitting faults; control/controller faults remain immediate. Failed shutdown retains its explicit retry obligation. |
 | Actuator failure | Stop monitoring; preserve confirmed owner state after partial writes | Do not normalize subsequent readings using an assumed successful move. |
 | Serialization | Binary doubles; JSON 12 significant digits, nonfinite values null | Preserve tiny powers/errors through Python, record arrays, and CSV. Binary and JSON share field order in firmware. |
+
+Each FVOA's runtime dB, local slope and dB uncertainty are evaluated in float.
+Both dB values and uncertainties promote before the double sum, linear
+transmission conversion and combined error. Linear attenuation commands,
+throughput normalization/error arithmetic, and calibration fitting remain double.
+Final fit validation checks the float curve, including its continuation join,
+with the existing 0.0001 dB monotonicity/join tolerance.
 
 Responsivity, effective gain, wavelength correction, route calibration, drift,
 shot noise at illuminated levels, and dynamic actuator/filter mismatch have no
@@ -278,8 +315,14 @@ failed control enters the fault path. A successful STOP confirms stopped state,
 while a zero-current write preserves unconfirmed or faulted state while powered.
 Autolevel and calibration still require healthy, confirmed emission.
 
-The existing laser auto-off work probes the checked TEC-state register of started (including zero-current)
-channels once per second, including channels whose shutdown failed. It does not
+The existing laser auto-off work reads checked TEC and LD operation-state registers
+of established started channels (including zero current) once per second, including
+channels whose shutdown failed. A nonblocking bus attempt and a second eligibility
+check prevent added reads of inactive or concurrently stopped channels. A positive
+unexpected stop latches the existing fault and emits its one-shot warning; no restart
+is attempted. Foreground status and heater temperature observations use the same
+component-stop accounting: only confirmed stopped components end their counters,
+while failed reads retain accounting, setpoints, deadlines and shutdown ownership. It does not
 depend on heater mode, setpoint changes, or the 20 Hz measurement loop. Heater
 control retains its ten-second cadence. Housekeeping's existing ambient work
 reads the DS2408 port once per second and publishes all three logical outputs.
@@ -342,3 +385,22 @@ zero levels keep PD collection alive, with undefined throughput at zero source p
 The [Maiman interface notes](api/maiman_laser.md#bench-transaction-timing-diagnostics)
 describe application transaction and quiet-interval logs, and their measurement
 limits, for the next bench capture.
+
+## Commissioning temporal-noise comparison
+
+`throughput_noise` separates single-reading shot noise, measured dark RMS, and
+postamp electrical RMS times each signed firmware local slope. For PD net voltage
+V and effective gain G, shot RMS is `sqrt(2*q*V*G*ENBW)` in volts. Electrical RMS
+is `abs(V)*ln(10)/10*abs(dA/dVdrive)*drive_rms`. Sum independent temporal variances;
+exclude static calibration/offset uncertainty and do not add quantization again
+when the measured dark already contains it. ENBW describes the full acquisition
+response, not half the publication frequency. Until scope measurement, 10 mV
+per drive and the notebook bandwidths remain labelled scenarios.
+
+A shared relative-power reference predicts neighboring-current mean levels without
+claiming absolute optical calibration. Conditional excess-variance allocations
+and nonnegative least-squares slope fits are self-assessment bounds, not proof of
+electrical noise or mechanical defects. The paired scope investigation measures
+both drives, their complex cross spectrum and local drive→PD responses at each
+operating point. The analog response is already present in those measurements;
+only a separately justified ADC response belongs in a TIB-sample prediction.

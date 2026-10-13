@@ -3,7 +3,7 @@
  * @brief Runtime defaults and direct-NVS persistence for app-owned settings.
  *
  * Public update helpers copy into the protected runtime snapshot. When
- * persistence is requested they write one numeric Zephyr NVS ID and may block
+ * persistence is requested they write fixed numeric Zephyr NVS records and may block
  * on flash I/O. The app owns this fixed NVS ID map; no string setting names
  * are stored in flash.
  *
@@ -31,9 +31,9 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Keep the schema: size checks reject extended attenuator/laser policy records
- * from older firmware without discarding unrelated settings or counters. */
-#define APP_NVS_SCHEMA_VERSION 13U
+/* Reset app NVS for the generic source spelling and smaller route-loss table.
+ * The existing schema reset discards all old app settings; no records migrate. */
+#define APP_NVS_SCHEMA_VERSION 14U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -43,12 +43,14 @@ enum app_nvs_id {
 	APP_NVS_ID_IP = 0x0005,
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
-	APP_NVS_ID_LAST_KNOWN_UTC_MS = 0x0008,
+	APP_NVS_ID_LAST_KNOWN_UTC_UNUSED = 0x0008, /* Reserved for OTA rollback. */
 	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
+	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
+	APP_NVS_ID_LASER_NTC_CH0 = 0x0380,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
 	APP_NVS_ID_MEMS = 0x0500,
 };
@@ -61,8 +63,10 @@ BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY
 	     "photodiode NVS ID block overlaps laser policy block");
 BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_TOTAL_CH0,
 	     "laser policy NVS ID block overlaps laser total block");
-BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
-	     "laser total NVS ID block overlaps route-loss block");
+BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_NTC_CH0,
+	     "laser total NVS ID block overlaps NTC block");
+BUILD_ASSERT(APP_NVS_ID_LASER_NTC_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
+	     "laser NTC NVS ID block overlaps route-loss block");
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
 	     "route-loss NVS ID block overlaps MEMS settings");
 BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
@@ -109,7 +113,7 @@ struct app_nvs_laser_policy {
 	double min_autolevel_current_ma;
 	double efficiency_mw_per_ma;
 	double wavelength_nm;
-	double current_set_calibration_pct;
+	double current_cal_pct;
 	double fractional_noise;
 	double constant_noise_mw;
 	double operating_temp_min_c;
@@ -131,8 +135,8 @@ struct app_nvs_laser_policy {
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
 	&LASER_1028,
 	&LASER_1270,
-	&LASER_1430,
-	&LASER_1430,
+	&LASER_1430YJ,
+	&LASER_1430HK,
 	&LASER_1510,
 	&LASER_2330,
 };
@@ -173,6 +177,12 @@ static uint16_t laser_policy_nvs_id(uint8_t channel)
 static uint16_t laser_total_nvs_id(uint8_t channel)
 {
 	return APP_NVS_ID_LASER_TOTAL_CH0 + channel;
+}
+
+/* Separate coefficient record leaves existing channel policy/calibration intact. */
+static uint16_t laser_ntc_nvs_id(uint8_t channel)
+{
+	return APP_NVS_ID_LASER_NTC_CH0 + channel;
 }
 
 static uint16_t route_loss_nvs_id(uint8_t index)
@@ -225,6 +235,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	s->mqtt.broker_port = (uint16_t)broker_port;
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+				s->attenuator_fit[ch].max_fit_residual_db[physical] = 2.0;
 				/* Default centers the nominal 0-3300 mV DAC span near the
 				 * FVOA half-shutter point until lab-measured coefficients
 				 * are stored.
@@ -297,7 +308,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		double minimum = default_laser_props[i]->threshold_current_ma + 1.0 / DIVIDER_CURRENT;
 		s->laser.channel[i].min_autolevel_current_ma = hispec_laser_quantize_current_ma(
 			minimum, minimum, default_laser_props[i]->nominal_current_ma);
-		s->laser.channel[i].current_set_calibration_pct = 100.0;
+		s->laser.channel[i].current_cal_pct = 100.0;
 		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
 		/* Use the immutable diode table, not user settings or current output. */
 		s->laser.channel[i].constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
@@ -518,7 +529,7 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->min_autolevel_current_ma = laser->min_autolevel_current_ma;
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
 	stored->wavelength_nm = laser->properties.wavelength_nm;
-	stored->current_set_calibration_pct = laser->current_set_calibration_pct;
+	stored->current_cal_pct = laser->current_cal_pct;
 	stored->fractional_noise = laser->fractional_noise;
 	stored->constant_noise_mw = laser->constant_noise_mw;
 	stored->operating_temp_min_c = laser->properties.operating_temp_range_c.min_c;
@@ -546,6 +557,8 @@ static void app_nvs_persist_laser_channel(uint8_t channel,
 
 	laser_policy_from_settings(&stored, laser);
 	(void)app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
+	(void)app_nvs_write(laser_ntc_nvs_id(channel), &laser->properties.ntc_coeff_pct_per_c,
+			    sizeof(laser->properties.ntc_coeff_pct_per_c));
 	(void)app_nvs_write(laser_total_nvs_id(channel),
 			    &laser->total_emitting_s,
 			    sizeof(laser->total_emitting_s));
@@ -814,7 +827,7 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->min_autolevel_current_ma = stored->min_autolevel_current_ma;
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
 	laser->properties.wavelength_nm = stored->wavelength_nm;
-	laser->current_set_calibration_pct = stored->current_set_calibration_pct;
+	laser->current_cal_pct = stored->current_cal_pct;
 	laser->fractional_noise = stored->fractional_noise;
 	laser->constant_noise_mw = stored->constant_noise_mw;
 	laser->properties.operating_temp_range_c.min_c = stored->operating_temp_min_c;
@@ -837,6 +850,7 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 		struct app_nvs_laser_policy policy;
 		struct app_laser_channel_settings laser;
 		double total_emitting_s;
+		double ntc_coefficient;
 
 		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
 				       sizeof(policy), "laser policy")) {
@@ -847,6 +861,17 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 				s->laser.channel[channel] = laser;
 			} else {
 				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
+			}
+		}
+
+		if (app_nvs_read_exact(laser_ntc_nvs_id(channel), &ntc_coefficient,
+				       sizeof(ntc_coefficient), "laser NTC")) {
+			laser = s->laser.channel[channel];
+			laser.properties.ntc_coeff_pct_per_c = ntc_coefficient;
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
+				s->laser.channel[channel] = laser;
+			} else {
+				LOG_WRN("Ignoring invalid stored laser NTC channel %u", channel);
 			}
 		}
 
@@ -899,14 +924,18 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
 		s->boot_count = value;
 	}
-	if (app_nvs_read_exact(APP_NVS_ID_LAST_KNOWN_UTC_MS, &s->last_known_utc_ms,
-			       sizeof(s->last_known_utc_ms), "last known UTC") &&
-	    s->last_known_utc_ms == 0U) {
-		LOG_WRN("Ignoring invalid stored last known UTC");
-	}
 	app_nvs_load_ip(s);
 	app_nvs_load_mqtt(s);
 	app_nvs_load_attenuator(s);
+	for (uint8_t channel = 0; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
+		struct app_attenuator_fit_policy policy;
+		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &policy,
+				      sizeof(policy), "attenuator fit policy") &&
+		    isfinite(policy.max_fit_residual_db[0]) && policy.max_fit_residual_db[0] > 0.0 &&
+		    isfinite(policy.max_fit_residual_db[1]) && policy.max_fit_residual_db[1] > 0.0) {
+			s->attenuator_fit[channel] = policy;
+		}
+	}
 	app_nvs_load_photodiode(s);
 	app_nvs_load_laserbank(s);
 	app_nvs_load_laser(s);
@@ -932,7 +961,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	if (!keep_boot_count) {
 		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
 	}
-	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_MS, &first_rc);
+	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_UNUSED, &first_rc);
 	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
 	if (!keep_ip) {
 		delete_setting_record(APP_NVS_ID_IP, &first_rc);
@@ -942,12 +971,14 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(attenuator_nvs_id(channel), &first_rc);
+		delete_setting_record(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(pd_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
+		delete_setting_record(laser_ntc_nvs_id(channel), &first_rc);
 		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
@@ -1143,6 +1174,27 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	}
 }
 
+void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || out == NULL) return;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.attenuator_fit[channel];
+	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_update_attenuator_fit(uint8_t channel,
+		const struct app_attenuator_fit_policy *policy, bool persist)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || policy == NULL) return -EINVAL;
+	for (uint8_t i = 0; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		if (!isfinite(policy->max_fit_residual_db[i]) || policy->max_fit_residual_db[i] <= 0.0) return -EINVAL;
+	}
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.attenuator_fit[channel] = *policy;
+	k_mutex_unlock(&g_settings.lock);
+	return persist ? app_nvs_write(APP_NVS_ID_ATTEN_FIT_CH0 + channel, policy, sizeof(*policy)) : 0;
+}
+
 void app_settings_get_attenuator(struct app_attenuator_settings *out)
 {
 	if (out == NULL) {
@@ -1324,23 +1376,16 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 {
 	int index;
 
-	if (transmission == NULL || route == NULL) {
+	if (transmission == NULL || route == NULL || laser == NULL) {
 		return -EINVAL;
 	}
-	if (route[0] == '\0' || strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
-	    (laser != NULL && (laser[0] == '\0' ||
-	     strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN))) {
+	if (route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
 		return -EINVAL;
 	}
 
 	*transmission = devices_route_loss_default(route, laser);
-	/* An unknown source uses source-independent defaults, never another laser's
-	 * override. The persisted route/laser key format remains unchanged.
-	 */
-	if (laser == NULL) {
-		return 0;
-	}
-
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);
 	if (index >= 0) {
@@ -1447,43 +1492,6 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
-}
-
-bool app_settings_get_last_known_utc_ms(uint64_t *utc_ms)
-{
-	uint64_t value;
-
-	if (utc_ms == NULL) {
-		return false;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	value = g_settings.snapshot.last_known_utc_ms;
-	k_mutex_unlock(&g_settings.lock);
-
-	if (value == 0U) {
-		return false;
-	}
-
-	*utc_ms = value;
-	return true;
-}
-
-void app_settings_note_time_utc_ms(uint64_t utc_ms)
-{
-	if (utc_ms == 0U) {
-		return;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	if (utc_ms == g_settings.snapshot.last_known_utc_ms) {
-		k_mutex_unlock(&g_settings.lock);
-		return;
-	}
-	g_settings.snapshot.last_known_utc_ms = utc_ms;
-	k_mutex_unlock(&g_settings.lock);
-
-	(void)app_nvs_write(APP_NVS_ID_LAST_KNOWN_UTC_MS, &utc_ms, sizeof(utc_ms));
 }
 
 struct nvs_fs *app_settings_nvs_fs(void)

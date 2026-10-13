@@ -48,6 +48,24 @@ A programming failure leaves preparation false and prevents a subsequent START
 until preparation succeeds. Range-only settings changes stop emission and defer
 programming until next preparation; combined driver-backed edits program now.
 
+`ntc_coeff_pct_per_c` is PCB-owned resistance change in %/°C at 25°C. Profile
+preparation translates it to rounded integer Maiman B and writes the internal LD
+NTC register 0x007F after the TEC current limit, before target/bounds/PID programming.
+External NTC register 0x008A is unused in this system. Failed writes
+leave preparation false. Explicit coefficient edits use the existing settings
+stop/power/program flow. Engineering status reads controller configuration before
+or after preparation; bank-off readbacks are null. Reads translate controller B
+back to the same units. Compiled defaults use vendor values: −4.4 %/°C for FLC
+and B=3900 K for Aero. No boot programming or EEPROM SAVE is added.
+App NVS owns optional persistence; see
+[settings](../settings.md) and [the thermal comparison](../temp_test_result.md).
+
+Raw service names `NTC_COEFFICIENT` and `NTC_B25_100_COEFFICIENT` select external
+0x008A; `INTERNAL_LD_NTC_SENSOR` selects internal 0x007F. They retain their
+literal register meanings. LD `current_cal_pct` uses 0x0088. TEC calibration
+0x007E remains an engineering getter; the Oct 9 trial supports retaining factory
+100% and adding no setting or rename.
+
 At 115200 baud, the former ordinary path's six reads and sixteen writes require
 about 34.2 ms of wire time plus 22.0 ms of configured RTU receive framing. One
 current write requires about 1.65 + 1.00 = 2.65 ms. These are transport estimates,
@@ -99,7 +117,9 @@ work and does not resolve that protocol ambiguity. See
 
 The laser owner keeps preparation and confirmed setpoints separately from
 operational communication health. Failed control operations or confirmed
-controller faults invalidate operational readiness without erasing confirmed configuration. Diagnostic failures warn and invalidate
+controller faults invalidate internal operational health without erasing confirmed configuration.
+Public status readiness separately describes known blockers to the explicit start
+endpoint; stopped TECs and recoverable fault history are not public blockers. Diagnostic failures warn and invalidate
 only that observation; five seconds without a response while started (including
 zero current) faults operation. Successful communication restores availability, but measurements
 remain stopped and a control fault requires a successful control operation.
@@ -159,3 +179,25 @@ Successful response timestamps remain the actual API completion time, never the 
 of the quiet interval. Neither elapsed time nor the guard turns a timeout into a
 successful acknowledgement. Use these records to assess the 75 ms ACK deadline
 within the measurement limits above.
+
+## Laser command failure evidence
+
+Laser operation helpers accept optional bounded failure text (`error`, `error_len`);
+pass NULL/0 to omit returned text. The laser owner formats existing controller
+evidence; command handlers include it in MQTT errors. Nested failures retain their
+detail through power restoration. Existing one-shot warnings remain best-effort.
+Controller observations stay private. No extra reads, waits or last-error cache.
+Return codes and hardware sequencing are unchanged.
+
+Compact `output_state` combines acknowledged output operations and positive LD
+observations. Its four values are documented in commands.md. It does not clear
+the existing control-fault latch or gate throughput/dark acquisition. Internal
+stop intent distinguishes an observed stop after a failed intentional shutdown
+from an autonomous stop after established nonzero operation. No extra reads.
+
+The existing one-second auto-off worker now reads LD operation state as well as
+TEC state during its eligible nonblocking checks. Foreground status, temperature
+polls and background observations share confirmed-stop accounting. Each positive
+component stop freezes its own accumulated on-time; failed component reads leave
+that component's counter unchanged. This does not persist/reset the current runtime,
+erase setpoints, release deadlines, restart output or add a post-START wait.

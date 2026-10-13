@@ -634,7 +634,7 @@ static void auto_error_locked(int error)
 	/* Acquisition faults stop the calibration-owned source. A failed stop
 	 * leaves its identity available for the user's explicit stop/restart.
 	 */
-	cal.shutdown_pending = hispec_laser_stop_output(cal.laser, false) != 0;
+	cal.shutdown_pending = hispec_laser_stop_output(cal.laser, false, NULL, 0) != 0;
 	atten_cal_emit_simple("error");
 }
 
@@ -646,7 +646,7 @@ static bool auto_set_laser_level_locked(uint8_t level_index)
 	}
 	cal.laser_level_index = level_index;
 	cal.laser_percent = initial_laser_levels_pct[level_index];
-	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U, true) != 0) {
+	if (hispec_laser_set_output_percent_autooff(cal.laser, cal.laser_percent, 0U, true, NULL, 0) != 0) {
 		auto_error_locked(-EIO);
 		return false;
 	}
@@ -804,7 +804,7 @@ static void auto_finish_physical_locked(void)
 		auto_start_next_physical_locked();
 		return;
 	}
-	int rc = hispec_laser_stop_output(cal.laser, false);
+	int rc = hispec_laser_stop_output(cal.laser, false, NULL, 0);
 	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	if (rc != 0) {
 		/* Preserve the data and shutdown responsibility without retrying STOP. */
@@ -1275,8 +1275,10 @@ static int build_fit_points(uint8_t physical,
  * Estimate the physical FVOA leakage floor from the final retained fit points.
  *
  * Acquisition sweeps monotonically toward higher DUT attenuation. The final
- * usable points therefore describe the finite transmission floor that remains
- * when the FVOA is effectively shut. This is not optimized as a third
+ * usable points estimate the finite transmission floor only if the optical
+ * path probes that far. Constrain the estimate to at least 65 dB so a dim path's
+ * last usable readings cannot bend the floor into its measured region. This
+ * constraint supplies no additional calibrated range. It is not a third
  * Gauss-Newton parameter; it is fixed before the two-shape-parameter fit so the
  * embedded optimizer stays small and reproducible.
  */
@@ -1315,7 +1317,10 @@ static int estimate_max_atten_db(const struct atten_cal_fit_point *points,
 		return -ERANGE;
 	}
 
-	*max_atten_db = mean;
+	/* An unprobed high-attenuation tail is not evidence for a low leakage
+	 * floor. 65 dB is a model constraint, not additional measured support.
+	 * Keep measured tail scatter for weighting; inspect its effect on fits. */
+	*max_atten_db = MAX(mean, 65.0);
 	*max_atten_sigma_db = sigma;
 	return 0;
 }
@@ -1632,8 +1637,14 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
 			}
 			*failed_mv = CLAMP(mv, 0.0f, ATTENUATOR_DRIVE_MAX_MV);
 			*eval = (struct atten_model_eval){.db = NAN, .d_db_d_voltage_mv = NAN};
-			if (!atten_model_eval(coeffs, *failed_mv, eval) ||
-			    eval->d_db_d_voltage_mv < 0.0 ||
+			/* Validate the actual float control curve; fitting and metrics above
+			 * still use the double model and its full coefficient derivatives.
+			 */
+			float db, slope;
+			if (!atten_model_eval_runtime(coeffs, *failed_mv, &db, &slope)) return false;
+			eval->db = (double)db;
+			eval->d_db_d_voltage_mv = (double)slope;
+			if (eval->d_db_d_voltage_mv < 0.0 ||
 			    eval->db + ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB < previous_db ||
 			    (pass == 2U && i == 1U &&
 			     fabs(eval->db - coeffs->max_calibrated_db) > ATTEN_CAL_CORRECTION_MONOTONIC_EPS_DB)) {
@@ -1887,7 +1898,10 @@ static int fit_one_physical(uint8_t physical,
 	out->fvoa_span_mv = max_x - min_x;
 	memcpy(out->correction_coeff, coeffs.correction_coeff,
 	       sizeof(out->correction_coeff));
-	out->accepted = isfinite(out->correlation) &&
+	struct app_attenuator_fit_policy policy;
+	app_settings_get_attenuator_fit(cal.attenuator_index, &policy);
+	out->accepted = max_abs_db <= policy.max_fit_residual_db[physical] &&
+			isfinite(out->correlation) &&
 			out->correlation >= ATTEN_CAL_MIN_FIT_CORR &&
 			isfinite(out->fvoa_50pct_mv) &&
 			out->fvoa_50pct_mv > 0.0 &&
@@ -2115,7 +2129,7 @@ int attenuator_calibration_start_auto(
 	replacing = cal.state == ATTEN_CAL_STATE_RUNNING;
 	cancel_fit_locked();
 	if (cal.shutdown_pending) {
-		rc = hispec_laser_stop_output(cal.laser, false);
+		rc = hispec_laser_stop_output(cal.laser, false, NULL, 0);
 		if (rc != 0) {
 			publish_status_locked(status);
 			k_mutex_unlock(&cal_lock);
@@ -2129,7 +2143,7 @@ int attenuator_calibration_start_auto(
 		 * Retain that identity if shutdown fails; do not start a second source.
 		 */
 		if (cal.laser != request->laser) {
-			rc = hispec_laser_stop_output(cal.laser, false);
+			rc = hispec_laser_stop_output(cal.laser, false, NULL, 0);
 			if (rc != 0) {
 				cal.shutdown_pending = true;
 				cal.state = ATTEN_CAL_STATE_ERROR;
@@ -2202,7 +2216,7 @@ int attenuator_calibration_start_auto(
 		goto failed_start;
 	}
 
-	rc = hispec_laser_stop_output(request->laser, false);
+	rc = hispec_laser_stop_output(request->laser, false, NULL, 0);
 	if (rc != 0) {
 		stop_failed = true;
 		goto failed_start;
@@ -2224,7 +2238,7 @@ failed_start:
 	/* No retry of a failed stop here. Earlier setup failures still release a
 	 * possibly emitting source, then keep any failed shutdown for explicit retry.
 	 */
-	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false) != 0;
+	cal.shutdown_pending = stop_failed || hispec_laser_stop_output(request->laser, false, NULL, 0) != 0;
 	atten_cal_emit_simple("error");
 	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
@@ -2239,7 +2253,7 @@ int attenuator_calibration_stop(struct attenuator_calibration_status *status)
 	if (cal.state == ATTEN_CAL_STATE_RUNNING || cal.shutdown_pending) {
 		cal.phase = ATTEN_CAL_PHASE_NONE;
 		housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
-		int rc = hispec_laser_stop_output(cal.laser, false);
+		int rc = hispec_laser_stop_output(cal.laser, false, NULL, 0);
 		cal.shutdown_pending = rc != 0;
 		if (rc != 0) {
 			cal.state = ATTEN_CAL_STATE_ERROR;

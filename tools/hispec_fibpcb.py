@@ -19,8 +19,9 @@ import re
 import struct
 import threading
 import time
+import warnings
 from collections import deque
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, Deque, Iterable, Literal, Mapping, Sequence
 
@@ -31,6 +32,32 @@ from paho.mqtt.properties import Properties
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def parameter_table(values: Any):
+    """Display nested settings with API field names and native values; no I/O.
+
+    This is a display aid. Save settings themselves with pandas.to_pickle;
+    ordinary dictionaries and dataclasses need no archive encoding.
+    """
+    import pandas as pd
+
+    rows = []
+
+    def visit(key, value):
+        if is_dataclass(value):
+            value = asdict(value)
+        if isinstance(value, Mapping):
+            for name, item in value.items():
+                visit(f"{key}.{name}" if key else str(name), item)
+        elif isinstance(value, (tuple, list)):
+            for index, item in enumerate(value):
+                visit(f"{key}.{index}", item)
+        else:
+            rows.append((key, value))
+
+    visit("", values)
+    return pd.DataFrame(rows, columns=["parameter", "value"]).set_index("parameter")
 
 DEVICE_NAMES = ("hsfib-tib", "hsfib-rcal", "hsfib-bcal", "hsfib-as")
 LASER_NAMES = ("1028y", "1270j", "1430yj", "1430hk", "1510h", "2330k")
@@ -81,7 +108,7 @@ _LASER_TO_PD_CHANNEL = {
     "2330k": "hk",
 }
 
-_THROUGHPUT_BINARY = struct.Struct("<8sQ18dh2QB")
+_THROUGHPUT_BINARY = struct.Struct("<8sQ24dh2QB")
 _THROUGHPUT_FLOAT_FIELDS = (
     "tp",
     "tp_err",
@@ -93,7 +120,7 @@ _THROUGHPUT_FLOAT_FIELDS = (
     "laser_output_power_uw",
     "laser_output_power_err_uw",
     "pd_route_tx",
-    "laser_route_tx",
+    "launch_route_tx",
     "atten_tx",
     "pd_mv",
     "pd_net_mv",
@@ -101,6 +128,12 @@ _THROUGHPUT_FLOAT_FIELDS = (
     "laser_current_ma",
     "atten_db",
     "wavelength_nm",
+    "atten1_db",
+    "atten2_db",
+    "dac1_mv",
+    "dac2_mv",
+    "atten1_slope_db_per_fvoa_mv",
+    "atten2_slope_db_per_fvoa_mv",
 )
 _ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
 _ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
@@ -420,9 +453,17 @@ class RouteLoss(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class LaserStatus(ResponseRepr):
+    """Public-start readiness and observed/acknowledged output abstraction.
+
+    Zero-current and full STOP are both stopped. Running is not an optical
+    measurement; i_mA and power_mw remain setpoint/model estimates. A historical
+    unexpected stop can coexist with ready=True and blocked_reason=None.
+    """
+
     name: str
     powered: bool
     ready: bool
+    output_state: Literal["stopped", "running", "stopped_fault", "unknown"]
     blocked_reason: str | None
     tec_on_s: int | None
     emit_on_s: int | None
@@ -458,10 +499,11 @@ class TecPid(ResponseRepr):
 class LaserSettings(ResponseRepr):
     name: str
     model: str
+    ld_serial: str
     expected_serial: int
     nominal_current_ma: float
     max_current_ma: float
-    current_set_calibration_pct: float
+    current_cal_pct: float
     fractional_noise: float
     constant_noise_mw: float
     threshold_current_ma: float
@@ -472,10 +514,10 @@ class LaserSettings(ResponseRepr):
     default_operating_temp_c: float
     thermistor_kohm: float
     isolation_db: float
-    tec_max_current_a: float
+    tec_curr_lim_a: float
     tec_pid: TecPid
     disable_tec_at_autooff: bool
-    ntc_t_coefficient_per_c: float
+    ntc_coeff_pct_per_c: float
     dlambda_dT_nm_per_k: float
     dlambda_dA_nm_per_ma: float
     autooff_s: int
@@ -515,10 +557,10 @@ class LaserEngineeringStatus(ResponseRepr):
     i_mA: float | None
     curr_meas_ma: float | None
     curr_min_ma: float | None
-    curr_max_ma: float | None
+    max_current_ma: float | None
     drv_max_ma: float | None
     ocp_ma: float | None
-    curr_cal_pct: float | None
+    current_cal_pct: float | None
     diode_v: float | None
     tec_temp_set_c: float | None
     tec_temp_c: float | None
@@ -526,8 +568,8 @@ class LaserEngineeringStatus(ResponseRepr):
     tec_ma: float | None
     tec_curr_lim_a: float | None
     tec_v: float | None
-    pid: tuple[int, int, int]
-    ntc_t_coeff: float | None
+    pid: tuple[int, int, int] | None
+    ntc_coeff_pct_per_c: float | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -1013,6 +1055,66 @@ def attenuator_noise(
     out.electrical_rms_tx = scale * out.electrical_rms_db
     out.total_sigma_tx = scale * out.total_sigma_db
     out.electrical_rms_pct = 100.0 * np.log(10.0) / 10.0 * out.electrical_rms_db
+    return out
+
+
+def throughput_noise(samples, *, enbw_hz: float, transimpedance_v_per_a: float,
+                     dark_rms_mv: float, fvoa_rms_mv: Sequence[float] = (10.0, 10.0),
+                     electrical_basis: str = 'firmware assumption: 10 mV RMS per FVOA',
+                     reference_net_mv=None, historical_model_rms_db: Sequence[float] | None = None):
+    """Pure single-reading temporal-noise budget for records or a DataFrame.
+
+    ENBW must describe the full detector/acquisition response, not stream Nyquist.
+    dark_rms_mv must be a measured, bandwidth-matched single-reading dark RMS;
+    a forced offset's uncertainty is not this quantity. Electrical RMS is at the
+    FVOA drive, after its amplifier, over the applicable response bandwidth.
+    Slopes come from firmware telemetry; no host FVOA model is fitted/evaluated.
+    Photon (photoelectron shot), detector and drives are assumed independent.
+    Static power, attenuation-model and dark-mean errors are excluded.
+
+    Historical records without slopes permit only the aggregate electrical
+    contribution: subtract the recorded laser/model uncertainty from firmware's
+    propagated variance. Individual drive terms remain unknown, and rescaling
+    this aggregate requires equal RMS for both drives. attrs retains provenance.
+    """
+    import pandas as pd
+
+    frame = pd.DataFrame.from_records(samples) if isinstance(samples, np.ndarray) else pd.DataFrame(samples)
+    bandwidth = _require_float('enbw_hz', enbw_hz, 1e-300, math.inf)
+    gain = _require_float('transimpedance_v_per_a', transimpedance_v_per_a, 1e-300, math.inf)
+    dark = _require_float('dark_rms_mv', dark_rms_mv, 0.0, math.inf)
+    rms = np.asarray(fvoa_rms_mv, dtype=float)
+    if rms.shape != (2,) or not np.all(np.isfinite(rms) & (rms >= 0)):
+        raise HispecFibError('fvoa_rms_mv must be a finite nonnegative pair')
+    if not electrical_basis or (tuple(rms) != (10.0, 10.0) and electrical_basis.startswith('firmware assumption')):
+        raise HispecFibError('provide electrical_basis for the supplied drive-noise estimate')
+    mean = np.broadcast_to(np.asarray(frame.pd_net_mv if reference_net_mv is None else reference_net_mv, dtype=float), (len(frame),))
+    photon = 1000*np.sqrt(2*1.602176634e-19*np.maximum(mean, 0)/1000*gain*bandwidth)
+    slopes = [f'atten{i}_slope_db_per_fvoa_mv' for i in (1, 2)]
+    individual = np.full((len(frame), 2), np.nan)
+    if all(name in frame for name in slopes):
+        individual = np.abs(mean[:, None]) * (np.log(10)/10) * np.abs(frame[slopes].to_numpy(float)) * rms
+        electrical = np.hypot(individual[:, 0], individual[:, 1])
+        source = 'signed firmware local slopes; independent drives'
+    elif historical_model_rms_db is not None:
+        model = np.asarray(historical_model_rms_db, dtype=float)
+        if model.shape != (2,) or not np.all(np.isfinite(model) & (model >= 0)) or rms[0] != rms[1]:
+            raise HispecFibError('historical aggregate requires two model RMS values and equal drive RMS')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            variance = (frame.delivered_power_err_nw/frame.delivered_power_nw)**2
+            variance -= (frame.laser_output_power_err_uw/frame.laser_output_power_uw)**2
+            variance -= (np.log(10)/10)**2 * np.sum(model**2)
+        electrical = np.abs(mean) * np.sqrt(np.maximum(variance.to_numpy(float), 0)) * rms[0]/10
+        source = 'historical firmware aggregate after recorded static/laser variance subtraction; per-drive terms unknown'
+    else:
+        electrical = np.full(len(frame), np.nan)
+        source = 'electrical contribution unavailable: no firmware slopes or historical model RMS supplied'
+    out = pd.DataFrame(dict(expected_net_mv=mean, photon_rms_mv=photon,
+        detector_rms_mv=np.full(len(frame), dark), fvoa1_rms_mv=individual[:, 0], fvoa2_rms_mv=individual[:, 1],
+        electrical_rms_mv=electrical, combined_rms_mv=np.sqrt(photon**2+dark**2+electrical**2)), index=frame.index)
+    out.attrs.update(units='mV at PD ADC input; single-reading RMS, not standard error',
+        enbw_hz=bandwidth, transimpedance_v_per_a=gain, fvoa_rms_mv=tuple(rms), electrical_basis=electrical_basis,
+        slope_basis=source, excluded='static laser power, attenuation calibration and dark-mean uncertainty')
     return out
 
 
@@ -3155,7 +3257,7 @@ class ThroughputSample(ResponseRepr):
     laser_output_power_uw: float
     laser_output_power_err_uw: float
     pd_route_tx: float
-    laser_route_tx: float
+    launch_route_tx: float
     atten_tx: float
     pd_mv: float
     pd_net_mv: float
@@ -3163,6 +3265,12 @@ class ThroughputSample(ResponseRepr):
     laser_current_ma: float
     atten_db: float
     wavelength_nm: float
+    atten1_db: float
+    atten2_db: float
+    dac1_mv: float
+    dac2_mv: float
+    atten1_slope_db_per_fvoa_mv: float
+    atten2_slope_db_per_fvoa_mv: float
     pd_raw: int
     pd_ontime_s: int
     laser_current_ontime_s: int
@@ -3178,6 +3286,8 @@ class _PendingRequest:
     event: threading.Event = field(default_factory=threading.Event)
     payload: bytes | None = None
     properties: Any = None
+    ack_utc_ms: int | None = None
+    receipt_utc_ms: int | None = None
 
 
 def _mqtt_client(client_id: str) -> mqtt.Client:
@@ -3331,7 +3441,10 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
         return CommandOk()
     data = _loads(payload)
     if isinstance(data, Mapping) and "error" in data and not _is_atten_cal_status(data):
-        raise HispecFibPCBError(str(data["error"]), topic=topic, response=_to_object(data))
+        message = f"{topic}: {data['error']}"
+        if "rc" in data:
+            message += f" (rc={data['rc']})"
+        raise HispecFibPCBError(message, topic=topic, response=_to_object(data))
     if data == {"status": "ok"}:
         return CommandOk()
     return data
@@ -3509,13 +3622,13 @@ def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
     return ThroughputSample(
         channel=channel,
         laser="",  # Channel plus payload wavelength identifies the source.
-        autolevel=bool(values[23] & 2),
+        autolevel=bool(values[-1] & 2),
         t_ms=int(values[1]),
-        **dict(zip(_THROUGHPUT_FLOAT_FIELDS, values[2:20])),
-        pd_raw=int(values[20]),
-        pd_ontime_s=int(values[21]),
-        laser_current_ontime_s=int(values[22]),
-        flags=("overrange",) if values[23] & 1 else (),
+        **dict(zip(_THROUGHPUT_FLOAT_FIELDS, values[2:-4])),
+        pd_raw=int(values[-4]),
+        pd_ontime_s=int(values[-3]),
+        laser_current_ontime_s=int(values[-2]),
+        flags=("overrange",) if values[-1] & 1 else (),
     )
 
 
@@ -3540,6 +3653,9 @@ class ThroughputMonitor:
             raise HispecFibError("max_samples must be positive")
         self._messages: queue.Queue[bytes | None] = queue.Queue()
         self._samples: Deque[tuple[Any, ...]] = deque(maxlen=self.max_samples)
+        self._commands: list[dict[str, Any]] = []
+        self.measurement: dict[str, Any] = {}
+        self.samples_received = 0
         self._lock = threading.Lock()
         self._running = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"hispec-tput-{channel}", daemon=True)
@@ -3575,6 +3691,24 @@ class ThroughputMonitor:
     def clear(self) -> None:
         with self._lock:
             self._samples.clear()
+            self._commands.clear()
+            self.samples_received = 0
+
+    @property
+    def command_events(self):
+        """Command replies received during collection, including read-only queries.
+
+        ack_utc_ms is board dispatch completion; receipt_utc_ms is host receipt.
+        Neither denotes optical settling. ack_clock explicitly identifies new
+        records; historical archives without it retain their original meaning.
+        Missing replies have no acknowledgement timestamp. Reading this property
+        creates a DataFrame snapshot and never sends a PCB command.
+        """
+        import pandas as pd
+
+        with self._lock:
+            return pd.DataFrame(self._commands, columns=[
+                "command", "arguments", "issue_utc_ms", "ack_utc_ms", "receipt_utc_ms", "ack_clock", "ok", "error"])
 
     def enqueue_payload(self, payload: bytes) -> None:
         if self._running.is_set():
@@ -3606,13 +3740,18 @@ class ThroughputMonitor:
         channel: Literal["yj", "hk"] | None = None,
         interval_s: float = 0.5,
         max_points: int = 600,
+        laser_current_max_ma: float | None = None,
+        attenuation_limits_db: tuple[float, float] | None = None,
     ):
         """Return a nonblocking ``(figure, animation)`` throughput dashboard.
 
         Use ``%matplotlib widget`` in Jupyter and retain the animation reference.
         An all-channel collector requires a channel selection. Shaded bands show
         reported uncertainties, not confidence intervals adjusted for filtering.
-        Throughput uses a log scale with a linked dB-loss axis. Detector S/N uses
+        Throughput has a locally autoscaled linear trace bounded below by zero
+        and an independent fixed dB trace.
+        Current and attenuation use run settings (or supplied limits for an
+        attached collector); no PCB commands are issued by this plot. Detector S/N uses
         the individual PD reading/error; total throughput S/N includes calibration error.
         The PD guides show the current firmware's 20-80% usable-input band.
         Nonpositive log values and undefined S/N are display gaps, never changes
@@ -3624,7 +3763,6 @@ class ThroughputMonitor:
         """
         import matplotlib.pyplot as plt
         from matplotlib.animation import FuncAnimation
-        from matplotlib.ticker import MaxNLocator, StrMethodFormatter
         from itertools import islice
 
         if channel is None:
@@ -3649,14 +3787,14 @@ class ThroughputMonitor:
         power_ax = fig.add_subplot(grid[3, :], sharex=tp_ax)
         axes = (tp_ax, pd_ax, snr_ax, drive_ax, source_ax, power_ax)
         atten_ax = drive_ax.twinx()
-        tp_ax.set(title="Throughput", ylabel="throughput (unitless)", yscale="log")
+        tp_ax.set(title="Throughput", ylabel="linear throughput (local scale)")
         pd_ax.set(title="Photodiode input", ylabel="ADC input (mV)")
         snr_ax.set(title="Signal / reported error", ylabel="S/N", yscale="log")
         drive_ax.set(title="Source and attenuation", ylabel="laser current (mA)")
-        atten_ax.set_ylabel("combined attenuation (dB)")
+        atten_ax.set_ylabel("attenuation (dB)")
         source_ax.set(title="Estimated laser optical output (before attenuation)", ylabel="power (µW)")
         power_ax.set(title="Route-corrected optical power", ylabel="power (nW)", yscale="log")
-        log_axes = (tp_ax, snr_ax, power_ax)
+        log_axes = (snr_ax, power_ax)
         for ax in log_axes:
             ax.set_ylim(1.0, 10.0)  # Valid log ranges before positive samples arrive.
             ax.set_autoscaley_on(True)
@@ -3667,24 +3805,13 @@ class ThroughputMonitor:
         for ax in (tp_ax, pd_ax, snr_ax, drive_ax, source_ax):
             ax.tick_params(labelbottom=False)
 
-        def transmission_to_loss(values):
-            # Matplotlib also probes zero/out-of-domain coordinates during layout.
-            with np.errstate(divide="ignore", invalid="ignore"):
-                return -10.0 * np.log10(values)
-
-        def loss_to_transmission(values):
-            with np.errstate(over="ignore", invalid="ignore"):
-                return np.power(10.0, -np.asarray(values) / 10.0)
-
-        loss_ax = tp_ax.secondary_yaxis("right", functions=(transmission_to_loss, loss_to_transmission))
-        # dB is already logarithmic: avoid the inherited log scale, which clamps
-        # zero/negative dB. Reflect the linear dB coordinate so larger loss stays
-        # aligned with smaller throughput, including toolbar zoom and inversion.
-        loss_ax.set_yscale("function", functions=(np.negative, np.negative))
-        loss_ax.set_ylabel("path loss (dB)")
-        loss_ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
-        loss_ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
-        loss_ax.minorticks_off()
+        db_ax = tp_ax.twinx()
+        db_ax.set(ylabel="throughput (dB, full range)", ylim=(-100, 10))
+        db_line, = db_ax.plot([], [], color="C1", lw=.8, label="throughput (dB)")
+        current_max = laser_current_max_ma if laser_current_max_ma is not None else self.measurement.get("laser_current_max_ma", 1.0)
+        attenuation_limits = attenuation_limits_db or self.measurement.get("attenuation_limits_db", (65.0, 65.0))
+        drive_ax.set_ylim(0, _require_float("laser_current_max_ma", current_max, 1e-9, math.inf))
+        atten_ax.set_ylim(0, sum(_require_float("attenuation limit", x, 1e-9, math.inf) for x in attenuation_limits))
 
         # Match TP_LOW/HIGH_FRACTION in throughput_monitor.c; ADC mV include
         # the board divider. The band is a net-signal control target, while
@@ -3695,7 +3822,7 @@ class ThroughputMonitor:
         snr_series = []
         for numerator, denominator, label, color in (
             ("pd_net_mv", "pd_net_err_mv", "PD reading / PD error", "C0"),
-            ("tp", "tp_err", "throughput / total error", "C1"),
+            ("tp", "tp_err", "throughput / total uncertainty (not temporal RMS)", "C1"),
         ):
             line, = snr_ax.plot([], [], label=label, color=color)
             snr_series.append((numerator, denominator, line))
@@ -3703,13 +3830,15 @@ class ThroughputMonitor:
 
         series = []
         for ax, field, error, label, color in (
-            (tp_ax, "tp", "tp_err", "throughput", "C0"),
+            (tp_ax, "tp", "tp_err", "linear throughput ± total uncertainty", "C0"),
             (pd_ax, "pd_net_mv", "pd_net_err_mv", "net reading", "C0"),
             (drive_ax, "laser_current_ma", None, "laser current", "C2"),
             (atten_ax, "atten_db", None, "combined attenuation", "C3"),
+            (atten_ax, "atten1_db", None, "FVOA1", "C4"),
+            (atten_ax, "atten2_db", None, "FVOA2", "C5"),
             (source_ax, "laser_output_power_uw", "laser_output_power_err_uw", "laser estimate", "C2"),
-            (power_ax, "pd_power_nw", "pd_power_err_nw", "detected / PD route transmission", "C0"),
-            (power_ax, "delivered_power_nw", "delivered_power_err_nw", "delivered (laser × attenuation × route)", "C1"),
+            (power_ax, "pd_power_nw", "pd_power_err_nw", "measured PD power / return transmission", "C0"),
+            (power_ax, "delivered_power_nw", "delivered_power_err_nw", "predicted delivered power (laser × attenuation × route)", "C1"),
         ):
             line, = ax.plot([], [], label=label, color=color, ls="--" if ax is atten_ax else "-")
             band = ax.fill_between([], [], [], color=color, alpha=0.18) if error else None
@@ -3717,9 +3846,16 @@ class ThroughputMonitor:
         bound_line, = tp_ax.plot([], [], "^", color="C3", label="overrange: nominal lower bound")
         for ax in (tp_ax, pd_ax, source_ax, power_ax):
             ax.legend(loc="upper left")
+        tp_ax.legend([*tp_ax.lines, db_line], [line.get_label() for line in (*tp_ax.lines, db_line)], loc="upper left")
         drive_ax.legend(drive_ax.lines + atten_ax.lines,
                         [line.get_label() for line in (*drive_ax.lines, *atten_ax.lines)],
                         loc="upper left")
+        ticks = []
+        for ax, field, changed_field, color in ((drive_ax, "laser_current_ma", "laser_current_ma", "C2"),
+                                               (atten_ax, "atten1_db", "dac1_mv", "C4"),
+                                               (atten_ax, "atten2_db", "dac2_mv", "C5")):
+            marker, = ax.plot([], [], marker="|", ms=7, mew=.9, ls="none", color=color)
+            ticks.append((field, changed_field, marker))
         title = fig.suptitle(f"{channel.upper()} — waiting for throughput samples")
         start_ms = None
         time_index = THROUGHPUT_DTYPE.names.index("t_ms")
@@ -3741,8 +3877,8 @@ class ThroughputMonitor:
                 source = f"{wavelength:g} nm" if np.isfinite(wavelength) else "unknown wavelength"
                 # Channel plus wavelength also distinguishes the two 1430 nm lasers.
                 state = "autolevel" if rec.autolevel[-1] else "passive"
-                bound = " · OVERRANGE: TP ≥ shown, loss ≤ shown" if "overrange" in rec["flags"][-1] else ""
-                title.set_text(f"{rec.channel[-1]} · {source} · {state}{bound} — bands: reported ± error")
+                bound = " · OVERRANGE: TP ≥ shown, dB ≥ shown" if "overrange" in rec["flags"][-1] else ""
+                title.set_text(f"{rec.channel[-1]} · {source} · {state}{bound} — bands: reported ± total/PD uncertainty, not temporal RMS")
             t = (rec.t_ms.astype(float) - (start_ms or 0)) / 1000.0
             gaps = np.zeros(len(rec), dtype=bool)
             if len(rec) > 1:
@@ -3751,6 +3887,15 @@ class ThroughputMonitor:
             overrange = np.array(["overrange" in flags for flags in rec["flags"]], dtype=bool)
             bounds = np.where(overrange & (rec.tp > 0), rec.tp, np.nan)
             bound_line.set_data(t, bounds)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                db = np.where(rec.tp > 0, 10*np.log10(rec.tp), np.nan)
+            db[gaps] = np.nan
+            db_line.set_data(t, db)
+            for field, changed_field, marker in ticks:
+                changed = np.zeros(len(rec), dtype=bool)
+                if len(rec) > 1:
+                    changed[1:] = np.isfinite(rec[changed_field][1:]) & np.isfinite(rec[changed_field][:-1]) & (rec[changed_field][1:] != rec[changed_field][:-1])
+                marker.set_data(t[changed], rec[field][changed])
             for ax, field, error, line, band in series:
                 values = np.asarray(rec[field], dtype=float).copy()
                 values[gaps | ~np.isfinite(values)] = np.nan
@@ -3780,6 +3925,8 @@ class ThroughputMonitor:
                         ax.update_datalim(vertices[np.all(np.isfinite(vertices), axis=1)])
             for ax in (*axes, atten_ax):
                 ax.autoscale_view()
+            if tp_ax.get_autoscaley_on() and tp_ax.get_ylim()[0] < 0:
+                tp_ax.set_ylim(0, max(tp_ax.get_ylim()[1], 1e-12), auto=True)
 
         animation = FuncAnimation(fig, update, interval=interval_s * 1000,
                                   cache_frame_data=False)
@@ -3793,7 +3940,8 @@ class ThroughputMonitor:
         return fig, animation
 
     def _run(self) -> None:
-        while self._running.is_set():
+        # The sentinel follows queued telemetry, so stop retains every received record.
+        while True:
             payload = self._messages.get()
             if payload is None:
                 break
@@ -3804,6 +3952,7 @@ class ThroughputMonitor:
                 continue
             with self._lock:
                 self._samples.append(sample.as_tuple())
+                self.samples_received += 1
 
 
 class AttenuatorGridProbe:
@@ -3862,6 +4011,12 @@ class HispecFibPcb:
     (the default), commands connect or wait for reconnection when needed.
     Once started, Paho's network loop reconnects independently of this option;
     every connection restores reply and telemetry subscriptions.
+
+    ``on_command`` receives the existing command-event dictionary after a
+    request finishes, including errors/timeouts. It runs on the requesting
+    thread, may be called concurrently, and should return promptly without
+    issuing commands or modifying the event. Callback exceptions are logged,
+    preserving the request result. The client does not retain a separate history.
     """
 
     def __init__(
@@ -3877,6 +4032,7 @@ class HispecFibPcb:
         connect: bool = False,
         logger: logging.Logger | None = None,
         warning_history: int = 200,
+        on_command: Callable[[dict[str, Any]], None] | None = None,
     ):
         if not re.fullmatch(r"hsfib-[A-Za-z0-9_-]+", device):
             raise HispecFibError("device must be a formal MQTT name such as hsfib-tib")
@@ -3887,6 +4043,7 @@ class HispecFibPcb:
         self.timeout_s = float(timeout_s)
         self.auto_connect = bool(auto_connect)
         self.logger = logger or LOGGER
+        self.on_command = on_command
         self._client_id = client_id or f"hispec-fibpcb-{device}-{int(time.time())}"
         self._client: Any = None
         self._connected = threading.Event()
@@ -4050,12 +4207,33 @@ class HispecFibPcb:
             return _dataclass_from(MqttConfig, self._request_json("mqtt"))
         return self._request_ok("mqtt", {"broker": broker, "persist": persist})
 
-    def time(self, unix_ms: int | None = None) -> TimeStatus | CommandOk:
-        if unix_ms is None:
-            return _dataclass_from(TimeStatus, self._request_json("time"))
-        return self._request_ok("time", {"unix_ms": int(unix_ms)})
+    def time(self, unix_ms: int | None = None, *, offset_tolerance_ms: float | None = 200.0) -> TimeStatus | CommandOk:
+        """Read/set UTC; warn only for offset outside the host round-trip bracket.
+
+        A None tolerance disables the warning. This compares clocks, not optical
+        timing, and never adjusts either clock unless unix_ms is supplied.
+        """
+        if unix_ms is not None:
+            return self._request_ok("time", {"unix_ms": int(unix_ms)})
+        if offset_tolerance_ms is not None:
+            offset_tolerance_ms = _require_float("offset_tolerance_ms", offset_tolerance_ms, 0.0, math.inf)
+        issued = time.time_ns() / 1e6
+        result = _dataclass_from(TimeStatus, self._request_json("time"))
+        received = time.time_ns() / 1e6
+        low, high = result.utc-received, result.utc-issued
+        if offset_tolerance_ms is not None and (low > offset_tolerance_ms or high < -offset_tolerance_ms):
+            warnings.warn(f"PCB UTC minus host is between {low:.1f} and {high:.1f} ms "
+                          f"(tolerance {offset_tolerance_ms:g} ms); check SNTP/RTC and host time.",
+                          RuntimeWarning, stacklevel=2)
+        return result
 
     def temps(self) -> TempsStatus:
+        """Fresh temperatures without enabling bank power.
+
+        laserbank_c averages valid idle TEC probes only; it is None if the bank
+        is off, all TECs are active or no idle reading is usable. Individual
+        temperatures include active TECs. This does not use the heater cache.
+        """
         data = self._request_json("temps")
         return TempsStatus(
             ambient_c=data.get("ambient_c"),
@@ -4144,6 +4322,8 @@ class HispecFibPcb:
         For example, loss=0.5 and loss="3.0103 dB" describe half the light lost.
         Split tuples use the same representations for each output. Prefer dB
         strings when a fractional value would lose precision near an endpoint.
+        Use laser="generic" for TIB CAL-to-AO/FEI or MM/SM-to-PD records.
+        Named lasers keep independent records and do not inherit this override.
         """
         if laser is None and loss is None and split is None and not persist:
             data = self._request_json("mems/route/loss", {"route": route})
@@ -4155,14 +4335,14 @@ class HispecFibPcb:
         payload: dict[str, Any] = {"route": route, "persist": persist}
         if split is not None:
             if laser is not None or loss is not None:
-                raise HispecFibError("route loss uses either split or a laser value")
+                raise HispecFibError("route loss uses either split or a source value")
             if len(split) != 3:
                 raise HispecFibError("split route loss must contain three values")
             payload["split"] = list(split)
         else:
             if laser is None or loss is None:
                 raise HispecFibError("laser and loss are required for non-split route loss")
-            _require_choice("laser", laser, LASER_NAMES)
+            _require_choice("laser", laser, (*LASER_NAMES, "generic"))
             if not isinstance(loss, str):
                 loss = _require_float("loss", loss, 0.0, 1.0)
                 if loss == 1.0:
@@ -4195,6 +4375,18 @@ class HispecFibPcb:
             payload["autooff_s"] = _require_nonnegative_u32("autooff_s", autooff_s)
         return self._request_ok("laser", payload)
 
+    def read_route_losses(self, routes: Iterable[str]):
+        """Query complete route/laser losses as a DataFrame; no settings writes."""
+        import pandas as pd
+
+        rows = []
+        for route in routes:
+            for item in self.mems_route_loss(route).lasers:
+                transmission = 1.0 - float(item.value)
+                rows.append(dict(route=route, laser=item.name, transmission=transmission,
+                                 loss_db=-10 * math.log10(transmission) if transmission > 0 else math.inf))
+        return pd.DataFrame(rows, columns=["route", "laser", "transmission", "loss_db"])
+
     def laser_tune(self, name: str, tune_nm: float | None = None) -> LaserTune | CommandOk:
         _require_choice("name", name, LASER_NAMES)
         if tune_nm is None:
@@ -4211,13 +4403,14 @@ class HispecFibPcb:
         min_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
         wavelength_nm: float | None = None,
-        current_set_calibration_pct: float | None = None,
+        current_cal_pct: float | None = None,
         fractional_noise: float | None = None,
         constant_noise_mw: float | None = None,
         default_operating_temp_c: float | None = None,
         operating_temp_range_c: tuple[float, float] | None = None,
-        tec_max_current_a: float | None = None,
+        tec_curr_lim_a: float | None = None,
         tec_pid: TecPid | tuple[int, int, int] | None = None,
+        ntc_coeff_pct_per_c: float | None = None,
         disable_tec_at_autooff: bool | None = None,
         dlambda_dT_nm_per_k: float | None = None,
         dlambda_dA_nm_per_ma: float | None = None,
@@ -4227,11 +4420,18 @@ class HispecFibPcb:
     ) -> LaserSettings | CommandOk:
         """Query or update per-laser policy, optionally persisting it to app NVS.
 
+        ld_serial is the read-only manufacturer diode serial. expected_serial
+        is the separately configured numeric Maiman driver serial.
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
         still applies; restart measurement after changing calibration.
-        An unavailable ntc_t_coefficient_per_c is returned as NumPy NaN.
+        ntc_coeff_pct_per_c is resistance change in %/C at 25 C, using a
+        constant-B approximation. Firmware rounds to integer B internally and
+        returns the representable coefficient. This PCB-owned setting follows
+        ordinary stop-before-profile-update and optional app NVS persistence;
+        profile preparation syncs it after bank power-up, not at MCU startup.
+        Engineering status separately reports actual readback in the same units.
         """
         _require_choice("name", name, LASER_NAMES)
         settings = _optional_payload(
@@ -4241,12 +4441,13 @@ class HispecFibPcb:
             min_autolevel_current_ma=min_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
             wavelength_nm=wavelength_nm,
-            current_set_calibration_pct=current_set_calibration_pct,
+            current_cal_pct=current_cal_pct,
             fractional_noise=fractional_noise,
             constant_noise_mw=constant_noise_mw,
             default_operating_temp_c=default_operating_temp_c,
             operating_temp_range_c=operating_temp_range_c,
-            tec_max_current_a=tec_max_current_a,
+            tec_curr_lim_a=tec_curr_lim_a,
+            ntc_coeff_pct_per_c=ntc_coeff_pct_per_c,
             disable_tec_at_autooff=disable_tec_at_autooff,
             dlambda_dT_nm_per_k=dlambda_dT_nm_per_k,
             dlambda_dA_nm_per_ma=dlambda_dA_nm_per_ma,
@@ -4257,6 +4458,11 @@ class HispecFibPcb:
         for key in ("fractional_noise", "constant_noise_mw", "min_autolevel_current_ma"):
             if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
                 raise HispecFibError(f"{key} must be finite and nonnegative")
+        if ntc_coeff_pct_per_c is not None:
+            b_k = -float(ntc_coeff_pct_per_c) * (298.15 * 298.15) / 100.0
+            if (not math.isfinite(b_k) or ntc_coeff_pct_per_c >= 0.0 or
+                    not 1 <= math.floor(b_k + 0.5) <= 0xFFFF):
+                raise HispecFibError("ntc_coeff_pct_per_c must be negative and fit integer controller B")
         if tec_pid is not None:
             if isinstance(tec_pid, TecPid):
                 settings["tec_pid"] = {"p": tec_pid.p, "i": tec_pid.i, "d": tec_pid.d}
@@ -4273,10 +4479,11 @@ class HispecFibPcb:
             return LaserSettings(
                 name=str(data["name"]),
                 model=str(settings["model"]),
+                ld_serial=str(settings["ld_serial"]),
                 expected_serial=int(settings["expected_serial"]),
                 nominal_current_ma=float(settings["nominal_current_ma"]),
                 max_current_ma=float(settings["max_current_ma"]),
-                current_set_calibration_pct=float(settings["current_set_calibration_pct"]),
+                current_cal_pct=float(settings["current_cal_pct"]),
                 fractional_noise=float(settings["fractional_noise"]),
                 constant_noise_mw=float(settings["constant_noise_mw"]),
                 threshold_current_ma=float(settings["threshold_current_ma"]),
@@ -4290,10 +4497,10 @@ class HispecFibPcb:
                 default_operating_temp_c=float(settings["default_operating_temp_c"]),
                 thermistor_kohm=float(settings["thermistor_kohm"]),
                 isolation_db=float(settings["isolation_db"]),
-                tec_max_current_a=float(settings["tec_max_current_a"]),
+                tec_curr_lim_a=float(settings["tec_curr_lim_a"]),
                 tec_pid=TecPid(p=int(pid["p"]), i=int(pid["i"]), d=int(pid["d"])),
                 disable_tec_at_autooff=bool(settings["disable_tec_at_autooff"]),
-                ntc_t_coefficient_per_c=_float_or_nan(settings["ntc_t_coefficient_per_c"]),
+                ntc_coeff_pct_per_c=_float_or_nan(settings["ntc_coeff_pct_per_c"]),
                 dlambda_dT_nm_per_k=float(settings["dlambda_dT_nm_per_k"]),
                 dlambda_dA_nm_per_ma=float(settings["dlambda_dA_nm_per_ma"]),
                 autooff_s=int(settings["autooff_s"]),
@@ -4308,8 +4515,35 @@ class HispecFibPcb:
         return _dataclass_from(
             LaserEngineeringStatus,
             data,
-            pid=tuple(int(v) for v in data.get("pid", (0, 0, 0))),
+            pid=None if data["pid"] is None else tuple(int(v) for v in data["pid"]),
         )
+
+    def laser_bank_power_mw(self, names: Sequence[str] | None = None) -> float:
+        """Sum measured electrical power delivered to selected diode/TEC outputs.
+
+        Defaults to all six lasers. Sequential engineering reads are not a
+        simultaneous snapshot. Excludes driver losses, heater and other bank
+        input consumption. Confirmed unpowered drivers contribute zero; missing
+        or invalid powered readings make the whole total NaN. Request errors
+        propagate. No writes, power changes, TEC starts or persistence.
+        """
+        names = tuple(LASER_NAMES if names is None else names)
+        for name in names:
+            _require_choice("name", name, LASER_NAMES)
+        if len(set(names)) != len(names):
+            raise HispecFibError("laser names must not contain duplicates")
+        total = 0.0
+        for name in names:
+            status = self.laser_status(name)
+            if status.powered is False:
+                continue
+            values = (status.diode_v, status.curr_meas_ma, status.tec_v, status.tec_ma)
+            if (status.powered is not True or status.read_rc != 0 or
+                    any(value is None or not math.isfinite(value) for value in values)):
+                total = math.nan
+                continue
+            total += status.diode_v * status.curr_meas_ma + abs(status.tec_v * status.tec_ma)
+        return total
 
     def laser_bankpower(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
         if mode is None:
@@ -4318,6 +4552,14 @@ class HispecFibPcb:
         return _dataclass_from(LaserBankPower, self._request_json(f"laser/bankpower/{mode}"))
 
     def laser_bankheater(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankHeater:
+        """Read cached heater state or set its persisted mode.
+
+        Auto heats if any fresh idle TEC probe is below 19 C and stops once all
+        fresh idle probes exceed 21 C. Active TECs are excluded. All-active and
+        missing-probe behavior are described in doc/commands.md. Overrides force
+        output while continuing powered-bank temperature observation; they do
+        not power the bank. Cached readings age out normally when it is off.
+        """
         if mode is None:
             return _dataclass_from(LaserBankHeater, self._request_json("laser/bankheater"))
         _require_choice("mode", mode, OVERRIDE_MODES)
@@ -4456,6 +4698,28 @@ class HispecFibPcb:
 
     def attenuator_grid_probe_async(self, laser: str, **kwargs: Any) -> AttenuatorGridProbe:
         return AttenuatorGridProbe(self, (laser,), kwargs).start()
+
+    def atten_settings(self, laser: str, *, dac1: Mapping[str, float] | None = None,
+                       dac2: Mapping[str, float] | None = None, persist: bool = False) -> dict[str, dict[str, float]]:
+        """Query/update per-FVOA fit policy without changing coefficients or outputs.
+
+        Example: atten_settings('1430yj', dac1={'max_fit_residual_db': 1.5}).
+        Thresholds are finite positive maximum absolute calibrated-region
+        residuals in dB; defaults are 2.0. Either physical device may be omitted.
+        """
+        _require_choice("laser", laser, ATTENUATOR_NAMES)
+        payload: dict[str, Any] = {}
+        for name, policy in (("dac1", dac1), ("dac2", dac2)):
+            if policy is not None:
+                if set(policy) != {"max_fit_residual_db"}:
+                    raise HispecFibError(f"{name} requires max_fit_residual_db")
+                value = _require_float("max_fit_residual_db", policy["max_fit_residual_db"], 0.0, math.inf)
+                if value <= 0:
+                    raise HispecFibError("max_fit_residual_db must be positive")
+                payload[name] = {"max_fit_residual_db": value}
+        if payload or persist:
+            payload["persist"] = bool(persist)
+        return self._request_json(f"atten/{laser}/settings", payload or None)
 
     def atten_coeff(
         self,
@@ -4769,6 +5033,8 @@ class HispecFibPcb:
         transimpedance_v_per_a combines detector datasheet transimpedance with
         the divider and intervening analog gain. noisewarn_mv is ADC-input RMS
         scatter in the fixed window, including any changing optical signal.
+        Warnings wait five seconds after reported input changes finish, then a
+        fresh 500 ms window; zero disables them. Reported RMS is not gated.
         """
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
@@ -4934,14 +5200,167 @@ class HispecFibPcb:
         if collect:
             assert channel is not None
             monitor = self.start_throughput_monitor(channel, max_samples=max_samples)
+        display_limits = {}
         try:
+            if collect and laser != "none":
+                laser_policy, coeff = self.laser_settings(laser), self.atten_coeff(laser)
+                display_limits = dict(laser_current_max_ma=laser_policy.max_current_ma,
+                    attenuation_limits_db=(coeff.dac1.max_atten_db, coeff.dac2.max_atten_db))
             self._request_ok("measure_throughput", payload)
         except Exception:
             if monitor is not None:
                 # A rejected start may leave an earlier same-channel run active.
                 monitor._stop_collection()
             raise
+        with self._throughput_lock:
+            for observer in self._throughput_monitors:
+                if observer.channel in ("all", channel):
+                    observer.measurement = {**payload, **display_limits}
         return monitor if monitor is not None else CommandOk()
+
+    def get_some_signal(
+        self, laser: str, *, min_mv: float = 800.0, max_mv: float = 1200.0,
+        use_atten_db: bool = False, attenuators: Sequence[int] = (1, 2),
+        initial_level: float = 0.5, vary_laser: bool = True,
+        output: str | None = None, fiber: Literal["M", "S"] | None = None,
+        dwell_s: float = 0.5, max_steps: int = 80,
+    ) -> dict[str, Any]:
+        """Find useful PD Net signal, leaving the achieved manual settings applied.
+
+        Reuses an active collector for this laser, so its live plot sees the
+        search. Otherwise starts manual measure_throughput on the selected
+        AO/FEI and M/S routes and stops only that temporary monitor afterward.
+        Never creates a figure. A manual atten/laser write already disables
+        autolevel; an existing monitor retains its normal shutdown ownership.
+
+        Start selected FVOAs at maximum drive (or calibrated dB), then open
+        them in order before increasing laser level. Reverse/halve steps after
+        crossing the requested range. Accept the three-sample mean PD Net
+        signal in [min_mv, max_mv], inclusive, with no raw overrange samples.
+        Bounds must satisfy 0 < min_mv < max_mv <= PD_ADC_USABLE_MV (2000 mV).
+        Unselected FVOAs stay fixed; attenuators=() holds both.
+        vary_laser=False holds initial_level. Failed searches stop this laser.
+        Limits or the bounded iteration count return found=False and a reason;
+        communication failures raise normally. Blocks on commands and fresh
+        samples; use await asyncio.to_thread(...) in a running notebook widget.
+        """
+        _require_choice("laser", laser, LASER_NAMES)
+        min_mv = _require_float("min_mv", min_mv, 0.0, PD_ADC_USABLE_MV)
+        max_mv = _require_float("max_mv", max_mv, 0.0, PD_ADC_USABLE_MV)
+        if not 0 < min_mv < max_mv:
+            raise HispecFibError("Signal bounds must satisfy 0 < min_mv < max_mv")
+        dwell_s = _require_float("dwell_s", dwell_s, 0.15, 60.0)
+        initial_level = _require_float("initial_level", initial_level, 0.0, 1.0)
+        if len(set(attenuators)) != len(attenuators) or any(i not in (1, 2) for i in attenuators):
+            raise HispecFibError("attenuators must contain distinct values 1/2, or be empty to hold both fixed")
+        if max_steps < 1:
+            raise HispecFibError("max_steps must be positive")
+        channel = _LASER_TO_PD_CHANNEL[laser]
+        with self._throughput_lock:
+            monitor = next((m for m in self._throughput_monitors
+                            if m.channel == channel and m.measurement.get("laser") == laser), None)
+        owns_monitor = monitor is None
+        if owns_monitor:
+            routes = self.mems_route().active_routes
+            if output is None:
+                output = next((r.name for r in routes if r.name in (f"{channel}_ao", f"{channel}_fei")), None)
+            if output is None:
+                raise HispecFibError("Select an AO/FEI route first, or supply output")
+            if fiber is None:
+                returning = next(r for r in routes if r.name == f"{channel}_pd")
+                fiber = "M" if f"{channel}_mm" in returning.value else "S"
+            monitor = self.measure_throughput(laser, output=output, fiber=fiber,
+                autolevel=False, off_in_s=0, collect=True, max_samples=10000)
+        try:
+            settings = self.laser_settings(laser)
+            span = settings.nominal_current_ma - settings.threshold_current_ma
+            minimum_ma = math.ceil((settings.threshold_current_ma + 1e-9) * 10) / 10
+            minimum = (minimum_ma-settings.threshold_current_ma)/span
+            level = max(minimum, initial_level)
+            coeff = self.atten_coeff(laser) if use_atten_db else None
+            limits = {i: getattr(coeff, f"dac{i}").max_calibrated_db if use_atten_db
+                      else ATTENUATOR_DRIVE_MAX_MV for i in attenuators}
+            if any(limit <= 0 for limit in limits.values()):
+                raise HispecFibError("Calibrated search requires a positive calibrated range")
+            unit = "db" if use_atten_db else "mv"
+            drive = self.atten(laser, **{f"value{i}_{unit}": limits[i] for i in attenuators})
+            requested = dict(limits)
+            self.laser(laser, value=level, autooff_s=0)
+            steps = {i: 5.0 if use_atten_db else 150.0 for i in attenuators}
+            directions = dict.fromkeys(attenuators, 0)
+            last_atten = attenuators[0] if attenuators else None
+            reason, found, net = "search step limit reached", False, math.nan
+            for iteration in range(max_steps):
+                # Use board UTC throughout. The status query confirms the quantized
+                # current; its ACK follows all preceding writes on this connection.
+                actual = self.laser(laser)
+                events = monitor.command_events
+                ack_ms = events.ack_utc_ms.iloc[-1] if len(events) else None
+                if ack_ms is None or not np.isfinite(ack_ms):
+                    raise HispecFibError("Signal search requires board ack_utc_ms from matching firmware")
+                after_ms = int(ack_ms) + int(dwell_s*1000)
+                settled_at = time.monotonic() + dwell_s
+                deadline = settled_at + self.timeout_s
+                while True:
+                    if not monitor._running.is_set() or not monitor.measurement:
+                        raise HispecFibError("Throughput monitor stopped during signal search")
+                    records = monitor.to_recarray()
+                    fresh = records[(records.t_ms >= after_ms)
+                        & np.isclose(records.laser_current_ma, actual.i_mA, atol=0.051, rtol=0)
+                        & np.isclose(records.dac1_mv, drive.v1_mv, atol=0.001, rtol=0)
+                        & np.isclose(records.dac2_mv, drive.v2_mv, atol=0.001, rtol=0)]
+                    if len(fresh) >= 3 and time.monotonic() >= settled_at:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise HispecFibError("No fresh throughput samples during signal search")
+                    time.sleep(0.05)
+                fresh = fresh[-3:]
+                net = float(np.mean(fresh.pd_net_mv))
+                high = bool(np.any(fresh.pd_mv >= PD_ADC_USABLE_MV) or net > max_mv)
+                if not math.isfinite(net):
+                    reason = "PD Net signal is unavailable"
+                    break
+                if not high and net >= min_mv:
+                    found, reason = True, "inside requested range"
+                    break
+                if iteration + 1 == max_steps:
+                    break  # Report settings whose signal was actually measured.
+                # Commanded bounds avoid treating DAC quantization near the maximum
+                # calibrated dB as remaining actuator travel. Report actual readback below.
+                values = requested
+                order = (last_atten, *[i for i in attenuators if i != last_atten]) if high and last_atten is not None else attenuators
+                movable = next((i for i in order if
+                    (values[i] < limits[i]-1e-6 if high else values[i] > 1e-6)), None)
+                if movable is not None:
+                    direction = 1 if high else -1
+                    if directions[movable] and direction != directions[movable]:
+                        steps[movable] *= 0.5
+                    directions[movable] = direction
+                    value = float(np.clip(values[movable]+direction*steps[movable], 0, limits[movable]))
+                    drive = self.atten(laser, **{f"value{movable}_{unit}": value})
+                    requested[movable] = value
+                    last_atten = movable
+                    continue
+                next_level = max(minimum, level/2) if high else min(1.0, level*2)
+                if not vary_laser or abs(next_level-level)*span < 0.05:
+                    reason = "above range at dim limit" if high else "below range at bright limit"
+                    break
+                level = next_level
+                self.laser(laser, value=level, autooff_s=0)
+            actual = self.laser(laser)
+            if not found:
+                self.laser(laser, stop=True)
+            return dict(laser=laser, found=found, reason=reason, pd_net_mv=net,
+                        level=actual.value, current_ma=actual.i_mA, steps=iteration+1,
+                        atten_db=drive.db, atten1_db=drive.db1, atten2_db=drive.db2,
+                        dac1_mv=drive.v1_mv, dac2_mv=drive.v2_mv,
+                        min_mv=min_mv, max_mv=max_mv, freshness="board_ack_and_confirmed_state")
+        except BaseException:
+            self.laser(laser, stop=True)
+            raise
+        finally:
+            if owns_monitor:
+                monitor.stop()
 
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
         """Stop measurement and its autolevel laser; preserve passive/manual output.
@@ -4949,7 +5368,12 @@ class HispecFibPcb:
         Bank power and TECs remain unchanged. See ThroughputMonitor.stop().
         """
         _require_choice("channel", channel, ("yj", "hk", "all"))
-        return self._request_ok("measure_throughput", {"stop": channel})
+        result = self._request_ok("measure_throughput", {"stop": channel})
+        with self._throughput_lock:
+            for observer in self._throughput_monitors:
+                if channel == "all" or observer.channel in ("all", channel):
+                    observer.measurement = {}
+        return result
 
     def start_throughput_monitor(
         self,
@@ -4994,6 +5418,10 @@ class HispecFibPcb:
         props.ResponseTopic = response_topic
         props.CorrelationData = corr
         data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        issue_utc_ms, error = time.time_ns() // 1_000_000, ""
+        with self._throughput_lock:
+            observers = tuple(self._throughput_monitors)
+        on_command = self.on_command
         try:
             info = self._client.publish(topic, payload=data, qos=0, properties=props)
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -5005,33 +5433,28 @@ class HispecFibPcb:
             if raw.lstrip().startswith(b"{"):
                 _decode_ok_or_raise(response_topic, raw)
             return raw
+        except BaseException as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             with self._pending_lock:
                 self._pending.pop(corr, None)
+            event = dict(command=key, arguments=json.loads(data) if data else {},
+                         issue_utc_ms=issue_utc_ms, ack_utc_ms=pending.ack_utc_ms,
+                         receipt_utc_ms=pending.receipt_utc_ms, ack_clock="board_utc",
+                         ok=not error, error=error)
+            for observer in observers:
+                with observer._lock:
+                    observer._commands.append(event)
+            if on_command is not None:
+                try:
+                    on_command(event)
+                except Exception:
+                    self.logger.exception("command-event callback failed for %s", key)
 
     def _request(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
-        self._ensure_connected()
-        topic = f"cmd/{self.device}/req/{key}"
         response_topic = f"cmd/{self.device}/resp/{key}"
-        corr = next(self._corr_counter).to_bytes(8, "little", signed=False)
-        pending = _PendingRequest(topic=response_topic)
-        with self._pending_lock:
-            self._pending[corr] = pending
-        props = Properties(PacketTypes.PUBLISH)
-        props.ResponseTopic = response_topic
-        props.CorrelationData = corr
-        data = b"" if payload is None else json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        try:
-            info = self._client.publish(topic, payload=data, qos=0, properties=props)
-            if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise HispecFibError(f"MQTT publish failed with rc={info.rc}")
-            if not pending.event.wait(self.timeout_s):
-                raise HispecFibError(f"timed out waiting for {response_topic}")
-            assert pending.payload is not None
-            return _decode_ok_or_raise(response_topic, pending.payload)
-        finally:
-            with self._pending_lock:
-                self._pending.pop(corr, None)
+        return _decode_ok_or_raise(response_topic, self._request_payload(key, payload))
 
     def _ensure_connected(self) -> None:
         if not self.is_connected:
@@ -5108,6 +5531,12 @@ class HispecFibPcb:
                 with self._pending_lock:
                     pending = self._pending.get(corr)
                 if pending is not None:
+                    pending.receipt_utc_ms = time.time_ns() // 1_000_000
+                    user_props = dict(getattr(msg.properties, "UserProperty", ()) or ())
+                    try:
+                        pending.ack_utc_ms = int(user_props["ack_utc_ms"])
+                    except (KeyError, ValueError, TypeError):
+                        pending.ack_utc_ms = None
                     pending.payload = bytes(msg.payload)
                     pending.properties = msg.properties
                     pending.event.set()

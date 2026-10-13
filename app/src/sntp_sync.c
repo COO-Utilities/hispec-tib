@@ -1,6 +1,6 @@
 /**
  * @file sntp_sync.c
- * @brief Low-priority SNTP sync, retry, and hourly resync logic.
+ * @brief Low-priority SNTP sync, retry, RTC restoration, and minute resync logic.
  *
  * The SNTP thread chooses manual or DHCP NTP source, calls sntp_simple(),
  * updates Zephyr's realtime clock on success, and records status for `time`
@@ -16,6 +16,8 @@
 #include <string.h>
 #include <time.h>
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/rtc.h>
+#include <zephyr/sys/timeutil.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
@@ -30,10 +32,11 @@ LOG_MODULE_REGISTER(sntp_sync, LOG_LEVEL_INF);
 
 #define SNTP_SYNC_TIMEOUT_MS 3000U
 #define SNTP_SYNC_RETRY_INTERVAL_MS 30000U
-#define SNTP_SYNC_RESYNC_INTERVAL_MS 3600000U
+#define SNTP_SYNC_RESYNC_INTERVAL_MS 60000U
 #define SNTP_SYNC_INITIAL_DELAY_MS 1000U
 #define SNTP_SYNC_STACK_SIZE 1400
 #define SNTP_SYNC_THREAD_PRIORITY 14
+#define RTC_RESYNC_THRESHOLD_NS (1250LL * NSEC_PER_MSEC)
 
 struct sntp_sync_runtime {
 	struct k_mutex lock;
@@ -42,6 +45,60 @@ struct sntp_sync_runtime {
 };
 
 static struct sntp_sync_runtime g_sntp;
+
+static const struct device *const calendar_rtc = DEVICE_DT_GET(DT_NODELABEL(rtc));
+static K_MUTEX_DEFINE(clock_set_lock);
+
+int sntp_sync_set_time(const struct timespec *utc)
+{
+	struct rtc_time calendar = {0};
+	if (utc == NULL || utc->tv_nsec < 0 || utc->tv_nsec >= NSEC_PER_SEC ||
+	    gmtime_r(&utc->tv_sec, rtc_time_to_tm(&calendar)) == NULL ||
+	    calendar.tm_year < 100 || calendar.tm_year > 199) return -EINVAL;
+	k_mutex_lock(&clock_set_lock, K_FOREVER);
+	/* Running UTC keeps every SNTP/manual correction, including fractions. */
+	int rc = sys_clock_settime(SYS_CLOCK_REALTIME, utc);
+	if (rc == 0) {
+		struct rtc_time retained = {0};
+		int rtc_rc = -ENODEV;
+		if (device_is_ready(calendar_rtc)) {
+			rtc_rc = rtc_get_time(calendar_rtc, &retained);
+			int64_t delta_ns = 0;
+			if (rtc_rc == 0) {
+				delta_ns = ((int64_t)timeutil_timegm(rtc_time_to_tm(&retained)) -
+					    (int64_t)utc->tv_sec) * NSEC_PER_SEC +
+					   retained.tm_nsec - utc->tv_nsec;
+			}
+			/* Calendar writes stop the RTC under the driver spinlock and discard
+			 * fractions. Allow that <1 s quantization plus 250 ms margin, rather
+			 * than repeatedly resetting a healthy warm-boot clock at each sync. */
+			if (rtc_rc != 0 || delta_ns > RTC_RESYNC_THRESHOLD_NS ||
+			    delta_ns < -RTC_RESYNC_THRESHOLD_NS) {
+				rtc_rc = rtc_set_time(calendar_rtc, &calendar);
+			}
+		}
+		if (rtc_rc != 0) LOG_WRN("UTC updated but RTC calendar write failed (%d)", rtc_rc);
+	}
+	k_mutex_unlock(&clock_set_lock);
+	return rc;
+}
+
+void sntp_sync_restore_rtc(void)
+{
+	struct rtc_time calendar = {0};
+	int rc = device_is_ready(calendar_rtc) ? rtc_get_time(calendar_rtc, &calendar) : -ENODEV;
+	if (rc != 0) {
+		LOG_INF("RTC unavailable (%d); awaiting SNTP/manual time", rc);
+		return;
+	}
+	struct timespec utc = {
+		.tv_sec = timeutil_timegm(rtc_time_to_tm(&calendar)),
+		.tv_nsec = calendar.tm_nsec,
+	};
+	/* Restore without rewriting the running calendar or claiming SNTP sync.
+	 * No battery/supercap is assumed; a power loss may invalidate the RTC. */
+	(void)sys_clock_settime(SYS_CLOCK_REALTIME, &utc);
+}
 
 static void sntp_sync_thread(void *p1, void *p2, void *p3);
 
@@ -186,9 +243,13 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 		return -EINVAL;
 	}
 
-	ts.tv_sec = (time_t)sntp_time->seconds;
-	ts.tv_nsec = (long)(((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32);
-	rc = sys_clock_settime(SYS_CLOCK_REALTIME, &ts);
+	/* Zephyr returns server transmit time and a separate estimated one-way
+	 * response delay. Advance to receive time, carrying fractional overflow. */
+	uint64_t ns = (((uint64_t)sntp_time->fraction * NSEC_PER_SEC) >> 32) +
+		      (uint64_t)sntp_time->rsp_delay_us * NSEC_PER_USEC;
+	ts.tv_sec = (time_t)(sntp_time->seconds + ns / NSEC_PER_SEC);
+	ts.tv_nsec = (long)(ns % NSEC_PER_SEC);
+	rc = sntp_sync_set_time(&ts);
 	if (rc != 0) {
 		return rc;
 	}
@@ -197,7 +258,6 @@ static int apply_sntp_time(const struct sntp_time *sntp_time, uint64_t *utc_ms_o
 	if (utc_ms_out != NULL) {
 		*utc_ms_out = utc_ms;
 	}
-	app_settings_note_time_utc_ms(utc_ms);
 
 	return 0;
 }

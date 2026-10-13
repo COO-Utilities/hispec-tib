@@ -470,20 +470,19 @@ static const struct {
 	const char *laser;
 	double transmission;
 } default_route_losses[] = {
-	/* YJ B2 * B3 = 0.88 * 0.88 = 0.7744; 1028 adds 50 dB static:
-	 * 0.7744 * 10^(-50/10) = 7.744e-6.
+	/* Provisional YJ whole-route losses: 34.5 / 41 / 62 dB. Saved power scans
+	 * already exclude external loopback loss; 1430 uses the current source model.
+	 * Equal AO/FEI totals are an approximation, not an independent FEI calibration.
 	 */
-	{"yj_laser_to_yj_ao", "1028y", 7.744e-6},
-	{"yj_laser_to_yj_fei", "1028y", 7.744e-6},
-
-	/* Same B2/B3 path; 1270 adds 40 dB: 0.7744 * 10^(-40/10). */
-	{"yj_laser_to_yj_ao", "1270j", 7.744e-5},
-	{"yj_laser_to_yj_fei", "1270j", 7.744e-5},
-	/* YJ B1 * B2 * B3 = 0.88^3 = 0.681472; 1430 adds 100 dB:
-	 * 0.681472 * 10^(-100/10) = 6.81472e-11.
-	 */
-	{"yj_1430_to_yj_ao", "1430yj", 6.81472e-11},
-	{"yj_1430_to_yj_fei", "1430yj", 6.81472e-11},
+	{"yj_laser_to_yj_ao", "1028y", 3.54813389234e-4},
+	{"yj_laser_to_yj_fei", "1028y", 3.54813389234e-4},
+	{"yj_laser_to_yj_ao", "1270j", 7.94328234724e-5},
+	{"yj_laser_to_yj_fei", "1270j", 7.94328234724e-5},
+	{"yj_1430_to_yj_ao", "1430yj", 6.30957344480e-7},
+	{"yj_1430_to_yj_fei", "1430yj", 6.30957344480e-7},
+	/* External CAL: approximately 1 dB from component measurements. */
+	{"yj_cal_to_yj_ao", "generic", 0.794328234724},
+	{"yj_cal_to_yj_fei", "generic", 0.794328234724},
 
 	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 50 dB:
 	 * 0.571787 * 10^(-50/10) = 5.71787e-6.
@@ -504,23 +503,31 @@ static const struct {
 	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
 	 * These do not traverse the outbound blue/red FFSW switches.
 	 */
-	{"yj_mm_to_yj_pd", NULL, 0.98},
-	{"yj_sm_to_yj_pd", NULL, 0.60},
-	{"hk_mm_to_hk_pd", NULL, 0.98},
-	{"hk_sm_to_hk_pd", NULL, 0.60},
+	{"yj_mm_to_yj_pd", "generic", 0.98},
+	{"yj_sm_to_yj_pd", "generic", 0.60},
+	{"hk_mm_to_hk_pd", "generic", 0.98},
+	{"hk_sm_to_hk_pd", "generic", 0.60},
 };
 
-/* Pure board-default lookup. NULL table source matches any light on that return. */
+/* Pure lookup: an exact source default takes precedence over the route's generic
+ * default. This shares compiled return estimates, never stored source overrides.
+ */
 double devices_route_loss_default(const char *route, const char *laser)
 {
+	double generic = 1.0;
+
 	for (size_t i = 0; i < ARRAY_SIZE(default_route_losses); ++i) {
-		if (strcmp(default_route_losses[i].route, route) == 0 &&
-		    (default_route_losses[i].laser == NULL ||
-		     (laser != NULL && strcmp(default_route_losses[i].laser, laser) == 0))) {
+		if (strcmp(default_route_losses[i].route, route) != 0) {
+			continue;
+		}
+		if (strcmp(default_route_losses[i].laser, laser) == 0) {
 			return default_route_losses[i].transmission;
 		}
+		if (strcmp(default_route_losses[i].laser, "generic") == 0) {
+			generic = default_route_losses[i].transmission;
+		}
 	}
-	return 1.0;
+	return generic;
 }
 
 /* AS splitter routes define the switch order used by splitting_set().

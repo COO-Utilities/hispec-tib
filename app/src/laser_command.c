@@ -45,6 +45,22 @@ static int laser_cmd_error_rc(struct coo_cmd_response *out,
 	return coo_cmd_error_rc(out, cmd, msg, rc);
 }
 
+static int laser_cmd_failure(struct coo_cmd_response *out,
+	const struct coo_cmd_request *cmd, enum hispec_laser_id id,
+	const char *operation, int rc, const char *detail)
+{
+	char message[256];
+	if (rc == -EBUSY) return coo_cmd_busy_response(out, cmd);
+	/* Copy detail before response construction clears the reused payload buffer. */
+	const char *reason = detail != NULL && detail[0] != '\0' ? detail :
+		rc == -EPERM ? "laser bank power override_off" :
+		rc == -EADDRNOTAVAIL ? "driver identity mismatch" :
+		rc == -ERANGE || rc == -EINVAL ? "invalid setting or limit" :
+		"operation failed; controller state uncertain";
+	snprintk(message, sizeof(message), "%s %s: %s", hispec_laser_name(id), operation, reason);
+	return coo_cmd_error_rc(out, cmd, message, rc);
+}
+
 static bool parse_laserbank_mode_request(const struct coo_cmd_request *cmd,
 					 const char *key,
 					 const struct coo_json_string_choice *choices,
@@ -149,10 +165,10 @@ static const char *laserbank_tempcontrol_auto_state(
 	if (status->waiting_for_temps) {
 		return "waiting_for_temps";
 	}
-	if (status->any_disabled_below_15c) {
+	if (status->any_disabled_below_on_threshold) {
 		return "warming_disabled_tec";
 	}
-	if (status->any_disabled_above_off_threshold) {
+	if (status->all_disabled_above_off_threshold) {
 		return "disabled_tec_warm";
 	}
 	if (status->all_tecs_enabled) {
@@ -256,10 +272,10 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"name\":\"%s\",\"powered\":%s,"
-			    "\"ready\":%s,\"blocked_reason\":",
+			    "\"ready\":%s,\"output_state\":\"%s\",\"blocked_reason\":",
 			    status->name,
 			    status->bank_powered ? "true" : "false",
-			    status->ready_to_operate ? "true" : "false") != 0 ||
+			    status->ready_to_operate ? "true" : "false", status->output_state) != 0 ||
 	    coo_json_append_string_or_null(payload, payload_len, &off,
 					   status->blocked_reason) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
@@ -339,7 +355,7 @@ int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	rc = hispec_laser_get_status(id, false, &status);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser status failed", rc);
+		return laser_cmd_failure(out, cmd, id, "status read", rc, NULL);
 	}
 	if (laser_append_compact_status(payload, sizeof(payload), &status) != 0) {
 		return coo_cmd_error(out, cmd, "laser response too large");
@@ -369,7 +385,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "value must be 0..1; stop requires zero or omitted value");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
-	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	autooff_s = settings.autooff_s;
 	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
 	    (stop && autooff_present)) {
@@ -378,14 +394,14 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 	throughput_monitor_note_laser_changed(id, false);
 	if (stop) {
-		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff);
+		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
 	} else if (value == 0.0 && !autooff_present) {
 		/* A momentary zero level preserves the existing shutdown deadline. */
-		rc = hispec_laser_set_current_ma(id, 0.0);
+		rc = hispec_laser_set_current_ma(id, 0.0, out->payload, sizeof(out->payload));
 	} else {
-		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true);
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, out->payload, sizeof(out->payload));
 	}
-	if (rc != 0) return laser_cmd_error_rc(out, cmd, "laser operation failed", rc);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : value == 0.0 ? "zero current" : "set level/start", rc, out->payload);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -421,14 +437,16 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 		return coo_cmd_error(out, cmd, "missing or invalid tune_nm");
 	}
 	throughput_monitor_note_laser_changed(id, true);
-	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true);
+	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true, out->payload, sizeof(out->payload));
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser tune failed", rc);
+		return laser_cmd_failure(out, cmd, id, "set tune", rc, out->payload);
 	}
 	return coo_cmd_ok(out, cmd);
 }
 
-/* Format a settings snapshot; unavailable datasheet values remain JSON null. */
+/* Format a settings snapshot; ld_serial is compiled diode identity, not driver readback.
+ * Unavailable datasheet values remain JSON null. No I/O or state changes.
+ */
 static int laser_settings_payload(char *payload, size_t payload_len,
 				  enum hispec_laser_id id,
 				  const struct app_laser_channel_settings *settings)
@@ -438,23 +456,23 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 
 	if (coo_json_append(payload, payload_len, &off,
 		"{\"name\":\"%s\",\"settings\":{"
-		"\"model\":\"%s\",\"expected_serial\":%u,"
+		"\"model\":\"%s\",\"ld_serial\":\"%s\",\"expected_serial\":%u,"
 		"\"nominal_current_ma\":%.3f,"
-		"\"max_current_ma\":%.3f,\"current_set_calibration_pct\":%.3f,"
+		"\"max_current_ma\":%.3f,\"current_cal_pct\":%.3f,"
 		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
 		"\"min_autolevel_current_ma\":%.1f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
-		"\"isolation_db\":%.2f,\"tec_max_current_a\":%.3f,"
+		"\"isolation_db\":%.2f,\"tec_curr_lim_a\":%.3f,"
 		"\"tec_pid\":{\"p\":%u,\"i\":%u,\"d\":%u},"
 		"\"disable_tec_at_autooff\":%s,"
-		"\"ntc_t_coefficient_per_c\":",
-		hispec_laser_name(id), p->model_number,
+		"\"ntc_coeff_pct_per_c\":",
+		hispec_laser_name(id), p->model_number, p->ld_serial,
 		settings->expected_serial,
 		(double)p->nominal_current_ma,
 		(double)p->max_current_ma,
-		(double)settings->current_set_calibration_pct,
+		(double)settings->current_cal_pct,
 		settings->fractional_noise, settings->constant_noise_mw,
 		(double)p->threshold_current_ma,
 		(double)p->efficiency_mw_per_ma,
@@ -465,11 +483,11 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->operating_temp_c,
 		(double)p->thermistor_kohm,
 		(double)p->isolation_db,
-		(double)p->tec_max_current_a,
+		(double)p->tec_curr_lim_a,
 		p->tec_pid.kp, p->tec_pid.ki, p->tec_pid.kd,
 		settings->disable_tec_at_autooff ? "true" : "false") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
-					  p->ntc_t_coefficient_per_c, 6) != 0 ||
+					  p->ntc_coeff_pct_per_c, 6) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 		",\"dlambda_dT_nm_per_k\":%.6f,"
 		"\"dlambda_dA_nm_per_ma\":%.6f,"
@@ -499,7 +517,7 @@ int laser_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+		return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	}
 	if (laser_settings_payload(payload, sizeof(payload), id, &settings) != 0) {
 		return coo_cmd_error(out, cmd, "laser settings response too large");
@@ -523,8 +541,8 @@ static int laser_parse_settings_update(const char *json,
 	}
 	if (coo_json_validate_top_level_keys(json,
 		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,"
-		"wavelength_nm,current_set_calibration_pct,fractional_noise,constant_noise_mw,"
-		"default_operating_temp_c,operating_temp_range_c,tec_max_current_a,tec_pid,"
+		"wavelength_nm,current_cal_pct,fractional_noise,constant_noise_mw,"
+		"default_operating_temp_c,operating_temp_range_c,tec_curr_lim_a,tec_pid,ntc_coeff_pct_per_c,"
 		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
 		invalid, 64U) != 0) {
 		return -EINVAL;
@@ -546,10 +564,11 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
 	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
 	LASER_PARSE_FLOAT("constant_noise_mw", settings->constant_noise_mw);
-	LASER_PARSE_FLOAT("current_set_calibration_pct",
-			  settings->current_set_calibration_pct);
+	LASER_PARSE_FLOAT("current_cal_pct",
+			  settings->current_cal_pct);
 	LASER_PARSE_FLOAT("default_operating_temp_c", settings->properties.operating_temp_c);
-	LASER_PARSE_FLOAT("tec_max_current_a", settings->properties.tec_max_current_a);
+	LASER_PARSE_FLOAT("tec_curr_lim_a", settings->properties.tec_curr_lim_a);
+	LASER_PARSE_FLOAT("ntc_coeff_pct_per_c", settings->properties.ntc_coeff_pct_per_c);
 	LASER_PARSE_FLOAT("dlambda_dT_nm_per_k", settings->properties.dlambda_dT_nm_per_k);
 	LASER_PARSE_FLOAT("dlambda_dA_nm_per_ma", settings->properties.dlambda_dA_nm_per_ma);
 
@@ -638,7 +657,7 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings unavailable", rc);
+		return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
 	}
 
 	rc = coo_json_extract_object(cmd->payload, "settings", settings_json, sizeof(settings_json));
@@ -664,9 +683,9 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
 	}
 
-	rc = throughput_monitor_update_laser_settings(id, &settings, persist);
+	rc = throughput_monitor_update_laser_settings(id, &settings, persist, out->payload, sizeof(out->payload));
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser settings update failed", rc);
+		return laser_cmd_failure(out, cmd, id, "update settings", rc, out->payload);
 	}
 	return coo_cmd_ok(out, cmd);
 }
@@ -697,7 +716,7 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 
 	rc = hispec_laser_get_status(id, true, &s);
 	if (rc != 0) {
-		return laser_cmd_error_rc(out, cmd, "laser engineering status failed", rc);
+		return laser_cmd_failure(out, cmd, id, "engineering status read", rc, NULL);
 	}
 	if (coo_json_append(payload, sizeof(payload), &off,
 			    "{\"name\":\"%s\",\"read_rc\":%d,\"powered\":%s,"
@@ -743,13 +762,13 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "curr_min_ma", s.current_min_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "curr_max_ma", s.current_max_ma, 3) != 0 ||
+				    "max_current_ma", s.max_current_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "drv_max_ma", s.current_max_limit_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "ocp_ma", s.current_protection_threshold_ma, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "curr_cal_pct", s.current_set_calibration_pct, 3) != 0 ||
+				    "current_cal_pct", s.current_cal_pct, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "diode_v", s.voltage_v, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
@@ -761,14 +780,15 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "tec_ma", (double)s.tec_current_measured_a * 1000.0, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "tec_curr_lim_a", s.tec_current_limit_a, 3) != 0 ||
+				    "tec_curr_lim_a", s.tec_curr_lim_a, 3) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
 				    "tec_v", s.tec_voltage_v, 3) != 0 ||
-	    coo_json_append(payload, sizeof(payload), &off,
-			    ",\"pid\":[%u,%u,%u]",
-			    s.tec_pid.kp, s.tec_pid.ki, s.tec_pid.kd) != 0 ||
+	    (s.bank_powered ?
+	     coo_json_append(payload, sizeof(payload), &off, ",\"pid\":[%u,%u,%u]",
+				     s.tec_pid.kp, s.tec_pid.ki, s.tec_pid.kd) :
+	     coo_json_append(payload, sizeof(payload), &off, ",\"pid\":null")) != 0 ||
 	    json_append_named_float(payload, sizeof(payload), &off,
-				    "ntc_t_coeff", s.ntc_t_coefficient_per_c, 6) != 0 ||
+				    "ntc_coeff_pct_per_c", s.ntc_coeff_pct_per_c, 6) != 0 ||
 	    coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
 		return coo_cmd_error(out, cmd, "laser engineering status response too large");
 	}

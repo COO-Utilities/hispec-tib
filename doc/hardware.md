@@ -29,10 +29,23 @@ See status.md for software details
 - Microcontroller reference manual STM32H563ZI.pdf
 - https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
 
-Must edit default solder bridges to use i2c2:
-• HSE not used: PF0/PH0 and PF1/PH1 are used as GPIOs instead of clocks. The configuration must be:
-– SB48 and SB50 ON
-– SB49 OFF
+The 32768 Hz LSE crystal clocks RTC and native LPTIM4 uptime (4096 kernel ticks/s).
+The application does not enable automatic STOP states. LSI remains the independent
+watchdog source. RTC has no battery/supercap backup in this setup; no valid time
+retention is assumed through removal of board power.
+
+The application assumes the MB1404 "HSE not used" solder-bridge configuration:
+
+- SB48 and SB50 ON (PH0/PH1 connected to the morpho header)
+- SB49 OFF (ST-LINK MCO disconnected)
+- SB3 and SB4 OFF (X3 crystal disconnected; these are OFF by default)
+
+This physically disconnects the onboard HSE sources, so firmware keeps HSE
+disabled and uses HSI/PLL for the 240 MHz CPU clock. On the H563ZI, HSE uses
+PH0/PH1; I2C2 uses the separate PF1/PF0 pins. The earlier claim that I2C2 itself
+requires disabling HSE was incorrect. UM3115's generic "PF0/PH0" notation does
+not mean those are the same pins on this MCU. See UM3115, Clock sources, and
+[the H563ZI schematic, sheets 3/5](https://www.st.com/resource/en/schematic_pack/mb1404-h563zi-c01-schematic.pdf).
 
 
 ## MEMS Switches
@@ -148,16 +161,16 @@ For board files:
 ## TIB Photodiode Monitoring ADC
 Uses an ADS1115 16 bit 4 channel muxed ADC
 - Use channels A0 and A2
-- Run device at 250 SPS, ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
+- The current overlay selects 64 SPS (ADS1115 rate index 3), ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
   input range leaves 48 mV of headroom below the ADC's numerical rail.
 - PD 50 Ohm coax is fed to the ADC as a single-ended input.
 - Input circuitry uses filtering and a precision divider to map 0-10 V PD
   output to 0-2 V with 20 Hz bandwidth.
 - Sample each at 20 Hz, muxing between the two within a 50 ms period. Each
-  throughput record uses one fresh conversion. The overlay retains 250 SPS;
-  selecting 64 SPS permits two conversions in about 31.3 ms before I2C and
-  scheduling overhead. Confirm runtime margin and noise on hardware before
-  changing that default. Timing allowances derive from the selected rate.
+  throughput record uses one fresh conversion. At 64 SPS, two conversions take
+  about 31.3 ms before I2C and scheduling overhead. This documents the existing
+  overlay setting; commissioning changes did not change the ADC rate. Confirm
+  runtime margin and noise on hardware. Timing allowances derive from that rate.
 - I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
 - ADC runs at 3.3v
 - Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
@@ -177,31 +190,43 @@ Static attenuation anticipated required:
 
 ### TIB route-loss defaults
 
-Nominal transmission is 0.88 per blue (YJ B1/B2/B3) FFSW and 0.83 per red
-(HK R1/R2/R3) FFSW. Complete FFLS return-path transmission is 0.98 for MM to
-PD and 0.60 for SM to PD on both channels. The return factors are separate
-from the outbound switch losses.
+The compiled YJ values in `devices.c` are provisional **whole-route** losses,
+shared by AO and FEI. They include the internal static loss; external test-path
+attenuation, dynamic FVOA attenuation, and the separate return are excluded.
 
-The compiled route defaults in `devices.c` combine static laser attenuation
-with the switches traversed below. Current lab defaults use 50 dB for 1028y and
-1430hk; the component planning table above retains its original target values. AO and FEI use the same switch count.
+| Source | Outbound route input | Total loss (AO and FEI) | Total transmission |
+|---|---|---|---|
+| 1028y | yj_laser | 34.5 dB | 3.54813389234e-4 |
+| 1270j | yj_laser | 41 dB | 7.94328234724e-5 |
+| 1430yj | yj_1430 | 62 dB | 6.30957344480e-7 |
+| generic | yj_cal | 1 dB | 0.794328234724 |
+
+The saved October 3 power captures, after removing the external 3 dB and MM
+return, give recorded-model median losses of about 34.45, 41.03, and 60.69 dB.
+For 1430yj, the current 0.24 mW/mA efficiency versus the older 0.192 adds about
+0.97 dB; mid/high-current data and the entered source-meter attenuation support
+rounding to 62 dB. Do not subtract the external 3 dB again. Current dependence
+and source-model uncertainty remain; these are not accepted optical calibrations.
+FEI equality is an assumption: the saved FEI captures did not establish an
+independent loss. The 1 dB CAL value is a component estimate.
+
+HK retains its nominal 0.83 transmission per red FFSW and existing static losses.
+AO and FEI use the same switch count. HK CAL has no measured default and uses
+unity. The component planning table above retains its original target values.
 
 | Laser | Outbound route input | Switch product | Static loss | Total transmission |
 |---|---|---|---|---|
-| 1028y | yj_laser | B2 × B3 = 0.88² | 50 dB | 7.744e-6 |
-| 1270j | yj_laser | B2 × B3 = 0.88² | 40 dB | 7.744e-5 |
-| 1430yj | yj_1430 | B1 × B2 × B3 = 0.88³ | 100 dB | 6.81472e-11 |
 | 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 50 dB | 5.71787e-6 |
 | 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
 | 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
 
-`total_tx = switch_product * 10^(-static_loss_db / 10)`. These are nominal
-assembly defaults, not measurements of the installed path. Explicit
-`mems/route/loss` records replace the whole total. Dynamic FVOA attenuation is
-applied separately, so static attenuation must not also be folded into its fit.
-MM/SM return defaults are four generic channel/fiber entries, including unknown
-or astrophysical light. Existing per-laser return overrides apply when that
-laser is selected; unknown-source captures use the generic return value.
+For HK, `total_tx = switch_product * 10^(-static_loss_db / 10)`. Complete FFLS
+return transmission is 0.98 for MM and 0.60 for SM on both channels: these are
+the compiled `generic` defaults, separate from launch losses. Explicit
+`mems/route/loss` records replace the whole route. Named-source overrides are
+independent of stored generic overrides. Passive capture selects `generic`.
+Dynamic FVOA attenuation is applied separately; static loss must not also be
+folded into its fit.
 
 ## Laser Diode Control
 MODBUS

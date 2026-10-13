@@ -42,7 +42,9 @@ int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
  *
  * Call once before starting command ingress threads.
  */
-int command_runtime_init(void);
+/* Reboot preparation uses the app queue; it can block on Modbus completion. */
+struct k_work_q;
+int command_runtime_init(struct k_work_q *blocking_work_q);
 
 /** Return the app's configured command runtime for main-loop and warning use. */
 struct coo_cmd_runtime *command_runtime_get(void);

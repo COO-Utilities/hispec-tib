@@ -20,10 +20,10 @@
 
 struct throughput_monitor_request {
 	/* Resolved run configuration. Return correction always applies; launch
-	 * transmission is NaN when the external source power is unknown.
+	 * transmission is NaN when no launch route was selected.
 	 */
 	double pd_route_tx;
-	double laser_route_tx;
+	double launch_route_tx;
 	enum hispec_laser_id laser;
 	enum photodiode_channel channel;
 	bool has_laser;
@@ -90,6 +90,6 @@ void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop
  * owned laser identity for stop retry; success relinquishes the stopped stream.
  */
 int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
-	const struct app_laser_channel_settings *settings, bool persist);
+	const struct app_laser_channel_settings *settings, bool persist, char *error, size_t error_len);
 
 #endif /* HISPEC_THROUGHPUT_MONITOR_H */

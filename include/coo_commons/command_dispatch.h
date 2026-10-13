@@ -113,6 +113,7 @@ struct coo_cmd_request {
 };
 
 struct coo_cmd_response {
+	uint64_t ack_utc_ms; /* Dispatch completion; zero for unsolicited telemetry. */
 	enum coo_cmd_msg_type msg_type;
 	enum coo_cmd_out_target target;
 	char topic[COO_CMD_TOPIC_MAX];
@@ -226,6 +227,7 @@ struct coo_cmd_spec {
 struct coo_cmd_runtime {
 	struct k_msgq *inbound_queue;
 	struct k_msgq *outbound_queue;
+	struct k_msgq *reply_queue;
 	char device_id[32];
 	char request_prefix[COO_CMD_TOPIC_MAX];
 	char warning_topic[COO_CMD_TOPIC_MAX];
@@ -244,12 +246,17 @@ struct coo_cmd_runtime {
 	uint32_t reboot_delay_ms;
 	bool reboot_erase_non_ip_settings;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
+	struct k_work_q *reboot_work_q; /* App-owned queue: prepare may block on I/O. */
 #endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	struct k_work_delayable serial_guard_work;
 	atomic_t serial_guard_active;
 	uint32_t serial_guard_seconds;
 #endif
+	int output_event_fd;
+	atomic_t dropped_best_effort;
+	atomic_t dropped_replies;
+	atomic_t publish_failures;
 	bool outbound_full_warning_seen;
 	bool serial_initialized;
 	bool serial_line_overflow;
@@ -274,6 +281,7 @@ struct coo_cmd_runtime_config {
 	const char *device_id;
 	struct k_msgq *inbound_queue;
 	struct k_msgq *outbound_queue;
+	struct k_msgq *reply_queue;
 	coo_cmd_handler_fn execute_handler;
 	uint16_t *mqtt_msg_id;
 	uint16_t serial_wrap_column;
@@ -284,6 +292,7 @@ struct coo_cmd_runtime_config {
 #if defined(CONFIG_COO_CMD_REBOOT)
 	uint32_t reboot_delay_ms;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
+	struct k_work_q *reboot_work_q; /* App-owned queue: prepare may block on I/O. */
 #endif
 	void *user_data;
 };
