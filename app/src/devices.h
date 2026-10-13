@@ -102,9 +102,9 @@ void devices_capture_boot_reset_cause(void);
  */
 void devices_queue_boot_reset_telemetry(void);
 
-/** Compiled route transmission, or 1.0 for an unspecified path. Pure lookup;
- * @p route is a non-null route name. NULL @p laser selects only generic defaults
- * (MM/SM returns); known laser names also select launch/static attenuation.
+/** Compiled route/source transmission, then its generic default, or 1.0 for an
+ * unspecified path. Pure lookup; both names must be non-null. Stored overrides
+ * are resolved separately by settings and match only their exact source.
  */
 double devices_route_loss_default(const char *route, const char *laser);
 

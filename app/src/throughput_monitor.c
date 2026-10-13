@@ -92,7 +92,7 @@ struct throughput_state {
 	int64_t next_gap_warning_ms;
 	/* Route calibration is run configuration; driver state stays with its owner. */
 	double pd_route_tx;
-	double laser_route_tx;
+	double launch_route_tx;
 	/* Autolevel's laser must still stop after manual level changes disable adjustments. */
 	bool stop_laser;
 };
@@ -236,9 +236,9 @@ static int refresh_reference(struct throughput_state *state)
 		if (rc == 0) {
 			ref.laser_output_power_uw = laser.power_mw * 1.0e3;
 			ref.laser_output_power_err_uw = laser.power_err_mw * 1.0e3;
-			ref.delivered_power_nw = laser.power_mw * 1.0e6 * atten.linear * state->laser_route_tx;
+			ref.delivered_power_nw = laser.power_mw * 1.0e6 * atten.linear * state->launch_route_tx;
 			ref.delivered_power_err_nw = hypot(laser.power_err_mw * atten.linear,
-				laser.power_mw * atten.linear_err) * 1.0e6 * state->laser_route_tx;
+				laser.power_mw * atten.linear_err) * 1.0e6 * state->launch_route_tx;
 			ref.laser_current_ma = laser.current_ma;
 			ref.atten_tx = atten.linear;
 			ref.atten_db = atten.attenuation_db;
@@ -392,7 +392,7 @@ static void publish_sample(const struct throughput_state *state,
 		{"delivered_power_err_nw", source->delivered_power_err_nw},
 		{"laser_output_power_uw", source->laser_output_power_uw},
 		{"laser_output_power_err_uw", source->laser_output_power_err_uw},
-		{"pd_route_tx", state->pd_route_tx}, {"laser_route_tx", state->laser_route_tx},
+		{"pd_route_tx", state->pd_route_tx}, {"launch_route_tx", state->launch_route_tx},
 		{"atten_tx", source->atten_tx}, {"pd_mv", pd->mv}, {"pd_net_mv", pd->net_mv},
 		{"pd_net_err_mv", overrange ? (double)NAN : pd->net_err_mv},
 		{"laser_current_ma", source->laser_current_ma}, {"atten_db", source->atten_db},
@@ -635,7 +635,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 	/* The command resolved losses for both independent routes before starting. */
 	next.pd_route_tx = request->pd_route_tx;
-	next.laser_route_tx = request->laser_route_tx;
+	next.launch_route_tx = request->launch_route_tx;
 
 	next.phase = TP_PREPARING;
 	next.autolevel = request->autolevel;

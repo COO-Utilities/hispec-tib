@@ -42,20 +42,17 @@ Current app NVS records include:
   double in %/°C at 25°C, NVS IDs 0x0380–0x0385). Missing or invalid values
   retain the compiled coefficient. Reset deletes this record with channel policy.
 - One route-loss table-entry record per configured route/source or split output,
-  up to 40 records. This covers both TIB channel ledgers (32 entries) and six AS
-  split outputs. Broadband/passive records use source `none` in the same format.
+  up to 32 records per PCB (16 per TIB channel). AS split records live on their
+  own PCB. Broadband TIB CAL/return records use source `generic`.
 - One MEMS intent record containing per-switch static state intent, per-switch
   direct-toggle restart metadata, and per-channel split restart metadata.
 
-The autolevel-minimum addition changes the laser-policy record size while
-leaving schema 13 and all other records unchanged. Old laser-policy records fail
-the exact-size check and that channel uses compiled policy defaults. Reapply
-desired laser overrides after updating firmware. Emission counters, attenuator
-calibration, routes, networking, and other records remain valid; there is no
-migration or wholesale reset.
+The autolevel-minimum addition changed the laser-policy record size under
+schema 13. An incorrect record size selects compiled policy defaults for that
+channel. Schema 14 now resets all older app settings as described below.
 
-The thermistor-coefficient addition uses a separate eight-byte record and keeps
-schema 13 and the existing laser-policy/calibration layout unchanged. The PCB
+The thermistor-coefficient addition introduced a separate eight-byte record
+under schema 13 without changing the laser-policy/calibration layout. The PCB
 owns the configured coefficient; Maiman EEPROM retains driver-side values.
 Profile preparation synchronizes the PCB value at the first explicit start after
 bank power-up, and driver-backed settings updates program it immediately through
@@ -112,17 +109,15 @@ silently reused on another.
   defaults to 0.5 in firmware, and is not persisted.
 - Laser settings `autooff_s` supplies the manual-command default; an explicit
   command value overrides it. Throughput owns its separate `off_in_s` deadline.
-- Route-loss records default to absent. Known TIB laser AO/FEI paths then use
-  the switch products plus planned static attenuation documented in
-  [hardware.md](hardware.md#tib-route-loss-defaults); matching MM/SM return
-  paths use transmission 0.98/0.60. Other route/laser pairs use 1.0. Defaults
-  are constants in flash and occupy no RAM/NVS override slots. Explicit
-  records replace defaults, including transmission 1.0 (API loss 0).
-  Passive measurements select an explicit `none` record before return defaults;
-  named lasers do not inherit `none`. CAL launch records can be stored for the
-  broadband source without implying that its source power is known.
-  Throughput captures effective route losses at start; restart to pick up a
-  changed override. The NVS layout and schema are unchanged.
+- Route-loss records default to absent. Lookup uses an exact route/source
+  override, then a compiled source default, then that route's compiled generic
+  default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)
+  distinguish provisional YJ totals from nominal HK values. MM/SM generic
+  defaults are transmission 0.98/0.60. Constants occupy no RAM/NVS slots;
+  overrides replace the whole route, including transmission 1.0 (API loss 0).
+  Passive measurements explicitly select `generic`; named sources never inherit
+  a stored generic override. CAL launch loss does not imply known emission.
+  Throughput latches effective losses at start; restart to pick up changes.
 - MEMS switch intent defaults to absent. A switch with no stored intent defaults
   to A at boot. Toggle and split restart metadata defaults to dormant/absent.
 
@@ -153,11 +148,15 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v13 resets calibrations acquired with the mean-only clipping test or
-the incomplete six-term correction basis. Coefficient records retain the
-physical-attenuator residual RMS added in v12 and the laser uncertainty added
-in v11. Older schema markers are not migrated: firmware clears the old app
-settings layout, writes the v13 marker, and uses defaults.
+Schema v14 replaces the obsolete `none` loss selector with `generic` and reduces
+the override table to 32 slots. On first boot with an older or missing marker,
+firmware clears **all app NVS records**, writes v14, and uses defaults. This
+includes calibration, network settings, board/switch intent, counters, and other
+app records, not just route losses. Reapply needed settings from reviewed lab
+records; there is no migration. Maiman EEPROM is separate and is not cleared.
+The earlier v13 reset invalidated calibrations from the mean-only clipping test
+or incomplete six-term correction basis. Coefficient records still include the
+physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 
 ## Intentionally Not Persisted
 

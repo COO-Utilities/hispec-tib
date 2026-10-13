@@ -670,7 +670,7 @@ while serial guard is active and attenuator DAC-range clamping.
       "1430hk": 0.0,
       "1510h": 0.0,
       "2330k": 0.0,
-      "none": 0.4
+      "generic": 0.4
     }
   }
   ```
@@ -683,29 +683,33 @@ while serial guard is active and attenuator DAC-range clamping.
   ```
 
 Route-loss records are app settings keyed by route name and source name or split.
-Each set request accepts exactly one top-level named laser, `none`, or `split` tuple.
+Each set request accepts exactly one top-level named laser, `generic`, or `split` tuple.
 The `lasers` object is a query response only. `persist` requires a loss value.
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
-transmission must remain positive. Missing records use the nominal TIB defaults
+transmission must remain positive. Missing records use the compiled TIB defaults
 in `devices.c`, documented in [hardware.md](hardware.md#tib-route-loss-defaults),
-for known laser AO/FEI paths and source-independent MM/SM returns; other route/laser pairs report zero loss. Explicit
-records replace the complete default, including an explicit zero loss.
+for the named source, then the route's compiled generic default, then unity
+transmission. Explicit records replace the complete default, including an explicit zero loss.
 
-`none` stores a broadband/passive source record, for example
-`{"route":"yj_cal_to_yj_ao","none":"0.5 dB","persist":false}`.
-It appears in the existing `lasers` query map. A passive return measurement uses
-its route's `none` override, falling back to the compiled MM/SM default. Named
-lasers use only their own overrides and never inherit `none`. A CAL launch loss
-can be stored and queried, but passive capture still has no known source power
-from which to calculate throughput. The fixed table holds 40 records, including
-split outputs; records keep the existing NVS format.
+`generic` stores a broadband/passive record, for example
+`{"route":"yj_cal_to_yj_ao","generic":"1 dB","persist":false}`.
+It is accepted and appears in the `lasers` query map only for the eight TIB
+CAL-to-AO/FEI and MM/SM-to-PD routes (four per channel). MM 0.98 and SM 0.60
+are the compiled generic defaults. Named sources use independent overrides and
+never inherit a stored generic override. Passive capture reports an explicitly
+selected CAL launch transmission, but unknown emission still prevents throughput.
+AS split losses and named-source scalar storage on AS/CAL boards are unchanged;
+AS CAL-in-to-CAL has no loss consumer. The table holds 32 overrides per PCB;
+AS split records live on their own PCB. Defaults occupy no override slots.
+The obsolete loss selector `none` is rejected. [Schema 14](settings.md) clears
+all older app NVS settings at first boot, with no migration.
 
 Strings ending in `dB`, `db`, or `DB` accept nonnegative finite loss in dB in the
 same field. Firmware stores transmission: `tx = 1 - loss` for numeric inputs,
 or `tx = 10^(-loss_db / 10)` for dB strings. The latter must produce a positive
 finite transmission. Queries return `1 - tx` with 17 significant digits to
-preserve the planned losses above 100 dB. Python route-loss representations also
+preserve very small transmissions. Python route-loss representations also
 retain float precision. Prefer dB input when a fractional
 value would lose precision near an endpoint. The split value is a three-tuple
 and may mix numeric fractional losses with dB strings.
@@ -2003,12 +2007,13 @@ Invalid input or an exclusion failure leaves an existing run untouched.
 
 All measurements divide detected power and its error by the selected return
 transmission. A known laser selects its route/laser override when present;
-unknown illumination selects the route's explicit `none` override, or the generic
-return default (MM 0.98, SM 0.60) when absent. Passive PD voltage, corrected power,
-errors, and detector S/N remain available; source power, wavelength, launch
-transmission, and throughput are NaN/null because emission is unknown. No new
-telemetry field is introduced. The `none` source uses the existing route-loss
-record format. A return-only example:
+unknown illumination selects the route's `generic` override or compiled generic
+default (MM 0.98, SM 0.60). Passive PD voltage, corrected power, errors, and
+detector S/N remain available; source power, wavelength, delivered power, and
+throughput are NaN/null because emission is unknown. `launch_route_tx` reports
+the resolved transmission for an explicitly selected launch; it is NaN/null for a
+return-only capture. The acquisition selector remains `laser:"none"`; only
+route-loss storage uses `generic`. A return-only example:
 ```json
 {"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
 ```
@@ -2050,7 +2055,7 @@ channel per 10 seconds. See [the sampling/error audit](photodiode_notes.md).
   "laser_output_power_uw": 1000,
   "laser_output_power_err_uw": 30,
   "pd_route_tx": 0.5,
-  "laser_route_tx": 0.2,
+  "launch_route_tx": 0.2,
   "atten_tx": 0.01,
   "pd_mv": 100,
   "pd_net_mv": 90,
@@ -2091,7 +2096,7 @@ float64 delivered_power_err_nw
 float64 laser_output_power_uw
 float64 laser_output_power_err_uw
 float64 pd_route_tx
-float64 laser_route_tx
+float64 launch_route_tx
 float64 atten_tx
 float64 pd_mv
 float64 pd_net_mv
@@ -2110,6 +2115,12 @@ uint64 pd_ontime_s
 uint64 laser_current_ontime_s
 uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 ```
+
+`launch_route_tx` replaces `laser_route_tx` in JSON and Python. The binary
+layout and field position are unchanged, so new live binary captures can use
+the updated Python label before flashing. Old JSON/archived column names have
+no alias or automatic conversion. The `generic` loss command requires updated
+firmware; passive acquisition continues to use `laser:"none"`.
 
 The two signed local slopes are in dB per **post-amplifier** drive mV and are
 also present in JSON. They are evaluated by the firmware model at confirmed DAC

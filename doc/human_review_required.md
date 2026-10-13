@@ -9,6 +9,12 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] After flashing the generic TIB loss correction, verify schema 14's full
+  app NVS reset, reapply needed settings, and bench-check generic CAL/return
+  overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain
+  provisional; equal AO/FEI loss needs optical validation. The Nucleo build,
+  temporary C/host checks, and saved noise/failed-hold replay passed offline;
+  no flashing, hardware commands, or physical persistence checks were performed.
 - [ ] Validate H's corrected internal LD coefficient I/O after flashing: both
   programming and readback use 0x007F, replacing unused external 0x008A.
   Check synchronization of vendor-based defaults, failed writes, persistence/reset

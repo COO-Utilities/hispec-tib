@@ -190,31 +190,43 @@ Static attenuation anticipated required:
 
 ### TIB route-loss defaults
 
-Nominal transmission is 0.88 per blue (YJ B1/B2/B3) FFSW and 0.83 per red
-(HK R1/R2/R3) FFSW. Complete FFLS return-path transmission is 0.98 for MM to
-PD and 0.60 for SM to PD on both channels. The return factors are separate
-from the outbound switch losses.
+The compiled YJ values in `devices.c` are provisional **whole-route** losses,
+shared by AO and FEI. They include the internal static loss; external test-path
+attenuation, dynamic FVOA attenuation, and the separate return are excluded.
 
-The compiled route defaults in `devices.c` combine static laser attenuation
-with the switches traversed below. Current lab defaults use 50 dB for 1028y and
-1430hk; the component planning table above retains its original target values. AO and FEI use the same switch count.
+| Source | Outbound route input | Total loss (AO and FEI) | Total transmission |
+|---|---|---|---|
+| 1028y | yj_laser | 34.5 dB | 3.54813389234e-4 |
+| 1270j | yj_laser | 41 dB | 7.94328234724e-5 |
+| 1430yj | yj_1430 | 62 dB | 6.30957344480e-7 |
+| generic | yj_cal | 1 dB | 0.794328234724 |
+
+The saved October 3 power captures, after removing the external 3 dB and MM
+return, give recorded-model median losses of about 34.45, 41.03, and 60.69 dB.
+For 1430yj, the current 0.24 mW/mA efficiency versus the older 0.192 adds about
+0.97 dB; mid/high-current data and the entered source-meter attenuation support
+rounding to 62 dB. Do not subtract the external 3 dB again. Current dependence
+and source-model uncertainty remain; these are not accepted optical calibrations.
+FEI equality is an assumption: the saved FEI captures did not establish an
+independent loss. The 1 dB CAL value is a component estimate.
+
+HK retains its nominal 0.83 transmission per red FFSW and existing static losses.
+AO and FEI use the same switch count. HK CAL has no measured default and uses
+unity. The component planning table above retains its original target values.
 
 | Laser | Outbound route input | Switch product | Static loss | Total transmission |
 |---|---|---|---|---|
-| 1028y | yj_laser | B2 × B3 = 0.88² | 50 dB | 7.744e-6 |
-| 1270j | yj_laser | B2 × B3 = 0.88² | 40 dB | 7.744e-5 |
-| 1430yj | yj_1430 | B1 × B2 × B3 = 0.88³ | 100 dB | 6.81472e-11 |
 | 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 50 dB | 5.71787e-6 |
 | 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
 | 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
 
-`total_tx = switch_product * 10^(-static_loss_db / 10)`. These are nominal
-assembly defaults, not measurements of the installed path. Explicit
-`mems/route/loss` records replace the whole total. Dynamic FVOA attenuation is
-applied separately, so static attenuation must not also be folded into its fit.
-MM/SM return defaults are four generic channel/fiber entries, including unknown
-or astrophysical light. Existing per-laser return overrides apply when that
-laser is selected; unknown-source captures use the generic return value.
+For HK, `total_tx = switch_product * 10^(-static_loss_db / 10)`. Complete FFLS
+return transmission is 0.98 for MM and 0.60 for SM on both channels: these are
+the compiled `generic` defaults, separate from launch losses. Explicit
+`mems/route/loss` records replace the whole route. Named-source overrides are
+independent of stored generic overrides. Passive capture selects `generic`.
+Dynamic FVOA attenuation is applied separately; static loss must not also be
+folded into its fit.
 
 ## Laser Diode Control
 MODBUS

@@ -120,7 +120,7 @@ _THROUGHPUT_FLOAT_FIELDS = (
     "laser_output_power_uw",
     "laser_output_power_err_uw",
     "pd_route_tx",
-    "laser_route_tx",
+    "launch_route_tx",
     "atten_tx",
     "pd_mv",
     "pd_net_mv",
@@ -3257,7 +3257,7 @@ class ThroughputSample(ResponseRepr):
     laser_output_power_uw: float
     laser_output_power_err_uw: float
     pd_route_tx: float
-    laser_route_tx: float
+    launch_route_tx: float
     atten_tx: float
     pd_mv: float
     pd_net_mv: float
@@ -4322,8 +4322,8 @@ class HispecFibPcb:
         For example, loss=0.5 and loss="3.0103 dB" describe half the light lost.
         Split tuples use the same representations for each output. Prefer dB
         strings when a fractional value would lose precision near an endpoint.
-        Use laser="none" for a broadband/passive source record. Named lasers
-        keep independent records and do not inherit this override.
+        Use laser="generic" for TIB CAL-to-AO/FEI or MM/SM-to-PD records.
+        Named lasers keep independent records and do not inherit this override.
         """
         if laser is None and loss is None and split is None and not persist:
             data = self._request_json("mems/route/loss", {"route": route})
@@ -4342,7 +4342,7 @@ class HispecFibPcb:
         else:
             if laser is None or loss is None:
                 raise HispecFibError("laser and loss are required for non-split route loss")
-            _require_choice("laser", laser, (*LASER_NAMES, "none"))
+            _require_choice("laser", laser, (*LASER_NAMES, "generic"))
             if not isinstance(loss, str):
                 loss = _require_float("loss", loss, 0.0, 1.0)
                 if loss == 1.0:

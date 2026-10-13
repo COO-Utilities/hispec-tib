@@ -47,8 +47,8 @@ struct app_mqtt_settings {
 #define APP_ATTENUATOR_PHYSICAL_COUNT 2
 #define APP_PD_CHANNEL_COUNT 2
 #define APP_SETTINGS_BOARD_TYPE_MAX_LEN 16
-/* Both TIB channels: 32 launch/return ledger entries plus six AS split outputs. */
-#define APP_ROUTE_LOSS_RECORD_COUNT 40
+/* Two TIB channels, 16 launch/return source pairs each. AS has its own PCB/NVS. */
+#define APP_ROUTE_LOSS_RECORD_COUNT 32
 #define APP_ROUTE_LOSS_ROUTE_MAX_LEN 24
 #define APP_ROUTE_LOSS_LASER_MAX_LEN 16
 #define APP_LASER_CHANNEL_COUNT 6
@@ -148,7 +148,7 @@ struct app_laser_settings {
 	struct app_laser_channel_settings channel[APP_LASER_CHANNEL_COUNT];
 };
 
-/** User-provided optical route transmission keyed by route and source (laser or "none"). */
+/** User-provided optical route transmission keyed by route and source or split output. */
 struct app_route_loss_record {
 	bool configured;
 	char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
@@ -299,9 +299,10 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
  * @brief Get effective route transmission, including compiled TIB defaults.
  *
  * Explicit RAM/NVS records override defaults, including transmission 1.0.
- * NULL laser selects the explicit "none" record or source-independent defaults;
- * named lasers never inherit "none". Unspecified paths return 1.0. May wait on the settings mutex;
- * performs no hardware or flash I/O. Throughput captures this value at start.
+ * Callers supply a named laser, "generic", or split-output key. Only an exact
+ * source override applies; named lasers never inherit a stored generic override.
+ * Unspecified paths return 1.0. May wait on the settings mutex; performs no
+ * hardware or flash I/O. Throughput captures this value at start.
  */
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission);

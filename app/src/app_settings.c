@@ -31,9 +31,9 @@
 LOG_MODULE_REGISTER(app_settings, LOG_LEVEL_INF);
 
 #define APP_NVS_SCHEMA_MAGIC 0x48535653U /* "HSVS" */
-/* Keep the schema: size checks reject extended attenuator/laser policy records
- * from older firmware without discarding unrelated settings or counters. */
-#define APP_NVS_SCHEMA_VERSION 13U
+/* Reset app NVS for the generic source spelling and smaller route-loss table.
+ * The existing schema reset discards all old app settings; no records migrate. */
+#define APP_NVS_SCHEMA_VERSION 14U
 
 enum app_nvs_id {
 	APP_NVS_ID_SCHEMA = 0x0001,
@@ -1376,23 +1376,16 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 {
 	int index;
 
-	if (transmission == NULL || route == NULL) {
+	if (transmission == NULL || route == NULL || laser == NULL) {
 		return -EINVAL;
 	}
-	if (route[0] == '\0' || strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
-	    (laser != NULL && (laser[0] == '\0' ||
-	     strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN))) {
+	if (route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
 		return -EINVAL;
 	}
 
 	*transmission = devices_route_loss_default(route, laser);
-	/* Passive illumination has its own "none" override. Named sources never
-	 * inherit that broadband record; the persisted route/source format is shared.
-	 */
-	if (laser == NULL) {
-		laser = "none";
-	}
-
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);
 	if (index >= 0) {
