@@ -9,6 +9,16 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Bench-validate laser calibration after FVOA calibration: 0.1 C thermal
+  qualification, 100 ms settling, current-grid/range overlaps, inferred knee and
+  upper linear limit, reference-based AO/FEI loss and effective noise. Check the
+  emission-off recabling pause/continue, stop/fault shutdown, scoped default
+  restoration and actual NVS power-cycle behavior. The Nucleo build and temporary
+  real-C numerical/acquisition/route-reset checks, attenuator replay, and C-to-Python
+  binary round-trip pass offline. RAM increased 616 bytes with the existing
+  4096-byte throughput stack; on-target stack/timing margins remain unmeasured.
+  See [laser calibration](laser_calibration.md). No flashing or hardware commands
+  were performed for this implementation.
 - [ ] After flashing the generic TIB loss correction, verify schema 14's full
   app NVS reset, reapply needed settings, and bench-check generic CAL/return
   overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain

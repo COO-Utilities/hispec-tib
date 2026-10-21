@@ -14,6 +14,10 @@
 
 #include "command.h"
 
+int laser_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+int laser_calibration_records_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+
 int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

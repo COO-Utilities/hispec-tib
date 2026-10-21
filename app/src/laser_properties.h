@@ -38,6 +38,10 @@ typedef struct laserprops_t {
     double dne_current_ma;
     double threshold_current_ma;
     double efficiency_mw_per_ma;
+    /* Independent vendor power anchor, measured at ref_ma and ref_temp_c. */
+    double ref_mw;
+    double ref_ma;
+    double ref_temp_c;
     double wavelength_nm; /* Reference at nominal_current_ma and operating_temp_c. */
     double test_monitor_current_ua;
     temp_range_c_t operating_temp_range_c;
@@ -70,6 +74,7 @@ static const laserprops_t LASER_1028 = {
     .wavelength_nm = 1030.485,
     .test_monitor_current_ua = 23.3,
     .efficiency_mw_per_ma = 0.185,
+    .ref_mw = 43.8, .ref_ma = 250, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.015,
     .dlambda_dT_nm_per_k = 0.12,
     .operating_temp_range_c = {17.0, 38.0},
@@ -94,6 +99,7 @@ static const laserprops_t LASER_2330 = {
     .wavelength_nm = 2328.310,
     .test_monitor_current_ua = LASERPROP_NA,
     .efficiency_mw_per_ma = 0.031,
+    .ref_mw = 3.18, .ref_ma = 120, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.015,
     .dlambda_dT_nm_per_k = 0.12,
     .operating_temp_range_c = {17.0, 38.0},
@@ -117,6 +123,7 @@ static const laserprops_t LASER_1270 = {
     .wavelength_nm = 1270.52,
     .test_monitor_current_ua = 90,
     .efficiency_mw_per_ma = 0.26,
+    .ref_mw = 10, .ref_ma = 52, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
@@ -140,6 +147,7 @@ static const laserprops_t LASER_1430YJ = {
     .wavelength_nm = 1429.64, //8897ACR=1429.64 8895ACR=1429.56
     .test_monitor_current_ua = 143, //8897ACR=143 8895ACR=159
     .efficiency_mw_per_ma = 0.24,
+    .ref_mw = 10, .ref_ma = 49, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
@@ -163,6 +171,7 @@ static const laserprops_t LASER_1430HK = {
     .wavelength_nm = 1429.56, //8897ACR=1429.64 8895ACR=1429.56
     .test_monitor_current_ua = 159, //8897ACR=143 8895ACR=159
     .efficiency_mw_per_ma = 0.24,
+    .ref_mw = 10, .ref_ma = 49, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},
@@ -186,6 +195,7 @@ static const laserprops_t LASER_1510 = {
     .wavelength_nm = 1509.33,
     .test_monitor_current_ua = 475,
     .efficiency_mw_per_ma = 0.24,
+    .ref_mw = 10, .ref_ma = 47, .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
     .operating_temp_range_c = {17.0, 38.0},

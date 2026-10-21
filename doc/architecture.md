@@ -27,6 +27,11 @@ Runtime ownership is:
   transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
+- `laser_calibration.c`: reference-anchored current acquisition, profiled-gain
+  fitting, effective noise estimates and conditional outbound-loss application.
+- `calibration_fit.c`: the allocation-free two-parameter double solver shared
+  by attenuator and laser fits. `calibration_storage.c` owns their shared static
+  dataset, scratch, data mutex and best-effort telemetry buffer.
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, laser settings
   validation, output estimates, auto-off delayable work, and higher-level Maiman
@@ -328,6 +333,15 @@ without holding the calibration mutex. Numerical loops check cancellation;
 the command cannot clear/reuse the single static dataset until fitting returns.
 Only an accepted new start clears records, references, bridges, and fit results.
 Stop and error cleanup preserve them. No second record buffer is allocated.
+Either an attenuator or laser start replaces the shared raw dataset, after
+cancel/join and confirmed shutdown of the previous owner. Applied settings survive.
+Laser fitting uses the same priority/cancellation discipline; it retains PD
+auto-off inhibition through optional lower-boundary refinement and the emission-off
+recabling pause, releasing it at completion, error or stop. The laser status uses an
+explicit `fitting` state. Data and scratch unions stay at 7680 and 3584 bytes;
+128 laser records use 3072 bytes, with bounded metadata and <=1 KiB numerical
+scratch. The throughput stack remains 4096 bytes. Details are in
+[laser_calibration.md](laser_calibration.md).
 
 The Cortex-M33 single-precision FPU is enabled with Zephyr shared FP context.
 PD window storage/mean/RMS and runtime FVOA dB/slope/local uncertainty use float.
@@ -351,7 +365,7 @@ Shared FP context adds 64 bytes of saved S16–S31 registers per thread object,
 plus a 72-byte hardware frame on an active FP thread's stack. Stack sizes are
 unchanged; DWT timings and runtime margins require the flashed board.
 
-Calibration publishes a coherent command-status snapshot under a separate short
+Attenuator calibration publishes a coherent command-status snapshot under a separate short
 mutex after start/stop/tick updates and before fitting. Status and active checks
 read that snapshot without waiting for acquisition I/O. The snapshot stays
 `running` throughout fitting and exposes each completed physical fit coherently.

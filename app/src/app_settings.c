@@ -51,6 +51,7 @@ enum app_nvs_id {
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
 	APP_NVS_ID_LASER_NTC_CH0 = 0x0380,
+	APP_NVS_ID_LASER_REF_CH0 = 0x03c0,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
 	APP_NVS_ID_MEMS = 0x0500,
 };
@@ -65,8 +66,10 @@ BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID
 	     "laser policy NVS ID block overlaps laser total block");
 BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_NTC_CH0,
 	     "laser total NVS ID block overlaps NTC block");
-BUILD_ASSERT(APP_NVS_ID_LASER_NTC_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
-	     "laser NTC NVS ID block overlaps route-loss block");
+BUILD_ASSERT(APP_NVS_ID_LASER_NTC_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_REF_CH0,
+	     "laser NTC NVS ID block overlaps reference block");
+BUILD_ASSERT(APP_NVS_ID_LASER_REF_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
+	     "laser reference NVS ID block overlaps route-loss block");
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
 	     "route-loss NVS ID block overlaps MEMS settings");
 BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
@@ -546,22 +549,24 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->tune_delta_nm = laser->tune_delta_nm;
 }
 
-static void app_nvs_persist_laser_channel(uint8_t channel,
-					  const struct app_laser_channel_settings *laser)
+/* Attempt every record and return the first flash error. RAM has already been
+ * applied; callers must not describe a partial NVS write as a rollback. */
+static int app_nvs_persist_laser_channel(uint8_t channel,
+					 const struct app_laser_channel_settings *laser)
 {
 	struct app_nvs_laser_policy stored;
-
-	if (laser == NULL || channel >= APP_LASER_CHANNEL_COUNT) {
-		return;
-	}
-
+	double reference[3] = {laser->properties.ref_mw, laser->properties.ref_ma,
+		laser->properties.ref_temp_c};
 	laser_policy_from_settings(&stored, laser);
-	(void)app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
-	(void)app_nvs_write(laser_ntc_nvs_id(channel), &laser->properties.ntc_coeff_pct_per_c,
-			    sizeof(laser->properties.ntc_coeff_pct_per_c));
-	(void)app_nvs_write(laser_total_nvs_id(channel),
-			    &laser->total_emitting_s,
-			    sizeof(laser->total_emitting_s));
+	int first = app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
+	int rc = app_nvs_write(laser_ntc_nvs_id(channel), &laser->properties.ntc_coeff_pct_per_c,
+			      sizeof(laser->properties.ntc_coeff_pct_per_c));
+	if (first == 0) first = rc;
+	rc = app_nvs_write(APP_NVS_ID_LASER_REF_CH0 + channel, reference, sizeof(reference));
+	if (first == 0) first = rc;
+	rc = app_nvs_write(laser_total_nvs_id(channel), &laser->total_emitting_s,
+			   sizeof(laser->total_emitting_s));
+	return first != 0 ? first : rc;
 }
 
 static void app_nvs_persist_laser_total(uint8_t channel, double total_emitting_s)
@@ -587,14 +592,14 @@ static void app_nvs_persist_laserbank(const struct app_laserbank_settings *laser
 	(void)app_nvs_write(APP_NVS_ID_LASERBANK, &mode, sizeof(mode));
 }
 
-static void app_nvs_persist_route_loss_index(uint8_t index,
+static int app_nvs_persist_route_loss_index(uint8_t index,
 					     const struct app_route_loss_record *record)
 {
 	if (record == NULL || index >= APP_ROUTE_LOSS_RECORD_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
-	(void)app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
+	return app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
 }
 
 static void app_nvs_persist_mems(const struct app_mems_settings *mems)
@@ -875,6 +880,20 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 			}
 		}
 
+		double reference[3];
+		if (app_nvs_read_exact(APP_NVS_ID_LASER_REF_CH0 + channel, reference,
+				       sizeof(reference), "laser reference")) {
+			laser = s->laser.channel[channel];
+			laser.properties.ref_mw = reference[0];
+			laser.properties.ref_ma = reference[1];
+			laser.properties.ref_temp_c = reference[2];
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
+				s->laser.channel[channel] = laser;
+			} else {
+				LOG_WRN("Ignoring invalid stored laser reference channel %u", channel);
+			}
+		}
+
 		if (app_nvs_read_exact(laser_total_nvs_id(channel), &total_emitting_s,
 				       sizeof(total_emitting_s), "laser total") &&
 		    double_in_range(total_emitting_s, 0.0, 1.0e12)) {
@@ -979,6 +998,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
 		delete_setting_record(laser_ntc_nvs_id(channel), &first_rc);
+		delete_setting_record(APP_NVS_ID_LASER_REF_CH0 + channel, &first_rc);
 		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
@@ -1346,7 +1366,7 @@ int app_settings_update_laser_channel(uint8_t channel,
 	k_mutex_unlock(&g_settings.lock);
 
 	if (persist) {
-		app_nvs_persist_laser_channel(channel, laser);
+		return app_nvs_persist_laser_channel(channel, laser);
 	}
 
 	return 0;
@@ -1428,10 +1448,40 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 	}
 
 	if (persist) {
-		app_nvs_persist_route_loss_index((uint8_t)index, &record);
+		return app_nvs_persist_route_loss_index((uint8_t)index, &record);
 	}
 
 	return 0;
+}
+
+/* Remove only this exact override. With persist=false the stored override can
+ * return after reboot, exactly like other volatile settings changes. */
+int app_settings_reset_route_loss(const char *route, const char *laser, bool persist)
+{
+	if (route == NULL || laser == NULL || route[0] == '\0' || laser[0] == '\0' ||
+	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) return -EINVAL;
+	int first = 0;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	for (uint8_t i = 0; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
+		struct app_route_loss_record *record = &g_settings.snapshot.route_loss.record[i];
+		bool match = record->configured && strcmp(record->route, route) == 0 &&
+			strcmp(record->laser, laser) == 0;
+		/* A previous volatile reset can have removed the RAM entry. Find its
+		 * persisted identity too, without deleting a different reused slot. */
+		struct app_route_loss_record stored;
+		if (match) memset(record, 0, sizeof(*record));
+		if (!persist) continue;
+		int read = app_nvs_ready ? nvs_read(&app_nvs, route_loss_nvs_id(i), &stored, sizeof(stored)) : -EIO;
+		if (read < 0 && read != -ENOENT) {
+			if (first == 0) first = read; /* Cannot confirm that this slot lacks the override. */
+		} else if (read == sizeof(stored) && route_loss_record_valid(&stored) &&
+			   strcmp(stored.route, route) == 0 && strcmp(stored.laser, laser) == 0) {
+			delete_setting_record(route_loss_nvs_id(i), &first);
+		}
+	}
+	k_mutex_unlock(&g_settings.lock);
+	return first;
 }
 
 void app_settings_get_mems(struct app_mems_settings *out)

@@ -39,6 +39,9 @@
 //TODO go through entire file and see which saturated measuerments are retained.
 
 #include "attenuator_calibration.h"
+#include "calibration_fit.h"
+#include "calibration_storage.h"
+#include "laser_calibration.h"
 
 #include <errno.h>
 #include <math.h>
@@ -79,8 +82,6 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_TAIL_FLOOR_POINTS 3U
 #define ATTEN_CAL_SNR_USABLE 5.0f
 #define ATTEN_CAL_DAC_SIGMA_MV 3.0f
-#define ATTEN_CAL_FIT_MAX_ITER 30U
-#define ATTEN_CAL_FIT_INITIAL_LAMBDA 1.0e-3
 #define ATTEN_CAL_FIT_MIN_SLOPE 1.0e-12
 #define ATTEN_CAL_FIT_MAX_SLOPE 1.0
 #define ATTEN_CAL_CORRECTION_PIVOT_EPS 1.0e-12
@@ -143,33 +144,10 @@ struct atten_cal_measurement {
 	enum atten_cal_record_classification classification;
 };
 
-struct atten_cal_record {
-	float sweep_mv;
-	float other_mv;
-	uint8_t laser_pct;
-	float signal_mv;
-	float signal_err_mv;
-	float max_mv;
-	uint8_t event;
-	uint8_t classification;
-	uint8_t segment;
-};
-
 BUILD_ASSERT(ATTEN_CAL_DATA_RECORDS_PER_CHUNK > 0U,
 	     "calibration data chunk must carry at least one record");
 BUILD_ASSERT(ATTEN_CAL_DATA_RECORDS_PER_CHUNK <= UINT8_MAX,
 	     "calibration data records per chunk must fit in wire metadata");
-
-struct atten_cal_bridge {
-	uint8_t before_record_index;
-	uint8_t after_record_index;
-};
-
-struct atten_cal_fit_point {
-	uint8_t record_index;
-	float measured_db;
-	float measured_db_err;
-};
 
 struct atten_cal_state_data {
 	enum atten_cal_state state;
@@ -205,8 +183,6 @@ struct atten_cal_state_data {
 	bool shutdown_pending; /* Keep laser identity after a failed fault shutdown. */
 	uint8_t reference_record_index[ATTENUATOR_PHYSICAL_COUNT];
 	bool reference_record_index_valid[ATTENUATOR_PHYSICAL_COUNT];
-	struct atten_cal_record records[ATTENUATOR_PHYSICAL_COUNT][ATTENUATOR_CAL_RECORD_COUNT];
-	struct atten_cal_bridge bridges[ATTENUATOR_PHYSICAL_COUNT][ATTENUATOR_CAL_RECORD_COUNT];
 	uint8_t record_count[ATTENUATOR_PHYSICAL_COUNT];
 	uint8_t bridge_count[ATTENUATOR_PHYSICAL_COUNT];
 	bool record_overflow[ATTENUATOR_PHYSICAL_COUNT];
@@ -216,7 +192,7 @@ struct atten_cal_state_data {
 static const uint8_t initial_laser_levels_pct[] = {100, 50, 5};
 
 static struct atten_cal_state_data cal;
-static K_MUTEX_DEFINE(cal_lock);
+#define cal_lock calibration_lock
 static atomic_t cal_fit_cancel;
 static K_SEM_DEFINE(cal_fit_done, 0, 1);
 /* Readers must not wait for the owner to finish a numerical fit or hardware I/O. */
@@ -225,8 +201,8 @@ static struct attenuator_calibration_status cal_status = {
 	.state = "inactive", .mode = "none", .physical = "dac1", .fit = "none",
 	.point_count = ATTENUATOR_CAL_RECORD_COUNT,
 };
-static struct coo_cmd_response cal_telemetry_msg;
-static struct atten_cal_fit_point cal_fit_points[ATTENUATOR_CAL_RECORD_COUNT];
+#define cal_telemetry_msg calibration_telemetry
+#define cal_fit_points calibration_scratch.atten.points
 
 static void publish_status_locked(struct attenuator_calibration_status *status);
 static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind, float sweep_mv, float other_mv);
@@ -552,7 +528,7 @@ static bool append_record_locked(enum atten_cal_record_event event,
 	}
 
 	index = cal.record_count[physical]++;
-	record = &cal.records[physical][index];
+	record = &calibration_data.atten.records[physical][index];
 	memset(record, 0, sizeof(*record));
 
 	record->sweep_mv = cal.sweep_mv;
@@ -874,7 +850,7 @@ static void auto_handle_initial_probe_locked(const struct atten_cal_measurement 
 		cal.reference_record_index_valid[cal.physical_index] = true;
 
 		auto_schedule_measure_locked(ATTEN_CAL_MEASURE_SWEEP, 0.0f,
-			cal.records[cal.physical_index][reference_index].other_mv);
+			calibration_data.atten.records[cal.physical_index][reference_index].other_mv);
 		return;
 	}
 
@@ -948,7 +924,7 @@ static void auto_begin_bridge_locked(void)
 
 	/* Find the latest usable DUT point in the current segment. */
 	for (uint8_t i = cal.record_count[physical]; i > 0U; --i) {
-		const struct atten_cal_record *record = &cal.records[physical][i - 1U];
+		const struct atten_cal_record *record = &calibration_data.atten.records[physical][i - 1U];
 
 		if (record->segment == cal.segment_id && record->event == ATTEN_CAL_EVENT_POINT) {
 			if (record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
@@ -965,9 +941,9 @@ static void auto_begin_bridge_locked(void)
 	 */
 	if (anchor == NULL && cal.bridge_count[physical] > 0U) {
 		const struct atten_cal_bridge *bridge =
-			&cal.bridges[physical][cal.bridge_count[physical] - 1U];
+			&calibration_data.atten.bridges[physical][cal.bridge_count[physical] - 1U];
 		const struct atten_cal_record *record =
-			&cal.records[physical][bridge->after_record_index];
+			&calibration_data.atten.records[physical][bridge->after_record_index];
 
 		if (record->classification == ATTEN_CAL_CLASSIFICATION_OK &&
 		    record->segment == cal.segment_id && record->other_mv == cal.other_mv) {
@@ -1025,7 +1001,7 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 			float search_floor = 0;
 			for (uint8_t i = 1; i <= cal.point_index; ++i) {
 				const struct atten_cal_record *candidate_record =
-					&cal.records[cal.physical_index][cal.point_index - i];
+					&calibration_data.atten.records[cal.physical_index][cal.point_index - i];
 
 				if (candidate_record->event == ATTEN_CAL_EVENT_BRIDGE_PROBE &&
 				    candidate_record->segment == cal.segment_id) {
@@ -1059,8 +1035,8 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 			return;
 		}
 
-		float ratio = cal.records[cal.physical_index][bridge_index].signal_mv /
-			cal.records[cal.physical_index][cal.bridge_before_index].signal_mv;
+		float ratio = calibration_data.atten.records[cal.physical_index][bridge_index].signal_mv /
+			calibration_data.atten.records[cal.physical_index][cal.bridge_before_index].signal_mv;
 		bool bad_bridge = (ratio <= 1.0f) || !isfinite(ratio);
 
 		if (bad_bridge) {
@@ -1088,10 +1064,10 @@ static void auto_close_bridge_locked(uint8_t index)
 {
 
 	/* Adopt the accepted bridge probe as the after side of this segment boundary. */
-	cal.other_mv = cal.records[cal.physical_index][index].other_mv;
+	cal.other_mv = calibration_data.atten.records[cal.physical_index][index].other_mv;
 	if (cal.bridge_before_index_valid && cal.bridge_count[cal.physical_index] < ATTENUATOR_CAL_RECORD_COUNT) {
 		struct atten_cal_bridge *bridge =
-			&cal.bridges[cal.physical_index][cal.bridge_count[cal.physical_index]++];
+			&calibration_data.atten.bridges[cal.physical_index][cal.bridge_count[cal.physical_index]++];
 
 		bridge->before_record_index = cal.bridge_before_index;
 		bridge->after_record_index = index;
@@ -1144,7 +1120,7 @@ static int build_segment_scales(uint8_t physical,
 	segment_rel_var[0] = 0.0;
 
 	for (uint8_t i = 0U; i < cal.bridge_count[physical]; ++i) {
-		const struct atten_cal_bridge *bridge = &cal.bridges[physical][i];
+		const struct atten_cal_bridge *bridge = &calibration_data.atten.bridges[physical][i];
 		const struct atten_cal_record *before;
 		const struct atten_cal_record *after;
 		uint8_t next_segment;
@@ -1155,8 +1131,8 @@ static int build_segment_scales(uint8_t physical,
 		    bridge->after_record_index >= cal.record_count[physical]) {
 			return -ERANGE;
 		}
-		before = &cal.records[physical][bridge->before_record_index];
-		after = &cal.records[physical][bridge->after_record_index];
+		before = &calibration_data.atten.records[physical][bridge->before_record_index];
+		after = &calibration_data.atten.records[physical][bridge->after_record_index];
 		next_segment = after->segment;
 		if (before->classification != ATTEN_CAL_CLASSIFICATION_OK ||
 		    after->classification != ATTEN_CAL_CLASSIFICATION_OK ||
@@ -1195,8 +1171,8 @@ static int build_fit_points(uint8_t physical,
 			    struct atten_cal_fit_point *points,
 			    uint8_t *point_count_out)
 {
-	static double segment_scale[ATTENUATOR_CAL_RECORD_COUNT];
-	static double segment_rel_var[ATTENUATOR_CAL_RECORD_COUNT];
+	double *segment_scale = calibration_scratch.atten.segment_scale;
+	double *segment_rel_var = calibration_scratch.atten.segment_rel_var;
 	const struct atten_cal_record *reference;
 	double open_signal;
 	double open_err;
@@ -1209,7 +1185,7 @@ static int build_fit_points(uint8_t physical,
 	if (!cal.reference_record_index_valid[physical]) {
 		return -ERANGE;
 	}
-	reference = &cal.records[physical][cal.reference_record_index[physical]];
+	reference = &calibration_data.atten.records[physical][cal.reference_record_index[physical]];
 
 	open_signal = (double)reference->signal_mv;
 	open_err = (double)reference->signal_err_mv;
@@ -1221,7 +1197,7 @@ static int build_fit_points(uint8_t physical,
 	}
 
 	for (uint8_t i = 0U; i < cal.record_count[physical]; ++i) {
-		const struct atten_cal_record *record = &cal.records[physical][i];
+		const struct atten_cal_record *record = &calibration_data.atten.records[physical][i];
 		double scale;
 		double signal;
 		double signal_err;
@@ -1361,27 +1337,39 @@ static int fit_point_weighted_eval(const struct atten_cal_fit_point *point,
 	return 0;
 }
 
-/** Sum weighted squared residuals for a complete fit candidate. */
-static double fit_cost(const struct atten_cal_fit_point *points,
-		       const struct atten_cal_record *records,
-		       uint8_t point_count,
-		       const struct attenuator_model_coeffs *coeffs,
-		       double max_atten_sigma_db)
+struct atten_fit_context {
+	const struct atten_cal_fit_point *points;
+	const struct atten_cal_record *records;
+	uint8_t count;
+	struct attenuator_model_coeffs coeffs;
+	double max_atten_sigma_db;
+};
+
+/* Sum weighted squared residuals for a complete fit candidate, optionally
+ * accumulating its normal equation. Keep point order, weighting and cancellation
+ * here; only the two-variable damped step is shared with laser calibration. */
+static int atten_fit_evaluate(void *context, const double p[2], bool derivatives,
+			      struct calibration_normal *normal)
 {
-	double cost = 0.0;
-
-	for (uint8_t i = 0U; i < point_count; ++i) {
-		double residual;
-
-		if (fit_point_weighted_eval(&points[i], records, coeffs,
-					    max_atten_sigma_db, &residual,
-					    NULL, NULL) != 0) {
-			return INFINITY;
+	struct atten_fit_context *fit = context;
+	fit->coeffs.fvoa_50pct_mv = p[0];
+	fit->coeffs.slope_inv_fvoa_mv = p[1];
+	for (uint8_t i = 0; i < fit->count; ++i) {
+		double r, j0, j1;
+		if (atomic_get(&cal_fit_cancel)) return -ECANCELED;
+		int rc = fit_point_weighted_eval(&fit->points[i], fit->records, &fit->coeffs,
+			fit->max_atten_sigma_db, &r, derivatives ? &j0 : NULL, derivatives ? &j1 : NULL);
+		if (rc != 0) return rc;
+		normal->cost += r * r;
+		if (derivatives) {
+			normal->h00 += j0 * j0;
+			normal->h01 += j0 * j1;
+			normal->h11 += j1 * j1;
+			normal->g0 += j0 * r;
+			normal->g1 += j1 * r;
 		}
-		cost += residual * residual;
-		if (atomic_get(&cal_fit_cancel)) return INFINITY;
 	}
-	return cost;
+	return 0;
 }
 
 /** Choose a data-derived initial coefficient guess for the dB-space optimizer. */
@@ -1435,106 +1423,24 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 			   double *fvoa_50pct_mv,
 			   double *slope_inv_fvoa_mv)
 {
-	double max_fvoa_mv = (double)ATTENUATOR_DRIVE_MAX_MV * gain;
-	double f50;
-	double slope;
-	double lambda = ATTEN_CAL_FIT_INITIAL_LAMBDA;
-	double cost;
-	struct attenuator_model_coeffs coeffs;
-
+	double p[2];
 	if (points == NULL || records == NULL || fvoa_50pct_mv == NULL ||
-	    slope_inv_fvoa_mv == NULL ||
-	    point_count < ATTEN_CAL_MIN_FIT_POINTS) {
-		return -EINVAL;
-	}
-	fit_initial_guess(points, records, point_count, gain, &f50, &slope);
-	coeffs = (struct attenuator_model_coeffs) {
-		.fvoa_50pct_mv = f50,
-		.slope_inv_fvoa_mv = slope,
-		.max_atten_db = max_atten_db,
-		.gain = gain,
+	    slope_inv_fvoa_mv == NULL || point_count < ATTEN_CAL_MIN_FIT_POINTS) return -EINVAL;
+	fit_initial_guess(points, records, point_count, gain, &p[0], &p[1]);
+	struct atten_fit_context context = {
+		.points = points, .records = records, .count = point_count,
+		.coeffs = {.max_atten_db = max_atten_db, .gain = gain},
+		.max_atten_sigma_db = max_atten_sigma_db,
 	};
-	cost = fit_cost(points, records, point_count, &coeffs,
-			max_atten_sigma_db);
-	if (!isfinite(cost)) {
-		return atomic_get(&cal_fit_cancel) ? -ECANCELED : -ERANGE;
+	const double lower[2] = {1.0, ATTEN_CAL_FIT_MIN_SLOPE};
+	const double upper[2] = {2.0 * (double)ATTENUATOR_DRIVE_MAX_MV * gain, ATTEN_CAL_FIT_MAX_SLOPE};
+	const double tolerance[2] = {1.0e-6, 1.0e-12};
+	int rc = calibration_fit_2(atten_fit_evaluate, &context, lower, upper, tolerance, p);
+	if (rc == 0) {
+		*fvoa_50pct_mv = p[0];
+		*slope_inv_fvoa_mv = p[1];
 	}
-
-	for (uint8_t iter = 0U; iter < ATTEN_CAL_FIT_MAX_ITER; ++iter) {
-		double h00 = 0.0;
-		double h01 = 0.0;
-		double h11 = 0.0;
-		double g0 = 0.0;
-		double g1 = 0.0;
-		double det;
-		double d_f50;
-		double d_slope;
-		double trial_f50;
-		double trial_slope;
-		double trial_cost;
-		struct attenuator_model_coeffs trial_coeffs;
-
-		coeffs.fvoa_50pct_mv = f50;
-		coeffs.slope_inv_fvoa_mv = slope;
-		for (uint8_t i = 0U; i < point_count; ++i) {
-			double r;
-			double j0;
-			double j1;
-
-			if (fit_point_weighted_eval(&points[i], records, &coeffs,
-						    max_atten_sigma_db, &r,
-						    &j0, &j1) != 0) {
-				return -ERANGE;
-			}
-			h00 += j0 * j0;
-			h01 += j0 * j1;
-			h11 += j1 * j1;
-			g0 += j0 * r;
-			g1 += j1 * r;
-			if (atomic_get(&cal_fit_cancel)) return -ECANCELED;
-		}
-
-		h00 += lambda;
-		h11 += lambda;
-		det = h00 * h11 - h01 * h01;
-		if (!(det > 0.0) || !isfinite(det)) {
-			return -ERANGE;
-		}
-		d_f50 = (-h11 * g0 + h01 * g1) / det;
-		d_slope = (h01 * g0 - h00 * g1) / det;
-		trial_f50 = CLAMP(f50 + d_f50, 1.0, 2.0 * max_fvoa_mv);
-		trial_slope = CLAMP(slope + d_slope,
-				    ATTEN_CAL_FIT_MIN_SLOPE,
-				    ATTEN_CAL_FIT_MAX_SLOPE);
-		trial_coeffs = (struct attenuator_model_coeffs) {
-			.fvoa_50pct_mv = trial_f50,
-			.slope_inv_fvoa_mv = trial_slope,
-			.max_atten_db = max_atten_db,
-			.gain = gain,
-		};
-		trial_cost = fit_cost(points, records, point_count,
-				      &trial_coeffs, max_atten_sigma_db);
-		if (atomic_get(&cal_fit_cancel)) return -ECANCELED;
-		if (isfinite(trial_cost) && trial_cost < cost) {
-			if (fabs(trial_f50 - f50) < 1.0e-6 &&
-			    fabs(trial_slope - slope) < 1.0e-12) {
-				f50 = trial_f50;
-				slope = trial_slope;
-				cost = trial_cost;
-				break;
-			}
-			f50 = trial_f50;
-			slope = trial_slope;
-			cost = trial_cost;
-			lambda = MAX(lambda * 0.3, 1.0e-12);
-		} else {
-			lambda = MIN(lambda * 10.0, 1.0e12);
-		}
-	}
-
-	*fvoa_50pct_mv = f50;
-	*slope_inv_fvoa_mv = slope;
-	return 0;
+	return rc;
 }
 
 /** Solve the small dense normal equation used for residual-correction terms. */
@@ -1747,7 +1653,7 @@ static int fit_correction_coeff(const struct atten_cal_fit_point *points,
 	if (atomic_get(&cal_fit_cancel)) return -ECANCELED;
 	if (selected != ATTENUATOR_MODEL_CORRECTION_TERMS) {
 		char context[160];
-		const char *name = physical_name(records == cal.records[0] ? 0U : 1U);
+		const char *name = physical_name(records == calibration_data.atten.records[0] ? 0U : 1U);
 
 		snprintk(context, sizeof(context), "%s terms=%d first_failure: %s", name, selected, first_failure);
 		LOG_WRN("atten correction %s", context);
@@ -1769,7 +1675,7 @@ static int fit_one_physical(uint8_t physical,
 	struct attenuator snapshot;
 	attenuator_snapshot(&attenuators[cal.attenuator_index], &snapshot);
 	const struct attenuator *atten = &snapshot;
-	const struct atten_cal_record *records = cal.records[physical];
+	const struct atten_cal_record *records = calibration_data.atten.records[physical];
 	double gain = physical == 0U ? atten->coeff1.gain : atten->coeff2.gain;
 	double fvoa_50pct_mv = 0.0;
 	double slope_inv_fvoa_mv = 0.0;
@@ -2125,6 +2031,9 @@ int attenuator_calibration_start_auto(
 		return -EINVAL;
 	}
 
+	rc = laser_calibration_stop(NULL);
+	if (rc != 0) return rc;
+
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	replacing = cal.state == ATTEN_CAL_STATE_RUNNING;
 	cancel_fit_locked();
@@ -2163,6 +2072,9 @@ int attenuator_calibration_start_auto(
 	 * to this new run; stop/error cleanup never erases its retained records.
 	 */
 	memset(&cal, 0, sizeof(cal));
+	memset(&calibration_data, 0, sizeof(calibration_data));
+	atomic_set(&calibration_data_kind, CALIBRATION_DATA_ATTEN);
+	++calibration_run_id;
 	cal.state = ATTEN_CAL_STATE_RUNNING;
 	cal.mode = ATTEN_CAL_MODE_TIB_AUTO;
 	cal.attenuator_index = request->attenuator_index;
@@ -2406,6 +2318,10 @@ int attenuator_calibration_write_data_metadata(void *payload,
 	*written = 0U;
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
+	if (atomic_get(&calibration_data_kind) != CALIBRATION_DATA_ATTEN) {
+		k_mutex_unlock(&cal_lock);
+		return -ENODATA;
+	}
 	total = cal.record_count[physical_index];
 	bridge_count = cal.bridge_count[physical_index];
 	chunk_count = (uint8_t)(((uint16_t)total + ATTEN_CAL_DATA_RECORDS_PER_CHUNK - 1U) /
@@ -2438,7 +2354,7 @@ int attenuator_calibration_write_data_metadata(void *payload,
 	bytes[17] = cal.reference_record_index[physical_index];
 	bytes[18] = bridge_count;
 	for (uint8_t i = 0U; i < bridge_count; ++i) {
-		const struct atten_cal_bridge *bridge = &cal.bridges[physical_index][i];
+		const struct atten_cal_bridge *bridge = &calibration_data.atten.bridges[physical_index][i];
 		size_t off = ATTEN_CAL_DATA_METADATA_HEADER_SIZE +
 			     ((size_t)i * ATTEN_CAL_DATA_BRIDGE_ENTRY_SIZE);
 
@@ -2471,6 +2387,10 @@ int attenuator_calibration_write_record_chunk(void *payload,
 	*written = 0U;
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
+	if (atomic_get(&calibration_data_kind) != CALIBRATION_DATA_ATTEN) {
+		k_mutex_unlock(&cal_lock);
+		return -ENODATA;
+	}
 	total = cal.record_count[physical_index];
 	chunk_count = (uint8_t)(((uint16_t)total + ATTEN_CAL_DATA_RECORDS_PER_CHUNK - 1U) /
 				ATTEN_CAL_DATA_RECORDS_PER_CHUNK);
@@ -2489,7 +2409,7 @@ int attenuator_calibration_write_record_chunk(void *payload,
 
 	for (uint8_t i = 0U; i < count; ++i) {
 		write_record_wire(bytes + ((size_t)i * ATTEN_CAL_DATA_CHUNK_RECORD_SIZE),
-				  &cal.records[physical_index][start_index + i]);
+				  &calibration_data.atten.records[physical_index][start_index + i]);
 	}
 	*written = byte_count;
 	k_mutex_unlock(&cal_lock);

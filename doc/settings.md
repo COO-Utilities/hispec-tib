@@ -41,6 +41,9 @@ Current app NVS records include:
 - One laser thermistor-coefficient record per channel (`ntc_coeff_pct_per_c`,
   double in %/°C at 25°C, NVS IDs 0x0380–0x0385). Missing or invalid values
   retain the compiled coefficient. Reset deletes this record with channel policy.
+- One independent laser reference triplet per channel (`ref_mw`, `ref_ma`,
+  `ref_temp_c`, three doubles at NVS IDs 0x03c0–0x03c5). Missing/invalid values
+  retain the compiled vendor anchor; reset deletes the record.
 - One route-loss table-entry record per configured route/source or split output,
   up to 32 records per PCB (16 per TIB channel). AS split records live on their
   own PCB. Broadband TIB CAL/return records use source `generic`.
@@ -175,3 +178,15 @@ physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 ## Not Currently Persisted
 
 - Laser output current, temperature, pulse, or tuning state.
+
+## Scoped laser calibration restore
+
+`laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
+compiled threshold/efficiency/autolevel floor/reference/noise settings and removes
+only that exact named outbound route override. Current limits, driver identity
+and current calibration, other TEC policy, return loss and other-output overrides
+remain. Optional persistence writes the laser records and deletes the route's NVS
+record; a volatile restore does not erase saved values. Laser/route application
+and persistence errors are reported separately. Raw calibration data occupies one
+shared RAM dataset for attenuator/laser runs, never NVS. See
+[laser calibration](laser_calibration.md) for mathematical assumptions and stages.

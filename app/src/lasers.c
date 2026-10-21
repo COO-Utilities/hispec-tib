@@ -2164,6 +2164,12 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	props = &settings->properties;
 	double ntc_b = ntc_b_from_coeff(props->ntc_coeff_pct_per_c);
 	if (!isfinite(ntc_b)) return -ERANGE;
+	if (!isfinite(props->ref_mw) || props->ref_mw <= 0.0 ||
+	    !isfinite(props->ref_ma) || props->ref_ma <= 0.0 || props->ref_ma > 1000.0 ||
+	    fabs(props->ref_ma * DIVIDER_CURRENT - round(props->ref_ma * DIVIDER_CURRENT)) > 1.0e-6 ||
+	    !isfinite(props->ref_temp_c) || props->ref_temp_c < 15.0 || props->ref_temp_c > 40.0) {
+		return -ERANGE;
+	}
 	if (!float_is_valid(props->nominal_current_ma) ||
 	    !float_is_valid(props->max_current_ma) ||
 	    !float_is_valid(props->threshold_current_ma) ||
@@ -2311,6 +2317,9 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		previous.properties.threshold_current_ma != settings->properties.threshold_current_ma ||
 		previous.properties.nominal_current_ma != settings->properties.nominal_current_ma ||
 		previous.properties.efficiency_mw_per_ma != settings->properties.efficiency_mw_per_ma ||
+		previous.properties.ref_mw != settings->properties.ref_mw ||
+		previous.properties.ref_ma != settings->properties.ref_ma ||
+		previous.properties.ref_temp_c != settings->properties.ref_temp_c ||
 		previous.properties.wavelength_nm != settings->properties.wavelength_nm ||
 		previous.properties.dlambda_dT_nm_per_k != settings->properties.dlambda_dT_nm_per_k ||
 		previous.properties.dlambda_dA_nm_per_ma != settings->properties.dlambda_dA_nm_per_ma ||
@@ -2386,7 +2395,8 @@ out_unlock:
 		/* A failed restore-to-off is reported because the bank state needs
 		 * attention, but it does not undo successfully programmed settings.
 		 */
-		(void)app_settings_update_laser_channel((uint8_t)id, settings, persist);
+		int persist_rc = app_settings_update_laser_channel((uint8_t)id, settings, persist);
+		if (rc == 0) rc = persist_rc;
 	}
 	laser_note_communication_locked(id, &drv);
 	k_mutex_unlock(&laser_io_lock);

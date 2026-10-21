@@ -314,8 +314,9 @@ before/after record indices. Each numbered chunk contains only raw records.
 Telemetry on `dt/<device>/atten` is useful for live monitoring but is not the
 authoritative dataset.
 
-There is one static dataset, cleared in place when a new start is accepted or
-by reboot. Stop, acquisition errors, rejected fits, and notebook cleanup retain
+There is one static dataset shared with laser calibration, cleared in place
+when either calibration accepts a new start or by reboot. Downloads for the
+replaced dataset return unavailable; applied coefficients remain. Stop, acquisition errors, rejected fits, and notebook cleanup retain
 all acquired records, reference indices, bridge tables, run identity, and completed
 fit results. Invalid requests leave it intact. Once a new run is accepted, a setup
 failure belongs to that new run and leaves its empty or partial dataset available.
@@ -569,3 +570,9 @@ places; coefficient precision is retained. `min_tx`, `max_tx` and `fvoa_span_mv`
 remain in the per-device fit telemetry but are omitted from aggregate status and
 therefore are absent from newly fetched dataset metadata. This fits the existing
 1024-byte response buffers without increasing queue storage.
+
+The two-shape-parameter damped optimizer now calls `calibration_fit.c`, shared
+with laser calibration. Attenuator model evaluation, weighting, point order,
+acceptance, and the separate six-term correction solver remain unchanged. The
+raw/bridge arrays and fit scratch reuse typed unions in `calibration_storage.c`;
+no additional large array is allocated for the laser sweep.

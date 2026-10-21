@@ -39,6 +39,9 @@ target_sources(app PRIVATE
         src/app_settings.c
         src/attenuator.c
         src/attenuator_calibration.c
+        src/calibration_fit.c
+        src/calibration_storage.c
+        src/laser_calibration.c
         src/attenuator_command.c
         src/command.c
         src/devices.c

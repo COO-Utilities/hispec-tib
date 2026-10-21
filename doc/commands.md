@@ -166,6 +166,7 @@ not be needed for normal serial operation.
 - [`laser/tune`](#laser-tune)
 - [`laser/status`](#laser-status)
 - [`laser/settings`](#laser-settings)
+- [`laser/calibrate`](#lasercalibrate)
 - [`laser/bankpower`](#laserbank-power)
 - [`laser/bankheater`](#laserbank-heater)
 - [`laser/clearfaults`](#laserbank-clearfaults)
@@ -1000,6 +1001,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
+      "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
       "wavelength_nm": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
       "default_operating_temp_c": 0.0,
@@ -1031,6 +1033,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "min_autolevel_current_ma": 0.0,
       "max_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
+      "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
       "wavelength_nm": 0.0,
       "current_cal_pct": 0.0,
       "fractional_noise": 0.001,
@@ -1054,6 +1057,11 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   ```
 
 - **Notes:**
+  - `ref_mw`, `ref_ma`, `ref_temp_c` are the independent vendor power anchor.
+    Power must be positive/finite, reference current must be positive, <=1000 mA
+    and on the 0.1 mA grid, and temperature must be 15–40 C. Calibration additionally
+    requires the reference inside the configured current/temperature envelope.
+    Reference edits stop emission and optionally persist the triplet.
   - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
     request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
     upward to the 0.1 mA register grid. Raising threshold also raises this floor
@@ -1194,6 +1202,76 @@ Names/duplicates are rejected before any request. It makes no writes or power
 changes and introduces no firmware endpoint.
 
 (laserbank-power)=
+### `laser/calibrate`
+
+- Query with no payload. Start with `laser` and same-band `output` (`yj_ao`,
+  `yj_fei`, `hk_ao`, `hk_fei`). Defaults: `fiber:"S"`, `dwell_ms:1000`,
+  `determine_static_loss:false`, `update_noise:false`, `other_output:false`,
+  `persist:false`.
+- Example: `{"laser":"1270j","output":"yj_ao","fiber":"S","determine_static_loss":true,"loopback_loss_db":10.0}`.
+  Loss fitting requires explicit external loopback loss, excluding the configured
+  SM/MM return. `other_output:true` requires loss fitting.
+- `{"stop":true}` cancels fitting/acquisition and stops emission, retaining data.
+- At `awaiting_output`, recable to the other AO/FEI output and send
+  `{"continue":true}`; optionally supply a new `loopback_loss_db`. First-stage
+  accepted changes remain applied even if this stage fails or is stopped.
+- `{"restore_defaults":true,"laser":"1270j","output":"yj_ao","persist":false}`
+  restores compiled threshold/efficiency/floor/reference/noise and removes that
+  named outbound loss override. Preserves current limits/calibration, identity,
+  unrelated TEC policy, return and other-output loss. Returns `rc`, per-part
+  `laser_error`/`route_error`, `laser_persist_error`/`route_persist_error`, and
+  separate `laser_applied`, `route_applied`, `laser_persisted`, `route_persisted`.
+- Status fields: `state`, `laser`, `output` (current stage), `records`, `dwell_ms`,
+  `current_ma`, `acquisition_complete`, `overflow`, `shutdown_pending`, `error`.
+  States: `inactive`, `running`, `fitting`, `awaiting_output`, `complete`,
+  `stopped`, `error`. Completion refers to acquisition of the current stage;
+  inspect the nested results for acceptance/application/persistence.
+- `fit`: `valid`, `accepted`, `applied`, `persisted`, `error`, `persist_error`,
+  `n`, `threshold_ma`, `efficiency_mw_per_ma`, `floor_ma`, `linear_max_ma`,
+  `baseline_mv`, `rms_fraction`, `threshold_se_ma`. Invalid numerical fields
+  are null. `noise`: `valid`, `applied`, `persisted`, `error`, `constant_mw`,
+  `fractional`. `routes`: two objects ordered requested output then other
+  output, each with `accepted`, `applied`, `persisted`, `error`, `persist_error`,
+  `combined_db`, `outbound_db` (null unless accepted). Unrequested fits have
+  false flags. Core/noise and route application are independent as described in
+  [the calibration model](laser_calibration.md).
+- Best-effort progress/status telemetry uses `dt/<device>/laser/calibrate`.
+  The command runs asynchronously after setup; query for progress. Start stops
+  throughput/laser outputs and requires the selected PD already powered and its
+  configured dark valid. Other mutation commands are busy while the path is
+  owned; zero/STOP and bank-off remain available. No maximum-current reduction
+  is applied automatically.
+- Binary MQTT queries: `laser/calibrate/records` for metadata,
+  `laser/calibrate/records/<chunk>` for zero-based raw chunks. Serial binary
+  retrieval is unsupported. Starting either optical calibration replaces this
+  shared retained dataset; stop/error/rejection retain it.
+- Metadata is 320 bytes, little endian: `HLC1`, version byte 1, then bytes for
+  state, laser index, PD channel, fiber ASCII, first-FEI flag, options bitmask
+  (loss=1, noise=2, other=4, persist=8), record size=24, count, records/chunk,
+  segment count, reserved. Offset 16 has `uint32 run_id`, `uint32 dwell_ms`,
+  `uint64 started_ms`. Offset 32 has 15 doubles: `ref_mw`, `ref_ma`, `ref_temp_c`,
+  `max_ma`, `nominal_ma`, `seed_threshold_ma`, `current_cal_pct`,
+  `pd_gain_mv_per_mw`, `dark_mv`, `dark_rms_mv`, `return_tx`, first/other external
+  loopback losses, compiled threshold and efficiency. Offset 152 has six floats:
+  DAC full scales (2), DAC limits (2), observed temperature min/max. Offsets
+  176/248 each have six doubles (`fvoa_50pct_mv`, `slope_inv_fvoa_mv`,
+  `max_atten_db`, `max_calibrated_db`, `gain`, `rms_db`) and six float correction
+  coefficients. `started_ms` is uptime, not UTC.
+- Each headerless raw record is `<IffHHHhBBBB`: elapsed uptime ms, net mV,
+  population RMS mV, commanded current in 0.1 mA, two confirmed 12-bit DAC codes,
+  signed ADC maximum, good/failed counts, segment, flags. Flags bits 0–1:
+  ok/saturated/below-SNR/ADC-error; bits 2–4: sweep/probe/overlap/reference/dark/
+  refinement; bit 7: other output. Other-output segment is 255. DAC conversion
+  is `code * full_scale_mv / 4096`. Use advertised records/chunk, not a hardcoded
+  transport capacity. Host download checks run ID/uptime after reading chunks.
+- Python: `laser_calibrate(name=None, *, output=None, fiber="S", dwell_ms=1000,
+  determine_static_loss=False, loopback_loss_db=None, update_noise=False,
+  other_output=False, persist=False)`, `laser_calibrate_continue(*,
+  loopback_loss_db=None)`, `laser_calibrate_stop()`, `laser_calibration_data()`,
+  `laser_calibrate_restore_defaults(name, *, output, persist=False)`.
+  Data is a `LaserCalibrationDataset` with a NumPy record array, frozen metadata
+  and a typed status snapshot. Save before another calibration start.
+
 ### `laser/bankpower`
 - **No payload -> laser-bank power state:**
   ```json

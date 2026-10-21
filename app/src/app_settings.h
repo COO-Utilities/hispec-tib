@@ -287,6 +287,8 @@ int app_settings_get_laser_channel(uint8_t channel,
  *
  * Driver-backed values are only app intent here; lasers.c owns applying those
  * values to the Maiman module. Laser output current is intentionally absent.
+ * May wait on the settings mutex and optional flash writes. Persistence errors
+ * are returned after RAM application; writes to separate records are not atomic.
  */
 int app_settings_update_laser_channel(uint8_t channel,
 				      const struct app_laser_channel_settings *laser,
@@ -311,10 +313,14 @@ int app_settings_get_route_loss(const char *route, const char *laser,
  *
  * The record is keyed only by route and laser names. It does not change MEMS
  * route structs or switch state. If @p persist is true, the indexed route-loss
- * record is saved via Zephyr NVS and may block on flash I/O.
+ * record is saved via Zephyr NVS and may block on flash I/O. A flash error is
+ * returned without undoing the RAM update.
  */
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
+/** Remove one exact route/source override, optionally deleting its NVS record.
+ * Exposes compiled defaults; no switch I/O. May block on settings/flash. */
+int app_settings_reset_route_loss(const char *route, const char *laser, bool persist);
 /** @brief Copy MEMS user intent and optional restart metadata. */
 void app_settings_get_mems(struct app_mems_settings *out);
 /** @brief Replace MEMS user intent and optionally persist the MEMS NVS record. */

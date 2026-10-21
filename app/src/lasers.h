@@ -363,7 +363,8 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
  * first; a failed stop rejects the update. Range-only edits invalidate preparation
  * without powering an idle bank; driver-backed edits, including the PCB-owned
  * NTC coefficient, program immediately through the existing stop/power flow.
- * May block on Modbus and requested NVS persistence.
+ * May block on Modbus and requested NVS persistence. A persistence error is
+ * returned after application; it does not undo successfully installed settings.
  */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,

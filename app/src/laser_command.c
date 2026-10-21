@@ -4,11 +4,14 @@
  */
 
 #include "laser_command.h"
+#include "laser_calibration.h"
 
 #include <errno.h>
 #include <float.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
 
 #include <zephyr/sys/util.h>
 
@@ -111,6 +114,10 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			return coo_cmd_error(out, cmd, "mode must be auto, override_on, or override_off");
 		}
 		mode = (enum hispec_laser_bank_power_mode)mode_value;
+		if (laser_calibration_active()) {
+			if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) return coo_cmd_busy_response(out,cmd);
+			(void)laser_calibration_stop(NULL); /* Bank-off remains available after a failed STOP. */
+		}
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
 			if (rc == -EBUSY) {
@@ -141,6 +148,7 @@ int laserbank_clearfaults(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	char payload[MAX_PAYLOAD_LEN] = {0};
 	int rc;
 
+	(void)laser_calibration_stop(NULL);
 	rc = hispec_laser_bank_clear_faults(HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS, &off_ms);
 	if (rc != 0) {
 		return laser_cmd_error_rc(out, cmd, "laser bank fault clear failed", rc);
@@ -392,6 +400,11 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "invalid autooff_s; not allowed with stop");
 	}
 
+	if (laser_calibration_active()) {
+		if (value > 0.0) return coo_cmd_busy_response(out,cmd);
+		rc=laser_calibration_stop(NULL);
+		if (rc != 0) return laser_cmd_failure(out,cmd,id,"calibration stop",rc,NULL);
+	}
 	throughput_monitor_note_laser_changed(id, false);
 	if (stop) {
 		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
@@ -423,6 +436,7 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 
 int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
 	enum hispec_laser_id id;
 	char name[16] = {0};
 	double delta_nm = 0.0;
@@ -461,6 +475,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"max_current_ma\":%.3f,\"current_cal_pct\":%.3f,"
 		"\"fractional_noise\":%.9g,\"constant_noise_mw\":%.9g,"
 		"\"threshold_current_ma\":%.3f,\"efficiency_mw_per_ma\":%.6f,"
+		"\"ref_mw\":%.9g,\"ref_ma\":%.1f,\"ref_temp_c\":%.2f,"
 		"\"min_autolevel_current_ma\":%.1f,"
 		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
@@ -476,6 +491,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		settings->fractional_noise, settings->constant_noise_mw,
 		(double)p->threshold_current_ma,
 		(double)p->efficiency_mw_per_ma,
+		p->ref_mw, p->ref_ma, p->ref_temp_c,
 		settings->min_autolevel_current_ma,
 		(double)p->wavelength_nm,
 		(double)p->operating_temp_range_c.min_c,
@@ -541,7 +557,7 @@ static int laser_parse_settings_update(const char *json,
 	}
 	if (coo_json_validate_top_level_keys(json,
 		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,"
-		"wavelength_nm,current_cal_pct,fractional_noise,constant_noise_mw,"
+		"wavelength_nm,current_cal_pct,fractional_noise,constant_noise_mw,ref_mw,ref_ma,ref_temp_c,"
 		"default_operating_temp_c,operating_temp_range_c,tec_curr_lim_a,tec_pid,ntc_coeff_pct_per_c,"
 		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
 		invalid, 64U) != 0) {
@@ -561,6 +577,9 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("threshold_current_ma", settings->properties.threshold_current_ma);
 	LASER_PARSE_FLOAT("min_autolevel_current_ma", settings->min_autolevel_current_ma);
 	LASER_PARSE_FLOAT("efficiency_mw_per_ma", settings->properties.efficiency_mw_per_ma);
+	LASER_PARSE_FLOAT("ref_mw", settings->properties.ref_mw);
+	LASER_PARSE_FLOAT("ref_ma", settings->properties.ref_ma);
+	LASER_PARSE_FLOAT("ref_temp_c", settings->properties.ref_temp_c);
 	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
 	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
 	LASER_PARSE_FLOAT("constant_noise_mw", settings->constant_noise_mw);
@@ -643,6 +662,7 @@ static int laser_parse_settings_update(const char *json,
 
 int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
 	enum hispec_laser_id id;
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
@@ -793,4 +813,98 @@ int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 		return coo_cmd_error(out, cmd, "laser engineering status response too large");
 	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
+}
+
+/* Commands only parse and shape replies; the calibration owner performs all
+ * acquisition, hardware sequencing, fitting, settings and optional NVS work. */
+static int laser_calibration_reply(const struct coo_cmd_request *cmd, struct coo_cmd_response *out, int rc)
+{
+	struct laser_calibration_status status;
+	laser_calibration_get_status(&status);
+	int reply=coo_cmd_make_response(out,cmd,rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR,NULL,NULL,NULL);
+	if (reply != 0) return reply;
+	if (laser_calibration_format_status(out->payload,sizeof(out->payload),&status) != 0)
+		return coo_cmd_error(out,cmd,"laser calibration status too large");
+	out->payload_len=strlen(out->payload);
+	return 0;
+}
+
+int laser_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+{
+	return laser_calibration_reply(cmd,out,0);
+}
+
+int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+{
+	bool stop=false,resume=false,restore=false,persist=false;
+	if (coo_json_extract_optional_bool(cmd->payload,"stop",&stop,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"continue",&resume,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"restore_defaults",&restore,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"persist",&persist,NULL) != 0 ||
+	    (unsigned)stop+(unsigned)resume+(unsigned)restore > 1)
+		return coo_cmd_error(out,cmd,"invalid or conflicting calibration action");
+	if (stop) return laser_calibration_reply(cmd,out,laser_calibration_stop(NULL));
+	double loopback=NAN;
+	int parsed=coo_json_extract_double(cmd->payload,"loopback_loss_db",&loopback);
+	if (parsed == COO_JSON_EXTRACT_ERR || (parsed == COO_JSON_EXTRACT_OK && (!isfinite(loopback) || loopback < 0.0)))
+		return coo_cmd_error(out,cmd,"loopback_loss_db must be finite and nonnegative");
+	if (resume) {
+		if (coo_json_validate_top_level_keys(cmd->payload,"continue,loopback_loss_db",NULL,0) != 0)
+			return coo_cmd_error(out,cmd,"continue accepts only loopback_loss_db");
+		int rc=laser_calibration_continue(parsed == COO_JSON_EXTRACT_OK,loopback,NULL);
+		if (rc == -EINVAL) return coo_cmd_error(out,cmd,"calibration is not awaiting the other output");
+		return laser_calibration_reply(cmd,out,rc);
+	}
+	char name[16],output[16],fiber[4]="S";
+	struct laser_calibration_request req={.output=output,.fiber='S',.dwell_ms=1000,.loopback_loss_db=loopback,.persist=persist};
+	if (coo_json_extract_string(cmd->payload,"laser",name,sizeof(name)) != COO_JSON_EXTRACT_OK ||
+	    hispec_laser_id_from_name(name,&req.laser) != 0 ||
+	    coo_json_extract_string(cmd->payload,"output",output,sizeof(output)) != COO_JSON_EXTRACT_OK)
+		return coo_cmd_error(out,cmd,"laser and output are required");
+	if (restore) {
+		if (coo_json_validate_top_level_keys(cmd->payload,"restore_defaults,laser,output,persist",NULL,0) != 0)
+			return coo_cmd_error(out,cmd,"restore accepts laser, output, persist");
+		struct laser_calibration_restore_result r;
+		int rc=laser_calibration_restore_defaults(req.laser,output,persist,&r);
+		char payload[320];
+		snprintk(payload,sizeof(payload),"{\"rc\":%d,\"laser_applied\":%s,\"route_applied\":%s,"
+			"\"laser_persisted\":%s,\"route_persisted\":%s,\"laser_error\":%d,\"route_error\":%d,"
+			"\"laser_persist_error\":%d,\"route_persist_error\":%d}",rc,
+			r.laser_applied?"true":"false",r.route_applied?"true":"false",r.laser_persisted?"true":"false",
+			r.route_persisted?"true":"false",r.laser_error,r.route_error,r.laser_persist_error,r.route_persist_error);
+		return coo_cmd_reply(out,cmd,rc == 0 ? COO_CMD_RESP_OK : COO_CMD_RESP_ERROR,payload);
+	}
+	parsed=coo_json_extract_string(cmd->payload,"fiber",fiber,sizeof(fiber));
+	if (parsed == COO_JSON_EXTRACT_ERR || fiber[1] != '\0' || (fiber[0]!='S' && fiber[0]!='M' && fiber[0]!='s' && fiber[0]!='m'))
+		return coo_cmd_error(out,cmd,"fiber must be S or M");
+	req.fiber=(fiber[0]=='S' || fiber[0]=='s')?'S':'M';
+	if (coo_json_extract_optional_u32(cmd->payload,"dwell_ms",&req.dwell_ms,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"determine_static_loss",&req.determine_static_loss,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"update_noise",&req.update_noise,NULL) != 0 ||
+	    coo_json_extract_optional_bool(cmd->payload,"other_output",&req.other_output,NULL) != 0)
+		return coo_cmd_error(out,cmd,"invalid calibration options");
+	int rc=laser_calibration_start(&req,NULL);
+	if (rc != 0) return coo_cmd_error_rc(out,cmd,"laser calibration start failed; check PD power/dark, reference, route and options",rc);
+	return laser_calibration_reply(cmd,out,0);
+}
+
+int laser_calibration_records_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+{
+	if (cmd->source == COO_CMD_SOURCE_SERIAL) return coo_cmd_error(out,cmd,"calibration records are binary MQTT payloads");
+	const char *suffix=coo_cmd_key_suffix_after(cmd->key,"laser/calibrate/records");
+	int chunk=-1;
+	if (*suffix != '\0') {
+		char *end;
+		if (*suffix < '0' || *suffix > '9') return coo_cmd_error(out,cmd,"invalid record chunk");
+		unsigned long value=strtoul(suffix,&end,10);
+		if (*end != '\0' || value > 127) return coo_cmd_error(out,cmd,"invalid record chunk");
+		chunk=(int)value;
+	}
+	int rc=coo_cmd_make_response(out,cmd,COO_CMD_RESP_OK,NULL,NULL,NULL);
+	if (rc != 0) return rc;
+	size_t written;
+	rc=laser_calibration_write_data(out->payload,sizeof(out->payload),chunk,&written);
+	if (rc != 0) return coo_cmd_error_rc(out,cmd,"calibration records unavailable or chunk out of range",rc);
+	out->payload_len=written;
+	return 0;
 }

@@ -13,6 +13,7 @@
 #include "app_settings.h"
 #include "attenuator.h"
 #include "attenuator_calibration.h"
+#include "laser_calibration.h"
 #include "command.h"
 #include "devices.h"
 #include "housekeeping.h"
@@ -473,6 +474,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 		int64_t now = k_uptime_get();
 		photodiode_get_status(&throughput_pd_status);
 		attenuator_calibration_tick(&throughput_pd_status);
+		laser_calibration_tick(&throughput_pd_status);
 		for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			struct throughput_state *state = &monitors[i];
 			const struct photodiode_channel_status *pd = &throughput_pd_status.channel[i];
@@ -547,7 +549,7 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 		return -EINVAL;
 	}
 	photodiode_get_status(&pd_status);
-	if (attenuator_calibration_active() || pd_status.channel[0].dark_pending ||
+	if (attenuator_calibration_active() || laser_calibration_active() || pd_status.channel[0].dark_pending ||
 	    pd_status.channel[1].dark_pending) {
 		return -EBUSY;
 	}

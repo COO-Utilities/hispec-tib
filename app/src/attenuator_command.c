@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "laser_calibration.h"
 #include "attenuator_command.h"
 
 #include <errno.h>
@@ -522,6 +523,7 @@ static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
 
 int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
 	enum attenuator_setting setting;
 	uint8_t attenuator_index;
 	char invalid[64] = "argument";

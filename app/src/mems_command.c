@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "laser_calibration.h"
 #include "mems_command.h"
 
 #include <ctype.h>
@@ -765,6 +766,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
 
 int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
     char input[MEMS_SOURCEDEST_MAX_LEN] = {0};
     char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
     const struct mems_route *route;
@@ -984,6 +986,7 @@ int mems_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     double duty_cycle = 0.0;
