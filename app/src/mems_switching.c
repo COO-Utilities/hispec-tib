@@ -1405,6 +1405,9 @@ static int split_correct_for_transmission(const double requested[MEMS_SPLIT_OUTP
 
     /* Solve for MEMS duty cycles whose transmitted outputs normalize back to
      * the requested ratios after the three split-path transmissions are applied.
+     * Equivalently d_i = (r_i / t_i) / sum(r_j / t_j), with r3 = 1-r1-r2.
+     * Later quantization acts on cumulative boundaries d1 and d1+d2, not
+     * independent output widths; reported output renormalizes actual_i * t_i.
      */
     denom = ta * tb - ra * ta * tb - rb * ta * tb +
             rb * ta * tc + ra * tb * tc;

@@ -5,6 +5,14 @@
  * This layer exposes raw and scaled register operations. Higher-level safety,
  * power sequencing, diode limits, and persistence are owned by lasers.c and the
  * Maiman module EEPROM, not this wrapper.
+ *
+ * Except local initialization/name lookup, calls below perform blocking Modbus
+ * I/O. The laser owner serializes them; never call from the Modbus RX workqueue.
+ * Checked bool operations return true only on success. Convenience getters use
+ * sentinels that can overlap valid signed values: inspect drv->io_failed rather
+ * than interpreting a returned zero/false/-1 as a confirmed physical state.
+ * No getter programs registers. Setters do not write app NVS; SAVE/RESET explicitly
+ * affect controller EEPROM. LD START/STOP and SAVE/RESET include a 350 ms busy wait.
  */
 
 //todo see https://github.com/CaltechOpticalObservatories/hispec-fib/blob/develop/ait/photonic_testing/photonic_testing.py
@@ -76,10 +84,10 @@
 
 typedef uint16_t laser_address_t;
 
-/* Finds the register, returns true and sets *address_out if found. */
+/** Finds the register, returns true and sets *address_out if found. */
 bool maiman_get_register_address(const char *name, laser_address_t *address_out);
 
-/*
+/**
  * Initializes the Zephyr Modbus client without sending a controller request.
  * Device setup owns interface lookup and calls this before workers start.
  * Runtime register calls own timeout cancellation and deferred initialization;
@@ -175,84 +183,150 @@ void maiman_init(maiman_driver_t *drv, uint8_t node_id);
 
 /** Read/write one raw holding register. Calls block on Modbus RTU I/O. */
 bool maiman_read_u16(maiman_driver_t *drv, uint16_t address, uint16_t *value);
+/** Write one holding register; false preserves the operation-local error. May sleep. */
 bool maiman_write_u16(maiman_driver_t *drv, uint16_t address, uint16_t value);
 /** Read/write scaled engineering units. Calls block on Modbus RTU I/O. */
 bool maiman_read_scaled(maiman_driver_t *drv, uint16_t address, double divider,
                         bool signed_value, double *value);
+/** Quantize engineering units by divider and write; false on range or I/O failure. */
 bool maiman_write_scaled(maiman_driver_t *drv, uint16_t address, double divider,
                          bool signed_value, double value);
 
 
 /* ----- Measurement getters ----- */
+/** Checked signed TEC temperature read in degrees C; output is valid only on true. */
 bool maiman_read_tec_temperature_measured(maiman_driver_t *drv, double *value);
+/** Read TEC temperature in degrees C; -273.15 on failure. */
 double maiman_get_tec_temperature_measured(maiman_driver_t *drv);
+/** Read controller PCB temperature in degrees C; -273.15 on failure. */
 double maiman_get_pcb_temperature_measured(maiman_driver_t *drv);
+/** Read external NTC temperature in degrees C; -273.15 on failure. Sensor is absent on HISPEC. */
 double maiman_get_ntc_temperature_measured(maiman_driver_t *drv);
+/** Read TEC target in degrees C; -273.15 on failure. */
 double maiman_get_tec_temperature_value(maiman_driver_t *drv);
+/** Read measured diode current in mA; -1 on failure. */
 double maiman_get_current_measured(maiman_driver_t *drv);
+/** Read modulation frequency in Hz; -1 on failure. */
 double maiman_get_frequency(maiman_driver_t *drv);
+/** Read pulse duration in ms; -1 on failure. */
 double maiman_get_duration(maiman_driver_t *drv);
+/** Checked diode current setpoint read in mA; output is valid only on true. */
 bool  maiman_get_current(maiman_driver_t *drv, double *value);
+/** Read diode voltage in V; -1 on failure. */
 double maiman_get_voltage_measured(maiman_driver_t *drv);
+/** Read minimum diode current in mA; -1 on failure. */
 double maiman_get_current_min(maiman_driver_t *drv);
+/** Read configured maximum diode current in mA; -1 on failure. */
 double maiman_get_current_max(maiman_driver_t *drv);
+/** Read absolute diode-current ceiling in mA; -1 on failure. */
 double maiman_get_current_max_limit(maiman_driver_t *drv);
+/** Read hardware overcurrent protection threshold in mA; -1 on failure. */
 double maiman_get_current_protection_threshold(maiman_driver_t *drv);
+/** Read LD current calibration in percent; -1 on failure. */
 double maiman_get_current_set_calibration(maiman_driver_t *drv);
-/* Reads internal LD thermistor B (K) over Modbus; -1 on read failure. */
+/** Reads internal LD thermistor B (K) over Modbus; -1 on read failure. */
 double maiman_get_ntc_b25_100_coefficient(maiman_driver_t *drv);
+/** Read signed TEC current in A; -1 also denotes failure, so check io_failed. */
 double maiman_get_tec_current_measured(maiman_driver_t *drv);
+/** Read TEC current limit in A; -1 on failure. */
 double maiman_get_tec_current_limit(maiman_driver_t *drv);
+/** Read TEC calibration register in percent; -1 on failure. */
 double maiman_get_tec_current_set_calibration(maiman_driver_t *drv);
+/** Read signed TEC voltage in V; -1 also denotes failure, so check io_failed. */
 double maiman_get_tec_voltage(maiman_driver_t *drv);
 
 /* ----- Status and control ----- */
+/** Read device identifier; zero on failure, with io_failed set. */
 uint16_t maiman_get_device_id(maiman_driver_t *drv);
+/** Read controller serial number; zero on failure, with io_failed set. */
 uint16_t maiman_get_serial_number(maiman_driver_t *drv);
+/** Read device-state bits; zero on failure is not proof of stopped operation. */
 uint16_t maiman_get_raw_status(maiman_driver_t *drv);
+/** Read lock bits; zero on failure is not proof that interlocks are clear. */
 uint16_t maiman_get_raw_lock_status(maiman_driver_t *drv);
+/** Checked TEC-state read; output is valid only on true. */
 bool maiman_read_raw_tec_status(maiman_driver_t *drv, uint16_t *status);
+/** Read TEC-state bits; zero on failure, with io_failed set. */
 uint16_t maiman_get_raw_tec_status(maiman_driver_t *drv);
+/** Checked TEC-started observation; false return leaves the observation unavailable. */
 bool maiman_read_tec_started(maiman_driver_t *drv, bool *started);
+/** Read device-state register and test any masked bit; false can also mean I/O failure. */
 bool maiman_is_bit_set(maiman_driver_t *drv, uint16_t bitmask);
+/** Read device-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_operation_started(maiman_driver_t *drv);
+/** Read device-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_current_set_internal(maiman_driver_t *drv);
+/** Read device-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_enable_internal(maiman_driver_t *drv);
+/** Read device-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_external_ntc_denied(maiman_driver_t *drv);
+/** Read device-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_interlock_denied(maiman_driver_t *drv);
+/** Read TEC-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_tec_started(maiman_driver_t *drv);
+/** Read TEC-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_tec_set_internal(maiman_driver_t *drv);
+/** Read TEC-state bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_tec_enable_internal(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_interlock(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_ld_overcurrent(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_ld_overheat(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_external_ntc_interlock(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_tec_error(maiman_driver_t *drv);
+/** Read lock bits for this predicate; false can also indicate I/O failure. */
 bool maiman_is_lockstate_tec_selfheat(maiman_driver_t *drv);
 
 /* ----- Setpoint and commands ----- */
+/** Write diode current setpoint in mA; does not independently enforce diode policy. */
 bool maiman_set_current(maiman_driver_t *drv, double current);
+/** Write configured maximum diode current in mA; owner validates the physical limit. */
 bool maiman_set_current_max(maiman_driver_t *drv, double current);
+/** Write LD current calibration percent; owner controls calibration intent. */
 bool maiman_set_current_set_calibration(maiman_driver_t *drv, double calibration_percent);
+/** Write modulation frequency in Hz. */
 bool maiman_set_frequency(maiman_driver_t *drv, double frequency);
+/** Write pulse duration in ms. */
 bool maiman_set_duration(maiman_driver_t *drv, double duration);
+/** Write signed TEC target in degrees C. */
 bool maiman_set_tec_temperature(maiman_driver_t *drv, double temperature_c);
+/** Write TEC current limit in A. */
 bool maiman_set_tec_current_limit(maiman_driver_t *drv, double current_a);
+/** Read P/I/D registers sequentially; false can leave a partial output. */
 bool maiman_get_tec_pid(maiman_driver_t *drv, tec_pid_t *pid);
+/** Write P/I/D registers sequentially; failure does not roll back earlier writes. */
 bool maiman_set_tec_pid(maiman_driver_t *drv, tec_pid_t pid);
+/** Request LD START and wait through the controller busy interval, including failed ACKs. */
 bool maiman_start_device(maiman_driver_t *drv);
+/** Request LD STOP and wait through the controller busy interval, including failed ACKs. */
 bool maiman_stop_device(maiman_driver_t *drv);
+/** Request TEC START; no thermal qualification is performed here. */
 bool maiman_start_tec(maiman_driver_t *drv);
+/** Request TEC STOP; no independent temperature or current observation. */
 bool maiman_stop_tec(maiman_driver_t *drv);
+/** Select internal/external LD current control through a device command. */
 bool maiman_set_internal_current_control(maiman_driver_t *drv, bool internal);
+/** Select internal/external LD enable control through a device command. */
 bool maiman_set_internal_enable_control(maiman_driver_t *drv, bool internal);
+/** Select internal/external TEC target control through a TEC command. */
 bool maiman_set_internal_tec_temperature_control(maiman_driver_t *drv, bool internal);
+/** Select internal/external TEC enable control through a TEC command. */
 bool maiman_set_internal_tec_enable_control(maiman_driver_t *drv, bool internal);
+/** Write the controller ALLOW_INTERLOCK command; laser policy owns its use. */
 bool maiman_allow_interlock(maiman_driver_t *drv);
+/** Write the controller DENY_INTERLOCK command; laser policy owns its use. */
 bool maiman_deny_interlock(maiman_driver_t *drv);
+/** Write ALLOW_EXTERNAL_NTC_INTERLOCK; the external sensor is absent on HISPEC. */
 bool maiman_allow_external_ntc_interlock(maiman_driver_t *drv);
+/** Write DENY_EXTERNAL_NTC_INTERLOCK; laser policy owns its use. */
 bool maiman_deny_external_ntc_interlock(maiman_driver_t *drv);
+/** Request controller EEPROM SAVE and wait 350 ms after the attempt; no app NVS write. */
 bool maiman_save_parameters(maiman_driver_t *drv);
+/** Request controller parameter RESET and wait 350 ms; no app settings reset. */
 bool maiman_reset_parameters(maiman_driver_t *drv);
 
 #endif //MAIMAN_H

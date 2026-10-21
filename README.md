@@ -1,13 +1,39 @@
-# HISPEC-FIB Zephyr RTOS Firmware
+# HISPEC-FIB Zephyr firmware
 
-This repository contains Zephyr RTOS firmware for HISPEC FIB PCB controllers.
-The current audited application is `app`, written in C, with MQTT and serial
-command interfaces for board-profile-specific optical routing, attenuator,
-photodiode, laser-bank, settings, network, SNTP, and telemetry behavior.
+Firmware for the TIB, calibration and achromatic-splitter PCBs, built on the
+STM32H563 Nucleo with Zephyr. The application controls optical routing,
+attenuation, photodiode measurement and, on TIB, the laser bank.
 
-## Current Target
+Start with the [documentation contents](doc/index.rst):
 
-The maintained build target for this audit is:
+- [Hardware introduction](doc/hardware_overview.md), [electrical reference](doc/hardware.md)
+  and [optical paths by profile](doc/hardware_profiles.md).
+- [Mathematics and uncertainty](doc/mathematics.md), with links to each operation.
+- [Control interface specification](doc/commands.md): the single command and
+  telemetry reference for MQTT and serial.
+- [Python command and lab helpers](doc/python_helpers.md): a convenience test
+  tool with typed replies, collectors, fitting and plotting. The official Python
+  API is maintained outside this repository.
+- [Runtime architecture](doc/architecture.md), [settings](doc/settings.md) and
+  [C contracts](doc/api/index.md).
+- [Human review ledger](doc/human_review_required.md): unresolved intent,
+  implementation and hardware questions.
+
+## Firmware setup and build
+
+Run from the parent Zephyr workspace, containing `hispec-tib/` and `.venv/`:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install west
+west init -l hispec-tib
+west update
+west zephyr-export
+west packages pip --install
+```
+
+For an already initialized workspace, use its environment and build:
 
 ```bash
 ./.venv/bin/west build \
@@ -16,195 +42,40 @@ The maintained build target for this audit is:
   ./hispec-tib/app
 ```
 
-Use the workspace virtual environment for Python and west commands:
+CLion users should enable RTOS integration and select GDB from the Zephyr SDK.
+ST-Link firmware and runner selection depend on the local workstation.
+Board identity comes from the active-low straps in the
+[hardware reference](doc/hardware.md), not a separate binary per profile.
+
+## Documentation build
+
+Install Doxygen through the workstation package manager and the Python
+requirements into the workspace environment. From the parent workspace:
 
 ```bash
-./.venv/bin/python
-./.venv/bin/west
+./.venv/bin/python -m pip install -r hispec-tib/doc/requirements.txt
+./.venv/bin/python -m sphinx -b html -n -W --keep-going \
+  hispec-tib/doc hispec-tib/doc/_build_sphinx/html
 ```
 
-## Hardware Profiles
+Sphinx runs Doxygen, reads Markdown through MyST and renders equations with
+MathJax and diagrams with Mermaid. Open the generated `index.html` in a browser;
+MathJax and Mermaid need access to their configured JavaScript resources.
 
-Board identity is selected by active-low strap GPIOs documented in
-`doc/hardware.md` and configured in `app/boards/nucleo_h563zi.overlay`.
+Host-only Python setup and notebook use are in the
+[Python helper guide](doc/python_helpers.md#setup-and-connection).
 
-Implemented firmware profiles:
+## Repository layout
 
-- `tib`: MEMS routing, six logical attenuator channels, photodiodes, laser-bank
-  power, relay GPIOs, Maiman Modbus, network/MQTT, SNTP, settings, watchdog.
-- `cal_yj`: calibration MEMS routes and one logical attenuator channel.
-- `cal_hk`: same firmware profile shape as `cal_yj`.
-- `as`: achromatic splitter MEMS routes and split-ratio command support.
-- `unknown`: selected when board straps are missing or conflicting; board
-  hardware setup is refused.
-
-`doc/hardware.md` is the hardware source of truth. `doc/hardware_profiles.md`
-documents how current code maps those hardware facts into firmware profiles.
-
-## Command Interfaces
-
-MQTT requests use:
-
-```text
-cmd/hsfib-tib/req/#
-```
-
-Default command responses use:
-
-```text
-cmd/hsfib-tib/resp/<key>
-```
-
-MQTT 5 `response_topic` is honored when it fits the fixed topic buffer.
-`correlation_data` is echoed when it is 16 bytes or less.
-
-Serial commands share the same normalized command path. A bare serial key is a
-GET; a key with payload is a SET. See:
-
-- `doc/commands.md` for intended command/API behavior.
-- `doc/implemented_commands.md` for the implementation-derived command list.
-- `doc/command_implementation_audit.md` for mismatches and stale behavior.
-
-## Runtime Shape
-
-- `main.c`: boot order, watchdog feed, network/MQTT loop, outbound publish.
-- `command.c`: app command queues, serial guard policy, command table, and
-  command handlers, using `lib/coo_commons/command_dispatch.c` for reusable
-  MQTT/serial request and response mechanics.
-- `devices.c`: board strap detection and board-profile setup.
-- `mems_switching.c`: MEMS switch state, routes, and toggler work.
-- `attenuator.c`: DAC-backed logical attenuator control and calibration.
-- `maiman.c` and `lasers.c`: Maiman Modbus and laser-bank helpers.
-- `photodiode.c`: ADS1115 sampling, dark calibration, noise, telemetry.
-- `tempsense.c`: DS18B20 ambient temperature cache.
-- `sntp_sync.c`: SNTP sync and time status.
-- `app_settings.c`: app-owned runtime settings and direct Zephyr NVS persistence.
-- `app_identity.c`: selected board-profile MQTT device ID.
-
-Architecture pages live in `doc/architecture.md`, `doc/threads.md`, and `doc/queues_and_work.md`.
-
-## Python Quick Start
-
-For local Python testing, install Python 3.11 or newer with `venv` support.
-On macOS/Linux, run these commands from the cloned repository directory
-(the directory containing this README):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r tools/requirements.txt
-cd tools
-python -m notebook
-```
-
-Open a lab notebook or create a Python notebook and import the helper:
-
-```python
-import hispec_fibpcb as hspcb
-```
-
-For a terminal IPython session, run this from `tools` with the environment active:
-
-```bash
-ipython -i -c "import hispec_fibpcb as hspcb"
-```
-
-Each clone gets its own `.venv`; it is ignored by Git and should not be copied
-between machines. For later sessions, activate it from the repository directory
-with `source .venv/bin/activate`, then `cd tools` and launch Jupyter or IPython.
-The notebook kernel uses this environment without global kernel registration.
-
-This minimal host-tool setup includes analysis, plotting, and interactive widgets.
-Optional oscilloscope integration requires additional instrument-specific packages.
-Connecting to a board requires a reachable MQTT broker and the device settings
-in the notebook. Importing the helper alone does not connect to hardware.
-
-The firmware build commands elsewhere in this README run from the parent Zephyr
-workspace and use its separate `.venv`. That existing environment can also install
-these packages with `./.venv/bin/python -m pip install -r hispec-tib/tools/requirements.txt`
-from the workspace directory. The clone-local setup above does not install Zephyr
-build tools.
-
-## Throughput Lab Notebook
-
-Open `tools/throuput_monitor_lab.ipynb` using the environment from the Python
-quick start above, which includes the `ipympl` interactive Matplotlib backend.
-
-The throughput section provides a fixed receive-log widget (500 records,
-updated at most twice per second), binary acquisition, a nonblocking six-panel
-dashboard, snapshot export, and explicit
-selected-laser shutdown. Use `%matplotlib widget`; keep the returned animation
-referenced. Pause/close affects display only. `monitor.stop()` stops the firmware
-measurement and the laser used by its autolevel operation; purely passive
-monitoring leaves manual laser output alone. The notebook also explicitly sets
-the selected laser level to zero. Bank power and TECs remain available. This
-shutdown behavior requires firmware built with the corresponding
-throughput-monitor change.
-
-Throughput packets feed collection directly and are excluded from logging.
-The dashboard shows logarithmic throughput with a linked dB-loss axis, PD input
-with the 400–1600 mV control band, detector and total-throughput S/N, source
-current/attenuation, estimated laser output (µW), and route-corrected
-delivered/detected power (nW). Firmware sends one fresh conversion per channel
-every 50 ms; the dashboard refreshes at most 4 Hz. Overrange points are nominal
-throughput lower bounds, with no PD/throughput error band or S/N. Calibration uncertainty can
-limit total S/N even when detector S/N is high. Only the displayed record tail
-is converted per frame. Display gaps for nonpositive log values or undefined
-S/N do not change the underlying records or CSV exports.
-
-For externally supplied light, use
-`pcb.measure_throughput("none", channel="hk", fiber="S", autolevel=False, collect=True)`.
-It selects and corrects the SM return while leaving launch switching untouched.
-An optional `input`/`output` pair selects a calibration launch. PD power/error
-and detector S/N remain available; source and throughput fields are undefined.
-
-Both photodiodes can stream; firmware permits only one autolevel owner because
-the instrument light paths overlap. See [sampling and uncertainty](doc/photodiode_notes.md)
-for the error budget, missing-sample behavior, and 64 SPS converter option.
-
-Saved outputs are historical observations. Run cells individually; dark,
-calibration, and manual laser tests are separate lab operations.
-
-## Documentation Build
-
-Documentation is Markdown-first Sphinx with Doxygen XML extraction through
-Breathe and Mermaid diagram rendering:
-
-```bash
-./.venv/bin/python -m sphinx -b html hispec-tib/doc hispec-tib/doc/_build_sphinx/html
-```
-
-The docs build requires:
-
-- Sphinx
-- alabaster
-- myst-parser
-- breathe
-- sphinxcontrib-mermaid
-- Doxygen
-
-Python package requirements are listed in `doc/requirements.txt`. Doxygen runs
-from the Sphinx build as a pre-step.
-
-## Repository Layout
-
-```text
-hispec-tib/
-  app/                 Zephyr application
-  app/src/             Firmware C sources and headers
-  app/boards/          App board overlays
-  doc/                 Sphinx, Markdown, Doxygen, and audit docs
-  include/coo_commons/ Shared wrapper headers
-  lib/coo_commons/     Local network, MQTT, JSON, and PID helpers
-  drivers/gpio/ds2408/ Project-local DS2408 GPIO driver
-```
-
-`app/doc` now contains short migration stubs pointing to `doc`.
-
-## Open items
-
-- Resolve command/spec mismatches listed in `doc/human_review_required.md`.
-
+| Path | Purpose |
+|---|---|
+| `app/src/` | Application firmware and header contracts |
+| `app/boards/` | Board overlay |
+| `include/coo_commons/`, `lib/coo_commons/` | Shared command, network, MQTT, JSON and control helpers |
+| `drivers/gpio/ds2408/` | Local relay GPIO driver |
+| `doc/` | Sphinx documentation and supporting datasheets/bench evidence |
+| `pcb/` | Committed schematic, assembly, BOM and placement evidence |
+| `tools/` | Python convenience helper, notebooks and lab captures |
 
 ## License
 

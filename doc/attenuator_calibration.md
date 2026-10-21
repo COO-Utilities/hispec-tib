@@ -1,9 +1,9 @@
 # Attenuator Calibration Flow
 
 This page describes the current firmware implementation of automatic TIB FVOA
-attenuator calibration. The lab rationale and model notes live in
-`attenuator_calibration_lab_notes.md`; this page documents the firmware command,
-state, telemetry, and retained-record flow.
+attenuator calibration. The [attenuator model](attenuator.md) explains the physical curve, voltage
+conversion and inverse. This page explains acquisition, bridge normalization,
+fitting and retained records.
 
 Calibration is intentionally measurement driven. It does not use datasheet
 voltage schedules, target photodiode voltages, fixed optical volumes, or other
@@ -93,9 +93,9 @@ sequenceDiagram
   Cal->>Att: set swept and companion DAC voltages
   Cal->>Cal: sleep 100 ms for FVOA settling
   Cal->>PD: reset configurable window for dwell_ms
-  PD->>PD: exclude in-flight old conversion; fill rounded sample count
+  PD->>PD: exclude in-flight old conversion, fill rounded sample count
   PD-->>Cal: completed current window
-  Cal->>Cal: check owner health; classify raw maximum and SNR
+  Cal->>Cal: check owner health, classify raw maximum and SNR
   Cal->>Rec: append point/probe/bridge record
   Cal-->>Cal: schedule next point or fit
 ```
@@ -365,11 +365,18 @@ The open reference, bridge-before, and bridge-after roles are metadata indices
 into these retained records. They are plotted as roles by host tools but are
 not separate firmware event values.
 
-The derived relative transmission for a fit point is:
+With net signal $S$, open reference $S_0$, bridge before/after readings
+$S_j^-,S_j^+$, and cumulative companion scale $Q_k$:
 
-```text
-tx = signal_mv / (reference_signal_mv * segment_scale[segment])
+```{math}
+R_j=\frac{S_j^+}{S_j^-},\qquad Q_0=1,\qquad Q_k=\prod_{j<k}R_j,
+\qquad T_k=\frac{S_k}{S_0Q_k}.
 ```
+
+For example, a fixed-DUT bridge from 100 to 1000 mV gives $R=10$. A later
+50 mV reading relative to a 1000 mV open reference is $T=50/(1000\times10)=0.005$,
+or 23.0103 dB. The bridge measures companion transmission without relying on
+that companion's prior calibration.
 
 The reference is a measured signal, so valid sweep readings can have `tx >= 1`.
 These remain fit inputs with signed measured attenuation: for example, `tx = 1.04`
@@ -381,31 +388,52 @@ residual rather than being clamped to zero.
 
 The propagated relative variance is:
 
-```text
-(sigma_tx / tx)^2 =
-    (signal_err_mv / signal_mv)^2
-  + (reference_signal_err_mv / reference_signal_mv)^2
-  + (sigma_segment_scale / segment_scale)^2
+```{math}
+\left(\frac{\sigma_{R_j}}{R_j}\right)^2=
+ \left(\frac{\sigma_{S_j^+}}{S_j^+}\right)^2+
+ \left(\frac{\sigma_{S_j^-}}{S_j^-}\right)^2,\qquad
+\left(\frac{\sigma_{Q_k}}{Q_k}\right)^2=\sum_{j<k}
+ \left(\frac{\sigma_{R_j}}{R_j}\right)^2,
 ```
 
-The fit minimizes uncertainty-weighted residuals in attenuator model dB output
-space:
-
-```text
-measured_db = -10 * log10(tx)
-max_atten_db = mean(measured_db for final three usable full-sweep points)
-fit_points = usable voltage prefix including first measured_db > 55
-floor_tx = 10^(-max_atten_db / 10)
-model_tx = floor_tx + (1 - floor_tx) * ideal_model_tx
-residual = model_db(dac_mv, fvoa_50pct_mv, slope_inv_fvoa_mv,
-                    max_atten_db, gain)
-         - measured_db
+```{math}
+\left(\frac{\sigma_{T_k}}{T_k}\right)^2=
+ \left(\frac{\sigma_{S_k}}{S_k}\right)^2+
+ \left(\frac{\sigma_{S_0}}{S_0}\right)^2+
+ \left(\frac{\sigma_{Q_k}}{Q_k}\right)^2,\qquad
+A_k=-10\log_{10}T_k,\quad
+\sigma_{A_k}=\frac{10}{\ln10}\frac{\sigma_{T_k}}{T_k}.
 ```
 
-`max_atten_db` is the physical FVOA leakage floor, not the sum available from a
-logical two-FVOA attenuator. Firmware estimates it from the final three usable
-full-sweep points, propagates that uncertainty into the weighted dB residuals, and
-then uses the restricted prefix to optimize only `fvoa_50pct_mv` and `slope_inv_fvoa_mv`.
+These are the implemented independent-term approximations. Reused references,
+bridges and dark offsets correlate errors between points; the fit does not carry
+a full covariance matrix. See [error interpretation](mathematics.md).
+
+The fit minimizes $\sum_i w_i[A(v_i)-A_i]^2$. Signal/reference/bridge
+propagation supplies $\sigma_{A_i}$ above; the model adds DAC and floor sensitivity:
+
+```{math}
+\sigma_i=\max\left[0.5\ {\rm dB},\sqrt{\sigma_{A_i}^2+
+ \left(\frac{\partial A}{\partial v}\,3\ {\rm mV}\right)^2+
+ \left(\frac{\partial A}{\partial L}\,\sigma_L\right)^2}\right],\qquad
+w_i=1/\sigma_i^2.
+```
+
+The 3 mV DAC-output uncertainty is a fitting assumption, distinct from the
+10 mV post-amplifier temporal-noise assumption used by runtime throughput.
+$\sigma_L$ is the last-three points' sample standard deviation divided by
+$\sqrt3$, with a minimum $0.5/\sqrt3$ dB. Weights are recomputed at each model
+candidate; the local Jacobian uses $(\partial A/\partial p)/\sigma_i$ without
+differentiating $\sigma_i$. It holds gain and leakage floor fixed while fitting
+`fvoa_50pct_mv` and `slope_inv_fvoa_mv` with the
+[shared optimizer](calibration_fitting.md).
+
+**Current implementation requiring review:** `estimate_max_atten_db()` computes
+$L=\max(\overline{A}_{\rm last\ three},65\ \mathrm{dB})$. The previous description
+said the last-three mean alone defined the measured leakage floor. The 65 dB
+minimum is a model constraint, not measured support. Whether it is intended is
+recorded in the [owner ledger](human_review_required.md#decisions-to-make);
+this documentation audit does not change the fitter.
 
 The operating ceiling is `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB per physical FVOA).
 Low-priority fitting and cancellation, described above, preserve fit order,
@@ -414,20 +442,8 @@ thread waits for fitting to finish; status and raw-record access remain responsi
 
 Acquisition still covers the complete voltage range. Both the base fit and the
 optional Chebyshev correction use the same retained prefix, including the first
-above-ceiling point so the boundary has measured support on both sides. The
-correction keeps its full-floor coordinates and is not forced to zero at 55 dB:
-
-```text
-start_db = -10 * log10(0.99)
-t = clamp((base_db - start_db) / (max_atten_db - start_db), 0, 1)
-x = 2 * t - 1
-correction_db = t * (1 - t) * sum(c_i * T_i(x))
-model_db = base_db + correction_db
-```
-
-This correction is intentionally ringfenced from the three physical
-coefficients. Its raw envelope is zero near open transmission and at the modeled
-leakage floor. The fitter tries six leading terms, then five, down to one,
+above-ceiling point so the boundary has measured support on both sides. The [model's Chebyshev correction](attenuator.md) keeps its full-floor
+coordinates and is not forced to zero at 55 dB. The fitter tries six leading terms, then five, down to one,
 refitting the smaller normal equation each time and zeroing unused coefficient
 slots. It keeps the first valid final curve. The base-only model is the last
 fallback; no error-budget threshold or regularization parameter is introduced.
@@ -442,22 +458,16 @@ polynomial behavior above the calibrated endpoint does not reject a valid contin
 
 The installed `max_calibrated_db` is the minimum of 55 dB, the last supporting
 measurement, its corrected-model prediction, and the leakage floor. It is separate
-from `max_atten_db`, which still sets that inferred floor. The corresponding boundary
-is recovered from the corrected curve; no cutoff voltage is persisted. Above it,
-the polynomial is replaced by a fixed continuation, with `B` the base model, `L` its floor,
-and `Bc + Cc = max_calibrated_db`:
+from `max_atten_db`, which still sets that inferred floor. The [continuous tail](attenuator.md) is used by forward evaluation,
+inverse commands and local sensitivities.
 
-```text
-model_db = B + Cc * (L - B) / (L - Bc)
+The final, unweighted residual RMS
+
+```{math}
+\mathrm{RMS}_{\rm dB}=\sqrt{\frac{1}{N}\sum_{i\in\mathrm{scored}}[A(v_i)-A_i]^2}
 ```
 
-The value is continuous at the boundary and tends to the original floor.
-The slope may have a corner. No blend width or additional fit parameter is
-introduced. All-zero correction coefficients recover the base model exactly.
-Forward evaluation, inverse commands and local sensitivities use this same
-piecewise curve.
-
-The final, unweighted `sqrt(sum(residual_db^2) / scored_count)` is installed as
+is installed as
 `rms_db` with each accepted physical model. Correlation and maximum absolute
 residual use the same scored points: fitting-support measurements whose **measured**
 attenuation is at or below `max_calibrated_db`, including negative reference-relative
@@ -485,27 +495,11 @@ calibrated boundary is approximate. Autolevel bounds each device by the smaller
 of its stored calibrated limit, the 55 dB ceiling and its reachable drive range.
 It uses laser adjustment after reaching those limits.
 
-The coefficient record now includes `max_calibrated_db`. Old attenuator NVS
-records fail the existing size check and use built-in defaults until a new
-calibration is installed. Other settings are preserved; there is no global
-NVS reset or settings migration.
-
-Runtime transmission uncertainty combines these model residuals with electrical
-variation. For each device, `electrical_sigma_db = abs(d_db_d_voltage_mv) *
-ATTENUATOR_FVOA_NOISE_RMS_MV / gain`. The constant defaults to 10 mV RMS measured
-after the amplifier; zero recovers model-only uncertainty. The local derivative
-includes the leakage floor and empirical correction. The pair uses
-`total_sigma_db = hypot(hypot(rms1, rms2), hypot(electrical1, electrical2))`, then
-`sigma_T = T * ln(10)/10 * total_sigma_db`.
-
-Model and electrical contributions are assumed independent, as are the two
-devices. Calibration error across repeated throughput samples remains correlated
-and does not average away; independence between devices does not establish
-temporal independence of electrical noise. This first-order static estimate
-applies no frequency-response correction, and its combined uncertainty is not
-temporal RMS variation. The throughput monitor combines it with laser uncertainty
-and PD-only error; `tp_pd_err` remains PD-only. The [Python scope helper](api/attenuator_control.md#scope-noise-in-python)
-reports model, electrical, and combined terms separately.
+Coefficients and residual RMS are saved together when persistence is requested.
+The current schema-14 policy clears all older app NVS records; it does not preserve
+other settings across that schema reset. See [settings](settings.md) for the exact
+reset boundary and [runtime uncertainty](attenuator.md#transmission-uncertainty)
+for how installed RMS is used.
 
 ## Notebook Inspection
 
@@ -524,13 +518,15 @@ least-squares exploratory fit. Its plots show propagated photodiode and
 normalization uncertainty; coefficients should be reviewed before any
 `atten_coeff(..., persist=True)` command is used.
 
-An accepted coefficient object contains:
+A coefficient object has this shape (illustrative values, not a calibration
+for an installed device):
 
 ```json
 {
   "fvoa_50pct_mv": 3144.95,
   "slope_inv_fvoa_mv": 0.00303104,
-  "max_atten_db": 48.36,
+  "max_atten_db": 65.0,
+  "max_calibrated_db": 55.0,
   "gain": 1.533,
   "rms_db": 0.75,
   "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
@@ -555,11 +551,7 @@ physical device, including the selected term count and first failed check, volta
 value and slope. The summary also goes to the local log. `terms=0` is base-only;
 `terms=-1` means no valid candidate, including the base model. `fit=ok` indicates an
 accepted final model and does not alone establish that optional correction was accepted; inspect its
-coefficients and warnings. The earlier move to NVS schema 13 reset the old
-four-term settings layout. The earlier calibrated-range update kept schema 13 and
-rejected old attenuator records by size. This fitting change preserves the current
-layout; recalibration is needed to obtain the new fits. Saved notebook
-outputs remain historical captures; reload the host module after updating firmware.
+coefficients and warnings.
 
 ### Compact calibration status
 
@@ -568,11 +560,9 @@ acceptance, point count, floor uncertainty, correlation, RMS and maximum error.
 Diagnostic scalars use six significant digits and progress voltages three decimal
 places; coefficient precision is retained. `min_tx`, `max_tx` and `fvoa_span_mv`
 remain in the per-device fit telemetry but are omitted from aggregate status and
-therefore are absent from newly fetched dataset metadata. This fits the existing
-1024-byte response buffers without increasing queue storage.
+therefore are absent from newly fetched dataset metadata. The response is bounded by the command payload capacity.
 
-The two-shape-parameter damped optimizer now calls `calibration_fit.c`, shared
-with laser calibration. Attenuator model evaluation, weighting, point order,
-acceptance, and the separate six-term correction solver remain unchanged. The
+The shape optimizer is shared with laser calibration; physical acceptance and
+the correction solver belong to the attenuator owner. The
 raw/bridge arrays and fit scratch reuse typed unions in `calibration_storage.c`;
 no additional large array is allocated for the laser sweep.

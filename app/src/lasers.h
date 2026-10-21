@@ -196,7 +196,9 @@ uint32_t hispec_laser_bank_power_on_duration_s(void);
 
 /** @brief Get or set the runtime laser-bank power override mode. */
 enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
+/** Return the static wire name of the bank-power policy; no I/O. */
 const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
+/** Apply bank auto/override policy; may sleep on power sequencing and Modbus shutdown. */
 int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
 
 /**
@@ -275,6 +277,9 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 
 /** @brief Save or reset the Maiman module's own EEPROM-backed settings. */
 int hispec_laser_save_driver_settings(enum hispec_laser_id id);
+/** Reset the selected driver and invalidate preparation/output caches; may sleep.
+ * The next start prepares the driver again. Controller EEPROM behavior belongs
+ * to Maiman; app policy is restored separately. */
 int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 
 /** Read one channel. Engineering values are controller readbacks, or unavailable
@@ -372,6 +377,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 /** @brief Store the wavelength tune offset applied by future positive laser starts. */
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist, char *error, size_t error_len);
+/** Copy the stored relative wavelength request under the state lock; no Modbus I/O. */
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */

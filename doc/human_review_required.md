@@ -9,6 +9,26 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Resolve the drawing/as-built differences exposed by the documentation
+  audit against the PCB evidence committed in `2fd8e87`. Record the assembly
+  revision and measured result before changing firmware assumptions:
+  - Schematic page 49 retains a 0–1 V / 0–0.5 V detector note, while the
+    maintained Rev. 2 acquisition model assumes 0–10 V divided to 0–2 V and
+    a 20 Hz analog filter. Confirm actual divider, load and filter components.
+  - Schematic page 39 has 2.43 kΩ / 4.7 kΩ feedback, implying gain 1.5170;
+    `ATTENUATOR_DEFAULT_GAIN` is 1.533. Confirm installed resistor values and
+    measured gain, then decide whether the drawing, default or calibration
+    interpretation needs correction.
+  - NoTIB placement connects ASR1 optical C to ASR2 and B to ASR3; blue uses
+    B to ASB2 and C to ASB3. Firmware's two channels use the same first-switch
+    state interpretation. Confirm electrical-state-to-optical-port mapping and
+    actual red patch before deciding whether routing or drawing labels are wrong.
+  - Confirm the CAL `nm` route's physical source/termination: the drawing calls
+    the branch Dark. Confirm physical AO/FEI and splitter-output port assignments
+    before treating the API-route figures as an as-built patch certificate.
+  See [electrical evidence](hardware.md#source-drawings-and-revision-boundaries)
+  and [fiber paths](hardware_profiles.md). No hardware was operated in this audit.
+
 - [ ] Bench-validate laser calibration after FVOA calibration: 0.1 C thermal
   qualification, 100 ms settling, current-grid/range overlaps, inferred knee and
   upper linear limit, reference-based AO/FEI loss and effective noise. Check the
@@ -167,6 +187,26 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Command/API Mismatches
+- [ ] Repair or remove the Python CLI `atten-db` entry. `main()` calls
+  `fib.atten_db(args.laser)`, but `HispecFibPcb` exposes `atten()` and has no
+  `atten_db()` method. The CLI therefore raises `AttributeError` after connecting.
+  Decide whether to print the full `AttenuatorState` or just its dB field.
+  This audit documents `pcb.atten(name)` as the working query and leaves code
+  behavior unchanged.
+
+- [ ] Decide throughput shutdown ownership across tuning and policy-only
+  settings changes. `laser_tune_set()` releases a matching monitor before
+  applying the tune, including a failed tune. Successful
+  `throughput_monitor_update_laser_settings()` also releases it; some settings
+  (for example fractional noise or auto-off policy) do not stop emission.
+  `release_locked()` clears the monitor deadline and owned-laser shutdown
+  obligation. An autolevel source can therefore remain emitting after its
+  stream disappears, outside the original measurement expiry. Decide whether
+  to stop the owned source or retain ownership while disabling feedback;
+  reconcile `laser_command.c`, `throughput_monitor.c`, `lasers.c` and the
+  [operation contract](throughput.md#lifetime-manual-changes-and-failure).
+  This audit documents the current path without changing behavior.
+
 
 ### LLM Resolved; Human Review Requested
 - [ ] Verify Maiman driver serial mismatches report
@@ -178,6 +218,15 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Decisions To Make
+- [ ] Confirm the attenuator leakage-floor constraint. The previous calibration
+  description used the last three normalized points' mean; current
+  `estimate_max_atten_db()` uses `max(mean, 65 dB)` while retaining their measured
+  standard error. The 65 dB lower bound is a prior on the model, not measured
+  optical support. Decide whether this prior and its uncertainty treatment are
+  intended, or whether the estimator must change. The
+  [calibration mathematics](attenuator_calibration.md#records-telemetry-and-fit)
+  now distinguishes this constraint from the calibrated operating range.
+
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled
   acceptance ceilings also exceed vendor maxima. Normal commanded maxima agree.

@@ -208,6 +208,7 @@ struct app_settings_snapshot {
  * storage is cleared and defaults are used.
  */
 int app_settings_init(void);
+/** Copy all app-owned settings under the settings mutex; no NVS or hardware I/O. */
 void app_settings_get_snapshot(struct app_settings_snapshot *out);
 /**
  * @brief Record the immutable PCB board type in persistent settings.

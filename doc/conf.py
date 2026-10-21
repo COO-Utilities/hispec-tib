@@ -18,6 +18,7 @@ extensions = [
     "myst_parser",
     "breathe",
     "sphinxcontrib.mermaid",
+    "sphinx.ext.mathjax",
 ]
 
 source_suffix = {
@@ -51,11 +52,23 @@ html_sidebars = {
 
 myst_heading_anchors = 3
 myst_fence_as_directive = ["mermaid"]
+myst_enable_extensions = ["dollarmath"]
 
 breathe_projects = {
     "hispec_tib": str(DOXYGEN_XML),
 }
 breathe_default_project = "hispec_tib"
+# Each page already names its owning headers; avoid redundant include listings.
+breathe_show_include = False
+# These identifiers belong to the C library or Zephyr, whose reference is external.
+nitpick_ignore = [("c:identifier", name) for name in (
+    "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int16_t", "int64_t",
+    "va_list", "timespec", "NET_IPV4_ADDR_LEN", "device", "gpio_dt_spec",
+    "k_msgq", "k_work_q", "k_work", "k_work_delayable", "k_mutex", "k_timeout_t",
+    "atomic_t", "mqtt_client", "mqtt_publish_param", "mqtt_utf8", "nvs_fs",
+    "dac_channel_cfg",
+)]
+breathe_domain_by_extension = {"h": "c", "c": "c"}
 
 def run_doxygen(_app):
     """Generate Doxygen XML before Breathe resolves API directives."""

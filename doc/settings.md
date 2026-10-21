@@ -23,7 +23,6 @@ Current app NVS records include:
 - Schema marker.
 - Board type.
 - Boot count.
-- Last known UTC time in milliseconds.
 - IP settings as one record.
 - MQTT broker host/port as one record.
 - Last command metadata as one command-dispatch record.
@@ -50,13 +49,7 @@ Current app NVS records include:
 - One MEMS intent record containing per-switch static state intent, per-switch
   direct-toggle restart metadata, and per-channel split restart metadata.
 
-The autolevel-minimum addition changed the laser-policy record size under
-schema 13. An incorrect record size selects compiled policy defaults for that
-channel. Schema 14 now resets all older app settings as described below.
-
-The thermistor-coefficient addition introduced a separate eight-byte record
-under schema 13 without changing the laser-policy/calibration layout. The PCB
-owns the configured coefficient; Maiman EEPROM retains driver-side values.
+The PCB owns the thermistor coefficient; Maiman EEPROM retains driver-side values.
 Profile preparation synchronizes the PCB value at the first explicit start after
 bank power-up, and driver-backed settings updates program it immediately through
 the existing stop/power flow. `persist:true` saves app NVS intent; it adds no
@@ -65,7 +58,7 @@ persistence behavior. Settings queries always report PCB configuration;
 engineering status reports controller readbacks while powered and null while off.
 Before preparation, readbacks can differ from configuration. The coefficient
 uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
-is unused; the mapping correction changes no NVS layout or configured values.
+is unused.
 
 ## Board-Type Reset Policy
 
@@ -81,9 +74,9 @@ silently reused on another.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
   `CONFIG_COO_MQTT_BROKER_PORT`; persistence stores host and port directly.
 - Serial guard defaults to 30 s from Kconfig but is runtime-only.
-- Last known UTC defaults to unset. Once SNTP or a `time` command sets the
-  realtime clock, the value is persisted and restored on later boots until a
-  fresher time source updates it.
+- UTC is restored from a valid RTC calendar on warm boot. There is no NVS
+  last-time fallback; its former record ID is reserved. Manual/SNTP updates use
+  the serialized RTC guard described in [architecture](architecture.md).
 - Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
   1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
   `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical
@@ -151,15 +144,13 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v14 replaces the obsolete `none` loss selector with `generic` and reduces
-the override table to 32 slots. On first boot with an older or missing marker,
+### Schema reset
+
+The current schema is v14. On boot with a different or missing schema marker,
 firmware clears **all app NVS records**, writes v14, and uses defaults. This
 includes calibration, network settings, board/switch intent, counters, and other
 app records, not just route losses. Reapply needed settings from reviewed lab
 records; there is no migration. Maiman EEPROM is separate and is not cleared.
-The earlier v13 reset invalidated calibrations from the mean-only clipping test
-or incomplete six-term correction basis. Coefficient records still include the
-physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 
 ## Intentionally Not Persisted
 
@@ -175,9 +166,9 @@ physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 - Serial guard active state and runtime holdoff changes are not restored after
   reboot.
 
-## Not Currently Persisted
-
-- Laser output current, temperature, pulse, or tuning state.
+- Active output/current and live TEC/tuner results. The stored `tune_delta_nm`
+  request is persisted configuration and is applied by a later positive level
+  command; restoring it does not resume emission.
 
 ## Scoped laser calibration restore
 

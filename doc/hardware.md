@@ -1,194 +1,152 @@
-# FIB PCB hardware
+# Electronics and repair reference
 
-FIB uses this hardware in four locations:
-1. The Trunk Interface Box (TIB), which has
-    2. 2 MMF Switches (FFLS)
-    3. 6 SMF Switches (FFSW)
-    4. 12 SMF variable attenuators (2x per laser channel) (FVOA)
-    4. 1 off-board 6 laser diode bank controlled via Modbus (Maiman electronics SF8250-ZIF14 + NH8 hub)
-    5. 1 off-board power switch to toggle PD power
-    6. one board power switch to toggle LD bank power
-2. The Achromatic Splitter
-    3. 6 SMF switches (FFSW) for muxing lign in the YJ (3x) and HK (3x) channels
-2. The YJ Calibration switch
-    3. 2 (smaller core) MMF switches (FFSW)
-    4. 5 SMF switches (FFSW)
-    5. 2 SMF variable attenuators (FVOA)
-6. The HK calibration switch, same as the YJ switch but with a slightly different, but electrically identical
-   model of fiber components (FFSW & FVOA).
+This page owns physical mappings and assumptions. [Fiber paths](hardware_profiles.md)
+connect those mappings to API names. A firmware profile describes what is used;
+a BOM describes assembly population. Neither alone certifies an installed board.
 
-All have an on-board temperature sensor and are interacted with via ethernet when deployed. USB-C is available
+## Source drawings and revision boundaries
 
-See status.md for software details
+The repository contains the following evidence, added in commit `2fd8e87`:
 
-## Microcontroller
-- ST Nucleo H563ZI on a STM32H5 Nucleo-144 board (MB1404)
-- STM32H563ZIT6 microcontroller based on the Arm Cortex®-M33 core.
-- 2 MB of flash memory and 640 KB of SRAM
-- See user manual um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf
-- Microcontroller reference manual STM32H563ZI.pdf
-- https://docs.zephyrproject.org/latest/boards/st/nucleo_h563zi/doc/index.html
+- {download}`Schematic print <../pcb/FIB_Switcher TIB Schematic Print.PDF>`:
+  52 PDF pages, with some sheets dated 21 October 2026. PDF page numbers below
+  are viewer page numbers, since repeated Altium sheet numbers are ambiguous.
+- {download}`PCB print <../pcb/FIB_Switcher PCB Print.PDF>`: 23 pages of layers
+  and assembly views; use component designators to locate the electrical stage.
+- {download}`TIB BOM <../pcb/FIB_Switcher_TIB_BOM.xlsx>` and
+  {download}`NoTIB BOM <../pcb/FIB_Switcher_NoTIB_BOM.xlsx>`: `Manufacturing`
+  sheets dated 4 September 2026, 12:18 and 12:19 respectively.
+- {download}`TIB placement <../pcb/FIB_Switcher_TIB.txt>` and
+  {download}`NoTIB placement <../pcb/FIB_Switcher_NoTIB.txt>`: 16 July 2026,
+  design revision `59e398672786f7c0d6aec813e7c4099687d5be41`.
+  NoTIB contains optical patch comments for CAL and AS.
 
-The 32768 Hz LSE crystal clocks RTC and native LPTIM4 uptime (4096 kernel ticks/s).
-The application does not enable automatic STOP states. LSI remains the independent
-watchdog source. RTC has no battery/supercap backup in this setup; no valid time
-retention is assumed through removal of board power.
+| Drawing pages | Use |
+|---|---|
+| 1, 10, 52 | AS, CAL and TIB hierarchy/component names |
+| 9 | DACs U8/U9, references U12/U13 and TP2 |
+| 39–44 | Repeated OPA2991 FVOA-drive stages |
+| 45–48 | Controller hierarchy and Nucleo connector nets/straps |
+| 49 | ADS1115 U4 and PD input networks |
+| 50 | Power circuitry |
+| 51 | PCAL6416 U7, MEMS drive mapping and TP1 |
 
-The application assumes the MB1404 "HSE not used" solder-bridge configuration:
+**Differences requiring physical review:** page 49's detector note describes an
+older voltage/divider arrangement than the documented Rev. 2 0–10 V → 0–2 V,
+20 Hz chain used by firmware. FVOA stages show 4.7 kΩ/2.43 kΩ feedback, giving
+nominal gain $1+2.43/4.7=1.5170$, while firmware defaults to 1.533. NoTIB placement
+comments reverse the red AS first-switch branch destinations relative to the
+firmware route interpretation. These are [owner-review items](human_review_required.md);
+no hardware mapping or gain was changed during the documentation audit.
 
-- SB48 and SB50 ON (PH0/PH1 connected to the morpho header)
-- SB49 OFF (ST-LINK MCO disconnected)
-- SB3 and SB4 OFF (X3 crystal disconnected; these are OFF by default)
+## Controller, buses and connectors
 
-This physically disconnects the onboard HSE sources, so firmware keeps HSE
-disabled and uses HSI/PLL for the 240 MHz CPU clock. On the H563ZI, HSE uses
-PH0/PH1; I2C2 uses the separate PF1/PF0 pins. The earlier claim that I2C2 itself
-requires disabling HSE was incorrect. UM3115's generic "PF0/PH0" notation does
-not mean those are the same pins on this MCU. See UM3115, Clock sources, and
-[the H563ZI schematic, sheets 3/5](https://www.st.com/resource/en/schematic_pack/mb1404-h563zi-c01-schematic.pdf).
+The controller is a Nucleo H563ZI (MB1404), STM32H563ZIT6 Cortex-M33, with 2 MB
+flash and 640 KB SRAM. See the bundled
+{download}`Nucleo manual <um3115-stm32h5-nucleo144-board-mb1404-stmicroelectronics.pdf>`
+and {download}`MCU reference <stm32h563zi.pdf>`.
 
+| Function | Nucleo signal / connector | Peripheral / destination |
+|---|---|---|
+| PD ADC SCL/SDA | PB8/PB9, D15/D14, CN7 2/4 | I2C1, 400 kHz; U4 ADS1115 at 0x48 |
+| DAC/MEMS SCL/SDA | PF1/PF0, D69/D68, CN9 19/21 | I2C2, 400 kHz; DAC 0x48/0x4A, PCAL 0x21 |
+| Laser Modbus RX/TX | PD6/PD5, D52/D53, CN9 4/6 | USART2, THVD1429 RS-485 |
+| RS-485 enable | PD4, D54, CN9 8 | GPIO active high |
+| Laser-bank enable | PB2, D72, CN9 13 | GPIO active low, default off |
+| Relay 1-Wire | PE9, D71, CN9 15 | UART12 RX, TX/RX swap, single-wire open drain |
+| Ambient 1-Wire | PG1, D64, CN9 30 | UART9 TX, single-wire open drain, DS18B20 |
+| FFLS status 1/2 | PF7/PF9, D62/D63 | PCB pull-ups; overlay inputs, unused by firmware |
 
-## MEMS Switches
-Controlled via 3V3 to 5V 16x GPIO expander (PCAL6416AHF,128)
-- 3.3V i2c, 5V gpio, 25mA max drive
-- Address 0x21 (ADDR high) or 0x20 (ADDR low), using 0x21 (addr is tied to +5V (VDD(P))) 0b0100001
-- FFSW lines have 4.7k external resistors. in open drain each switch channel flows 2mA through PCAL
-  - FFLS lines do not have a pullup but one may be added at site of unpopulated FFSW drive MOSFET to allow operation in same manner
-- Placing ports in push-pull with pull-ups enabled and then idling the external MEMS control lines low should work for all switches.
-- The port with FFLS switches also has FFSW switches so I am going with a common selection for both ports for simplicity.
-- Initial testing will be with push-pull approach and full drive strength
-- Requires 2 pins per FFSW or FFLS
-- The Nucleo devicetree configures all 16 PCAL MEMS outputs with GPIO hogs:
-  push-pull, pull-ups enabled, active-low at the PCAL pin, and logical
-  output-low at boot so the external switch-control lines idle low. Firmware
-  pulses the logical line active, which is a high pulse at the switch-control
-  line. Zephyr's mainline `nxp,pcal6416a` driver resets the PCAL drive strength
-  registers to full drive and leaves both ports push-pull; firmware no longer
-  writes the PCAL port-drive register directly.
+The two devices at address 0x48 are on different buses. Check bus identity before
+interpreting an address scan. `app/boards/nucleo_h563zi.overlay` supplies the exact
+pin configuration; `devices.c` maps profile names and logical channels.
 
-- FFLS 1 & 2 (sw channels 7 & 8) have their status pins connected to D62 and D63 (PF7 & PF9) on the PCB with on-PCB pullups.
-  - The FFLS pulls the sense line low for position B; high means position A.
-  - The Nucleo overlay includes `mems-ffls1-sense-gpios` and `mems-ffls2-sense-gpios` stubs with no internal pull because the PCB provides the pullups.
-  - Firmware does not presently consume these sense lines.
-  - Do not appear to need any solder bridges set.
+Required MB1404 solder bridges: PB2 uses SB61 OFF/SB66 ON; PE9 uses SB35 OFF/SB67
+ON. The installed-clock assumption is “HSE not used”: SB48/SB50 ON, SB49 OFF,
+SB3/SB4 OFF. HSE pins PH0/PH1 are distinct from I2C2 PF0/PF1. Firmware therefore
+uses HSI/PLL at 240 MHz, not an HSE source. LSE 32768 Hz clocks RTC and periodic
+LPTIM4 uptime at 4096 ticks/s. LSI clocks the independent watchdog. No automatic
+STOP states or RTC retention across complete power removal are assumed.
 
-For board files:
-- Nucleo:
-    - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
-    - CN9 21 D68 I2C_B_SDA PF0 I2C2_SDA
+## MEMS drive and switch identity
 
-At the drive level transistors are
-- NTGD4167 (Agiltron's recommended SI3552DV is obsolete) (for FFLS)
-    - N & P MOSFET
-    - 2x each for FFSW
-    - 2x 4.7k resistors for pullups
-- DMP3085LSD (for FFSW)
-    - 2x P MOSFET
-    - 1x each for FFLS
-    - 2x 10k resistor for status line (pullup and current limiting)
+U7 is a PCAL6416AHF,128: 3.3 V I2C logic, 5 V port supply, ADDR tied high for
+0x21. Its outputs drive external transistor stages. The overlay uses push-pull,
+pull-ups and **active-low PCAL logic**: logical inactive gives an external low
+control line, and logical active creates a high pulse at the switch. A GPIO
+`output-low` flag describes logical state, not necessarily low voltage at the pin.
 
-### Switch assignments
-PCAL assignments:
-  - sw1 A B: P0 6, 7 / gpio 6, 7 
-  - sw2 A B: P1 0, 1 / gpio 8, 9 
-  - sw3 A B: P0 4, 5 / gpio 4, 5 
-  - sw4 A B: P1 2, 3 / gpio 10, 11 
-  - sw5 A B: P1 4, 5 / gpio 12, 13 
-  - sw6 A B: P1 6, 7 / gpio 14, 15 
-  - sw7 A B: P0 2, 3 / gpio 2, 3 
-  - sw8 A B: P0 0, 1 / gpio 0, 1 
+| Stage | Parts verified in schematic/BOM | Function |
+|---|---|---|
+| FFSW | Two NTGD4167CT1G complementary MOSFET packages per switch, Q6/Q7; 4.7 kΩ resistors | Coil drive for 20 ms firmware pulses |
+| FFLS (TIB only) | DMP3085LSD-13 dual P-channel packages Q4/Q5 | Large-core switch drive for 50 ms pulses |
 
-- TIB:
-  - sw1: FFSW, SW1_TIBB1 YJATC laser forward/retro selector
-  - sw2: FFSW, SW1_TIBB2 YJ Laser/CAL selector
-  - sw3: FFSW, SW1_TIBB3 YJ AO/FEI selector
-  - sw4: FFSW, SW1_TIBR1 HKATC laser forward/retro selector
-  - sw5: FFSW, SW1_TIBR2 HK Laser/CAL selector
-  - sw6: FFSW, SW1_TIBR3 HK AO/FEI selector
-  - sw7: FFLS, SW2_FFLS1 YJ MM/SM PD Selector
-  - sw8: FFLS, SW2_FFLS2 HK MM/SM PD Selector
-- AS
-  - sw1: FFSW, SW1_ASR1 HK Splitter in
-  - sw2: FFSW, SW1_ASR2 HK Splitter out 1 (Cal/Split1)
-  - sw3: FFSW, SW1_ASR3 HK Splitter out 2 (Split2/Split3)
-  - sw4: FFSW, SW1_ASB1 YJ Splitter in
-  - sw5: FFSW, SW1_ASB2 YJ Splitter out 1 (Cal/Split1)
-  - sw6: FFSW, SW1_ASB3 YJ Splitter out 2 (Split2/Split3) 
-  - sw7: NC
-  - sw8: NC
-  
-- CAL 
-  - sw1: FFSW, SW1_CAL1 LFC/Etalon Selector
-  - sw2: FFSW, SW1_CAL2 Lamp/BB Selector
-  - sw3: FFSW, SW1_CAL3 BB IS/Cal Selector
-  - sw4: FFSW, SW1_CAL4 Lamp+BB vs LFC+Eta Selector
-  - sw5: FFSW, SW1_CAL5 Cal/Dark Selector
-  - sw6: FFSW, SW1_CAL6 IS BB/Dark Selector
-  - sw7: FFSW, SW1_CAL7 MSR/TIB Selector
-  - sw8: NC
+TIB BOM rows 32–33 and NoTIB row 26 agree with the schematic's stage names. Both switch types latch;
+firmware limits actuation to five pulses/s. FFLS status low indicates position B,
+high A, but firmware does not consume this feedback. See the bundled
+{download}`FFSW datasheet <datasheets/FFSW 1x2 Switch.pdf>` and
+{download}`FFLS datasheet <datasheets/FFLS 1x2 Switch.pdf>`.
 
-## TIB & CAL Attenuator Drive
-A pair of DAC7678 8 chan DAC driving OPA2991 2 channel OpAmps
-- DAC codes are 0 - 4095; ideal output transfer uses `code / 4096`.
-- Both DAC7678 devices use an external 3.3 V REF3333AIDBZR reference, so
-  `Vout = code / 4096 * VREFIN`, clipped by AVDD.
-- Current board DAC AVDD is 3.3V. The OPA2991 scales the DAC 0 - 3.3V output
-  toward the FVOA 0 - 5V command range; op-amp gain is firmware-calibrated.
-- Must not exceed Vmax of attenuator (6V for FVOA, so safe). 
-  - Imax per datasheet is 36.66 mA, but lab testing suggests that the FVOA resistance is a fairly consistent:
-  - 615 Ohms (530-616 Ohms measured via an ammeter and bench supply)
-- OpAmp supplies required current to attenuator.
-- Each laser channel uses a pair of physical attenuators:
-  - CAL: 2 DAC channels in use (1 channel x 2 attenuators)
-  - TIB: 12 DAC channels in use (6 channels x 2 attenuators)
-- I2C addr: 0x48 and 0x4A  (DS says: 0x4C floating pin, 0x48 GND, 0x4A VCC)
-- LDAC is tied to ground.
-- Channels:
-  - 0x4A
-    - Y Attens: A=1, C=2
-    - J Attens: E=1, G=2 
-    - YJATC Attens: D=1 & F=2
-  - 0x48
-    - HKATC Attens: A=1, C=2
-    - H/CAL Attens: E=1, G=2
-    - K Attens: D=1, F=2
+| PCB channel | PCAL A/B GPIO indices | Port bits |
+|---|---|---|
+| sw1 | 6 / 7 | P0.6 / P0.7 |
+| sw2 | 8 / 9 | P1.0 / P1.1 |
+| sw3 | 4 / 5 | P0.4 / P0.5 |
+| sw4 | 10 / 11 | P1.2 / P1.3 |
+| sw5 | 12 / 13 | P1.4 / P1.5 |
+| sw6 | 14 / 15 | P1.6 / P1.7 |
+| sw7 | 2 / 3 | P0.2 / P0.3 |
+| sw8 | 0 / 1 | P0.0 / P0.1 |
 
-For board files:
-- Nucleo:
-    - CN9 19 D69 I2C_B_SCL PF1 I2C2_SCL
-    - CN9 21 D68 I2C_B_SDA PF0 I2C2_SDA
+TP1 on schematic page 51 exposes drive-side nets. Its physical header pin numbers
+are not PCAL bit numbers. Use [profile assignments](hardware_profiles.md) to map
+sw1…sw8 to installed switch designators before probing.
 
-## TIB Photodiode Monitoring ADC
-Uses an ADS1115 16 bit 4 channel muxed ADC
-- Use channels A0 and A2
-- The current overlay selects 64 SPS (ADS1115 rate index 3), ±2.048 V range, 62.5 uV LSB. The intended 0-2 V
-  input range leaves 48 mV of headroom below the ADC's numerical rail.
-- PD 50 Ohm coax is fed to the ADC as a single-ended input.
-- Input circuitry uses filtering and a precision divider to map 0-10 V PD
-  output to 0-2 V with 20 Hz bandwidth.
-- Sample each at 20 Hz, muxing between the two within a 50 ms period. Each
-  throughput record uses one fresh conversion. At 64 SPS, two conversions take
-  about 31.3 ms before I2C and scheduling overhead. This documents the existing
-  overlay setting; commissioning changes did not change the ADC rate. Confirm
-  runtime margin and noise on hardware. Timing allowances derive from that rate.
-- I2C addr: 0x48 (0x48 ADDR=gnd, 0x49 ADDR=Vcc)
-- ADC runs at 3.3v
-- Photodiodes are Femto FWPR-20-IN (YJ) and Thorlabs PDA10DT (HK)
-- See photodiode_notes.md for additional details
+## TIB and CAL attenuator drive
 
-For board files:
-- Nucleo:
-    - CN7 2 D15 I2C_A_SCL PB8 I2C1_SCL
-    - CN7 4 D14 I2C_A_SDA PB9 I2C1_SDA
+TIB populates DAC7678 U8/U9, REF3333 U12/U13 and six dual OPA2991 drive stages;
+NoTIB's BOM populates U9/U13 and only FVOADrive5. The latter is consistent with
+CAL's one logical pair, not a separately verified AS population manifest.
 
-Static attenuation anticipated required:
-  - 1028: -90.0 to -73.0 dB, range 17.0 dB, **static -73.0 dB**
-  - 1270:  -70.0 to -40.0 dB, range 30.0 dB, **static -40.0 dB**
-  - 1430: range 0.0 dB, **static -100.0 dB**
-  - 1510: -80.0 to -33.0 dB, range 47.0 dB, **static -33.0 dB**
-  - 2330: -73.0 to -3.0 dB, range 70.0 dB, **static -3.0 dB**
+DAC AVDD/reference are 3.3 V; LDAC is grounded. Ideal 12-bit output is
+$V=3.3n/4096$ volts for code 0…4095. Amplifiers drive the FVOAs toward 5 V.
+Firmware's gain is a model coefficient; distinguish it from the resistor-derived
+gain and the measured post-amplifier voltage. The FVOA datasheet allows 6 V;
+lab resistance observations were 530–616 Ω. Verify actual supply/headroom and
+loading before interpreting a saturated drive as extra attenuation.
+
+| API channel | PCB attenuator label | DAC/address | DAC1 / DAC2 outputs |
+|---|---|---|---|
+| `1028y` | Y / pair 1 | U8 / 0x4A | A / C |
+| `1270j` | J / pair 2 | U8 / 0x4A | E / G |
+| `1430yj` | YJATC / pair 3 | U8 / 0x4A | D / F |
+| `1430hk` | HKATC / pair 4 | U9 / 0x48 | A / C |
+| `1510h` or CAL `lfc` | H / CAL / pair 5 | U9 / 0x48 | E / G |
+| `2330k` | K / pair 6 | U9 / 0x48 | D / F |
+
+The firmware CAL index is **4, zero-based**, meaning physical pair 5. TP2 exposes
+pre/post-amplifier nets; consult page 9 for its pin mapping. Two successful DAC
+writes are consecutive I2C operations, not simultaneous latching. Refer to the
+[attenuator model](attenuator.md), [calibration](attenuator_calibration.md), and
+{download}`FVOA datasheet <datasheets/FVOA_atten.pdf>` for optical interpretation.
+
+(photodiode-monitoring)=
+## TIB photodiode monitoring ADC
+
+U4 ADS1115 channel A0 samples YJ (J13); A2 samples HK (J12), single-ended. Nominal
+detectors are Femto FWPR-20-IN and Thorlabs PDA10DT. Firmware uses ±2.048 V range,
+62.5 µV/code and 64 SPS converter rate, producing a fresh sample on each channel
+at 20 Hz. It treats 2000 mV as the usable upper limit, distinct from the ADC rail.
+
+The maintained Rev. 2 assumption is a precision 0–10 V → 0–2 V divider and
+20 Hz filter before conversion. The supplied schematic's old annotation does not
+verify that as-built transfer. Trace J12/J13, R7/R8 and C17/C18 on the installed
+revision before deriving gain or bandwidth from the print. Firmware effective
+transimpedance includes the divider; applying it twice would corrupt power.
+[Sampling and uncertainty](photodiode_notes.md) explains clipping and dark capture.
 
 ### TIB route-loss defaults
+
 
 The compiled YJ values in `devices.c` are provisional **whole-route** losses,
 shared by AO and FEI. They include the internal static loss; external test-path
@@ -212,7 +170,7 @@ independent loss. The 1 dB CAL value is a component estimate.
 
 HK retains its nominal 0.83 transmission per red FFSW and existing static losses.
 AO and FEI use the same switch count. HK CAL has no measured default and uses
-unity. The component planning table above retains its original target values.
+unity. These defaults do not certify the installed attenuation or fiber patch.
 
 | Laser | Outbound route input | Switch product | Static loss | Total transmission |
 |---|---|---|---|---|
@@ -228,86 +186,50 @@ independent of stored generic overrides. Passive capture selects `generic`.
 Dynamic FVOA attenuation is applied separately; static loss must not also be
 folded into its fit.
 
-## Laser Diode Control
-MODBUS
-- Use a UART with 485 driver chip (THVD1429DT)
-- 50 Ohm termination resistor on PCB per NH8 hub documentation
-- 5V and ground to the NH8 from the LD bank
 
-For board files:
-- Nucleo:
-    - USART2 (valid are UART4/5/7/8/9/12 or USART1/2/3/6/10/11 not !! LPUART1)
-    - CN9 4 D52 USART_B_RX PD6 USART2
-    - CN9 6 D53 USART_B_TX PD5 USART2
-    - CN9 8 D54 USART_B_RTS PD4 USART2
+## Laser control and switched power
 
-The Nucleo overlay enables USART2's native eight-byte hardware FIFO with
-`fifo-enable`. Modbus uses the stock interrupt-driven UART API at 115200 baud,
-8N1, with PD4 controlled as GPIO driver enable. UART9 and UART12 separately
-provide the 1-Wire waveforms; no Zephyr source patches are required.
+The off-board bank contains six Maiman controllers and an NH8 hub. USART2 uses
+115200 baud, 8N1, native FIFO and interrupt-driven Modbus. The THVD1429 drives
+RS-485 with a documented 50 Ω board termination for this hub connection.
+Power/ground to the hub come from the bank. See the bundled
+{download}`Maiman manual <datasheets/maiman sf8025.pdf>` and
+[laser operation](laser_operation.md) for transaction timing and faults.
 
-## Laser Bank Power Enable
-- 3.3V, GPIO to enable power driver
-- Switches gate of a BSS138 that connects the not inhibit of the power IC to ground
-- Default is to be off after reboot. The Nucleo devicetree hog drives to this state.
-- At the nucleo it is ACTIVE_LOW with a pull up GPIO_PULL_UP
+PB2 drives a BSS138 stage controlling the bank power inhibit. The active-low
+logical enable defaults off; heater auto policy can subsequently power the bank.
+Off-board DS2408 relays switch PD YJ, PD HK and the auxiliary heater:
 
-For board files:
-- Nucleo: CN9 13 D72 IO PB2 -
-- MB1404 solder bridges SB61, SB66 must be changed to OFF, ON for PB2 to connect to CN9 pin 13 as GPIO.
+| Relay label | Zero-based DS2408 pin | Logical function |
+|---|---|---|
+| P1 | 0 | YJ PD power |
+| P2 | 1 | HK PD power |
+| P3 | 2 | Laser-bank auxiliary heater |
 
-## Off-board power switch for photodiodes and laser bank aux heater
-Uses a 1-Wire DS2408 GPIO chip controlling relays on P1-P3
-- The data line has an external 3.3 V pull-up and connects directly to the Nucleo
-  without level shifting.
-- Zephyr's stock UART-backed 1-Wire driver uses 115200 baud for data and 9600
-  baud for reset, producing an approximately 521 us reset-low pulse. The
-  [DS2408 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/ds2408.pdf)
-  specifies 660–720 us at this pull-up voltage (page 3). The owner accepts the
-  stock timing for this board: the previous 480 us GPIO reset also operated
-  outside that specification. Revisit reset timing only if observed failures
-  justify it; no reset-timing extension is applied.
-- Hardware assumption: successful communication with the DS2408 establishes that
-  power is available for its PD/heater loads. Logical relay states establish which
-  loads are powered; no additional downstream power-good feedback is required.
-- Housekeeping checks the port approximately once per second. Five seconds without
-  a response is an operational fault; a single failed transaction warns. The
-  throughput loop consumes confirmed state without 1-Wire I/O.
-- P1 is the power switch for the YJ photodiode
-- P2 is the power switch for the HK photodiode
-- P3 is the power switch for the laser bank aux heater
-- The DS2408 driver should set all expander outputs to their overlay-configured defaults during driver init in the same 
-  manner as any system GPIOs when the chip is present. Absent configuration, driver should not configure the chip 
-  (allowing default power-on or current config to persist). Application device startup code will enforce startup logic 
-  state for the relays. 
-- If the off-board relay expander is missing at boot, firmware emits a (non-droppable) warning,
-  reports the relay GPIO expander offline in `status`, and ignores relay power commands with a warning.
-- The DS2408 is intentionally not configured through a generic GPIO hog because
-  Zephyr's hog init aborts on a not-ready GPIO controller. The relay board is an
-  allowed missing-at-boot fault (the mems' PCAL being unavaialble would indicate a much larger, PCB, problem).
+All are active-low, with inactive/off startup intent. The custom DS2408 driver
+applies `init-gpios` defaults when available; application setup enforces its own
+startup state. This allowed missing-at-boot peripheral is not a generic GPIO hog:
+a hog would abort on a not-ready controller. Offline commands report errors;
+warnings are best-effort, not guaranteed delivery. Successful DS2408 communication
+is the current proxy for load-power availability; there is no downstream power-good
+measurement. Status reports confirmed logical relay state.
 
-For board files:
-- Nucleo: CN9 15 D71 IO PE9, UART12_RX (AF6) with TX/RX swap and single-wire
-  mode. Pinctrl configures open-drain drive with the external pull-up.
-- MB1404 solder bridges for PE9 must route it to Zio/ST morpho:
-  SB35 OFF, SB67 ON.
+Both 1-Wire buses have external 3.3 V pull-ups and use stock UART timing:
+115200 baud data, 9600 baud reset (about 521 µs low). The accepted DS2408 reset
+timing is outside its documented 660–720 µs range at this pull-up voltage; earlier
+GPIO timing also fell outside it. This is a known board assumption, not a claim
+of datasheet compliance. Revisit it if failures warrant. The pinned serial-driver
+mutex limitation is described in [architecture](architecture.md#hardware-control).
+Ambient DS18B20 conversion can take 750 ms on the app blocking queue.
 
-## DS18B20 1Wire Temperature Sensor
-- 3.3v digital temp sensor for good measure
+## Tracing a fault
 
-For board files:
-- Nucleo: CN9 30 D64 IO PG1, UART9_TX (AF11) in single-wire mode, open-drain
-  with the existing external pull-up. Uses the same stock serial 1-Wire timings.
-
-Nucleo board pins in use:
-- USB
-    - PB13 USB PD controller side for the CC1 pin
-    - PA12 USB differential pair P
-    - PA11 USB differential pair M
-    - PB14 USB PD controller side for the CC2 pin
-- STLINK-V3EC
-    - PC3 USB PD controller side for the CC1 pin
-    - PC4 USB PD controller side for the CC2 pin
-    - PB15 USB differential pair P
-    - PB14 USB differential pair M
-- RMII interface for ETH
+Start with the detected profile and commanded path, then follow its physical
+channel through the tables above. For switching, distinguish requested state,
+PCAL output, transistor-side pulse and actual optical continuity. For attenuation,
+compare DAC code, pre-amplifier voltage and FVOA drive before judging the optical
+model. For a PD fault, check relay state, input voltage, ADC raw code and configured
+dark before interpreting computed nW. For a laser fault, preserve controller
+readbacks and communication errors separately from cached current/power estimates.
+The [review ledger](human_review_required.md) records unresolved drawing/firmware
+questions; a drawing export date alone does not resolve installed-board evidence.

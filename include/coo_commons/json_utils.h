@@ -64,6 +64,7 @@ int coo_json_match_string_choice(const char *text,
 				 int *value);
 
 /* Return values use enum coo_json_extract_status. */
+/** Extract a JSON boolean; return COO_JSON_EXTRACT_OK, MISSING, or ERR. */
 int coo_json_extract_bool(const char *json, const char *key, bool *value);
 /** Extract an unsigned integer; reject signs, fractions, and overflow. */
 int coo_json_extract_u32(const char *json, const char *key, uint32_t *value);
@@ -112,6 +113,7 @@ int coo_json_extract_optional_u16(const char *json, const char *key,
 int coo_json_extract_optional_double_range(const char *json, const char *key,
 					   double *value, bool *changed,
 					   double min_value, double max_value);
+/** Copy a JSON string into the bounded output; return COO_JSON_EXTRACT_OK, MISSING, or ERR. */
 int coo_json_extract_string(const char *json, const char *key, char *out, size_t out_len);
 /**
  * Extract a JSON string field and match it against a static choice table.
@@ -140,6 +142,7 @@ int coo_json_extract_object(const char *json, const char *key, char *out, size_t
  */
 int coo_json_append(char *buf, size_t buf_len, size_t *offset,
 		    const char *fmt, ...);
+/** Append formatted text using a va_list; advance offset only on success, return -ENOSPC on overflow. */
 int coo_json_vappend(char *buf, size_t buf_len, size_t *offset,
 		     const char *fmt, va_list args);
 /**

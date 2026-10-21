@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Notebook-friendly MQTT client for the HISPEC FIB PCB firmware.
+"""Convenience MQTT test client and lab helpers for HISPEC FIB PCB firmware.
+
+The official Python API is external to this repository.
 
 The firmware command API is JSON over MQTT v5.  This module keeps JSON as a
 transport detail: command methods accept ordinary Python arguments and return
@@ -1489,6 +1491,7 @@ class AttenuatorGridFit(ResponseRepr):
     accepted: bool
 
     def coeff_args(self) -> dict[str, Any]:
+        """Return shape/gain terms; add leakage floor and calibrated limit before atten_coeff use."""
         return {
             "dac1": {
                 "fvoa_50pct_mv": self.dac1[0],
@@ -1503,17 +1506,21 @@ class AttenuatorGridFit(ResponseRepr):
         }
 
     def b1(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate the dimensionless erf coordinate from DAC1 output mV and fitted gain."""
         dac = np.asarray(dac_mv, dtype=float)
         return self.dac1[1] * ((self.gain1 * dac) - self.dac1[0])
 
     def b2(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate the dimensionless erf coordinate from DAC2 output mV and fitted gain."""
         dac = np.asarray(dac_mv, dtype=float)
         return self.dac2[1] * ((self.gain2 * dac) - self.dac2[0])
 
     def b1_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate DAC1 erf coordinate from post-amplifier drive volts."""
         return self.b1(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain1)
 
     def b2_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate DAC2 erf coordinate from post-amplifier drive volts."""
         return self.b2(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain2)
 
     def model_mv(
@@ -1521,6 +1528,7 @@ class AttenuatorGridFit(ResponseRepr):
         dac1_mv: np.ndarray | Sequence[float],
         dac2_mv: np.ndarray | Sequence[float],
     ) -> np.ndarray:
+        """Predict net PD mV from the two DAC-output mV arrays using this grid fit."""
         tx = _atten_model_tx_from_b(self.b1(dac1_mv)) * _atten_model_tx_from_b(self.b2(dac2_mv))
         return self.estimated_unsaturated_unattenuated_pd_mv * tx
 
@@ -1541,13 +1549,16 @@ class AttenuatorSliceFit(ResponseRepr):
     accepted: bool
 
     def b(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate the dimensionless erf coordinate from DAC-output mV."""
         dac = np.asarray(dac_mv, dtype=float)
         return self.dac[1] * ((self.gain * dac) - self.dac[0])
 
     def b_from_fvoa(self, fvoa_v: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Evaluate the erf coordinate from post-amplifier drive volts."""
         return self.b(np.asarray(fvoa_v, dtype=float) * 1000.0 / self.gain)
 
     def model_mv(self, dac_mv: np.ndarray | Sequence[float]) -> np.ndarray:
+        """Predict net PD mV with the other attenuator held at this fitted slice."""
         return self.sweep_plateau_pd_mv * _atten_model_tx_from_b(self.b(dac_mv))
 
 
@@ -1583,9 +1594,11 @@ class AttenuatorGridDataset(ResponseRepr):
         )
 
     def to_recarray(self, *, copy: bool = False) -> np.recarray:
+        """Return raw records, sharing storage unless copy=True."""
         return self.records.copy().view(np.recarray) if copy else self.records
 
     def to_dataframe(self):
+        """Return local records as a pandas DataFrame; requires pandas and performs no board I/O."""
         try:
             import pandas as pd
         except ImportError as exc:
@@ -1593,6 +1606,7 @@ class AttenuatorGridDataset(ResponseRepr):
         return pd.DataFrame.from_records(self.records, columns=ATTEN_GRID_DTYPE.names)
 
     def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        """Select named record fields; return one array for one name, otherwise a tuple."""
         missing = [name for name in names if name not in self.records.dtype.names]
         if missing:
             raise HispecFibError(f"unknown attenuator grid field(s): {', '.join(missing)}")
@@ -1600,6 +1614,7 @@ class AttenuatorGridDataset(ResponseRepr):
         return arrays[0] if len(arrays) == 1 else arrays
 
     def save(self, path: str = ATTEN_GRID_DEFAULT_FILE) -> str:
+        """Write raw grid records and channel to compressed NPZ; return the supplied path."""
         np.savez_compressed(
             path,
             records=np.asarray(self.records, dtype=ATTEN_GRID_DTYPE),
@@ -1609,6 +1624,7 @@ class AttenuatorGridDataset(ResponseRepr):
 
     @classmethod
     def load(cls, path: str = ATTEN_GRID_DEFAULT_FILE) -> "AttenuatorGridDataset":
+        """Read grid records and channel from NPZ with pickle loading disabled."""
         with np.load(path, allow_pickle=False) as data:
             records = _coerce_atten_grid_records(np.asarray(data["records"]))
             channel = str(np.asarray(data["channel"]).item())
@@ -1654,6 +1670,12 @@ class AttenuatorGridDataset(ResponseRepr):
         max_mv: float = PD_ADC_USABLE_MV,
         estimated_unsaturated_unattenuated_pd_mv: float | None = None,
     ) -> AttenuatorGridFit:
+        """Fit two selected slices and a joint grid model, without writing coefficients.
+
+        The other-drive selections are post-amplifier volts. Ordinary values
+        use min_mv/max_mv in net ADC mV; floor/ceiling points are censored and
+        raw ADC clipping is checked separately. Requires SciPy. Acceptance is
+        a numerical diagnostic, not physical validation or firmware installation."""
         rec = self.records
         y = np.asarray(rec.pd_mv, dtype=float)
         gain1 = float(np.nanmedian(rec.gain1))
@@ -1785,6 +1807,11 @@ class AttenuatorGridDataset(ResponseRepr):
         max_mv: float = PD_ADC_USABLE_MV,
         sweep_plateau_pd_mv: float | None = None,
     ) -> AttenuatorSliceFit:
+        """Fit one drive sweep at the nearest recorded other_fvoa_v, in volts.
+
+        Fit limits and optional plateau are net ADC mV. Requires SciPy; reports
+        the actual selected voltage and residual metrics without modifying data
+        or hardware. Raw clipped samples remain censored."""
         try:
             from scipy.optimize import least_squares
         except ImportError as exc:
@@ -1901,6 +1928,7 @@ class AttenuatorGridDataset(ResponseRepr):
         residual_clip_db: float = 12.0,
         figsize: tuple[float, float] = (12.0, 9.0),
     ):
+        """Plot grid data, fitted surface and residuals; fit locally if none is supplied."""
         import matplotlib.pyplot as plt
         from matplotlib.colors import Normalize
 
@@ -2336,6 +2364,7 @@ class AttenuatorGridDataset(ResponseRepr):
         max_mv: float = PD_ADC_USABLE_MV,
         figsize: tuple[float, float] = (11.0, 8.0),
     ):
+        """Plot a selected slice or all slices with local fits; no board requests."""
         import matplotlib.pyplot as plt
 
         sweep = _require_choice("sweep", sweep, ("dac1", "dac2"))  # type: ignore[assignment]
@@ -2662,9 +2691,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         )
 
     def to_recarray(self, *, copy: bool = False) -> np.recarray:
+        """Return raw records, sharing storage unless copy=True."""
         return self.records.copy().view(np.recarray) if copy else self.records
 
     def to_dataframe(self):
+        """Return local records as a pandas DataFrame; requires pandas and performs no board I/O."""
         try:
             import pandas as pd
         except ImportError as exc:
@@ -2672,6 +2703,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         return pd.DataFrame.from_records(self.records, columns=ATTEN_CAL_DTYPE.names)
 
     def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        """Select named record fields; return one array for one name, otherwise a tuple."""
         missing = [name for name in names if name not in self.records.dtype.names]
         if missing:
             raise HispecFibError(f"unknown attenuator calibration field(s): {', '.join(missing)}")
@@ -2679,6 +2711,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         return arrays[0] if len(arrays) == 1 else arrays
 
     def physical(self, physical: Literal["dac1", "dac2"]) -> "AttenuatorCalibrationDataset":
+        """Select dac1 or dac2 raw records while retaining the acquisition metadata."""
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
         records = self.records[np.asarray(self.records.physical).astype(str) == physical]
         return AttenuatorCalibrationDataset(records=records.view(np.recarray), meta=self.meta)
@@ -2788,6 +2821,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
     ) -> np.recarray:
+        """Copy raw records and add bridge-normalized attenuation and model diagnostics.
+
+        Explicit coefficients override downloaded fit metadata. Missing reference
+        or model information leaves unavailable derived values as NaN; raw values
+        remain unchanged. This does not download, fit or install coefficients."""
         out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
         for name in ATTEN_CAL_DTYPE.names:
             out[name] = self.records[name]
@@ -2897,6 +2935,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         return out.view(np.recarray)
 
     def bridge_table(self):
+        """Return accepted normalization bridges as a pandas DataFrame; no I/O."""
         try:
             import pandas as pd
         except ImportError as exc:
@@ -3149,6 +3188,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         max_db: float = 80.0,
         figsize: tuple[float, float] = (9.0, 7.0),
     ):
+        """Plot the supplied two-drive model with optional acquisition overlay; no fitting or writes."""
         import matplotlib.pyplot as plt
         from matplotlib.colors import Normalize
 
@@ -3393,6 +3433,7 @@ class ThroughputSample(ResponseRepr):
     flags: tuple[str, ...] = ()
 
     def as_tuple(self) -> tuple[Any, ...]:
+        """Return fields in THROUGHPUT_DTYPE order for local record-array storage."""
         return tuple(getattr(self, name) for name in THROUGHPUT_DTYPE.names)
 
 
@@ -3797,6 +3838,12 @@ def decode_warning(payload: bytes | str) -> WarningEvent:
 
 
 def decode_throughput_payload(payload: bytes | str) -> ThroughputSample:
+    """Decode one JSON or fixed-layout binary packet without I/O.
+
+    JSON null/missing floating fields become NaN. Binary packets must have the
+    exact current size; their laser name is empty, with channel/wavelength
+    carrying source identity. Malformed packets raise rather than becoming samples.
+    """
     if isinstance(payload, str) or payload[:1] == b"{":
         data = _loads(payload)
         if not isinstance(data, Mapping):
@@ -3861,6 +3908,7 @@ class ThroughputMonitor:
         self._thread = threading.Thread(target=self._run, name=f"hispec-tput-{channel}", daemon=True)
 
     def start(self) -> ThroughputMonitor:
+        """Attach this one-use collector and start decoding; does not start firmware measurement."""
         self._running.set()
         self.client._register_throughput_monitor(self)
         self._thread.start()
@@ -3889,6 +3937,7 @@ class ThroughputMonitor:
             self._thread.join(timeout=2.0)
 
     def clear(self) -> None:
+        """Clear retained samples, command events and receive count; keep collection running."""
         with self._lock:
             self._samples.clear()
             self._commands.clear()
@@ -3911,15 +3960,18 @@ class ThroughputMonitor:
                 "command", "arguments", "issue_utc_ms", "ack_utc_ms", "receipt_utc_ms", "ack_clock", "ok", "error"])
 
     def enqueue_payload(self, payload: bytes) -> None:
+        """Queue a raw telemetry packet for the decoder only while collection is running."""
         if self._running.is_set():
             self._messages.put(payload)
 
     def to_recarray(self) -> np.recarray:
+        """Return a locked snapshot of retained samples, oldest first; never query the board."""
         with self._lock:
             data = list(self._samples)
         return np.array(data, dtype=THROUGHPUT_DTYPE).view(np.recarray)
 
     def to_dataframe(self):
+        """Return local records as a pandas DataFrame; requires pandas and performs no board I/O."""
         try:
             import pandas as pd
         except ImportError as exc:
@@ -3927,6 +3979,7 @@ class ThroughputMonitor:
         return pd.DataFrame.from_records(self.to_recarray(), columns=THROUGHPUT_DTYPE.names)
 
     def arrays(self, *names: str) -> tuple[np.ndarray, ...] | np.ndarray:
+        """Select named record fields; return one array for one name, otherwise a tuple."""
         rec = self.to_recarray()
         missing = [name for name in names if name not in rec.dtype.names]
         if missing:
@@ -4168,18 +4221,22 @@ class AttenuatorGridProbe:
         self._thread = threading.Thread(target=self._run, name="hispec-atten-grid", daemon=True)
 
     def start(self) -> AttenuatorGridProbe:
+        """Start this one-use background grid acquisition and return its handle."""
         self._thread.start()
         return self
 
     @property
     def done(self) -> bool:
+        """Whether acquisition finished, successfully or with an error."""
         return self._done.is_set()
 
     @property
     def error(self) -> BaseException | None:
+        """The captured acquisition exception, or None; inspect done to establish completion."""
         return self._error
 
     def wait(self, timeout_s: float | None = None) -> AttenuatorGridDataset:
+        """Join and return the dataset or rethrow the worker error; timeout does not cancel the probe."""
         self._thread.join(timeout=timeout_s)
         if self._thread.is_alive():
             raise TimeoutError("attenuator grid probe is still running")
@@ -4190,6 +4247,7 @@ class AttenuatorGridProbe:
         return self._dataset
 
     def save(self, path: str = ATTEN_GRID_DEFAULT_FILE) -> str:
+        """Wait for successful acquisition and save its dataset as compressed NPZ."""
         return self.wait().save(path)
 
     def _run(self) -> None:
@@ -4202,7 +4260,11 @@ class AttenuatorGridProbe:
 
 
 class HispecFibPcb:
-    """MQTT client for a HISPEC FIB PCB.
+    """Convenience MQTT test client, not the external official Python API.
+
+    Methods expose command keys and typed replies predictably: omit update
+    arguments to query; supply them to set. Zero/False are updates, None omits
+    a field. See doc/python_helpers.md for collectors and offline lab helpers.
 
     ``device`` is the formal MQTT device name, for example ``"hsfib-tib"``.
     Board-profile names are intentionally not part of the public API.
@@ -4273,6 +4335,7 @@ class HispecFibPcb:
 
     @property
     def warnings(self) -> tuple[WarningEvent, ...]:
+        """Return a locked snapshot of the bounded received-warning history; no board query."""
         with self._warning_lock:
             return tuple(self._warnings)
 
@@ -4318,6 +4381,7 @@ class HispecFibPcb:
             raise ExceptionGroup("throughput shutdown failed while closing client", errors)
 
     def help(self) -> HelpSummary:
+        """Query command keys and MQTT topic prefixes supported by the connected firmware."""
         data = self._request_json("help")
         return HelpSummary(
             device=str(data["device"]),
@@ -4327,6 +4391,7 @@ class HispecFibPcb:
         )
 
     def help_options(self) -> HelpOptions:
+        """Query board-specific laser names and supported optical route pairs."""
         data = self._request_json("help/options")
         return HelpOptions(
             board=str(data["board"]),
@@ -4380,6 +4445,7 @@ class HispecFibPcb:
         prefer_dhcpdns: bool | None = None,
         persist: bool = False,
     ) -> IpConfig | CommandOk | PartialSupport:
+        """Query network configuration or update supplied fields; persist requests NVS storage."""
         payload = _optional_payload(
             ip=ip,
             ntp=ntp,
@@ -4401,6 +4467,7 @@ class HispecFibPcb:
         return CommandOk()
 
     def mqtt(self, broker: str | None = None, *, persist: bool = False) -> MqttConfig | CommandOk:
+        """Query broker configuration or set its address, optionally in NVS."""
         if broker is None:
             if persist:
                 raise HispecFibError("broker is required when persisting MQTT settings")
@@ -4442,9 +4509,11 @@ class HispecFibPcb:
         )
 
     def reboot(self) -> CommandOk:
+        """Request the firmware delayed reboot; acknowledgement precedes disconnection."""
         return self._request_ok("reboot")
 
     def serialguard(self, seconds: int | None = None) -> SerialGuardStatus | CommandOk:
+        """Query or set serial override duration in seconds; active override blocks MQTT mutations."""
         if seconds is None:
             return _dataclass_from(SerialGuardStatus, self._request_json("serialguard"))
         return self._request_ok(
@@ -4452,6 +4521,7 @@ class HispecFibPcb:
         )
 
     def mems(self) -> tuple[MemsSwitchState, ...]:
+        """Query all profile switches, including state and fractional duty cycle."""
         return tuple(
             MemsSwitchState(
                 name=name,
@@ -4473,6 +4543,11 @@ class HispecFibPcb:
         off_in_s: int | None = None,
         force: bool = False,
     ) -> MemsSwitchDetail:
+        """Query a switch or set its state, optional duty cycle and timing.
+
+        state is required for updates; A/B are firmware control states, not
+        optical port names. force can displace split ownership. See the command
+        specification for cycle_ms and off_in_s behavior."""
         key = f"mems/{name}"
         if state is None and duty_cycle is None and cycle_ms is None and off_in_s is None and not force:
             return _decode_mems_detail(name, self._request_json(key))
@@ -4496,6 +4571,7 @@ class HispecFibPcb:
     def mems_route(
         self, input: str | None = None, output: str | None = None, *, force: bool = False,
     ) -> MemsRoutes | CommandOk:
+        """Query active routes or apply a named input/output pair; force can displace a splitter."""
         if input is None and output is None and not force:
             active = self._request_json("mems/route").get("active_routes", {})
             return MemsRoutes(
@@ -4588,6 +4664,7 @@ class HispecFibPcb:
         return pd.DataFrame(rows, columns=["route", "laser", "transmission", "loss_db"])
 
     def laser_tune(self, name: str, tune_nm: float | None = None) -> LaserTune | CommandOk:
+        """Query stored tune offset or request a wavelength offset in nm; zero clears the offset."""
         _require_choice("name", name, LASER_NAMES)
         if tune_nm is None:
             return _dataclass_from(LaserTune, self._request_json("laser/tune", {"name": name}))
@@ -4721,6 +4798,7 @@ class HispecFibPcb:
         return self._request_ok("laser/settings", {"name": name, "settings": settings, "persist": persist})
 
     def laser_status(self, name: str) -> LaserEngineeringStatus:
+        """Read engineering controller status; unavailable bank-off readings remain None."""
         _require_choice("name", name, LASER_NAMES)
         data = self._request_json("laser/status", {"name": name})
         return _dataclass_from(
@@ -4757,6 +4835,7 @@ class HispecFibPcb:
         return total
 
     def laser_bankpower(self, mode: Literal["auto", "override_on", "override_off"] | None = None) -> LaserBankPower:
+        """Query bank power or set its persisted auto/override mode, with immediate power effects."""
         if mode is None:
             return _dataclass_from(LaserBankPower, self._request_json("laser/bankpower"))
         _require_choice("mode", mode, OVERRIDE_MODES)
@@ -4777,6 +4856,7 @@ class HispecFibPcb:
         return _dataclass_from(LaserBankHeater, self._request_json(f"laser/bankheater/{mode}"))
 
     def laser_clearfaults(self) -> LaserBankClearFaults:
+        """Cancel laser calibration and check LD overcurrent latches; may power-cycle the whole bank."""
         return _dataclass_from(LaserBankClearFaults, self._request_json("laser/clearfaults"))
 
     def atten(
@@ -4792,6 +4872,11 @@ class HispecFibPcb:
         value1_mv: float | None = None,
         value2_mv: float | None = None,
     ) -> AttenuatorState:
+        """Query a logical attenuator pair or set transmission, attenuation or raw DACs.
+
+        value fields are linear transmission fractions, *_db positive dB loss,
+        and *_mv DAC-output mV before the amplifier. Firmware validates allowed
+        combinations. Updates can partially succeed; query state after an error."""
         _require_choice("laser", laser, ATTENUATOR_NAMES)
         payload: dict[str, float] = {}
         if value is not None:
@@ -4832,6 +4917,12 @@ class HispecFibPcb:
         drive_gain: float = ATTENUATOR_DEFAULT_GAIN,
         channel: Literal["yj", "hk"] | None = None,
     ) -> AttenuatorGridDataset:
+        """Acquire a manual DAC-output mV grid with the named laser at laser_pct percent.
+
+        Reads existing dark, sets laser output and each DAC pair, then reads PD
+        windows after dwell_s. It neither configures the optical path nor stops
+        the laser afterward. Caller owns routing, PD power and cleanup. Supplied
+        drive_gain only labels post-amplifier volts; it does not calibrate gain."""
         _require_choice("laser", laser, LASER_NAMES)
         if channel is None:
             channel = _LASER_TO_PD_CHANNEL[laser]  # type: ignore[assignment]
@@ -4908,6 +4999,7 @@ class HispecFibPcb:
         )
 
     def attenuator_grid_probe_async(self, laser: str, **kwargs: Any) -> AttenuatorGridProbe:
+        """Start attenuator_grid_probe in a worker; its handle provides wait/save, not automatic shutdown."""
         return AttenuatorGridProbe(self, (laser,), kwargs).start()
 
     def atten_settings(self, laser: str, *, dac1: Mapping[str, float] | None = None,
@@ -5176,6 +5268,7 @@ class HispecFibPcb:
         dwell_ms: int = 300,
         persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
+        """Query calibration status or start firmware acquisition with laser and output; persist saves accepted fits."""
         if laser is None and output is None and fiber == "M" and dwell_ms == 300 and not persist:
             return _decode_atten_cal_status(self._request_json("atten/calibrate"))
         if laser is None or output is None:
@@ -5323,6 +5416,7 @@ class HispecFibPcb:
         return LaserCalibrationDataset(records=records, meta=meta, status=status)
 
     def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
+        """Query cached single-sample and window PD values for one or both channels."""
         if channel is None:
             return _decode_pd(self._request_json("pd"))
         channel = _require_choice("channel", channel, PD_CHANNELS)
@@ -5338,6 +5432,11 @@ class HispecFibPcb:
         reset_lowest: bool | None = None,
         persist: bool = False,
     ) -> PhotodiodeDark:
+        """Query dark status, request a timed capture, or supply forced dark values in mV.
+
+        Capture completion is asynchronous. reset_lowest affects the measured
+        floor history; persist requests storage. Firmware owns settling,
+        illumination, valid ranges and allowed field combinations."""
         _require_choice("channel", channel, PD_CHANNELS)
         payload = _optional_payload(
             duration_ms=duration_ms,
@@ -5430,6 +5529,7 @@ class HispecFibPcb:
         cycle_ms: int | None = None,
         stop_in_s: int = 0,
     ) -> SplitState:
+        """Query a split or set delivered ratios 1/2; ratio 3 is the remainder and firmware compensates path loss."""
         _require_choice("channel", channel, PD_CHANNELS)
         if ratio1 is None and ratio2 is None and cycle_ms is None and stop_in_s == 0:
             return _decode_split_state(self._request_json(f"mems/split/{channel}"))
@@ -5720,10 +5820,12 @@ class HispecFibPcb:
         *,
         max_samples: int = 20000,
     ) -> ThroughputMonitor:
+        """Attach a bounded local collector to existing streams; does not start a firmware measurement."""
         monitor = ThroughputMonitor(self, channel, max_samples=max_samples)
         return monitor.start()
 
     def smoke_test(self) -> SimpleNamespace:
+        """Query status, UTC, temperatures and MEMS; returns results without deliberate output changes."""
         return SimpleNamespace(
             status=self.status(),
             time=self.time(),
@@ -5959,6 +6061,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the terminal test client; connect for the requested query/listener."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = _build_arg_parser().parse_args(argv)
     with HispecFibPcb(

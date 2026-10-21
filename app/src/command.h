@@ -27,23 +27,29 @@
 #define MAX_PENDING_COMMANDS 2
 
 /* Handler prototypes for command.c-owned commands (get/set where defined). */
+/** Format configured network policy and runtime status; response publication belongs to main. */
 int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Validate/apply network policy and optional NVS persistence; DHCP completion is asynchronous. */
 int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Copy broker configuration into the reply; no broker connection is attempted here. */
 int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Validate/resolve and save broker intent; main owns reconnect/revert. May block on DNS/NVS. */
 int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Format current UTC and SNTP status; no synchronization request is sent. */
 int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Set UTC through the shared RTC guard; may perform RTC I/O, never persists a last-time NVS value. */
 int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
+/** Assemble bounded status; optional laser/DAC sections can block on hardware reads. */
 int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Read available temperatures without powering the bank; idle TECs alone define bank temperature. */
 int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
-/**
- * @brief Initialize command runtime identity, queues, hooks, and reboot work.
- *
- * Call once before starting command ingress threads.
- */
-/* Reboot preparation uses the app queue; it can block on Modbus completion. */
 struct k_work_q;
+/** Initialize runtime identity, queues, hooks and reboot work before ingress.
+ * Reboot preparation uses the app queue because it can block on Modbus.
+ * Configuration only: main starts the supplied queue before consumers run.
+ */
 int command_runtime_init(struct k_work_q *blocking_work_q);
 
 /** Return the app's configured command runtime for main-loop and warning use. */

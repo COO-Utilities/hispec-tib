@@ -1,5 +1,17 @@
 # Control and Telemetry Interface Specification
-Draft 0.1
+
+This is the canonical wire specification for MQTT and serial commands, responses
+and telemetry. Operational explanations and equations are indexed in
+[Mathematics and reported uncertainty](mathematics.md).
+
+The repository's [Python command and lab helpers](python_helpers.md) are a
+**convenience test tool**, with typed results, collectors and analysis helpers.
+They are not the official Python API; that API is maintained outside this
+repository. Their core convention mirrors the wire interface: selectors alone
+query; supplied values update; `None` omits a value while zero and `False` remain
+explicit values. Normal command methods decode the matching firmware response
+without issuing an extra readback. The dedicated guide explains the additional
+operations performed by acquisition and plotting helpers.
 
 
 ## MQTT Topics (roles)
@@ -952,8 +964,8 @@ Python `HispecFibPCBError` text includes topic and available `rc`; `.topic` and
 For an already emitting laser with valid preparation, level changes write only
 required current/TEC setpoints. Startup and invalidated preparation retain the
 full identity/profile/control sequence. Failed control operations or confirmed
-controller faults revoke preparation. Diagnostic read failures retain setpoints;
-sustained communication loss faults operation separately from numerical estimates. See [laser operation and timing](api/maiman_laser.md).
+controller faults invalidate operational health without erasing confirmed configuration. Diagnostic read failures retain setpoints;
+sustained communication loss faults operation separately from numerical estimates. See [laser operation and timing](laser_operation.md).
 
 (laser-status)=
 ### `laser/status`
@@ -962,8 +974,7 @@ sustained communication loss faults operation separately from numerical estimate
   {"name":"<lasername>"}
   ```
 
-Detailed engineering status derived from the Maiman status query used in
-`refrence_docs_examples/lasers.py`. Includes raw state, lock, and TEC-state
+Detailed engineering status includes raw state, lock, and TEC-state
 registers, measured diode/TEC voltage and current, driver limits, PID, hard
 device-id verification, configured expected driver serial, `blocking_lock`,
 `blocked_reason`, and interlock flags. This command may be slower than
@@ -1191,17 +1202,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     - TEC max current must be greater than zero and no higher than the compiled-in diode datasheet maximum for that laser.
 
 
-Python convenience: `pcb.laser_bank_power_mw(names=None)` reads selected lasers'
-existing engineering status sequentially (all six by default) and sums
-`diode_v * curr_meas_ma + abs(tec_v * tec_ma)` in mW. It estimates electrical
-power delivered to diode/TEC outputs, excluding driver losses, heater and other
-bank input power; the readings are not simultaneous. Confirmed unpowered drivers
-and an empty selection contribute zero. Missing/nonfinite powered readings or
-nonzero powered `read_rc` make the whole total NaN; request exceptions propagate.
-Names/duplicates are rejected before any request. It makes no writes or power
-changes and introduces no firmware endpoint.
-
-(laserbank-power)=
+(laser-calibrate)=
 ### `laser/calibrate`
 
 - Query with no payload. Start with `laser` and same-band `output` (`yj_ao`,
@@ -1272,6 +1273,7 @@ changes and introduces no firmware endpoint.
   Data is a `LaserCalibrationDataset` with a NumPy record array, frozen metadata
   and a typed status snapshot. Save before another calibration start.
 
+(laserbank-power)=
 ### `laser/bankpower`
 - **No payload -> laser-bank power state:**
   ```json
@@ -1508,9 +1510,9 @@ command wait budget, this command returns `{"error":"busy"}`.
   - Manual dB/linear and voltage commands retain full-range access. Values beyond
     the calibrated endpoint are rough estimates. Autolevel uses individual
     calibrated limits and switches to laser adjustment when they are exhausted.
-  - Records predating `max_calibrated_db` are rejected by size; other NVS settings
-    are preserved. The fitting update keeps the current record layout; recalibrate
-    to obtain its new fits.
+  - Schema 14 clears the app NVS store when the schema marker differs; see
+    [settings reset policy](settings.md#schema-reset).
+
   - `persist` is optional and defaults to false. A non-persistent coefficient
     update changes runtime behavior until reboot or a later coefficient command.
   - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
@@ -1689,102 +1691,25 @@ available without waiting for the other fit.
   - TIB automatic calibration uses `laser`, `output`, and `fiber`; the laser
     selects the logical attenuator pair and outbound route input, while `fiber`
     selects the photodiode route as in `measure_throughput`.
-  - TIB automatic calibration requires the selected photodiode to already be
-    powered and producing valid sampler data. It stops laser emission, sets
-    both physical attenuators to the maximum firmware DAC-drive voltage, sets
-    the photodiode internal configurable-window duration to `dwell_ms`, rounded
-    by the PD owner to whole samples. For each measurement, after both DAC writes
-    it sleeps 100 ms for FVOA settling, then resets that window and waits for its
-    full sample count. The settling wait is additional to `dwell_ms`; conversions
-    begun before reset are excluded. No extra conversion-time pad or private
-    calibration dark is used. Each point uses the photodiode configurable
-    window's configured dark-subtracted `mean_net_mv`; updating dark remains a
-    separate `pd/dark/<channel>` operation.
-  - Automatic calibration uses SNR for the dim edge and a separate headroom
-    target for companion searches. A measurement is usable when its raw window
-    maximum is below the manufacturer's **2000 mV photodiode saturation/linearity
-    limit**, expressed at the ADC input after the divider, and its
-    dark-subtracted signal is at least 5 sigma above the sample mean
-    uncertainty. This photodiode limit is not an output-voltage clamp: the
-    detector can produce voltages beyond it and beyond the ADC range. The ADC
-    clips at **2048 mV** full scale; its maximum reported code is **2047.9375 mV**.
-    Calibration rejects photodiode saturation before ADC clipping occurs.
-    Initial-reference and bridge searches select usable candidates
-    with raw window maxima below **1850 mV**, leaving headroom for subsequent
-    fluctuations. A usable record between 1850 and 2000 mV remains `ok` but is
-    too bright for search selection. Laser fallback and bridge-search recovery
-    use the same 1850 mV search target.
-    Low-but-clean points are retained and may be fit inputs. Saturated,
-    below-SNR, and ADC-error measurements are retained as records but are not
-    fit inputs.
-  - Automatic calibration does not use an FVOA datasheet voltage schedule
-    to choose calibration points. For each physical FVOA it binary-searches the
-    companion FVOA to find the lowest usable companion DAC below the peak target,
-    selects that measured initial-probe record as the open reference, linearly sweeps the
-    DUT from 0 mV to maximum drive in
-    `ATTEN_CAL_SWEEP_STEP_MV` increments, skips saturated bright-side sweep
-    records as diagnostics, and bridge-normalizes when the sweep reaches the
-    below-SNR dim edge. `ATTEN_CAL_SEARCH_MIN_STEP_MV` is the companion binary
-    search resolution, not the DUT sweep step. Bridge normalization holds the
-    DUT, selects the latest usable DUT point as the bridge-before record,
-    searches the companion FVOA, and records the accepted bridge probe as the
-    bridge-after record in the bridge table. The bridge ratio updates the
-    segment scale and its uncertainty. If there is no usable DUT point in the
-    current segment, the last accepted bridge-after record can anchor another
-    bridge when it is classified `ok` and matches the current segment and
-    companion DAC voltage. A single below-SNR point after a bridge is not by
-    itself a reason to finish the sweep; lacking both eligible anchors is an
-    acquisition error.
-  - Firmware does not try to classify or discard whole nonlinear regions. It
-    reports every retained acquisition record, and the fit uses only records
-    derived as fit candidates by classification and the minimum transmission limit,
-    restricted to the contiguous prefix including the first measured point above
-    55 dB. The extra point constrains the operating boundary in both fitting stages.
-    Valid sweep readings equal to or brighter than the measured reference remain
-    eligible. Their measured dB may be zero or negative; the model stays nonnegative.
-    External analysis can inspect all retained records regardless of fit success.
-  - Automatic calibration uses the sampler-owned internal photodiode
-    configurable window. It does not start a separate photodiode measurement or
-    a new calibration thread; the throughput monitor thread advances the state
-    machine.
-  - The automatic fit derives all normalized quantities from raw records after
-    acquisition. It divides each retained signal by the open reference and the
-    cumulative bridge segment scale, converts that relative transmission to dB,
-    and optimizes the attenuator model directly in dB output space while
-    keeping the coefficient names and meanings `fvoa_50pct_mv`,
-    `slope_inv_fvoa_mv`, and `max_atten_db`. Firmware estimates
-    `max_atten_db = max(mean(final three retained usable points), 65 dB)` and holds it
-    fixed while optimizing the two shape parameters on that prefix. It then fits
-    the optional `correction_coeff` residual layer against the same data, trying
-    six leading Chebyshev terms, then five, down to one. Each candidate receives
-    its calibrated limit and continuation before checking the final curve on a
-    1 mV grid across the drive range, at retained fit voltages and at the calibrated
-    join. Values must be finite, nonnegative and ordered; analytic slopes must
-    be nonnegative. This numerical check can detect turns between measured points;
-    it is not a proof between grid locations. The first valid correction is kept,
-    with unused coefficient slots zeroed. The base-only model is the last fallback.
-    A single `atten_correction_rejected` warning identifies the selected term count
-    (`0` for base only, `-1` for no valid model) and the first failed check/location.
-    The same summary is logged locally. The y uncertainty comes from photodiode mean
-    uncertainty, bridge/segment-scale propagation, and the open-reference
-    uncertainty; the x uncertainty is the fixed DAC uncertainty, initially
-    3 mV. `points` counts all fitting support, including the above-limit anchor.
-    Correlation and residual RMS/max score only those support points whose measured
-    attenuation is at or below `max_calibrated_db`, including negative
-    reference-relative measurements; a model prediction above the limit
-    does not remove a large error from these metrics. Fit details also include
-    calibrated limit and correction coefficients. Transmission/FVOA spans remain
-    in per-device fit telemetry, but are omitted from aggregate status to fit
-    the bounded response buffers (1152 bytes in this build).
-    The floor constraint is not measured support: the calibrated endpoint remains
-    bounded by 55 dB, the last supporting measurement and the model at that point.
-    The measured tail scatter still supplies floor-parameter weighting. The full
-    corrected curve, endpoint continuation and inverse must remain monotonic.
-    A fit is rejected if any absolute residual in the calibrated region exceeds
-    that device's `max_fit_residual_db`. Raw records remain available with acquisition
-    complete and fit failed. Both fits must pass before either is installed.
-    The final `rms_db` is retained with each accepted physical model for runtime
-    throughput uncertainty and optional NVS persistence.
+  - Start requires the selected photodiode to be powered, with valid sampler
+    data and a configured dark. `dwell_ms` is rounded to whole 50 ms attempts;
+    the 100 ms FVOA settling wait is additional. Calibration does not measure a
+    private dark or turn on the photodiode.
+  - Records marked saturated, below-SNR or ADC-error remain available as
+    diagnostics. Classification `ok` alone does not guarantee inclusion in the
+    fitted prefix. `points` includes the above-limit supporting anchor;
+    residual RMS/max and correlation score support within `max_calibrated_db`.
+  - Both physical fits must pass before either is installed. A rejected fit
+    leaves the prior coefficients/RMS intact. `max_fit_residual_db` is a per-device
+    maximum absolute residual acceptance threshold. Fit details include the
+    calibrated limit and correction coefficients; per-device telemetry also
+    reports spans omitted from the bounded aggregate status reply.
+
+The [calibration operation page](attenuator_calibration.md) owns acquisition,
+bridge normalization, fit weighting, the 65 dB floor constraint and model
+validation. The [attenuator model](attenuator.md) defines runtime conversion and
+uncertainty; the [Python guide](python_helpers.md#calibration-datasets-and-manual-grids)
+explains retained-record inspection and fitting tools.
 
 ### `atten/<laser>/settings`
 
@@ -2044,7 +1969,8 @@ manual laser level or attenuation changes have since disabled automatic adjustme
 A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
 same source with `autolevel:false` retains an existing operation's laser
 shutdown obligation; replacing its source first stops that autolevel laser.
-Bank power, TECs, and unrelated lasers are left unchanged.
+Bank power, TECs and unrelated lasers are left unchanged. This differs from an
+explicit `laser stop:true` or laser auto-off, which uses `disable_tec_at_autooff`.
 Valid `stop` requests take priority over accompanying start fields, whose values
 are ignored even if invalid. Unknown top-level fields are still rejected.
 
@@ -2060,12 +1986,13 @@ and operational source/relay faults use the same stop path. Numerical laser
 estimates continue to use confirmed setpoints; acquisition checks owner health
 separately. A single failed read warns; five seconds without a response while
 in use faults the owner. Recovery does not restart measurements. See
-[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime).
+[communication and power lifetime](laser_operation.md#communication-and-power-lifetime).
 
 Both `format:"json"` and `format:"binary"` are supported. Firmware defaults to
 JSON; Python and the notebook default to binary. Binary channel and wavelength
 identify the source, including both 1430 nm lasers, and a flag bit carries the
-actual autolevel state. No individual DAC values or laser percentages are streamed.
+actual autolevel state. Individual DAC setpoints are streamed as `dac1_mv` and `dac2_mv`; laser
+percentage is not streamed.
 
 For a known laser, `output` is required and `input` is inferred unless supplied.
 Optional `channel` must match that laser. Passive `laser:"none"` requires explicit
@@ -2194,194 +2121,30 @@ uint64 laser_current_ontime_s
 uint8 flags  # bit 0: overrange; bit 1: autolevel; remaining bits zero
 ```
 
-`launch_route_tx` replaces `laser_route_tx` in JSON and Python. The binary
-layout and field position are unchanged, so new live binary captures can use
-the updated Python label before flashing. Old JSON/archived column names have
-no alias or automatic conversion. The `generic` loss command requires updated
-firmware; passive acquisition continues to use `laser:"none"`.
-
 The two signed local slopes are in dB per **post-amplifier** drive mV and are
 also present in JSON. They are evaluated by the firmware model at confirmed DAC
 settings; unavailable values are null/NaN. These slopes allow host temporal-noise
 estimates without evaluating another attenuator model.
 
-**Measurement and control interpretation:**
+**Field interpretation:**
 
-- `tp = pd_power_nw / delivered_power_nw`. Signed net values are preserved.
-  Zero/invalid delivered power makes throughput NaN/null.
-- `pd_power_nw` is detected net power divided by PD route transmission.
-  `delivered_power_nw` is estimated laser output times dynamic attenuator and
-  outbound route transmissions. Laser output in µW is before both losses.
-- `tp_pd_err` contains PD-reading and dark-offset error. `tp_err` additionally
-  includes laser calibration, attenuator-fit residual uncertainty, and modeled
-  FVOA electrical variation. Calibration errors are correlated between records
-  and must not be reduced by treating them as independent sample noise. The
-  combined error is not temporal RMS; electrical independence between FVOAs
-  does not imply independence over time. The error audit documents the assumptions
-  and omitted calibration terms.
-- `pd_mv`, `pd_net_mv`, `pd_net_err_mv`, and `pd_raw` describe this conversion.
-  Input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0: retain `tp` as
-  a **nominal lower bound**, with PD/throughput errors NaN/null. S/N is undefined.
-  Calibration's ADC-rail classification remains separate.
-- PD responsivity and effective transimpedance already include the analog
-  divider. The nearest nominal wavelength correction is applied once; current
-  correction coefficients are all unity.
-- `atten_tx`/`atten_db` are the logical pair relative to modeled zero-voltage
-  transmission. Static attenuation belongs in the source route loss.
-- `atten1_db`/`atten2_db` describe the individual FVOAs in that same model.
-  `dac1_mv`/`dac2_mv` are their confirmed DAC-output setpoints (the `atten`
-  response's `v1_mv`/`v2_mv`), not independent voltage measurements. All four
-  use the sample's source context, including the previous context for a delayed
-  conversion. They are NaN/null for an unnamed source. Use DAC setpoints to
-  distinguish physical settings independently of calibration slope.
-- Route losses resolve explicit settings, then compiled TIB switch/static
-  defaults, then unity for unspecified pairs. Start latches the outbound
-  `<input>_to_<output>` and inbound `<yj|hk>_<mm|sm>_to_<yj|hk>_pd` transmission
-  using the selected laser name. Restart to capture changed route settings.
-- Publish the completed measurement before choosing a move. A fresh low reading
-  (<20% of the 2000 mV useful range) requests 3× flux; high (>80%) requests 1/3.
-  Raw overrange wins over low net signal. Startup uses the same direct path.
-  A sample that began before the previous move completed cannot select another
-  move. Brightening waits until a low sample was acquired at least two 50 ms
-  intervals after the last input change; high/overrange dimming remains immediate.
-  There is no rolling-window gate or blanked stream interval. Physical response
-  and filter lag remain visible in the data.
-- Flux is raised by reducing attenuation first, then increasing laser current.
-  Dimming order is selected by `TP_AUTOLEVEL_DIM_PRIORITY` in
-  `throughput_monitor.c`: `TP_LASER_FIRST` (1, default) reduces current before
-  increasing attenuation; `TP_ATTEN_FIRST` (0) preserves the previous order.
-  Either mode holds settings in the useful band and tries the other actuator
-  when the preferred one cannot move. Current is bounded by the per-laser
-  autolevel minimum and nominal current; checks use the actual 0.1 mA register
-  grid, so a repeated setpoint cannot count as progress. The directional pair
-  allocator avoids loading all attenuation onto one device. Each FVOA is limited by its
-  `max_calibrated_db`, the 55 dB ceiling and its reachable drive range.
-- Photodiode `override_off` rejects start. Active streaming and attenuator acquisition inhibit PD auto-off;
-  `off_in_s` stops the monitor after the requested seconds, with zero disabling
-  expiry. Bank power/TECs remain under their existing owner.
-- Manual laser level and attenuation commands disable autolevel while streaming
-  continues with updated source context and the existing laser shutdown obligation.
-  They do not restart the measurement deadline. A zero laser level keeps PD readings
-  flowing, with throughput NaN/null until estimated source power is positive.
-  Laser tuning/settings commands stop the stream. A failed settings update
-  retains any owned laser shutdown for explicit stop retry. Display controls only affect UI.
+- `pd_mv`, `pd_net_mv`, `pd_net_err_mv` and `pd_raw` describe one conversion,
+  not the rolling window. `pd_power_nw` includes the return-route correction;
+  `delivered_power_nw` includes attenuator and launch-route transmission.
+- `tp` is corrected return/delivered power. `tp_pd_err` includes only detector
+  uncertainty; `tp_err` also includes modeled source and attenuator uncertainty.
+  These uncertainties are not temporal RMS. Zero/invalid delivered power makes
+  throughput null/NaN.
+- ADC input ≥2000 mV sets JSON `flags:["overrange"]` / binary bit 0. Retain
+  detector/throughput values only as nominal lower bounds; their errors and S/N
+  are unavailable. Calibration's ADC-rail classification is separate.
+- `atten1_db`, `atten2_db`, `dac1_mv` and `dac2_mv` describe the source context
+  associated with the conversion, including previous settings for a delayed
+  sample. DAC values are confirmed setpoints, not independent voltage readings.
+  An unnamed source leaves these fields null/NaN.
+- JSON uses null and binary uses NaN for unavailable floating-point values.
 
-For manual exploration, start `pcb.measure_throughput(LASER, fiber=FIBER,
-output=OUTPUT, autolevel=False, collect=True)` once, then adjust `pcb.laser(...)`
-and `pcb.atten(...)` repeatedly. The same collector and live plot continue running.
-
-
-## Python command helpers
-
-The `HispecFibPcb` command helpers query when only selectors are supplied and
-update when setting values are supplied. Numeric zero and boolean false are
-values, not omissions. Updates return the firmware's existing response without
-an additional query.
-
-```python
-pcb.help()                         # MQTT endpoint summary
-pcb.help_options()                 # laser names and input/output route pairs
-pcb.ip()
-pcb.ip(try_dhcp_first=False, prefer_dhcpdns=True)
-pcb.mqtt()
-pcb.mqtt(broker="hispec.caltech.edu:1883", persist=True)
-pcb.time()
-pcb.time(unix_ms=int(time.time() * 1000))  # explicit host timestamp
-pcb.serialguard(seconds=0)
-pcb.mems_route()
-pcb.mems_route(input="yj_laser", output="yj_ao")
-pcb.mems_route_loss("yj_laser_to_yj_ao")
-pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss=0.5)
-pcb.mems_route_loss("yj_laser_to_yj_ao", laser="1028y", loss="3.0103 dB")
-pcb.laser("1028y")
-pcb.laser("1028y", value=0.25)
-pcb.laser("1028y", value=0)    # Temporary zero current; retains readiness/deadline.
-pcb.laser("1028y", stop=True) # Explicit shutdown, including configured TEC policy.
-pcb.laser_tune("1028y", tune_nm=0)
-pcb.laser_settings("1028y", autooff_s=300)
-pcb.laser_bankpower("auto")
-pcb.laser_bankheater("auto")
-pcb.laser_clearfaults()
-pcb.atten_coeff("1028y")
-pcb.atten_coeff("1028y", dac1=coeff1, dac2=coeff2, persist=False)
-pcb.atten_calibrate()              # query
-pcb.atten_calibrate("1028y", output="yj_ao")  # start
-pcb.atten_calibrate_stop()
-pcb.pd_settings("yj", noisewarn_mv=3.0)
-pcb.mems_split("yj")               # AS board
-pcb.mems_split("yj", 0.25, 0.25, stop_in_s=30)
-pcb.temps()
-pcb.measure_throughput("1028y", output="yj_ao", collect=True)
-pcb.measure_throughput("none", channel="hk", fiber="S", autolevel=False, collect=True)
-```
-
-Existing `mems()`, `mems_switch(...)`, `atten(...)`, `pd(...)`, `pd_dark(...)`,
-and lab acquisition/dataset helpers retain their roles. Calibration and
-throughput use `laser` as their source setting; laser-specific commands use
-`name` as their selector. Restart throughput to capture new route-loss settings.
-
-Python commissioning helpers:
-
-- `HispecFibPcb(..., on_command=callback)` or `pcb.on_command = callback`
-  delivers the same command-event dictionary used by throughput collectors,
-  without starting a measurement. The callback runs after request completion,
-  including board errors and timeouts, on the requesting thread; concurrent
-  requests can call it concurrently. Treat the event as read-only; do not issue commands
-  from it. Exceptions are logged without changing the request result. Set it
-  to `None` to detach; the client keeps no additional history.
-  `temp_test.ipynb` uses this hook for file logging and thermal captures while
-  manual notebook cells continue to operate the same client. Its PD readbacks
-  use explicit override modes, and its temperature queries never enable bank
-  power. Heater-on shading is sampled state, not exact relay transition timing.
-- `parameter_table(settings)` displays nested dictionaries/dataclasses using
-  API field names and native values. It performs no I/O and is not an archive
-  encoding.
-- `pcb.read_route_losses(routes)` queries complete route/laser losses
-  as a DataFrame of transmission and dB values.
-- `pcb.get_some_signal(laser, min_mv=800, max_mv=1200, use_atten_db=False)` finds a useful
-  manual signal. It uses an active collector for that laser, or temporarily
-  starts non-autolevel `measure_throughput` on the selected AO/FEI and M/S routes
-  (which can also be supplied as `output`/`fiber`). It doesn't create a plot but
-  its search appears in an existing live monitoring plot.
-  Selected FVOAs start at maximum drive and are opened in order; after their
-  travel is exhausted the laser level can change. `use_atten_db=True` uses
-  calibrated individual-FVOA dB; `attenuators=(1,)` or `(2,)` leaves the other
-  FVOA fixed; `attenuators=()` holds both. `initial_level=.5`, `vary_laser=False` holds a chosen laser level.
-  The default dwell is 0.5 s followed by three fresh records after the board ACK,
-  with confirmed current/DAC matches and a monotonic deadline; at most 80 moves
-  are tried. Success means the three-record mean PD Net signal is inside the
-  inclusive `[min_mv, max_mv]` bounds, with no raw sample at/above 2000 mV.
-  Bounds must be finite and satisfy `0 < min_mv < max_mv <= 2000`; they are
-  validated before any I/O. Set both explicitly at each notebook test call,
-  e.g. `min_mv=100, max_mv=200` for a weaker-signal test. The result records
-  `min_mv`/`max_mv`, achieved level/current, individual dB/mV, PD Net signal, and a reason
-  when the limits prevent success. Successful manual settings remain in place;
-  unsuccessful searches and exceptions stop the selected laser.
-  An existing monitor retains its normal stop/laser ownership; only a temporary
-  monitor is stopped on return. In Jupyter use
-  `await asyncio.to_thread(pcb.get_some_signal, laser, min_mv=800, max_mv=1200, use_atten_db=True)` so an
-  existing widget can refresh during the blocking search.
-- A collector's `command_events` property is a DataFrame of command arguments,
-  `issue_utc_ms` (host), `ack_utc_ms` (board), `receipt_utc_ms` (host),
-  `ack_clock="board_utc"`, success and error text. Board completion precedes output
-  queue/network delay and does not imply optical settling. Queries are retained;
-  timeouts have no acknowledgement timestamp. `samples_received` counts decoded
-  records, including those displaced from the finite buffer. Save the sample
-  DataFrame, event DataFrame and context directly with `pd.to_pickle`; there
-  is no commissioning archive codec or old-format migration.
-
-The commissioning notebook draws command changes as thin colored board-time lines
-and live confirmed-setting changes as short ticks. Historical captures whose ACKs
-were host receipts need an explicit host-to-board offset before drawing those
-lines. The six live panels retain linear throughput and add a separate fixed
-−100 to +10 dB trace, with fixed full current and attenuation limits.
-
-`throughput_noise(records, enbw_hz=..., transimpedance_v_per_a=..., dark_rms_mv=...)`
-is a pure array/DataFrame calculation. It returns expected PD net mV and photon,
-detector, individual FVOA, electrical and combined single-reading RMS in mV;
-DataFrame attrs retain units, bandwidth and provenance. The default 10 mV drive
-RMS is an explicitly labelled assumption. Static laser-power, attenuation-fit
-and dark-mean errors are excluded. Old saved frames without slopes can supply
-`historical_model_rms_db=(rms1,rms2)` for an aggregate electrical estimate from
-firmware's propagated error; individual drives remain unidentified. A forced
-zero-duration dark is not a measured detector noise reference.
+See [throughput and autolevel operation](throughput.md) for the equations,
+route-loss selection, timestamp association, feedback decisions and ownership.
+[Mathematics and uncertainty](mathematics.md) distinguishes reported errors,
+window RMS and temporal noise, including correlated and omitted terms.

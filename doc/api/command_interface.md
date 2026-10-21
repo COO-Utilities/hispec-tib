@@ -16,3 +16,8 @@
 .. doxygenfile:: app/src/throughput_command.h
    :project: hispec_tib
 ```
+
+```{eval-rst}
+.. doxygenfile:: app/src/mems_command.h
+   :project: hispec_tib
+```

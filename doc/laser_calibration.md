@@ -10,8 +10,8 @@ used. See [commands](commands.md#lasercalibrate) for the interface.
 
 At fixed DAC settings in segment j, fit signed dark-subtracted voltage as
 
-```
-V_ij = b + a_j (I_i - t)
+```{math}
+V_{ij}=b+a_j(I_i-t).
 ```
 
 `t` is threshold in commanded mA, `b` is the residual baseline and `a_j` absorbs
@@ -20,8 +20,8 @@ be separately recovered from this sweep. `current_cal_pct` is held fixed: a
 multiplicative driver-current error remains degenerate with efficiency. The
 independent vendor reference defines
 
-```
-efficiency_mw_per_ma = ref_mw / (ref_ma - t)
+```{math}
+\eta=\frac{P_{\rm ref}}{I_{\rm ref}-t}\quad[\mathrm{mW/mA}].
 ```
 
 This assumes the reference lies in the validated linear region at `ref_temp_c`.
@@ -36,14 +36,13 @@ Compiled `(ref_mw, ref_ma, ref_temp_c)` values are `(43.8,250,25)` for 1028y,
 
 For each trial `(t,b)`, profile each nuisance gain analytically:
 
-```
-a_j = sum[w (I-t) (V-b)] / sum[w (I-t)^2]
+```{math}
+a_j=\frac{\sum_i w_{ij}(I_i-t)(V_{ij}-b)}{\sum_i w_{ij}(I_i-t)^2}\quad[\mathrm{mV/mA}].
 ```
 
 Five weighted sums per segment suffice. Analytic derivatives of this quotient
-feed a two-parameter damped Gauss–Newton solve. `calibration_fit.c` is extracted
-from the attenuator optimizer: 30 iterations, the same damping schedule, bounded
-trials, and a shared symmetric 2x2 solve. Attenuator weighting, point order and
+feed a two-parameter damped Gauss–Newton solve. The [shared two-parameter optimizer](calibration_fitting.md) uses 30 iterations,
+bounded trials and a symmetric 2x2 solve. Attenuator weighting, point order and
 six-term correction fitting remain with their existing owner.
 
 Weights use temporal variance of each window mean, bounded below by the
@@ -51,6 +50,31 @@ observed off-state variance. Off/zero-current windows constrain one shared `b`.
 Configured dark-offset uncertainty is common to the run and is not incorrectly
 averaged as independent noise on every point. Each contributing segment needs
 three distinct current levels; the joint fit needs six distinct levels.
+
+For a window with $n_i$ valid readings and sample variance $s_i^2$, its mean
+weight is $w_i=n_i/\max(s_i^2,d^2)$, where $d^2$ is the pooled off-state
+within-window variance, bounded below by quantization variance. A single-reading
+window can supply a mean but cannot establish the empirical noise floor.
+
+The reported `threshold_se_ma` is the local normal-matrix estimate
+
+```{math}
+\sigma_t=\sqrt{\frac{H_{11}}{H_{00}H_{11}-H_{01}^2}},\qquad
+H=J^T J,
+```
+
+including the shared baseline constraint and derivatives through profiled gains.
+A singular matrix fails the fit. This estimate is not scaled by reduced chi-square
+and does not include vendor-reference uncertainty or unmodeled optical drift.
+The separate mean-curve diagnostic is
+
+```{math}
+\texttt{rms\_fraction}=\sqrt{\frac1N\sum_{i\in\mathrm{fit}}
+ \left[\frac{V_i-b-a_{j(i)}(I_i-t)}{a_{j(i)}(I_i-t)}\right]^2}.
+```
+
+It is unweighted fractional scatter of window means around the fitted curve,
+not within-window temporal noise.
 
 Seed the fit with the upper 75% of reference overdrive, from
 `seed_threshold + .25*(ref_ma-seed_threshold)` through `ref_ma`. Extend downward
@@ -123,14 +147,15 @@ The PD retains population RMS. With n surviving readings, use unbiased sample
 variance `s² = n/(n-1) * rms²` for n > 1. Pool off-state within-window variances to
 estimate `d²`; use only accepted linear-region windows for
 
-```
-s_ij² = d² + (a_j / efficiency)² * constant_noise_mw²
-              + [a_j (I_i-t)]² * fractional_noise²
+```{math}
+s_{ij}^2=d^2+\left(\frac{a_j}{\eta}\right)^2 C^2+[a_j(I_i-t)]^2 f^2.
 ```
 
 Fit the two nonnegative variance terms with scaled two-column least squares,
 checking the interior, both axes and the origin. Three passes use variance-based
-weights after the first solve. Keep negative measured excess variances signed;
+weights after the first solve: for modeled reading variance $v_i$, the Gaussian
+independent-sample approximation gives $\operatorname{Var}(s_i^2)=2v_i^2/(n_i-1)$.
+Keep negative measured excess variances signed;
 clipping them would bias both noise estimates upward. Reject a rank-deficient
 noise fit. Mean-curve residual RMS is reported separately.
 
@@ -144,12 +169,13 @@ valid noise fit. It never updates PD noise settings.
 
 `determine_static_loss=true` requires an explicit, nonnegative
 `loopback_loss_db`, for the **external cable/attenuators only**. With reference
-voltage corrected by the same-run baseline and snapshotted PD gain G:
+voltage corrected by the same-run baseline and snapshotted optical conversion gain $G$ in mV/mW (including detector
+responsivity, divider and known wavelength correction):
 
-```
-P_pd = (V_ref - b) / G
-L_combined = 10 log10(ref_mw / P_pd) - A_fvoa - L_loopback
-L_outbound = L_combined - L_return
+```{math}
+P_{\rm PD}=\frac{V_{\rm ref}-b}{G},\qquad
+L_{\rm combined}=10\log_{10}\frac{P_{\rm ref}}{P_{\rm PD}}-A_{\rm FVOA}-L_{\rm loopback},
+\qquad L_{\rm outbound}=L_{\rm combined}-L_{\rm return}.
 ```
 
 `L_combined` includes outbound plus configured SM/MM return. The return loss is
@@ -183,16 +209,9 @@ route NVS entry. Separate error/applied/persisted fields report partial work;
 flash failure does not imply a RAM rollback. A second persistent restore also
 finds the old route record after an earlier volatile removal.
 
-## Verification boundary
+## Validation boundary
 
-Temporary host checks execute the firmware numerical and acquisition code with
-simulated hardware, including partial ADC failures, temperature timeout,
-shutdown failure and independent first/second output application. The Nucleo
-build verifies the static layout: RAM 164676 bytes versus 164060 before this
-change (+616 bytes), flash 450756 versus 427156 (+23600 bytes). Temporary compiler
-stack reports show a 432-byte laser tick frame and a 2136-byte start frame on the
-existing 8192-byte command executor; these are frame sizes, not whole-call-chain
-or interrupt high-water measurements. Saved attenuator replay agrees with the
-original optimizer to floating-point roundoff. Physical settling, thermal stability, optical
-reference accuracy, on-target stack margin and persistence over actual power
-cycles still require the board. No hardware is driven by these offline checks.
+The fit assumes stable optical paths within each segment and an accurate vendor
+reference at the stated temperature. Offline numerical checks cannot establish
+physical settling, thermal stability, reference accuracy, target stack margin or
+persistence over power cycles. These remain [bench-review items](human_review_required.md).

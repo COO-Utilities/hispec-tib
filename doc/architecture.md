@@ -2,11 +2,11 @@
 
 ## Authority
 
-This architecture audit is derived from current code in `hispec-tib/app`.
+This page describes runtime ownership in `app`, local libraries and drivers.
 `hardware.md` remains authoritative for wiring and physical assumptions.
 `commands.md` remains authoritative for intended command/API behavior. When code
 and intended docs disagree, the mismatch is listed in
-`human_review_required.md` and `command_implementation_audit.md`.
+[the owner-review ledger](human_review_required.md).
 
 ## System Overview
 
@@ -60,7 +60,7 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
 - `command_dispatch.c`: fixed-buffer MQTT/serial command request, built-in
-  help/serialguard/reboot commands, static longest-prefix spec lookup, default
+  help/serialguard/reboot commands, exact-match spec lookup with explicitly enabled suffix families, default
   request classification/execution, serial guard policy, persisted
   lastcommand, topic formatting, response metadata, warning JSON, serial
   payload normalization, and serial response printing helpers. Built-ins are
@@ -75,25 +75,15 @@ APIs directly.
 
 ## Boot Sequence
 
-1. `main()` reads and clears the hardware reset cause, then initializes the
-   watchdog.
-2. `app_settings_init()` loads defaults and then stored app settings.
-3. `devices_detect_board_type()` reads four active-low strap GPIOs.
-4. `app_settings_note_board_type()` persists board type and clears other app
-   settings if a different valid board type is detected after a prior boot.
-5. `devices_ready()` checks/profile-configures required devices.
-6. `setup_mems_switches_and_routes()` builds the active MEMS router.
-7. `setup_attenuators()` initializes profile-available logical attenuators and
-   loads persisted coefficients into runtime attenuator objects.
-8. Command runtime configures static command specs, persisted lastcommand
-   storage, built-in reboot behavior, and serial console input.
-9. Executor and serial threads are created. Ambient-temperature delayable work
-   is started. On the TIB profile, main also starts the photodiode thread,
-   throughput monitor thread, and laser-bank heater delayable work.
-10. SNTP, network, MQTT client, broker settings, and command subscription are
-    initialized.
-11. The main loop feeds the watchdog, keeps MQTT connected when network is
-    ready, drains outbound messages, and processes MQTT events.
+1. Read/clear reset cause and initialize the watchdog.
+2. Load app defaults/NVS; detect exactly one strap; apply the board-change reset policy.
+3. Restore UTC from a valid RTC and increment the boot counter.
+4. Configure the command runtime and fixed queues (no command execution yet).
+5. Check required devices, build the MEMS router, initialize attenuators and load coefficients.
+6. Start the app blocking queue; bind laser auto-off and housekeeping before their consumers.
+7. Start TIB PD/throughput/heater work when required devices are ready, then executor/serial threads.
+8. Start SNTP and network policy, initialize MQTT and its command subscription.
+9. Feed the watchdog, reconnect MQTT, drain output and process socket events in main.
 
 ## Board Profiles
 
@@ -258,8 +248,8 @@ Command payload capacity is 1152 bytes, MQTT buffers 1280. Throughput binary is
 227 bytes; even a pessimistic JSON frame with 24 worst-length double strings and
 uint64 timestamps is below 1152 bytes. Eventfd capacity 2 and fd capacity 10 allow
 the existing socket service plus output wakeup, MQTT/DNS/SNTP and OTA SMP resources.
-Buffer increases also change lastcommand record size, so a rollback may lose that
-diagnostic record; the app calibration/dark schema is unchanged.
+The lastcommand record includes the request buffer, so its storage size depends
+on the configured payload size. App settings own calibration/dark schema reset.
 
 ## Hardware Control
 
@@ -267,7 +257,7 @@ Commands do not directly publish. For example, MEMS commands update
 router-owned switch state that is applied by the timer-driven MEMS router
 thread.
 Photodiode sampling does not publish directly. Throughput monitoring owns
-photodiode stream publication through `outbound_queue`. Warning publication is
+photodiode stream publication through the best-effort output queue. Warning publication is
 non-blocking and best-effort. Runtime warnings use one shared scratch response;
 if that buffer or the outbound queue is busy, the warning is logged locally and
 dropped rather than blocking a timing-sensitive caller.
@@ -287,15 +277,15 @@ Preemptible application priorities (smaller numbers run first):
 
 | Priority | Owner | Purpose |
 |---|---|---|
-| 0 | MEMS router | Splitter toggle timing and pulse cleanup |
+| 0 | MEMS router / ADS1x1x driver acquisition | Splitter pulse cleanup / ADC conversion service |
 | 1 | Photodiode | Independent 50 ms acquisition cadence |
 | 2 | System workqueue | Native Modbus RX parsing/completion, short system work |
 | 3 | Throughput | Streaming, autolevel, calibration acquisition |
 | 4 | Main/MQTT | Network service and queued outbound publication |
-| 6 | Command executor | Foreground commands, potentially blocking I/O |
+| 6 | Command executor / serial input | Serialized commands / console line ingestion |
 | 7 | App blocking workqueue | Housekeeping, heater, auto-off and reboot preparation |
 | 13 | Logging | Deferred log output |
-| 14 | Calibration fitting | Numerical fitting after acquisition/shutdown |
+| 14 | Calibration fitting / SNTP | Numerical work / blocking time-server requests |
 
 Networking's cooperative priorities and system-workqueue yielding are unchanged.
 The Modbus caller sleeps while awaiting its 75 ms reply; that deadline and UART
@@ -320,7 +310,7 @@ kernel's uncontended lock/unlock path tolerates this state, but it is not a
 properly initialized mutex and must not be relied on for contended access.
 Revisit this limitation before changing bus ownership or the Zephyr revision.
 Stock reset timing and the accepted DS2408 timing exception at 3.3 V are documented
-in [hardware.md](hardware.md#off-board-power-switch-for-photodiodes-and-laser-bank-aux-heater).
+in [hardware.md](hardware.md#laser-control-and-switched-power).
 
 Numerical attenuator fitting reuses the throughput thread after stopping the
 calibration-owned laser and releasing PD auto-off inhibition. It releases the
@@ -394,12 +384,6 @@ Coefficient I/O uses internal LD NTC register 0x007F. External NTC 0x008A is
 unused. Compiled defaults use vendor values: −4.4 %/°C for FLC and B=3900 K
 for Aero. Accepted app NVS overrides retain their existing precedence.
 
-## Implemented vs Intended
-
-Implemented behavior is detailed in `implemented_commands.md`. Intended command
-behavior remains in `commands.md`. Current code-vs-doc gaps and owner-review
-items are centralized in `human_review_required.md`.
-
 ## Design Constraints
 
 - Static memory and bounded queues are preferred.
@@ -420,76 +404,50 @@ Attenuator estimates use confirmed DAC voltages; explicit `attenuator_get`
 queries still read both registers. Settings/status copies own their mutable
 properties rather than borrowing pointers into another thread's state.
 
-Throughput input alignment: laser and attenuator modules own confirmed device
-state. `throughput_monitor.c` retains previous/current source contexts and the
-last change time, selecting the nominal reference at acquisition start.
-`photodiode.c` owns only detector acquisition and its timestamps, waking throughput
-with one binary semaphore after each channel round. There is no throughput ring
-or frame queue. At 20 Hz, each fresh conversion is published once before any
-autolevel move; the fixed 500 ms window serves diagnostics only. Faulted source
-owners stop monitoring. Physical transition readings remain visible. See
-[the timing and error audit](photodiode_notes.md).
+## Feature ownership
 
-Passive monitoring accepts a laser whose control state is unconfirmed after
-bank power-on, so acquisition can precede the first laser command. The laser
-owner distinguishes this from a control fault; throughput and calibration retain
-their shared health check, and calibration additionally requires emission.
+Acquisition timing and equations belong with their consumers:
 
-Throughput starts at maximum calibrated attenuation and an optional initial
-laser fraction (firmware default 0.5). Brightening reduces attenuation before
-raising current. Dimming uses `TP_AUTOLEVEL_DIM_PRIORITY`: laser first by default,
-or the previous attenuation-first behavior. Both use the same actuator paths,
-calibrated limits, and global laser current quantization. The laser owner owns
-the current grid and per-laser autolevel floor; throughput owns priority and
-ignores stored tuning while retaining the live TEC target.
+- [Photodiode](photodiode_notes.md): ADC conversion, dark windows, RMS and warning eligibility.
+- [Throughput](throughput.md): source alignment, streaming, autolevel and shutdown ownership.
+- [MEMS](mems_splitting.md): latching pulses, route intent and split quantization.
+- [Attenuator](attenuator.md): confirmed DAC state, allocation and physical model.
+- [Calibration](attenuator_calibration.md) and [laser calibration](laser_calibration.md): acquisition, retained data, acceptance and persistence.
+- [Laser operation](laser_operation.md): Modbus behavior, emission/TEC policy and health.
 
-Laser settings commands quiesce the matching monitor before applying settings
-under its lock. Changes affecting the emission model or operating envelope stop
-emission in `lasers.c`. Failure retains measurement shutdown responsibility;
-success releases it. App-only range edits defer TEC programming to preparation.
-Noise/default-policy edits and tuning that relinquish a still-emitting source
-remain a separate ownership audit in `human_review_required.md`.
+## Queue and delayed-work contracts
 
-At measurement start, the command resolves an exact route/source override,
-then a compiled source default in `devices.c`, then the route's compiled generic
-default, then unity. Defaults stay in flash and consume no override slots;
-settings owns override persistence. Passive capture explicitly selects `generic`
-for its CAL launch and MM/SM return. It reports a selected launch transmission
-but cannot infer emission or throughput. Named sources never inherit a stored
-generic override. The table holds 32 records per PCB; AS split records live on
-their own PCB. Schema 14 clears older app NVS settings without migration.
+```{mermaid}
+flowchart LR
+  MQTT[MQTT ingress in main] -->|K_NO_WAIT| In[Inbound queue: 2 requests]
+  Serial[Serial thread] -->|K_NO_WAIT| In
+  In --> Exec[Single executor]
+  Exec --> Replies[Reserved reply queue: 4 responses]
+  Workers[PD / throughput / owners] --> Best[Best-effort queue: 8 responses]
+  Replies --> Drain[Main: bounded reply-first drain]
+  Best --> Drain
+  Drain --> Pub[MQTT publish or serial print]
+  Replies -. eventfd wake .-> Drain
+  Best -. eventfd wake .-> Drain
+```
 
-The command validates both routes, calls `throughput_monitor_prepare_start` to
-check exclusions and quiesce the target, applies launch (if requested) and return
-routes, then starts the monitor with resolved losses. The existing command
-executor serializes this sequence; the preparing phase retains PD auto-off inhibition.
-Failure after preparation uses the existing stop path. Restart the measurement
-to pick up changed route-loss settings.
+The queue elements are `struct coo_cmd_request` and `struct coo_cmd_response`.
+Ingress never waits for space; full queues return busy/error paths. Producers
+use `K_NO_WAIT`; reserved replies reduce competition with telemetry but do not
+guarantee delivery. Required MQTT output is requeued when offline/failed and can
+still be lost if requeueing fails. Best-effort output is discarded instead.
+Watchdog boot telemetry uses required output. Drop/publish counters distinguish
+these cases. Serial `help` prints directly, bypassing both queues.
 
-Owner communication checks reuse the laser auto-off and housekeeping work items
-on the existing app blocking queue. Throughput and calibration consume state-only
-health snapshots; neither polls relay hardware. See
-[communication and power lifetime](photodiode_notes.md#communication-and-power-lifetime)
-for the one-second check cadence, five-second fault timeout, inhibition ownership,
-and failure/recovery flow.
+The MEMS and PD timer callbacks only give semaphores; hardware I/O runs in their
+threads. Dispatcher serial-guard expiration is short system work. Dispatcher
+reboot work runs on the app blocking queue, invokes the app prepare hook after
+the response window, then cold-reboots. Later app commands are rejected while
+reboot is pending. Auto-off, ambient/relay checks and heater work share that queue;
+a slow DS18B20 conversion can delay other work on it. Never put a blocking
+Modbus caller on the system queue that must parse its response.
 
-Paired attenuator writes compute both inversions, quantization and forward estimates
-before writing either DAC. The I2C mutex covers the consecutive writes; each
-successful write updates confirmed state even if the second fails. Two address +
-three-byte writes cost 72 SCL bits, about 0.18 ms at 400 kHz, excluding software,
-START/STOP setup and bus contention. This is not simultaneous latching.
-
-Dark capture stays asynchronous on the PD sampler. It credits already elapsed
-PD-on/relevant-lasers-off time, requires ten continuous seconds, then resets the
-measurement window and excludes conversions started before the reset. A changed
-state discards partial capture and requires a fresh settle. Clipped or empty
-captures cannot replace the dark. Lowest-dark replacement is measured-only;
-zero-duration forced/default values cannot enter it, including combined commands.
-Existing stored minima and optional persistence behavior are preserved.
-
-Noise warning eligibility is separate from dark capture. Hardware owners call
-`photodiode_noise_change_begin()` and `photodiode_noise_change_end()` around
-input changes; overlapping operations share a spinlock-protected count and quiet deadline.
-The sampler defers both channels' noise warnings for five seconds after activity
-finishes, then replaces the fixed diagnostic window before checking RMS. These
-notifications do no I/O and do not change sampling, throughput, or calibration.
+Network reconnect/DHCP fallback are system work; SNTP owns its separate blocking
+thread. The optional `coo_scheduled_action` helper is a fixed table of delayable
+work on the system queue, not an active app automation engine. Its callbacks must
+remain short. See [C contracts](api/scheduled_actions.md).

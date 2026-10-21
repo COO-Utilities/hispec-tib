@@ -57,6 +57,7 @@ void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);
 int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 					  bool persist);
 
+/** Return the static wire name of a heater mode; no I/O or state changes. */
 const char *laserbank_heater_mode_name(enum laserbank_heater_mode mode);
 
 #endif /* HISPEC_LASERBANK_TEMPCONTROL_H */

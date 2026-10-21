@@ -89,40 +89,40 @@ struct laser_calibration_restore_result {
 	bool route_persisted;
 };
 
-/* Starts may cancel/join the previous calibration, stop throughput, and block
+/** Starts may cancel/join the previous calibration, stop throughput, and block
  * on hardware setup. Accepted starts replace the shared retained dataset. */
 int laser_calibration_start(const struct laser_calibration_request *request,
 				    struct laser_calibration_status *status);
 
-/* Resume the paused other-output anchor. May block on hardware setup and queue
+/** Resume the paused other-output anchor. May block on hardware setup and queue
  * status; retains first-output results. No current sweep is repeated. */
 int laser_calibration_continue(bool set_loopback, double loopback_loss_db,
 				       struct laser_calibration_status *status);
 
-/* Cancel/join numerical work and stop the owned source; retain raw records. */
+/** Cancel/join numerical work and stop the owned source; retain raw records. */
 int laser_calibration_stop(struct laser_calibration_status *status);
 
-/* Snapshot under the status mutex, without hardware I/O. */
+/** Snapshot under the status mutex, without hardware I/O. */
 void laser_calibration_get_status(struct laser_calibration_status *status);
 
-/* Ownership includes a recabling pause or unconfirmed shutdown; status lock only. */
+/** Ownership includes a recabling pause or unconfirmed shutdown; status lock only. */
 bool laser_calibration_active(void);
 
-/* Only the throughput thread calls tick. May sleep on actuation and run a
+/** Only the throughput thread calls tick. May sleep on actuation and run a
  * cancellable fit at lowest application priority, with no state mutex held.
  * Applies accepted settings, optionally writes NVS, and queues status. */
 void laser_calibration_tick(const struct photodiode_status *pd);
 
-/* Encode a coherent caller-owned snapshot; no locks or I/O. Returns -ENOSPC
+/** Encode a coherent caller-owned snapshot; no locks or I/O. Returns -ENOSPC
  * rather than letting callers publish a truncated JSON response. */
 int laser_calibration_format_status(char *payload, size_t size,
 					    const struct laser_calibration_status *status);
 
-/* Bounded copies, under the shared data lock. Metadata and records are binary;
+/** Bounded copies, under the shared data lock. Metadata and records are binary;
  * chunk=-1 selects metadata. Returns -ENODATA after another calibration starts. */
 int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *written);
 
-/* Stops calibration/output and restores only calibration-owned properties and
+/** Stops calibration/output and restores only calibration-owned properties and
  * this output's outbound loss. May block on hardware and optional NVS writes.
  * The required result reports independent RAM/persistence outcomes. */
 int laser_calibration_restore_defaults(enum hispec_laser_id laser, const char *output,

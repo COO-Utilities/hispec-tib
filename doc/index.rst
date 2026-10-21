@@ -1,29 +1,13 @@
 HiSPEC-FIB Firmware Documentation
 =================================
 
-This documentation is built from Markdown-first architecture and audit pages
-plus Doxygen-extracted C API reference material.
+Start with hardware to understand the PCBs, operation pages for algorithms and
+measurements, or the interface specification to control a board. Python helpers
+are an in-repository lab/test tool; the official Python API is external.
 
-Source-of-truth rules:
-
-* ``hardware.md`` is the hardware source of truth.
-* ``commands.md`` is the intended command/API source of truth.
-* Current C source is the implementation source of truth.
-* Mismatches are centralized in ``human_review_required.md``.
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Architecture and Runtime
-
-   architecture.md
-   threads.md
-   queues_and_work.md
-   settings.md
-   warnings_and_telemetry.md
-   photodiode_notes.md
-   attenuator_calibration.md
-   attenuator_calibration_lab_notes.md
-   diagrams.md
+Hardware mappings and the control specification describe intended behavior.
+Source describes the implementation. Unresolved differences remain explicit in
+the human-review ledger.
 
 .. toctree::
    :maxdepth: 2
@@ -33,21 +17,40 @@ Source-of-truth rules:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Commands and Audit
+   :caption: Operation and Mathematics
 
-   commands.md
-   implemented_commands.md
-   command_implementation_audit.md
-   human_review_required.md
+   mathematics.md
+   mems_splitting.md
+   photodiode_notes.md
+   throughput.md
+   attenuator.md
+   attenuator_calibration.md
+   laser_operation.md
+   laser_calibration.md
+   calibration_fitting.md
 
 .. toctree::
    :maxdepth: 2
-   :caption: API Reference
+   :caption: Interfaces and Python
 
+   commands.md
+   python_helpers.md
+   warnings_and_telemetry.md
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Firmware Internals
+
+   architecture.md
+   settings.md
    api/index.md
 
-Indices and tables
-==================
+.. toctree::
+   :maxdepth: 1
+   :caption: Evidence and Human Review
+
+   temp_test_result.md
+   human_review_required.md
 
 * :ref:`genindex`
 * :ref:`search`
