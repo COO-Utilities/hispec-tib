@@ -329,7 +329,11 @@ int pd_dark_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
+	/* Changing the subtracted offset mid-run invalidates the shared baseline. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
 	enum photodiode_channel channel;
 	uint32_t duration_ms = 0U;
 	double dark_mv = NAN;
@@ -486,7 +490,11 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 
 int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-	if (laser_calibration_active()) return coo_cmd_busy_response(out,cmd);
+	/* Calibration snapshots PD gain/dark and owns the sampling configuration. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
 	struct app_photodiode_settings settings;
 	struct app_pd_channel_settings channel_settings;
 	enum photodiode_channel channel;

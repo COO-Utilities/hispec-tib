@@ -550,20 +550,32 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 }
 
 /* Attempt every record and return the first flash error. RAM has already been
- * applied; callers must not describe a partial NVS write as a rollback. */
+ * applied; callers must not describe a partial NVS write as a rollback.
+ * Called with validated channel/settings. May block on separate NVS writes;
+ * this is neither a hardware update nor an atomic flash transaction. */
 static int app_nvs_persist_laser_channel(uint8_t channel,
 					 const struct app_laser_channel_settings *laser)
 {
 	struct app_nvs_laser_policy stored;
-	double reference[3] = {laser->properties.ref_mw, laser->properties.ref_ma,
-		laser->properties.ref_temp_c};
+	double reference[3] = {
+		laser->properties.ref_mw,
+		laser->properties.ref_ma,
+		laser->properties.ref_temp_c,
+	};
+
 	laser_policy_from_settings(&stored, laser);
 	int first = app_nvs_write(laser_policy_nvs_id(channel), &stored, sizeof(stored));
 	int rc = app_nvs_write(laser_ntc_nvs_id(channel), &laser->properties.ntc_coeff_pct_per_c,
 			      sizeof(laser->properties.ntc_coeff_pct_per_c));
-	if (first == 0) first = rc;
+	if (first == 0) {
+		first = rc;
+	}
+
 	rc = app_nvs_write(APP_NVS_ID_LASER_REF_CH0 + channel, reference, sizeof(reference));
-	if (first == 0) first = rc;
+	if (first == 0) {
+		first = rc;
+	}
+
 	rc = app_nvs_write(laser_total_nvs_id(channel), &laser->total_emitting_s,
 			   sizeof(laser->total_emitting_s));
 	return first != 0 ? first : rc;
@@ -592,6 +604,8 @@ static void app_nvs_persist_laserbank(const struct app_laserbank_settings *laser
 	(void)app_nvs_write(APP_NVS_ID_LASERBANK, &mode, sizeof(mode));
 }
 
+/* Persist the already-applied route override in its assigned slot. May block
+ * on NVS; returning an error does not undo the caller's RAM change. */
 static int app_nvs_persist_route_loss_index(uint8_t index,
 					     const struct app_route_loss_record *record)
 {
@@ -880,6 +894,8 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 			}
 		}
 
+		/* The independent power anchor has its own record. Missing/invalid
+		 * values leave the compiled reference from settings initialization. */
 		double reference[3];
 		if (app_nvs_read_exact(APP_NVS_ID_LASER_REF_CH0 + channel, reference,
 				       sizeof(reference), "laser reference")) {
@@ -1455,32 +1471,48 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 }
 
 /* Remove only this exact override. With persist=false the stored override can
- * return after reboot, exactly like other volatile settings changes. */
+ * return after reboot, exactly like other volatile settings changes.
+ * Holds the settings mutex while clearing RAM and, when requested, finding and
+ * deleting matching flash records. May block on NVS but never actuates MEMS.
+ * Retains the first flash error while attempting the remaining slots. */
 int app_settings_reset_route_loss(const char *route, const char *laser, bool persist)
 {
 	if (route == NULL || laser == NULL || route[0] == '\0' || laser[0] == '\0' ||
 	    strlen(route) >= APP_ROUTE_LOSS_ROUTE_MAX_LEN ||
-	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) return -EINVAL;
+	    strlen(laser) >= APP_ROUTE_LOSS_LASER_MAX_LEN) {
+		return -EINVAL;
+	}
+
 	int first = 0;
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	for (uint8_t i = 0; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
 		struct app_route_loss_record *record = &g_settings.snapshot.route_loss.record[i];
 		bool match = record->configured && strcmp(record->route, route) == 0 &&
 			strcmp(record->laser, laser) == 0;
+
 		/* A previous volatile reset can have removed the RAM entry. Find its
 		 * persisted identity too, without deleting a different reused slot. */
 		struct app_route_loss_record stored;
-		if (match) memset(record, 0, sizeof(*record));
-		if (!persist) continue;
+		if (match) {
+			memset(record, 0, sizeof(*record));
+		}
+		if (!persist) {
+			continue;
+		}
+
 		int read = app_nvs_ready ? nvs_read(&app_nvs, route_loss_nvs_id(i), &stored, sizeof(stored)) : -EIO;
 		if (read < 0 && read != -ENOENT) {
-			if (first == 0) first = read; /* Cannot confirm that this slot lacks the override. */
+			/* Cannot confirm that this slot lacks the override. */
+			if (first == 0) {
+				first = read;
+			}
 		} else if (read == sizeof(stored) && route_loss_record_valid(&stored) &&
 			   strcmp(stored.route, route) == 0 && strcmp(stored.laser, laser) == 0) {
 			delete_setting_record(route_loss_nvs_id(i), &first);
 		}
 	}
 	k_mutex_unlock(&g_settings.lock);
+
 	return first;
 }
 

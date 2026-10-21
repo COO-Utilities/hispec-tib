@@ -14,8 +14,14 @@
 
 #include "command.h"
 
+/** Query a coherent calibration status; no hardware I/O. Runtime sends the reply. */
 int laser_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+
+/** Parse and delegate start/continue/stop/defaults restore. Domain calls may
+ * block on hardware, cancellation joins and requested persistence. */
 int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+
+/** Copy retained metadata/records into a binary MQTT reply under the data lock. */
 int laser_calibration_records_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 int laser_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);

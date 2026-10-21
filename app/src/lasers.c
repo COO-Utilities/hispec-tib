@@ -2164,12 +2164,17 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	props = &settings->properties;
 	double ntc_b = ntc_b_from_coeff(props->ntc_coeff_pct_per_c);
 	if (!isfinite(ntc_b)) return -ERANGE;
+
+	/* Reference current must be exactly representable on the driver's grid.
+	 * These are storage bounds; calibration start separately checks that the
+	 * reference is reachable within the current operating limits. */
 	if (!isfinite(props->ref_mw) || props->ref_mw <= 0.0 ||
 	    !isfinite(props->ref_ma) || props->ref_ma <= 0.0 || props->ref_ma > 1000.0 ||
 	    fabs(props->ref_ma * DIVIDER_CURRENT - round(props->ref_ma * DIVIDER_CURRENT)) > 1.0e-6 ||
 	    !isfinite(props->ref_temp_c) || props->ref_temp_c < 15.0 || props->ref_temp_c > 40.0) {
 		return -ERANGE;
 	}
+
 	if (!float_is_valid(props->nominal_current_ma) ||
 	    !float_is_valid(props->max_current_ma) ||
 	    !float_is_valid(props->threshold_current_ma) ||
@@ -2396,7 +2401,9 @@ out_unlock:
 		 * attention, but it does not undo successfully programmed settings.
 		 */
 		int persist_rc = app_settings_update_laser_channel((uint8_t)id, settings, persist);
-		if (rc == 0) rc = persist_rc;
+		if (rc == 0) {
+			rc = persist_rc;
+		}
 	}
 	laser_note_communication_locked(id, &drv);
 	k_mutex_unlock(&laser_io_lock);

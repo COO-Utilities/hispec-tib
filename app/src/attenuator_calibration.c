@@ -1354,12 +1354,21 @@ static int atten_fit_evaluate(void *context, const double p[2], bool derivatives
 	struct atten_fit_context *fit = context;
 	fit->coeffs.fvoa_50pct_mv = p[0];
 	fit->coeffs.slope_inv_fvoa_mv = p[1];
+
 	for (uint8_t i = 0; i < fit->count; ++i) {
-		double r, j0, j1;
-		if (atomic_get(&cal_fit_cancel)) return -ECANCELED;
+		double r;
+		double j0;
+		double j1;
+
+		if (atomic_get(&cal_fit_cancel)) {
+			return -ECANCELED;
+		}
 		int rc = fit_point_weighted_eval(&fit->points[i], fit->records, &fit->coeffs,
 			fit->max_atten_sigma_db, &r, derivatives ? &j0 : NULL, derivatives ? &j1 : NULL);
-		if (rc != 0) return rc;
+		if (rc != 0) {
+			return rc;
+		}
+
 		normal->cost += r * r;
 		if (derivatives) {
 			normal->h00 += j0 * j0;
@@ -1424,17 +1433,29 @@ static int fit_optimize_db(const struct atten_cal_fit_point *points,
 			   double *slope_inv_fvoa_mv)
 {
 	double p[2];
+
 	if (points == NULL || records == NULL || fvoa_50pct_mv == NULL ||
-	    slope_inv_fvoa_mv == NULL || point_count < ATTEN_CAL_MIN_FIT_POINTS) return -EINVAL;
+	    slope_inv_fvoa_mv == NULL || point_count < ATTEN_CAL_MIN_FIT_POINTS) {
+		return -EINVAL;
+	}
+
+	/* Keep the physical model and uncertainty in this owner. The shared
+	 * optimizer sees only p[0]=f50 in mV and p[1]=slope in inverse mV. */
 	fit_initial_guess(points, records, point_count, gain, &p[0], &p[1]);
 	struct atten_fit_context context = {
-		.points = points, .records = records, .count = point_count,
-		.coeffs = {.max_atten_db = max_atten_db, .gain = gain},
+		.points = points,
+		.records = records,
+		.count = point_count,
+		.coeffs = {
+			.max_atten_db = max_atten_db,
+			.gain = gain,
+		},
 		.max_atten_sigma_db = max_atten_sigma_db,
 	};
 	const double lower[2] = {1.0, ATTEN_CAL_FIT_MIN_SLOPE};
 	const double upper[2] = {2.0 * (double)ATTENUATOR_DRIVE_MAX_MV * gain, ATTEN_CAL_FIT_MAX_SLOPE};
 	const double tolerance[2] = {1.0e-6, 1.0e-12};
+
 	int rc = calibration_fit_2(atten_fit_evaluate, &context, lower, upper, tolerance, p);
 	if (rc == 0) {
 		*fvoa_50pct_mv = p[0];
@@ -2031,8 +2052,12 @@ int attenuator_calibration_start_auto(
 		return -EINVAL;
 	}
 
+	/* Both calibrations reuse the same data/scratch buffers. Join the laser
+	 * owner and confirm its source stopped before replacing any retained data. */
 	rc = laser_calibration_stop(NULL);
-	if (rc != 0) return rc;
+	if (rc != 0) {
+		return rc;
+	}
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	replacing = cal.state == ATTEN_CAL_STATE_RUNNING;

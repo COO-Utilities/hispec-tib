@@ -473,6 +473,8 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 		(void)photodiode_wait_for_sample(K_MSEC(PHOTODIODE_SAMPLE_INTERVAL_MS));
 		int64_t now = k_uptime_get();
 		photodiode_get_status(&throughput_pd_status);
+		/* Starts enforce mutual exclusion. Both calibrations use this worker
+		 * and sampler snapshot; the inactive owner returns without advancing. */
 		attenuator_calibration_tick(&throughput_pd_status);
 		laser_calibration_tick(&throughput_pd_status);
 		for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
@@ -549,7 +551,10 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 		return -EINVAL;
 	}
 	photodiode_get_status(&pd_status);
-	if (attenuator_calibration_active() || laser_calibration_active() || pd_status.channel[0].dark_pending ||
+	/* Throughput must not compete with a calibration for the source, DACs or
+	 * PD window, including a calibration's emission-off recabling pause. */
+	if (attenuator_calibration_active() || laser_calibration_active() ||
+	    pd_status.channel[0].dark_pending ||
 	    pd_status.channel[1].dark_pending) {
 		return -EBUSY;
 	}

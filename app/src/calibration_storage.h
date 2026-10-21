@@ -15,36 +15,78 @@
 #define LASER_CAL_SEGMENTS 8U
 #define LASER_CAL_GRID_COUNT 64U
 
-enum calibration_data_kind { CALIBRATION_DATA_NONE, CALIBRATION_DATA_ATTEN, CALIBRATION_DATA_LASER };
+enum calibration_data_kind {
+	CALIBRATION_DATA_NONE,
+	CALIBRATION_DATA_ATTEN,
+	CALIBRATION_DATA_LASER,
+};
 
 struct atten_cal_record {
-	float sweep_mv, other_mv;
+	float sweep_mv;
+	float other_mv;
 	uint8_t laser_pct;
-	float signal_mv, signal_err_mv, max_mv;
-	uint8_t event, classification, segment;
+	float signal_mv;
+	float signal_err_mv;
+	float max_mv;
+	uint8_t event;
+	uint8_t classification;
+	uint8_t segment;
 };
-struct atten_cal_bridge { uint8_t before_record_index, after_record_index; };
-struct atten_cal_fit_point { uint8_t record_index; float measured_db, measured_db_err; };
+
+struct atten_cal_bridge {
+	uint8_t before_record_index;
+	uint8_t after_record_index;
+};
+
+struct atten_cal_fit_point {
+	uint8_t record_index;
+	float measured_db;
+	float measured_db_err;
+};
 
 /* Explicit binary encoding follows this field order; never transmit C padding. */
 struct laser_cal_record {
 	uint32_t elapsed_ms;
-	float net_mv, rms_mv;
-	uint16_t current_tenth_ma, dac_code[2];
+	float net_mv;
+	float rms_mv; /* Population RMS of the surviving ADC samples. */
+	uint16_t current_tenth_ma;
+	uint16_t dac_code[2]; /* Confirmed physical pair, before optical model conversion. */
 	int16_t max_raw;
-	uint8_t good, failed, segment, flags;
+	uint8_t good;
+	uint8_t failed;
+	uint8_t segment;
+	uint8_t flags; /* Classification 0..1, event 2..4, other output 7. */
 };
 
 struct laser_cal_metadata {
 	struct attenuator_model_coeffs coeff[2];
-	double ref_mw, ref_ma, ref_temp_c, max_ma, nominal_ma, seed_threshold_ma;
-	double current_cal_pct, pd_gain_mv_per_mw, dark_mv, dark_rms_mv;
-	double return_tx, loopback_loss_db[2];
-	double default_threshold_ma, default_efficiency_mw_per_ma;
+	/* Frozen acquisition assumptions, separate from the fitted result. */
+	double ref_mw;
+	double ref_ma;
+	double ref_temp_c;
+	double max_ma;
+	double nominal_ma;
+	double seed_threshold_ma;
+	double current_cal_pct;
+	double pd_gain_mv_per_mw;
+	double dark_mv;
+	double dark_rms_mv;
+	double return_tx;
+	double loopback_loss_db[2];
+	double default_threshold_ma;
+	double default_efficiency_mw_per_ma;
 	uint64_t started_ms;
-	uint32_t run_id, dwell_ms;
-	float dac_full_scale_mv[2], dac_limit_mv[2], temp_min_c, temp_max_c;
-	uint8_t laser, channel, fiber, first_fei, options;
+	uint32_t run_id;
+	uint32_t dwell_ms;
+	float dac_full_scale_mv[2];
+	float dac_limit_mv[2];
+	float temp_min_c;
+	float temp_max_c;
+	uint8_t laser;
+	uint8_t channel;
+	uint8_t fiber;
+	uint8_t first_fei;
+	uint8_t options;
 };
 
 union calibration_data {
@@ -67,11 +109,17 @@ union calibration_scratch {
 		double segment_rel_var[CALIBRATION_RECORD_COUNT];
 	} atten;
 	struct {
-		/* S0,Sx,Sxx,Sy,Sxy in each fixed-attenuation segment. */
+		/* Sum(w), sum(w*I), sum(w*I^2), sum(w*V), sum(w*I*V).
+		 * I is commanded mA; V is net PD mV. Each segment has fixed DACs. */
 		double sums[LASER_CAL_SEGMENTS][5];
-		double gain[LASER_CAL_SEGMENTS], dt[LASER_CAL_SEGMENTS], db[LASER_CAL_SEGMENTS];
-		double dark_variance, baseline_weight, baseline_mean;
-		uint8_t include[CALIBRATION_RECORD_COUNT], count[LASER_CAL_SEGMENTS];
+		double gain[LASER_CAL_SEGMENTS]; /* Profiled mV/mA for each attenuation segment. */
+		double dt[LASER_CAL_SEGMENTS]; /* Gain derivative with respect to threshold mA. */
+		double db[LASER_CAL_SEGMENTS]; /* Gain derivative with respect to baseline mV. */
+		double dark_variance;
+		double baseline_weight;
+		double baseline_mean;
+		uint8_t include[CALIBRATION_RECORD_COUNT];
+		uint8_t count[LASER_CAL_SEGMENTS]; /* Distinct currents, not repeated windows. */
 	} laser;
 };
 

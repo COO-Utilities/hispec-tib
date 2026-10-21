@@ -6,8 +6,12 @@
 
 struct calibration_normal {
 	double cost;
-	double h00, h01, h11;
-	double g0, g1;
+	/* Symmetric J'J and J'r, in the caller's parameter coordinates. */
+	double h00;
+	double h01;
+	double h11;
+	double g0;
+	double g1;
 };
 
 /* Evaluate the entire model, optionally accumulating J'J and J'r. The caller
@@ -23,7 +27,9 @@ int calibration_solve_2x2(double h00, double h01, double h11,
 
 /* Thirty damped analytic-Jacobian Gauss-Newton iterations, preserving the
  * attenuator fitter's damping schedule and component-wise bounded trials.
- * Pure CPU work; the evaluator decides how often to check cancellation.
+ * p is the initial guess and last accepted result. Tolerances use each
+ * parameter's units. Reaching the iteration limit is not an error or a physical
+ * acceptance decision. Pure CPU work; the evaluator owns cancellation checks.
  */
 int calibration_fit_2(calibration_evaluate_fn evaluate, void *context,
 		      const double lower[2], const double upper[2],

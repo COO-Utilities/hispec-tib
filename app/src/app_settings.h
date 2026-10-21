@@ -318,9 +318,11 @@ int app_settings_get_route_loss(const char *route, const char *laser,
  */
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
+
 /** Remove one exact route/source override, optionally deleting its NVS record.
  * Exposes compiled defaults; no switch I/O. May block on settings/flash. */
 int app_settings_reset_route_loss(const char *route, const char *laser, bool persist);
+
 /** @brief Copy MEMS user intent and optional restart metadata. */
 void app_settings_get_mems(struct app_mems_settings *out);
 /** @brief Replace MEMS user intent and optionally persist the MEMS NVS record. */
