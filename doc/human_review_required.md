@@ -41,16 +41,31 @@ LLMs Agents: Do NOT change heading names in this file.
   See [electrical evidence](hardware.md#source-drawings-and-revision-boundaries)
   and [fiber paths](hardware_profiles.md). No hardware was operated in this audit.
 
-- [ ] Bench-validate laser calibration after FVOA calibration: 0.1 C thermal
-  qualification, 100 ms settling, current-grid/range overlaps, inferred knee and
-  upper linear limit, reference-based AO/FEI loss and effective noise. Check the
-  emission-off recabling pause/continue, stop/fault shutdown, scoped default
-  restoration and actual NVS power-cycle behavior. The Nucleo build and temporary
-  real-C numerical/acquisition/route-reset checks, attenuator replay, and C-to-Python
-  binary round-trip pass offline. RAM increased 616 bytes with the existing
-  4096-byte throughput stack; on-target stack/timing margins remain unmeasured.
-  See [laser calibration](laser_calibration.md). No flashing or hardware commands
-  were performed for this implementation.
+- [ ] Bench-validate revised laser calibration after FVOA calibration: thermal
+  qualification/settling, overlap normalization, corrected curve and automatic
+  floor/maximum, AO/FEI loss, effective noise, recabling/STOP, default restoration
+  and NVS reboot behavior. Compare 1500 versus 500 mV PD targets before attributing
+  the observed upper-current compression to the diode. Reference anchoring does
+  not establish absolute power independently of the vendor report.
+  - 2026-10-22 iteration: normal and OTA Nucleo builds and strict Sphinx build pass.
+    Temporary real-C saved-data/synthetic fits, acquisition/failure/application
+    simulations, 5000 forward/inverse checks, packet/host decoding and offline
+    notebook replay/plots pass. The 87-window 1028y archive yields 46 selected
+    windows, 17.1–250 mA, threshold 13.436 mA and maximum residual 4.12% at the
+    new 5% tolerance. This replay is not another physical calibration.
+  - Static RAM increases 16 bytes versus the pre-iteration ELF; shared data/scratch
+    remain 7680/3584 bytes. On-target stack/timing margins remain unmeasured.
+  - OTA **succeeded** on `hsfib-tib` at `hispec.caltech.edu`, firmware
+    `03d32f8171fe-dirty`, 477880-byte image, confirmed MCUboot hash
+    `5dfe910057a649fdea47ca6a395f5f52268e3b2cd624f420eec08e7d54f9ecac`.
+    Acquisition was stopped and bank-off acknowledged before upload. Exact hash,
+    confirmed/inactive/nonpending OTA state, board readiness, all six correction
+    settings, per-channel PD power and new calibration/error replies were queried
+    after boot. Bank remains `override_off`; both PDs are off. No optical sweep or
+    calibration-setting adoption was performed. The MCUMgr parameter probe logged
+    `ENOTSUP`, but upload, trial boot and confirmation completed successfully.
+    Build label is dirty because existing notebook/ledger edits remain local.
+    See [laser calibration](laser_calibration.md) for the next bench workflow.
 - [ ] After flashing the generic TIB loss correction, verify schema 14's full
   app NVS reset, reapply needed settings, and bench-check generic CAL/return
   overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain
