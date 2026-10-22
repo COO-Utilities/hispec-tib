@@ -321,14 +321,19 @@ static int autolevel_adjust(struct throughput_state *state,
 			continue;
 		}
 		const laserprops_t *props = &settings.properties;
-		double excess_ma = source->laser_current_ma - props->threshold_current_ma;
 		double max_ma = props->nominal_current_ma;
+		double power = hispec_laser_estimate_power_mw(props, source->laser_current_ma);
+		double max_power = hispec_laser_estimate_power_mw(props, max_ma);
 		if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
-			max_ma = MIN(max_ma, props->threshold_current_ma + excess_ma *
+			max_power = MIN(max_power, power *
 				state->max_flux_ph_s / (laser_flux * source->atten_tx));
+			max_ma = hispec_laser_current_for_power_mw(props, max_power);
 		}
+		/* Threefold optical steps and the flux cap must use the corrected
+		 * power curve; current overdrive is proportional only when q is zero. */
+		double next_power = MIN(low ? power * 3.0 : power / 3.0, max_power);
 		double next_ma = hispec_laser_quantize_current_ma(
-			props->threshold_current_ma + (low ? excess_ma * 3.0 : excess_ma / 3.0),
+			hispec_laser_current_for_power_mw(props, next_power),
 			settings.min_autolevel_current_ma, max_ma);
 		if (!isfinite(next_ma) || (low ? next_ma <= source->laser_current_ma :
 					       next_ma >= source->laser_current_ma)) {

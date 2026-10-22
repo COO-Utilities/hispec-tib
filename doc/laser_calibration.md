@@ -1,243 +1,276 @@
 # Laser calibration
 
-`laser/calibrate` runs after FVOA calibration with an external loopback to the
-selected SM/MM photodiode return. `laser_calibration.c` owns acquisition, fitting,
-application and optional persistence. `laser_command.c` parses commands. The
-existing throughput thread advances the operation; no extra thread or heap is
-used. See [commands](commands.md#lasercalibrate) for the interface.
-
-## Commissioning notebook
-
-The **Laser calibration, vendor curves and measured reference powers** section in
-[TIB PCB Commissioning](../tools/tib_pcb_commissioning.ipynb) follows FVOA calibration.
-It combines the historical Thorlabs readings, unit-specific vendor reference points,
-and digitized power curves with start/progress, stop, recabling continuation,
-raw-data download, offline review, reviewed application/persistence and scoped
-defaults restoration. New hardware-action cells are disabled initially.
-
-Vendor curve text files in `doc/datasheets/` are named
-`<diode-serial>_power_vs_current.txt`. They contain `current_ma power_mw` columns
-and comments identifying the source page, conditions, digitization method and
-approximate reading precision. They are plot readings, not vendor raw samples;
-they retain disagreements with tabulated threshold/slope/reference values.
-The Thorlabs path adjustments are explicitly provisional estimates, separate
-from the base attenuator estimates and unchanged raw readings.
-
-The notebook saves raw records, metadata, typed status and settings/reference
-context in ordinary pandas pickle captures before plotting. Replay needs no PCB.
-Its segment-gain overlays are diagnostic reconstructions, not another optimizer
-or a transmitted fit-membership mask. A RAM-only run can already change accepted
-settings; later reviewed writes and restoration have their own archived outcomes.
-Persistence saves the current laser policy record, including unchanged fields.
-Acquisition, numerical acceptance, RAM readback and power-cycle persistence remain
-distinct checks.
+`laser_calibration.c` owns current acquisition, fitting, application and optional
+persistence after FVOA calibration. The existing throughput thread advances it;
+no new thread or heap is used. See [commands](commands.md#lasercalibrate) for
+prerequisites, payloads and the field/commissioning workflows.
 
 ## Model and identifiability
 
-At fixed DAC settings in segment j, fit signed dark-subtracted voltage as
+At fixed DAC settings in segment $j$, the signed dark-subtracted voltage is
+$V_i=b+G_j P(I_i)$. Same-run zero-current windows establish residual baseline $b$.
+Measured same-current overlaps establish relative segment scale $S_j$, without
+assuming a linear laser curve or using FVOA attenuation to infer curve shape:
 
 ```{math}
-V_{ij}=b+a_j(I_i-t).
+\frac{S_j}{S_{j-1}}=\frac{\overline{V}_{j}-b}{\overline{V}_{j-1}-b},\qquad
+U_i=\frac{V_i-b}{S_j},\qquad
+P_i=P_{ref}\frac{U_i}{\overline{U}_{ref}}.
 ```
 
-`t` is threshold in commanded mA, `b` is the residual baseline and `a_j` absorbs
-PD gain, static transmission and FVOA transmission. Their absolute scales cannot
-be separately recovered from this sweep. `current_cal_pct` is held fixed: a
-multiplicative driver-current error remains degenerate with efficiency. The
-independent vendor reference defines
+The three reference windows define $\overline U_{ref}$ and turn each relative
+scale into the recorded `segment_mv_per_mw`. PD gain, FVOA scale and unknown fixed
+loss cancel from this curve inference. They remain separate assumptions for loss
+estimation. Absolute power still depends on the vendor anchor; the experiment
+cannot distinguish a multiplicative driver-current error from efficiency.
+`current_cal_pct`, PD gain and the configured dark are not changed.
+
+The runtime curve, for $I>t$, is
 
 ```{math}
-\eta=\frac{P_{\rm ref}}{I_{\rm ref}-t}\quad[\mathrm{mW/mA}].
+x=I-t,\quad x_{ref}=I_{ref}-t,\quad
+\eta=\frac{P_{ref}}{x_{ref}},\qquad
+P(I)=\eta x+q x(x-x_{ref}).
 ```
 
-This assumes the reference lies in the validated linear region at `ref_temp_c`.
-It does not establish absolute power independently of that reference. No PD
-responsivity, transimpedance, configured dark, or current-calibration setting is
-refined. The reference fields are independent of nominal current and the mutable
-threshold/efficiency model; changing one does not silently move the reference.
+Below threshold, modeled power is zero. `threshold_current_ma` is the corrected
+curve's true zero; `efficiency_mw_per_ma` is its **reference-average linear slope**,
+not the tangent at threshold. `quadratic_correction_mw_per_ma2` is a separate
+correction, zero at threshold and reference. Setting $q=0$ recovers the linear
+law. The reference need not lie in a linear region; the vendor's definition of
+maximum power is not treated as a nonlinearity specification.
 
-Compiled `(ref_mw, ref_ma, ref_temp_c)` values are `(43.8,250,25)` for 1028y,
-`(10,52,25)` for 1270j, `(10,49,25)` for both 1430s, `(10,47,25)` for 1510h and
-`(3.18,120,25)` for 2330k. These represent each diode's vendor test point.
+The independent reference triplets `(ref_mw, ref_ma, ref_temp_c)` are
+`(43.8,250,25)` for 1028y, `(10,52,25)` for 1270j, `(10,49,25)` for both 1430s,
+`(10,47,25)` for 1510h and `(3.18,120,25)` for 2330k. They are separate from
+nominal current and mutable model settings. Current is commanded mA on the
+0.1 mA driver grid.
 
-For each trial `(t,b)`, profile each nuisance gain analytically:
+## Fit and interval selection
+
+For each candidate current interval, scale current to $z\in[-1,1]$ and fit
 
 ```{math}
-a_j=\frac{\sum_i w_{ij}(I_i-t)(V_{ij}-b)}{\sum_i w_{ij}(I_i-t)^2}\quad[\mathrm{mV/mA}].
+P(z)=P_{ref}+c_1[T_1(z)-T_1(z_{ref})]+c_2[T_2(z)-T_2(z_{ref})],
+\qquad T_1(z)=z,\quad T_2(z)=2z^2-1.
 ```
 
-Five weighted sums per segment suffice. Analytic derivatives of this quotient
-feed a two-parameter damped Gauss–Newton solve. The [shared two-parameter optimizer](calibration_fitting.md) uses 30 iterations,
-bounded trials and a symmetric 2x2 solve. Attenuator weighting, point order and
-six-term correction fitting remain with their existing owner.
+The anchor is exact. A direct weighted two-column normal solve uses the existing
+[`calibration_solve_2x2`](calibration_fitting.md), with diagonal scaling before
+inversion. The linear candidate sets $c_2=0$. A rationalized quadratic root
+selects the increasing branch's zero, then converts to $(t,\eta,q)$ above.
+Scoring uses $q$ rounded to its stored float precision. There is no iterative
+laser optimizer, fixed 2% seed window, or compiled-efficiency deviation guard.
 
-Weights use temporal variance of each window mean, bounded below by the
-observed off-state variance. Off/zero-current windows constrain one shared `b`.
-Configured dark-offset uncertainty is common to the run and is not incorrectly
-averaged as independent noise on every point. Each contributing segment needs
-three distinct current levels; the joint fit needs six distinct levels.
+For a window with $n_i$ surviving readings and recorded population RMS $r_i$,
+$s_i^2=r_i^2n_i/(n_i-1)$ when $n_i>1$. Pool off-state within-window variances to
+obtain $d^2$, bounded below by ADC quantization variance. Mean weights are
+$w_i=n_i/\max(s_i^2,d^2)$; single-reading means use the pooled floor. The baseline
+is weighted by the same rule. Normalized mean variance is $1/(w_iG_j^2)$.
+Overlaps and reference repeats are pooled with the corresponding scaled weights.
 
-For a window with $n_i$ valid readings and sample variance $s_i^2$, its mean
-weight is $w_i=n_i/\max(s_i^2,d^2)$, where $d^2$ is the pooled off-state
-within-window variance, bounded below by quantization variance. A single-reading
-window can supply a mean but cannot establish the empirical noise floor.
+Enumerate contiguous intervals whose endpoints are measured usable currents.
+Every usable observation inside each interval participates; individual outliers
+are never removed to improve acceptance. An interval must:
 
-The reported `threshold_se_ma` is the local normal-matrix estimate
+- contain the reference and nominal currents and at least six distinct currents;
+- have a nonnegative modeled threshold at least 0.1 mA below its lower endpoint;
+- have positive derivative from threshold through its upper endpoint;
+- keep every absolute fractional mean residual within `max_fit_residual_pct`
+  (default **5%**), and every mean's three-standard-error precision within the
+  same tolerance. This precision check includes pooled baseline uncertainty.
 
-```{math}
-\sigma_t=\sqrt{\frac{H_{11}}{H_{00}H_{11}-H_{01}^2}},\qquad
-H=J^T J,
-```
+Choose the widest passing span, then the lower floor. Prefer a linear curve if
+both orders pass the same interval; otherwise compare residual RMS. Curvature
+may extend the useful range, but cannot excuse residuals beyond the requested
+tolerance. If no interval passes, retain a diagnostic candidate and its failure
+reason. Fitting never changes acquisition completion or discards raw records.
 
-including the shared baseline constraint and derivatives through profiled gains.
-A singular matrix fails the fit. This estimate is not scaled by reduced chi-square
-and does not include vendor-reference uncertainty or unmodeled optical drift.
-The separate mean-curve diagnostic is
+On application, the lower endpoint becomes `min_autolevel_current_ma`; the upper
+endpoint becomes the existing `max_current_ma`. The maximum cannot fall below
+nominal or reference current. If a bad high-power region contains either required
+point, the run rejects instead of silently discarding that point. The automatic
+floor avoids the knee without redefining the modeled threshold. Manual current
+commands retain their existing meaning. Runtime power requests, tuning power
+budgets and automatic power steps use the corrected forward model and inverse.
 
-```{math}
-\texttt{rms\_fraction}=\sqrt{\frac1N\sum_{i\in\mathrm{fit}}
- \left[\frac{V_i-b-a_{j(i)}(I_i-t)}{a_{j(i)}(I_i-t)}\right]^2}.
-```
-
-It is unweighted fractional scatter of window means around the fitted curve,
-not within-window temporal noise.
-
-Seed the fit with the upper 75% of reference overdrive, from
-`seed_threshold + .25*(ref_ma-seed_threshold)` through `ref_ma`. Extend downward
-and upward from the reference; three distinct consecutive current levels with
-both >2% and >3 standard-error departure end a linear interval. Repeated reference
-windows cannot count as three departures. A boundary needs precision sufficient
-to establish 2% linearity. Fit the selected interval again. The default acceptance
-guards are threshold change <= `max(1 mA, .05*ref_ma)` and efficiency within ±25%
-of the compiled efficiency. The reference must agree with the line. The lowest
-validated linear current becomes `min_autolevel_current_ma`, subject to the
-existing threshold + 0.1 mA/grid/nominal-current validator. It may decrease or
-increase. `linear_max_ma` is diagnostic; configured maximum current is unchanged.
+`rms_fraction` and `max_residual_fraction` describe mean-curve departure, not
+within-window temporal noise. With normal matrix $H$ and root sensitivity
+$J_t=\partial t/\partial(c_1,c_2)$, `threshold_se_ma` is
+$\sqrt{J_t H^{-1}J_t^T}$ (the one-column equivalent for a line).
+This is **conditional** on measured normalization and the fixed reference. It
+excludes common overlap/anchor uncertainty, baseline uncertainty in the fit
+covariance, systematic drift and vendor uncertainty. It is not rescaled by
+reduced chi-square and should not be read as absolute calibration accuracy.
 
 ## Acquisition and bounded storage
 
-Start validates the reference/current/temperature envelope, selected route,
-PD power and configured dark, then cancels previous calibration and throughput.
-It stops laser outputs to exclude other diodes sharing the selected input. It
-selects launch and return routes and high calibrated attenuation, starts the TEC
-at `ref_temp_c`, and waits for three one-second checks within 0.1 C (60 s timeout).
-A later drift discards the partial window and waits again. TEC operation continues
-after completion/stop; calibration does not rewrite the stored TEC setpoint.
+Start checks selected PD power, configured dark, both dark-busy flags, reference
+envelope and optical routes before replacing the retained dataset. It stops
+throughput and laser outputs, routes the loopback and starts at high calibrated
+attenuation. TEC qualification requires three one-second checks within 0.1 C of
+`ref_temp_c`, with a 60 s timeout. Temperature drift discards the partial window
+and waits again. Completion/STOP leave TEC policy unchanged.
 
-Capture an off-state window, then step down from the quantized configured maximum.
-The grid combines 33 linear points from maximum to the seed threshold, 20
-log-spaced overdrive points from 0.1 mA to reference overdrive, nine points from
-threshold to zero, and the exact reference. Deduplicate on the 0.1 mA grid; the
-six default profiles use at most 64 points. Dwell defaults to 1000 ms (100–2000 ms,
-rounded up to the PD's 50 ms sample interval). Allow 100 ms settling after writes
-and reset the configurable PD window to exclude conversions already in flight.
+After an off-state window, step down from the configured maximum. The grid combines
+33 linear currents toward the seed threshold, 20 logarithmic overdrive currents,
+nine currents through the knee to zero and the reference. Deduplicate on the
+0.1 mA grid; the six default profiles fit the 64-entry grid. Dwell is 100–2000 ms,
+default 1000 ms, rounded up to the PD's 50 ms sample interval. Each actuator change
+settles for 100 ms and resets the window to exclude conversions already in flight.
 
-Hunt from high attenuation toward a mean near 1500 mV with peaks below 1850 mV,
-using at most 16 initial probes. When a descending-current window falls below
-250 mV, retain it, reduce attenuation at the same current, and retain the overlap
-with a new segment. Later range searches have four probes. Each record includes
-raw peak, valid/failed sample counts, population RMS, event and confirmed DAC
-codes; probes and clipped/low-SNR points remain available but do not fit the curve.
-Three reference windows use one DAC pair. Continue through the knee to zero.
-A provisional fit can select up to eight interior points in the lower linearity
-bracket, reusing that segment's exact DAC pair, then capture zero again and refit.
+Range toward `pd_target_mv` (default 1500 mV), using at most 16 initial probes
+and four probes on subsequent segments. Accepted ranged means are 65–115% of
+target, or below target at zero attenuation. Peaks must remain below 1850 mV.
+When a descending-current mean falls below target/6, retain it, reduce attenuation
+at the same current and record the overlap. Three reference windows use one DAC
+pair. Continue to zero. A provisional accepted fit may select up to eight interior
+currents in the lower-bound bracket at that segment's exact DAC pair; capture a
+new zero window and refit before application. Probes, saturation, below-SNR and
+ADC-error records remain available but do not contribute to curve fitting.
 
-There are at most eight sweep segments and 128 records total, including probes,
-repeated anchors and zero windows. Each record occupies 24 bytes: **3072 bytes**.
-A request for the other output reserves 24 records, leaving 104 for the sweep.
-Metadata is <=512 bytes; the laser numerical workspace is <=1024 bytes. Dataset,
-results, 64-entry current grid and fitting workspace reuse the attenuator's
-**7680-byte data union and 3584-byte scratch union**. A full buffer ends acquisition
-as incomplete; no record is overwritten. The shared telemetry buffer is reused.
+| Storage | Bound |
+|---|---:|
+| Raw windows | 128 × 24 = 3072 bytes |
+| Current grid | 64 × 2 = 128 bytes |
+| Sweep segments | 8 |
+| Other-output reservation | 24 of the 128 windows |
+| Wire metadata, including 16-byte support mask | 432 bytes |
+| Laser numerical scratch | 1496 bytes on the checked build |
+| Shared data / scratch unions | 7680 / 3584 bytes, unchanged |
 
-A partial ADC failure uses surviving samples. Fitting needs at least one off-state
-window with two surviving samples to establish empirical variance. Zero surviving samples or no fresh
-window within dwell + 3 s is terminal. Stop cancels/join numerical work before
-releasing ownership, stops emission, and retains records. Failed STOP retains a
-shutdown obligation for explicit retry. Numerical fitting runs at the existing
-lowest application priority with no calibration mutex held. Manual laser starts,
-settings/attenuator/route/PD mutations and throughput starts are busy while this
-operation owns the path, including the recabling pause. Zero/STOP or bank-off can
-cancel it. An accepted attenuator start can replace it after confirmed shutdown.
+Records/results/metadata reuse the existing calibration unions. A full buffer
+ends acquisition as incomplete; no record is overwritten. The quadratic float
+uses four formerly zeroed trailing bytes in the existing 144-byte NVS policy
+record; its offsets and size are build-asserted. No additional NVS record is added.
 
-Starting either attenuator or laser calibration replaces the one raw dataset.
-Applied settings survive replacement; raw data and results are not persisted.
-Download before another start. Acquisition completion, fit acceptance, RAM
-application and successful NVS persistence are distinct status facts. Applied
-flags describe this run's actions; later manual edits or restoration do not rewrite
-historical fit results. Query laser/route settings for current configuration.
+Partial ADC failures use surviving samples. Zero surviving samples or no fresh
+window within dwell + 3 s is terminal. At least one off-state window needs two
+samples to establish empirical variance. STOP cancels/joins numerical work,
+stops emission and preserves records. A failed stop retains a shutdown obligation
+for explicit retry. Fitting runs at the existing lowest application priority
+without the calibration mutex held. Starts/stops join before reusing scratch.
 
-## Temporal noise
+## Temporal noise and static loss
 
-The PD retains population RMS. With n surviving readings, use unbiased sample
-variance `s² = n/(n-1) * rms²` for n > 1. Pool off-state within-window variances to
-estimate `d²`; use only accepted linear-region windows for
+Only accepted core support contributes to noise fitting. With measured segment
+gain $G_j$ in mV/mW and corrected power $P_i$:
 
 ```{math}
-s_{ij}^2=d^2+\left(\frac{a_j}{\eta}\right)^2 C^2+[a_j(I_i-t)]^2 f^2.
+s_i^2=d^2+G_j^2 C^2+(G_jP_i)^2 f^2.
 ```
 
-Fit the two nonnegative variance terms with scaled two-column least squares,
-checking the interior, both axes and the origin. Three passes use variance-based
-weights after the first solve: for modeled reading variance $v_i$, the Gaussian
-independent-sample approximation gives $\operatorname{Var}(s_i^2)=2v_i^2/(n_i-1)$.
-Keep negative measured excess variances signed;
-clipping them would bias both noise estimates upward. Reject a rank-deficient
-noise fit. Mean-curve residual RMS is reported separately.
+The existing scaled two-term nonnegative variance solve checks the interior, both
+axes and the origin. It performs one initial solve and two variance-weighted
+passes, using $\operatorname{Var}(s_i^2)=2v_i^2/(n_i-1)$ as the independent-Gaussian
+approximation. Negative measured excess variances stay signed to avoid upward
+bias. Rank-deficient noise estimates cannot be adopted.
 
-These are effective source-referred noise estimates: any illuminated PD/FVOA noise
-not removed by the off-state measurement remains included. Do not subtract the
-assumed 10 mV FVOA electrical noise or a static model RMS. `update_noise=false`
-reports estimates only; `true` applies them only with an accepted core fit and
-valid noise fit. It never updates PD noise settings.
+These are effective source-referred terms: illuminated PD/FVOA noise not removed
+by the off-state windows remains included. No assumed electrical FVOA noise is
+subtracted. `update_noise=false` reports estimates without changing settings;
+`true` requests both noise terms with an accepted core. PD noise is unchanged.
 
-## Static loss and the other output
-
-`determine_static_loss=true` requires an explicit, nonnegative
-`loopback_loss_db`, for the **external cable/attenuators only**. With reference
-voltage corrected by the same-run baseline and snapshotted optical conversion gain $G$ in mV/mW (including detector
-responsivity, divider and known wavelength correction):
+With `determine_static_loss=true`, the reference and frozen PD conversion $G$
+in mV/mW give
 
 ```{math}
-P_{\rm PD}=\frac{V_{\rm ref}-b}{G},\qquad
-L_{\rm combined}=10\log_{10}\frac{P_{\rm ref}}{P_{\rm PD}}-A_{\rm FVOA}-L_{\rm loopback},
-\qquad L_{\rm outbound}=L_{\rm combined}-L_{\rm return}.
+P_{PD}=\frac{V_{ref}-b}{G},\qquad
+L_{combined}=10\log_{10}\frac{P_{ref}}{P_{PD}}-A_{FVOA}-L_{loopback},\qquad
+L_{outbound}=L_{combined}-L_{return}.
 ```
 
-`L_combined` includes outbound plus configured SM/MM return. The return loss is
-held fixed, so only the selected exact named-laser outbound route is replaced.
-This is a complete route override, not an additional correction to the old loss.
-A negative/nonfinite inferred outbound loss is rejected. Reference anchoring can
-succeed independently of core-fit acceptance, using its own off-state baseline.
+`loopback_loss_db` describes external cable/attenuators only. Return transmission,
+PD gain, reference power and FVOA model remain assumptions. The result replaces
+the whole selected named outbound loss; it is not an incremental correction.
+Negative/nonfinite losses reject. Loss can be *estimated* despite core rejection,
+but cannot be *applied* without an accepted core.
 
-With `other_output=true`, apply accepted first-stage results, stop emission and
-enter `awaiting_output`. PD auto-off remains inhibited through this pause so
-continuation can acquire without changing the protected PD settings. Physically reconnect the external loopback to the other
-AO/FEI output, keeping the same return. `continue:true` reroutes, repeats thermal
-qualification, captures its own dark, ranges at `ref_ma`, captures three reference
-windows and final zero. It does not repeat the current sweep. Continue may replace
-that output's external loopback loss. A stop/error in this stage preserves the
-first-stage core/noise/route changes and persistence.
+`other_output=true` adds an emission-off `awaiting_output` pause with PD auto-off
+inhibited. Physically reconnect the other AO/FEI output to the same return and
+continue, optionally supplying a different external loss. Its own dark/reference
+triplet/zero windows estimate that output's loss without repeating the sweep.
+Automatic first-stage changes survive a later stage failure.
 
-## Restore compiled defaults
+## Application, restoration and notebook review
 
-`restore_defaults:true` with `laser` and `output` stops calibration/throughput and
-the selected source, restores compiled threshold, efficiency, autolevel floor,
-reference triplet and both noise settings, and removes the selected named outbound
-route override. Removing the override exposes the compiled route default.
-Current limits, `current_cal_pct`, driver identity, other TEC policy, the return
-loss and other-output override are preserved. If preserved limits make the
-compiled core invalid, that part reports failure; route restoration is independent.
+The field default `apply=true` installs an accepted core automatically. Noise and
+loss are requested separately; all requested estimates validate before settings
+mutation. `persist=true` additionally saves the current laser policy and requested
+route overrides. Core acceptance, RAM application and NVS persistence have distinct
+outcomes; a flash failure cannot roll back an already active RAM update.
 
-`persist:false` changes RAM only; old saved values return after reboot.
-`persist:true` writes laser policy/reference records and deletes the matching
-route NVS entry. Separate error/applied/persisted fields report partial work;
-flash failure does not imply a RAM rollback. A second persistent restore also
-finds the old route record after an earlier volatile removal.
+The commissioning notebook starts with `apply=False,persist=False`, archives raw
+data first, and shows one summary plus normalized power/curve/residual plots.
+Selected points come from the transmitted mask. Below-floor extrapolation, the
+reference-average line, vendor trace and source-power assumptions are explicit.
+Detailed raw-window plots are optional. Reviewed application uses
+`laser_calibrate_apply(run_id, ...)`, the same firmware domain path as automatic
+application. The run must still be retained and idle; reference/current-calibration
+changes invalidate its application. An old pickle is not an installable substitute.
 
-## Validation boundary
+The notebook preserves historical S154C readings and labels the original base
+attenuation and later JIB path adjustment separately. Digitized vendor traces in
+`doc/datasheets/<serial>_power_vs_current.txt` retain source/precision comments;
+they are not raw vendor samples. The notebook compares linear and quadratic fits
+over identical report intervals. Earlier archives can be normalized offline from
+measured overlaps for comparison, with unknown membership explicitly labeled;
+their original failed result is never replaced. Optional 500/1500 mV target
+comparison helps test PD-level dependence. It cannot by itself isolate diode
+curvature from detector or path effects.
 
-The fit assumes stable optical paths within each segment and an accurate vendor
-reference at the stated temperature. Offline numerical checks cannot establish
-physical settling, thermal stability, reference accuracy, target stack margin or
-persistence over power cycles. These remain [bench-review items](human_review_required.md).
+Restore returns to compiled threshold, efficiency, zero correction, maximum,
+automatic floor, reference and noise defaults, and removes the selected named
+outbound override. It preserves nominal current, current calibration, identity,
+other TEC policy, PD return and the other output. This is not an undo to a pre-run
+snapshot. Applied/persisted flags and independent errors report partial outcomes.
+
+## Status and retained data
+
+Status fields: `state`, `run_id`, `laser`, `output` (current stage), `records`,
+`dwell_ms`, `current_ma`, `acquisition_complete`, `overflow`, `shutdown_pending`,
+`error`. States are `inactive`, `running`, `fitting`, `awaiting_output`, `complete`,
+`stopped`, `error`. Completion concerns acquisition of the current stage.
+
+- `fit`: `valid`, `accepted`, `applied`, `persisted`, `error`, `apply_error`,
+  `persist_error`, `n`, `threshold_ma`, `efficiency_mw_per_ma`,
+  `quadratic_correction_mw_per_ma2`, `floor_ma`, `max_ma`, `baseline_mv`,
+  `rms_fraction`, `max_residual_fraction`, `threshold_se_ma`.
+- `noise`: `valid`, `applied`, `persisted`, `error`, `constant_mw`, `fractional`.
+- `routes`: two objects, requested output then other output; each has `accepted`,
+  `applied`, `persisted`, `error`, `apply_error`, `persist_error`, `combined_db`,
+  `outbound_db`. Unrequested results have false flags. Invalid numbers are null.
+
+All JSON errors are text/null. Internal errno values remain C implementation
+contracts. Expected guards have specific text such as `pd off`, `dark required`,
+`too non-linear` or `fit failed`; unexpected errno uses `unexpected error (<ENAME>)`.
+Flags describe actions by this run, not guarantees that settings were never edited
+later. Read current settings to establish present configuration.
+
+Binary retrieval is MQTT only. `laser/calibrate/records` returns **432 bytes**,
+little endian, magic `HLC1`, version byte **2**:
+
+| Offset | Contents |
+|---:|---|
+| 5–15 | State, laser index, PD channel, fiber ASCII, first-FEI flag, options (loss=1, noise=2, other=4, persist=8, apply=16), record size=24, count, records/chunk, segment count, reserved |
+| 16 | `uint32 run_id`, `uint32 dwell_ms`, `uint64 started_ms` (uptime) |
+| 32 | 15 doubles: reference triplet, maximum, nominal, seed threshold, current-cal %, PD mV/mW, configured dark mean/RMS, return transmission, first/other loopback dB, compiled threshold/efficiency |
+| 152 | Six floats: two DAC full scales, two limits, observed temperature min/max |
+| 176, 248 | Each FVOA: six doubles (f50, slope, max attenuation, calibrated max, gain, RMS) and six float correction coefficients |
+| 320 | Two doubles: residual tolerance %, PD target mV |
+| 336 | Eight doubles: measured segment gain mV/mW |
+| 400 | Two doubles: same-run residual baseline mV, pooled dark variance mV² |
+| 416 | 16-byte fit-membership bitmask, low bit first; one bit per retained record |
+
+`laser/calibrate/records/<chunk>` returns headerless `<IffHHHhBBBB` records:
+elapsed uptime ms, net mV, population RMS mV, current in 0.1 mA, two confirmed
+12-bit DAC codes, signed ADC maximum, good/failed counts, segment and flags.
+Flag bits 0–1 mean OK/saturated/below-SNR/ADC-error; bits 2–4 mean
+sweep/probe/overlap/reference/dark/refinement; bit 7 means other output.
+Other-output segment is 255. DAC mV is `code * full_scale_mv / 4096`.
+Use advertised chunk capacity. The host checks run ID, uptime and stable metadata
+around download so replaced data cannot silently mix with an earlier run.
+
+Starting either calibration replaces the single retained dataset; reboot loses
+it. Applied settings survive replacement, but raw data and results are not saved
+to NVS. Download and archive before starting another run.

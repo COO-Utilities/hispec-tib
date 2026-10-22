@@ -173,11 +173,16 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 ## Scoped laser calibration restore
 
 `laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
-compiled threshold/efficiency/autolevel floor/reference/noise settings and removes
-only that exact named outbound route override. Current limits, driver identity
-and current calibration, other TEC policy, return loss and other-output overrides
+compiled threshold/efficiency/zero correction/maximum/autolevel floor/reference/noise
+settings and removes only that exact named outbound route override. Nominal current,
+driver identity and current calibration, other TEC policy, return loss and other-output overrides
 remain. Optional persistence writes the laser records and deletes the route's NVS
 record; a volatile restore does not erase saved values. Laser/route application
 and persistence errors are reported separately. Raw calibration data occupies one
 shared RAM dataset for attenuator/laser runs, never NVS. See
 [laser calibration](laser_calibration.md) for mathematical assumptions and stages.
+
+The quadratic correction is a float in the formerly zeroed four-byte tail of the
+144-byte laser policy record. Size and offset are build-asserted. Reference and
+policy are loaded together before validating the corrected model; the reference
+current is part of its definition. No new NVS key or schema reset is introduced.

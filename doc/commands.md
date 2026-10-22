@@ -1088,6 +1088,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
+      "quadratic_correction_mw_per_ma2": 0.0,
       "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
       "wavelength_nm": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
@@ -1120,6 +1121,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "min_autolevel_current_ma": 0.0,
       "max_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
+      "quadratic_correction_mw_per_ma2": 0.0,
       "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
       "wavelength_nm": 0.0,
       "current_cal_pct": 0.0,
@@ -1149,6 +1151,12 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     and on the 0.1 mA grid, and temperature must be 15–40 C. Calibration additionally
     requires the reference inside the configured current/temperature envelope.
     Reference edits stop emission and optionally persist the triplet.
+  - `quadratic_correction_mw_per_ma2` adds `q*x*(x-x_ref)` to the linear
+    power estimate, where `x=current_ma-threshold_current_ma` and
+    `x_ref=ref_ma-threshold_current_ma`. Defaults are zero. The corrected
+    model must remain increasing from threshold through maximum current;
+    nonzero correction requires reference above threshold. Calibration retains
+    efficiency as the reference-average linear slope. Changes stop emission.
   - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
     request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
     upward to the 0.1 mA register grid. Raising threshold also raises this floor
@@ -1174,7 +1182,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `threshold_current_ma + value * (nominal_current_ma - threshold_current_ma)`,
     rounded to the 0.1 mA current grid; `value:0` instead requests zero current.
     Estimated optical power is
-    `max(0, (current_ma - threshold_current_ma) * efficiency_mw_per_ma)` in mW.
+    zero at/below threshold, otherwise `efficiency_mw_per_ma*x + q*x*(x-x_ref)`
+    in mW, using the correction defined above.
     Threshold therefore affects both the current mapping and the power model;
     efficiency changes the power/throughput/flux scale, not the untuned current
     mapping. Nominal current sets the level-1/autolevel ceiling and the wavelength
@@ -1227,7 +1236,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - it is **encouraged** to send only the settings that requested changed.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
-  - Actual changes to threshold, nominal current, efficiency, wavelength,
+  - Actual changes to threshold, nominal current, efficiency, quadratic correction, wavelength,
     wavelength coefficients, autolevel minimum, operating range, or driver-backed
     settings stop emission before acceptance. The TEC follows
     `disable_tec_at_autooff`. Failed shutdown rejects the update and preserves
@@ -1270,6 +1279,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     - `wavelength_nm`
     - `threshold_current_ma`
     - `efficiency_mw_per_ma`
+    - `quadratic_correction_mw_per_ma2`
   - Settings that are informational only (included for datasheet posterity):
     - `isolation_db`
   - Ranges:
@@ -1281,73 +1291,93 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
 (laser-calibrate)=
 ### `laser/calibrate`
 
-- Query with no payload. Start with `laser` and same-band `output` (`yj_ao`,
-  `yj_fei`, `hk_ao`, `hk_fei`). Defaults: `fiber:"S"`, `dwell_ms:1000`,
-  `determine_static_loss:false`, `update_noise:false`, `other_output:false`,
-  `persist:false`.
-- Example: `{"laser":"1270j","output":"yj_ao","fiber":"S","determine_static_loss":true,"loopback_loss_db":10.0}`.
-  Loss fitting requires explicit external loopback loss, excluding the configured
-  SM/MM return. `other_output:true` requires loss fitting.
-- `{"stop":true}` cancels fitting/acquisition and stops emission, retaining data.
-- At `awaiting_output`, recable to the other AO/FEI output and send
-  `{"continue":true}`; optionally supply a new `loopback_loss_db`. First-stage
-  accepted changes remain applied even if this stage fails or is stopped.
-- `{"restore_defaults":true,"laser":"1270j","output":"yj_ao","persist":false}`
-  restores compiled threshold/efficiency/floor/reference/noise and removes that
-  named outbound loss override. Preserves current limits/calibration, identity,
-  unrelated TEC policy, return and other-output loss. Returns `rc`, per-part
-  `laser_error`/`route_error`, `laser_persist_error`/`route_persist_error`, and
-  separate `laser_applied`, `route_applied`, `laser_persisted`, `route_persisted`.
-- Status fields: `state`, `laser`, `output` (current stage), `records`, `dwell_ms`,
-  `current_ma`, `acquisition_complete`, `overflow`, `shutdown_pending`, `error`.
-  States: `inactive`, `running`, `fitting`, `awaiting_output`, `complete`,
-  `stopped`, `error`. Completion refers to acquisition of the current stage;
-  inspect the nested results for acceptance/application/persistence.
-- `fit`: `valid`, `accepted`, `applied`, `persisted`, `error`, `persist_error`,
-  `n`, `threshold_ma`, `efficiency_mw_per_ma`, `floor_ma`, `linear_max_ma`,
-  `baseline_mv`, `rms_fraction`, `threshold_se_ma`. Invalid numerical fields
-  are null. `noise`: `valid`, `applied`, `persisted`, `error`, `constant_mw`,
-  `fractional`. `routes`: two objects ordered requested output then other
-  output, each with `accepted`, `applied`, `persisted`, `error`, `persist_error`,
-  `combined_db`, `outbound_db` (null unless accepted). Unrequested fits have
-  false flags. Core/noise and route application are independent as described in
-  [the calibration model](laser_calibration.md).
-- Best-effort progress/status telemetry uses `dt/<device>/laser/calibrate`.
-  The command runs asynchronously after setup; query for progress. Start stops
-  throughput/laser outputs and requires the selected PD already powered and its
-  configured dark valid. Other mutation commands are busy while the path is
-  owned; zero/STOP and bank-off remain available. No maximum-current reduction
-  is applied automatically.
-- Binary MQTT queries: `laser/calibrate/records` for metadata,
-  `laser/calibrate/records/<chunk>` for zero-based raw chunks. Serial binary
-  retrieval is unsupported. Starting either optical calibration replaces this
-  shared retained dataset; stop/error/rejection retain it.
-- Metadata is 320 bytes, little endian: `HLC1`, version byte 1, then bytes for
-  state, laser index, PD channel, fiber ASCII, first-FEI flag, options bitmask
-  (loss=1, noise=2, other=4, persist=8), record size=24, count, records/chunk,
-  segment count, reserved. Offset 16 has `uint32 run_id`, `uint32 dwell_ms`,
-  `uint64 started_ms`. Offset 32 has 15 doubles: `ref_mw`, `ref_ma`, `ref_temp_c`,
-  `max_ma`, `nominal_ma`, `seed_threshold_ma`, `current_cal_pct`,
-  `pd_gain_mv_per_mw`, `dark_mv`, `dark_rms_mv`, `return_tx`, first/other external
-  loopback losses, compiled threshold and efficiency. Offset 152 has six floats:
-  DAC full scales (2), DAC limits (2), observed temperature min/max. Offsets
-  176/248 each have six doubles (`fvoa_50pct_mv`, `slope_inv_fvoa_mv`,
-  `max_atten_db`, `max_calibrated_db`, `gain`, `rms_db`) and six float correction
-  coefficients. `started_ms` is uptime, not UTC.
-- Each headerless raw record is `<IffHHHhBBBB`: elapsed uptime ms, net mV,
-  population RMS mV, commanded current in 0.1 mA, two confirmed 12-bit DAC codes,
-  signed ADC maximum, good/failed counts, segment, flags. Flags bits 0–1:
-  ok/saturated/below-SNR/ADC-error; bits 2–4: sweep/probe/overlap/reference/dark/
-  refinement; bit 7: other output. Other-output segment is 255. DAC conversion
-  is `code * full_scale_mv / 4096`. Use advertised records/chunk, not a hardcoded
-  transport capacity. Host download checks run ID/uptime after reading chunks.
-- Python: `laser_calibrate(name=None, *, output=None, fiber="S", dwell_ms=1000,
-  determine_static_loss=False, loopback_loss_db=None, update_noise=False,
-  other_output=False, persist=False)`, `laser_calibrate_continue(*,
-  loopback_loss_db=None)`, `laser_calibrate_stop()`, `laser_calibration_data()`,
-  `laser_calibrate_restore_defaults(name, *, output, persist=False)`.
-  Data is a `LaserCalibrationDataset` with a NumPy record array, frozen metadata
-  and a typed status snapshot. Save before another calibration start.
+- **No payload -> current calibration status.** Acquisition runs asynchronously;
+  query again or watch `dt/<device>/laser/calibrate` for progress.
+- **Prerequisites:** review the FVOA calibration, physically connect the selected
+  outbound output to the selected SM/MM PD return, power that **specific PD**, and
+  acquire a valid dark with light blocked. Neither channel may have a dark pending.
+  `pd/settings/<channel>.powered` reports actual power without enabling it.
+  The laser bank must permit operation; the reference current and temperature
+  must be inside configured limits. Firmware sets `ref_temp_c` and qualifies
+  temperature after start. A stored dark alone does not mean the PD is on.
+- **Payload -> start and return status:**
+  ```json
+  {
+    "laser": "1270j",
+    "output": "yj_ao",
+    "fiber": "S",
+    "dwell_ms": 1000,
+    "apply": true,
+    "max_fit_residual_pct": 5.0,
+    "pd_target_mv": 1500.0,
+    "determine_static_loss": false,
+    "update_noise": false,
+    "other_output": false,
+    "persist": false
+  }
+  ```
+  `laser` and same-band `output` are required. Other values shown are defaults.
+  `fiber` is `S` or `M`; dwell is 100–2000 ms. Residual tolerance is strictly
+  between 0 and 100 percent; PD target is strictly between 0 and 1850 mV.
+  Loss estimation requires `determine_static_loss:true` plus explicit nonnegative
+  `loopback_loss_db` for **external** cable/attenuators, excluding the configured
+  PD return. `other_output:true` requires loss estimation.
+- **Payload -> apply a reviewed retained run:**
+  ```json
+  {"apply":true,"run_id":17,"update_loss":true,"update_noise":false,"persist":false}
+  ```
+  First acquire with `apply:false,persist:false`. Finish or STOP acquisition
+  before applying. The run ID must still match; a reboot or another calibration
+  replaces it. All requested components, including the core fit, must be accepted.
+- **Payload -> stop, continue after physical recabling, or restore defaults:**
+  ```json
+  {"stop":true}
+  ```
+  ```json
+  {"continue":true,"loopback_loss_db":10.0}
+  ```
+  ```json
+  {"restore_defaults":true,"laser":"1270j","output":"yj_ao","persist":false}
+  ```
+  STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
+  loss replaces the external loss for the second output. Restore stops the owned
+  operations and restores compiled threshold, efficiency, zero quadratic
+  correction, maximum, automatic floor, reference and noise; it removes the named
+  outbound override. Identity, current calibration, nominal current, other TEC
+  settings, return loss and the other output's override are preserved.
+- **Response:** status separates acquisition (`state`, `acquisition_complete`,
+  `error`) from `fit`, `noise` and `routes`. Each result reports acceptance/validity,
+  application and persistence separately. Errors are strings or `null`, for example
+  `"pd off"`, `"too non-linear"`, `"insufficient precision for residual limit"`, or
+  `"unexpected error (EIO)"`. The last form uses the actual errno name only when
+  no more specific explanation is available. Numerical rejection retains data
+  and does not turn completed acquisition into acquisition failure.
+  Restore reports `laser_applied`, `route_applied`, `laser_persisted`,
+  `route_persisted` and independent text/null errors. See the
+  [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
+- **Notes:**
+  - `apply:true` automatically installs an accepted threshold, reference-average
+    efficiency, quadratic correction, automatic floor and maximum. This is the
+    field default and requires no notebook. Loss and noise adoption are opt-in.
+    `persist:true` also requests NVS; `apply:false,persist:true` is rejected.
+  - Commissioning uses `apply:false,persist:false`, saves raw data, reviews the
+    normalized curve/residual plot, then explicitly applies the retained run.
+    A failed core fit cannot apply a route or noise estimate. A persistence
+    failure may leave RAM updated; inspect each result's errors/flags.
+  - Start stops throughput/laser outputs and owns the loopback through acquisition
+    and recabling. Other mutations are busy; STOP/zero and bank-off remain available.
+    With automatic application, accepted first-stage changes survive a later
+    second-stage failure. The source is off during the recabling pause.
+  - MQTT binary queries `laser/calibrate/records` and
+    `laser/calibrate/records/<chunk>` retrieve metadata and raw chunks. Starting
+    either optical calibration replaces the shared dataset. Save it first.
+  - Python: `laser_calibrate(name, ..., apply=True, max_fit_residual_pct=5.0,
+    pd_target_mv=1500.0, determine_static_loss=False, loopback_loss_db=None,
+    update_noise=False, other_output=False, persist=False)`;
+    `laser_calibrate_apply(run_id, *, update_loss=False, update_noise=False, persist=False)`;
+    `laser_calibrate_continue(loopback_loss_db=None)`, `laser_calibrate_stop()`,
+    `laser_calibration_data()`, and
+    `laser_calibrate_restore_defaults(name, *, output, persist=False)`.
 
 (laserbank-power)=
 ### `laser/bankpower`
@@ -1936,6 +1966,7 @@ unchanged so an OTA rollback can still read the existing calibration.
     "responsivity_a_per_w": 0.93,
     "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
+    "powered": false,
     "autooff_s": 300,
     "off_in_s": null
   }
@@ -1966,6 +1997,8 @@ unchanged so an OTA rollback can still read the existing calibration.
   this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
   channel's automatic power-off delay used when firmware auto-enables the
   relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
+  `powered` is the read-only actual state of this channel. Querying settings
+  neither enables it nor rearms auto-off; unlike `pd`, it is suitable for preflight.
   Dark and lowest-dark values are queried and updated through
   `pd/dark/<channel>`.
 

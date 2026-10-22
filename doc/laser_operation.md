@@ -9,13 +9,23 @@ provides callable contracts.
 
 ## Power and photon estimates
 
-For current $I$ in mA, threshold $I_t$ and efficiency $\eta$ in mW/mA:
+For current $I$ in mA, threshold $I_t$, efficiency $\eta$ in mW/mA and correction
+$q$ in mW/mA², let $x=\max(0,I-I_t)$ and $x_{ref}=I_{ref}-I_t$:
 
 ```{math}
-P[\mathrm{mW}]=\max[0,\eta(I-I_t)],\qquad
+P[\mathrm{mW}]=\eta x+q x(x-x_{ref}),\qquad
 \sigma_P=\sqrt{(fP)^2+C^2},\qquad
 \Phi[\mathrm{s}^{-1}]=\frac{10^{-3}P\lambda}{hc}.
 ```
+
+The correction defaults to zero. Settings validation requires an increasing curve
+from threshold to maximum. Calibration chooses the true modeled zero and
+reference-average efficiency $P_{ref}/(I_{ref}-I_t)$; automatic operation starts
+at the independently validated `min_autolevel_current_ma`, above the knee.
+For positive requested power, the stable inverse is
+$I=I_t+2P/[a+\sqrt{a^2+4qP}]$, where $a=\eta-qx_{ref}$.
+Zero requested power means zero current. An unreachable/nonfinite power fails;
+the existing bounds and 0.1 mA quantization still apply.
 
 Here $f$ is `fractional_noise`, $C$ is `constant_noise_mw`, and $\lambda$ is in
 metres. Photon error uses the same power-to-flux scale. For example, 1 mW at
@@ -48,12 +58,15 @@ If temperature tuning is disabled, $T_*=T_0$. Remaining wavelength error can
 be corrected by current when enabled:
 
 ```{math}
-\Delta I=\operatorname{clip}\left(
- \frac{\Delta\lambda-k_T(T_*-T_0)}{k_I},-\delta I_{\max},\delta I_{\max}\right),
-\qquad
-\delta I_{\max}=\frac{\texttt{maximum\_power\_shift\_percent}}{100}
- (I_{\rm nom}-I_t).
+\Delta I=\frac{\Delta\lambda-k_T(T_*-T_0)}{k_I},\qquad
+\delta P_{max}=\frac{\texttt{maximum\_power\_shift\_percent}}{100}P(I_{\rm nom}).
 ```
+
+Clamp the current candidate to the inverse-model bounds corresponding to
+$P(I_d)\pm\delta P_{max}$, intersected with the configured current envelope.
+The budget is optical power; with nonzero correction, equal current steps do
+not imply equal power steps. Manual brightness still uses the current-fraction
+mapping above.
 
 The final current is bounded, rounded to the 0.1 mA register grid, and used for
 both application and reporting. Residuals are requested minus estimated

@@ -105,8 +105,8 @@ k=\begin{cases}
 
 For attenuator adjustment alone, $T_A'=kT_A$, or
 $A'=A-10\log_{10}k$: a factor of three is about 4.7712 dB. For a fixed attenuator,
-laser power is proportional to current overdrive, so
-$I'=I_{\rm threshold}+k(I-I_{\rm threshold})$, subject to the allowed current
+request $P'=kP(I)$ and use the corrected laser model inverse to obtain $I'$,
+subject to the allowed current
 and 0.1 mA register grid. The controller recomputes from confirmed owner state;
 requested settings are never treated as acknowledged writes.
 

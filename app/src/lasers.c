@@ -1974,8 +1974,8 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *e
 		return -EINVAL;
 	}
 
-	current_ma = props->threshold_current_ma + (power_mw / props->efficiency_mw_per_ma);
-	if (current_ma > props->max_current_ma) {
+	current_ma = hispec_laser_current_for_power_mw(props, power_mw);
+	if (!isfinite(current_ma)) {
 		return -ERANGE;
 	}
 
@@ -2180,6 +2180,7 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->threshold_current_ma) ||
 	    !float_is_valid(settings->min_autolevel_current_ma) || settings->min_autolevel_current_ma < 0.0 ||
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
+	    !isfinite(props->quadratic_correction_mw_per_ma2) ||
 	    !float_is_valid(props->wavelength_nm) ||
 	    !float_is_valid(settings->current_cal_pct) ||
 	    !float_is_valid(settings->fractional_noise) || settings->fractional_noise < 0.0 ||
@@ -2193,7 +2194,7 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    props->nominal_current_ma > 1000.0 ||
 	    props->max_current_ma < props->nominal_current_ma ||
 	    props->max_current_ma > 1000.0 ||
-	    props->efficiency_mw_per_ma < 0.0 ||
+	    props->efficiency_mw_per_ma <= 0.0 ||
 	    props->efficiency_mw_per_ma > 100.0 ||
 	    props->wavelength_nm < 1.0 ||
 	    props->wavelength_nm > 10000.0 ||
@@ -2206,6 +2207,19 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    props->dlambda_dA_nm_per_ma < -10.0 ||
 	    props->dlambda_dA_nm_per_ma > 10.0 ||
 	    settings->expected_serial == 0U) {
+		return -ERANGE;
+	}
+
+	/* The derivative is affine in current, so checking its two endpoints
+	 * proves monotonicity throughout the operating interval. q=0 retains the
+	 * compiled linear model even when the independent reference differs. */
+	double q = props->quadratic_correction_mw_per_ma2;
+	double slope_at_threshold = props->efficiency_mw_per_ma -
+		q * (props->ref_ma - props->threshold_current_ma);
+	double slope_at_max = slope_at_threshold +
+		2.0 * q * (props->max_current_ma - props->threshold_current_ma);
+	if (!(slope_at_threshold > 0.0) || !(slope_at_max > 0.0) ||
+	    (q != 0.0 && props->ref_ma <= props->threshold_current_ma)) {
 		return -ERANGE;
 	}
 
@@ -2322,6 +2336,7 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		previous.properties.threshold_current_ma != settings->properties.threshold_current_ma ||
 		previous.properties.nominal_current_ma != settings->properties.nominal_current_ma ||
 		previous.properties.efficiency_mw_per_ma != settings->properties.efficiency_mw_per_ma ||
+		previous.properties.quadratic_correction_mw_per_ma2 != settings->properties.quadratic_correction_mw_per_ma2 ||
 		previous.properties.ref_mw != settings->properties.ref_mw ||
 		previous.properties.ref_ma != settings->properties.ref_ma ||
 		previous.properties.ref_temp_c != settings->properties.ref_temp_c ||
@@ -2500,6 +2515,8 @@ static void laser_autooff_work_handler(struct k_work *work)
 	laser_autooff_reschedule();
 }
 
+/** Evaluate the calibrated power model without I/O. Below threshold the
+ * model is zero; the separate autolevel floor marks where data validated it. */
 double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma)
 {
 	double power_mw;
@@ -2509,9 +2526,38 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
 		return LASERPROP_NA;
 	}
 
-	power_mw = (current_ma - properties->threshold_current_ma) *
-		   properties->efficiency_mw_per_ma;
+	double x = fmax(0.0, current_ma - properties->threshold_current_ma);
+	double x_ref = properties->ref_ma - properties->threshold_current_ma;
+	power_mw = x * (properties->efficiency_mw_per_ma +
+		(double)properties->quadratic_correction_mw_per_ma2 * (x - x_ref));
 	return (power_mw > 0.0) ? power_mw : 0.0;
+}
+
+/** Invert the monotone power curve without I/O or current quantization.
+ * The rationalized quadratic root avoids cancellation as q approaches zero.
+ * Zero means emission off; an unreachable/nonfinite power returns NAN. */
+double hispec_laser_current_for_power_mw(const laserprops_t *properties, double power_mw)
+{
+	if (properties == NULL || !isfinite(power_mw) || power_mw < 0.0) {
+		return NAN;
+	}
+	if (power_mw == 0.0) {
+		return 0.0;
+	}
+	if (power_mw > hispec_laser_estimate_power_mw(properties, properties->max_current_ma)) {
+		return NAN;
+	}
+
+	double q = properties->quadratic_correction_mw_per_ma2;
+	double a = properties->efficiency_mw_per_ma -
+		q * (properties->ref_ma - properties->threshold_current_ma);
+	double discriminant = a * a + 4.0 * q * power_mw;
+	if (!(a > 0.0) || !(discriminant >= 0.0)) {
+		return NAN;
+	}
+	double current_ma = properties->threshold_current_ma +
+		2.0 * power_mw / (a + sqrt(discriminant));
+	return fmin(current_ma, properties->max_current_ma);
 }
 
 int laser_estimate_flux(enum hispec_laser_id id,
@@ -2630,7 +2676,6 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	double delta_from_temp_nm;
 	double delta_remaining_nm;
 	double delta_i_ma;
-	double allowed_delta_i_ma;
 	double target_current_ma;
 	double delta_from_current_nm;
 	double estimated_wavelength_nm;
@@ -2714,21 +2759,22 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	delta_remaining_nm = delta_lambda_nm - delta_from_temp_nm;
 	if (request->use_current) {
 		delta_i_ma = delta_remaining_nm / props->dlambda_dA_nm_per_ma;
-		allowed_delta_i_ma =
-			(request->maximum_power_shift_percent / 100.0) * current_range_ma;
-		if (delta_i_ma > allowed_delta_i_ma) {
-			delta_i_ma = allowed_delta_i_ma;
-			current_clamped = true;
-		}
-		if (delta_i_ma < -allowed_delta_i_ma) {
-			delta_i_ma = -allowed_delta_i_ma;
-			current_clamped = true;
-		}
-		target_current_ma = desired_i_ma + delta_i_ma;
-		target_current_ma = clamp_with_flag(target_current_ma,
-						    props->threshold_current_ma,
-						    props->max_current_ma,
-						    &current_clamped);
+		/* The budget is a percentage of nominal optical power. Brightness
+		 * still selects a current fraction, but curvature changes the allowed
+		 * current excursion for that optical budget. */
+		double desired_power = hispec_laser_estimate_power_mw(props, desired_i_ma);
+		double budget = request->maximum_power_shift_percent / 100.0 *
+			hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+		double low_power = fmax(0.0, desired_power - budget);
+		double high_power = fmin(desired_power + budget,
+			hispec_laser_estimate_power_mw(props, props->max_current_ma));
+		double low_ma = fmax(props->threshold_current_ma,
+			hispec_laser_current_for_power_mw(props, low_power));
+		double high_ma = hispec_laser_current_for_power_mw(props, high_power);
+		target_current_ma = clamp_with_flag(desired_i_ma + delta_i_ma,
+			low_ma, high_ma, &current_clamped);
+		/* Quantize inside the optical budget rather than rounding outside it. */
+		target_current_ma = hispec_laser_quantize_current_ma(target_current_ma, low_ma, high_ma);
 	} else {
 		target_current_ma = desired_i_ma;
 	}

@@ -40,8 +40,10 @@ can be retried with more damping; cancellation and other errors terminate.
 The diagonal damping is in the caller's coordinates, so changing parameter units
 changes the numerical problem. Attenuator calibration holds the inferred floor
 fixed while fitting two shape parameters, then uses its own correction solver.
-Laser calibration profiles each segment gain analytically before fitting shared
-threshold and baseline, then solves nonnegative noise variances separately.
+Laser calibration derives measured segment normalization from overlaps and uses
+`calibration_solve_2x2` directly for a reference-anchored Chebyshev quadratic.
+It also uses that solve for nonnegative noise variances; it does not invoke the
+Gauss–Newton optimizer. Baseline and normalization are frozen before its curve solve.
 These are distinct objectives, not interchangeable uses of one generic fit.
 
 Numerical work temporarily uses priority 14 with the calibration control mutex

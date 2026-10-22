@@ -435,17 +435,25 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 {
 	size_t off = 0U;
 	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
+	/* Query actual channel power without enabling it or rearming auto-off.
+	 * Calibration preflight must distinguish policy "auto" from a live PD. */
+	bool powered;
+	int rc = housekeeping_power_get(pd_power_output(channel), &powered);
+	if (rc != 0) {
+		return rc;
+	}
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"channel\":\"%s\",\"noisewarn_mv\":%.3f,"
 			    "\"responsivity_a_per_w\":%.9f,"
 				    "\"transimpedance_v_per_a\":%.6e,"
-				    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":",
+				    "\"power\":\"%s\",\"powered\":%s,\"autooff_s\":%u,\"off_in_s\":",
 			    photodiode_channel_names[channel],
 				    (double)ch->noise_warn_rms_mv,
 				    ch->responsivity_a_per_w,
 				    ch->transimpedance_v_per_a,
 				    pd_power_mode_name(ch->power),
+				    powered ? "true" : "false",
 				    ch->autooff_s) != 0) {
 		return -ENOSPC;
 	}
@@ -482,7 +490,8 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	rc = pd_settings_channel_json(payload, sizeof(payload), channel,
 				      &settings.channel[channel]);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "pd/settings response too large");
+		return coo_cmd_error(out, cmd, rc == -ENOSPC ?
+			"pd/settings response too large" : "pd power query failed");
 	}
 
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);

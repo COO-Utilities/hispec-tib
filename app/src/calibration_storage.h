@@ -75,6 +75,14 @@ struct laser_cal_metadata {
 	double loopback_loss_db[2];
 	double default_threshold_ma;
 	double default_efficiency_mw_per_ma;
+	double max_fit_residual_pct;
+	double pd_target_mv;
+	/* Published normalization, conditional on this run's dark and reference.
+	 * Copied from fit scratch under calibration_lock, never reconstructed by host. */
+	double segment_mv_per_mw[LASER_CAL_SEGMENTS];
+	double baseline_mv;
+	double dark_variance_mv2;
+	uint8_t fit_support[CALIBRATION_RECORD_COUNT / 8U];
 	uint64_t started_ms;
 	uint32_t run_id;
 	uint32_t dwell_ms;
@@ -109,19 +117,21 @@ union calibration_scratch {
 		double segment_rel_var[CALIBRATION_RECORD_COUNT];
 	} atten;
 	struct {
-		/* Sum(w), sum(w*I), sum(w*I^2), sum(w*V), sum(w*I*V).
-		 * I is commanded mA; V is net PD mV. Each segment has fixed DACs. */
-		double sums[LASER_CAL_SEGMENTS][5];
-		double gain[LASER_CAL_SEGMENTS]; /* Profiled mV/mA for each attenuation segment. */
-		double dt[LASER_CAL_SEGMENTS]; /* Gain derivative with respect to threshold mA. */
-		double db[LASER_CAL_SEGMENTS]; /* Gain derivative with respect to baseline mV. */
+		/* Record-indexed normalized observations; accumulate normal equations
+		 * in double. This remains smaller than the attenuator scratch member. */
+		float power_mw[CALIBRATION_RECORD_COUNT];
+		float variance_mw2[CALIBRATION_RECORD_COUNT];
+		uint16_t levels[CALIBRATION_RECORD_COUNT];
+		double gain[LASER_CAL_SEGMENTS]; /* Measured mV/mW, including attenuation. */
 		double dark_variance;
 		double baseline_weight;
 		double baseline_mean;
 		uint8_t include[CALIBRATION_RECORD_COUNT];
-		uint8_t count[LASER_CAL_SEGMENTS]; /* Distinct currents, not repeated windows. */
 	} laser;
 };
+
+BUILD_ASSERT(sizeof(struct laser_cal_record) == 24U);
+BUILD_ASSERT(sizeof(union calibration_scratch) <= 3584U);
 
 extern union calibration_data calibration_data;
 extern union calibration_scratch calibration_scratch;

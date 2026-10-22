@@ -29,8 +29,11 @@ Runtime ownership is:
   transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
-- `laser_calibration.c`: reference-anchored current acquisition, profiled-gain
-  fitting, effective noise estimates and conditional outbound-loss application.
+- `laser_calibration.c`: reference-anchored current acquisition, measured-overlap
+  normalization, bounded linear/quadratic fitting, effective noise estimates and
+  accepted-core-gated application. Laser scratch uses 1496 bytes within the existing
+  3584-byte shared union; its 128 raw windows occupy 3072 bytes. The host can review
+  the exact 16-byte support mask in 432-byte metadata before explicitly applying.
 - `calibration_fit.c`: the allocation-free two-parameter double solver shared
   by attenuator and laser fits. `calibration_storage.c` owns their shared static
   dataset, scratch, data mutex and best-effort telemetry buffer.

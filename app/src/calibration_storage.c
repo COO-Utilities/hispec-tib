@@ -15,4 +15,5 @@ BUILD_ASSERT(sizeof(struct laser_cal_record) == 24);
 BUILD_ASSERT(sizeof(struct laser_cal_metadata) <= 512);
 BUILD_ASSERT(sizeof(calibration_data) == 7680);
 BUILD_ASSERT(sizeof(calibration_scratch) == 3584);
-BUILD_ASSERT(sizeof(calibration_scratch.laser) <= 1024);
+/* Laser normalization reuses the larger attenuator workspace; no extra RAM. */
+BUILD_ASSERT(sizeof(calibration_scratch.laser) <= sizeof(calibration_scratch.atten));

@@ -33,6 +33,11 @@ typedef struct laserprops_t {
     const char *name;
     const char *model_number;
     const char *ld_serial; /* Manufacturer diode serial, distinct from Maiman driver serial. */
+    /* P = efficiency*x + q*x*(x-x_ref), x=I-threshold. The correction
+     * preserves zero at threshold and average efficiency through ref_ma.
+     * Compiled defaults use q=0. Placing the float here uses the MCU's
+     * alignment gap before the doubles instead of enlarging every profile. */
+    float quadratic_correction_mw_per_ma2;
     double nominal_current_ma;
     double max_current_ma;
     double dne_current_ma;

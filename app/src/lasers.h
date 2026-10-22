@@ -383,6 +383,10 @@ double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
 /** @brief Estimate optical power from current using the fixed diode properties. */
 double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma);
 
+/** Invert the corrected power curve; zero requests off and unreachable power
+ * returns NAN. Pure arithmetic; callers own quantization and operating floors. */
+double hispec_laser_current_for_power_mw(const laserprops_t *properties, double power_mw);
+
 /**
  * @brief Estimate emitted photon flux from the laser module's operating state.
  *

@@ -21,6 +21,9 @@ struct laser_calibration_request {
 	char fiber; /* S or M selects the loopback return. */
 	uint32_t dwell_ms;
 	double loopback_loss_db; /* External cable/attenuators only; excludes the PD return. */
+	double max_fit_residual_pct;
+	double pd_target_mv;
+	bool apply; /* Default true at the command API; false retains estimates only. */
 	bool determine_static_loss;
 	bool update_noise;
 	bool other_output;
@@ -30,14 +33,17 @@ struct laser_calibration_request {
 struct laser_calibration_fit {
 	double threshold_ma;
 	double efficiency_mw_per_ma;
+	float quadratic_correction_mw_per_ma2;
 	double floor_ma;
-	double linear_max_ma; /* Diagnostic; never lowers configured maximum automatically. */
+	double max_ma; /* Proposed existing maximum; must contain reference and nominal. */
 	double baseline_mv;
 	double rms_fraction; /* Mean-curve residuals, separate from temporal noise. */
+	double max_residual_fraction;
 	double threshold_se_ma;
 	double constant_noise_mw;
 	double fractional_noise;
 	int error;
+	int apply_error;
 	int noise_error;
 	int persist_error;
 	uint8_t points;
@@ -56,6 +62,7 @@ struct laser_calibration_route_fit {
 	double combined_loss_db; /* Outbound plus configured return, excluding loopback/FVOAs. */
 	double outbound_loss_db;
 	int error;
+	int apply_error;
 	int persist_error;
 	bool accepted;
 	bool applied;
@@ -67,6 +74,7 @@ struct laser_calibration_status {
 	enum hispec_laser_id laser;
 	struct laser_calibration_fit fit;
 	struct laser_calibration_route_fit route[2]; /* Requested output, then other output. */
+	uint32_t run_id;
 	uint32_t dwell_ms;
 	float current_ma;
 	int error;
@@ -101,6 +109,16 @@ int laser_calibration_continue(bool set_loopback, double loopback_loss_db,
 
 /** Cancel/join numerical work and stop the owned source; retain raw records. */
 int laser_calibration_stop(struct laser_calibration_status *status);
+
+/** Apply one retained, completed run after review. Requires an accepted core and
+ * every requested component; rejects a replaced run ID or active acquisition.
+ * May stop emission, block on settings/driver I/O and write NVS. */
+int laser_calibration_apply(uint32_t run_id, bool update_loss, bool update_noise,
+			    bool persist, struct laser_calibration_status *status);
+
+/** Static human-readable failure text, or NULL for success. Specific domain
+ * failures keep their cause; unclassified errno uses unexpected error (ENAME). */
+const char *laser_calibration_error_message(int error);
 
 /** Snapshot under the status mutex, without hardware I/O. */
 void laser_calibration_get_status(struct laser_calibration_status *status);

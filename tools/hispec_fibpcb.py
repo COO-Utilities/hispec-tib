@@ -525,6 +525,7 @@ class LaserSettings(ResponseRepr):
     threshold_current_ma: float
     min_autolevel_current_ma: float
     efficiency_mw_per_ma: float
+    quadratic_correction_mw_per_ma2: float
     ref_mw: float
     ref_ma: float
     ref_temp_c: float
@@ -722,15 +723,18 @@ class LaserCalibrationFit(ResponseRepr):
     accepted: bool
     applied: bool
     persisted: bool
-    error: int
-    persist_error: int
+    error: str | None
+    apply_error: str | None
+    persist_error: str | None
     n: int
     threshold_ma: float | None
     efficiency_mw_per_ma: float | None
+    quadratic_correction_mw_per_ma2: float | None
     floor_ma: float | None
-    linear_max_ma: float | None
+    max_ma: float | None
     baseline_mv: float | None
     rms_fraction: float | None
+    max_residual_fraction: float | None
     threshold_se_ma: float | None
 
 
@@ -741,7 +745,7 @@ class LaserCalibrationNoise(ResponseRepr):
     valid: bool
     applied: bool
     persisted: bool
-    error: int
+    error: str | None
     constant_mw: float | None
     fractional: float | None
 
@@ -753,8 +757,9 @@ class LaserCalibrationRoute(ResponseRepr):
     accepted: bool
     applied: bool
     persisted: bool
-    error: int
-    persist_error: int
+    error: str | None
+    apply_error: str | None
+    persist_error: str | None
     combined_db: float | None
     outbound_db: float | None
 
@@ -764,6 +769,7 @@ class LaserCalibrationStatus(ResponseRepr):
     """Acquisition progress plus independent curve, noise and route outcomes."""
 
     state: str
+    run_id: int
     laser: str
     output: str
     records: int
@@ -772,7 +778,7 @@ class LaserCalibrationStatus(ResponseRepr):
     acquisition_complete: bool
     overflow: bool
     shutdown_pending: bool
-    error: int
+    error: str | None
     fit: LaserCalibrationFit
     noise: LaserCalibrationNoise
     routes: tuple[LaserCalibrationRoute, ...]
@@ -782,15 +788,15 @@ class LaserCalibrationStatus(ResponseRepr):
 class LaserCalibrationRestoreResult(ResponseRepr):
     """Partial restore outcomes: a flash failure does not undo a RAM update."""
 
-    rc: int
+    error: str | None
     laser_applied: bool
     route_applied: bool
     laser_persisted: bool
     route_persisted: bool
-    laser_error: int
-    route_error: int
-    laser_persist_error: int
-    route_persist_error: int
+    laser_error: str | None
+    route_error: str | None
+    laser_persist_error: str | None
+    route_persist_error: str | None
 
 
 # Match the firmware's explicit 24-byte record encoding, without native padding.
@@ -3367,6 +3373,7 @@ class PhotodiodeSettings(ResponseRepr):
     noisewarn_mv: float
     responsivity_a_per_w: float
     transimpedance_v_per_a: float
+    powered: bool
     power: str
     autooff_s: int
     off_in_s: int | None
@@ -3607,10 +3614,11 @@ def _is_atten_cal_status(data: Any) -> bool:
     )
 
 
-def _is_laser_cal_status(data: Any) -> bool:
-    """Recognize status replies whose error field describes a retained run."""
-    return isinstance(data, Mapping) and all(
-        key in data for key in ("state", "records", "fit", "noise", "routes", "acquisition_complete")
+def _is_laser_cal_result(data: Any) -> bool:
+    """Keep partial calibration/restore outcomes instead of reducing them to an exception."""
+    return isinstance(data, Mapping) and (
+        all(key in data for key in ("state", "records", "fit", "noise", "routes", "acquisition_complete"))
+        or all(key in data for key in ("laser_applied", "route_applied", "laser_persisted", "route_persisted"))
     )
 
 
@@ -3625,12 +3633,12 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 320-byte metadata packet; no requests or state changes.
+    """Decode the fixed 432-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 320 or payload[:5] != b"HLC1\x01":
+    if len(payload) != 432 or payload[:5] != b"HLC1\x02":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
@@ -3667,7 +3675,18 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
+    # Bytes 320..431: policy, measured normalization and exact firmware support.
+    residual_limit, target_mv = struct.unpack_from("<2d", payload, 320)
+    segment_gain = struct.unpack_from("<8d", payload, 336)
+    baseline, dark_variance = struct.unpack_from("<2d", payload, 400)
+    support = np.unpackbits(np.frombuffer(payload[416:432], dtype=np.uint8), bitorder="little")
     meta.update(
+        max_fit_residual_pct=residual_limit,
+        pd_target_mv=target_mv,
+        segment_mv_per_mw=segment_gain,
+        baseline_mv=baseline,
+        dark_variance_mv2=dark_variance,
+        fit_support=tuple(bool(v) for v in support[:count]),
         state=_LASER_CAL_STATES[state],
         laser=LASER_NAMES[laser],
         channel=PD_CHANNELS[channel],
@@ -3694,8 +3713,8 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
         return CommandOk()
     data = _loads(payload)
     # Calibration status keeps an error alongside usable retained data/results.
-    if (isinstance(data, Mapping) and "error" in data
-            and not (_is_atten_cal_status(data) or _is_laser_cal_status(data))):
+    if (isinstance(data, Mapping) and data.get("error") is not None
+            and not (_is_atten_cal_status(data) or _is_laser_cal_result(data))):
         message = f"{topic}: {data['error']}"
         if "rc" in data:
             message += f" (rc={data['rc']})"
@@ -4722,6 +4741,7 @@ class HispecFibPcb:
         threshold_current_ma: float | None = None,
         min_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
+        quadratic_correction_mw_per_ma2: float | None = None,
         ref_mw: float | None = None,
         ref_ma: float | None = None,
         ref_temp_c: float | None = None,
@@ -4765,6 +4785,7 @@ class HispecFibPcb:
             threshold_current_ma=threshold_current_ma,
             min_autolevel_current_ma=min_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
+            quadratic_correction_mw_per_ma2=quadratic_correction_mw_per_ma2,
             ref_mw=ref_mw,
             ref_ma=ref_ma,
             ref_temp_c=ref_temp_c,
@@ -4817,6 +4838,7 @@ class HispecFibPcb:
                 threshold_current_ma=float(settings["threshold_current_ma"]),
                 min_autolevel_current_ma=float(settings["min_autolevel_current_ma"]),
                 efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
+                quadratic_correction_mw_per_ma2=float(settings["quadratic_correction_mw_per_ma2"]),
                 ref_mw=float(settings["ref_mw"]),
                 ref_ma=float(settings["ref_ma"]),
                 ref_temp_c=float(settings["ref_temp_c"]),
@@ -5336,6 +5358,9 @@ class HispecFibPcb:
         output: str | None = None,
         fiber: Literal["M", "S"] = "S",
         dwell_ms: int = 1000,
+        apply: bool = True,
+        max_fit_residual_pct: float = 5.0,
+        pd_target_mv: float = 1500.0,
         determine_static_loss: bool = False,
         loopback_loss_db: float | None = None,
         update_noise: bool = False,
@@ -5346,7 +5371,10 @@ class HispecFibPcb:
 
         Start stops throughput/laser outputs, routes to a powered and dark-calibrated
         PD, holds ref_temp_c, and steps current from configured maximum to zero.
-        Accepted threshold/efficiency/floor apply in RAM; persist opts into NVS.
+        Accepted threshold/efficiency/correction/floor/maximum apply automatically
+        unless apply=False. The firmware performs acceptance and application;
+        no external review is needed. persist opts into NVS and requires apply.
+        Efficiency is ref_mw/(ref_ma-threshold), and the floor excludes the knee.
         Noise remains diagnostic unless update_noise=True. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
         other_output requires loss fitting and pauses for physical recabling;
@@ -5357,7 +5385,8 @@ class HispecFibPcb:
         # must fail rather than silently returning status without starting.
         if (name is None and output is None and fiber == "S" and dwell_ms == 1000
                 and not determine_static_loss and loopback_loss_db is None
-                and not update_noise and not other_output and not persist):
+                and not update_noise and not other_output and not persist and apply
+                and max_fit_residual_pct == 5.0 and pd_target_mv == 1500.0):
             return _decode_laser_cal_status(self._request_json("laser/calibrate"))
         if name is None or output is None:
             raise HispecFibError("name and output are required to start laser calibration")
@@ -5369,6 +5398,13 @@ class HispecFibPcb:
         dwell_ms = _require_nonnegative_u32("dwell_ms", dwell_ms)
         if not 100 <= dwell_ms <= 2000:
             raise HispecFibError("dwell_ms must be 100..2000")
+
+        if not apply and persist:
+            raise HispecFibError("persist requires apply")
+        if not math.isfinite(max_fit_residual_pct) or not 0 < max_fit_residual_pct < 100:
+            raise HispecFibError("max_fit_residual_pct must be between 0 and 100")
+        if not math.isfinite(pd_target_mv) or not 0 < pd_target_mv < 1850:
+            raise HispecFibError("pd_target_mv must be between 0 and 1850")
 
         # The second output only measures the reference loss, and neither
         # measurement can distinguish an unspecified external cable loss.
@@ -5382,6 +5418,9 @@ class HispecFibPcb:
             output=output,
             fiber=fiber,
             dwell_ms=dwell_ms,
+            apply=bool(apply),
+            max_fit_residual_pct=float(max_fit_residual_pct),
+            pd_target_mv=float(pd_target_mv),
             determine_static_loss=bool(determine_static_loss),
             update_noise=bool(update_noise),
             other_output=bool(other_output),
@@ -5393,6 +5432,24 @@ class HispecFibPcb:
             payload["loopback_loss_db"] = float(loopback_loss_db)
 
         return _decode_laser_cal_status(self._request_json("laser/calibrate", payload))
+
+    def laser_calibrate_apply(
+        self, run_id: int, *, update_loss: bool = False,
+        update_noise: bool = False, persist: bool = False,
+    ) -> LaserCalibrationStatus:
+        """Apply a retained accepted run; optionally adopt its noise and route loss.
+
+        Replaced/active runs are rejected. Firmware validates all requested
+        components before mutation, stops throughput, and applies the core as
+        one settings update. Inspect applied/persisted and their string errors.
+        """
+        run_id = _require_nonnegative_u32("run_id", run_id)
+        if run_id == 0:
+            raise HispecFibError("run_id must be positive")
+        return _decode_laser_cal_status(self._request_json("laser/calibrate", {
+            "apply": True, "run_id": run_id, "update_loss": bool(update_loss),
+            "update_noise": bool(update_noise), "persist": bool(persist),
+        }))
 
     def laser_calibrate_continue(self, *, loopback_loss_db: float | None = None) -> LaserCalibrationStatus:
         """Resume the other-output reference after recabling; optional new loop loss."""
@@ -5412,12 +5469,12 @@ class HispecFibPcb:
     def laser_calibrate_restore_defaults(
         self, name: str, *, output: str, persist: bool = False,
     ) -> LaserCalibrationRestoreResult:
-        """Restore compiled threshold/efficiency/floor/reference/noise and one loss.
+        """Restore compiled model, floor/maximum, reference/noise and one loss.
 
         Stops acquisition/output; removes the selected named outbound override,
-        exposing the compiled route default. Preserves current limits, driver
-        calibration/identity, unrelated TEC policy, return and other-output losses.
-        Inspect both applied/persisted flags and error codes for partial results.
+        exposing the compiled route default. Preserves driver
+        current calibration/identity, unrelated TEC policy, return and other-output losses.
+        Inspect both applied/persisted flags and string errors for partial results.
         """
         _require_choice("name", name, LASER_NAMES)
         band = "yj" if name in LASER_NAMES[:3] else "hk"
@@ -5454,8 +5511,12 @@ class HispecFibPcb:
         # across a replacement start instead of returning mixed-run records.
         status = self.laser_calibrate()
         after = _laser_cal_metadata(self._request_payload("laser/calibrate/records"))
-        if (after["run_id"], after["started_ms"]) != (meta["run_id"], meta["started_ms"]):
+        if (status.run_id != meta["run_id"] or
+                (after["run_id"], after["started_ms"]) != (meta["run_id"], meta["started_ms"])):
             raise HispecFibError("calibration was replaced during download; fetch again")
+        if (after["state"] != meta["state"] or status.state != meta["state"] or
+                after["fit_support"][:count] != meta["fit_support"]):
+            raise HispecFibError("calibration changed phase during download; fetch again")
         return LaserCalibrationDataset(records=records, meta=meta, status=status)
 
     def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
@@ -5536,6 +5597,7 @@ class HispecFibPcb:
                 responsivity_a_per_w=float(data["responsivity_a_per_w"]),
                 transimpedance_v_per_a=float(data["transimpedance_v_per_a"]),
                 power=str(data["power"]),
+                powered=bool(data["powered"]),
                 autooff_s=int(data["autooff_s"]),
                 off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
             )
@@ -5886,8 +5948,8 @@ class HispecFibPcb:
 
     def _request_json(self, key: str, payload: Mapping[str, Any] | None = None) -> Any:
         result = self._request(key, payload)
-        if (isinstance(result, Mapping) and "error" in result
-                and not (_is_atten_cal_status(result) or _is_laser_cal_status(result))):
+        if (isinstance(result, Mapping) and result.get("error") is not None
+                and not (_is_atten_cal_status(result) or _is_laser_cal_result(result))):
             raise HispecFibPCBError(str(result["error"]), response=_to_object(result))
         return result
 
