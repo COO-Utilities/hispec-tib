@@ -9,6 +9,18 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Validate the integrated OTA flow before making MCUboot the only build:
+  provision a confirmed schema-14 baseline while preserving NVS; exercise USB
+  confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
+  and maximum-size network updates, exact-hash confirmation and rollback.
+  Exercise all board profiles, command admission, pending-slot protection,
+  wrong/late confirmation, network loss, running hangs and power cuts during
+  swap/revert. Observe bank power and measure the 30-second MCUboot to 15-second
+  application IWDG handoff/feed gaps. USB updates may install a confirmed image
+  directly; they do not need to test rollback. Once these results are recorded,
+  make MCUboot/sysbuild the default and remove the temporary standalone build
+  and its instructions. Software builds do not validate hardware behavior.
+  See [firmware updates and OTA](ota.md).
 - [ ] Resolve the drawing/as-built differences exposed by the documentation
   audit against the PCB evidence committed in `2fd8e87`. Record the assembly
   revision and measured result before changing firmware assumptions:

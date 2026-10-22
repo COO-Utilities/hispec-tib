@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include <zephyr/sys/util.h>
+#include <zephyr/logging/log.h>
 
 #include "app_settings.h"
 #include "devices.h"

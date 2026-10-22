@@ -96,14 +96,17 @@ the console.
 
 Top-level implementation path:
 
-1. `coo_cmd_runtime_serial_thread()` reads one console line.
+1. Main calls `coo_cmd_runtime_serial_poll()` to consume up to 64 buffered
+   characters without waiting and assemble complete console lines. Receive
+   buffering and network-wait limitations are described in
+   [serial polling](architecture.md#serial-polling).
 2. `coo_cmd_runtime_handle_serial_line()` splits the line into `<key>` and optional payload.
 3. `coo_cmd_normalize_serial_payload()` turns non-JSON serial payloads into the same JSON shape used by MQTT.
-4. Dispatcher built-ins handle `help` and, when enabled,
-   `serialguard`. Serial `help` prints directly and does not enter the command
-   queues.
-5. `coo_cmd_runtime_executor_thread()` dispatches app-owned commands through the
-   app command table.
+4. Serial `help` prints directly during ingress and does not enter the command
+   queues. Other normalized requests are enqueued to `inbound_queue`.
+5. `coo_cmd_runtime_executor_thread()` handles built-ins (`help`, `reboot`, and
+   enabled `serialguard`/`ota`) before dispatching app commands through the static table.
+   Builtins and app commands both check table-based OTA permission before execution.
 6. `coo_cmd_runtime_drain_outbound()` prints queued serial responses with
    `coo_cmd_print_serial_response_pretty()`. The simpler
    `coo_cmd_print_serial_response()` remains available as a fallback renderer.
@@ -169,6 +172,7 @@ not be needed for normal serial operation.
 - [`mqtt`](#mqtt)
 - [`serialguard`](#serialguard)
 - [`reboot`](#reboot)
+- [`ota`](#ota)
 - [`mems`](#mems)
 - [`mems/<switchname>`](#mems-switchname)
 - [`mems/route`](#mems-route)
@@ -197,7 +201,8 @@ not be needed for normal serial operation.
 (warning-publication)=
 ### Warning Publication
 - **Publish topic:** `dt/<device>/warning`
-- **Top-level helper:** `coo_cmd_runtime_emit(command_runtime_get(), &args)`
+- **App producer interface:** `app_output_emit(&args)`, using the existing
+  common `coo_cmd_runtime_emit()` implementation and outbound queue.
 - **Queue behavior:** warnings are usually best-effort MQTT, but the runtime
   helper accepts an explicit delivery mode. Required warnings are retried by the
   outbound drain after successful enqueue; enqueue can still fail if the bounded
@@ -510,6 +515,77 @@ while serial guard is active and attenuator DAC-range clamping.
   settings. The erase preserves IP settings, boot count, and storage schema
   metadata. Once a reboot is pending, later commands are rejected before app
   handlers run.
+
+(ota-permissions)=
+### Commands while OTA is active
+
+The dispatcher checks the matched table entry's `ota_query_allowed` or
+`ota_effect_allowed` after dequeue and before invoking the handler or recording
+an effect as `lastcommand`. Both permissions default to false. This covers
+requests queued before OTA entry as well as new MQTT/serial requests.
+
+| Commands | Queries | Effects |
+| --- | --- | --- |
+| `ota`, `serialguard` | allowed | allowed |
+| `reboot` | unsupported | allowed |
+| `help`, `help/options`, `status`, `temps` | allowed | disallowed |
+| `ip`, `mqtt`, `time`, `laser/bankpower` | allowed | disallowed |
+| All other application commands | disallowed | disallowed |
+
+A blocked operation returns `{"error":"command unavailable during OTA"}`.
+Unknown commands, invalid payloads, unsupported operations, and unavailable board
+features retain their usual errors. Serial guard can still reject MQTT effects,
+including `ota` effects; OTA permission does not override it. Serial `help` remains
+an immediate console operation, allowed during OTA.
+
+The restriction lasts through window close if an admitted SMP operation is still
+finishing, a candidate is pending, or the running image is an unconfirmed trial.
+Bank-mode writes are all blocked, even a repeated `override_off` in payload or
+suffix form. After successful confirmation the operator must select `auto`.
+
+(ota)=
+### `ota`
+
+Available only in the explicit MCUboot/OTA build (`CONFIG_COO_OTA`). The default
+standalone bench build omits this command. See [firmware updates](ota.md).
+
+- **No payload:** query running MCUboot identity and maintenance/trial state.
+  ```json
+  {"enabled":false,"active":false,"remaining_s":0,"image_hash":"<64 hex digits>","confirmed":true,"pending":false,"trial_remaining_s":0,"max_image_size":966656}
+  ```
+  `enabled` means the UDP maintenance window is open. `active` additionally
+  includes an operation finishing after close, a pending candidate, or an
+  unconfirmed/expired trial; it activates the command permissions below.
+  `remaining_s` and `trial_remaining_s` are rounded-up seconds. `image_hash` is
+  MCUboot's SHA256 of the running header/body, not the whole-file SHA256 or the
+  Git build string. `max_image_size` is generated from the slot geometry and
+  sysbuild reservation for offset swapping and the trailer.
+- **Open:** `{"enable":true,"duration_s":600}`. Duration is 1..1800 seconds,
+  default 600. Repeating an open request resets that window's deadline.
+  Firmware must be confirmed, with no pending candidate or closing operation.
+  TIB also requires the operator to have stopped experiments, selected bank
+  `override_off`, and let bank power turn off. This command never powers down
+  an active bank on the operator's behalf.
+- **Close:** `{"enable":false}`. No duration is accepted when closing.
+  Closing or expiry stops UDP access and leaves bank mode unchanged. A pending
+  image remains pending; close is not a cancellation of a scheduled test boot.
+- **Confirm:** `{"confirm":true,"image_hash":"<exact running hash>"}`.
+  This writes only the running image's MCUboot confirmation flag. An incorrect
+  hash, or confirmation at/after the five-minute trial deadline, is rejected.
+  Repeating confirmation for an already confirmed matching image is harmless.
+  Confirmation leaves bank mode `override_off`; the operator restores `auto`.
+- **Serial:** `ota`, `ota enable=true duration_s=600`, `ota enable=false`,
+  `ota confirm=true image_hash=<hash>`. MQTT effects obey serial guard.
+- **Transfer:** image state/test and upload use SMP on IPv4 UDP port 1337 while
+  the window is open. Upload is unavailable during a trial or with a pending
+  image. Permanent secondary confirmation, image erase, and other SMP groups
+  are unavailable. Use `reboot` after selecting the candidate for a test boot.
+- **Trial:** UDP starts closed. TIB selects bank `override_off` before workers
+  or command ingress. The five-minute deadline starts at application boot,
+  independent of network availability and the earlier upload window. Without
+  confirmation, firmware requests the existing delayed reboot and stops feeding
+  IWDG; MCUboot reverts on reset. No powered-laser or Modbus response check is
+  part of confirmation. See [OTA operation](ota.md).
 
 (mems)=
 ### `mems`
@@ -1291,7 +1367,12 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `cmd/<device>/req/laser/bankpower/override_on`, or
   `cmd/<device>/req/laser/bankpower/override_off`.
 
-- **Notes:** `auto` is the compiled boot default. Power to the laser bank is handled by the bank
+- **Notes:** `auto` is the ordinary confirmed-boot default. An unconfirmed OTA trial
+  selects `override_off` before workers start, and confirmation leaves it off.
+  During an OTA window, an in-flight close, a pending candidate, or a trial,
+  all mode writes (including `override_off`) are rejected before the handler, in
+  both payload and suffix forms. Queries remain allowed.
+  In `auto`, power to the laser bank is handled by the bank
   heater and commands interacting with laser drivers. `override_on` forces bank power on. `override_off` stops all laser
   emission, writes driver currents to 0 as practical, powers the bank off, and rejects commands that need a live driver
   while the override is active. If the pre-off driver-current shutdown reports a Modbus failure, the command returns an

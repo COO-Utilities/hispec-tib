@@ -10,6 +10,26 @@ config COO_COMMONS
 
 if COO_COMMONS
 
+config COO_OTA
+	bool "COO MCUboot OTA maintenance and trials"
+	depends on BOOTLOADER_MCUBOOT && MCUMGR_GRP_IMG && MCUBOOT_IMG_MANAGER
+	depends on MCUMGR_TRANSPORT_UDP_IPV4 && !MCUMGR_TRANSPORT_UDP_AUTOMATIC_INIT
+	depends on MCUMGR_GRP_IMG_TOO_LARGE_SYSBUILD
+	depends on MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER = 1 && !MCUMGR_GRP_IMG_DIRECT_UPLOAD
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_SECONDARY
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_ANY
+	depends on !MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT
+	depends on !MCUMGR_GRP_IMG_ALLOW_ERASE_PENDING
+	select MCUMGR_MGMT_NOTIFICATION_HOOKS
+	select MCUMGR_SMP_COMMAND_STATUS_HOOKS
+	default n
+	help
+	  Own one application's image identity, explicit UDP upload windows,
+	  exact-hash confirmation, and five-minute trial deadline. Requires
+	  MCUboot sysbuild image-size reservations and test-only image management.
+	  The application supplies hardware prerequisites and polls for rollback.
+	  COO MQTT command dispatch adds the ota command when this is enabled.
+
 config COO_NETWORK
 	bool "COO network utilities"
 	depends on NETWORKING
@@ -41,23 +61,19 @@ config COO_JSON
 	  Enable lightweight JSON helper wrappers used by command handling
 	  (keyed primitive extraction and key splitting).
 
-config COO_SCHEDULED_ACTIONS
-	bool "COO scheduled action helper"
-	default n
-	help
-	  Enable a small fixed-table wrapper around Zephyr delayable work for named
-	  firmware actions. This does not create a user-programmable scheduler.
-
 config COO_MQTT
 	bool "COO MQTT client wrapper"
 	depends on MQTT_LIB
 	select COO_NETWORK
+	select REBOOT
 	default n
 	help
 	  Enable COO MQTT client wrapper with automatic retry,
 	  subscription management, and optional TLS support.
 	  Provides a simplified interface over Zephyr's MQTT library
-	  with built-in connection management. Requires MQTT_LIB.
+	  with built-in connection management. Includes command dispatch and its
+	  delayed reboot command, which requires Zephyr's REBOOT capability.
+	  Requires MQTT_LIB.
 
 if COO_MQTT
 
@@ -113,15 +129,6 @@ config COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS
 	help
 	  Default number of seconds that MQTT effect commands remain blocked after
 	  serial activity. A serialguard command can change this until reboot.
-
-config COO_CMD_REBOOT
-	bool "Command dispatcher reboot command"
-	depends on REBOOT
-	default y
-	help
-	  Let the command dispatcher own a built-in reboot command, including
-	  command rejection after reboot is accepted and an optional application
-	  prepare callback immediately before sys_reboot().
 
 endif # COO_MQTT
 

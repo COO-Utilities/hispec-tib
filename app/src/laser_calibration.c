@@ -20,7 +20,7 @@
 #include "calibration_storage.h"
 #include "attenuator_calibration.h"
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 #include "housekeeping.h"
 #include "mems_switching.h"
@@ -707,7 +707,7 @@ static void publish_status(struct laser_calibration_status *out, bool emit)
 		return;
 	}
 	msg->payload_len = strlen(msg->payload);
-	(void)coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	(void)app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_DATA,
 		.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.suffix = "laser/calibrate",

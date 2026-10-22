@@ -23,14 +23,20 @@
 #include <time.h>
 
 #include <coo_commons/mqtt_client.h>
+#include <coo_commons/command_dispatch.h>
 #include <coo_commons/network.h>
+#if defined(CONFIG_COO_OTA)
+#include <coo_commons/ota.h>
+#endif
 
 #include "app_identity.h"
+#include "app_output.h"
 #include "app_settings.h"
 #include "command.h"
 #include "devices.h"
 #include "housekeeping.h"
 #include "laserbank_tempcontrol.h"
+#include "lasers.h"
 #include "photodiode.h"
 #include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
@@ -77,7 +83,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 #define MQTT_CONNECT_RETRY_MS 5000
 
 static struct mqtt_client client_ctx;
-static char mqtt_cmd_subscription[MAX_TOPIC_LEN];
+static char mqtt_cmd_subscription[COO_CMD_TOPIC_MAX];
 
 static K_THREAD_STACK_DEFINE(exec_stack, EXECUTOR_STACK_SIZE);
 static struct k_thread exec_thread_data;
@@ -188,6 +194,9 @@ static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
  * use an application callback in this build, because Zephyr's STM32 IWDG driver
  * only supports callbacks when early-wakeup interrupt support is enabled. Setup
  * writes hardware watchdog registers and can briefly wait for them to settle.
+ * In the OTA build, MCUboot leaves IWDG running at 30 seconds across chainload;
+ * the fresh STM32 driver state permits reprogramming our 15-second timeout.
+ * Uploads keep this main-loop budget. Trial expiry deliberately stops feeding.
  */
 static int watchdog_init(const struct device **wdt_out, int *wdt_channel_out)
 {
@@ -246,6 +255,23 @@ static void network_event_handler(bool connected)
 // All console messages need to be evaluated for the assumption that the console is UNMONITORED. so for example if boot telem isn't making it out cause the
 // queue is full it either wasn't needed in the first place or there is now a problem that vitally needs to be debugged. So careful thout about what actually CAN happen and design of flow and sizes based on that is appropriate
 
+
+#if defined(CONFIG_COO_OTA)
+/* Inspect the existing bank state only. The operator shuts down experiments
+ * and selects override_off before opening OTA; this callback performs no I/O.
+ */
+static int ota_check_ready(void *user_data)
+{
+	ARG_UNUSED(user_data);
+	if (devices_board_type() == HISPEC_BOARD_TIB &&
+	    (hispec_laser_bank_power_mode_get() != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF ||
+	     hispec_laser_bank_power_is_enabled())) {
+		LOG_WRN("Set laser bank override_off before opening OTA");
+		return -EPERM;
+	}
+	return 0;
+}
+#endif
 
 int main(void)
 {
@@ -308,6 +334,26 @@ int main(void)
 	devices_queue_boot_reset_telemetry();
 
 	board_devices_ready = devices_ready();
+#if defined(CONFIG_COO_OTA)
+	struct coo_ota_status ota_status;
+
+	rc = coo_ota_init(ota_check_ready, NULL);
+	if (rc != 0) {
+		LOG_ERR("OTA boot state initialization failed (%d); refusing to boot", rc);
+		return rc;
+	}
+	/* Trial hardware preparation must precede every worker and command ingress.
+	 * Confirmation leaves this mode in place; only the operator restores auto.
+	 */
+	coo_ota_get_status(&ota_status);
+	if (!ota_status.confirmed && devices_board_type() == HISPEC_BOARD_TIB) {
+		rc = hispec_laser_bank_power_mode_set(HISPEC_LASER_BANK_POWER_OVERRIDE_OFF);
+		if (rc != 0) {
+			LOG_ERR("Trial bank shutdown failed (%d); refusing to boot", rc);
+			return rc;
+		}
+	}
+#endif
 	setup_mems_switches_and_routes();
 	setup_attenuators();
 
@@ -421,7 +467,23 @@ int main(void)
 			}
 		}
 
+#if defined(CONFIG_COO_OTA)
+		enum coo_ota_poll_result ota_result = coo_ota_poll();
+
+		if (ota_result == COO_OTA_REBOOT_REQUESTED) {
+			LOG_WRN("Unconfirmed image trial expired; rebooting for MCUboot rollback");
+			rc = coo_cmd_runtime_schedule_reboot(cmd_runtime, false);
+			if (rc != 0 && rc != -EALREADY) {
+				LOG_ERR("Rollback reboot scheduling failed (%d); watchdog will reset", rc);
+			}
+		}
+		/* Both expiry results withhold feeds, including when scheduling failed. */
+		if (ota_result == COO_OTA_CONTINUE) {
+			wdt_feed(wdt, wdt_channel);
+		}
+#else
 		wdt_feed(wdt, wdt_channel);
+#endif
 
 		if (coo_mqtt_is_connected() && !mqtt_can_run) {
 			(void)mqtt_disconnect(&client_ctx, NULL);
@@ -440,15 +502,13 @@ int main(void)
 					snprintk(context, sizeof(context),
 						 "host=%s port=%u rc=%d",
 						 mqtt_cfg.host, mqtt_cfg.port, rc);
-					coo_cmd_runtime_emit(
-						command_runtime_get(),
-						&(const struct coo_cmd_runtime_emit_args){
-							.type = COO_CMD_RUNTIME_EMIT_WARNING,
-							.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-							.code = "mqtt_broker_revert",
-							.msg = "MQTT broker connection failed; reverting to prior broker",
-							.context = context,
-						});
+					app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+						.type = COO_CMD_RUNTIME_EMIT_WARNING,
+						.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+						.code = "mqtt_broker_revert",
+						.msg = "MQTT broker connection failed; reverting to prior broker",
+						.context = context,
+					});
 					LOG_WRN("MQTT broker connection failed (%d), reverting to %s:%u",
 						rc, prior_mqtt_cfg.host, prior_mqtt_cfg.port);
 				mqtt_cfg = prior_mqtt_cfg;

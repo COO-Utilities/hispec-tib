@@ -39,6 +39,12 @@ the human-review ledger.
 
 .. toctree::
    :maxdepth: 2
+   :caption: Firmware Maintenance
+
+   ota.md
+
+.. toctree::
+   :maxdepth: 2
    :caption: Firmware Internals
 
    architecture.md

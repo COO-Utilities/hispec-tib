@@ -1,0 +1,46 @@
+/* Match the HISPEC PCB's HSE-not-used wiring and PB2 bank-off polarity.
+ * See doc/hardware.md and app/boards/nucleo_h563zi.overlay.
+ */
+/ {
+	chosen {
+		zephyr,code-partition = &boot_partition;
+	};
+};
+
+&clk_hse {
+	status = "disabled";
+	/delete-property/ hse-bypass;
+};
+
+&clk_hsi {
+	status = "okay";
+};
+
+&pll {
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <4>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&pll2 {
+	div-m = <16>;
+	mul-n = <120>;
+	div-p = <2>;
+	div-q = <3>;
+	div-r = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&gpiob {
+	laser_bank_power_default: laser-bank-power-default {
+		gpio-hog;
+		gpios = <2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		output-low;
+		line-name = "laser-bank-power-default-off";
+	};
+};

@@ -19,7 +19,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 #include "photodiode.h"
 
@@ -200,7 +200,7 @@ static void relay_health_warning(const char *code, const char *message, int erro
 {
 	char context[64];
 	snprintk(context, sizeof(context), "device=DS2408 rc=%d", error);
-	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.code = code, .msg = message, .context = context,
 	});
@@ -296,15 +296,13 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 	}
 	if (!devices_relay_gpio_online()) {
 		if (power_output_is_photodiode(output)) {
-			coo_cmd_runtime_emit(
-				command_runtime_get(),
-				&(const struct coo_cmd_runtime_emit_args){
-					.type = COO_CMD_RUNTIME_EMIT_WARNING,
-					.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					.code = "relay_gpio_offline",
-					.msg = "photodiode relay command ignored because relay GPIO expander is offline",
-					.context = enabled ? "enable" : "disable",
-				});
+			app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_WARNING,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.code = "relay_gpio_offline",
+				.msg = "photodiode relay command ignored because relay GPIO expander is offline",
+				.context = enabled ? "enable" : "disable",
+			});
 			return 0;
 		}
 		return -EIO;

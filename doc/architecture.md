@@ -17,10 +17,12 @@ scheduling.
 
 Runtime ownership is:
 
-- `main.c`: boot order, watchdog, network/MQTT loop, outbound queue draining.
+- `main.c`: boot order, watchdog, serial polling, network/MQTT loop, outbound
+  queue draining and optional OTA deadline polling.
 - `command.c`: app command queues, static command spec table, support
   predicates, custom request classification callbacks, reboot-prepare hook, and
-  app/cross-domain command handlers.
+  app/cross-domain command handlers. It supplies `app_output_emit()` for domain
+  warning/telemetry producers, using the common emitter and existing queues.
 - `devices.c`: board strap detection, profile setup, shared device objects.
 - `mems_switching.c`: MEMS switch state, route matching, timer-driven router thread.
 - `attenuator.c`: DAC channel setup/read/write, coefficient application, and
@@ -60,12 +62,14 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
 - `mqtt_client.c`: MQTT 5 broker parsing, broker resolution, connect/process,
   and subscription helpers around Zephyr MQTT.
 - `command_dispatch.c`: fixed-buffer MQTT/serial command request, built-in
-  help/serialguard/reboot commands, exact-match spec lookup with explicitly enabled suffix families, default
+  help/serialguard/reboot and optional OTA commands, exact-match spec lookup with explicitly enabled suffix families, default
   request classification/execution, serial guard policy, persisted
   lastcommand, topic formatting, response metadata, warning JSON, serial
   payload normalization, and serial response printing helpers. Built-ins are
-  executor-owned so app execute hooks extend app commands without replacing
-  help, serialguard, or reboot behavior.
+  executor-owned and run before the app command table. Table entries also own
+  query/effect permissions while OTA is active. Serial `help` prints at ingress.
+- `ota.c`: optional MCUboot image identity, upload admission, confirmation and
+  trial deadlines. MCUboot trailers own durable state; no app NVS record is added.
 - `json_utils.c`: constrained keyed JSON extraction and fixed-buffer append
   helpers used by command code.
 
@@ -75,15 +79,24 @@ APIs directly.
 
 ## Boot Sequence
 
+The standalone bench build enters the application directly. The explicit OTA
+sysbuild runs MCUboot first, with HSI clocks, a PB2 bank-off GPIO hog and a
+30-second watchdog. It validates/selects the application before chainload. See
+[firmware updates](ota.md) for provisioning, flash layout and recovery.
+
 1. Read/clear reset cause and initialize the watchdog.
 2. Load app defaults/NVS; detect exactly one strap; apply the board-change reset policy.
 3. Restore UTC from a valid RTC and increment the boot counter.
 4. Configure the command runtime and fixed queues (no command execution yet).
-5. Check required devices, build the MEMS router, initialize attenuators and load coefficients.
-6. Start the app blocking queue; bind laser auto-off and housekeeping before their consumers.
-7. Start TIB PD/throughput/heater work when required devices are ready, then executor/serial threads.
-8. Start SNTP and network policy, initialize MQTT and its command subscription.
-9. Feed the watchdog, reconnect MQTT, drain output and process socket events in main.
+5. Check required devices. In OTA builds, initialize image state and select bank
+   `override_off` on an unconfirmed TIB trial before any workers or ingress.
+6. Build the MEMS router, initialize attenuators and load coefficients.
+7. Start the app blocking queue; bind laser auto-off and housekeeping before their consumers.
+8. Start TIB PD/throughput/heater work when required devices are ready, then the command executor.
+9. Start SNTP and network policy, initialize MQTT and its command subscription.
+10. Poll serial and OTA deadlines, feed the watchdog, reconnect MQTT, drain output
+    and process socket events in main. Trial expiry schedules delayed reboot and
+    withholds watchdog feeds; standalone builds always feed during each main pass.
 
 ## Board Profiles
 
@@ -128,8 +141,9 @@ translated into the same payload shapes as MQTT. The old payload `msg_type`
 convention is not part of current ingress classification.
 
 The command executor runs exactly one request at a time from `inbound_queue`.
-Command dispatch handles library built-ins first, then calls the optional app
-execute hook or the default static spec-table executor for app commands.
+Command dispatch handles library built-ins first, then the static spec-table
+executor for app commands. OTA admission is checked after dequeue, before the
+handler or lastcommand write, so it also covers requests queued before entry.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response. Pure queries are not recorded as `lastcommand`; supported
 effect-capable requests are recorded before handler execution in
@@ -139,7 +153,7 @@ laser, photodiode, throughput, or laser-bank command handlers on other board
 profiles. Serial help marks those entries as unsupported instead of encoding
 board names in the common command-dispatch library.
 
-When `CONFIG_COO_CMD_REBOOT` is enabled, `reboot` is a dispatcher built-in.
+`reboot` is always a dispatcher built-in when COO MQTT is enabled.
 After the response window, command dispatch calls the app reboot-prepare hook
 and then `sys_reboot(SYS_REBOOT_COLD)`. The delayed reboot runs on the existing
 app blocking workqueue, so laser STOP can wait for Modbus completion on the system
@@ -152,6 +166,19 @@ fixed header plus the full `struct coo_cmd_request`, requiring
 payload portion is sized by `CONFIG_COO_CMD_PAYLOAD_SIZE`, which is constrained
 to fit within `CONFIG_COO_MQTT_PAYLOAD_SIZE` but can be tuned independently
 because command queues store complete request and response objects.
+
+## Serial polling
+
+Main consumes at most 64 console characters per pass without waiting. The
+128-byte UART receive buffer and 127-character command line are bounded;
+main assembles CR/LF-delimited lines and handles backspace. Serial `help` prints
+directly; other requests enter the shared executor. Serial polling, MQTT ingress
+and output drain share main-owned scratch buffers.
+
+Network waits can delay parsing and serial-guard activation. UART interrupts
+still receive bytes, but excess input is dropped if the receive buffer fills;
+line-overflow handling cannot detect characters already lost there. There is
+no separate serial thread. Avoid pasting long commands during network stalls.
 
 ## Network And MQTT Runtime
 
@@ -281,9 +308,10 @@ Preemptible application priorities (smaller numbers run first):
 | 1 | Photodiode | Independent 50 ms acquisition cadence |
 | 2 | System workqueue | Native Modbus RX parsing/completion, short system work |
 | 3 | Throughput | Streaming, autolevel, calibration acquisition |
-| 4 | Main/MQTT | Network service and queued outbound publication |
-| 6 | Command executor / serial input | Serialized commands / console line ingestion |
+| 4 | Main/MQTT | Serial polling, network service and queued outbound publication |
+| 6 | Command executor | Serialized MQTT and serial commands |
 | 7 | App blocking workqueue | Housekeeping, heater, auto-off and reboot preparation |
+| 8 | MCUmgr SMP (OTA build only) | Progressive flash upload and image state/test requests |
 | 13 | Logging | Deferred log output |
 | 14 | Calibration fitting / SNTP | Numerical work / blocking time-server requests |
 
@@ -420,7 +448,7 @@ Acquisition timing and equations belong with their consumers:
 ```{mermaid}
 flowchart LR
   MQTT[MQTT ingress in main] -->|K_NO_WAIT| In[Inbound queue: 2 requests]
-  Serial[Serial thread] -->|K_NO_WAIT| In
+  Serial[Serial polling in main] -->|K_NO_WAIT| In
   In --> Exec[Single executor]
   Exec --> Replies[Reserved reply queue: 4 responses]
   Workers[PD / throughput / owners] --> Best[Best-effort queue: 8 responses]
@@ -447,7 +475,8 @@ reboot is pending. Auto-off, ambient/relay checks and heater work share that que
 a slow DS18B20 conversion can delay other work on it. Never put a blocking
 Modbus caller on the system queue that must parse its response.
 
-Network reconnect/DHCP fallback are system work; SNTP owns its separate blocking
-thread. The optional `coo_scheduled_action` helper is a fixed table of delayable
-work on the system queue, not an active app automation engine. Its callbacks must
-remain short. See [C contracts](api/scheduled_actions.md).
+DHCP fallback is system work; main owns MQTT reconnect and SNTP owns its separate
+blocking thread. OTA uses Zephyr's SMP processing workqueue, not an application
+upload thread. Receive/done hooks retain admission restrictions through a closing
+in-flight operation and refresh pending image state before releasing them.
+The [OTA C contract](api/ota.md) defines lifecycle locking and main-loop duties.

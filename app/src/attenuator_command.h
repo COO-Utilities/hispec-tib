@@ -6,7 +6,7 @@
 #ifndef HISPEC_ATTENUATOR_COMMAND_H
 #define HISPEC_ATTENUATOR_COMMAND_H
 
-#include "command.h"
+#include <coo_commons/command_dispatch.h>
 
 /**
  * @file attenuator_command.h

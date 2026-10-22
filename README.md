@@ -14,6 +14,7 @@ Start with the [documentation contents](doc/index.rst):
 - [Python command and lab helpers](doc/python_helpers.md): a convenience test
   tool with typed replies, collectors, fitting and plotting. The official Python
   API is maintained outside this repository.
+- [Firmware updates and OTA](doc/ota.md): USB provisioning, network updates and recovery.
 - [Runtime architecture](doc/architecture.md), [settings](doc/settings.md) and
   [C contracts](doc/api/index.md).
 - [Human review ledger](doc/human_review_required.md): unresolved intent,
@@ -41,6 +42,10 @@ For an already initialized workspace, use its environment and build:
   --build-dir ./hispec-tib/app/build \
   ./hispec-tib/app
 ```
+
+The standalone build above remains the bench default. MCUboot/OTA is an explicit
+`--sysbuild` build in `app/build-ota`; follow the [update guide](doc/ota.md)
+before provisioning a board.
 
 CLion users should enable RTOS integration and select GDB from the Zephyr SDK.
 ST-Link firmware and runner selection depend on the local workstation.

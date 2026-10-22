@@ -19,6 +19,8 @@ manifest:
         name-allowlist:
           - cmsis_6      # required by the ARM port for Cortex-M
           - hal_stm32    # required by the st32 nucleo board
+          - mcuboot     # application image validation, test swap and rollback
+          - zcbor       # MCUmgr SMP image protocol
     - name: zscilib
       remote: zephyrproject-rtos
       revision: b5668a80c02e8e0a8ca5f6debdbe1dc3e09e7f35

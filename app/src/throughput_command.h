@@ -6,7 +6,7 @@
 #ifndef HISPEC_THROUGHPUT_COMMAND_H
 #define HISPEC_THROUGHPUT_COMMAND_H
 
-#include "command.h"
+#include <coo_commons/command_dispatch.h>
 
 /**
  * @file throughput_command.h

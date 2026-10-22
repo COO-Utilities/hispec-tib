@@ -12,7 +12,7 @@
 #ifndef HISPEC_LASER_COMMAND_H
 #define HISPEC_LASER_COMMAND_H
 
-#include "command.h"
+#include <coo_commons/command_dispatch.h>
 
 /** Query a coherent calibration status; no hardware I/O. Runtime sends the reply. */
 int laser_calibration_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
@@ -39,7 +39,10 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 /** Read engineering controller status without starting output; may block on Modbus. */
 int laser_status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
-/** Query or set laser-bank power auto/override mode. */
+/**
+ * Query or set bank power mode, possibly blocking on the laser owner's I/O.
+ * Command dispatch checks OTA permission before calling this handler.
+ */
 int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 /** Clear laser-bank faults with a bounded laser-bank power cycle. */

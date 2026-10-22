@@ -46,7 +46,8 @@ fault/recovery transitions remain immediate. Recovery does not restart acquisiti
 
 ## Delivery and state
 
-`coo_cmd_runtime_emit()` logs warnings locally and attempts a bounded JSON enqueue
+`app_output_emit()` is the application producer boundary; it delegates to
+`coo_cmd_runtime_emit()`, which logs warnings locally and attempts a bounded JSON enqueue
 without waiting. Scratch contention, a full queue, disconnection or failed publish
 can lose best-effort telemetry. Required output is retried only after successful
 enqueue and can still be lost if requeueing fails. Warnings do not create a generic
