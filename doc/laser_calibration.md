@@ -6,6 +6,32 @@ application and optional persistence. `laser_command.c` parses commands. The
 existing throughput thread advances the operation; no extra thread or heap is
 used. See [commands](commands.md#lasercalibrate) for the interface.
 
+## Commissioning notebook
+
+The **Laser calibration, vendor curves and measured reference powers** section in
+[TIB PCB Commissioning](../tools/tib_pcb_commissioning.ipynb) follows FVOA calibration.
+It combines the historical Thorlabs readings, unit-specific vendor reference points,
+and digitized power curves with start/progress, stop, recabling continuation,
+raw-data download, offline review, reviewed application/persistence and scoped
+defaults restoration. New hardware-action cells are disabled initially.
+
+Vendor curve text files in `doc/datasheets/` are named
+`<diode-serial>_power_vs_current.txt`. They contain `current_ma power_mw` columns
+and comments identifying the source page, conditions, digitization method and
+approximate reading precision. They are plot readings, not vendor raw samples;
+they retain disagreements with tabulated threshold/slope/reference values.
+The Thorlabs path adjustments are explicitly provisional estimates, separate
+from the base attenuator estimates and unchanged raw readings.
+
+The notebook saves raw records, metadata, typed status and settings/reference
+context in ordinary pandas pickle captures before plotting. Replay needs no PCB.
+Its segment-gain overlays are diagnostic reconstructions, not another optimizer
+or a transmitted fit-membership mask. A RAM-only run can already change accepted
+settings; later reviewed writes and restoration have their own archived outcomes.
+Persistence saves the current laser policy record, including unchanged fields.
+Acquisition, numerical acceptance, RAM readback and power-cycle persistence remain
+distinct checks.
+
 ## Model and identifiability
 
 At fixed DAC settings in segment j, fit signed dark-subtracted voltage as

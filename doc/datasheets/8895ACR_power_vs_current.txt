@@ -1,0 +1,66 @@
+# Digitized optical power versus current; approximate plot readings, not vendor raw data.
+# Source PDF: 8895ACR.pdf; page 2; diode serial: 8895ACR.
+# Reference plane: vendor diode fiber output; no notebook path-loss correction applied.
+# Conditions: 25 C stated for this L-I graph.
+# Method: PDF rendered at 160 dpi; sampled center of the solid black power trace.
+# Power uses the right axis for Frankfurt reports and left axis for AeroDIODE reports.
+# Voltage trace excluded. No smoothing, slope fit, forced table anchor, or extrapolation.
+# Unresolved baseline portions are omitted; successive rows are not independent measurements.
+# Approximate reading precision: +/- 0.2 mA, +/- 0.06 mW (not statistical error bars).
+# Axis calibration in rendered-page pixels: x=271,1022 -> 0,60 mA;
+# y=657.5,333 -> 0,14 mW; origin at page top left.
+# Digitized 2026-10-22; trace overlaid on the original plot for visual verification.
+current_ma power_mw
+3.99 0.151
+5.03 0.388
+5.99 0.604
+7.03 0.841
+7.99 1.057
+9.03 1.294
+9.99 1.510
+11.03 1.726
+11.98 1.941
+13.02 2.179
+13.98 2.394
+15.02 2.675
+15.98 2.847
+17.02 3.085
+17.98 3.279
+19.01 3.538
+19.97 3.732
+21.01 3.969
+21.97 4.185
+23.01 4.401
+23.97 4.616
+25.01 4.875
+25.97 5.091
+27.00 5.307
+27.96 5.501
+29.00 5.738
+29.96 5.954
+31.00 6.169
+32.04 6.407
+33.00 6.622
+34.03 6.838
+34.99 7.032
+36.03 7.270
+36.99 7.485
+38.03 7.723
+38.99 7.917
+40.03 8.133
+40.99 8.327
+42.02 8.564
+42.98 8.758
+44.02 8.974
+44.98 9.190
+46.02 9.405
+46.98 9.621
+48.02 9.858
+48.97 10.052
+50.01 10.290
+50.97 10.484
+52.01 10.721
+52.97 10.915
+54.01 11.131
+54.97 11.347
+55.53 11.476
