@@ -13,32 +13,19 @@ their existing main loop.
 
 ## Configuration
 
-Enable `CONFIG_COO_OTA=y` together with the existing MCUboot/MCUmgr facilities:
-
-```ini
-CONFIG_BOOTLOADER_MCUBOOT=y
-CONFIG_MCUMGR=y
-CONFIG_MCUMGR_GRP_IMG=y
-CONFIG_MCUBOOT_IMG_MANAGER=y
-CONFIG_MCUMGR_TRANSPORT_UDP=y
-CONFIG_MCUMGR_TRANSPORT_UDP_IPV4=y
-CONFIG_MCUMGR_TRANSPORT_UDP_AUTOMATIC_INIT=n
-CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_SYSBUILD=y
-CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD=n
-CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_SECONDARY=n
-CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_ANY=n
-CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT=n
-CONFIG_MCUMGR_GRP_IMG_ALLOW_ERASE_PENDING=n
-CONFIG_COO_OTA=y
-```
+HISPEC enables `CONFIG_COO_OTA` only through `app/sysbuild/app.conf` in the
+explicit sysbuild. The ordinary bench build omits the lifecycle and `ota`
+command. The [operator guide](../ota.md#explicit-mcubootota-build) owns build,
+installation and artifact instructions; the Kconfig dependencies enforce the
+required MCUboot/MCUmgr capabilities for other consuming applications.
 
 COO OTA selects the MCUmgr receive/done notification hooks. Sysbuild must provide
 the MCUboot footer reservation used to calculate the secondary-slot upload
 limit. Image management must use one updatable image and secondary-slot uploads.
 Keep partition geometry, signing policy, bootloader GPIOs, watchdog
 configuration, buffers, and thread priorities in the consuming application.
-The [HISPEC configuration and validation](../ota.md) describe this board's
-30-second bootloader and 15-second application watchdog budgets.
+The [watchdog contract](../ota.md#watchdog-ownership) describes this board's
+30-second bootloader and 15-second application intervals.
 
 With COO MQTT/dispatch enabled, `ota` is a builtin command. An application must
 not also register its own `ota` row. Without `CONFIG_COO_OTA`, that builtin and
@@ -79,7 +66,10 @@ application must retain that hardware restriction when confirmation succeeds;
 the operator restores operation explicitly.
 
 In the existing main loop, request the existing delayed reboot exactly once
-on expiry and stop watchdog feeding while waiting for reset:
+on expiry and stop watchdog feeding while waiting for reset. Configure the
+command runtime with the app blocking queue as `reboot_work_q`: its hardware
+shutdown hook can wait for Modbus RX on the system queue. Do not move that
+shutdown onto the system queue. This polling block runs only in OTA builds:
 
 ```c
 enum coo_ota_poll_result result = coo_ota_poll();
@@ -127,9 +117,9 @@ transitions, and admission releases it before invoking hardware handlers.
 Closing/expiry can leave an admitted SMP operation finishing; restrictions
 remain until it finishes and throughout any pending image or unconfirmed trial.
 
-The protocol remains a 600-second default window (1..1800 seconds), image-group
-SMP operations only, and confirmation of the exact running image hash. Firmware
-confirmation does not require powered hardware or a Modbus response.
+Firmware confirmation does not require powered hardware or a Modbus response.
+The [command specification](../commands.md#ota) owns duration ranges, payloads
+and response field meanings; the declarations below own callable C contracts.
 
 ```{eval-rst}
 .. doxygenfile:: include/coo_commons/ota.h

@@ -24,17 +24,27 @@
 #define COO_OTA_DEFAULT_WINDOW_S 600U
 #define COO_OTA_MAX_WINDOW_S 1800U
 
+/** Snapshot of the single image's admission and MCUboot state. */
 struct coo_ota_status {
+	/** True only while the UDP upload listener is open. */
 	bool enabled;
+	/** Retain command restrictions through open/in-flight/pending/trial/revert. */
 	bool active;
+	/** True when the running image does not require trial confirmation. */
 	bool confirmed;
+	/** Pending/unknown swap state, refreshed after each admitted SMP operation. */
 	bool pending;
+	/** Rounded-up seconds before the upload window closes; zero when closed. */
 	uint32_t remaining_s;
+	/** Rounded-up seconds before the boot-uptime trial deadline; zero otherwise. */
 	uint32_t trial_remaining_s;
+	/** Maximum unpadded upload bytes after the sysbuild footer reservation. */
 	uint32_t max_image_size;
+	/** Running header/body SHA256 from its image TLV, not a whole-file upload SHA. */
 	uint8_t image_hash[COO_OTA_HASH_SIZE];
 };
 
+/** Main-loop action; both reboot states require withholding watchdog feeds. */
 enum coo_ota_poll_result {
 	COO_OTA_CONTINUE,
 	COO_OTA_REBOOT_REQUESTED,
@@ -54,6 +64,7 @@ typedef int (*coo_ota_ready_fn)(void *user_data);
  * A NULL readiness callback means the application has no entry prerequisite.
  * Then inspect status.confirmed and prepare trial hardware before starting work.
  * The five-minute trial deadline is measured from application boot uptime.
+ * Returns 0 or -EIO if the running image information cannot be read.
  */
 int coo_ota_init(coo_ota_ready_fn ready, void *user_data);
 

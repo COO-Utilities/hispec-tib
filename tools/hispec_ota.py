@@ -4,6 +4,12 @@
 MQTT opens the maintenance window and confirms the exact running image. SMP
 uploads to the secondary slot and requests a test boot. This tool never changes
 bank power mode. Hash-only images require the trusted observatory network.
+
+Run from a full Zephyr workspace with its Python requirements installed. Image
+validation (including --dry-run) reads the matching sysbuild configuration and
+uses imgtool from the pinned MCUboot checkout. See doc/ota.md for setup, USB
+provisioning, network updates and recovery. This is an engineering convenience
+tool, not the external official Python API.
 """
 
 from __future__ import annotations
@@ -38,7 +44,11 @@ from imgtool.version import decode_version  # noqa: E402
 
 @dataclass(frozen=True)
 class BuildLayout:
-    """Image bounds from generated configuration, including offset/trailer space."""
+    """Image bounds in bytes, including offset/trailer space reserved by sysbuild.
+
+    ``version`` is the image-header version, not the exact-image identity; use
+    the MCUboot hash returned by ``read_image`` to identify a candidate.
+    """
 
     header_size: int
     slot_size: int
@@ -49,6 +59,10 @@ class BuildLayout:
 
     @classmethod
     def read(cls, build: Path) -> BuildLayout:
+        """Read generated app/bootloader config and DTS; reject other build modes.
+
+        Requires a completed sysbuild. Reads local files only; no board access.
+        """
         config = dict(line.split("=", 1) for line in
                       (build / "app/zephyr/.config").read_text().splitlines()
                       if line.startswith("CONFIG_"))
@@ -188,7 +202,13 @@ async def upload_test(ip: str, data: bytes, digest: bytes, running_hash: str,
 
 def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
                    timeout_s: int, skip_confirm: bool) -> None:
-    """Use fresh correlated MQTT replies after reboot; never confirm another hash."""
+    """Verify a new boot using fresh MQTT replies and confirm only the exact hash.
+
+    Requires board readiness and TIB bank off. A lost confirmation ACK is
+    recoverable by querying again. ``skip_confirm`` returns with the trial still
+    unconfirmed; a timeout does not prove rollback has already occurred. Sleeps
+    between retries and leaves hardware/bank mode to the operator.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -282,21 +302,27 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
 
 
 def main() -> int:
+    """Parse one offline-fixture or update action; report handled failures as exit 1."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     upload = sub.add_parser("update", help="verify, upload, test boot and confirm one image")
-    upload.add_argument("image", type=Path)
-    upload.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD)
-    upload.add_argument("--broker")
-    upload.add_argument("--broker-port", type=int, default=1883)
-    upload.add_argument("--device", default="hsfib-tib")
+    upload.add_argument("image", type=Path, help="unpadded zephyr.signed.bin candidate")
+    upload.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD,
+                        help="matching sysbuild directory (default: workspace/hispec-tib/app/build-ota)")
+    upload.add_argument("--broker", help="MQTT broker host/IP; required except with --dry-run")
+    upload.add_argument("--broker-port", type=int, default=1883, help="MQTT port (default: 1883)")
+    upload.add_argument("--device", default="hsfib-tib", help="MQTT namespace (default: hsfib-tib)")
     upload.add_argument("--ip", help="optional IPv4 cross-check against fresh MQTT status")
-    upload.add_argument("--duration-s", type=int, default=600)
-    upload.add_argument("--boot-timeout-s", type=int, default=180)
-    upload.add_argument("--dry-run", action="store_true")
-    upload.add_argument("--skip-confirm", action="store_true", help="lab rollback trial")
+    upload.add_argument("--duration-s", type=int, default=600,
+                        help="upload window, 30..1800 seconds (default: 600); does not extend trial")
+    upload.add_argument("--boot-timeout-s", type=int, default=180,
+                        help="host boot/confirmation wait, 1..300 seconds (default: 180)")
+    upload.add_argument("--dry-run", action="store_true", help="validate locally without connecting")
+    upload.add_argument("--skip-confirm", action="store_true",
+                        help="verify trial then leave it unconfirmed; observe rollback separately")
     fixtures = sub.add_parser("fixtures", help="generate maximum, oversized and corrupt lab images")
-    fixtures.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD)
+    fixtures.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD,
+                          help="matching sysbuild directory (default: workspace/hispec-tib/app/build-ota)")
     fixtures.add_argument("--output", type=Path, help="default: BUILD/test-images")
     args = parser.parse_args()
     try:

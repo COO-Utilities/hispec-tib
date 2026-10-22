@@ -1,232 +1,454 @@
 # Firmware updates and OTA
 
-OTA updates the application through an explicit maintenance window on the
-trusted observatory network. MCUboot checks SHA256 integrity; images are not
-authenticated with a signing key. The bootloader itself is installed through
-ST-Link and is not updated over the network. One application serves all board
-profiles. MQTT/serial owns maintenance and confirmation; MCUmgr image commands
-use direct IPv4 UDP port 1337 during an open window.
+Firmware can be programmed through USB/ST-Link at the bench or updated over
+Ethernet using MCUboot. MCUboot is the small program that runs before the
+application: it checks image integrity, starts a trial image, and returns to the
+previous confirmed image if the trial is not confirmed. The bootloader itself
+is installed through ST-Link and is not updated over the network.
 
-## Build and initial provisioning
+**The existing standalone USB/CLion build remains the default during validation.**
+An explicit `--sysbuild` build enables MCUboot and OTA. These are temporary build
+choices: after USB and network workflows pass [bench acceptance](#bench-acceptance-and-retiring-the-standalone-build),
+MCUboot will become the single build flow. USB and network transfer will both
+remain useful ways to install that firmware.
 
-The ordinary standalone build remains the USB/CLion bench default. Use an
-explicit `--sysbuild` build for OTA; its app-only configuration fragment is
-`app/sysbuild/app.conf`. The two build modes are transitional: retire standalone
-once USB and network MCUboot workflows pass bench validation.
+## Choose the operation
 
+| Task | Build / artifact | Connection |
+|---|---|---|
+| Continue ordinary bench development | Standalone application in `app/build` | Existing USB/ST-Link and CLion workflow |
+| Prepare a board for its first network update | MCUboot plus a confirmed application from `app/build-ota` | USB/ST-Link; selective erase and initial provisioning |
+| Edit and reflash a provisioned board locally | Confirmed application from `app/build-ota` | USB/ST-Link; no trial or rollback test required |
+| Update a provisioned board remotely | Unpadded `zephyr.signed.bin` from `app/build-ota` | MQTT control plus direct IPv4 UDP upload |
 
-From the workspace root:
+The standalone application starts at `0x08000000`; MCUboot occupies that address
+on a provisioned board. Flashing a standalone image there replaces MCUboot.
+Returning that board to network updates requires provisioning again. Keep the
+build directories distinct and select the artifact for the operation being done.
+
+This firmware uses **SHA256 integrity checks without signature authentication**,
+for use on the trusted instrument network. The generated filename `signed` is
+Zephyr/imgtool terminology; it does not mean these images have a signing-key
+signature. The helper uses the MCUboot image hash, not the Git version string,
+to identify exactly which firmware was uploaded and booted.
+
+## Install and check the tools
+
+Commands below run from the **parent Zephyr workspace**, containing `hispec-tib/`,
+`zephyr/`, `bootloader/`, and `.venv/`. Use the existing workspace environment.
+The OTA helper needs this workspace and a matching sysbuild directory; installing
+only the notebook requirements in an isolated tools checkout is insufficient.
+
+| Tool | Used for | Install / source |
+|---|---|---|
+| Python 3.12 or newer | west, host helper and image validation; this workspace was checked with Python 3.13 | [Python downloads](https://www.python.org/downloads/); create/use the workspace `.venv` |
+| Git, CMake, Ninja and Zephyr host dependencies | Fetch pinned modules and build firmware | [Zephyr setup by operating system](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) |
+| west | Workspace modules, build and runner selection | Install with `python -m pip install west` in `.venv`; [west installation](https://docs.zephyrproject.org/latest/develop/west/install.html) |
+| Zephyr SDK | ARM compiler and GDB; builds here use SDK 1.0.1 | [SDK installation](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html), [SDK releases](https://github.com/zephyrproject-rtos/sdk-ng/releases) |
+| STM32CubeProgrammer | Initial selective erase, backup, programming and recovery; includes `STM32_Programmer_CLI` | [ST download for macOS, Linux and Windows](https://www.st.com/en/development-tools/stm32cubeprog.html), [programmer manual](https://www.st.com/resource/en/user_manual/dm00403500-stm32cubeprogrammer-software-description-stmicroelectronics.pdf) |
+| STM32CubeCLT | ST-Link GDB server used by the existing CLion debug configuration; also includes the programmer CLI | [ST CubeCLT download](https://www.st.com/en/development-tools/stm32cubeclt.html) |
+| MCUboot and imgtool | Bootloader, image packaging and offline hash verification | Fetched at the revision selected by `west.yml`; [MCUboot with Zephyr](https://docs.mcuboot.com/readme-zephyr.html) |
+| Python `smpclient==7.3.0` | UDP image transfer inside the repository helper | Installed by `tools/requirements.txt`; [package](https://pypi.org/project/smpclient/), [client documentation](https://intercreate.github.io/smpclient/latest/) |
+
+Install the ST package matching the host architecture. For macOS, the standalone
+programmer is normally installed in
+`/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/`.
+Within that directory, its CLI is in
+`STM32CubeProgrammer.app/Contents/Resources/bin/`.
+Add that `bin` directory to the terminal `PATH` if needed. The pinned
+`stlink_gdbserver` runner discovers CubeCLT installations under `/opt/ST/` on
+macOS, `/opt/st/` on Linux, and `C:\ST\` on Windows. Installing only the
+standalone programmer does not supply this GDB server.
+
+For an initialized workspace:
 
 ```bash
 ./.venv/bin/west update
-./.venv/bin/python -m pip install -r hispec-tib/tools/requirements.txt -r bootloader/mcuboot/scripts/requirements.txt
-./.venv/bin/west build --sysbuild -b nucleo_h563zi/stm32h563xx -d hispec-tib/app/build-ota hispec-tib/app
+./.venv/bin/python -m pip install \
+  -r hispec-tib/tools/requirements.txt \
+  -r bootloader/mcuboot/scripts/requirements.txt
 ```
 
-The Zephyr manifest pins MCUboot and ZCBOR. `app/sysbuild.conf` selects hash-only
-images and swap using offset. MCUboot's overlay explicitly selects the boot
-partition, HSI clocks (the PCB does not use HSE), and the same PB2 bank-off GPIO
-hog as the application. Partition addresses are unchanged:
+`west update` fetches the pinned MCUboot and ZCBOR modules. The helper imports
+imgtool directly from that MCUboot checkout, so do not substitute an unrelated
+PyPI imgtool version. Python `smpclient` supplies the transport; **no separate
+Go installation or MCUmgr command-line client is needed**.
 
-| Area | Address | Size |
-| --- | --- | --- |
-| MCUboot | `0x08000000` | 64 KiB |
-| Primary application | `0x08010000` | 960 KiB |
-| Secondary application | `0x08100000` | 960 KiB |
-| Settings/NVS | `0x081f0000` | 64 KiB |
-
-Initial provisioning is a bench operation with experiments stopped and bank
-power off. Using STM32CubeProgrammer/ST-Link, connect under reset; erase only
-the boot and image areas (`0x08000000` through `0x081effff`), leaving the NVS
-area untouched. Use a baseline from the merged schema-14 firmware; changing
-settings schema can still clear NVS at application boot, including after rollback. This also clears any stale secondary image/trailer. Program
-both of these artifacts before releasing reset:
-
-- `app/build-ota/mcuboot/zephyr/zephyr.hex`
-- `app/build-ota/app/zephyr/zephyr.signed.confirmed.hex`
-
-The confirmed artifact is essential for the initial baseline. Do not use a
-mass erase if calibration/settings must survive. After boot, query `ota` and
-verify `confirmed:true`, `enabled:false`, and no pending image. Retain a known
-working confirmed baseline and its hash for recovery. Sysbuild's application
-flash runner selects the confirmed artifact automatically, but initial
-secondary-slot clearing and preservation of NVS still require attention.
-
-## Normal update
-
-First stop calibration/monitoring and any other experiment. On TIB, explicitly
-select `laser/bankpower mode=override_off` and verify `powered:false`. OTA entry
-rejects a powered bank or another mode; it does not perform that shutdown.
-The existing off mode prevents heater/control/settings paths from powering
-the bank. COO dispatch enforces the [command allowlist](commands.md#commands-while-ota-is-active)
-while OTA is active, before handlers run. All bank-mode writes are blocked,
-including a repeated `override_off`; queries remain available. No Modbus
-response is expected from unpowered laser drivers. The reusable lifecycle and
-application integration are described in [the COO OTA API](api/ota.md).
-
-Validate locally without connecting:
+Check host setup without connecting to a board:
 
 ```bash
-./.venv/bin/python hispec-tib/tools/hispec_ota.py update hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin --dry-run
+./.venv/bin/python --version
+./.venv/bin/west --version
+./.venv/bin/python hispec-tib/tools/hispec_ota.py --help
+STM32_Programmer_CLI --help
 ```
 
-Run an update, replacing the broker address as appropriate:
+For a new workspace, follow the repository README's setup and the linked Zephyr
+host/SDK instructions first. A tool that fails to start must be repaired before
+using it for programming; its installation alone does not verify USB access.
+
+## Build and select the image
+
+### Current standalone bench build
+
+The existing command and CLion profiles remain valid:
 
 ```bash
-./.venv/bin/python hispec-tib/tools/hispec_ota.py update hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin --broker 192.168.1.5 --device hsfib-tib
+./.venv/bin/west build \
+  --board=nucleo_h563zi/stm32h563xx \
+  --build-dir hispec-tib/app/build hispec-tib/app
 ```
 
-The helper validates the unpadded binary with the pinned imgtool, checks fresh
-MQTT identity/readiness/bank state and the generated upload limit, derives the
-device IPv4 address, and opens a 600-second window. `--ip` optionally checks
-that address against an expected value. CAL/AS device namespaces work the same
-way, without TIB bank checks. Use `--duration-s` (30..1800) to change the host
-upload budget; this does not change the trial deadline.
+Use the existing standalone USB workflow with this build. The timing profile
+continues to add `-- -DEXTRA_CONF_FILE=debug.conf` in its separate
+`app/build-timing` directory. These builds omit the `ota` command and MCUboot.
 
-It then compares SMP's running hash with MQTT's running hash, uploads image 0's
-secondary slot, verifies the reported secondary hash, marks it for a **test**
-boot, closes the window, and requests the ordinary delayed reboot. Upload uses
-at most three transport attempts and resumes using the transfer SHA/offset.
-After reboot, fresh correlated MQTT replies must report a new boot count, the
-exact expected image hash, a ready board, and bank off on TIB before the helper
-confirms. A lost confirmation reply is recovered by querying current state.
-The helper does not use firmware-version strings to identify an image.
+### Explicit MCUboot/OTA build
 
-Image-state responses report the stored hash TLV; they do not recompute the
-flash contents. The host verifies its file before upload, and MCUboot performs
-the full candidate-body hash check before running it. An interrupted/corrupted
-upload cannot be confirmed by the normal workflow. The SMP client's optional
-OS-parameters request receives an unsupported response because only the image
-group is enabled; its fixed 1024-byte MTU remains in use.
+```bash
+./.venv/bin/west build --sysbuild \
+  --board=nucleo_h563zi/stm32h563xx \
+  --build-dir hispec-tib/app/build-ota hispec-tib/app
+```
 
-On successful confirmation, **the operator must explicitly set bank mode back
-to `auto`**. Confirmation and window close both leave `override_off` unchanged.
-Ordinary later boots of confirmed firmware retain the existing `auto` default;
-bank mode is not persisted by OTA. A rollback returns to already-confirmed
-firmware and therefore follows that ordinary boot behavior.
+Sysbuild loads `app/sysbuild.conf`, the app-only `app/sysbuild/app.conf`, and the
+MCUboot configuration/overlay. It packages the app for offset swapping and reserves
+the required image/trailer space. For a stale directory, repeat with `-p always`;
+never reuse a standalone directory for sysbuild. Avoid a workspace-wide
+`west config build.sysbuild True` during the transition, because it changes the
+meaning of ordinary bench builds.
 
-The Python notebook API also provides `pcb.ota()`,
-`pcb.set_ota_window(True, duration_s=600)`, `pcb.set_ota_window(False)`, and
-`pcb.confirm_image(image_hash)`. See [the command contract](commands.md#ota).
+One application serves TIB, CAL YJ, CAL HK and AS; the board straps select its
+profile. The generated artifacts have different purposes:
 
-## Failure and rollback
+| Relative to `hispec-tib/app/build-ota/` | Purpose |
+|---|---|
+| `mcuboot/zephyr/zephyr.hex` | Bootloader at `0x08000000`; initial provisioning or deliberate recovery |
+| `app/zephyr/zephyr.signed.confirmed.hex` | Application container with confirmation trailer; USB provisioning/reflash |
+| `app/zephyr/zephyr.signed.bin` | Unpadded application container; network OTA candidate |
+| `app/zephyr/zephyr.elf` | Application symbols for debugging the exact matching build |
+| `app/zephyr/zephyr.bin` | Raw build output used internally by packaging/fixtures; not an OTA candidate |
 
-An upload window expires independently of the host. Closing it can leave an
-already-admitted request finishing; command restrictions remain until it finishes,
-and remains longer if a test image became pending. Pending images cannot be
-overwritten or erased through SMP. A close does not cancel a pending test boot.
-If a host fails after marking the candidate pending, inspect `ota` and issue
-the ordinary `reboot` to complete the trial workflow.
+The helper rejects padded/preconfirmed images, malformed containers, bad hashes,
+and files above the generated upload limit. Keep the confirmed baseline image
+and its matching ELF before testing another image.
 
-A trial boots with UDP closed and TIB bank `override_off` before application
-workers or commands start. It has **five minutes of application boot uptime**
-to be confirmed through MQTT or serial with its exact running image hash. No
-network connection, host timeout, or maintenance-window renewal extends this
-deadline. At expiry, the main loop schedules the existing three-second delayed
-reboot and stops feeding IWDG. Thus a stuck reboot work item also leads to reset.
-The deadline and confirmation flag write share a mutex so they cannot race.
-MCUboot reverts an unconfirmed test on reset. The old secondary image remains
-protected throughout the trial.
+## USB provisioning and local development
 
-`--skip-confirm` exercises this path: the helper waits for the exact trial but
-deliberately does not confirm. It reports the remaining trial time and exits;
-observe the later reset and return of the baseline hash separately. The default
-host boot wait is 180 seconds (`--boot-timeout-s` changes it, up to 300). A host
-timeout is a failure to verify success, not a claim that rollback already ran.
+### Flash layout
 
-## Watchdog phases
+The Nucleo STM32H563 layout is shared by the application and MCUboot:
 
-| Phase | Nominal timeout | Feed owner |
-| --- | --- | --- |
-| MCUboot validation, swap, revert | 30 seconds | MCUboot watchdog checkpoints |
-| Chainload and application initialization before `main()` | Remaining bootloader interval | Inherited running IWDG |
-| Application startup, upload, ordinary operation, trial | 15 seconds | Application main loop |
+| Area | Inclusive addresses | Size |
+|---|---|---|
+| MCUboot | `0x08000000`–`0x0800ffff` | 64 KiB |
+| Primary application | `0x08010000`–`0x080fffff` | 960 KiB |
+| Secondary application | `0x08100000`–`0x081effff` | 960 KiB |
+| Settings/NVS | `0x081f0000`–`0x081fffff` | 64 KiB |
+
+```{mermaid}
+flowchart TD
+  Reset[Reset] --> Boot[MCUboot: 64 KiB at 0x08000000]
+  Boot --> Primary[Primary application: 960 KiB at 0x08010000]
+  Secondary[Secondary candidate or rollback image: 960 KiB at 0x08100000] <-->|offset swap / revert| Primary
+  Primary --> NVS[Settings and calibration: 64 KiB at 0x081f0000]
+```
+
+MCUboot's overlay uses HSI clocks and the same PB2 bank-off GPIO hog as the app.
+Its 30-second watchdog stays running across chainload; the application takes
+it over with a 15-second timeout. Detailed ownership is in
+[architecture](architecture.md#boot-sequence) and [the C integration contract](api/ota.md).
+
+### First-time provisioning or recovery
+
+This is a bench procedure with experiments stopped and TIB bank power off.
+Use the ST-Link USB connector and STM32CubeProgrammer:
+
+1. Record the board identity, network settings and calibration information.
+   Connect under reset and halt the target. If preserving its current contents,
+   save a backup of the 64 KiB NVS region beginning at `0x081f0000`.
+2. Selectively erase the bootloader and both application areas:
+   `0x08000000` through `0x081effff`. This clears stale secondary images and
+   swap trailers. Leave NVS untouched; do not select mass erase.
+3. Program and verify `mcuboot/zephyr/zephyr.hex`, then
+   `app/zephyr/zephyr.signed.confirmed.hex` from the same sysbuild, before allowing
+   the application to run. The initial application must be confirmed.
+4. Reset/run, then query `ota` over serial or the Python helper. Require
+   `confirmed:true`, `enabled:false`, `active:false`, and `pending:false`.
+   Record `image_hash`, verify board/network readiness, and retain the artifacts.
+
+Use the integrated **schema-14** firmware for the baseline. Preserving NVS during
+programming preserves bytes, not necessarily their interpretation: application
+startup clears storage when its schema differs. The original unmerged OTA branch
+uses schema 13. Do not use that old image as a baseline for retaining current
+calibration, and verify schema compatibility before any downgrade or rollback.
+See [settings persistence](settings.md).
+
+An ordinary sysbuild `west flash` selects both domains and their configured
+artifacts, but does not replace the initial selective-erase and NVS-preservation
+procedure above.
+
+### Reflash a provisioned board through USB
+
+Once MCUboot and a clean confirmed baseline are installed, normal local edits
+can be built and flashed directly as a confirmed application. Stop experiments
+first. Start with no pending test image; if the board has unfinished swap/trial
+state or cannot boot, use the provisioning/recovery procedure to clear it.
+
+```bash
+./.venv/bin/west flash \
+  --build-dir hispec-tib/app/build-ota \
+  --domain app --runner stm32cubeprogrammer
+```
+
+The generated app runner selects `zephyr.signed.confirmed.hex`. `--domain app`
+leaves the bootloader alone. Do not add `--erase`, which requests mass erase.
+USB installation goes directly to confirmed firmware; it does not need to
+exercise the network trial or rollback path. A later edit/reflash repairs a
+broken local application.
+
+For debugging, flash the packaged image first and attach with its matching ELF:
+
+```bash
+./.venv/bin/west attach --no-rebuild \
+  --build-dir hispec-tib/app/build-ota \
+  --domain app --runner stlink_gdbserver --port-number 3333
+```
+
+`--no-rebuild` keeps the symbols matched to the image just programmed. In a
+separate CLion OTA configuration, use the app domain's ELF and attach without
+an automatic raw-ELF download; the existing standalone configurations need no
+change. A raw ELF download does not create MCUboot's header/hash/trailer and can
+invalidate an otherwise packaged image. Confirm this flash/attach/reset workflow
+on the bench before replacing the default CLion flow.
+
+## Network update with the helper
+
+### Prepare the target
+
+The host needs access to the MQTT broker (normally TCP 1883) **and direct IPv4
+UDP port 1337 on the board**. The upload does not travel through the broker.
+UDP listens only during an explicit maintenance window; no DHCP lease or open
+MQTT connection opens that window by itself.
+
+Stop calibration, throughput monitoring and any other experiment before entry.
+On TIB, select `laser/bankpower mode=override_off` and query it until
+`mode:override_off` and `powered:false` are reported. For example, from serial:
+
+```text
+laser/bankpower mode=override_off
+laser/bankpower
+ota
+```
+
+The helper checks this prerequisite but never changes bank mode for you. CAL/AS
+have no TIB bank prerequisite; their experiments still need to be stopped.
+Serial activity can activate serial guard, which rejects MQTT effects including
+OTA entry/confirmation. Let it expire or use `serialguard off` before starting
+the MQTT-driven update. See the [command permissions](commands.md#commands-while-ota-is-active).
+
+### Validate, upload and confirm
+
+Validate the candidate locally first; this opens no network connection:
+
+```bash
+./.venv/bin/python hispec-tib/tools/hispec_ota.py update \
+  hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin --dry-run
+```
+
+Then update, replacing `broker.example` and the device namespace:
+
+```bash
+./.venv/bin/python hispec-tib/tools/hispec_ota.py update \
+  hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin \
+  --broker broker.example --device hsfib-tib
+```
+
+Use `hsfib-bcal` for CAL YJ, `hsfib-rcal` for CAL HK, and `hsfib-as` for AS.
+The helper obtains the board's IPv4 address from a fresh MQTT reply. Optional
+`--ip` checks that address against your expectation; it does not override it.
+
+```{mermaid}
+sequenceDiagram
+  participant H as Host helper
+  participant A as Running application
+  participant B as MCUboot
+  H->>H: Check image<br/>and size limit
+  H->>A: MQTT identity, readiness,<br/>image and bank queries
+  H->>A: MQTT open window
+  H->>A: UDP verify running hash,<br/>upload secondary image
+  H->>A: UDP verify candidate hash,<br/>request test boot
+  H->>A: MQTT close window,<br/>request delayed reboot
+  A->>B: Reset
+  B->>B: Validate body hash,<br/>swap candidate into primary
+  B->>A: Start unconfirmed trial<br/>UDP closed, TIB bank off
+  H->>A: Fresh MQTT boot count,<br/>exact hash and readiness
+  alt Candidate verified before deadline
+    H->>A: MQTT confirm exact hash
+    Note over H,A: Operator explicitly<br/>restores TIB bank mode
+  else Candidate remains unconfirmed
+    A->>B: Trial deadline: stop feeds,<br/>schedule reset
+    B->>A: Revert to confirmed baseline
+  end
+```
+
+The helper requires a confirmed, inactive baseline and matching host/device
+upload limits. It compares the SMP running hash against MQTT identity before
+uploading, verifies the secondary image's reported hash, and requests a **test**
+boot rather than permanent installation. Upload transport failures have at most
+three attempts, using transfer SHA/offset recovery. After reboot, it requires a
+new boot count, the exact candidate hash, board readiness, and TIB bank off before
+confirming. A lost confirmation acknowledgment is recovered by querying state.
+
+Progress reports image size/hash, upload percentages, and finally
+`Confirmed <hash>`. If that exact image is already running and confirmed, it
+reports a no-op. These checks establish identity and reported readiness, not an
+optical or electrical acceptance test of the new application.
+
+**After successful network confirmation, explicitly restore TIB bank mode to
+`auto` when ready to resume work.** Closing the window and confirming the image
+leave `override_off` unchanged. Later ordinary boots of confirmed firmware,
+including a rollback to the confirmed baseline, use the ordinary `auto` default.
+OTA does not persist bank mode.
+
+### Helper options and notebook access
+
+| Option | Meaning |
+|---|---|
+| `--build-dir PATH` | Matching sysbuild configuration; defaults to `hispec-tib/app/build-ota` in the workspace |
+| `--broker`, `--broker-port` | MQTT broker and port; port defaults to 1883, broker required for a real update |
+| `--device` | MQTT device identity; defaults to `hsfib-tib` |
+| `--ip` | Optional expected board IPv4 address |
+| `--duration-s` | Upload-window budget, 30–1800 s, default 600; does not extend a trial |
+| `--boot-timeout-s` | Host wait for the new boot/confirmation, 1–300 s, default 180 |
+| `--dry-run` | Validate the file against the build locally, then exit without a connection |
+| `--skip-confirm` | Lab trial: verify the candidate boot, deliberately leave it unconfirmed, then exit |
+
+`update` exits with status 1 and `OTA failed: ...` on the handled validation,
+transport or verification failures. Status 0 also covers a dry-run, an
+already-running image, or a deliberately unconfirmed `--skip-confirm` trial;
+read the reported outcome. `fixtures` is the separate offline image-generation
+subcommand described below.
+
+The repository's [Python convenience helper](python_helpers.md) exposes
+`pcb.ota()`, `pcb.set_ota_window(True, duration_s=600)`,
+`pcb.set_ota_window(False)`, and `pcb.confirm_image(image_hash)`.
+These wrap individual MQTT commands; `hispec_ota.py` owns the complete update
+sequence. Neither is the official external Python API. The
+[control specification](commands.md#ota) owns field definitions and serial syntax.
+
+## Failure, deadlines and recovery
+
+The upload window and trial have separate clocks. Closing/expiry stops new UDP
+admission but does not cancel an admitted operation or an already pending test
+boot. Command restrictions remain while an operation finishes, a candidate is
+pending, or a trial is unconfirmed. A pending/trial image cannot be overwritten
+or made permanent through SMP.
+
+A trial has **five minutes of application boot uptime** to be confirmed with its
+exact running hash. Network loss, host timeout and maintenance-window renewal
+cannot extend it. At expiry, main requests the existing three-second delayed
+reboot and stops feeding IWDG. MCUboot reverts an unconfirmed trial on reset.
+The confirmation flag write and expiry decision share the OTA mutex.
+
+| Observation | Interpretation and next action |
+|---|---|
+| `ota` is unavailable | Check that this is the explicit OTA build and that MCUboot was provisioned |
+| Entry rejected | Query bank state, pending/trial state and serial guard; do not assume the helper powered anything off |
+| UDP upload fails while MQTT works | Check direct host-to-board routing/firewall access on UDP 1337 and window state |
+| Close succeeded but `active` remains true | An admitted operation, pending candidate or unconfirmed trial still owns restrictions |
+| Helper failed after requesting a test boot | Query `ota`; a pending candidate remains pending. Ordinary `reboot` starts its trial |
+| Host times out after reboot | Success was not verified. Inspect the running hash/confirmation state; timeout does not prove rollback has already completed |
+| Wrong image hash or board failure after reboot | Helper refuses confirmation. Leave the trial unconfirmed and inspect the later baseline boot |
+| Board cannot recover over the network | Use ST-Link and the confirmed-baseline provisioning procedure, preserving NVS as appropriate |
+
+Image-state replies report the stored hash TLV, not a fresh hash of flash.
+The helper verifies the local file and MCUboot hashes the candidate body before
+executing it. The upload SHA used for transfer recovery is also distinct from
+MCUboot's header/body hash. Only image-group SMP operations are enabled; an
+unsupported optional OS-parameters request from the client is expected, and its
+fixed 1024-byte transport MTU remains in use.
+
+### Watchdog ownership
+
+| Phase | Nominal interval between feeds | Owner |
+|---|---|---|
+| MCUboot validation, swap, revert | 30 s | MCUboot checkpoints |
+| Chainload and initialization before `main()` | Remaining bootloader interval | Inherited running IWDG |
+| Application startup, upload, ordinary operation and trial | 15 s | Main loop |
 | Expired trial | No further feeds | Delayed reboot, with IWDG as fallback |
 
-These are intervals **between feeds**, not total upload/swap time limits.
-MCUboot installs a valid timeout and starts IWDG; it feeds during long boot
-operations. It jumps into the application without resetting the peripheral.
-The application's fresh STM32 driver state permits `wdt_install_timeout()`;
-`wdt_setup()` rewrites the running prescaler/reload to 15 seconds and reloads
-the counter. No attempt is made to disable IWDG. The upstream 300-second
-MCUboot default exceeds this MCU's IWDG range, so it is explicitly overridden.
+These are not total upload/swap limits. The application reprograms the inherited
+running watchdog; it does not disable it. The pinned driver uses nominal 32 kHz
+LSI. At ST's specified 33.6 kHz upper frequency, the nominal intervals become
+approximately 28.57 and 14.29 seconds; measured feed gaps need margin below them.
+See the [STM32H563 LSI specifications](https://www.st.com/resource/en/datasheet/stm32h563zi.pdf).
 
-Both 15 and 30 seconds use the pinned driver's nominal 32 kHz LSI calculation.
-ST specifies LSI up to 33.6 kHz, giving approximately 14.29 and 28.57 seconds
-at that extreme. Leave measured feed-gap margin below those bounds. See the
-[STM32H563 datasheet, LSI characteristics](https://www.st.com/resource/en/datasheet/stm32h563zi.pdf).
-Pre-main protection starts once MCUboot has enabled IWDG; it does not cover
-earlier cold-boot clock initialization. A debugger halt is also not a valid
-watchdog test: the application requests pause while halted. Inject a running
-spin/hang or use temporary lab instrumentation instead.
+SMP processing runs at priority 8, below system/Modbus RX (2), main (4), commands
+(6), and app blocking work (7). Progressive erase bounds individual erase work,
+but internal-flash stalls still need measurement. A debugger halt is not a
+watchdog validation: the application requests watchdog pause while halted.
+Pre-main protection begins when MCUboot starts IWDG, after its early clock setup.
 
-SMP flash work runs at priority 8 instead of the upstream default 3, below system/Modbus RX (2), main
-(4), commands (6), and app blocking work (7). Progressive erase
-keeps uploads from erasing the entire slot in one operation. Thread ordering
-does not eliminate internal-flash stalls; actual feed gaps require measurement.
-See [MCUboot's swap and image format](https://docs.mcuboot.com/design.html).
+## Bench acceptance and retiring the standalone build
 
-## Maximum-size and negative fixtures
+Software builds and offline checks do not establish flash timing, bank-power
+behavior or power-failure recovery. Record actual results in the
+[owner-review ledger](human_review_required.md), using a baseline and candidate
+with compatible settings schemas:
+
+1. Provision and cold-boot a confirmed baseline, record its hash and settings,
+   and verify UDP is closed on each board profile.
+2. Repeat USB confirmed-image reflash, matching-ELF attach/debug and cold reset.
+   Verify the normal edit/build/reflash loop is usable; USB need not test rollback.
+3. Complete normal and maximum-size network updates. Observe PB2 through boot,
+   swap and trial. Check MQTT/serial permissions, including requests queued before
+   entry, all bank-mode writes, and operator-only restoration after confirmation.
+4. Leave trials unconfirmed, including broker/network loss. Verify the deadline,
+   reset, baseline hash and settings retention. Reject wrong/late confirmation.
+5. Measure watchdog feed gaps through startup, upload, validation, swap and
+   revert, including the 30-to-15-second handoff. Exercise running hangs without
+   debugger freeze, interrupted uploads, and power cuts at erase/write/trailer stages.
+6. Reject oversized and corrupt candidates; verify pending/trial protection.
+   Recovery must produce the exact unconfirmed candidate or the confirmed
+   baseline, never execute a partial image.
+
+After acceptance is recorded, switch the standard build and CLion workflow to
+MCUboot, remove the standalone build path and its instructions, and keep one
+canonical artifact table. Continue to support USB confirmed-image installation
+and network trial installation from that one build.
+
+### Maximum-size and negative fixtures
 
 ```bash
 ./.venv/bin/python hispec-tib/tools/hispec_ota.py fixtures
 ```
 
-This reads the generated DTS and application/MCUboot configurations. The
-current 983,040-byte slot reserves 16,384 bytes for offset swapping and trailer
-space, allowing a **966,656-byte** unpadded image. The tool appends deterministic
-non-`0xff` bytes to `zephyr.bin` **before** imgtool builds the header/hash. The
-declared image body includes the extension, so every appended byte participates
-in upload, flash, validation, swap, and rollback. Linked code, entry point,
-initialized data and RAM footprint stay the same. `imgtool --pad` alone would
-not create this test.
+The helper reads the generated DTS and app/MCUboot configuration. The current
+983,040-byte slot reserves 16,384 bytes for offset swapping/trailer space, leaving
+**966,656 bytes** for an unpadded image. It extends `zephyr.bin` with deterministic
+non-erased bytes *before* constructing the hash. The declared body includes those
+bytes, so they participate in upload, validation, swap and rollback without
+changing linked code or RAM use. Merely padding a finished image would not test this.
 
-`app/build-ota/test-images/` contains:
+| File under `app/build-ota/test-images/` | Expected result |
+|---|---|
+| `maximum.bin` | Valid runnable image exactly at the generated limit |
+| `oversized.bin` | Valid hash/container, one 16-byte flash-write unit too large; host rejects before connecting |
+| `corrupt-tail.bin` | Last body byte changed after hashing; offline verification rejects it |
+| `manifest.json` | Fixture sizes and MCUboot hashes |
 
-- `maximum.bin`: valid, exactly the generated limit, runnable with unchanged code.
-- `oversized.bin`: valid hash/container, one flash-write unit (16 bytes) over
-  the generated upload limit; the host rejects it before connecting.
-- `corrupt-tail.bin`: maximum-size image with its last body byte changed after
-  hashing; local verification must fail.
-- `manifest.json`: sizes and MCUboot hashes of the valid fixtures.
+`fixtures --build-dir PATH --output PATH` selects another matching build/output
+directory. Use `maximum.bin` in both normal update and `--skip-confirm` cases,
+restoring a different confirmed baseline between them: an already-running hash
+is intentionally a no-op. `--skip-confirm` verifies the trial and reports remaining
+time; observe the subsequent reset and baseline hash separately.
 
-Run `maximum.bin` through normal update and `--skip-confirm` workflows. Start
-each case from a different confirmed baseline; uploading an already-running
-hash is deliberately a no-op, so restore the baseline between these cases. For
-device-side negative tests, bypass only the normal host validator using the
-installed typed SMP client in a temporary lab script. With a manually opened
-window, send `ImageUploadWrite(off=0, image=0, len=len(oversized),
-data=oversized[:128])`; require an image-too-large error before an upload is
-accepted. To test bootloader validation, upload `corrupt-tail.bin` using
-`SMPClient.upload`, request `ImageStatesWrite(hash=<maximum image hash>,
-confirm=False)`, close, and reboot. MCUboot must retain/recover the baseline;
-never confirm the damaged candidate. Close the window after each negative test.
-
-## Bench acceptance
-
-Build and offline checks do not establish target flash timing or power-failure
-behavior. Before relying on OTA:
-
-1. Provision a confirmed baseline, record its hash and selected calibration/IP
-   settings, and verify UDP is closed at startup on each board profile.
-2. Complete normal and maximum-size updates with exact-hash confirmation.
-   Observe PB2/bank power through boot, swap, trial and confirmation. Exercise
-   the command allowlist over both MQTT and serial, including requests queued
-   before OTA entry. Bank queries succeed; every payload/suffix mode write is
-   rejected, including off. After confirmation, require operator `auto`.
-3. Repeat maximum-size trials without confirmation and with broker/network
-   loss; verify the deadline, reset, baseline hash and NVS retention. Reject a
-   wrong confirmation hash and an attempt at/after expiry.
-4. Measure feed gaps during progressive erase, image validation, both swap
-   directions, application startup, and full upload. Verify IWDG registers
-   change from 30 to 15 seconds at handoff and test running hangs before main,
-   in the main loop, and at bootloader checkpoints without debugger freeze.
-5. Interrupt uploads and cut power at several erase/write/trailer stages of
-   maximum-size swap and revert. After recovery, require either the exact trial
-   (still off/unconfirmed) or the known confirmed baseline, never a partial image.
-6. Perform the oversized and corrupt-body tests separately at host and device
-   layers. Verify a pending/trial image cannot be overwritten or made permanent
-   by SMP, and preserve calibration, IP, and other app settings throughout.
-
-No hardware flash, watchdog timing run, or power-cut test is implied by a
-successful software build. Record actual bench results in the owner ledger.
+Device-side rejection needs a temporary lab script that bypasses only the host
+validator. With a manually opened window, send
+`ImageUploadWrite(off=0, image=0, len=len(oversized), data=oversized[:128])` and
+require an image-too-large response. Separately upload `corrupt-tail.bin` with
+`SMPClient.upload`, request `ImageStatesWrite(hash=<maximum image hash>, confirm=False)`,
+close and reboot. MCUboot must retain/recover the baseline; do not confirm the
+damaged candidate. Close the window after each negative test. These are bench
+acceptance procedures, not steps in an ordinary update.

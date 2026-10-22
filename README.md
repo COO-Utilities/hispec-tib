@@ -14,7 +14,8 @@ Start with the [documentation contents](doc/index.rst):
 - [Python command and lab helpers](doc/python_helpers.md): a convenience test
   tool with typed replies, collectors, fitting and plotting. The official Python
   API is maintained outside this repository.
-- [Firmware updates and OTA](doc/ota.md): USB provisioning, network updates and recovery.
+- [Firmware updates and OTA](doc/ota.md): tool installation, USB provisioning, network updates,
+  the update helper and recovery.
 - [Runtime architecture](doc/architecture.md), [settings](doc/settings.md) and
   [C contracts](doc/api/index.md).
 - [Human review ledger](doc/human_review_required.md): unresolved intent,

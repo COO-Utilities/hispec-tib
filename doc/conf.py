@@ -54,6 +54,9 @@ myst_heading_anchors = 3
 myst_fence_as_directive = ["mermaid"]
 myst_enable_extensions = ["dollarmath"]
 
+# Keep tall process diagrams readable at the content width.
+mermaid_height = "auto"
+
 breathe_projects = {
     "hispec_tib": str(DOXYGEN_XML),
 }
@@ -87,6 +90,11 @@ def run_doxygen(_app):
 
 def setup(app):
     app.connect("builder-inited", run_doxygen)
+    # Alabaster is light even when the browser prefers dark mode. Tell Mermaid
+    # before its module runs so diagram labels keep contrast with the page.
+    app.add_js_file(
+        None, body="document.documentElement.dataset.theme = 'light';", priority=200
+    )
     return {
         "version": "1.0",
         "parallel_read_safe": True,
