@@ -17,7 +17,7 @@ remain useful ways to install that firmware.
 | Task | Build / artifact | Connection |
 |---|---|---|
 | Continue ordinary bench development | Standalone application in `app/build` | Existing USB/ST-Link and CLion workflow |
-| Prepare a board for its first network update | MCUboot plus a confirmed application from `app/build-ota` | USB/ST-Link; selective erase and initial provisioning |
+| Bring up a fresh board for MCUboot/OTA | MCUboot plus a confirmed application from `app/build-ota` | USB/ST-Link; one-time full erase and provisioning |
 | Edit and reflash a provisioned board locally | Confirmed application from `app/build-ota` | USB/ST-Link; no trial or rollback test required |
 | Update a provisioned board remotely | Unpadded `zephyr.signed.bin` from `app/build-ota` | MQTT control plus direct IPv4 UDP upload |
 
@@ -45,18 +45,24 @@ only the notebook requirements in an isolated tools checkout is insufficient.
 | Git, CMake, Ninja and Zephyr host dependencies | Fetch pinned modules and build firmware | [Zephyr setup by operating system](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) |
 | west | Workspace modules, build and runner selection | Install with `python -m pip install west` in `.venv`; [west installation](https://docs.zephyrproject.org/latest/develop/west/install.html) |
 | Zephyr SDK | ARM compiler and GDB; builds here use SDK 1.0.1 | [SDK installation](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html), [SDK releases](https://github.com/zephyrproject-rtos/sdk-ng/releases) |
-| STM32CubeProgrammer | Initial selective erase, backup, programming and recovery; includes `STM32_Programmer_CLI` | [ST download for macOS, Linux and Windows](https://www.st.com/en/development-tools/stm32cubeprog.html), [programmer manual](https://www.st.com/resource/en/user_manual/dm00403500-stm32cubeprogrammer-software-description-stmicroelectronics.pdf) |
+| STM32CubeProgrammer | Initial provisioning and later USB programming; includes `STM32_Programmer_CLI` | [ST download](https://www.st.com/en/development-tools/stm32cubeprog.html), [command-line reference](https://dev.st.com/stm32cube-docs/prog/2.23.0/en/docs/markup/CubeProg_Command_Lines.html) |
 | STM32CubeCLT | ST-Link GDB server used by the existing CLion debug configuration; also includes the programmer CLI | [ST CubeCLT download](https://www.st.com/en/development-tools/stm32cubeclt.html) |
 | MCUboot and imgtool | Bootloader, image packaging and offline hash verification | Fetched at the revision selected by `west.yml`; [MCUboot with Zephyr](https://docs.mcuboot.com/readme-zephyr.html) |
 | Python `smpclient==7.3.0` | UDP image transfer inside the repository helper | Installed by `tools/requirements.txt`; [package](https://pypi.org/project/smpclient/), [client documentation](https://intercreate.github.io/smpclient/latest/) |
 
-Install the ST package matching the host architecture. For macOS, the standalone
-programmer is normally installed in
-`/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/`.
-Within that directory, its CLI is in
-`STM32CubeProgrammer.app/Contents/Resources/bin/`.
-Add that `bin` directory to the terminal `PATH` if needed. The pinned
-`stlink_gdbserver` runner discovers CubeCLT installations under `/opt/ST/` on
+On macOS, download and install STM32CubeProgrammer from the ST link above,
+choosing the package for the Mac's processor. For the default installation,
+paste this into the terminal used for the commands below:
+
+```bash
+ota_bin="/Applications/STMicroelectronics/STM32Cube"
+ota_bin="$ota_bin/STM32CubeProgrammer"
+ota_bin="$ota_bin/STM32CubeProgrammer.app"
+ota_bin="$ota_bin/Contents/Resources/bin"
+export PATH="$ota_bin:$PATH"
+```
+
+The pinned `stlink_gdbserver` runner discovers CubeCLT installations under `/opt/ST/` on
 macOS, `/opt/st/` on Linux, and `C:\ST\` on Windows. Installing only the
 standalone programmer does not supply this GDB server.
 
@@ -103,6 +109,7 @@ Use the existing standalone USB workflow with this build. The timing profile
 continues to add `-- -DEXTRA_CONF_FILE=debug.conf` in its separate
 `app/build-timing` directory. These builds omit the `ota` command and MCUboot.
 
+(ota-build)=
 ### Explicit MCUboot/OTA build
 
 ```bash
@@ -135,65 +142,78 @@ and its matching ELF before testing another image.
 
 ## USB provisioning and local development
 
-### Flash layout
+### First-time provisioning on macOS
 
-The Nucleo STM32H563 layout is shared by the application and MCUboot:
+Use this once for fresh bring-up. **It erases all existing firmware and saved
+configuration**, installs MCUboot and a confirmed application, then boots with
+the defaults compiled into that application.
 
-| Area | Inclusive addresses | Size |
-|---|---|---|
-| MCUboot | `0x08000000`–`0x0800ffff` | 64 KiB |
-| Primary application | `0x08010000`–`0x080fffff` | 960 KiB |
-| Secondary application | `0x08100000`–`0x081effff` | 960 KiB |
-| Settings/NVS | `0x081f0000`–`0x081fffff` | 64 KiB |
+1. Connect one Nucleo board to the Mac with a USB data cable at **CN1, the
+   ST-LINK USB-C connector**. Stop any CLion debug session and close the
+   STM32CubeProgrammer GUI so the command-line tool can use ST-Link.
+2. Complete the [tool setup](#install-and-check-the-tools), then run the
+   [MCUboot/OTA build command](#ota-build). Wait for the build
+   to succeed. Keep the terminal in the parent Zephyr workspace.
+3. Paste this entire block into that terminal:
 
-```{mermaid}
-flowchart TD
-  Reset[Reset] --> Boot[MCUboot: 64 KiB at 0x08000000]
-  Boot --> Primary[Primary application: 960 KiB at 0x08010000]
-  Secondary[Secondary candidate or rollback image: 960 KiB at 0x08100000] <-->|offset swap / revert| Primary
-  Primary --> NVS[Settings and calibration: 64 KiB at 0x081f0000]
-```
+   ```bash
+   ota_build="hispec-tib/app/build-ota"
+   ota_boot="$ota_build/mcuboot/zephyr/zephyr.hex"
+   ota_app="$ota_build/app/zephyr/zephyr.signed.confirmed.hex"
 
-MCUboot's overlay uses HSI clocks and the same PB2 bank-off GPIO hog as the app.
-Its 30-second watchdog stays running across chainload; the application takes
-it over with a 15-second timeout. Detailed ownership is in
-[architecture](architecture.md#boot-sequence) and [the C integration contract](api/ota.md).
+   if test -f "$ota_boot" && test -f "$ota_app"; then
+     STM32_Programmer_CLI -c port=SWD mode=UR -e all &&
+     STM32_Programmer_CLI -c port=SWD mode=UR \
+       -w "$ota_boot" -v &&
+     STM32_Programmer_CLI -c port=SWD mode=UR \
+       -w "$ota_app" -v &&
+     STM32_Programmer_CLI -c port=SWD mode=UR -rst
+   else
+     echo "Build the MCUboot/OTA images before provisioning."
+   fi
+   ```
 
-### First-time provisioning or recovery
+   The block checks that both files exist before erasing. It connects under
+   reset, erases the device, writes and verifies each image, then resets to run
+   the application. Each command runs only if the preceding command succeeded.
+   Both downloads must report successful verification. If a command fails,
+   fix the reported error and rerun the block.
+4. Find the board's serial console:
 
-This is a bench procedure with experiments stopped and TIB bank power off.
-Use the ST-Link USB connector and STM32CubeProgrammer:
+   ```bash
+   ls /dev/cu.usbmodem*
+   ```
 
-1. Record the board identity, network settings and calibration information.
-   Connect under reset and halt the target. If preserving its current contents,
-   save a backup of the 64 KiB NVS region beginning at `0x081f0000`.
-2. Selectively erase the bootloader and both application areas:
-   `0x08000000` through `0x081effff`. This clears stale secondary images and
-   swap trailers. Leave NVS untouched; do not select mass erase.
-3. Program and verify `mcuboot/zephyr/zephyr.hex`, then
-   `app/zephyr/zephyr.signed.confirmed.hex` from the same sysbuild, before allowing
-   the application to run. The initial application must be confirmed.
-4. Reset/run, then query `ota` over serial or the Python helper. Require
-   `confirmed:true`, `enabled:false`, `active:false`, and `pending:false`.
-   Record `image_hash`, verify board/network readiness, and retain the artifacts.
+   Open it with macOS's built-in `screen`, replacing the example port below
+   with the path printed by `ls`:
 
-Use the integrated **schema-14** firmware for the baseline. Preserving NVS during
-programming preserves bytes, not necessarily their interpretation: application
-startup clears storage when its schema differs. The original unmerged OTA branch
-uses schema 13. Do not use that old image as a baseline for retaining current
-calibration, and verify schema compatibility before any downgrade or rollback.
-See [settings persistence](settings.md).
+   ```bash
+   screen -fn /dev/cu.usbmodemXXXX 115200
+   ```
 
-An ordinary sysbuild `west flash` selects both domains and their configured
-artifacts, but does not replace the initial selective-erase and NVS-preservation
-procedure above.
+   This uses 115200 baud with flow control off. Press Return, then type:
+
+   ```text
+   ota
+   ```
+
+5. Check the reply for `confirmed:true`, `enabled:false`, `active:false`, and
+   `pending:false`. These mean the installed application is confirmed and no
+   update is in progress. Record its `image_hash` with the build artifacts.
+   To leave `screen`, press **Ctrl-A**, then **K**, then **Y**.
+
+After bring-up, use the USB reflash or network update procedure below. Both
+preserve saved settings and calibration. A deliberate settings-schema change
+resets configuration to compiled defaults and must be documented with that
+firmware release; reconfiguration is then the user's responsibility. See
+[settings persistence](settings.md).
 
 ### Reflash a provisioned board through USB
 
 Once MCUboot and a clean confirmed baseline are installed, normal local edits
 can be built and flashed directly as a confirmed application. Stop experiments
-first. Start with no pending test image; if the board has unfinished swap/trial
-state or cannot boot, use the provisioning/recovery procedure to clear it.
+first. Start with no pending test image; allow an unfinished OTA trial to confirm
+or revert before reflashing.
 
 ```bash
 ./.venv/bin/west flash \
@@ -221,6 +241,31 @@ an automatic raw-ELF download; the existing standalone configurations need no
 change. A raw ELF download does not create MCUboot's header/hash/trailer and can
 invalidate an otherwise packaged image. Confirm this flash/attach/reset workflow
 on the bench before replacing the default CLion flow.
+
+### Flash layout
+
+The Nucleo STM32H563 layout is shared by the application and MCUboot. This is
+implementation reference; the programming commands select the image addresses.
+
+| Area | Inclusive addresses | Size |
+|---|---|---|
+| MCUboot | `0x08000000`–`0x0800ffff` | 64 KiB |
+| Primary application | `0x08010000`–`0x080fffff` | 960 KiB |
+| Secondary application | `0x08100000`–`0x081effff` | 960 KiB |
+| Settings/NVS | `0x081f0000`–`0x081fffff` | 64 KiB |
+
+```{mermaid}
+flowchart TD
+  Reset[Reset] --> Boot[MCUboot: 64 KiB at 0x08000000]
+  Boot --> Primary[Primary application: 960 KiB at 0x08010000]
+  Secondary[Secondary candidate or rollback image: 960 KiB at 0x08100000] <-->|offset swap / revert| Primary
+  Primary --> NVS[Settings and calibration: 64 KiB at 0x081f0000]
+```
+
+MCUboot's overlay uses HSI clocks and the same PB2 bank-off GPIO hog as the app.
+Its 30-second watchdog stays running across chainload; the application takes
+it over with a 15-second timeout. Detailed ownership is in
+[architecture](architecture.md#boot-sequence) and [the C integration contract](api/ota.md).
 
 ## Network update with the helper
 
@@ -360,7 +405,7 @@ The confirmation flag write and expiry decision share the OTA mutex.
 | Helper failed after requesting a test boot | Query `ota`; a pending candidate remains pending. Ordinary `reboot` starts its trial |
 | Host times out after reboot | Success was not verified. Inspect the running hash/confirmation state; timeout does not prove rollback has already completed |
 | Wrong image hash or board failure after reboot | Helper refuses confirmation. Leave the trial unconfirmed and inspect the later baseline boot |
-| Board cannot recover over the network | Use ST-Link and the confirmed-baseline provisioning procedure, preserving NVS as appropriate |
+| Board cannot recover over the network | Use ST-Link for a [USB application reflash](#reflash-a-provisioned-board-through-usb). If full reinitialization is needed, [first-time provisioning](#first-time-provisioning-on-macos) erases configuration and restores compiled defaults |
 
 Image-state replies report the stored hash TLV, not a fresh hash of flash.
 The helper verifies the local file and MCUboot hashes the candidate body before

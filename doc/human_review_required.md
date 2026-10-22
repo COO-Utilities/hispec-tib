@@ -10,7 +10,7 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ## PCB Validation
 - [ ] Validate the integrated OTA flow before making MCUboot the only build:
-  provision a confirmed schema-14 baseline while preserving NVS; exercise USB
+  provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
   and maximum-size network updates, exact-hash confirmation and rollback.
   Exercise all board profiles, command admission, pending-slot protection,
