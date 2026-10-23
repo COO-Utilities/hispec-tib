@@ -34,9 +34,18 @@ nine logarithmic overdrive points, five points from zero through the seed thresh
 0.1 mA quantization and deduplication it contains at most 24 currents including zero.
 
 Initial ranging uses at most 16 probes; each of at most five subsequent ranges
-uses four. A usable primary mean is 65–115% of `pd_target_mv`, or lower at zero
-attenuation, with peak below 1850 mV. A primary block ends when the mean falls below
-target/6. Its companion attenuation is +6.02 dB (one quarter signal); the upper
+uses four. The preferred primary mean is 65–115% of `pd_target_mv`, with peak
+below 1850 mV. Those are ranging preferences, not measurement-validity limits.
+When the probe budget is exhausted or the next attenuation move is negligible,
+use the valid probe closest to the target, restoring its exact DAC pair if needed.
+Validity uses the normal recorded classification: peak below 2000 mV and mean
+above five times its standard error. Thus a 1931 mV peak or a much lower signal
+can be usable. Fresh early/late windows follow; probes themselves do not enter
+the fit. Ranging fails only when no valid probe was found, except at zero
+attenuation where dim observations are retained and acquisition continues.
+
+A primary block ends when the mean falls below target/6. Its companion attenuation
+is +6.02 dB (one quarter signal); the upper
 middle setting is +2.22 dB (0.6 signal). The next range begins at the old boundary
 but resumes acquisition at the next grid current. At the optical floor, acquisition
 continues through all remaining currents. A condition without usable signal is

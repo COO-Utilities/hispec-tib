@@ -1341,6 +1341,29 @@ static int retain_window(const struct photodiode_window_result *window)
 	return r->good == 0 ? CAL_NO_SAMPLES : 0;
 }
 
+/* Restore the exact DAC pair of a retained observation at the same or lower
+ * current. Ranging fallback and boundary revisits must not substitute a newly
+ * solved allocation. Caller holds calibration_lock; this blocks on DAC I/O. */
+static int restore_recorded_attenuation(const struct laser_cal_record *r)
+{
+	struct attenuator_target target[2];
+	for (unsigned j = 0; j < 2; ++j) {
+		target[j] = (struct attenuator_target){
+			.value = (double)r->dac_code[j] * (double)meta.dac_full_scale_mv[j] / 4096.0,
+			.voltage_mv = true,
+			.update = true,
+		};
+	}
+	if (!attenuator_set_pair(&attenuators[run.attenuator], target)) {
+		return CAL_ATTEN_WRITE;
+	}
+
+	struct attenuator a;
+	attenuator_snapshot(&attenuators[run.attenuator], &a);
+	run.atten_db = a.attenuation_db;
+	return 0;
+}
+
 /* Bracket a usable PD range without using a clipped mean. Each attenuator
  * change creates a new fixed-gain segment only once a usable setting is found.
  * Called under calibration_lock; initializes search state and sleeps to start
@@ -1357,65 +1380,88 @@ static int start_search(unsigned limit)
 	return begin_window(EVENT_PROBE);
 }
 
-/* Use the completed probe to accept a gain segment or select the next DAC pair.
- * Caller holds calibration_lock; DAC I/O and the next window's settling delay
- * can block. Search limits and minimum movement keep ranging bounded. */
+/* Seek the preferred PD level, then fall back to an actually usable probe.
+ * Headroom and target proximity guide ranging; only the retained classification
+ * determines measurement validity. Exhausted probes or a quantized no-op do not
+ * discard usable evidence. Caller holds calibration_lock; actuator/window I/O
+ * can block. Fresh early/late windows, not ranging probes, supply the fit. */
 static int search_step(const struct photodiode_window_result *w)
 {
 	++run.search_tries;
 	double signal = w->mean_net_mv;
-	bool safe = w->max_mv < PEAK_TARGET_MV;
-	bool near_target = signal >= 0.65 * meta.pd_target_mv && signal <= 1.15 * meta.pd_target_mv;
-	bool usable = safe && (near_target || (signal < meta.pd_target_mv && run.atten_db < 0.05));
+	const struct laser_cal_record *latest = &data.records[result.records - 1U];
+	bool headroom = w->max_mv < PEAK_TARGET_MV;
+	bool preferred = (latest->flags & 3U) == POINT_OK && headroom && signal >= 0.65 * meta.pd_target_mv &&
+		signal <= 1.15 * meta.pd_target_mv;
+	/* Zero attenuation can expose the optical floor. Retain that evidence and
+	 * continue downward even if it is too dim to support a fit. */
+	bool at_floor = run.atten_db < 0.05 && (latest->flags & 3U) != POINT_SATURATED;
 
-	/* Accept a lower signal at zero attenuation or after exhausting probes,
-	 * but never promote a window whose peaks exceed the ranging headroom. */
-	if (usable || (run.search_tries >= run.search_limit && safe &&
-		      signal >= meta.pd_target_mv / 6.0 && signal <= 1.15 * meta.pd_target_mv)) {
-		run.searching = false;
-		if (result.output_index) {
-			return set_current(meta.ref_ma, EVENT_REFERENCE);
+	if (!preferred && !at_floor && run.search_tries < run.search_limit) {
+		if (headroom && signal < meta.pd_target_mv) {
+			run.search_high_db = run.atten_db;
+		} else {
+			run.search_low_db = run.atten_db;
 		}
-		if (run.ranged) {
-			++run.grid_index; /* The old boundary already has two PD levels. */
+
+		/* Above preferred headroom, bisect toward more attenuation. Near the
+		 * noise floor, avoid a logarithm of an unreliable signal. */
+		double next;
+		if (!headroom) {
+			next = 0.5 * (run.atten_db + run.search_high_db);
+		} else if (signal <= 5.0 * fmax(w->rms_mv, sqrt(Q_VARIANCE))) {
+			next = run.atten_db - 10.0;
+		} else {
+			next = run.atten_db - 10.0 * log10(meta.pd_target_mv / signal);
 		}
-		run.ranged = true;
-		run.stage = STAGE_SWEEP;
-		run.segment_start = run.grid_index;
-		run.primary_record = result.records;
-		run.primary_db = run.atten_db;
-		++run.primary_count;
-		double ma = data.grid[run.grid_index] / 10.0;
-		return set_current(ma, fabs(ma - meta.ref_ma) < 0.05 ? EVENT_REFERENCE : EVENT_SWEEP);
-	}
-	if (run.search_tries >= run.search_limit) {
-		return CAL_PD_RANGE;
+		next = CLAMP(next, run.search_low_db, run.search_high_db);
+		if (fabs(next - run.atten_db) >= 0.02) {
+			int rc = set_attenuation(next);
+			return rc == 0 ? begin_window(EVENT_PROBE) : rc;
+		}
 	}
 
-	if (safe && signal < meta.pd_target_mv) {
-		run.search_high_db = run.atten_db;
-	} else {
-		run.search_low_db = run.atten_db;
+	if (!preferred && !at_floor) {
+		/* Probe records already contain classification and exact DAC codes, so
+		 * fallback needs no separate buffer or extra acquisition attempt. A
+		 * valid observation remains usable even when it misses the requested
+		 * level or the preferred 1850-mV peak headroom. */
+		const struct laser_cal_record *best = NULL;
+		double distance = DBL_MAX;
+		for (unsigned i = result.records - run.search_tries; i < result.records; ++i) {
+			const struct laser_cal_record *probe = &data.records[i];
+			double difference = fabs((double)probe->net_mv - meta.pd_target_mv);
+			if ((probe->flags & 3U) == POINT_OK && difference < distance) {
+				best = probe;
+				distance = difference;
+			}
+		}
+		if (best == NULL) {
+			return CAL_PD_RANGE;
+		}
+		if (best != latest) {
+			int rc = restore_recorded_attenuation(best);
+			if (rc != 0) {
+				return rc;
+			}
+		}
 	}
 
-	/* A clipped mean cannot predict the needed attenuation, so bisect that
-	 * bracket. Near the noise floor, use a bounded 10-dB reduction instead of
-	 * a logarithm of an unreliable signal. Otherwise aim directly at meta.pd_target_mv. */
-	double next;
-	if (!safe) {
-		next = 0.5 * (run.atten_db + run.search_high_db);
-	} else if (signal <= 5.0 * fmax(w->rms_mv, sqrt(Q_VARIANCE))) {
-		next = run.atten_db - 10.0;
-	} else {
-		next = run.atten_db - 10.0 * log10(meta.pd_target_mv / signal);
+	run.searching = false;
+	if (result.output_index) {
+		return set_current(meta.ref_ma, EVENT_REFERENCE);
 	}
-	next = CLAMP(next, run.search_low_db, run.search_high_db);
-	if (fabs(next - run.atten_db) < 0.02) {
-		return CAL_PD_RANGE;
+	if (run.ranged) {
+		++run.grid_index; /* The old boundary already has two PD levels. */
 	}
-
-	int rc = set_attenuation(next);
-	return rc == 0 ? begin_window(EVENT_PROBE) : rc;
+	run.ranged = true;
+	run.stage = STAGE_SWEEP;
+	run.segment_start = run.grid_index;
+	run.primary_record = result.records;
+	run.primary_db = run.atten_db;
+	++run.primary_count;
+	double ma = data.grid[run.grid_index] / 10.0;
+	return set_current(ma, fabs(ma - meta.ref_ma) < 0.05 ? EVENT_REFERENCE : EVENT_SWEEP);
 }
 
 /* Advance to the next quantized mA setpoint, ending with a zero-current dark
@@ -1848,26 +1894,6 @@ static int apply_results(bool core, bool loss, bool noise, bool persist,
 	return first_error;
 }
 
-/* Restore an identical physical DAC pair, not a re-solved attenuation target.
- * Caller lowers current first; this may increase transmission. Blocks on DAC I/O. */
-static int restore_primary(void)
-{
-	const struct laser_cal_record *r = &data.records[run.primary_record];
-	struct attenuator_target target[2];
-	for (unsigned j = 0; j < 2; ++j) {
-		target[j] = (struct attenuator_target){
-			.value = (double)r->dac_code[j] * (double)meta.dac_full_scale_mv[j] / 4096.0,
-			.voltage_mv = true,
-			.update = true,
-		};
-	}
-	if (!attenuator_set_pair(&attenuators[run.attenuator], target)) {
-		return CAL_ATTEN_WRITE;
-	}
-	run.atten_db = run.primary_db;
-	return 0;
-}
-
 /* Every positive grid current receives a high- and low-signal condition at
  * fixed DAC settings. Reverse the low sweep to separate current direction from
  * PD level, then revisit the exact primary boundary condition. No fitted gain
@@ -1937,7 +1963,7 @@ static int advance_window(const struct photodiode_window_result *w)
 		{
 			int rc = set_current(data.grid[run.grid_index] / 10.0, EVENT_REVISIT);
 			if (rc == 0) {
-				rc = restore_primary();
+				rc = restore_recorded_attenuation(&data.records[run.primary_record]);
 			}
 			return rc == 0 ? set_current(result.current_ma, EVENT_REVISIT) : rc;
 		}

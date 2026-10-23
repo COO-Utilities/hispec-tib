@@ -1319,6 +1319,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   Each current receives high/low PD conditions (plus a middle level in the upper
   block), with one early and two late windows per condition. Only late windows fit. Residual tolerance is strictly
   between 0 and 100 percent; PD target is strictly between 0 and 1850 mV.
+  The target and preferred peak headroom guide ranging; usable probes outside
+  those preferences are retained as fallback when ranging exhausts its budget.
   Loss estimation requires `determine_static_loss:true` plus explicit nonnegative
   `loopback_loss_db` for **external** cable/attenuators, excluding the configured
   PD return. `other_output:true` requires loss estimation.
@@ -1345,6 +1347,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `"unexpected error (EIO)"`. The last form uses the actual errno name only when
   no more specific explanation is available. Numerical rejection retains data
   and does not turn completed acquisition into acquisition failure.
+  If acquisition fails before fitting, `error` explains the failure while
+  `fit.valid:false`, `fit.n:0`, and `fit.error:null` mean the fit never ran.
   Restore reports `laser_applied`, `route_applied`, `laser_persisted`,
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
