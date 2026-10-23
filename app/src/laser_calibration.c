@@ -4,8 +4,9 @@
  * Same-current overlaps normalize fixed-attenuation segments after subtracting
  * this run's zero-current baseline. The measured vendor reference fixes power
  * scale without assuming linearity there. A reference-anchored quadratic uses
- * the shared 2x2 solver; threshold is its zero and efficiency is the average
- * slope from threshold to reference. The validated operating floor excludes the
+ * the shared 2x2 solver; threshold is its zero and efficiency is the uncorrected
+ * straight-line fit's slope. A derived curve reference preserves both meanings
+ * without adding a fitted degree of freedom. The operating floor excludes the
  * knee. This empirical shape cannot distinguish diode curvature from PD error.
  * The reference also measures launch+return loss; configured return and external
  * loopback losses are subtracted once to update the selected launch route.
@@ -56,7 +57,7 @@ LOG_MODULE_REGISTER(laser_calibration, LOG_LEVEL_INF);
 #define OTHER_RECORDS 24U
 #define WIRE_RECORD_SIZE 24U
 #define WIRE_CHUNK_RECORDS (COO_CMD_PAYLOAD_MAX / WIRE_RECORD_SIZE)
-#define WIRE_METADATA_SIZE 432U
+#define WIRE_METADATA_SIZE 428U
 
 /* Internal reasons preserve the originating guard instead of guessing a cause
  * from ERANGE/EIO in command glue. Only strings leave the calibration API. */
@@ -80,7 +81,6 @@ enum calibration_error {
 	CAL_NOISE_FIT_FAILED,
 	CAL_LOSS_FIT_FAILED,
 	CAL_ATTEN_RANGE,
-	CAL_STALE_RUN,
 	CAL_NOT_ACCEPTED,
 	CAL_CORE_NOT_APPLIED,
 	CAL_LOSS_NOT_ACCEPTED,
@@ -120,7 +120,6 @@ const char *laser_calibration_error_message(int error)
 	case CAL_NOISE_FIT_FAILED: return "noise fit failed";
 	case CAL_LOSS_FIT_FAILED: return "static loss fit failed";
 	case CAL_ATTEN_RANGE: return "reference outside calibrated attenuation";
-	case CAL_STALE_RUN: return "calibration run was replaced";
 	case CAL_NOT_ACCEPTED: return "core fit not accepted";
 	case CAL_CORE_NOT_APPLIED: return "core fit not applied";
 	case CAL_LOSS_NOT_ACCEPTED: return "requested route loss not accepted";
@@ -464,21 +463,29 @@ static int fit_interval(double low, double high, bool quadratic,
 		c[1] /= s1;
 	}
 
-	/* Solve for the increasing branch's zero using a rationalized root.
-	 * Store average efficiency through the reference, never the tangent at
-	 * threshold. Round q to its actual settings precision before scoring. */
-	double q = 2.0 * c[1] / (scale * scale);
-	double slope_ref = (c[0] + 4.0 * c[1] * z_ref) / scale;
+	/* Preserve the uncorrected anchored line's slope on this same support.
+	 * For d=I-ref_ma, M=sum(w*d^3)/sum(w*d^2) comes from the normal matrix:
+	 * T2(z)-T2(z_ref)=4*z_ref*(z-z_ref)+2*(z-z_ref)^2.
+	 * The quadratic's reference slope is eta-q*M. Round q before deriving
+	 * the zero/reference, so the actual stored curve still hits the anchor. */
+	fit->efficiency_mw_per_ma = g0 / h00 / scale;
+	fit->efficiency_mw_per_ma2 = (float)(2.0 * c[1] / (scale * scale));
+	double q = fit->efficiency_mw_per_ma2;
+	double moment = scale * (0.5 * h01 / h00 - 2.0 * z_ref);
+	double slope_ref = fit->efficiency_mw_per_ma - q * moment;
 	double discriminant = slope_ref * slope_ref - 4.0 * q * meta.ref_mw;
 	if (!(discriminant > 0.0) || !(slope_ref > 0.0)) {
 		return CAL_NONMONOTONIC;
 	}
-	double x_ref = 2.0 * meta.ref_mw / (slope_ref + sqrt(discriminant));
-	fit->threshold_ma = meta.ref_ma - x_ref;
-	fit->efficiency_mw_per_ma = meta.ref_mw / x_ref;
-	fit->quadratic_correction_mw_per_ma2 = (float)q;
+	/* Rationalized root avoids cancellation near the linear limit. The curve
+	 * reference is a coordinate, not a hardware setpoint; it may exceed max.
+	 * This derivation never divides by q or makes the reference another fit. */
+	double reference_overdrive = 2.0 * meta.ref_mw / (slope_ref + sqrt(discriminant));
+	fit->threshold_ma = meta.ref_ma - reference_overdrive;
+	fit->efficiency_ref_ma = q == 0.0 ? meta.ref_ma :
+		2.0 * meta.ref_ma - fit->threshold_ma + moment;
 	fit->valid = isfinite(fit->threshold_ma) && isfinite(fit->efficiency_mw_per_ma) &&
-		isfinite(fit->quadratic_correction_mw_per_ma2);
+		isfinite(fit->efficiency_mw_per_ma2) && isfinite(fit->efficiency_ref_ma);
 	if (!fit->valid) {
 		return CAL_FIT_FAILED;
 	}
@@ -493,7 +500,7 @@ static int fit_interval(double low, double high, bool quadratic,
 		j0 * j0 / h00;
 	fit->threshold_se_ma = sqrt(fmax(0.0, variance));
 
-	q = fit->quadratic_correction_mw_per_ma2;
+	double x_ref = fit->efficiency_ref_ma - fit->threshold_ma;
 	double slope_zero = fit->efficiency_mw_per_ma - q * x_ref;
 	double slope_high = slope_zero + 2.0 * q * (high - fit->threshold_ma);
 	bool physical = fit->threshold_ma >= 0.0 && low >= fit->threshold_ma + 0.1 - 1e-7 &&
@@ -591,9 +598,9 @@ static int fit_noise(void)
 			const struct laser_cal_record *r = &data.records[i];
 			double gain = work.gain[r->segment];
 			double x = current_of(r) - result.fit.threshold_ma;
-			double x_ref = meta.ref_ma - result.fit.threshold_ma;
+			double x_ref = result.fit.efficiency_ref_ma - result.fit.threshold_ma;
 			double mu = gain * x * (result.fit.efficiency_mw_per_ma +
-				(double)result.fit.quadratic_correction_mw_per_ma2 * (x - x_ref));
+				(double)result.fit.efficiency_mw_per_ma2 * (x - x_ref));
 			double x0 = gain * gain;
 			double x1 = mu * mu;
 			double y = reading_variance(r) - work.dark_variance;
@@ -722,9 +729,9 @@ static int fit_laser(void)
 						better = span > best_span;
 					} else if (fabs(low - result.fit.floor_ma) > 1e-7) {
 						better = low < result.fit.floor_ma;
-					} else if ((candidate.quadratic_correction_mw_per_ma2 == 0.0f) !=
-						   (result.fit.quadratic_correction_mw_per_ma2 == 0.0f) && candidate.accepted) {
-						better = candidate.quadratic_correction_mw_per_ma2 == 0.0f;
+					} else if ((candidate.efficiency_mw_per_ma2 == 0.0f) !=
+						   (result.fit.efficiency_mw_per_ma2 == 0.0f) && candidate.accepted) {
+						better = candidate.efficiency_mw_per_ma2 == 0.0f;
 					} else {
 						better = candidate.rms_fraction < result.fit.rms_fraction;
 					}
@@ -1362,8 +1369,6 @@ int laser_calibration_start(const struct laser_calibration_request *request,
 	atomic_set(&calibration_data_kind, CALIBRATION_DATA_LASER);
 	atomic_clear(&fit_cancel);
 
-	meta.run_id = ++calibration_run_id;
-	result.run_id = meta.run_id;
 	meta.started_ms = (uint64_t)k_uptime_get();
 	meta.laser = request->laser;
 	meta.channel = channel;
@@ -1539,16 +1544,10 @@ static int apply_results(bool core, bool loss, bool noise, bool persist,
 		}
 		settings.properties.threshold_current_ma = f->threshold_ma;
 		settings.properties.efficiency_mw_per_ma = f->efficiency_mw_per_ma;
-		settings.properties.quadratic_correction_mw_per_ma2 = f->quadratic_correction_mw_per_ma2;
+		settings.properties.efficiency_mw_per_ma2 = f->efficiency_mw_per_ma2;
+		settings.properties.efficiency_ref_ma = f->efficiency_ref_ma;
 		settings.properties.max_current_ma = f->max_ma;
 		settings.min_autolevel_current_ma = f->floor_ma;
-		/* The fitted correction refers to this frozen anchor. A later user
-		 * edit must not silently change the meaning of a retained candidate. */
-		if (settings.properties.ref_ma != meta.ref_ma || settings.properties.ref_mw != meta.ref_mw ||
-		    settings.properties.ref_temp_c != meta.ref_temp_c || settings.current_cal_pct != meta.current_cal_pct) {
-			f->apply_error = CAL_STALE_RUN;
-			return f->apply_error;
-		}
 		if (noise) {
 			settings.constant_noise_mw = f->constant_noise_mw;
 			settings.fractional_noise = f->fractional_noise;
@@ -1559,8 +1558,8 @@ static int apply_results(bool core, bool loss, bool noise, bool persist,
 		}
 	}
 
-	/* A reviewed apply may follow unrelated streaming. Stop it only after
-	 * candidate validation; a bad run ID or rejected fit has no hardware effect. */
+	/* Validate before relinquishing any stream or changing the active model.
+	 * This path belongs to automatic calibration; manual imports use settings. */
 	int first_error = throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, NULL);
 	if (first_error != 0) {
 		f->apply_error = first_error;
@@ -1606,26 +1605,6 @@ static int apply_results(bool core, bool loss, bool noise, bool persist,
 		}
 	}
 	return first_error;
-}
-
-/** Apply the retained candidate after human review, using the same domain path
- * as automatic field application. Serializes against dataset replacement;
- * never resumes acquisition. May block on shutdown, driver settings and NVS. */
-int laser_calibration_apply(uint32_t run_id, bool update_loss, bool update_noise,
-			    bool persist, struct laser_calibration_status *status)
-{
-	k_mutex_lock(&calibration_lock, K_FOREVER);
-	int rc;
-	if (atomic_get(&calibration_data_kind) != CALIBRATION_DATA_LASER || meta.run_id != run_id) {
-		rc = CAL_STALE_RUN;
-	} else if (run.phase != PHASE_IDLE || result.shutdown_pending) {
-		rc = -EBUSY;
-	} else {
-		rc = apply_results(true, update_loss, update_noise, persist, 0, result.output_index + 1U);
-		publish_status(status, true);
-	}
-	k_mutex_unlock(&calibration_lock);
-	return rc;
 }
 
 /* Reuse the floor observation's exact DAC setting and segment. At most eight
@@ -1969,9 +1948,10 @@ int laser_calibration_restore_defaults(enum hispec_laser_id laser, const char *o
 	out->laser_error = hispec_laser_get_channel_settings(laser, &s);
 	if (out->laser_error == 0) {
 		s.properties.max_current_ma = p->max_current_ma;
-		s.properties.quadratic_correction_mw_per_ma2 = 0.0f;
+		s.properties.efficiency_mw_per_ma2 = 0.0f;
 		s.properties.threshold_current_ma = p->threshold_current_ma;
 		s.properties.efficiency_mw_per_ma = p->efficiency_mw_per_ma;
+		s.properties.efficiency_ref_ma = p->efficiency_ref_ma;
 		s.properties.ref_mw = p->ref_mw;
 		s.properties.ref_ma = p->ref_ma;
 		s.properties.ref_temp_c = p->ref_temp_c;
@@ -2051,10 +2031,10 @@ int laser_calibration_format_status(char *payload, size_t size,
 	} \
 } while (0)
 
-	APPEND("{\"state\":\"%s\",\"run_id\":%u,\"laser\":\"%s\",\"output\":\"%s_%s\","
+	APPEND("{\"state\":\"%s\",\"laser\":\"%s\",\"output\":\"%s_%s\","
 		"\"records\":%u,\"dwell_ms\":%u,\"current_ma\":%.1f,"
 		"\"acquisition_complete\":%s,\"overflow\":%s,\"shutdown_pending\":%s",
-		states[s->state], s->run_id, hispec_laser_name(s->laser),
+		states[s->state], hispec_laser_name(s->laser),
 		s->laser <= HISPEC_LASER_1430_YJ ? "yj" : "hk",
 		(s->first_fei ^ (s->output_index != 0)) ? "fei" : "ao", s->records, s->dwell_ms,
 		(double)s->current_ma, BOOL(s->acquisition_complete), BOOL(s->overflow), BOOL(s->shutdown_pending));
@@ -2067,7 +2047,8 @@ int laser_calibration_format_status(char *payload, size_t size,
 	ERROR("persist_error", f->persist_error);
 	NUMBER("threshold_ma", f->threshold_ma, f->valid);
 	NUMBER("efficiency_mw_per_ma", f->efficiency_mw_per_ma, f->valid);
-	NUMBER("quadratic_correction_mw_per_ma2", f->quadratic_correction_mw_per_ma2, f->valid);
+	NUMBER("efficiency_mw_per_ma2", f->efficiency_mw_per_ma2, f->valid);
+	NUMBER("efficiency_ref_ma", f->efficiency_ref_ma, f->valid);
 	NUMBER("floor_ma", f->floor_ma, f->points > 0);
 	NUMBER("max_ma", f->max_ma, f->points > 0);
 	NUMBER("baseline_mv", f->baseline_mv, f->points > 0);
@@ -2145,7 +2126,7 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 		/* Bytes 0..15: format identity and one-byte selectors/counts.
 		 * Byte 15 remains reserved/zero. Field order matches the host decoder. */
 		memcpy(bytes, "HLC1", 4);
-		bytes[4] = 2;
+		bytes[4] = 3;
 		bytes[5] = result.state;
 		bytes[6] = meta.laser;
 		bytes[7] = meta.channel;
@@ -2157,12 +2138,11 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 		bytes[13] = WIRE_CHUNK_RECORDS;
 		bytes[14] = run.segments;
 
-		/* Bytes 16..31: run identity and acquisition timing (uptime, not UTC). */
-		sys_put_le32(meta.run_id, bytes + 16);
-		sys_put_le32(meta.dwell_ms, bytes + 20);
-		sys_put_le64(meta.started_ms, bytes + 24);
+		/* Bytes 16..27: acquisition timing (uptime, not UTC). */
+		sys_put_le32(meta.dwell_ms, bytes + 16);
+		sys_put_le64(meta.started_ms, bytes + 20);
 
-		/* Bytes 32..151: fifteen frozen optical/laser assumptions as doubles. */
+		/* Bytes 28..147: fifteen frozen optical/laser assumptions as doubles. */
 		const double values[] = {
 			meta.ref_mw,
 			meta.ref_ma,
@@ -2180,12 +2160,12 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 			meta.default_threshold_ma,
 			meta.default_efficiency_mw_per_ma,
 		};
-		size_t off = 32;
+		size_t off = 28;
 		for (unsigned i = 0; i < ARRAY_SIZE(values); ++i, off += 8) {
 			put_double(bytes + off, values[i]);
 		}
 
-		/* Bytes 152..175: DAC scale/limit pairs and observed temperature range. */
+		/* Bytes 148..171: DAC scale/limit pairs and observed temperature range. */
 		for (unsigned i = 0; i < 2; ++i, off += 4) {
 			put_float(bytes + off, meta.dac_full_scale_mv[i]);
 		}
@@ -2196,7 +2176,7 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 		put_float(bytes + off + 4, meta.temp_max_c);
 		off += 8;
 
-		/* Bytes 176..319: two FVOA snapshots, each six doubles then six floats. */
+		/* Bytes 172..315: two FVOA snapshots, each six doubles then six floats. */
 		for (unsigned i = 0; i < 2; ++i) {
 			const struct attenuator_model_coeffs *c = &meta.coeff[i];
 			const double coefficients[] = {
@@ -2214,7 +2194,7 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 				put_float(bytes + off, c->correction_coeff[j]);
 			}
 		}
-		/* Bytes 320..431: requested policy, measured normalization and the
+		/* Bytes 316..427: requested policy, measured normalization and the
 		 * exact 128-bit support mask. All numbers remain explicit LE values. */
 		put_double(bytes + off, meta.max_fit_residual_pct);
 		put_double(bytes + off + 8, meta.pd_target_mv);

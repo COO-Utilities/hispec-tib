@@ -33,7 +33,9 @@ Runtime ownership is:
   normalization, bounded linear/quadratic fitting, effective noise estimates and
   accepted-core-gated application. Laser scratch uses 1496 bytes within the existing
   3584-byte shared union; its 128 raw windows occupy 3072 bytes. The host can review
-  the exact 16-byte support mask in 432-byte metadata before explicitly applying.
+  the exact 16-byte support mask in 428-byte metadata, then install reviewed
+  coefficients through ordinary laser settings. Automatic application remains
+  the embedded default and requires no host review.
 - `calibration_fit.c`: the allocation-free two-parameter double solver shared
   by attenuator and laser fits. `calibration_storage.c` owns their shared static
   dataset, scratch, data mutex and best-effort telemetry buffer.

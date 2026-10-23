@@ -339,8 +339,10 @@ static int autolevel_adjust(struct throughput_state *state,
 					       next_ma >= source->laser_current_ma)) {
 			continue;
 		}
-		double percent = MIN(100.0, 100.0 * (next_ma - props->threshold_current_ma) /
-			(props->nominal_current_ma - props->threshold_current_ma));
+		/* The level API consumes emission fractions, including when the
+		 * autolevel floor or register grid changed the proposed current. */
+		double percent = MIN(100.0, 100.0 * hispec_laser_estimate_power_mw(props, next_ma) /
+			hispec_laser_estimate_power_mw(props, props->nominal_current_ma));
 		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false, NULL, 0);
 		if (rc != 0) {
 			return rc;
@@ -672,9 +674,11 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			goto failed;
 		}
 		const laserprops_t *props = &settings.properties;
-		double range_ma = props->nominal_current_ma - props->threshold_current_ma;
+		double nominal_power = hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+		/* Start at the requested emission fraction, then enforce autolevel's
+		 * independent current floor. Initial level zero therefore uses the floor. */
 		double initial_ma = hispec_laser_quantize_current_ma(
-			props->threshold_current_ma + range_ma * request->initial_level,
+			hispec_laser_current_for_power_mw(props, nominal_power * request->initial_level),
 			settings.min_autolevel_current_ma, props->nominal_current_ma);
 		stage = "initial attenuation";
 		rc = attenuator_set_db(&attenuators[attenuator_index],
@@ -682,7 +686,8 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		if (rc == 0) {
 			stage = "initial laser current";
 			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false, NULL, 0);
+				MIN(100.0, 100.0 * hispec_laser_estimate_power_mw(props, initial_ma) / nominal_power),
+				0U, false, NULL, 0);
 		}
 		if (rc != 0) {
 			goto failed;

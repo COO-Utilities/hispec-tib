@@ -7,7 +7,6 @@ union calibration_scratch calibration_scratch;
 K_MUTEX_DEFINE(calibration_lock);
 struct coo_cmd_response calibration_telemetry;
 atomic_t calibration_data_kind;
-uint32_t calibration_run_id;
 
 /* Keep the original attenuator RAM envelope. Laser wire encoding is explicit,
  * but its in-memory records must also remain 24 bytes to meet the point budget. */

@@ -53,7 +53,6 @@ enum hispec_laser_bank_power_mode {
 struct hispec_laser_driver_profile {
 	enum hispec_laser_id id;
 	const char *name;
-	const char *modbus_name;
 	uint8_t node_id;
 	uint16_t expected_device_id;
 	const laserprops_t *properties;
@@ -161,8 +160,8 @@ struct hispec_laser_channel_temperature {
 /**
  * @brief Parse a command/API laser name into a laser-bank channel.
  *
- * Accepts command names such as "1430yj" and validation-notebook names such
- * as "yj1430". Returns 0 on success or -EINVAL for an unknown name.
+ * Accepts canonical command names such as "1430yj", case-insensitively.
+ * Returns 0 on success or -EINVAL for an unknown name. No I/O or state changes.
  */
 int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out);
 
@@ -332,7 +331,9 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *error, size_t error_len);
 
-/** @brief Set output as 0-100 percent of nominal current above threshold. */
+/** Set 0-100 percent of modeled nominal emission, using the curve inverse.
+ * Zero requests zero current. May prepare the driver and block on Modbus;
+ * the existing current bounds and 0.1 mA register quantization still apply. */
 int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, char *error, size_t error_len);
 
 /**

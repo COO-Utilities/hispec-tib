@@ -133,12 +133,14 @@ struct app_nvs_laser_policy {
 	double tune_delta_nm;
 	uint16_t expected_serial;
 	uint16_t reserved2;
-	/* Previously zeroed trailing padding; preserve the 144-byte policy record. */
-	float quadratic_correction_mw_per_ma2;
+	float efficiency_mw_per_ma2;
+	/* The installed curve owns its reference independently of the vendor triplet. */
+	double efficiency_ref_ma;
 };
 
-BUILD_ASSERT(sizeof(struct app_nvs_laser_policy) == 144);
-BUILD_ASSERT(offsetof(struct app_nvs_laser_policy, quadratic_correction_mw_per_ma2) == 140);
+BUILD_ASSERT(sizeof(struct app_nvs_laser_policy) == 152);
+BUILD_ASSERT(offsetof(struct app_nvs_laser_policy, efficiency_mw_per_ma2) == 140);
+BUILD_ASSERT(offsetof(struct app_nvs_laser_policy, efficiency_ref_ma) == 144);
 
 static const laserprops_t *const default_laser_props[APP_LASER_CHANNEL_COUNT] = {
 	&LASER_1028,
@@ -536,7 +538,8 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->threshold_current_ma = laser->properties.threshold_current_ma;
 	stored->min_autolevel_current_ma = laser->min_autolevel_current_ma;
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
-	stored->quadratic_correction_mw_per_ma2 = laser->properties.quadratic_correction_mw_per_ma2;
+	stored->efficiency_mw_per_ma2 = laser->properties.efficiency_mw_per_ma2;
+	stored->efficiency_ref_ma = laser->properties.efficiency_ref_ma;
 	stored->wavelength_nm = laser->properties.wavelength_nm;
 	stored->current_cal_pct = laser->current_cal_pct;
 	stored->fractional_noise = laser->fractional_noise;
@@ -851,7 +854,8 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.threshold_current_ma = stored->threshold_current_ma;
 	laser->min_autolevel_current_ma = stored->min_autolevel_current_ma;
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
-	laser->properties.quadratic_correction_mw_per_ma2 = stored->quadratic_correction_mw_per_ma2;
+	laser->properties.efficiency_mw_per_ma2 = stored->efficiency_mw_per_ma2;
+	laser->properties.efficiency_ref_ma = stored->efficiency_ref_ma;
 	laser->properties.wavelength_nm = stored->wavelength_nm;
 	laser->current_cal_pct = stored->current_cal_pct;
 	laser->fractional_noise = stored->fractional_noise;
@@ -878,27 +882,30 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 		double total_emitting_s;
 		double ntc_coefficient;
 
-		/* The correction uses ref_ma. Load policy and reference together so
-		 * validation never combines a stored curve with the wrong anchor. */
-		laser = s->laser.channel[channel];
-		double reference[3];
-		bool have_policy = app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
-			sizeof(policy), "laser policy");
-		bool have_reference = app_nvs_read_exact(APP_NVS_ID_LASER_REF_CH0 + channel,
-			reference, sizeof(reference), "laser reference");
-		if (have_policy) {
+		/* A policy is a self-contained curve. An old-length or invalid record
+		 * keeps compiled policy defaults without discarding independent inputs. */
+		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
+				       sizeof(policy), "laser policy")) {
+			laser = s->laser.channel[channel];
 			app_nvs_apply_laser_policy(&laser, &policy);
-		}
-		if (have_reference) {
-			laser.properties.ref_mw = reference[0];
-			laser.properties.ref_ma = reference[1];
-			laser.properties.ref_temp_c = reference[2];
-		}
-		if (have_policy || have_reference) {
 			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
 				s->laser.channel[channel] = laser;
 			} else {
-				LOG_WRN("Ignoring invalid stored laser policy/reference channel %u", channel);
+				LOG_WRN("Ignoring invalid stored laser policy channel %u", channel);
+			}
+		}
+
+		double reference[3];
+		if (app_nvs_read_exact(APP_NVS_ID_LASER_REF_CH0 + channel, reference,
+				       sizeof(reference), "laser reference")) {
+			laser = s->laser.channel[channel];
+			laser.properties.ref_mw = reference[0];
+			laser.properties.ref_ma = reference[1];
+			laser.properties.ref_temp_c = reference[2];
+			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
+				s->laser.channel[channel] = laser;
+			} else {
+				LOG_WRN("Ignoring invalid stored laser reference channel %u", channel);
 			}
 		}
 

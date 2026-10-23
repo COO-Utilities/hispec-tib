@@ -2097,7 +2097,6 @@ int attenuator_calibration_start_auto(
 	memset(&cal, 0, sizeof(cal));
 	memset(&calibration_data, 0, sizeof(calibration_data));
 	atomic_set(&calibration_data_kind, CALIBRATION_DATA_ATTEN);
-	++calibration_run_id;
 	cal.state = ATTEN_CAL_STATE_RUNNING;
 	cal.mode = ATTEN_CAL_MODE_TIB_AUTO;
 	cal.attenuator_index = request->attenuator_index;

@@ -42,5 +42,5 @@ fields without transmitting C padding.
 ```{literalinclude} ../../app/src/calibration_storage.h
 :language: c
 :start-at: union calibration_data {
-:end-at: extern uint32_t calibration_run_id;
+:end-at: extern atomic_t calibration_data_kind;
 ```

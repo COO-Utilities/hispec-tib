@@ -952,7 +952,9 @@ these values feed the existing throughput and splitting calculations.
   }
   ```
 
-- **Notes:** `value` is a fraction from 0 to 1 of the nominal current range above threshold current. Setting a positive value powers
+- **Notes:** `value` is a fraction from 0 to 1 of modeled optical emission at nominal current.
+  Firmware uses the calibrated inverse to select current; reported `value` uses the
+  confirmed current and the same forward curve. Setting a positive value powers
   the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
   request when `tune_nm` is nonzero, sets the laser current, and restarts the
   auto-off timer. Setting value 0 writes zero current without STOP, retains driver/TEC
@@ -1088,7 +1090,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
       "efficiency_mw_per_ma": 0.0,
-      "quadratic_correction_mw_per_ma2": 0.0,
+      "efficiency_mw_per_ma2": 0.0,
+      "efficiency_ref_ma": 52.0,
       "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
       "wavelength_nm": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
@@ -1111,39 +1114,25 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     }
   }
   ```
-- **Payload:** update laser settings.
+- **Payload:** replace the complete power curve (example for a linear model).
   ```json
   {
-    "name": "<lasername>",
+    "name": "1270j",
     "settings": {
-      "nominal_current_ma": 0.0,
-      "expected_serial": 0,
-      "min_autolevel_current_ma": 0.0,
-      "max_current_ma": 0.0,
-      "efficiency_mw_per_ma": 0.0,
-      "quadratic_correction_mw_per_ma2": 0.0,
-      "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
-      "wavelength_nm": 0.0,
-      "current_cal_pct": 0.0,
-      "fractional_noise": 0.001,
-      "constant_noise_mw": 0.13505925,
-      "tec_curr_lim_a": 0.0,
-      "ntc_coeff_pct_per_c": -4.4,
-      "default_operating_temp_c": 0.0,
-      "operating_temp_range_c": [0.0, 0.0],
-      "tec_pid": {
-        "p": 0,
-        "i": 0,
-        "d": 0
-      },
-      "disable_tec_at_autooff": true,
-      "dlambda_dT_nm_per_k": 0.0,
-      "dlambda_dA_nm_per_ma": 0.0,
-      "autooff_s": 0
+      "threshold_current_ma": 13.0,
+      "efficiency_mw_per_ma": 0.26,
+      "efficiency_mw_per_ma2": 0.0,
+      "efficiency_ref_ma": 52.0
     },
-    "persist": true
+    "persist": false
   }
   ```
+  Sending any curve coefficient requires all four. Other writable settings remain
+  independent partial updates, for example:
+  ```json
+  {"name":"1270j","settings":{"min_autolevel_current_ma":15.0},"persist":false}
+  ```
+  A complete curve can be installed without a calibration run or retained dataset.
 
 - **Notes:**
   - `ref_mw`, `ref_ma`, `ref_temp_c` are the independent vendor power anchor.
@@ -1151,12 +1140,15 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     and on the 0.1 mA grid, and temperature must be 15–40 C. Calibration additionally
     requires the reference inside the configured current/temperature envelope.
     Reference edits stop emission and optionally persist the triplet.
-  - `quadratic_correction_mw_per_ma2` adds `q*x*(x-x_ref)` to the linear
-    power estimate, where `x=current_ma-threshold_current_ma` and
-    `x_ref=ref_ma-threshold_current_ma`. Defaults are zero. The corrected
-    model must remain increasing from threshold through maximum current;
-    nonzero correction requires reference above threshold. Calibration retains
-    efficiency as the reference-average linear slope. Changes stop emission.
+  - The installed curve is `P=x*(efficiency_mw_per_ma + efficiency_mw_per_ma2*(current_ma-efficiency_ref_ma))`,
+    with `x=max(0,current_ma-threshold_current_ma)`. Calibration preserves the
+    uncorrected anchored line's slope as efficiency and derives its curve reference
+    to reproduce the corrected fit. That finite reference coordinate is independent
+    of `ref_ma`; it need not lie on the current grid or below the hardware maximum.
+    Nonzero correction requires it above threshold. Validate a positive derivative
+    from threshold through maximum; compiled defaults use zero correction.
+    All four coefficients must accompany a manual curve replacement. Their changes
+    stop emission. Datasheet edits do not change any of these coefficients.
   - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
     request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
     upward to the 0.1 mA register grid. Raising threshold also raises this floor
@@ -1178,18 +1170,15 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
     aligned and in sync because these values form the baseline for wavelength
     tuning.
-  - At zero stored wavelength tune, positive `laser.value` maps to
-    `threshold_current_ma + value * (nominal_current_ma - threshold_current_ma)`,
-    rounded to the 0.1 mA current grid; `value:0` instead requests zero current.
-    Estimated optical power is
-    zero at/below threshold, otherwise `efficiency_mw_per_ma*x + q*x*(x-x_ref)`
-    in mW, using the correction defined above.
-    Threshold therefore affects both the current mapping and the power model;
-    efficiency changes the power/throughput/flux scale, not the untuned current
-    mapping. Nominal current sets the level-1/autolevel ceiling and the wavelength
-    tuning reference; it is not merely a power-normalization parameter.
-    Changes to these model/envelope fields stop emission. Restart measurement
-    afterward; existing captures retain their original settings.
+  - Positive `laser.value` requests that fraction of `P(nominal_current_ma)`.
+    The calibrated inverse chooses current, rounded to the 0.1 mA grid; zero instead
+    requests zero current. With zero quadratic coefficient this reduces to
+    `threshold_current_ma + value*(nominal_current_ma-threshold_current_ma)`.
+    Tuning begins from that emission request and may shift power within its budget.
+    Readback reports the modeled emission fraction at the actual setpoint.
+    Nominal current sets the level-1/autolevel ceiling and the wavelength reference.
+    Changing `current_cal_pct` affects the driver independently; it does not silently
+    rescale the optical coefficients. Existing captures retain their recorded model.
   - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
     applied during driver preparation and TEC start. It is not the live tuned
     TEC setpoint. Tuning may write a different live TEC setpoint when a positive
@@ -1233,7 +1222,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `ntc_coeff_pct_per_c`. If
     `laser/bankpower` is `override_off`, driver-backed settings changes return
     an error.
-  - it is **encouraged** to send only the settings that requested changed.
+  - Send only independent settings being changed. A curve replacement is the
+    exception: send all four curve coefficients together.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
   - Actual changes to threshold, nominal current, efficiency, quadratic correction, wavelength,
@@ -1279,7 +1269,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     - `wavelength_nm`
     - `threshold_current_ma`
     - `efficiency_mw_per_ma`
-    - `quadratic_correction_mw_per_ma2`
+    - `efficiency_mw_per_ma2`
+    - `efficiency_ref_ma`
   - Settings that are informational only (included for datasheet posterity):
     - `isolation_db`
   - Ranges:
@@ -1322,13 +1313,6 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   Loss estimation requires `determine_static_loss:true` plus explicit nonnegative
   `loopback_loss_db` for **external** cable/attenuators, excluding the configured
   PD return. `other_output:true` requires loss estimation.
-- **Payload -> apply a reviewed retained run:**
-  ```json
-  {"apply":true,"run_id":17,"update_loss":true,"update_noise":false,"persist":false}
-  ```
-  First acquire with `apply:false,persist:false`. Finish or STOP acquisition
-  before applying. The run ID must still match; a reboot or another calibration
-  replaces it. All requested components, including the core fit, must be accepted.
 - **Payload -> stop, continue after physical recabling, or restore defaults:**
   ```json
   {"stop":true}
@@ -1341,7 +1325,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   ```
   STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
   loss replaces the external loss for the second output. Restore stops the owned
-  operations and restores compiled threshold, efficiency, zero quadratic
+  operations and restores compiled threshold, efficiency, curve reference, zero quadratic
   correction, maximum, automatic floor, reference and noise; it removes the named
   outbound override. Identity, current calibration, nominal current, other TEC
   settings, return loss and the other output's override are preserved.
@@ -1356,12 +1340,14 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
-  - `apply:true` automatically installs an accepted threshold, reference-average
-    efficiency, quadratic correction, automatic floor and maximum. This is the
+  - `apply:true` automatically installs an accepted threshold, linear-fit
+    efficiency, quadratic coefficient, curve reference, automatic floor and maximum. This is the
     field default and requires no notebook. Loss and noise adoption are opt-in.
     `persist:true` also requests NVS; `apply:false,persist:true` is rejected.
   - Commissioning uses `apply:false,persist:false`, saves raw data, reviews the
-    normalized curve/residual plot, then explicitly applies the retained run.
+    normalized curve/residual plot, then installs the complete coefficients through
+    `laser/settings` and selected losses through `mems/route/loss`. No retained run
+    is needed for manual installation; the saved model supplies its own reference.
     A failed core fit cannot apply a route or noise estimate. A persistence
     failure may leave RAM updated; inspect each result's errors/flags.
   - Start stops throughput/laser outputs and owns the loopback through acquisition
@@ -1374,7 +1360,6 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - Python: `laser_calibrate(name, ..., apply=True, max_fit_residual_pct=5.0,
     pd_target_mv=1500.0, determine_static_loss=False, loopback_loss_db=None,
     update_noise=False, other_output=False, persist=False)`;
-    `laser_calibrate_apply(run_id, *, update_loss=False, update_noise=False, persist=False)`;
     `laser_calibrate_continue(loopback_loss_db=None)`, `laser_calibrate_stop()`,
     `laser_calibration_data()`, and
     `laser_calibrate_restore_defaults(name, *, output, persist=False)`.
@@ -2072,8 +2057,9 @@ still stop the stream.
 
 `initial_level` is an optional fraction from 0 to 1, accepted only with
 `autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
-calibrated attenuation, then sets this fraction of the threshold-to-nominal
-current range, bounded by `min_autolevel_current_ma` and nominal current.
+calibrated attenuation, then requests this fraction of modeled nominal emission.
+The inverse curve selects current, bounded by `min_autolevel_current_ma` and nominal
+current and quantized to 0.1 mA.
 Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
 off. This applies to both compiled dimming priorities. Throughput ignores stored
 `tune_nm` and retains the live TEC target when already prepared; cold preparation

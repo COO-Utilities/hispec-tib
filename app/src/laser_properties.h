@@ -33,17 +33,19 @@ typedef struct laserprops_t {
     const char *name;
     const char *model_number;
     const char *ld_serial; /* Manufacturer diode serial, distinct from Maiman driver serial. */
-    /* P = efficiency*x + q*x*(x-x_ref), x=I-threshold. The correction
-     * preserves zero at threshold and average efficiency through ref_ma.
+    /* P = x*(efficiency + q*(I-efficiency_ref_ma)), x=I-threshold.
+     * Calibration retains the uncorrected linear fit's efficiency; its
+     * reference coordinate makes the correction reproduce the fitted curve.
      * Compiled defaults use q=0. Placing the float here uses the MCU's
      * alignment gap before the doubles instead of enlarging every profile. */
-    float quadratic_correction_mw_per_ma2;
+    float efficiency_mw_per_ma2;
     double nominal_current_ma;
     double max_current_ma;
     double dne_current_ma;
     double threshold_current_ma;
     double efficiency_mw_per_ma;
-    /* Independent vendor power anchor, measured at ref_ma and ref_temp_c. */
+    double efficiency_ref_ma; /* Curve coordinate, not a commanded current. */
+    /* Independent vendor anchor for calibration; never used by the active curve. */
     double ref_mw;
     double ref_ma;
     double ref_temp_c;
@@ -81,6 +83,7 @@ static const laserprops_t LASER_1028 = {
     .efficiency_mw_per_ma = 0.185,
     .ref_mw = 43.8,
     .ref_ma = 250,
+    .efficiency_ref_ma = 250,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.015,
     .dlambda_dT_nm_per_k = 0.12,
@@ -108,6 +111,7 @@ static const laserprops_t LASER_2330 = {
     .efficiency_mw_per_ma = 0.031,
     .ref_mw = 3.18,
     .ref_ma = 120,
+    .efficiency_ref_ma = 120,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.015,
     .dlambda_dT_nm_per_k = 0.12,
@@ -134,6 +138,7 @@ static const laserprops_t LASER_1270 = {
     .efficiency_mw_per_ma = 0.26,
     .ref_mw = 10,
     .ref_ma = 52,
+    .efficiency_ref_ma = 52,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
@@ -160,6 +165,7 @@ static const laserprops_t LASER_1430YJ = {
     .efficiency_mw_per_ma = 0.24,
     .ref_mw = 10,
     .ref_ma = 49,
+    .efficiency_ref_ma = 49,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
@@ -186,6 +192,7 @@ static const laserprops_t LASER_1430HK = {
     .efficiency_mw_per_ma = 0.24,
     .ref_mw = 10,
     .ref_ma = 49,
+    .efficiency_ref_ma = 49,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,
@@ -212,6 +219,7 @@ static const laserprops_t LASER_1510 = {
     .efficiency_mw_per_ma = 0.24,
     .ref_mw = 10,
     .ref_ma = 47,
+    .efficiency_ref_ma = 47,
     .ref_temp_c = 25.0,
     .dlambda_dA_nm_per_ma = 0.003,
     .dlambda_dT_nm_per_k = 0.08,

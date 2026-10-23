@@ -23,7 +23,9 @@ have $A=A_1+A_2$ and $T=T_1T_2$. A 3.0103 dB loss transmits one half of the powe
 voltage is proportional to optical power, as for these photodiode outputs.
 
 `level` is a linear fraction for attenuators; laser command `value` is a fraction
-of the modeled threshold-to-nominal current range (the C tuner takes percent). Read the command's units:
+of modeled nominal emission (the C tuner takes percent). The calibrated inverse
+converts that emission request to current; only the linear model reduces to
+threshold-to-nominal current interpolation. Read the command's units:
 these are different quantities. DAC millivolts are measured before the FVOA
 amplifier; FVOA-drive millivolts are after it. Model power is an estimate from
 confirmed settings, not an independent optical measurement.

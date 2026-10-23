@@ -119,7 +119,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1028_Y] = {
 		.id = HISPEC_LASER_1028_Y,
 		.name = "1028y",
-		.modbus_name = "1028",
 		.node_id = 5U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_1028,
@@ -127,7 +126,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1270_J] = {
 		.id = HISPEC_LASER_1270_J,
 		.name = "1270j",
-		.modbus_name = "1270",
 		.node_id = 6U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_1270,
@@ -135,7 +133,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1430_YJ] = {
 		.id = HISPEC_LASER_1430_YJ,
 		.name = "1430yj",
-		.modbus_name = "yj1430",
 		.node_id = 4U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_1430YJ,
@@ -143,7 +140,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1430_HK] = {
 		.id = HISPEC_LASER_1430_HK,
 		.name = "1430hk",
-		.modbus_name = "hk1430",
 		.node_id = 3U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_1430HK,
@@ -151,7 +147,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_1510_H] = {
 		.id = HISPEC_LASER_1510_H,
 		.name = "1510h",
-		.modbus_name = "1510",
 		.node_id = 1U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_1510,
@@ -159,7 +154,6 @@ static const struct hispec_laser_driver_profile laser_profiles[] = {
 	[HISPEC_LASER_2330_K] = {
 		.id = HISPEC_LASER_2330_K,
 		.name = "2330k",
-		.modbus_name = "2330",
 		.node_id = 2U,
 		.expected_device_id = 0x1113,
 		.properties = &LASER_2330,
@@ -604,9 +598,7 @@ int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out)
 	for (uint8_t i = 0U; i < ARRAY_SIZE(laser_profiles); ++i) {
 		const struct hispec_laser_driver_profile *profile = &laser_profiles[i];
 
-		if (names_match(name, profile->name) ||
-		    names_match(name, profile->modbus_name) ||
-		    names_match(name, profile->properties->name)) {
+		if (names_match(name, profile->name)) {
 			*out = profile->id;
 			return 0;
 		}
@@ -913,21 +905,19 @@ out:
 	return rc;
 }
 
+/* Report the same modeled emission fraction that level commands request.
+ * Quantized/current-tuned setpoints may differ from the requested level. No I/O. */
 static double level_percent_for_current(const laserprops_t *props, double current_ma)
 {
-	double range;
-
 	if (props == NULL || !float_is_valid(current_ma)) {
 		return LASERPROP_NA;
 	}
-	range = props->nominal_current_ma - props->threshold_current_ma;
-	if (range <= 0.0) {
+
+	double nominal_power = hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+	if (!(nominal_power > 0.0)) {
 		return LASERPROP_NA;
 	}
-	if (current_ma <= 0.0) {
-		return 0.0;
-	}
-	return 100.0 * (current_ma - props->threshold_current_ma) / range;
+	return 100.0 * hispec_laser_estimate_power_mw(props, current_ma) / nominal_power;
 }
 
 static void init_temperature_channels(
@@ -1982,12 +1972,14 @@ int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *e
 	return hispec_laser_set_current_ma(id, current_ma, error, error_len);
 }
 
+/** Request a fraction of modeled nominal emission. The curve inverse selects
+ * current before quantization; the current owner handles preparation and I/O.
+ * The autolevel-only floor does not restrict manual level commands. */
 int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, char *error, size_t error_len)
 {
 	if (error_len != 0) error[0] = '\0';
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props = &settings.properties;
-	double current_range_ma;
 	double current_ma;
 
 	if (hispec_laser_get_channel_settings(id, &settings) != 0 || !float_is_valid(percent) || percent < 0.0 || percent > 100.0) {
@@ -1998,13 +1990,13 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, cha
 		return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 	}
 
-	current_range_ma = props->nominal_current_ma - props->threshold_current_ma;
-	if (!float_is_positive(current_range_ma)) {
+	double nominal_power = hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+	if (!float_is_positive(nominal_power)) {
 		return -EINVAL;
 	}
 
 	current_ma = hispec_laser_quantize_current_ma(
-		props->threshold_current_ma + current_range_ma * (percent / 100.0),
+		hispec_laser_current_for_power_mw(props, nominal_power * (percent / 100.0)),
 		0.0, MIN(props->nominal_current_ma, props->max_current_ma));
 
 	return hispec_laser_set_current_ma(id, current_ma, error, error_len);
@@ -2152,6 +2144,9 @@ int hispec_laser_set_tec_pid(enum hispec_laser_id id, tec_pid_t pid)
 	return rc;
 }
 
+/** Validate a candidate's curve and independent policy before any I/O or storage.
+ * Normalizes the autolevel floor to the driver grid and the NTC coefficient to
+ * its register representation; rejected candidates never alter live settings. */
 static int validate_laser_settings(const struct hispec_laser_driver_profile *profile,
 				   struct app_laser_channel_settings *settings)
 {
@@ -2180,7 +2175,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->threshold_current_ma) ||
 	    !float_is_valid(settings->min_autolevel_current_ma) || settings->min_autolevel_current_ma < 0.0 ||
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
-	    !isfinite(props->quadratic_correction_mw_per_ma2) ||
+	    !isfinite(props->efficiency_mw_per_ma2) ||
+	    !isfinite(props->efficiency_ref_ma) ||
 	    !float_is_valid(props->wavelength_nm) ||
 	    !float_is_valid(settings->current_cal_pct) ||
 	    !float_is_valid(settings->fractional_noise) || settings->fractional_noise < 0.0 ||
@@ -2213,13 +2209,13 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	/* The derivative is affine in current, so checking its two endpoints
 	 * proves monotonicity throughout the operating interval. q=0 retains the
 	 * compiled linear model even when the independent reference differs. */
-	double q = props->quadratic_correction_mw_per_ma2;
+	double q = props->efficiency_mw_per_ma2;
 	double slope_at_threshold = props->efficiency_mw_per_ma -
-		q * (props->ref_ma - props->threshold_current_ma);
+		q * (props->efficiency_ref_ma - props->threshold_current_ma);
 	double slope_at_max = slope_at_threshold +
 		2.0 * q * (props->max_current_ma - props->threshold_current_ma);
 	if (!(slope_at_threshold > 0.0) || !(slope_at_max > 0.0) ||
-	    (q != 0.0 && props->ref_ma <= props->threshold_current_ma)) {
+	    (q != 0.0 && props->efficiency_ref_ma <= props->threshold_current_ma)) {
 		return -ERANGE;
 	}
 
@@ -2336,7 +2332,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		previous.properties.threshold_current_ma != settings->properties.threshold_current_ma ||
 		previous.properties.nominal_current_ma != settings->properties.nominal_current_ma ||
 		previous.properties.efficiency_mw_per_ma != settings->properties.efficiency_mw_per_ma ||
-		previous.properties.quadratic_correction_mw_per_ma2 != settings->properties.quadratic_correction_mw_per_ma2 ||
+		previous.properties.efficiency_mw_per_ma2 != settings->properties.efficiency_mw_per_ma2 ||
+		previous.properties.efficiency_ref_ma != settings->properties.efficiency_ref_ma ||
 		previous.properties.ref_mw != settings->properties.ref_mw ||
 		previous.properties.ref_ma != settings->properties.ref_ma ||
 		previous.properties.ref_temp_c != settings->properties.ref_temp_c ||
@@ -2527,9 +2524,9 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
 	}
 
 	double x = fmax(0.0, current_ma - properties->threshold_current_ma);
-	double x_ref = properties->ref_ma - properties->threshold_current_ma;
+	double x_ref = properties->efficiency_ref_ma - properties->threshold_current_ma;
 	power_mw = x * (properties->efficiency_mw_per_ma +
-		(double)properties->quadratic_correction_mw_per_ma2 * (x - x_ref));
+		(double)properties->efficiency_mw_per_ma2 * (x - x_ref));
 	return (power_mw > 0.0) ? power_mw : 0.0;
 }
 
@@ -2548,9 +2545,9 @@ double hispec_laser_current_for_power_mw(const laserprops_t *properties, double 
 		return NAN;
 	}
 
-	double q = properties->quadratic_correction_mw_per_ma2;
+	double q = properties->efficiency_mw_per_ma2;
 	double a = properties->efficiency_mw_per_ma -
-		q * (properties->ref_ma - properties->threshold_current_ma);
+		q * (properties->efficiency_ref_ma - properties->threshold_current_ma);
 	double discriminant = a * a + 4.0 * q * power_mw;
 	if (!(a > 0.0) || !(discriminant >= 0.0)) {
 		return NAN;
@@ -2667,8 +2664,6 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	const struct hispec_laser_driver_profile *profile;
 	struct app_laser_channel_settings settings;
 	const laserprops_t *props = &settings.properties;
-	double brightness;
-	double current_range_ma;
 	double desired_i_ma;
 	double initial_wavelength_nm;
 	double delta_lambda_nm;
@@ -2726,13 +2721,15 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	current_range_ma = props->nominal_current_ma - props->threshold_current_ma;
-	if (!float_is_positive(current_range_ma)) {
+	double nominal_power = hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+	if (!float_is_positive(nominal_power)) {
 		return -EINVAL;
 	}
 
-	brightness = request->desired_power_percent / 100.0;
-	desired_i_ma = props->threshold_current_ma + current_range_ma * brightness;
+	/* The starting level is an emission fraction. Subsequent wavelength
+	 * adjustment may move it within the explicitly requested power budget. */
+	desired_i_ma = hispec_laser_current_for_power_mw(props,
+		nominal_power * (request->desired_power_percent / 100.0));
 	desired_i_ma = clamp_with_flag(desired_i_ma, props->threshold_current_ma,
 					props->max_current_ma, &current_clamped);
 
@@ -2759,12 +2756,11 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	delta_remaining_nm = delta_lambda_nm - delta_from_temp_nm;
 	if (request->use_current) {
 		delta_i_ma = delta_remaining_nm / props->dlambda_dA_nm_per_ma;
-		/* The budget is a percentage of nominal optical power. Brightness
-		 * still selects a current fraction, but curvature changes the allowed
-		 * current excursion for that optical budget. */
+		/* The budget is a percentage of nominal optical power. The inverse
+		 * converts that optical interval to allowed current excursions. */
 		double desired_power = hispec_laser_estimate_power_mw(props, desired_i_ma);
 		double budget = request->maximum_power_shift_percent / 100.0 *
-			hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+			nominal_power;
 		double low_power = fmax(0.0, desired_power - budget);
 		double high_power = fmin(desired_power + budget,
 			hispec_laser_estimate_power_mw(props, props->max_current_ma));

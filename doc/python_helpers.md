@@ -166,6 +166,10 @@ records separately from derived normalization and model predictions.
 `laser_calibration_data()` returns `LaserCalibrationDataset` with `.records` and
 `.meta`. A replacement run during a multi-request download invalidates that
 snapshot. The dataset does not automatically reapply a saved calibration.
+Install a reviewed saved curve with `laser_settings`, supplying `threshold_current_ma`,
+`efficiency_mw_per_ma`, `efficiency_mw_per_ma2` and `efficiency_ref_ma` together.
+Optional noise uses that same settings call; outbound loss uses `mems_route_loss`.
+No retained acquisition or notebook identifier is required by firmware.
 
 `attenuator_grid_probe()` sets the laser, steps explicit DAC coordinates, sleeps
 for `dwell_s` and reads the PD window. It assumes routing, PD power and dark were

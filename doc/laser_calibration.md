@@ -28,17 +28,17 @@ cannot distinguish a multiplicative driver-current error from efficiency.
 The runtime curve, for $I>t$, is
 
 ```{math}
-x=I-t,\quad x_{ref}=I_{ref}-t,\quad
-\eta=\frac{P_{ref}}{x_{ref}},\qquad
-P(I)=\eta x+q x(x-x_{ref}).
+x=I-t,\qquad P(I)=x[\eta+q(I-I_e)].
 ```
 
 Below threshold, modeled power is zero. `threshold_current_ma` is the corrected
-curve's true zero; `efficiency_mw_per_ma` is its **reference-average linear slope**,
-not the tangent at threshold. `quadratic_correction_mw_per_ma2` is a separate
-correction, zero at threshold and reference. Setting $q=0$ recovers the linear
-law. The reference need not lie in a linear region; the vendor's definition of
-maximum power is not treated as a nonlinearity specification.
+curve's zero; `efficiency_mw_per_ma` retains the **uncorrected straight-line fit's
+slope** on the selected support. `efficiency_mw_per_ma2` is the quadratic
+coefficient. The installed `efficiency_ref_ma` ($I_e$) is a curve coordinate,
+independent of the datasheet triplet. Setting $q=0$ recovers the linear law.
+Changing datasheet inputs later does not change this installed curve. The vendor
+reference need not lie in a linear region, and its stated maximum power is not
+interpreted as a nonlinearity specification.
 
 The independent reference triplets `(ref_mw, ref_ma, ref_temp_c)` are
 `(43.8,250,25)` for 1028y, `(10,52,25)` for 1270j, `(10,49,25)` for both 1430s,
@@ -57,9 +57,29 @@ P(z)=P_{ref}+c_1[T_1(z)-T_1(z_{ref})]+c_2[T_2(z)-T_2(z_{ref})],
 
 The anchor is exact. A direct weighted two-column normal solve uses the existing
 [`calibration_solve_2x2`](calibration_fitting.md), with diagonal scaling before
-inversion. The linear candidate sets $c_2=0$. A rationalized quadratic root
-selects the increasing branch's zero, then converts to $(t,\eta,q)$ above.
-Scoring uses $q$ rounded to its stored float precision. There is no iterative
+inversion. The linear candidate sets $c_2=0$. On the same selected observations,
+let $d_i=I_i-R$, where $R=\texttt{ref_ma}$, and let $W_i$ be inverse normalized
+mean variance. Preserve the uncorrected anchored line's slope:
+
+```{math}
+\eta=\frac{\sum W_i d_i(P_i-P_{ref})}{\sum W_i d_i^2},\qquad
+M=\frac{\sum W_i d_i^3}{\sum W_i d_i^2},\qquad
+s=\eta-qM.
+```
+
+Here $s$ is the corrected curve's slope at the datasheet reference. Round $q$ to
+its stored float precision before deriving the remaining coefficients:
+
+```{math}
+t=R-\frac{2P_{ref}}{s+\sqrt{s^2-4qP_{ref}}},\qquad
+I_e=\begin{cases}R,&q=0\\2R-t+M,&q\ne0.\end{cases}
+```
+
+This rationalized root selects the increasing branch. The derived coordinate
+reproduces the quadratic while retaining $\eta$; it is not an independently fitted
+parameter. It never divides by $q$, and $M$ comes from the existing normal matrix.
+$I_e$ may exceed the measured or allowed current range and is not quantized to
+a driver register. Scoring uses the actual stored curve. There is no iterative
 laser optimizer, fixed 2% seed window, or compiled-efficiency deviation guard.
 
 For a window with $n_i$ surviving readings and recorded population RMS $r_i$,
@@ -135,14 +155,15 @@ ADC-error records remain available but do not contribute to curve fitting.
 | Current grid | 64 × 2 = 128 bytes |
 | Sweep segments | 8 |
 | Other-output reservation | 24 of the 128 windows |
-| Wire metadata, including 16-byte support mask | 432 bytes |
+| Wire metadata, including 16-byte support mask | 428 bytes |
 | Laser numerical scratch | 1496 bytes on the checked build |
 | Shared data / scratch unions | 7680 / 3584 bytes, unchanged |
 
 Records/results/metadata reuse the existing calibration unions. A full buffer
-ends acquisition as incomplete; no record is overwritten. The quadratic float
-uses four formerly zeroed trailing bytes in the existing 144-byte NVS policy
-record; its offsets and size are build-asserted. No additional NVS record is added.
+ends acquisition as incomplete; no record is overwritten. The curve reference
+adds one double to each property/fit copy without another per-point array.
+The self-contained policy record is 152 bytes; see [settings](settings.md#scoped-laser-calibration-restore)
+for old-record handling and explicit reinstallation before/after flashing.
 
 Partial ADC failures use surviving samples. Zero surviving samples or no fresh
 window within dwell + 3 s is terminal. At least one off-state window needs two
@@ -203,11 +224,13 @@ outcomes; a flash failure cannot roll back an already active RAM update.
 The commissioning notebook starts with `apply=False,persist=False`, archives raw
 data first, and shows one summary plus normalized power/curve/residual plots.
 Selected points come from the transmitted mask. Below-floor extrapolation, the
-reference-average line, vendor trace and source-power assumptions are explicit.
-Detailed raw-window plots are optional. Reviewed application uses
-`laser_calibrate_apply(run_id, ...)`, the same firmware domain path as automatic
-application. The run must still be retained and idle; reference/current-calibration
-changes invalidate its application. An old pickle is not an installable substitute.
+uncorrected weighted line (with its own intercept), corrected curve, vendor trace
+and source-power assumptions are explicit. Detailed raw-window plots are optional.
+Reviewed installation sends all four coefficients through `laser/settings`, with
+optional noise in that write and separate existing route-loss writes. Saved fits
+remain installable after reboot or dataset replacement. Target/diode/archive
+checks belong to Python, and each acknowledgement/error/readback is saved without
+rewriting the original calibration result.
 
 The notebook preserves historical S154C readings and labels the original base
 attenuation and later JIB path adjustment separately. Digitized vendor traces in
@@ -219,7 +242,7 @@ their original failed result is never replaced. Optional 500/1500 mV target
 comparison helps test PD-level dependence. It cannot by itself isolate diode
 curvature from detector or path effects.
 
-Restore returns to compiled threshold, efficiency, zero correction, maximum,
+Restore returns to compiled threshold, efficiency, curve reference, zero correction, maximum,
 automatic floor, reference and noise defaults, and removes the selected named
 outbound override. It preserves nominal current, current calibration, identity,
 other TEC policy, PD return and the other output. This is not an undo to a pre-run
@@ -227,14 +250,14 @@ snapshot. Applied/persisted flags and independent errors report partial outcomes
 
 ## Status and retained data
 
-Status fields: `state`, `run_id`, `laser`, `output` (current stage), `records`,
+Status fields: `state`, `laser`, `output` (current stage), `records`,
 `dwell_ms`, `current_ma`, `acquisition_complete`, `overflow`, `shutdown_pending`,
 `error`. States are `inactive`, `running`, `fitting`, `awaiting_output`, `complete`,
 `stopped`, `error`. Completion concerns acquisition of the current stage.
 
 - `fit`: `valid`, `accepted`, `applied`, `persisted`, `error`, `apply_error`,
   `persist_error`, `n`, `threshold_ma`, `efficiency_mw_per_ma`,
-  `quadratic_correction_mw_per_ma2`, `floor_ma`, `max_ma`, `baseline_mv`,
+  `efficiency_mw_per_ma2`, `efficiency_ref_ma`, `floor_ma`, `max_ma`, `baseline_mv`,
   `rms_fraction`, `max_residual_fraction`, `threshold_se_ma`.
 - `noise`: `valid`, `applied`, `persisted`, `error`, `constant_mw`, `fractional`.
 - `routes`: two objects, requested output then other output; each has `accepted`,
@@ -247,20 +270,20 @@ contracts. Expected guards have specific text such as `pd off`, `dark required`,
 Flags describe actions by this run, not guarantees that settings were never edited
 later. Read current settings to establish present configuration.
 
-Binary retrieval is MQTT only. `laser/calibrate/records` returns **432 bytes**,
-little endian, magic `HLC1`, version byte **2**:
+Binary retrieval is MQTT only. `laser/calibrate/records` returns **428 bytes**,
+little endian, magic `HLC1`, version byte **3**:
 
 | Offset | Contents |
 |---:|---|
 | 5–15 | State, laser index, PD channel, fiber ASCII, first-FEI flag, options (loss=1, noise=2, other=4, persist=8, apply=16), record size=24, count, records/chunk, segment count, reserved |
-| 16 | `uint32 run_id`, `uint32 dwell_ms`, `uint64 started_ms` (uptime) |
-| 32 | 15 doubles: reference triplet, maximum, nominal, seed threshold, current-cal %, PD mV/mW, configured dark mean/RMS, return transmission, first/other loopback dB, compiled threshold/efficiency |
-| 152 | Six floats: two DAC full scales, two limits, observed temperature min/max |
-| 176, 248 | Each FVOA: six doubles (f50, slope, max attenuation, calibrated max, gain, RMS) and six float correction coefficients |
-| 320 | Two doubles: residual tolerance %, PD target mV |
-| 336 | Eight doubles: measured segment gain mV/mW |
-| 400 | Two doubles: same-run residual baseline mV, pooled dark variance mV² |
-| 416 | 16-byte fit-membership bitmask, low bit first; one bit per retained record |
+| 16 | `uint32 dwell_ms`, `uint64 started_ms` (uptime) |
+| 28 | 15 doubles: reference triplet, maximum, nominal, seed threshold, current-cal %, PD mV/mW, configured dark mean/RMS, return transmission, first/other loopback dB, compiled threshold/efficiency |
+| 148 | Six floats: two DAC full scales, two limits, observed temperature min/max |
+| 172, 244 | Each FVOA: six doubles (f50, slope, max attenuation, calibrated max, gain, RMS) and six float correction coefficients |
+| 316 | Two doubles: residual tolerance %, PD target mV |
+| 332 | Eight doubles: measured segment gain mV/mW |
+| 396 | Two doubles: same-run residual baseline mV, pooled dark variance mV² |
+| 412 | 16-byte fit-membership bitmask, low bit first; one bit per retained record |
 
 `laser/calibrate/records/<chunk>` returns headerless `<IffHHHhBBBB` records:
 elapsed uptime ms, net mV, population RMS mV, current in 0.1 mA, two confirmed

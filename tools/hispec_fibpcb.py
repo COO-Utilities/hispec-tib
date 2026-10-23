@@ -525,7 +525,8 @@ class LaserSettings(ResponseRepr):
     threshold_current_ma: float
     min_autolevel_current_ma: float
     efficiency_mw_per_ma: float
-    quadratic_correction_mw_per_ma2: float
+    efficiency_mw_per_ma2: float
+    efficiency_ref_ma: float
     ref_mw: float
     ref_ma: float
     ref_temp_c: float
@@ -729,7 +730,8 @@ class LaserCalibrationFit(ResponseRepr):
     n: int
     threshold_ma: float | None
     efficiency_mw_per_ma: float | None
-    quadratic_correction_mw_per_ma2: float | None
+    efficiency_mw_per_ma2: float | None
+    efficiency_ref_ma: float | None
     floor_ma: float | None
     max_ma: float | None
     baseline_mv: float | None
@@ -769,7 +771,6 @@ class LaserCalibrationStatus(ResponseRepr):
     """Acquisition progress plus independent curve, noise and route outcomes."""
 
     state: str
-    run_id: int
     laser: str
     output: str
     records: int
@@ -3633,12 +3634,12 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 432-byte metadata packet; no requests or state changes.
+    """Decode the fixed 428-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 432 or payload[:5] != b"HLC1\x02":
+    if len(payload) != 428 or payload[:5] != b"HLC1\x03":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
@@ -3648,10 +3649,10 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
             or count > 128 or per_chunk == 0 or segments > 8):
         raise HispecFibError("invalid laser calibration metadata")
 
-    # Bytes 16..31: run identity and acquisition timing.
-    run_id, dwell_ms, started_ms = struct.unpack_from("<IIQ", payload, 16)
+    # Bytes 16..27: acquisition timing; no host archive identifier is on the wire.
+    dwell_ms, started_ms = struct.unpack_from("<IQ", payload, 16)
 
-    # Bytes 32..151: frozen optical/laser assumptions in firmware field order.
+    # Bytes 28..147: frozen optical/laser assumptions in firmware field order.
     keys = (
         "ref_mw", "ref_ma", "ref_temp_c",
         "max_ma", "nominal_ma", "seed_threshold_ma",
@@ -3659,14 +3660,14 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         "return_tx", "loopback_loss_db", "other_loopback_loss_db",
         "default_threshold_ma", "default_efficiency_mw_per_ma",
     )
-    meta = dict(zip(keys, struct.unpack_from("<15d", payload, 32)))
+    meta = dict(zip(keys, struct.unpack_from("<15d", payload, 28)))
 
-    # Bytes 152..175: DAC scales/limits and the observed temperature range.
-    full1, full2, limit1, limit2, tmin, tmax = struct.unpack_from("<6f", payload, 152)
+    # Bytes 148..171: DAC scales/limits and the observed temperature range.
+    full1, full2, limit1, limit2, tmin, tmax = struct.unpack_from("<6f", payload, 148)
 
-    # Bytes 176..319: the two FVOA models, six doubles then six float corrections.
+    # Bytes 172..315: the two FVOA models, six doubles then six float corrections.
     coeffs = []
-    for offset in (176, 248):
+    for offset in (172, 244):
         values = struct.unpack_from("<6d6f", payload, offset)
         c = dict(zip(
             ("fvoa_50pct_mv", "slope_inv_fvoa_mv", "max_atten_db", "max_calibrated_db", "gain", "rms_db"),
@@ -3675,11 +3676,11 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
-    # Bytes 320..431: policy, measured normalization and exact firmware support.
-    residual_limit, target_mv = struct.unpack_from("<2d", payload, 320)
-    segment_gain = struct.unpack_from("<8d", payload, 336)
-    baseline, dark_variance = struct.unpack_from("<2d", payload, 400)
-    support = np.unpackbits(np.frombuffer(payload[416:432], dtype=np.uint8), bitorder="little")
+    # Bytes 316..427: policy, measured normalization and exact firmware support.
+    residual_limit, target_mv = struct.unpack_from("<2d", payload, 316)
+    segment_gain = struct.unpack_from("<8d", payload, 332)
+    baseline, dark_variance = struct.unpack_from("<2d", payload, 396)
+    support = np.unpackbits(np.frombuffer(payload[412:428], dtype=np.uint8), bitorder="little")
     meta.update(
         max_fit_residual_pct=residual_limit,
         pd_target_mv=target_mv,
@@ -3696,7 +3697,6 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         record_count=count,
         records_per_chunk=per_chunk,
         segments=segments,
-        run_id=run_id,
         dwell_ms=dwell_ms,
         started_ms=started_ms,
         dac_full_scale_mv=(full1, full2),
@@ -3716,6 +3716,8 @@ def _decode_ok_or_raise(topic: str, payload: bytes) -> Any:
     if (isinstance(data, Mapping) and data.get("error") is not None
             and not (_is_atten_cal_status(data) or _is_laser_cal_result(data))):
         message = f"{topic}: {data['error']}"
+        if "arg" in data:
+            message += f" (argument: {data['arg']})"
         if "rc" in data:
             message += f" (rc={data['rc']})"
         raise HispecFibPCBError(message, topic=topic, response=_to_object(data))
@@ -4695,6 +4697,8 @@ class HispecFibPcb:
         """Query/set laser level; zero current retains readiness and the off deadline.
 
         ``stop=True`` shuts down the diode and applies the configured TEC-off policy.
+        A level is a fraction of modeled nominal emission; firmware inverts the
+        calibrated curve and reports the emission fraction at the confirmed current.
         Setting a level disables autolevel while throughput streaming continues.
         """
         _require_choice("name", name, LASER_NAMES)
@@ -4741,7 +4745,8 @@ class HispecFibPcb:
         threshold_current_ma: float | None = None,
         min_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
-        quadratic_correction_mw_per_ma2: float | None = None,
+        efficiency_mw_per_ma2: float | None = None,
+        efficiency_ref_ma: float | None = None,
         ref_mw: float | None = None,
         ref_ma: float | None = None,
         ref_temp_c: float | None = None,
@@ -4766,7 +4771,11 @@ class HispecFibPcb:
         ld_serial is the read-only manufacturer diode serial. expected_serial
         is the separately configured numeric Maiman driver serial.
         ref_mw/ref_ma/ref_temp_c are an independent vendor power anchor; they
-        do not track nominal current or the threshold/efficiency estimate.
+        do not change an installed curve. Replace a curve by supplying all four
+        of threshold_current_ma, efficiency_mw_per_ma, efficiency_mw_per_ma2 and
+        efficiency_ref_ma together; zero curvature selects a linear model.
+        efficiency_ref_ma is a curve coordinate, independent of the datasheet
+        ref_ma. Other policy/noise/reference settings remain partial updates.
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
@@ -4785,7 +4794,8 @@ class HispecFibPcb:
             threshold_current_ma=threshold_current_ma,
             min_autolevel_current_ma=min_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
-            quadratic_correction_mw_per_ma2=quadratic_correction_mw_per_ma2,
+            efficiency_mw_per_ma2=efficiency_mw_per_ma2,
+            efficiency_ref_ma=efficiency_ref_ma,
             ref_mw=ref_mw,
             ref_ma=ref_ma,
             ref_temp_c=ref_temp_c,
@@ -4804,6 +4814,11 @@ class HispecFibPcb:
             expected_serial=expected_serial,
         )
         settings = settings or {}
+        curve_keys = {"threshold_current_ma", "efficiency_mw_per_ma",
+                      "efficiency_mw_per_ma2", "efficiency_ref_ma"}
+        if curve_keys.intersection(settings) and not curve_keys.issubset(settings):
+            missing = ", ".join(sorted(curve_keys.difference(settings)))
+            raise HispecFibError(f"Complete curve required; missing {missing}")
         for key in ("fractional_noise", "constant_noise_mw", "min_autolevel_current_ma"):
             if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
                 raise HispecFibError(f"{key} must be finite and nonnegative")
@@ -4838,7 +4853,8 @@ class HispecFibPcb:
                 threshold_current_ma=float(settings["threshold_current_ma"]),
                 min_autolevel_current_ma=float(settings["min_autolevel_current_ma"]),
                 efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
-                quadratic_correction_mw_per_ma2=float(settings["quadratic_correction_mw_per_ma2"]),
+                efficiency_mw_per_ma2=float(settings["efficiency_mw_per_ma2"]),
+                efficiency_ref_ma=float(settings["efficiency_ref_ma"]),
                 ref_mw=float(settings["ref_mw"]),
                 ref_ma=float(settings["ref_ma"]),
                 ref_temp_c=float(settings["ref_temp_c"]),
@@ -5433,24 +5449,6 @@ class HispecFibPcb:
 
         return _decode_laser_cal_status(self._request_json("laser/calibrate", payload))
 
-    def laser_calibrate_apply(
-        self, run_id: int, *, update_loss: bool = False,
-        update_noise: bool = False, persist: bool = False,
-    ) -> LaserCalibrationStatus:
-        """Apply a retained accepted run; optionally adopt its noise and route loss.
-
-        Replaced/active runs are rejected. Firmware validates all requested
-        components before mutation, stops throughput, and applies the core as
-        one settings update. Inspect applied/persisted and their string errors.
-        """
-        run_id = _require_nonnegative_u32("run_id", run_id)
-        if run_id == 0:
-            raise HispecFibError("run_id must be positive")
-        return _decode_laser_cal_status(self._request_json("laser/calibrate", {
-            "apply": True, "run_id": run_id, "update_loss": bool(update_loss),
-            "update_noise": bool(update_noise), "persist": bool(persist),
-        }))
-
     def laser_calibrate_continue(self, *, loopback_loss_db: float | None = None) -> LaserCalibrationStatus:
         """Resume the other-output reference after recabling; optional new loop loss."""
         payload = {"continue": True}
@@ -5511,8 +5509,9 @@ class HispecFibPcb:
         # across a replacement start instead of returning mixed-run records.
         status = self.laser_calibrate()
         after = _laser_cal_metadata(self._request_payload("laser/calibrate/records"))
-        if (status.run_id != meta["run_id"] or
-                (after["run_id"], after["started_ms"]) != (meta["run_id"], meta["started_ms"])):
+        identity = ("started_ms", "laser", "channel", "fiber", "first_output")
+        if (status.laser != meta["laser"] or
+                any(after[key] != meta[key] for key in identity)):
             raise HispecFibError("calibration was replaced during download; fetch again")
         if (after["state"] != meta["state"] or status.state != meta["state"] or
                 after["fit_support"][:count] != meta["fit_support"]):
@@ -5817,9 +5816,16 @@ class HispecFibPcb:
                 autolevel=False, off_in_s=0, collect=True, max_samples=10000)
         try:
             settings = self.laser_settings(laser)
-            span = settings.nominal_current_ma - settings.threshold_current_ma
             minimum_ma = math.ceil((settings.threshold_current_ma + 1e-9) * 10) / 10
-            minimum = (minimum_ma-settings.threshold_current_ma)/span
+            # Levels are emission fractions. This manual search's smallest
+            # emitting register step is independent of the autolevel floor.
+            minimum_power = (minimum_ma-settings.threshold_current_ma) * (
+                settings.efficiency_mw_per_ma + settings.efficiency_mw_per_ma2 *
+                (minimum_ma-settings.efficiency_ref_ma))
+            nominal_power = (settings.nominal_current_ma-settings.threshold_current_ma) * (
+                settings.efficiency_mw_per_ma + settings.efficiency_mw_per_ma2 *
+                (settings.nominal_current_ma-settings.efficiency_ref_ma))
+            minimum = minimum_power/nominal_power
             level = max(minimum, initial_level)
             coeff = self.atten_coeff(laser) if use_atten_db else None
             limits = {i: getattr(coeff, f"dac{i}").max_calibrated_db if use_atten_db
@@ -5950,7 +5956,10 @@ class HispecFibPcb:
         result = self._request(key, payload)
         if (isinstance(result, Mapping) and result.get("error") is not None
                 and not (_is_atten_cal_status(result) or _is_laser_cal_result(result))):
-            raise HispecFibPCBError(str(result["error"]), response=_to_object(result))
+            message = f"{key}: {result['error']}"
+            if "arg" in result:
+                message += f" (argument: {result['arg']})"
+            raise HispecFibPCBError(message, response=_to_object(result))
         return result
 
     def _request_payload(self, key: str, payload: Mapping[str, Any] | None = None) -> bytes:

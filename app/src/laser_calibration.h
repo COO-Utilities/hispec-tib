@@ -33,7 +33,8 @@ struct laser_calibration_request {
 struct laser_calibration_fit {
 	double threshold_ma;
 	double efficiency_mw_per_ma;
-	float quadratic_correction_mw_per_ma2;
+	double efficiency_ref_ma;
+	float efficiency_mw_per_ma2;
 	double floor_ma;
 	double max_ma; /* Proposed existing maximum; must contain reference and nominal. */
 	double baseline_mv;
@@ -74,7 +75,6 @@ struct laser_calibration_status {
 	enum hispec_laser_id laser;
 	struct laser_calibration_fit fit;
 	struct laser_calibration_route_fit route[2]; /* Requested output, then other output. */
-	uint32_t run_id;
 	uint32_t dwell_ms;
 	float current_ma;
 	int error;
@@ -109,12 +109,6 @@ int laser_calibration_continue(bool set_loopback, double loopback_loss_db,
 
 /** Cancel/join numerical work and stop the owned source; retain raw records. */
 int laser_calibration_stop(struct laser_calibration_status *status);
-
-/** Apply one retained, completed run after review. Requires an accepted core and
- * every requested component; rejects a replaced run ID or active acquisition.
- * May stop emission, block on settings/driver I/O and write NVS. */
-int laser_calibration_apply(uint32_t run_id, bool update_loss, bool update_noise,
-			    bool persist, struct laser_calibration_status *status);
 
 /** Static human-readable failure text, or NULL for success. Specific domain
  * failures keep their cause; unclassified errno uses unexpected error (ENAME). */

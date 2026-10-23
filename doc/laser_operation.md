@@ -9,8 +9,9 @@ provides callable contracts.
 
 ## Power and photon estimates
 
-For current $I$ in mA, threshold $I_t$, efficiency $\eta$ in mW/mA and correction
-$q$ in mW/mA², let $x=\max(0,I-I_t)$ and $x_{ref}=I_{ref}-I_t$:
+For current $I$ in mA, threshold $I_t$, efficiency $\eta$ in mW/mA and quadratic coefficient
+$q$ in mW/mA², let $x=\max(0,I-I_t)$ and $x_{ref}=I_e-I_t$,
+where $I_e$ is the installed `efficiency_ref_ma`, independent of datasheet `ref_ma`:
 
 ```{math}
 P[\mathrm{mW}]=\eta x+q x(x-x_{ref}),\qquad
@@ -19,8 +20,10 @@ P[\mathrm{mW}]=\eta x+q x(x-x_{ref}),\qquad
 ```
 
 The correction defaults to zero. Settings validation requires an increasing curve
-from threshold to maximum. Calibration chooses the true modeled zero and
-reference-average efficiency $P_{ref}/(I_{ref}-I_t)$; automatic operation starts
+from threshold to maximum. Calibration chooses the true modeled zero and preserves the uncorrected
+straight-line fit slope as `efficiency_mw_per_ma`. It derives `efficiency_ref_ma`
+to express the corrected curve with that slope; this is not another fitted degree
+of freedom. Automatic operation starts
 at the independently validated `min_autolevel_current_ma`, above the knee.
 For positive requested power, the stable inverse is
 $I=I_t+2P/[a+\sqrt{a^2+4qP}]$, where $a=\eta-qx_{ref}$.
@@ -46,7 +49,7 @@ are the configured operating temperature and nominal current. At zero current
 the reported nominal wavelength is a convention; no optical line is implied.
 
 For requested brightness $b=\texttt{desired\_power\_percent}/100$, the tuner
-first chooses $I_d=I_t+b(I_{\rm nom}-I_t)$, bounded to the allowed current.
+first chooses $P_d=bP(I_{\rm nom})$ and $I_d=P^{-1}(P_d)$, bounded to the allowed current.
 At $T_0$, compute $\Delta\lambda=\lambda_{\rm requested}-\lambda(I_d,T_0)$.
 Temperature is used first when enabled:
 
@@ -65,8 +68,10 @@ be corrected by current when enabled:
 Clamp the current candidate to the inverse-model bounds corresponding to
 $P(I_d)\pm\delta P_{max}$, intersected with the configured current envelope.
 The budget is optical power; with nonzero correction, equal current steps do
-not imply equal power steps. Manual brightness still uses the current-fraction
-mapping above.
+not imply equal power steps. Manual levels and throughput `initial_level` use
+the same emission fraction. When $q=0$, the inverse reduces to the old
+threshold-to-nominal current interpolation. Reported level is $P(I)/P(I_{\rm nom})$
+at the confirmed setpoint, including quantization and any tuning adjustment.
 
 The final current is bounded, rounded to the 0.1 mA register grid, and used for
 both application and reporting. Residuals are requested minus estimated

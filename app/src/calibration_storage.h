@@ -84,7 +84,6 @@ struct laser_cal_metadata {
 	double dark_variance_mv2;
 	uint8_t fit_support[CALIBRATION_RECORD_COUNT / 8U];
 	uint64_t started_ms;
-	uint32_t run_id;
 	uint32_t dwell_ms;
 	float dac_full_scale_mv[2];
 	float dac_limit_mv[2];
@@ -138,6 +137,5 @@ extern union calibration_scratch calibration_scratch;
 extern struct k_mutex calibration_lock;
 extern struct coo_cmd_response calibration_telemetry;
 extern atomic_t calibration_data_kind;
-extern uint32_t calibration_run_id; /* Updated under calibration_lock. */
 
 #endif

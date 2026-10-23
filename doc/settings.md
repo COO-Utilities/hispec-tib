@@ -173,7 +173,7 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 ## Scoped laser calibration restore
 
 `laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
-compiled threshold/efficiency/zero correction/maximum/autolevel floor/reference/noise
+compiled threshold/efficiency/curve reference/zero correction/maximum/autolevel floor/datasheet reference/noise
 settings and removes only that exact named outbound route override. Nominal current,
 driver identity and current calibration, other TEC policy, return loss and other-output overrides
 remain. Optional persistence writes the laser records and deletes the route's NVS
@@ -182,7 +182,12 @@ and persistence errors are reported separately. Raw calibration data occupies on
 shared RAM dataset for attenuator/laser runs, never NVS. See
 [laser calibration](laser_calibration.md) for mathematical assumptions and stages.
 
-The quadratic correction is a float in the formerly zeroed four-byte tail of the
-144-byte laser policy record. Size and offset are build-asserted. Reference and
-policy are loaded together before validating the corrected model; the reference
-current is part of its definition. No new NVS key or schema reset is introduced.
+The self-contained laser policy record is 152 bytes: the quadratic coefficient
+is a float at offset 140, and `efficiency_ref_ma` is a double at offset 144.
+Size and offsets are build-asserted. Datasheet references load independently and
+do not redefine the installed curve. Existing exact-length validation rejects
+older policy records and keeps compiled policy defaults; no firmware migration,
+new NVS key or global schema reset is introduced. Before flashing this revision,
+archive the laser settings and reinstall them explicitly through `laser/settings`
+with all four curve coefficients. For a previous reference-anchored curve, copying
+its saved `ref_ma` into `efficiency_ref_ma` preserves the represented curve.
