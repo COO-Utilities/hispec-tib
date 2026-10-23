@@ -42,11 +42,47 @@ LLMs Agents: Do NOT change heading names in this file.
   and [fiber paths](hardware_profiles.md). No hardware was operated in this audit.
 
 - [ ] Bench-validate revised laser calibration after FVOA calibration: thermal
-  qualification/settling, overlap normalization, corrected curve and automatic
+  qualification/settling, calibrated FVOA weighting, corrected curve and automatic
   floor/maximum, AO/FEI loss, effective noise, recabling/STOP, default restoration
-  and NVS reboot behavior. Compare 1500 versus 500 mV PD targets before attributing
-  the observed upper-current compression to the diode. Reference anchoring does
-  not establish absolute power independently of the vendor report.
+  and NVS reboot behavior. Multi-level captures below show that the upper-current
+  compression persists at low PD signal. Its physical origin remains unresolved;
+  reference anchoring does not establish power independently of the vendor report.
+  - 2026-10-22/23 multi-level revision (`51891ed`, settling recovery fix `fbe64e7`):
+    every emitting-current portion is sampled at high/low PD signal, with a third
+    upper-band level, early/two-late windows, same-DAC/current returns and three
+    dark groups. The fit uses calibrated transmission and shared per-DAC-pair
+    FVOA RMS uncertainty, not overlap-derived gains. Wavelength coordinates are
+    the independent `wave_ref_nm/ma/temp_c` triplet. Normal/OTA builds, strict
+    Sphinx, temporary real-C acquisition/failure/fit/runtime/dispatcher checks,
+    dense-covariance crosscheck and offline notebook replay pass. Shared data and
+    scratch remain 7680/3584 bytes; static RAM grows 232 bytes and flash about
+    4.7 kB versus the preceding image. On-target stack margins remain unmeasured.
+  - Both new OTAs **succeeded**. Final firmware `fbe64e711b90-dirty`, signed image
+    482636 bytes, confirmed MCUboot hash
+    `7d7524f9c7e8411e8fecc160d6e0d41f273da54fe7561eca489cca6751eea599`.
+    The six policies were explicitly reinstalled for the 168-byte record after
+    the first update and verified across a further reboot. Existing physical
+    wavelength predictions were preserved. Final readback matches all six
+    policies except elapsed-emission counters; source stopped at 0 mA, bank and
+    PD policies `auto`. No fitted curve, noise or route loss was applied.
+  - New 1028y captures: `laser_cal_1028y_20261023T052755_242609Z.pkl` has 192
+    windows at 2 s settling, accepted only 48.3–220.6 mA; the 191-window
+    `laser_cal_1028y_20261023T053942_629881Z.pkl` at 5 s settling is rejected.
+    Both acquisitions completed without overflow. The latter's identical
+    27.3 mA / DAC 3129/3000 return changes 176.48 to 195.91 mV (+11.0%), while
+    the measured dark varies only about 0.25 mV. This is time/history dependence
+    in the measurement chain, not proof of which component changed.
+  - Within fixed DAC pairs, the new 133/250-mA ratios are 0.797–0.853 across
+    305–1423 mV reference signals, versus 0.742–0.756 in the two earlier captures
+    and about 0.52 in the vendor trace. Constant gain normalization cancels in
+    this check. Driver readback follows commanded upper-band current. Neither
+    the fitter revision nor simple high-PD saturation alone explains the curves.
+    The commissioning notebook retains all diagnostic panels, compares these
+    captures and separates observed darks from the rejected candidate baseline.
+    Evidence is under `tools/commissioning_data/laser_multilevel_20261023/`.
+    Independent optical/current metrology and isolating attenuator/path history
+    remain bench questions; do not treat the rejected fit's gain shifts or
+    conditional threshold SE as physical estimates.
   - 2026-10-22 API/curve follow-up (`b3a0056`): manual calibration now uses the
     complete four-coefficient `laser/settings` update, independent of the retained
     dataset and vendor triplet. Removed the retained-run apply API and lab aliases.
