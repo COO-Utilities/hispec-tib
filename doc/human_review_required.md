@@ -47,6 +47,31 @@ LLMs Agents: Do NOT change heading names in this file.
   and NVS reboot behavior. Compare 1500 versus 500 mV PD targets before attributing
   the observed upper-current compression to the diode. Reference anchoring does
   not establish absolute power independently of the vendor report.
+  - 2026-10-22 API/curve follow-up (`b3a0056`): manual calibration now uses the
+    complete four-coefficient `laser/settings` update, independent of the retained
+    dataset and vendor triplet. Removed the retained-run apply API and lab aliases.
+    Levels, initial autolevel and tuning use emission fractions. Efficiency is the
+    uncorrected anchored line's slope on the selected support; the independent
+    `efficiency_ref_ma` preserves the corrected curve. Fixed both the missing
+    command-registry options and the required numeric-parser presence flag.
+    Normal/OTA builds, strict Sphinx, real dispatcher/JSON-handler checks, saved
+    and synthetic fits, acquisition/failure simulation, runtime level/inverse/
+    validation checks, NVS layout/loading, and offline notebook replay/application
+    checks pass. Shared buffers and the 1496-byte laser scratch are unchanged;
+    static RAM grows 100 bytes versus the preceding ELF.
+  - Follow-up OTA **succeeded**: `b3a0056b3196-dirty`, 477928-byte signed image,
+    confirmed MCUboot hash
+    `c9ac7ef7535cd13e4bd7efc7fdc7ddf9e5b3b7f504179cc45fa4f7488635c755`.
+    The real command accepted the new options and returned `pd off`; removed
+    arguments and incomplete curves returned explanatory strings. All six saved
+    policies were explicitly reinstalled into the 152-byte record and matched
+    readback after a further reboot. Existing NTC register quantization changed
+    the displayed -4.4 coefficients to -4.399651 on 1028y/2330k; no new NTC policy
+    was introduced. PD settings are unchanged. Bank remains `override_off`, both
+    PDs off; no optical sweep or new fitted-curve adoption was performed. The
+    parameter probe reported `ENOTSUP` and one transport retry recovered; upload,
+    boot and confirmation completed. Local before/after/reboot snapshots are in
+    `tools/commissioning_data/laser_policy_ota_20261023T011000Z`.
   - 2026-10-22 iteration: normal and OTA Nucleo builds and strict Sphinx build pass.
     Temporary real-C saved-data/synthetic fits, acquisition/failure/application
     simulations, 5000 forward/inverse checks, packet/host decoding and offline
