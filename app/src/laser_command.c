@@ -325,8 +325,8 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->estimated_power_mw, 3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
-			    ",\"nominal_nm\":%.3f,\"tuned_nm\":",
-			    props != NULL ? (double)props->wavelength_nm : 0.0) != 0 ||
+			    ",\"wave_ref_nm\":%.3f,\"tuned_nm\":",
+			    props != NULL ? (double)props->wave_ref_nm : 0.0) != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->estimated_wavelength_nm, 3) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
@@ -495,7 +495,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"efficiency_mw_per_ma2\":%.9g,\"efficiency_ref_ma\":%.9g,"
 		"\"ref_mw\":%.9g,\"ref_ma\":%.1f,\"ref_temp_c\":%.2f,"
 		"\"min_autolevel_current_ma\":%.1f,"
-		"\"wavelength_nm\":%.3f,\"operating_temp_range_c\":[%.2f,%.2f],"
+		"\"wave_ref_nm\":%.6f,\"wave_ref_ma\":%.6f,\"wave_ref_temp_c\":%.6f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
 		"\"isolation_db\":%.2f,\"tec_curr_lim_a\":%.3f,"
 		"\"tec_pid\":{\"p\":%u,\"i\":%u,\"d\":%u},"
@@ -513,7 +513,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		p->efficiency_ref_ma,
 		p->ref_mw, p->ref_ma, p->ref_temp_c,
 		settings->min_autolevel_current_ma,
-		(double)p->wavelength_nm,
+		p->wave_ref_nm, p->wave_ref_ma, p->wave_ref_temp_c,
 		(double)p->operating_temp_range_c.min_c,
 		(double)p->operating_temp_range_c.max_c,
 		(double)p->operating_temp_c,
@@ -580,7 +580,7 @@ static int laser_parse_settings_update(const char *json,
 	}
 	if (coo_json_validate_top_level_keys(json,
 		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,efficiency_mw_per_ma2,efficiency_ref_ma,"
-		"wavelength_nm,current_cal_pct,fractional_noise,constant_noise_mw,ref_mw,ref_ma,ref_temp_c,"
+		"wave_ref_nm,wave_ref_ma,wave_ref_temp_c,current_cal_pct,fractional_noise,constant_noise_mw,ref_mw,ref_ma,ref_temp_c,"
 		"default_operating_temp_c,operating_temp_range_c,tec_curr_lim_a,tec_pid,ntc_coeff_pct_per_c,"
 		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
 		invalid, 64U) != 0) {
@@ -637,7 +637,30 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("ref_mw", settings->properties.ref_mw);
 	LASER_PARSE_FLOAT("ref_ma", settings->properties.ref_ma);
 	LASER_PARSE_FLOAT("ref_temp_c", settings->properties.ref_temp_c);
-	LASER_PARSE_FLOAT("wavelength_nm", settings->properties.wavelength_nm);
+	/* The wavelength and its measurement coordinates form one observation.
+	 * A partial replacement would silently reinterpret the retained slopes. */
+	const char *const wave_keys[] = {"wave_ref_nm", "wave_ref_ma", "wave_ref_temp_c"};
+	double wave[ARRAY_SIZE(wave_keys)] = {0};
+	bool wave_present[ARRAY_SIZE(wave_keys)] = {false};
+	supplied = 0U;
+	for (unsigned i = 0; i < ARRAY_SIZE(wave_keys); ++i) {
+		strcpy(invalid, wave_keys[i]);
+		if (coo_json_extract_optional_double_range(json, wave_keys[i], &wave[i],
+						   &wave_present[i], -DBL_MAX, DBL_MAX) != 0) {
+			return -EINVAL;
+		}
+		supplied += wave_present[i];
+	}
+	if (supplied != 0U && supplied != ARRAY_SIZE(wave_keys)) {
+		strcpy(invalid, "complete wave_ref triplet required");
+		return -EINVAL;
+	}
+	if (supplied != 0U) {
+		settings->properties.wave_ref_nm = wave[0];
+		settings->properties.wave_ref_ma = wave[1];
+		settings->properties.wave_ref_temp_c = wave[2];
+		*changed = true;
+	}
 	LASER_PARSE_FLOAT("fractional_noise", settings->fractional_noise);
 	LASER_PARSE_FLOAT("constant_noise_mw", settings->constant_noise_mw);
 	LASER_PARSE_FLOAT("current_cal_pct",
@@ -958,6 +981,7 @@ int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 		.output = output,
 		.fiber = 'S',
 		.dwell_ms = 1000,
+		.settle_ms = 2000,
 		.loopback_loss_db = loopback,
 		.max_fit_residual_pct = 5.0,
 		.pd_target_mv = 1500.0,
@@ -1007,7 +1031,7 @@ int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	}
 
 	if (coo_json_validate_top_level_keys(cmd->payload,
-		"laser,output,fiber,dwell_ms,determine_static_loss,loopback_loss_db,update_noise,other_output,"
+		"laser,output,fiber,dwell_ms,settle_ms,determine_static_loss,loopback_loss_db,update_noise,other_output,"
 		"persist,apply,max_fit_residual_pct,pd_target_mv", NULL, 0) != 0) {
 		return coo_cmd_error(out, cmd, "unknown calibration option");
 	}
@@ -1021,6 +1045,7 @@ int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	 * simply retain the request defaults above. */
 	bool numeric_option_present = false;
 	if (coo_json_extract_optional_u32(cmd->payload, "dwell_ms", &req.dwell_ms, NULL) != 0 ||
+	    coo_json_extract_optional_u32(cmd->payload, "settle_ms", &req.settle_ms, NULL) != 0 ||
 	    coo_json_extract_optional_bool(cmd->payload, "determine_static_loss", &req.determine_static_loss, NULL) != 0 ||
 	    coo_json_extract_optional_bool(cmd->payload, "update_noise", &req.update_noise, NULL) != 0 ||
 	    coo_json_extract_optional_bool(cmd->payload, "other_output", &req.other_output, NULL) != 0 ||
@@ -1033,6 +1058,9 @@ int laser_calibration_set(const struct coo_cmd_request *cmd, struct coo_cmd_resp
 	}
 	if (req.dwell_ms < 100 || req.dwell_ms > 2000) {
 		return coo_cmd_error(out, cmd, "dwell_ms must be 100..2000");
+	}
+	if (req.settle_ms < 100 || req.settle_ms > 10000) {
+		return coo_cmd_error(out, cmd, "settle_ms must be 100..10000");
 	}
 	if (!apply && persist) {
 		return coo_cmd_error(out, cmd, "persist requires apply");

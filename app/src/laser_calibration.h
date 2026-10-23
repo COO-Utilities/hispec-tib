@@ -20,6 +20,7 @@ struct laser_calibration_request {
 	const char *output; /* Same-band named AO/FEI launch route. */
 	char fiber; /* S or M selects the loopback return. */
 	uint32_t dwell_ms;
+	uint32_t settle_ms;
 	double loopback_loss_db; /* External cable/attenuators only; excludes the PD return. */
 	double max_fit_residual_pct;
 	double pd_target_mv;
@@ -36,11 +37,15 @@ struct laser_calibration_fit {
 	double efficiency_ref_ma;
 	float efficiency_mw_per_ma2;
 	double floor_ma;
-	double max_ma; /* Proposed existing maximum; must contain reference and nominal. */
+	double max_ma; /* Accepted maximum; nominal is lowered with it if necessary. */
 	double baseline_mv;
 	double rms_fraction; /* Mean-curve residuals, separate from temporal noise. */
 	double max_residual_fraction;
 	double threshold_se_ma;
+	double revisit_fraction;
+	double band_fraction;
+	double atten_shift_sigma;
+	double dark_residual_mv;
 	double constant_noise_mw;
 	double fractional_noise;
 	int error;
@@ -76,6 +81,7 @@ struct laser_calibration_status {
 	struct laser_calibration_fit fit;
 	struct laser_calibration_route_fit route[2]; /* Requested output, then other output. */
 	uint32_t dwell_ms;
+	uint32_t settle_ms;
 	float current_ma;
 	int error;
 	uint8_t records;

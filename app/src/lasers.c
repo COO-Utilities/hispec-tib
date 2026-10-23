@@ -2028,7 +2028,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 		 */
 		struct hispec_laser_tune_request request = {
 			.desired_power_percent = percent,
-			.wavelength_nm = props->wavelength_nm + settings.tune_delta_nm,
+			.wavelength_nm = props->wave_ref_nm + settings.tune_delta_nm,
 			.use_current = true,
 			.use_temperature = true,
 			.maximum_power_shift_percent = 100.0,
@@ -2177,7 +2177,9 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !isfinite(props->efficiency_mw_per_ma2) ||
 	    !isfinite(props->efficiency_ref_ma) ||
-	    !float_is_valid(props->wavelength_nm) ||
+	    !float_is_valid(props->wave_ref_nm) ||
+	    !isfinite(props->wave_ref_ma) || props->wave_ref_ma < 0.0 || props->wave_ref_ma > 1000.0 ||
+	    !isfinite(props->wave_ref_temp_c) || props->wave_ref_temp_c < 15.0 || props->wave_ref_temp_c > 40.0 ||
 	    !float_is_valid(settings->current_cal_pct) ||
 	    !float_is_valid(settings->fractional_noise) || settings->fractional_noise < 0.0 ||
 	    !float_is_valid(settings->constant_noise_mw) || settings->constant_noise_mw < 0.0 ||
@@ -2192,8 +2194,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    props->max_current_ma > 1000.0 ||
 	    props->efficiency_mw_per_ma <= 0.0 ||
 	    props->efficiency_mw_per_ma > 100.0 ||
-	    props->wavelength_nm < 1.0 ||
-	    props->wavelength_nm > 10000.0 ||
+	    props->wave_ref_nm < 1.0 ||
+	    props->wave_ref_nm > 10000.0 ||
 	    settings->current_cal_pct < 95.0 ||
 	    settings->current_cal_pct > 105.0 ||
 	    props->tec_curr_lim_a <= 0.0 ||
@@ -2337,7 +2339,9 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		previous.properties.ref_mw != settings->properties.ref_mw ||
 		previous.properties.ref_ma != settings->properties.ref_ma ||
 		previous.properties.ref_temp_c != settings->properties.ref_temp_c ||
-		previous.properties.wavelength_nm != settings->properties.wavelength_nm ||
+		previous.properties.wave_ref_nm != settings->properties.wave_ref_nm ||
+		previous.properties.wave_ref_ma != settings->properties.wave_ref_ma ||
+		previous.properties.wave_ref_temp_c != settings->properties.wave_ref_temp_c ||
 		previous.properties.dlambda_dT_nm_per_k != settings->properties.dlambda_dT_nm_per_k ||
 		previous.properties.dlambda_dA_nm_per_ma != settings->properties.dlambda_dA_nm_per_ma ||
 		previous.min_autolevel_current_ma != settings->min_autolevel_current_ma;
@@ -2592,8 +2596,8 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	    !float_is_valid(fractional_noise) ||
 	    !float_is_valid(constant_noise_mw) ||
 	    fractional_noise < 0.0 || constant_noise_mw < 0.0 ||
-	    !float_is_valid(properties.wavelength_nm) ||
-	    properties.wavelength_nm <= 0.0) {
+	    !float_is_valid(properties.wave_ref_nm) ||
+	    properties.wave_ref_nm <= 0.0) {
 		return -EINVAL;
 	}
 
@@ -2645,12 +2649,13 @@ double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
 		return LASERPROP_NA;
 	}
 	if (current_ma == 0.0) {
-		return properties->wavelength_nm;
+		return properties->wave_ref_nm;
 	}
 
-	delta_i_ma = current_ma - properties->nominal_current_ma;
-	delta_t_c = tec_temperature_c - properties->operating_temp_c;
-	return properties->wavelength_nm +
+	/* Reference coordinates stay fixed when a calibration lowers nominal/max. */
+	delta_i_ma = current_ma - properties->wave_ref_ma;
+	delta_t_c = tec_temperature_c - properties->wave_ref_temp_c;
+	return properties->wave_ref_nm +
 	       delta_t_c * properties->dlambda_dT_nm_per_k +
 	       delta_i_ma * properties->dlambda_dA_nm_per_ma;
 }
@@ -2672,7 +2677,6 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	double delta_remaining_nm;
 	double delta_i_ma;
 	double target_current_ma;
-	double delta_from_current_nm;
 	double estimated_wavelength_nm;
 	double estimated_power_mw;
 	bool temp_clamped = false;
@@ -2708,8 +2712,8 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 		result->target_current_ma = 0.0;
 		result->target_temperature_c = props->operating_temp_c;
 		result->estimated_power_mw = 0.0;
-		result->estimated_wavelength_nm = props->wavelength_nm;
-		result->wavelength_error_nm = request->wavelength_nm - props->wavelength_nm;
+		result->estimated_wavelength_nm = props->wave_ref_nm;
+		result->wavelength_error_nm = request->wavelength_nm - props->wave_ref_nm;
 		if (request->apply) {
 			return hispec_laser_set_current_ma(id, 0.0, error, error_len);
 		}
@@ -2733,9 +2737,8 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	desired_i_ma = clamp_with_flag(desired_i_ma, props->threshold_current_ma,
 					props->max_current_ma, &current_clamped);
 
-	initial_wavelength_nm =
-		(desired_i_ma - props->nominal_current_ma) *
-		props->dlambda_dA_nm_per_ma + props->wavelength_nm;
+	initial_wavelength_nm = hispec_laser_estimate_wavelength_nm(
+		props, props->operating_temp_c, desired_i_ma);
 
 	delta_lambda_nm = request->wavelength_nm - initial_wavelength_nm;
 	if (request->use_temperature) {
@@ -2783,10 +2786,8 @@ int hispec_laser_tune_wavelength(enum hispec_laser_id id,
 	if (!isfinite(target_current_ma)) {
 		return -ERANGE;
 	}
-	delta_from_current_nm = (target_current_ma - props->nominal_current_ma) *
-		props->dlambda_dA_nm_per_ma;
-	estimated_wavelength_nm = props->wavelength_nm +
-				  delta_from_temp_nm + delta_from_current_nm;
+	estimated_wavelength_nm = hispec_laser_estimate_wavelength_nm(
+		props, target_temp_c, target_current_ma);
 	estimated_power_mw =
 		hispec_laser_estimate_power_mw(props, target_current_ma);
 

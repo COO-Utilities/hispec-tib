@@ -12,8 +12,9 @@
 #include <zephyr/sys/atomic.h>
 
 #define CALIBRATION_RECORD_COUNT 128U
-#define LASER_CAL_SEGMENTS 8U
-#define LASER_CAL_GRID_COUNT 64U
+#define LASER_CAL_RECORD_COUNT 240U
+#define LASER_CAL_SEGMENTS 16U
+#define LASER_CAL_GRID_COUNT 24U
 
 enum calibration_data_kind {
 	CALIBRATION_DATA_NONE,
@@ -82,9 +83,12 @@ struct laser_cal_metadata {
 	double segment_mv_per_mw[LASER_CAL_SEGMENTS];
 	double baseline_mv;
 	double dark_variance_mv2;
-	uint8_t fit_support[CALIBRATION_RECORD_COUNT / 8U];
+	double baseline_slope_mv_per_s;
+	float segment_gain_shift[LASER_CAL_SEGMENTS]; /* GLS nuisance estimates; not new FVOA coefficients. */
+	uint8_t fit_support[LASER_CAL_RECORD_COUNT / 8U];
 	uint64_t started_ms;
 	uint32_t dwell_ms;
+	uint32_t settle_ms;
 	float dac_full_scale_mv[2];
 	float dac_limit_mv[2];
 	float temp_min_c;
@@ -104,7 +108,7 @@ union calibration_data {
 	struct {
 		struct laser_cal_metadata meta;
 		struct laser_calibration_status result;
-		struct laser_cal_record records[CALIBRATION_RECORD_COUNT];
+		struct laser_cal_record records[LASER_CAL_RECORD_COUNT];
 		uint16_t grid[LASER_CAL_GRID_COUNT];
 	} laser;
 };
@@ -116,20 +120,29 @@ union calibration_scratch {
 		double segment_rel_var[CALIBRATION_RECORD_COUNT];
 	} atten;
 	struct {
-		/* Record-indexed normalized observations; accumulate normal equations
-		 * in double. This remains smaller than the attenuator scratch member. */
-		float power_mw[CALIBRATION_RECORD_COUNT];
-		float variance_mw2[CALIBRATION_RECORD_COUNT];
-		uint16_t levels[CALIBRATION_RECORD_COUNT];
-		double gain[LASER_CAL_SEGMENTS]; /* Measured mV/mW, including attenuation. */
+		/* Late-condition means/variances; all six-parameter math is streamed.
+		 * These matrices reuse attenuator scratch and avoid an N-by-N matrix. */
+		float mean[LASER_CAL_RECORD_COUNT];
+		float variance[LASER_CAL_RECORD_COUNT];
+		uint8_t include[LASER_CAL_RECORD_COUNT];
+		uint16_t levels[LASER_CAL_GRID_COUNT];
+		double gain[LASER_CAL_SEGMENTS];
+		double transmission[LASER_CAL_SEGMENTS];
+		float gain_shift[LASER_CAL_SEGMENTS];
+		double normal[6][7];
+		double equations[6][7];
+		double beta[6];
 		double dark_variance;
 		double baseline_weight;
 		double baseline_mean;
-		uint8_t include[CALIBRATION_RECORD_COUNT];
+		double time_scale_s;
+		double atten_sigma;
+		double reference_tx;
 	} laser;
 };
 
 BUILD_ASSERT(sizeof(struct laser_cal_record) == 24U);
+BUILD_ASSERT(sizeof(union calibration_data) <= 7680U);
 BUILD_ASSERT(sizeof(union calibration_scratch) <= 3584U);
 
 extern union calibration_data calibration_data;

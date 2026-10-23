@@ -933,7 +933,7 @@ these values feed the existing throughput and splitting calculations.
     "i_mA": 0.0,
     "value": 0.0,
     "power_mw": 0.0,
-    "nominal_nm": 0.0,
+    "wave_ref_nm": 0.0,
     "tuned_nm": 0.0,
     "tune_nm": 0.0,
     "tec_ma": 0.0,
@@ -1017,7 +1017,7 @@ these values feed the existing throughput and splitting calculations.
 - **Notes:** Sets the wavelength tuning request used when running the laser.
   The request is stored by firmware; it does not immediately write TEC
   temperature or laser current. Future positive `laser` value commands apply
-  the stored offset relative to `laser/settings.wavelength_nm`. Reissuing a
+  the stored offset relative to `laser/settings.wave_ref_nm`. Reissuing a
   positive `laser` value after changing value does not require retuning because
   firmware reapplies the stored offset. Setting `laser` value 0 zeros current without issuing STOP
   without clearing the stored tune request. Tuning is best-effort: large shifts
@@ -1093,7 +1093,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "efficiency_mw_per_ma2": 0.0,
       "efficiency_ref_ma": 52.0,
       "ref_mw": 10.0, "ref_ma": 52.0, "ref_temp_c": 25.0,
-      "wavelength_nm": 0.0,
+      "wave_ref_nm": 0.0,
+      "wave_ref_ma": 0.0,
+      "wave_ref_temp_c": 0.0,
       "operating_temp_range_c": [0.0, 0.0],
       "default_operating_temp_c": 0.0,
       "thermistor_kohm": 0.0,
@@ -1142,7 +1144,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     Reference edits stop emission and optionally persist the triplet.
   - The installed curve is `P=x*(efficiency_mw_per_ma + efficiency_mw_per_ma2*(current_ma-efficiency_ref_ma))`,
     with `x=max(0,current_ma-threshold_current_ma)`. Calibration preserves the
-    uncorrected anchored line's slope as efficiency and derives its curve reference
+    uncorrected linear fit's slope as efficiency and derives its curve reference
     to reproduce the corrected fit. That finite reference coordinate is independent
     of `ref_ma`; it need not lie on the current grid or below the hardware maximum.
     Nonzero correction requires it above threshold. Validate a positive derivative
@@ -1166,17 +1168,21 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     1510 = 0.040176; 2330 = 0.00913911.
     The baseline does not change when current output or user property settings
     change. `persist:true` saves both fields with that laser's policy.
-  - It is the user's responsibility to ensure the triple of
-    (`nominal_current_ma`, `default_operating_temp_c`, `wavelength_nm`) is
-    aligned and in sync because these values form the baseline for wavelength
-    tuning.
+  - `wave_ref_nm`, `wave_ref_ma`, `wave_ref_temp_c` describe an independent
+    wavelength measurement. Replace all three together. Wavelength is
+    `wave_ref_nm + (I-wave_ref_ma)*dlambda_dA_nm_per_ma + (T-wave_ref_temp_c)*dlambda_dT_nm_per_k`.
+    The reference current may be 0–1000 mA and temperature 15–40 C, independent
+    of the operating envelope. In particular the 2330 report's 40 C reference
+    is retained while operation is limited to 17–38 C. These are coordinates,
+    not commanded setpoints. `laser/tune` is an offset from `wave_ref_nm`.
   - Positive `laser.value` requests that fraction of `P(nominal_current_ma)`.
     The calibrated inverse chooses current, rounded to the 0.1 mA grid; zero instead
     requests zero current. With zero quadratic coefficient this reduces to
     `threshold_current_ma + value*(nominal_current_ma-threshold_current_ma)`.
     Tuning begins from that emission request and may shift power within its budget.
     Readback reports the modeled emission fraction at the actual setpoint.
-    Nominal current sets the level-1/autolevel ceiling and the wavelength reference.
+    Nominal current sets the level-1/autolevel ceiling; `max_current_ma` is the
+    independent do-not-exceed limit. Neither defines the wavelength reference.
     Changing `current_cal_pct` affects the driver independently; it does not silently
     rescale the optical coefficients. Existing captures retain their recorded model.
   - `default_operating_temp_c` is the persisted TEC startup/baseline setpoint
@@ -1184,10 +1190,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     TEC setpoint. Tuning may write a different live TEC setpoint when a positive
     `laser` value command applies the stored `tune_nm`, but it does not overwrite
     `default_operating_temp_c`.
-  - Changing `default_operating_temp_c` changes the baseline used by future tune
-    calculations. Existing `tune_nm` remains stored, but the next positive
-    `laser` value command may compute a different TEC/current point from the new
-    baseline.
+  - Changing `default_operating_temp_c` changes the initial TEC setpoint used
+    by tuning. The wavelength reference and stored `tune_nm` remain fixed; the
+    next positive output request solves from the new initial temperature.
   - `operating_temp_range_c` programs the writable TEC minimum/maximum during
     preparation. Firmware expands the old range if needed, moves the default
     target, then narrows it. A range-only change stops emission and invalidates
@@ -1223,7 +1228,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `laser/bankpower` is `override_off`, driver-backed settings changes return
     an error.
   - Send only independent settings being changed. A curve replacement is the
-    exception: send all four curve coefficients together.
+    exception: send all four curve coefficients together. A wavelength-reference
+    replacement likewise requires the complete `wave_ref_*` triplet.
   - The overcurrent threshold is the maximum current the driver will allow the laser to run at and requires physically 
     adjusting a potentiometer on the driver. It has a (weak) temperature dependence and is not a fixed value.
   - Actual changes to threshold, nominal current, efficiency, quadratic correction, wavelength,
@@ -1266,7 +1272,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     - `dlambda_dT_nm_per_k`
     - `dlambda_dA_nm_per_ma`
     - `disable_tec_at_autooff`
-    - `wavelength_nm`
+    - `wave_ref_nm`, `wave_ref_ma`, `wave_ref_temp_c`
     - `threshold_current_ma`
     - `efficiency_mw_per_ma`
     - `efficiency_mw_per_ma2`
@@ -1298,6 +1304,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     "output": "yj_ao",
     "fiber": "S",
     "dwell_ms": 1000,
+    "settle_ms": 2000,
     "apply": true,
     "max_fit_residual_pct": 5.0,
     "pd_target_mv": 1500.0,
@@ -1308,7 +1315,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   }
   ```
   `laser` and same-band `output` are required. Other values shown are defaults.
-  `fiber` is `S` or `M`; dwell is 100–2000 ms. Residual tolerance is strictly
+  `fiber` is `S` or `M`; dwell is 100–2000 ms and settling is 100–10000 ms.
+  Each current receives high/low PD conditions (plus a middle level in the upper
+  block), with one early and two late windows per condition. Only late windows fit. Residual tolerance is strictly
   between 0 and 100 percent; PD target is strictly between 0 and 1850 mV.
   Loss estimation requires `determine_static_loss:true` plus explicit nonnegative
   `loopback_loss_db` for **external** cable/attenuators, excluding the configured
@@ -1326,8 +1335,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
   loss replaces the external loss for the second output. Restore stops the owned
   operations and restores compiled threshold, efficiency, curve reference, zero quadratic
-  correction, maximum, automatic floor, reference and noise; it removes the named
-  outbound override. Identity, current calibration, nominal current, other TEC
+  correction, maximum and nominal, automatic floor, reference and noise; it removes the named
+  outbound override. Identity, current calibration, independent `wave_ref_*`, other TEC
   settings, return loss and the other output's override are preserved.
 - **Response:** status separates acquisition (`state`, `acquisition_complete`,
   `error`) from `fit`, `noise` and `routes`. Each result reports acceptance/validity,
@@ -1341,7 +1350,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
   - `apply:true` automatically installs an accepted threshold, linear-fit
-    efficiency, quadratic coefficient, curve reference, automatic floor and maximum. This is the
+    efficiency, quadratic coefficient, curve reference, automatic floor and maximum. Nominal is lowered with the maximum
+    when necessary; neither wavelength references nor the datasheet power triplet
+    move with it. This is the
     field default and requires no notebook. Loss and noise adoption are opt-in.
     `persist:true` also requests NVS; `apply:false,persist:true` is rejected.
   - Commissioning uses `apply:false,persist:false`, saves raw data, reviews the
@@ -1354,11 +1365,19 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     and recabling. Other mutations are busy; STOP/zero and bank-off remain available.
     With automatic application, accepted first-stage changes survive a later
     second-stage failure. The source is off during the recabling pause.
+  - Fitting uses calibrated FVOA transmission and stored RMS as common gain
+    uncertainty for each exact DAC pair. Same-current ratios and revisits test
+    consistency; they do not set the normalization. Every fitted current must
+    have two usable PD levels. A changed revisit, unstable dark, inconsistent
+    attenuation levels or insufficient precision rejects automatic application.
+    The widest passing contiguous interval is used, with a line preferred over
+    a quadratic when both pass. A measured power reference can lie outside that
+    interval; future starts still require it inside the installed hardware limits.
   - MQTT binary queries `laser/calibrate/records` and
     `laser/calibrate/records/<chunk>` retrieve metadata and raw chunks. Starting
     either optical calibration replaces the shared dataset. Save it first.
   - Python: `laser_calibrate(name, ..., apply=True, max_fit_residual_pct=5.0,
-    pd_target_mv=1500.0, determine_static_loss=False, loopback_loss_db=None,
+    settle_ms=2000, pd_target_mv=1500.0, determine_static_loss=False, loopback_loss_db=None,
     update_noise=False, other_output=False, persist=False)`;
     `laser_calibrate_continue(loopback_loss_db=None)`, `laser_calibrate_stop()`,
     `laser_calibration_data()`, and

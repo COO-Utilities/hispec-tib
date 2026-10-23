@@ -29,13 +29,13 @@ Runtime ownership is:
   transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
-- `laser_calibration.c`: reference-anchored current acquisition, measured-overlap
-  normalization, bounded linear/quadratic fitting, effective noise estimates and
-  accepted-core-gated application. Laser scratch uses 1496 bytes within the existing
-  3584-byte shared union; its 128 raw windows occupy 3072 bytes. The host can review
-  the exact 16-byte support mask in 428-byte metadata, then install reviewed
-  coefficients through ordinary laser settings. Automatic application remains
-  the embedded default and requires no host review.
+- `laser_calibration.c`: paired high/low PD acquisition across the current range,
+  calibrated-attenuation raw-PD fitting with common RMS uncertainty, effective
+  noise estimates and accepted-core-gated application. Laser scratch uses 3296
+  bytes within the existing 3584-byte shared union; 240 raw windows occupy 5760
+  bytes. The exact 30-byte support mask and fit diagnostics accompany 614-byte
+  metadata. Autonomous application remains the embedded default; the host can
+  review and install a saved complete curve through ordinary laser settings.
 - `calibration_fit.c`: the allocation-free two-parameter double solver shared
   by attenuator and laser fits. `calibration_storage.c` owns their shared static
   dataset, scratch, data mutex and best-effort telemetry buffer.
@@ -359,10 +359,10 @@ Stop and error cleanup preserve them. No second record buffer is allocated.
 Either an attenuator or laser start replaces the shared raw dataset, after
 cancel/join and confirmed shutdown of the previous owner. Applied settings survive.
 Laser fitting uses the same priority/cancellation discipline; it retains PD
-auto-off inhibition through optional lower-boundary refinement and the emission-off
+auto-off inhibition through paired sweeps, identical-condition revisits and the emission-off
 recabling pause, releasing it at completion, error or stop. The laser status uses an
 explicit `fitting` state. Data and scratch unions stay at 7680 and 3584 bytes;
-128 laser records use 3072 bytes, with bounded metadata and <=1 KiB numerical
+240 laser records use 5760 bytes, with 576-byte in-memory metadata and 3296-byte numerical
 scratch. The throughput stack remains 4096 bytes. Details are in
 [laser_calibration.md](laser_calibration.md).
 

@@ -40,11 +40,14 @@ can be retried with more damping; cancellation and other errors terminate.
 The diagonal damping is in the caller's coordinates, so changing parameter units
 changes the numerical problem. Attenuator calibration holds the inferred floor
 fixed while fitting two shape parameters, then uses its own correction solver.
-Laser calibration derives measured segment normalization from overlaps and uses
-`calibration_solve_2x2` directly for a reference-anchored Chebyshev quadratic.
-It also uses that solve for nonnegative noise variances; it does not invoke the
-Gauss–Newton optimizer. Baseline and normalization are frozen before its curve solve.
-These are distinct objectives, not interchangeable uses of one generic fit.
+Laser calibration uses calibrated FVOA transmission and streams rank-one common
+attenuation uncertainty into a raw-PD generalized least-squares problem. It
+profiles scalar baseline/reference nuisance coordinates, then reuses
+`calibration_solve_2x2` for the remaining Chebyshev shape coordinates. At most six
+unknowns and two small matrices fit in the existing shared scratch buffer.
+It also reuses that solve for nonnegative noise variances. The bounded covariance
+iteration does not invoke the Gauss–Newton optimizer. These remain distinct
+physical objectives, not interchangeable uses of a generic fit.
 
 Numerical work temporarily uses priority 14 with the calibration control mutex
 released. Stop/start cancels and joins before reusing the shared dataset/scratch.

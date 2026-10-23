@@ -11,7 +11,7 @@ atomic_t calibration_data_kind;
 /* Keep the original attenuator RAM envelope. Laser wire encoding is explicit,
  * but its in-memory records must also remain 24 bytes to meet the point budget. */
 BUILD_ASSERT(sizeof(struct laser_cal_record) == 24);
-BUILD_ASSERT(sizeof(struct laser_cal_metadata) <= 512);
+BUILD_ASSERT(sizeof(struct laser_cal_metadata) <= 640);
 BUILD_ASSERT(sizeof(calibration_data) == 7680);
 BUILD_ASSERT(sizeof(calibration_scratch) == 3584);
 /* Laser normalization reuses the larger attenuator workspace; no extra RAM. */

@@ -488,7 +488,7 @@ class LaserStatus(ResponseRepr):
     i_mA: float | None
     value: float | None
     power_mw: float | None
-    nominal_nm: float
+    wave_ref_nm: float
     tuned_nm: float | None
     tune_nm: float
     tec_ma: float | None
@@ -530,7 +530,9 @@ class LaserSettings(ResponseRepr):
     ref_mw: float
     ref_ma: float
     ref_temp_c: float
-    wavelength_nm: float
+    wave_ref_nm: float
+    wave_ref_ma: float
+    wave_ref_temp_c: float
     operating_temp_range_c: tuple[float, float]
     default_operating_temp_c: float
     thermistor_kohm: float
@@ -775,6 +777,7 @@ class LaserCalibrationStatus(ResponseRepr):
     output: str
     records: int
     dwell_ms: int
+    settle_ms: int
     current_ma: float
     acquisition_complete: bool
     overflow: bool
@@ -815,7 +818,7 @@ LASER_CAL_DTYPE = np.dtype([
     ("flags", "u1"),            # 23: classification/event/output
 ])
 _LASER_CAL_STATES = ("inactive", "running", "fitting", "awaiting_output", "complete", "stopped", "error")
-_LASER_CAL_EVENTS = ("sweep", "probe", "overlap", "reference", "dark", "refine")
+_LASER_CAL_EVENTS = ("sweep", "probe", "reserved", "reference", "dark", "revisit")
 
 
 @dataclass(frozen=True, repr=False)
@@ -824,7 +827,8 @@ class LaserCalibrationDataset(ResponseRepr):
 
     records is the exact 24-byte wire dtype. Current = current_tenth_ma / 10;
     DAC mV = dacN_code * meta['dac_full_scale_mv'][N-1] / 4096. Flags bits 0..1
-    are ok/saturated/below_snr/adc_error, bits 2..4 index meta['events'], bit 7
+    are ok/saturated/below_snr/adc_error, bits 2..4 index meta['events'];
+    bit 5 marks early and bit 6 the second late window. Bit 7
     selects the other output. RMS is population RMS; unbiased reading variance
     is rms_mv**2 * good / (good-1), only for good > 1. Settings and inferred loss
     are assumptions, not independent optical measurements.
@@ -3634,19 +3638,19 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 428-byte metadata packet; no requests or state changes.
+    """Decode the fixed 614-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 428 or payload[:5] != b"HLC1\x03":
+    if len(payload) != 614 or payload[:5] != b"HLC1\x04":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
     state, laser, channel, fiber, fei, options, size, count, per_chunk, segments = payload[5:15]
     if (state >= len(_LASER_CAL_STATES) or laser >= len(LASER_NAMES) or channel > 1
             or chr(fiber) not in FIBERS or fei > 1 or size != LASER_CAL_DTYPE.itemsize
-            or count > 128 or per_chunk == 0 or segments > 8):
+            or count > 240 or per_chunk == 0 or segments > 16):
         raise HispecFibError("invalid laser calibration metadata")
 
     # Bytes 16..27: acquisition timing; no host archive identifier is on the wire.
@@ -3676,16 +3680,21 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
-    # Bytes 316..427: policy, measured normalization and exact firmware support.
+    # Bytes 316..613: policy, calibrated gains, exact support and diagnostics.
     residual_limit, target_mv = struct.unpack_from("<2d", payload, 316)
-    segment_gain = struct.unpack_from("<8d", payload, 332)
-    baseline, dark_variance = struct.unpack_from("<2d", payload, 396)
-    support = np.unpackbits(np.frombuffer(payload[412:428], dtype=np.uint8), bitorder="little")
+    segment_gain = struct.unpack_from("<16d", payload, 332)
+    baseline, dark_variance = struct.unpack_from("<2d", payload, 460)
+    support = np.unpackbits(np.frombuffer(payload[476:506], dtype=np.uint8), bitorder="little")
     meta.update(
         max_fit_residual_pct=residual_limit,
         pd_target_mv=target_mv,
         segment_mv_per_mw=segment_gain,
         baseline_mv=baseline,
+        settle_ms=struct.unpack_from("<I", payload, 506)[0],
+        baseline_slope_mv_per_s=struct.unpack_from("<d", payload, 510)[0],
+        segment_gain_shift=struct.unpack_from("<16f", payload, 518),
+        diagnostics=dict(zip(("revisit_fraction", "band_fraction", "atten_shift_sigma", "dark_residual_mv"),
+                             struct.unpack_from("<4d", payload, 582))),
         dark_variance_mv2=dark_variance,
         fit_support=tuple(bool(v) for v in support[:count]),
         state=_LASER_CAL_STATES[state],
@@ -4750,7 +4759,9 @@ class HispecFibPcb:
         ref_mw: float | None = None,
         ref_ma: float | None = None,
         ref_temp_c: float | None = None,
-        wavelength_nm: float | None = None,
+        wave_ref_nm: float | None = None,
+        wave_ref_ma: float | None = None,
+        wave_ref_temp_c: float | None = None,
         current_cal_pct: float | None = None,
         fractional_noise: float | None = None,
         constant_noise_mw: float | None = None,
@@ -4775,7 +4786,9 @@ class HispecFibPcb:
         of threshold_current_ma, efficiency_mw_per_ma, efficiency_mw_per_ma2 and
         efficiency_ref_ma together; zero curvature selects a linear model.
         efficiency_ref_ma is a curve coordinate, independent of the datasheet
-        ref_ma. Other policy/noise/reference settings remain partial updates.
+        ref_ma. Replace wave_ref_nm/wave_ref_ma/wave_ref_temp_c together;
+        their measurement coordinates are independent of operating setpoints.
+        Other policy/noise/power-reference settings remain partial updates.
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
         program Maiman. Existing settings-command emission/monitor stop behavior
@@ -4799,7 +4812,9 @@ class HispecFibPcb:
             ref_mw=ref_mw,
             ref_ma=ref_ma,
             ref_temp_c=ref_temp_c,
-            wavelength_nm=wavelength_nm,
+            wave_ref_nm=wave_ref_nm,
+            wave_ref_ma=wave_ref_ma,
+            wave_ref_temp_c=wave_ref_temp_c,
             current_cal_pct=current_cal_pct,
             fractional_noise=fractional_noise,
             constant_noise_mw=constant_noise_mw,
@@ -4819,6 +4834,9 @@ class HispecFibPcb:
         if curve_keys.intersection(settings) and not curve_keys.issubset(settings):
             missing = ", ".join(sorted(curve_keys.difference(settings)))
             raise HispecFibError(f"Complete curve required; missing {missing}")
+        wave_keys = {"wave_ref_nm", "wave_ref_ma", "wave_ref_temp_c"}
+        if wave_keys.intersection(settings) and not wave_keys.issubset(settings):
+            raise HispecFibError("Complete wave_ref triplet required")
         for key in ("fractional_noise", "constant_noise_mw", "min_autolevel_current_ma"):
             if key in settings and (not math.isfinite(settings[key]) or settings[key] < 0):
                 raise HispecFibError(f"{key} must be finite and nonnegative")
@@ -4858,7 +4876,9 @@ class HispecFibPcb:
                 ref_mw=float(settings["ref_mw"]),
                 ref_ma=float(settings["ref_ma"]),
                 ref_temp_c=float(settings["ref_temp_c"]),
-                wavelength_nm=float(settings["wavelength_nm"]),
+                wave_ref_nm=float(settings["wave_ref_nm"]),
+                wave_ref_ma=float(settings["wave_ref_ma"]),
+                wave_ref_temp_c=float(settings["wave_ref_temp_c"]),
                 operating_temp_range_c=(
                     float(settings["operating_temp_range_c"][0]),
                     float(settings["operating_temp_range_c"][1]),
@@ -5374,6 +5394,7 @@ class HispecFibPcb:
         output: str | None = None,
         fiber: Literal["M", "S"] = "S",
         dwell_ms: int = 1000,
+        settle_ms: int = 2000,
         apply: bool = True,
         max_fit_residual_pct: float = 5.0,
         pd_target_mv: float = 1500.0,
@@ -5390,7 +5411,12 @@ class HispecFibPcb:
         Accepted threshold/efficiency/correction/floor/maximum apply automatically
         unless apply=False. The firmware performs acceptance and application;
         no external review is needed. persist opts into NVS and requires apply.
-        Efficiency is ref_mw/(ref_ma-threshold), and the floor excludes the knee.
+        Efficiency is the uncorrected linear-fit slope on the same support.
+        Every sampled current has high/low PD conditions; the upper block has
+        a middle level too. Retain one early and two late windows per condition;
+        settle_ms measures from actuation to the first late window. The joint
+        raw-PD fit uses calibrated FVOA transmission with shared RMS uncertainty.
+        A lower accepted maximum also lowers nominal when necessary.
         Noise remains diagnostic unless update_noise=True. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
         other_output requires loss fitting and pauses for physical recabling;
@@ -5399,7 +5425,7 @@ class HispecFibPcb:
         """
         # Only a call with all defaults is a query. Incomplete start arguments
         # must fail rather than silently returning status without starting.
-        if (name is None and output is None and fiber == "S" and dwell_ms == 1000
+        if (name is None and output is None and fiber == "S" and dwell_ms == 1000 and settle_ms == 2000
                 and not determine_static_loss and loopback_loss_db is None
                 and not update_noise and not other_output and not persist and apply
                 and max_fit_residual_pct == 5.0 and pd_target_mv == 1500.0):
@@ -5414,6 +5440,10 @@ class HispecFibPcb:
         dwell_ms = _require_nonnegative_u32("dwell_ms", dwell_ms)
         if not 100 <= dwell_ms <= 2000:
             raise HispecFibError("dwell_ms must be 100..2000")
+
+        settle_ms = _require_nonnegative_u32("settle_ms", settle_ms)
+        if not 100 <= settle_ms <= 10000:
+            raise HispecFibError("settle_ms must be 100..10000")
 
         if not apply and persist:
             raise HispecFibError("persist requires apply")
@@ -5434,6 +5464,7 @@ class HispecFibPcb:
             output=output,
             fiber=fiber,
             dwell_ms=dwell_ms,
+            settle_ms=settle_ms,
             apply=bool(apply),
             max_fit_residual_pct=float(max_fit_residual_pct),
             pd_target_mv=float(pd_target_mv),

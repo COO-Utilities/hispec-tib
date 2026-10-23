@@ -115,7 +115,7 @@ struct app_nvs_laser_policy {
 	double threshold_current_ma;
 	double min_autolevel_current_ma;
 	double efficiency_mw_per_ma;
-	double wavelength_nm;
+	double wave_ref_nm;
 	double current_cal_pct;
 	double fractional_noise;
 	double constant_noise_mw;
@@ -136,9 +136,12 @@ struct app_nvs_laser_policy {
 	float efficiency_mw_per_ma2;
 	/* The installed curve owns its reference independently of the vendor triplet. */
 	double efficiency_ref_ma;
+	/* Independent wavelength measurement coordinates, not operating limits. */
+	double wave_ref_ma;
+	double wave_ref_temp_c;
 };
 
-BUILD_ASSERT(sizeof(struct app_nvs_laser_policy) == 152);
+BUILD_ASSERT(sizeof(struct app_nvs_laser_policy) == 168);
 BUILD_ASSERT(offsetof(struct app_nvs_laser_policy, efficiency_mw_per_ma2) == 140);
 BUILD_ASSERT(offsetof(struct app_nvs_laser_policy, efficiency_ref_ma) == 144);
 
@@ -540,7 +543,9 @@ static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
 	stored->efficiency_mw_per_ma = laser->properties.efficiency_mw_per_ma;
 	stored->efficiency_mw_per_ma2 = laser->properties.efficiency_mw_per_ma2;
 	stored->efficiency_ref_ma = laser->properties.efficiency_ref_ma;
-	stored->wavelength_nm = laser->properties.wavelength_nm;
+	stored->wave_ref_nm = laser->properties.wave_ref_nm;
+	stored->wave_ref_ma = laser->properties.wave_ref_ma;
+	stored->wave_ref_temp_c = laser->properties.wave_ref_temp_c;
 	stored->current_cal_pct = laser->current_cal_pct;
 	stored->fractional_noise = laser->fractional_noise;
 	stored->constant_noise_mw = laser->constant_noise_mw;
@@ -856,7 +861,9 @@ static void app_nvs_apply_laser_policy(struct app_laser_channel_settings *laser,
 	laser->properties.efficiency_mw_per_ma = stored->efficiency_mw_per_ma;
 	laser->properties.efficiency_mw_per_ma2 = stored->efficiency_mw_per_ma2;
 	laser->properties.efficiency_ref_ma = stored->efficiency_ref_ma;
-	laser->properties.wavelength_nm = stored->wavelength_nm;
+	laser->properties.wave_ref_nm = stored->wave_ref_nm;
+	laser->properties.wave_ref_ma = stored->wave_ref_ma;
+	laser->properties.wave_ref_temp_c = stored->wave_ref_temp_c;
 	laser->current_cal_pct = stored->current_cal_pct;
 	laser->fractional_noise = stored->fractional_noise;
 	laser->constant_noise_mw = stored->constant_noise_mw;
