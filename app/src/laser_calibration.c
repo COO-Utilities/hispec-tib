@@ -1270,6 +1270,12 @@ static int check_temperature(void)
 		run.stable_temperatures = 0;
 		run.phase = PHASE_WARM;
 	} else if (run.phase == PHASE_WARM && ++run.stable_temperatures >= 3) {
+		/* Thermal qualification can interrupt a longer requested settling wait.
+		 * It does not replace that wait before the first late window. */
+		if (run.condition_window == 1 && now - run.condition_started_ms < meta.settle_ms) {
+			run.phase = PHASE_SETTLE;
+			return 0;
+		}
 		return begin_window(run.event);
 	}
 
