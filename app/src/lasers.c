@@ -2652,7 +2652,7 @@ double hispec_laser_estimate_wavelength_nm(const laserprops_t *properties,
 		return properties->wave_ref_nm;
 	}
 
-	/* Reference coordinates stay fixed when a calibration lowers nominal/max. */
+	/* Wavelength coordinates stay fixed when power calibration or limits change. */
 	delta_i_ma = current_ma - properties->wave_ref_ma;
 	delta_t_c = tec_temperature_c - properties->wave_ref_temp_c;
 	return properties->wave_ref_nm +

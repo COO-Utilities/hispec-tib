@@ -5408,7 +5408,7 @@ class HispecFibPcb:
 
         Start stops throughput/laser outputs, routes to a powered and dark-calibrated
         PD, holds ref_temp_c, and steps current from configured maximum to zero.
-        Accepted threshold/efficiency/correction/floor/maximum apply automatically
+        Accepted threshold/efficiency/correction/floor apply automatically
         unless apply=False. The firmware performs acceptance and application;
         no external review is needed. persist opts into NVS and requires apply.
         Efficiency is the uncorrected linear-fit slope on the same support.
@@ -5416,7 +5416,12 @@ class HispecFibPcb:
         a middle level too. Retain one early and two late windows per condition;
         settle_ms measures from actuation to the first late window. The joint
         raw-PD fit uses calibrated FVOA transmission with shared RMS uncertainty.
-        A lower accepted maximum also lowers nominal when necessary.
+        The fitted interval includes the power reference and configured maximum;
+        maximum and nominal are never changed. Residuals allow the requested
+        fraction plus three measured standard errors. Vendor comparison uses
+        that fraction of vendor reference power plus three fitted-power SEs.
+        Revisit/dark inconsistency rejects the selected curve without retrying
+        another floor; cross-attenuation/gain-shift diagnostics have no veto.
         Noise remains diagnostic unless update_noise=True. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
         other_output requires loss fitting and pauses for physical recabling;

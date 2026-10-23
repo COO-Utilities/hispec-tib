@@ -37,7 +37,7 @@ struct laser_calibration_fit {
 	double efficiency_ref_ma;
 	float efficiency_mw_per_ma2;
 	double floor_ma;
-	double max_ma; /* Accepted maximum; nominal is lowered with it if necessary. */
+	double max_ma; /* Fitted sweep endpoint; configured maximum/nominal are preserved. */
 	double baseline_mv;
 	double rms_fraction; /* Mean-curve residuals, separate from temporal noise. */
 	double max_residual_fraction;

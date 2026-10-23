@@ -1343,7 +1343,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
 - **Response:** status separates acquisition (`state`, `acquisition_complete`,
   `error`) from `fit`, `noise` and `routes`. Each result reports acceptance/validity,
   application and persistence separately. Errors are strings or `null`, for example
-  `"pd off"`, `"too non-linear"`, `"insufficient precision for residual limit"`, or
+  `"pd off"`, `"full-range residual exceeds uncertainty allowance"`,
+  `"curve disagrees with vendor characterization"`, or
   `"unexpected error (EIO)"`. The last form uses the actual errno name only when
   no more specific explanation is available. Numerical rejection retains data
   and does not turn completed acquisition into acquisition failure.
@@ -1354,9 +1355,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
   - `apply:true` automatically installs an accepted threshold, linear-fit
-    efficiency, quadratic coefficient, curve reference, automatic floor and maximum. Nominal is lowered with the maximum
-    when necessary; neither wavelength references nor the datasheet power triplet
-    move with it. This is the
+    efficiency, quadratic coefficient, curve reference and automatic floor. Maximum
+    and nominal current, wavelength references and the datasheet power triplet
+    are preserved. This is the
     field default and requires no notebook. Loss and noise adoption are opt-in.
     `persist:true` also requests NVS; `apply:false,persist:true` is rejected.
   - Commissioning uses `apply:false,persist:false`, saves raw data, reviews the
@@ -1372,11 +1373,15 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - Fitting uses calibrated FVOA transmission and stored RMS as common gain
     uncertainty for each exact DAC pair. Same-current ratios and revisits test
     consistency; they do not set the normalization. Every fitted current must
-    have two usable PD levels. A changed revisit, unstable dark, inconsistent
-    attenuation levels or insufficient precision rejects automatic application.
-    The widest passing contiguous interval is used, with a line preferred over
-    a quadratic when both pass. A measured power reference can lie outside that
-    interval; future starts still require it inside the installed hardware limits.
+    have two usable PD levels. Search only the lowest usable floor, with a line
+    preferred when both orders pass; the fit must include the power reference
+    and reach the configured maximum. PD residuals allow the requested fraction
+    plus three measured standard errors. Immutable unit-specific vendor traces
+    allow that fraction of vendor reference power plus three fitted-power SEs.
+    Cross-attenuation/gain-shift diagnostics have no separate veto. Check repeats
+    and darks once after selecting the curve; measurement inconsistency rejects
+    the whole calibration without another floor search. See
+    [acceptance](laser_calibration.md#curve-meaning-and-acceptance) for equations.
   - MQTT binary queries `laser/calibrate/records` and
     `laser/calibrate/records/<chunk>` retrieve metadata and raw chunks. Starting
     either optical calibration replaces the shared dataset. Save it first.

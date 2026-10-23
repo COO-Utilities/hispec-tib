@@ -52,10 +52,38 @@ LLMs Agents: Do NOT change heading names in this file.
 
 - [ ] Bench-validate revised laser calibration after FVOA calibration: thermal
   qualification/settling, calibrated FVOA weighting, corrected curve and automatic
-  floor/maximum, AO/FEI loss, effective noise, recabling/STOP, default restoration
+  floor and full configured range, AO/FEI loss, effective noise, recabling/STOP, default restoration
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-10-23 full-range acceptance revision: calibration now preserves maximum
+    and nominal current, fits through the configured maximum with its reference
+    inside support, and searches only the floor. Residuals allow 5% plus three
+    measured SEs; immutable unit-specific vendor traces allow 5% of vendor
+    reference power plus three fitted-power SEs. Cross-attenuation/gain-shift
+    vetoes are removed; GLS uncertainty and raw diagnostics remain. Repeat/dark
+    controls run once after selection; failure rejects the whole calibration.
+    The fresh 18:19/18:24/18:28 UTC captures completed with the ranging fallback.
+    Offline real-C replay of those records rejects 1028y through 250 mA (best
+    full-range candidate has 10.04% raw maximum residual); 1430yj accepts 6–60 mA
+    with threshold 4.266 +/- 0.006 mA conditional SE. The lowest 1270j candidate,
+    9.8–65 mA, passes curve/vendor tests but fails the final dark check: 0.594 mV
+    residual versus 0.484 mV allowance. The earlier 11.7–65 estimate checked darks
+    during interval selection; the approved once-after-selection rule does not
+    retry that floor. This is a control/model inconsistency, not proof of diode
+    nonlinearity or a component-level physical diagnosis.
+    Temporary real-C saved/synthetic replays, acquisition/failure/application
+    simulations, independent dense GLS/covariance checks, all six vendor-table
+    compression bounds, offline plot/manual-install checks, normal/OTA builds
+    and strict Sphinx pass. Flash grows 2040 bytes; static RAM, shared buffers,
+    settings and retained-data layouts are unchanged. No permanent test tooling
+    was added. The notebook marks threshold/SE, floor and configured maximum,
+    separates supported curve from extrapolation, preserves all diagnostics and
+    refuses partial-range manual installs. Owner options, outputs and captures
+    are preserved. Evidence is in `/private/tmp/laser-fullrange-20261023/`.
+    No hardware action or OTA was performed for this revision; on-target behavior,
+    control interpretation and the 1028y measurement-chain cause remain bench
+    validation work.
   - 2026-10-23 morning follow-up: the 179-window 1028y run accepted only
     43.9–191.1 mA; the 168-window 1270j run stopped before fitting with
     `usable pd range not found`. Its 19/219/1840 mV probes were valid, including

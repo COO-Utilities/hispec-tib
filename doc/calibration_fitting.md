@@ -43,7 +43,7 @@ fixed while fitting two shape parameters, then uses its own correction solver.
 Laser calibration uses calibrated FVOA transmission and streams rank-one common
 attenuation uncertainty into a raw-PD generalized least-squares problem. It
 profiles scalar baseline/reference nuisance coordinates, then reuses
-`calibration_solve_2x2` for the remaining Chebyshev shape coordinates. At most six
+`calibration_solve_2x2` for the remaining Chebyshev shape coordinates. At most five
 unknowns and two small matrices fit in the existing shared scratch buffer.
 It also reuses that solve for nonnegative noise variances. The bounded covariance
 iteration does not invoke the Gauss–Newton optimizer. These remain distinct
