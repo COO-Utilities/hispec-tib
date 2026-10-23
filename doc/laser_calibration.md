@@ -75,6 +75,12 @@ is an acquisition failure. Fit rejection does not change acquisition completion.
 Raw data survive rejection and STOP until either optical calibration starts again
 or the controller reboots.
 
+The commissioning notebook provides three successive source subsections for the
+selected channel, each with its own run switch and saved-data review. It reports
+acquisition failure separately from fit rejection. When acquisition fails before
+fitting, raw diagnostic panels remain available and residual panels explain the
+missing curve and report the acquisition error.
+
 ## Raw-PD fit and uncertainty
 
 At current $I_i$, elapsed time $t_i$ and exact DAC pair $j$, fit

@@ -47,6 +47,25 @@ LLMs Agents: Do NOT change heading names in this file.
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-10-23 morning follow-up: the 179-window 1028y run accepted only
+    43.9–191.1 mA; the 168-window 1270j run stopped before fitting with
+    `usable pd range not found`. Its 19/219/1840 mV probes were valid, including
+    the final 1931 mV peak. Preferred 1850 mV ranging headroom was incorrectly
+    treated as a validity requirement. Fix `0a810f3` falls back to the closest
+    valid retained probe, restores its exact DAC pair and takes fresh windows;
+    fitting and classification thresholds are unchanged. Targeted real-C probe
+    checks, full acquisition simulations, normal/OTA builds and strict Sphinx
+    pass. Shared buffers and static RAM are unchanged; OTA flash grows 112 bytes.
+    OTA succeeded: firmware `0a810f371ffa-dirty`, boot 8, image 482748 bytes,
+    confirmed hash `6a5eaa451c959c5783d5277dd5c8b1bfca28af0fca93163591fc85be6ce41017`.
+    All six laser policies and both PD settings match pre-update readback; bank
+    policy restored to `auto`, all laser outputs stopped. No curve/noise/loss
+    applied. A fresh physical acquisition with the fallback remains to be run.
+    The notebook now has three explicit source subsections per channel, clear
+    acquisition/fit outcomes and explanations in absent-residual panels. Offline
+    morning and earlier accepted/rejected replays pass; original captures and
+    all diagnostic panels are retained. Local OTA snapshots and checks are in
+    `/private/tmp/laser-notebook-morning/`.
   - 2026-10-22/23 multi-level revision (`51891ed`, settling recovery fix `fbe64e7`):
     every emitting-current portion is sampled at high/low PD signal, with a third
     upper-band level, early/two-late windows, same-DAC/current returns and three
