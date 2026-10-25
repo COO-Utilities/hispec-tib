@@ -168,7 +168,35 @@ not be needed for normal serial operation.
 
 ---
 
+(ota-permissions)=
+## Commands while OTA is active
+
+The dispatcher checks the matched table entry's `ota_query_allowed` or
+`ota_effect_allowed` after dequeue and before invoking the handler or recording
+an effect as `lastcommand`. Both permissions default to false. This covers
+requests queued before OTA entry as well as new MQTT/serial requests.
+
+| Commands | Queries | Effects |
+| --- | --- | --- |
+| `ota`, `serialguard` | allowed | allowed |
+| `reboot` | unsupported | allowed |
+| `help`, `help/options`, `status`, `temps` | allowed | disallowed |
+| `ip`, `mqtt`, `time`, `laser/bankpower` | allowed | disallowed |
+| All other application commands | disallowed | disallowed |
+
+A blocked operation returns `{"error":"command unavailable during OTA"}`.
+Unknown commands, invalid payloads, unsupported operations, and unavailable board
+features retain their usual errors. Serial guard can still reject MQTT effects,
+including `ota` effects; OTA permission does not override it. Serial `help` remains
+an immediate console operation, allowed during OTA.
+
+The restriction lasts through window close if an admitted SMP operation is still
+finishing, a candidate is pending, or the running image is an unconfirmed trial.
+Bank-mode writes are all blocked, even a repeated `override_off` in payload or
+suffix form. After successful confirmation the operator must select `auto`.
+
 ## Command Endpoints
+
 - [`help`](#help)
 - [`help/options`](#help-options)
 - [`status`](#status)
@@ -522,33 +550,6 @@ while serial guard is active and attenuator DAC-range clamping.
   metadata. Once a reboot is pending, later commands are rejected before app
   handlers run.
 
-(ota-permissions)=
-### Commands while OTA is active
-
-The dispatcher checks the matched table entry's `ota_query_allowed` or
-`ota_effect_allowed` after dequeue and before invoking the handler or recording
-an effect as `lastcommand`. Both permissions default to false. This covers
-requests queued before OTA entry as well as new MQTT/serial requests.
-
-| Commands | Queries | Effects |
-| --- | --- | --- |
-| `ota`, `serialguard` | allowed | allowed |
-| `reboot` | unsupported | allowed |
-| `help`, `help/options`, `status`, `temps` | allowed | disallowed |
-| `ip`, `mqtt`, `time`, `laser/bankpower` | allowed | disallowed |
-| All other application commands | disallowed | disallowed |
-
-A blocked operation returns `{"error":"command unavailable during OTA"}`.
-Unknown commands, invalid payloads, unsupported operations, and unavailable board
-features retain their usual errors. Serial guard can still reject MQTT effects,
-including `ota` effects; OTA permission does not override it. Serial `help` remains
-an immediate console operation, allowed during OTA.
-
-The restriction lasts through window close if an admitted SMP operation is still
-finishing, a candidate is pending, or the running image is an unconfirmed trial.
-Bank-mode writes are all blocked, even a repeated `override_off` in payload or
-suffix form. After successful confirmation the operator must select `auto`.
-
 (ota)=
 ### `ota`
 
@@ -561,7 +562,7 @@ standalone bench build omits this command. See [firmware updates](ota.md).
   ```
   `enabled` means the UDP maintenance window is open. `active` additionally
   includes an operation finishing after close, a pending candidate, or an
-  unconfirmed/expired trial; it activates the command permissions below.
+  unconfirmed/expired trial; it activates the [OTA command permissions](#ota-permissions).
   `remaining_s` and `trial_remaining_s` are rounded-up seconds. `image_hash` is
   MCUboot's SHA256 of the running header/body, not the whole-file SHA256 or the
   Git build string. `max_image_size` is generated from the slot geometry and

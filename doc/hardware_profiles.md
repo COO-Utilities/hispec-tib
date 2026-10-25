@@ -9,8 +9,8 @@ the installed switch/patch mapping.
 The functional paths follow `devices.c` route tables, with component and port
 labels from the [schematic and placement files](hardware.md#source-drawings-and-revision-boundaries).
 They are useful route views, not a newly certified as-built fiber patch drawing.
-The AS red-branch discrepancy and missing physical termination evidence are
-explicit below and in the [review ledger](human_review_required.md).
+The AS red-branch discrepancy is explicit below and in the
+[review ledger](human_review_required.md).
 
 The figures support zoom/fullscreen for reading connector labels.
 
@@ -27,9 +27,11 @@ valid identity clears other app settings at the next boot.
 | HK CAL / `cal_hk` | D36 / PB10 | `hsfib-rcal` | Same route shape, wavelength-appropriate fiber components |
 | AS / `as` | D38 / PE6 | `hsfib-as` | 6 FFSW switches, no attenuators used |
 
-All assemblies use the Nucleo/network and ambient sensor. CAL includes smaller-core
-multimode and single-mode component variants; confirm installed part/fiber choices
-from the assembly record, since the electronic profile does not encode core size.
+All assemblies use the Nucleo/network and ambient sensor. Each CAL assembly uses
+**two smaller-core multimode FFSW variants and five single-mode FFSWs**. HK uses
+wavelength-appropriate, electrically identical variants of the YJ components.
+The electronic profile does not encode fiber core size; use the assembly record
+to identify the component fitted at a particular switch position.
 
 ## TIB: launch and return
 
@@ -111,9 +113,8 @@ optical outputs.
 
 YJ and HK CAL use this topology. PCB `Cal` capitalization is retained below;
 API names are lower-case. `lfc` is the frequency-comb input, `etalon` the etalon,
-`bb` the broadband source and `cathgas` the cathode/gas source. API `nm` selects
-the branch called Dark in the hardware notes; its actual termination/source
-meaning requires owner confirmation.
+`bb` the broadband source and `cathgas` the cathode/gas source. API `nm` means
+**narcissus mirror**, the formal name for the Dark source in the hardware notes.
 
 ```{mermaid}
 flowchart LR
@@ -125,7 +126,7 @@ flowchart LR
   C1 -->|state A| C4["cal4<br/>SW1_Cal4 / sw4"]
   C2 -->|state B| C4
   C4 -->|state B| C5["cal5<br/>SW1_Cal5 / sw5"]
-  NM["nm / Dark branch<br/>physical termination unverified"] -->|state A| C5
+  NM["nm / Dark source<br/>narcissus mirror"] -->|state A| C5
   C5 --> C7["cal7<br/>SW1_Cal7 / sw7"]
   C7 -->|state A; optical B| SPEC["spec / SPEC"]
   C7 -->|state B; optical C| TIB["tib / TIB"]

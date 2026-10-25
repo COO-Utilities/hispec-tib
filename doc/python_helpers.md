@@ -92,6 +92,20 @@ nonfinite numbers and objects without a JSON representation fail locally.
 A reported partial board error can leave successful hardware writes applied;
 query confirmed state before deciding the next action.
 
+`atten_coeff()` accepts an `AttenuatorPhysicalCoeff`, a mapping with wire field
+names, or a flat sequence for each physical drive. The sequence has **five or
+eleven values**, in this order:
+
+```text
+fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, max_calibrated_db
+[, c0, c1, c2, c3, c4, c5]
+```
+
+The six optional terms form `correction_coeff`. Use a mapping or dataclass to
+include `rms_db`; it has no positional slot. Named fields are easier to review
+than a long sequence. The helper checks sequence length to assign those names;
+the PCB checks the coefficient values, completeness and model validity.
+
 ## Included tools and their side effects
 
 | Tool | Purpose | Hardware / lifecycle |
@@ -156,8 +170,21 @@ The collector decodes outside Paho's callback, retains a finite sample deque
 (default 20,000), and counts all decoded records in `samples_received`, including
 those displaced from the deque. `clear()` clears local samples/events, not the
 measurement. `arrays("field")` or `arrays("field1", "field2")` returns snapshots.
-Command events retain host issue/receipt times and board `ack_utc_ms`; an ACK is
-command completion, not optical settling. Missing replies have no board ACK.
+
+`command_events` is a DataFrame snapshot with these columns:
+
+| Columns | Meaning |
+|---|---|
+| `command`, `arguments` | Wire command key and encoded argument dictionary |
+| `issue_utc_ms`, `receipt_utc_ms` | Host UTC milliseconds at issue and reply receipt; receipt is absent if no reply arrives |
+| `ack_utc_ms`, `ack_clock` | Board dispatch-completion UTC milliseconds; `ack_clock` is `board_utc` |
+| `ok`, `error` | Request completion status and failure text |
+
+An ACK marks command completion, not optical settling. Missing replies have no
+board ACK. Host and board timestamps belong to different clocks. Their difference includes
+clock offset as well as transport/dispatch time; it is not by itself a latency
+measurement. The [command callback](#command-callbacks-and-notebooks) receives the
+same dictionary without needing a collector.
 
 In Jupyter, use `%matplotlib widget`, then keep the result of
 `monitor.plot_live()` referenced. Its panels show linear throughput, a separate
@@ -222,6 +249,16 @@ It opens selected FVOAs from maximum drive, then can vary laser level.
 `use_atten_db=True` uses calibrated dB; `attenuators=(1,)`, `(2,)` or `()` selects
 which devices may move; `vary_laser=False` holds the chosen `initial_level`.
 
+The local search band must be finite and satisfy
+$0<\mathtt{min\_mv}<\mathtt{max\_mv}\le2000$ mV. These are bounds on the
+search's dark-subtracted PD result; raw overrange is checked separately. A weak
+signal can use `min_mv=100, max_mv=200` rather than the default 800–1200 mV.
+
+**Current limitation:** when a search reaches the laser-adjustment step,
+`get_some_signal()` references an undefined `span` and raises `NameError`.
+`vary_laser=False` avoids that branch and searches with the selected FVOAs only.
+The laser-adjustment stopping criterion needs correction before using that path.
+
 The default dwell is 0.5 s followed by three fresh records after board ACK with
 matching confirmed current/DAC settings. At most 80 moves are tried. Success is
 a three-record mean inside the inclusive requested band with no raw overrange.
@@ -249,6 +286,21 @@ variances add. Static calibration, dark-mean and model residual errors are
 excluded; measured dark already contains quantization. A forced dark is not
 measured detector noise. The default 10 mV drive RMS is an explicit assumption,
 not a scope result. Returned DataFrame attributes retain units/bandwidth/provenance.
+
+Use ENBW for the [full detector/acquisition response](photodiode_notes.md#sensitivity-and-noise-bandwidth),
+and supply drive RMS over the applicable bandwidth. The helper assumes independent
+drives; [correlation and filtering](attenuator.md#transmission-uncertainty) require
+more information than two scalar RMS values.
+
+For saved records lacking individual slope fields,
+`historical_model_rms_db=(r1, r2)` enables the existing aggregate calculation.
+It subtracts recorded laser fractional variance and the supplied static fit-RMS
+variance from delivered-power fractional variance, clips a negative remainder
+to zero, and rescales from the recorded 10 mV drive-noise assumption. This needs
+the fit RMS values used for that capture and **equal requested RMS for both
+drives**. Individual drive terms remain NaN because the aggregate cannot separate
+them. Without slopes or this explicit input, electrical and combined RMS are
+unavailable. Current records with slopes use those slopes directly.
 
 ## Electrical output-power estimate
 
@@ -281,5 +333,5 @@ request result. Assign `None` to detach; the client keeps no separate history.
 `tools/attenuator_calibration_lab.ipynb` and `tools/temp_test.ipynb` are experiments
 built on this tool. Run their cells deliberately: saved outputs are observations,
 and a notebook may change routing, power, calibration or persistent settings.
-The [thermal report](temp_test_result.md) retains evidence relevant to present
+The [thermal report](temp_test_result.md) retains measurements relevant to present
 laser settings and fault interpretation.

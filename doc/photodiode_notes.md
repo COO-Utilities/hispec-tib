@@ -133,7 +133,73 @@ Calibration examines the raw **maximum** of each window, since a single clipped
 sample can bias an otherwise plausible mean. The source-error estimate may still
 be finite: it describes a different part of the measurement.
 
+Detector outputs were observed to saturate around **10.3–11.4 V** in lab tests.
+The current divider maps that to 2.06–2.28 V, beyond the ADC's approximately
+2.048 V rail (10.24 V at the detector output). The ADC therefore clips first
+for those observed detector limits. Use the 2000 mV operating limit when
+planning measurements; a flat ADC trace cannot locate detector saturation.
+
 Responsivity/gain drift, illuminated shot noise and physical settling have no
 separate measured terms in this firmware error budget. The host
 [temporal-noise helpers](python_helpers.md#noise-calculations) support explicit
 comparisons without conflating those terms with static model accuracy.
+
+## Detector response references
+
+These digitized responsivity curves are inputs for optical calculations, in
+**A/W**, rather than measurements of the installed channels. The complete data
+are available as {download}`Femto FWPR-20-IN CSV <reference_data/femto_fwpr20in_responsivity.csv>`
+(9 points) and {download}`Thorlabs PDA10DT CSV <reference_data/thorlabs_pda10dt_responsivity.csv>`
+(96 points, 1400–2350 nm in 10 nm steps).
+
+```{figure} figures/photodiode_responsivity.svg
+:alt: Femto responsivity rises from 0.2 A/W at 900 nm to about 0.95 A/W near 1500 nm and falls at 1700 nm; Thorlabs rises from about 0.5 A/W at 1400 nm to about 1.25 A/W near 2200 nm.
+
+Reference responsivity samples. Connecting lines guide interpolation within the
+tabulated ranges; they do not establish an installed-channel calibration.
+```
+
+| TIB wavelength (nm) | YJ reference (A/W) | HK reference (A/W) |
+|---|---|---|
+| 1028 | 0.656, linearly interpolated | — |
+| 1270 | 0.85 | — |
+| 1430 | 0.93 | 0.5264 |
+| 1510 | — | 0.60971 |
+| 2330 | — | 1.23378 |
+
+The firmware uses the configured nominal responsivity per channel (0.93 for YJ,
+0.60971 for HK); it does not interpolate these files. The known-source wavelength
+correction table remains unity. Keep that distinction when comparing modeled
+optical power at different wavelengths with reported nW.
+
+### Sensitivity and noise bandwidth
+
+The [Femto receiver specification](https://www.femto.de/images/pdf-dokumente/de-fwpr-20-in.pdf)
+gives $10^{11}$ V/A at a load of at least 100 kΩ, a 20 Hz −3 dB bandwidth,
+110 pW optical saturation for linear amplification at 1550 nm, and NEP
+$7.5\ \mathrm{fW}/\sqrt{\mathrm{Hz}}$ at 1550 nm and 1 Hz. Its electrical test
+conditions include ±15 V supply, 25 °C and 20 minutes of warm-up. These receiver
+figures precede the PCB divider/filter and ADC.
+
+For a white input-referred noise density NEP and a normalized full-chain response
+$H(f)$, the corresponding ADC voltage RMS is
+
+```{math}
+B_{\rm ENBW}=\int_0^\infty |H(f)|^2\,df,\qquad
+\sigma_{V,\rm detector}=G R\,\mathrm{NEP}\sqrt{B_{\rm ENBW}}.
+```
+
+$G$ already includes the 0.2 divider; NEP and $R$ must refer to the same
+wavelength. A single RC pole alone has
+$B_{\rm ENBW}=\pi f_c/2$, about 33.2 Hz for the PCB's 21.2 Hz pole. The full
+response also contains the detector and ADC filters. Neither the HK 500 Hz
+selector nor the stream's 10 Hz Nyquist frequency is the full-chain ENBW.
+For nonwhite noise, integrate its power spectral density through $|H(f)|^2$
+instead of treating one quoted NEP as constant across the band.
+
+For collected data, measured dark RMS is the empirical detector/ADC noise term;
+do not add a datasheet NEP estimate or quantization to it again. Illuminated
+shot noise and FVOA drive noise are separate temporal contributions. Use the
+[noise calculation helper](python_helpers.md#noise-calculations) with an explicit
+bandwidth and the [attenuator noise assumptions](attenuator.md#transmission-uncertainty)
+when comparing a scope measurement with PD scatter.

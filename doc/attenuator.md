@@ -7,6 +7,30 @@ approximates a Gaussian mode clipped by a moving edge, with a finite leakage flo
 and an empirical correction. [Automatic calibration](attenuator_calibration.md)
 measures the two devices separately using overlapping detector ranges.
 
+## Nominal FVOA response
+
+The digitized nominal curve provides a useful scale for planning a sweep:
+attenuation changes rapidly over roughly 2.2–3.2 V **at the FVOA, after the
+amplifier**. Manufacturing variation shifts this transition, so these points
+cannot substitute for an individual device's calibration. The
+{download}`complete 20-point CSV <reference_data/fvoa_nominal_attenuation.csv>`
+preserves the approximate zero-drive value and the lower bound at 5 V.
+
+```{figure} figures/fvoa_nominal_attenuation.svg
+:alt: Nominal attenuation increases from approximately zero at 0 V through 5 dB at 2.23 V and 30 dB at 2.69 V to 59 dB at 3.18 V; the 5 V sample is a lower bound greater than 65 dB.
+
+Nominal drive curve and its transition region. The 5 V point means **greater
+than 65 dB**, not an exact 65 dB measurement or a fitted continuation.
+```
+
+The firmware's 55 dB per-device calibrated ceiling is a separate operating
+constraint. A nominal curve extending beyond it does not establish supported
+accuracy there. The manual Python grid fitter uses the first 19 nominal points
+with a finite 0.5 dB anchor at zero drive; it omits the 5 V lower bound. That
+numerical anchor is not a measured insertion loss. See
+[manual grid fitting](python_helpers.md#calibration-datasets-and-manual-grids)
+for the distinction between its exploratory fit and the firmware model.
+
 ## Voltage, transmission and dB
 
 Let $v$ be DAC output in mV, $g$ the amplifier gain (default 1.533), $v_{50}$
@@ -94,6 +118,23 @@ curve RMS is not temporal noise; it does not average away with stream length.
 No frequency-response or averaging correction is inferred from scope RMS.
 The [Python noise tools](python_helpers.md#noise-calculations) can evaluate
 separate measured drive RMS values without changing firmware settings.
+
+For two correlated drives, independence is an additional assumption. With signed
+FVOA-side slopes $a_i=dA_i/du_i$ and correlation $\rho$, their electrical term is
+
+```{math}
+\sigma_{A,\rm electrical}^2=a_1^2\sigma_{u_1}^2+a_2^2\sigma_{u_2}^2
+ +2a_1a_2\rho\sigma_{u_1}\sigma_{u_2}.
+```
+
+The firmware and helper use $\rho=0$. Shared supply/reference fluctuations can
+correlate the drives; two separate scope RMS readings do not determine that
+cross term. A frequency-resolved calculation uses each drive's power spectrum
+and their cross spectrum, integrated through the optical/detector/ADC response.
+Apply that response once: a drive RMS already restricted to the applicable
+bandwidth must not receive a second filtering reduction. The
+[PD bandwidth discussion](photodiode_notes.md#sensitivity-and-noise-bandwidth)
+defines ENBW and explains why sample rate alone is insufficient.
 
 ## Implementation contracts
 

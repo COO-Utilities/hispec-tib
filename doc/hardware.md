@@ -6,7 +6,7 @@ a BOM describes assembly population. Neither alone certifies an installed board.
 
 ## Source drawings and revision boundaries
 
-The repository contains the following evidence, added in commit `2fd8e87`:
+Use these source drawings and assembly files:
 
 - {download}`Schematic print <../pcb/FIB_Switcher TIB Schematic Print.PDF>`:
   52 PDF pages, with some sheets dated 21 October 2026. PDF page numbers below
@@ -55,13 +55,35 @@ and {download}`MCU reference <stm32h563zi.pdf>`.
 | Laser Modbus RX/TX | PD6/PD5, D52/D53, CN9 4/6 | USART2, THVD1429 RS-485 |
 | RS-485 enable | PD4, D54, CN9 8 | GPIO active high |
 | Laser-bank enable | PB2, D72, CN9 13 | GPIO active low, default off |
-| Relay 1-Wire | PE9, D71, CN9 15 | UART12 RX, TX/RX swap, single-wire open drain |
-| Ambient 1-Wire | PG1, D64, CN9 30 | UART9 TX, single-wire open drain, DS18B20 |
+| Relay 1-Wire | PE9, D71, CN9 15 | UART12 RX, AF6, TX/RX swap, single-wire open drain |
+| Ambient 1-Wire | PG1, D64, CN9 30 | UART9 TX, AF11, single-wire open drain, DS18B20 |
 | FFLS status 1/2 | PF7/PF9, D62/D63 | PCB pull-ups; overlay inputs, unused by firmware |
 
 The two devices at address 0x48 are on different buses. Check bus identity before
 interpreting an address scan. `app/boards/nucleo_h563zi.overlay` supplies the exact
 pin configuration; `devices.c` maps profile names and logical channels.
+
+Addresses below are **7-bit I2C addresses**, without the read/write bit:
+
+| Device | Address strap | Installed selection |
+|---|---|---|
+| ADS1115 U4, I2C1 | ADDR to GND: 0x48; to VDD: 0x49 | GND, 0x48 |
+| DAC7678PW U8/U9, I2C2 | ADDR to GND: 0x48; to AVDD: 0x4A; floating: 0x4C | U8: 0x4A; U9: 0x48 |
+| PCAL6416A U7, I2C2 | ADDR low: 0x20; high: 0x21 | High, 0x21 |
+
+The [DAC address table](https://www.ti.com/lit/ds/symlink/dac7678.pdf)
+depends on package: these are the single-address-pin TSSOP-16 parts.
+
+| Nucleo connector | Purpose | USB signal pins |
+|---|---|---|
+| CN1, ST-Link USB-C | Programming/debugging and ST-Link virtual COM port | Debugger MCU: D+ PB15, D− PB14, CC1 PC3, CC2 PC4 |
+| CN13, user USB-C | USB connection directly to the STM32H563 | Target MCU: D+ PA12, D− PA11, CC1 PB13, CC2 PB14 |
+| CN14, RJ45 | Ethernet for MQTT and OTA | — |
+| CN5, MIPI20 | External SWD/JTAG/trace debugger | See Nucleo manual table 6 |
+
+CN1 and CN13 connect to **different MCUs**; their similarly named pins are not
+shared target pins. The connector names and USB mappings are in Nucleo manual
+tables 18–19. Use CN1 for the [USB firmware procedure](ota.md#usb-provisioning-and-local-development).
 
 Required MB1404 solder bridges: PB2 uses SB61 OFF/SB66 ON; PE9 uses SB35 OFF/SB67
 ON. The installed-clock assumption is “HSE not used”: SB48/SB50 ON, SB49 OFF,
@@ -78,10 +100,29 @@ pull-ups and **active-low PCAL logic**: logical inactive gives an external low
 control line, and logical active creates a high pulse at the switch. A GPIO
 `output-low` flag describes logical state, not necessarily low voltage at the pin.
 
+The [PCAL specification](https://www.nxp.com/docs/en/data-sheet/PCAL6416A.pdf)
+allows up to 25 mA sink and 10 mA source per pin, subject to its voltage and
+package limits. The external MOSFETs supply the switch-coil current. The Zephyr
+driver initializes full drive strength and push-pull operation. Output mode is
+selected per eight-bit port; TIB's port 0 mixes FFLS and FFSW controls, so the
+common push-pull configuration serves both stage types.
+
 | Stage | Parts verified in schematic/BOM | Function |
 |---|---|---|
 | FFSW | Two NTGD4167CT1G complementary MOSFET packages per switch, Q6/Q7; 4.7 kΩ resistors | Coil drive for 20 ms firmware pulses |
 | FFLS (TIB only) | DMP3085LSD-13 dual P-channel packages Q4/Q5 | Large-core switch drive for 50 ms pulses |
+
+Each FFSW control has a 4.7 kΩ pull-up to 5 V: about 1.06 mA flows through that
+resistor when its PCAL output is low, or up to 2.1 mA for the two-line stage.
+The NTGD4167 is the PCB's complementary N/P MOSFET implementation of Agiltron's
+SI3552DV reference stage. FFLS gate controls lack these external pull-ups.
+An open-drain conversion would require gate pull-ups; unpopulated FFSW-stage
+pads provide possible connection points where present. The current push-pull
+configuration does not require that modification.
+
+FFLS status inputs have separate 10 kΩ pull-ups to 3.3 V (R11/R12) and 10 kΩ
+series resistors (R13/R14), shown on page 48 and specified in TIB BOM row 36.
+These are sense-line components, not gate pull-ups.
 
 TIB BOM rows 32–33 and NoTIB row 26 agree with the schematic's stage names. Both switch types latch;
 firmware limits actuation to five pulses/s. FFLS status low indicates position B,
@@ -113,9 +154,15 @@ CAL's one logical pair, not a separately verified AS population manifest.
 DAC AVDD/reference are 3.3 V; LDAC is grounded. Ideal 12-bit output is
 $V=3.3n/4096$ volts for code 0…4095. Amplifiers drive the FVOAs toward 5 V.
 Firmware's gain is a model coefficient; distinguish it from the resistor-derived
-gain and the measured post-amplifier voltage. The FVOA datasheet allows 6 V;
-lab resistance observations were 530–616 Ω. Verify actual supply/headroom and
-loading before interpreting a saturated drive as extra attenuation.
+gain and the measured post-amplifier voltage.
+
+The FVOA is a resistive load without polarity. The datasheet lists 6 V maximum
+drive and 220 mW maximum consumption at full attenuation. Their ratio is
+36.7 mA, the design current allowance; it is not a separately specified current
+limit. Bench supply/ammeter measurements found **530–616 Ω**, typically about
+615 Ω. At 5 V that implies about 8.1–9.4 mA per FVOA. The OPA2991, rather than
+the DAC, supplies this load. Verify actual supply/headroom and loading before
+interpreting a saturated drive as extra attenuation.
 
 | API channel | PCB attenuator label | DAC/address | DAC1 / DAC2 outputs |
 |---|---|---|---|
@@ -161,8 +208,26 @@ states gain in **kV/A**. Firmware effective transimpedance includes the divider;
 applying it twice would corrupt power.
 [Sampling and uncertainty](photodiode_notes.md) explains clipping and dark capture.
 
-### TIB route-loss defaults
+### Static attenuation requirements
 
+The optical simulations determined these anticipated attenuation requirements.
+They retain the signed power-ratio convention, $10\log_{10}T$: negative dB means
+loss. The static component supplies the least-negative end of the required range;
+the variable attenuation supplies the remaining span.
+
+| Wavelength (nm) | Anticipated attenuation | Variable span | Static attenuation |
+|---|---|---|---|
+| 1028 | -90.0 to -73.0 dB | 17.0 dB | **-73.0 dB** |
+| 1270 | -70.0 to -40.0 dB | 30.0 dB | **-40.0 dB** |
+| 1430 | Fixed | 0.0 dB | **-100.0 dB** |
+| 1510 | -80.0 to -33.0 dB | 47.0 dB | **-33.0 dB** |
+| 2330 | -73.0 to -3.0 dB | 70.0 dB | **-3.0 dB** |
+
+These simulation-derived requirements are distinct from the compiled whole-route
+defaults below and from an installed route's measured loss. Firmware attenuation
+commands use **positive loss in dB**; do not send these signed values directly.
+
+### TIB route-loss defaults
 
 The compiled YJ values in `devices.c` are provisional **whole-route** losses,
 shared by AO and FEI. They include the internal static loss; external test-path
@@ -248,4 +313,4 @@ model. For a PD fault, check relay state, input voltage, ADC raw code and config
 dark before interpreting computed nW. For a laser fault, preserve controller
 readbacks and communication errors separately from cached current/power estimates.
 The [review ledger](human_review_required.md) records unresolved drawing/firmware
-questions; a drawing export date alone does not resolve installed-board evidence.
+questions; use the installed configuration when resolving them.
