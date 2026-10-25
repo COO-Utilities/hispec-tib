@@ -227,12 +227,8 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Command/API Mismatches
-- [ ] Repair or remove the Python CLI `atten-db` entry. `main()` calls
-  `fib.atten_db(args.laser)`, but `HispecFibPcb` exposes `atten()` and has no
-  `atten_db()` method. The CLI therefore raises `AttributeError` after connecting.
-  Decide whether to print the full `AttenuatorState` or just its dB field.
-  This audit documents `pcb.atten(name)` as the working query and leaves code
-  behavior unchanged.
+- [x] Python CLI `atten-db` calls `atten()` and prints the full `AttenuatorState`,
+  including dB loss. Offline CLI dispatch and request/response checks pass.
 
 - [ ] Decide throughput shutdown ownership across tuning and policy-only
   settings changes. `laser_tune_set()` releases a matching monitor before

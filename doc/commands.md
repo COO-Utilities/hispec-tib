@@ -13,6 +13,12 @@ explicit values. Normal command methods decode the matching firmware response
 without issuing an extra readback. The dedicated guide explains the additional
 operations performed by acquisition and plotting helpers.
 
+The PCB owns command validation. The Python command wrappers send encodable
+arguments, including deliberately invalid values and incomplete updates, to
+firmware and preserve its error response. Python checks only requirements of its
+own encoding, local calculations, collection and decoding; it does not duplicate
+the firmware's allowed values or argument rules.
+
 
 ## MQTT Topics (roles)
 

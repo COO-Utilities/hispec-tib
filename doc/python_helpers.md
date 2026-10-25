@@ -6,6 +6,10 @@ telemetry and includes collectors, typed records and analysis helpers. **It is n
 the official Python API**, which is maintained outside this repository. Firmware
 field definitions remain in the [control and telemetry specification](commands.md).
 
+**The PCB owns command validation.** The helper sends encodable arguments to
+firmware, including invalid values supplied deliberately to test rejection. It
+does not maintain another set of device limits, allowed names or argument rules.
+
 ## Setup and connection
 
 Use Python 3.11 or newer. From the repository directory:
@@ -74,10 +78,18 @@ pcb.ip(try_dhcp_first=False)              # False is an update
 pcb.laser_tune("1028y", tune_nm=0)       # Zero resets stored tune request
 ```
 
-`HispecFibError` covers host validation/transport/decode failures.
-`HispecFibPCBError` is a board error response, with `.topic` and `.response`
-preserving diagnostic evidence. Local validation does not replace firmware
-validation. A reported partial error can leave successful hardware writes applied;
+Firmware checks command types, ranges, names, required fields and combinations.
+For example, an incomplete laser curve or a negative PD gain reaches the PCB;
+the helper reports its rejection as `HispecFibPCBError`, preserving `.topic`
+and `.response`. It does not turn strings into numbers, truncate durations or
+convert arbitrary values to booleans to make a request pass validation.
+
+Python checks only its own requirements: JSON encoding, positional argument
+shapes needed to assign field names, local calculation inputs, collector setup
+and response decoding. NumPy numbers and arrays encode as their JSON equivalents;
+nonfinite numbers and objects without a JSON representation fail locally.
+`HispecFibError` covers these local failures and transport failures.
+A reported partial board error can leave successful hardware writes applied;
 query confirmed state before deciding the next action.
 
 ## Included tools and their side effects
@@ -102,6 +114,9 @@ query confirmed state before deciding the next action.
 and return `OtaStatus`. They require an OTA-enabled firmware build; they do not
 perform an image upload or turn bank power off. `tools/hispec_ota.py` combines
 those commands with the Python SMP client to perform a verified network update.
+Omitting `duration_s` from `set_ota_window(True)` uses the firmware's 600-second
+default. Explicit fields are sent even when firmware will reject their combination,
+such as a duration supplied with `set_ota_window(False, duration_s=10)`.
 
 Follow [firmware updates and OTA](ota.md) for workspace/tool installation, USB
 provisioning, artifact selection, the complete helper workflow and recovery.
@@ -129,7 +144,10 @@ finally:
 
 For a named source, supply `output` such as `yj_ao`; `autolevel=True` starts and
 controls that source. With `collect=True`, the helper also queries laser policy
-and attenuator coefficients for display limits. Firmware defaults to a 300-second
+and attenuator coefficients for display limits and needs a channel for the local
+collector; supply `channel` if it cannot infer one from the laser name. With
+`collect=False`, the command goes to firmware without a local channel lookup.
+Firmware defaults to a 300-second
 measurement lifetime; zero disables expiry. Manual laser/attenuator changes
 disable adjustment but retain streaming and owned-laser shutdown. See
 [throughput lifetime](throughput.md#lifetime-manual-changes-and-failure).
@@ -193,8 +211,8 @@ replacement for firmware calibration.
 From `tools/`, `python hispec_fibpcb.py --help` lists the small CLI. For example,
 `python hispec_fibpcb.py --host broker.example --device hsfib-tib status` connects,
 queries and closes. `warnings` keeps listening until interrupted. The `atten-db`
-CLI entry currently calls a missing helper; use `pcb.atten(name)` in Python until
-the [review item](human_review_required.md#commandapi-mismatches) is resolved.
+CLI entry queries the attenuator pair and displays its state, including dB loss.
+Selector arguments are sent to the PCB for validation, just as in notebook calls.
 
 ## Manual signal search
 
