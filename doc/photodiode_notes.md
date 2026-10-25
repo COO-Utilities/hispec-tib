@@ -27,10 +27,12 @@ subtraction and final error/power propagation use double. Public fields are doub
 A transient ADC error warns, discards that sample and leaves the previous latest
 state without advancing its timestamp. This prevents duplicate telemetry/control.
 
-The maintained Rev. 2 model assumes 20 Hz low-pass filters after 0–10 V to
-0–2 V dividers; the [as-built transfer needs confirmation](hardware.md#source-drawings-and-revision-boundaries). A single pole has $\tau=1/(2\pi20)=7.96$ ms and about 55 ms to
-0.1% settling. This is a circuit approximation, not a measured settling guarantee.
-Ideal filtered white noise has $e^{-2\pi20(0.05)}\simeq0.0019$ instantaneous
+The [80 kΩ / 20 kΩ dividers and 0.47 µF capacitors](hardware.md#tib-photodiode-monitoring-adc)
+map 0–10 V to 0–2 V and form nominal 21.2 Hz low-pass filters. Their single-pole
+time constant is $\tau=(80\,\mathrm{k\Omega}\parallel20\,\mathrm{k\Omega})\,0.47\,\mu\mathrm F
+=7.52$ ms, giving about 52 ms to 0.1% settling. This describes the PCB network;
+the detector and ADC also have their own responses.
+Ideal white noise filtered by this pole has $e^{-0.05/0.00752}\simeq0.0013$ instantaneous
 sample correlation; real detector/ADC response, aliasing and optical motion need
 measurement. Firmware applies no inverse filter or illuminated-stream blanking.
 Recapture dark after changing the sample cadence: saved records contain duration
@@ -112,6 +114,17 @@ P_D[\mathrm{nW}]=\frac{10^6\max(V_{\rm net}[\mathrm{mV}],0)}{GR},\qquad
 Signed net voltage is retained even when negative inferred power clips to zero.
 NaN voltage propagates as unavailable. A known-source wavelength coefficient is
 applied by throughput, not by the ADC owner; its current table is unity.
+
+| Channel | Detector gain before divider (V/A) | Effective ADC gain $G$ (V/A) | Default $R$ (A/W) |
+|---|---|---|---|
+| YJ, Femto FWPR-20-IN | $1.0\times10^{11}$ | $2.0\times10^{10}$ | 0.93 |
+| HK, Thorlabs PDA10DT at 70 dB | $4.75\times10^6$ | $9.5\times10^5$ | 0.60971 |
+
+For HK, 1000 mV net gives $1.726\,\mu\mathrm W$ with these defaults. A 10 mV
+ADC-input RMS corresponds to 17.3 nW for HK or 0.538 pW for YJ. These are
+nominal conversions at the configured responsivity, not a wavelength-independent
+detector sensitivity. The HK 500 Hz selector does not set the bandwidth of the
+complete detector, divider, ADC and sampling chain.
 
 Raw voltage at or above **2000 mV** is overrange, before the numerical ADC rail
 of **2047.9375 mV**. Such optical power/throughput is only a nominal lower bound;

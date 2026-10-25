@@ -31,13 +31,15 @@ The repository contains the following evidence, added in commit `2fd8e87`:
 | 50 | Power circuitry |
 | 51 | PCAL6416 U7, MEMS drive mapping and TP1 |
 
-**Differences requiring physical review:** page 49's detector note describes an
-older voltage/divider arrangement than the documented Rev. 2 0–10 V → 0–2 V,
-20 Hz chain used by firmware. FVOA stages show 4.7 kΩ/2.43 kΩ feedback, giving
+The PD scaling follows the resistor network on page 49; its voltage annotation
+is obsolete. The [input-chain description](#tib-photodiode-monitoring-adc) below
+uses the component values and connections.
+
+**Differences requiring physical review:** FVOA stages show 4.7 kΩ/2.43 kΩ feedback, giving
 nominal gain $1+2.43/4.7=1.5170$, while firmware defaults to 1.533. NoTIB placement
 comments reverse the red AS first-switch branch destinations relative to the
 firmware route interpretation. These are [owner-review items](human_review_required.md);
-no hardware mapping or gain was changed during the documentation audit.
+the installed configuration matters when interpreting those drawings.
 
 ## Controller, buses and connectors
 
@@ -138,11 +140,25 @@ detectors are Femto FWPR-20-IN and Thorlabs PDA10DT. Firmware uses ±2.048 V ran
 62.5 µV/code and 64 SPS converter rate, producing a fresh sample on each channel
 at 20 Hz. It treats 2000 mV as the usable upper limit, distinct from the ADC rail.
 
-The maintained Rev. 2 assumption is a precision 0–10 V → 0–2 V divider and
-20 Hz filter before conversion. The supplied schematic's old annotation does not
-verify that as-built transfer. Trace J12/J13, R7/R8 and C17/C18 on the installed
-revision before deriving gain or bandwidth from the print. Firmware effective
-transimpedance includes the divider; applying it twice would corrupt power.
+Each input uses a precision **0–10 V → 0–2 V divider**. R7 (YJ) and R8 (HK)
+are NOMCT16032002AT1 networks containing eight isolated 20 kΩ resistors; four
+form the 80 kΩ upper leg and one the 20 kΩ lower leg. The remaining three are
+tied to ground at both ends. This presents a nominal 100 kΩ load to the detector.
+See page 49 and the [Vishay network specification](https://www.vishay.com/docs/60007/nomc.pdf).
+
+C17/C18 are 0.47 µF capacitors across the lower legs. The divider's Thevenin
+resistance is $80\,\mathrm{k\Omega}\parallel20\,\mathrm{k\Omega}=16\,\mathrm{k\Omega}$,
+giving $f_c=1/(2\pi\,16\,000\times0.47\,\mu\mathrm F)\simeq21.2$ Hz.
+This PCB filter follows the detector's own response; it is separate from the
+ADS1115's digital filtering and 20 Hz per-channel sample cadence.
+
+The HK PDA10DT uses **70 dB gain and the 500 Hz bandwidth selector**. Its
+high-impedance gain is $4.75\times10^6$ V/A, making the effective ADC gain
+$0.2\times4.75\times10^6=9.5\times10^5$ V/A. The 100 kΩ divider is not a
+50 Ω termination, so the detector's 50 Ω-load half-gain does not apply.
+The [Thorlabs gain table](https://www.thorlabs.com/catalogpages/V21/1576.PDF)
+states gain in **kV/A**. Firmware effective transimpedance includes the divider;
+applying it twice would corrupt power.
 [Sampling and uncertainty](photodiode_notes.md) explains clipping and dark capture.
 
 ### TIB route-loss defaults

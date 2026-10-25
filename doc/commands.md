@@ -2023,11 +2023,11 @@ unchanged so an OTA rollback can still read the existing calibration.
 
   `transimpedance_v_per_a` is the effective gain at the ADC input, combining
   detector datasheet transimpedance with the divider and intervening analog gain.
-  Its allowed range is `1e7` to `1e12` V/A. Defaults are `2.0e10` V/A
-  for YJ and `9.5e8` V/A for HK; do not apply the divider again in power conversion.
+  Its allowed range is `1e5` to `1e12` V/A. Defaults are `2.0e10` V/A
+  for YJ and `9.5e5` V/A for HK; do not apply the divider again in power conversion.
   `noisewarn_mv` is ADC-input RMS scatter in the fixed 500 ms window, including
   real optical changes. The 10 mV default warning level corresponds nominally to 0.538 pW RMS
-  for YJ and 17.3 pW RMS for HK using the default responsivities.
+  for YJ and 17.3 nW RMS for HK using the default responsivities.
   Zero disables the noise warning. PD power, attenuator, laser-output, and
   actual MEMS changes defer noise warnings on both channels until all changing
   operations finish, five seconds elapse, and a fresh 500 ms window is acquired

@@ -24,9 +24,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Resolve the drawing/as-built differences exposed by the documentation
   audit against the PCB evidence committed in `2fd8e87`. Record the assembly
   revision and measured result before changing firmware assumptions:
-  - Schematic page 49 retains a 0–1 V / 0–0.5 V detector note, while the
-    maintained Rev. 2 acquisition model assumes 0–10 V divided to 0–2 V and
-    a 20 Hz analog filter. Confirm actual divider, load and filter components.
   - Schematic page 39 has 2.43 kΩ / 4.7 kΩ feedback, implying gain 1.5170;
     `ATTENUATOR_DEFAULT_GAIN` is 1.533. Confirm installed resistor values and
     measured gain, then decide whether the drawing, default or calibration
