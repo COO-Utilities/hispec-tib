@@ -9,6 +9,18 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Diagnose the HK attenuator-calibration reset with USB console/ST-Link:
+  the 2026-10-26 UTC MQTT reproduction (`1430hk`, `hk_fei`, S, 550 ms,
+  `persist=False`) reached dac1 point 12/128, then replies timed out and boots
+  increased from 12 to 13. No reboot command was sent. Raw MQTT and independent
+  cleanup results are saved locally under
+  `tools/commissioning_data/hk_timeout_20261026T022852Z/`. Boot telemetry reports
+  `reset_cause:"pin,watchdog"`, `watchdog:true`, raw cause 17; the last acquisition
+  event set dac1 to 50 mV. The watchdog reset is confirmed, but the stalled
+  thread/lock and instruction remain unknown without console/debugger evidence. No
+  speculative interlock, scheduling or calibration-algorithm change was made.
+  The commissioning notebook now preserves the primary error and archives
+  context even if record retrieval fails.
 - [ ] Validate the integrated OTA flow before making MCUboot the only build:
   provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
