@@ -12,7 +12,6 @@ and exported as NumPy record arrays or pandas DataFrames for live plotting.
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import logging
 import math
@@ -22,6 +21,7 @@ import struct
 import threading
 import time
 import warnings
+import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from types import SimpleNamespace
@@ -3930,6 +3930,7 @@ class ThroughputMonitor:
             raise HispecFibError("max_samples must be positive")
         self._messages: queue.Queue[bytes | None] = queue.Queue()
         self._samples: Deque[tuple[Any, ...]] = deque(maxlen=self.max_samples)
+        self._last_sample_at: dict[str, float] = {}
         self._commands: list[dict[str, Any]] = []
         self.measurement: dict[str, Any] = {}
         self.samples_received = 0
@@ -3970,6 +3971,7 @@ class ThroughputMonitor:
         """Clear retained samples, command events and receive count; keep collection running."""
         with self._lock:
             self._samples.clear()
+            self._last_sample_at.clear()
             self._commands.clear()
             self.samples_received = 0
 
@@ -4033,8 +4035,9 @@ class ThroughputMonitor:
         reported uncertainties, not confidence intervals adjusted for filtering.
         Throughput has a locally autoscaled linear trace bounded below by zero
         and an independent fixed dB trace.
-        Current and attenuation use run settings (or supplied limits for an
-        attached collector); no PCB commands are issued by this plot. Detector S/N uses
+        Current and attenuation use run settings or supplied limits, otherwise
+        autoscale for an attached listener. The title reports local sample age;
+        no PCB commands are issued by this plot. Detector S/N uses
         the individual PD reading/error; total throughput S/N includes calibration error.
         The PD guides show the current firmware's 20-80% usable-input band.
         Nonpositive log values and undefined S/N are display gaps, never changes
@@ -4091,10 +4094,12 @@ class ThroughputMonitor:
         db_ax = tp_ax.twinx()
         db_ax.set(ylabel="throughput (dB, full range)", ylim=(-100, 10))
         db_line, = db_ax.plot([], [], color="C1", lw=.8, label="throughput (dB)")
-        current_max = laser_current_max_ma if laser_current_max_ma is not None else self.measurement.get("laser_current_max_ma", 1.0)
-        attenuation_limits = attenuation_limits_db or self.measurement.get("attenuation_limits_db", (65.0, 65.0))
-        drive_ax.set_ylim(0, _require_float("laser_current_max_ma", current_max, 1e-9, math.inf))
-        atten_ax.set_ylim(0, sum(_require_float("attenuation limit", x, 1e-9, math.inf) for x in attenuation_limits))
+        current_max = laser_current_max_ma if laser_current_max_ma is not None else self.measurement.get("laser_current_max_ma")
+        attenuation_limits = attenuation_limits_db if attenuation_limits_db is not None else self.measurement.get("attenuation_limits_db")
+        if current_max is not None:
+            drive_ax.set_ylim(0, _require_float("laser_current_max_ma", current_max, 1e-9, math.inf))
+        if attenuation_limits is not None:
+            atten_ax.set_ylim(0, sum(_require_float("attenuation limit", x, 1e-9, math.inf) for x in attenuation_limits))
 
         # Match TP_LOW/HIGH_FRACTION in throughput_monitor.c; ADC mV include
         # the board divider. The band is a net-signal control target, while
@@ -4154,19 +4159,30 @@ class ThroughputMonitor:
                                      if row[0].startswith(prefix)), None)
                 rows = list(islice((row for row in reversed(self._samples)
                                     if row[0].startswith(prefix)), max_points))
+                last_sample_at = self._last_sample_at.get(channel)
             rec = np.array(rows[::-1], dtype=THROUGHPUT_DTYPE).view(np.recarray)
+            freshness = "waiting for throughput samples"
+            if last_sample_at is not None:
+                age = max(0.0, time.monotonic() - last_sample_at)
+                freshness = f"{'STALE · ' if age >= 2.0 else ''}last sample {age:.1f} s ago"
+            if not self._running.is_set():
+                freshness = f"collection stopped · {freshness}"
+            elif not self.client.is_connected:
+                freshness = f"MQTT disconnected · {freshness}"
             if len(rec):
                 wavelength = rec.wavelength_nm[-1]
                 source = f"{wavelength:g} nm" if np.isfinite(wavelength) else "unknown wavelength"
                 # Channel plus wavelength also distinguishes the two 1430 nm lasers.
                 state = "autolevel" if rec.autolevel[-1] else "passive"
                 bound = " · OVERRANGE: TP ≥ shown, dB ≥ shown" if "overrange" in rec["flags"][-1] else ""
-                title.set_text(f"{rec.channel[-1]} · {source} · {state}{bound} — bands: reported ± total/PD uncertainty, not temporal RMS")
+                title.set_text(f"{rec.channel[-1]} · {source} · {state}{bound} · {freshness}\nBands: reported ± total/PD uncertainty, not temporal RMS")
+            else:
+                title.set_text(f"{channel.upper()} — {freshness}")
             t = (rec.t_ms.astype(float) - (start_ms or 0)) / 1000.0
             gaps = np.zeros(len(rec), dtype=bool)
             if len(rec) > 1:
                 gaps[1:] = (rec.channel[1:] != rec.channel[:-1]) | ~np.isclose(
-                    rec.wavelength_nm[1:], rec.wavelength_nm[:-1], equal_nan=True) | (np.diff(rec.t_ms.astype(float)) > 75)
+                    rec.wavelength_nm[1:], rec.wavelength_nm[:-1], equal_nan=True) | (np.diff(rec.t_ms.astype(float)) > 75) | (np.diff(rec.t_ms.astype(float)) <= 0)
             overrange = np.array(["overrange" in flags for flags in rec["flags"]], dtype=bool)
             bounds = np.where(overrange & (rec.tp > 0), rec.tp, np.nan)
             bound_line.set_data(t, bounds)
@@ -4235,6 +4251,7 @@ class ThroughputMonitor:
                 continue
             with self._lock:
                 self._samples.append(sample.as_tuple())
+                self._last_sample_at[sample.channel.split("_", 1)[0]] = time.monotonic()
                 self.samples_received += 1
 
 
@@ -4340,13 +4357,12 @@ class HispecFibPcb:
         self.auto_connect = bool(auto_connect)
         self.logger = logger or LOGGER
         self.on_command = on_command
-        self._client_id = client_id or f"hispec-fibpcb-{device}-{int(time.time())}"
+        self._client_id = client_id or f"hispec-fibpcb-{device}-{uuid.uuid4().hex}"
         self._client: Any = None
         self._connected = threading.Event()
         self._connect_rc: Any = None
         self._pending: dict[bytes, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
-        self._corr_counter = itertools.count(1)
         self._warnings: Deque[WarningEvent] = deque(maxlen=int(warning_history))
         self._warning_lock = threading.Lock()
         self._throughput_monitors: set[ThroughputMonitor] = set()
@@ -4396,14 +4412,23 @@ class HispecFibPcb:
         if not self._connected.wait(self.timeout_s if timeout_s is None else timeout_s):
             raise HispecFibError(f"timed out connecting to MQTT broker {self.host}:{self.port}")
 
-    def close(self) -> None:
-        """Stop collected measurements/autolevel lasers, then disconnect, even on failure."""
+    def close(self, *, stop_measurements: bool = True) -> None:
+        """Disconnect and detach collectors, stopping measurements by default.
+
+        Passive listeners must use ``stop_measurements=False``: this only drains
+        local collection and disconnects MQTT, without publishing any commands.
+        The default and context-manager exit still stop collected measurements
+        and their autolevel lasers, including when a shutdown command fails.
+        """
         with self._throughput_lock:
             monitors = tuple(self._throughput_monitors)
         errors = []
         for monitor in monitors:
             try:
-                monitor.stop()
+                if stop_measurements:
+                    monitor.stop()
+                else:
+                    monitor._stop_collection()
             except Exception as exc:
                 errors.append(exc)
         if self._client is not None and self._loop_started:
@@ -5755,7 +5780,9 @@ class HispecFibPcb:
         self._ensure_connected()
         topic = f"cmd/{self.device}/req/{key}"
         response_topic = f"cmd/{self.device}/resp/{key}"
-        corr = next(self._corr_counter).to_bytes(8, "little", signed=False)
+        # Replies share a topic across notebooks. Firmware echoes up to 16 bytes;
+        # a per-client counter alone would match another client's first request.
+        corr = uuid.uuid4().bytes
         pending = _PendingRequest(topic=response_topic)
         with self._pending_lock:
             self._pending[corr] = pending
@@ -5881,7 +5908,7 @@ class HispecFibPcb:
             if corr is not None:
                 with self._pending_lock:
                     pending = self._pending.get(corr)
-                if pending is not None:
+                if pending is not None and pending.topic == topic:
                     pending.receipt_utc_ms = time.time_ns() // 1_000_000
                     user_props = dict(getattr(msg.properties, "UserProperty", ()) or ())
                     try:

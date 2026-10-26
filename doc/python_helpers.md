@@ -27,6 +27,10 @@ the clone-local environment above does not install the firmware toolchain.
 `numpy` and `paho-mqtt` support the client; the requirements also include SciPy,
 pandas, Matplotlib, notebook and widget support for the included lab tools.
 Importing the module does not connect or operate hardware.
+Notebook setup cells locate the helper from the workspace, repository, `tools/`
+or archived notebook directory. Restart the kernel after updating the helper so
+imports and previously defined notebook functions use the same revision. The
+scope notebooks additionally need `SCPI-Instrument-Control==7.3.0`.
 
 ```python
 import hispec_fibpcb as hspcb
@@ -43,9 +47,14 @@ or the context manager connects immediately. Commands block awaiting responses
 with the instance `timeout_s` (default five seconds). Paho reconnects and restores
 subscriptions; lost in-flight commands are not replayed. A timeout does not prove
 that a hardware operation failed to execute.
+Default MQTT client IDs and 16-byte request correlation values are unique across
+notebooks. Replies must match both correlation data and the expected topic.
 
 `close()` stops registered collectors' measurements, then disconnects even when
 shutdown errors occur; such failures are raised as an `ExceptionGroup`.
+Use `close(stop_measurements=False)` for a passive listener: it drains and
+detaches local collectors and disconnects without sending any board commands.
+Context-manager exit retains the default measurement-stopping behavior.
 Uncollected/manual laser activity is not a blanket responsibility of connection
 cleanup. Use explicit `laser(..., stop=True)` when the experiment owns a manual
 source. `laser(..., value=0)` only requests zero current and preserves readiness
@@ -189,13 +198,49 @@ clock offset as well as transport/dispatch time; it is not by itself a latency
 measurement. The [command callback](#command-callbacks-and-notebooks) receives the
 same dictionary without needing a collector.
 
-In Jupyter, use `%matplotlib widget`, then keep the result of
+In Jupyter, run `%matplotlib widget` in a setup cell before acquisition, then keep the result of
 `monitor.plot_live()` referenced. Its panels show linear throughput, a separate
 dB trace, detector levels/SNR and confirmed source/attenuation context. Pausing
-or closing a plot changes display only. Save sample/event DataFrames and
+or closing a plot changes display only. Explicit current/attenuation limits or
+measurement settings are honored; an attached listener without those limits
+autoscales. The title shows local sample age and marks samples stale after two
+seconds without a decoded sample for that channel. Disconnection and stopped
+collection are also shown; old samples are never replaced with zeros.
+
+Display and draw an attached collector in a preceding cell when observing
+power-up, then start the measurement in the next cell. For example, commissioning's
+dark display is already listening before its acquisition cell enables the PD.
+Use `await asyncio.to_thread(...)` for blocking board calls during live acquisition
+so the kernel can process widget messages and animation timers. Close the live
+figure before switching back to inline review plots. Save sample/event DataFrames and
 experiment context directly (for example with `pandas.to_pickle`); there is no
 separate commissioning archive codec. Unit definitions and uncertainty meanings
 are in [the math guide](mathematics.md).
+
+### Passive monitoring notebook
+
+`tools/monitoring.ipynb` runs beside an experiment notebook. Run setup and connection,
+then either or both channel dashboard cells. Run All starts both dashboards and
+leaves them running. The connection only subscribes and attaches
+`start_throughput_monitor("all")`; it does not call `measure_throughput()`.
+
+The shared message pane retains the latest 500 decoded info/warning/error,
+calibration and boot messages, refreshing at 0.5 seconds. Each dashboard shows
+the latest 600 samples; the shared collector retains at most 40,000 samples.
+There are no automatic status queries or file writes. The explicit optional
+status cell sends only `status()`. It does not use `pd()`, whose query enables
+and rearms detector power.
+
+Dashboard reruns replace only that channel's display. Connection reruns, failure
+cleanup and the explicit shutdown cell use `close(stop_measurements=False)` and
+leave other notebooks' measurements running. Do not substitute `monitor.stop()`
+or default `pcb.close()` for that local shutdown.
+
+This notebook shows existing broadcasts. Optical calibration stops ordinary
+throughput streams, so those plots become stale while calibration messages continue.
+It neither starts a replacement stream nor polls calibration records. Continuous
+observation telemetry across operating modes is deferred. Boot messages appear
+only when firmware publishes them; their absence is not proof of no restart.
 
 ## Calibration datasets and manual grids
 
