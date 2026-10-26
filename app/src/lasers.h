@@ -369,6 +369,9 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
  * first; a failed stop rejects the update. Range-only edits invalidate preparation
  * without powering an idle bank; driver-backed edits, including the PCB-owned
  * NTC coefficient, program immediately through the existing stop/power flow.
+ * A changed autooff_s restarts the deadline for a started laser (including zero
+ * current); zero cancels it. Unchanged values leave the deadline alone. This
+ * never starts an idle laser and reschedules the existing auto-off work.
  * May block on Modbus and requested NVS persistence. A persistence error is
  * returned after application; it does not undo successfully installed settings.
  */

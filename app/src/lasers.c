@@ -2400,6 +2400,12 @@ out_unlock:
 		/* STOP may have just committed emission time after the caller's copy. */
 		normalized.total_emitting_s = laser_settings[id].total_emitting_s;
 		laser_settings[id] = *settings;
+		if (previous.autooff_s != settings->autooff_s) {
+			laser_autooff_deadline_ms[id] =
+				laser_output_estimate[id].started && settings->autooff_s > 0U ?
+				k_uptime_get() + (int64_t)settings->autooff_s * 1000LL :
+				LASER_AUTOFF_NO_DEADLINE;
+		}
 		if (range_changed && !apply_driver) {
 			/* Apply new bounds/default target at the next preparation/start. */
 			laser_output_estimate[id].prepared = false;
@@ -2423,6 +2429,9 @@ out_unlock:
 	}
 	laser_note_communication_locked(id, &drv);
 	k_mutex_unlock(&laser_io_lock);
+	if (settings_applied && previous.autooff_s != settings->autooff_s) {
+		laser_autooff_reschedule();
+	}
 	return rc;
 }
 

@@ -3348,6 +3348,7 @@ class PhotodiodeChannelValues(ResponseRepr):
     window: PhotodiodeWindow
     pd_powered: bool
     pd_on_s: int
+    off_in_s: int | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -3376,7 +3377,6 @@ class PhotodiodeSettings(ResponseRepr):
     powered: bool
     power: str
     autooff_s: int
-    off_in_s: int | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -3819,6 +3819,7 @@ def _decode_pd_channel(data: Mapping[str, Any]) -> PhotodiodeChannelValues:
         window=_decode_pd_window(data.get("window", {})),
         pd_powered=bool(data.get("pd_powered", False)),
         pd_on_s=int(data.get("pd_on_s", 0)),
+        off_in_s=None if data["off_in_s"] is None else int(data["off_in_s"]),
     )
 
 
@@ -4742,6 +4743,10 @@ class HispecFibPcb:
         ordinary stop-before-profile-update and optional app NVS persistence;
         profile preparation syncs it after bank power-up, not at MCU startup.
         Engineering status separately reports actual readback in the same units.
+        Changing autooff_s restarts a started laser's countdown, including at
+        zero current; zero cancels it. It never starts an idle laser. Unchanged
+        values and unrelated settings do not rearm; calibration rejects autooff
+        writes. Settings writes still stop that laser's throughput monitor.
         """
         settings = _optional_payload(
             nominal_current_ma=nominal_current_ma,
@@ -5378,7 +5383,11 @@ class HispecFibPcb:
         return LaserCalibrationDataset(records=records, meta=meta, status=status)
 
     def pd(self, channel: Literal["yj", "hk"] | None = None) -> PhotodiodeValues:
-        """Query cached single-sample and window PD values for one or both channels."""
+        """Query cached PD values, powered-on time and remaining auto-off seconds.
+
+        In auto mode this enables selected PDs and rearms their countdowns.
+        off_in_s is None when no countdown is active, including inhibition.
+        """
         if channel is None:
             return _decode_pd(self._request_json("pd"))
         return _decode_pd(self._request_json(f"pd/{channel}"))
@@ -5427,6 +5436,9 @@ class HispecFibPcb:
         scatter in the fixed window, including any changing optical signal.
         Warnings wait five seconds after reported input changes finish, then a
         fresh 500 ms window; zero disables them. Reported RMS is not gated.
+        Changing autooff_s restarts a powered auto-mode PD's countdown; zero
+        cancels it. It never powers on an idle PD. Calibration rejects autooff
+        writes; unchanged values and unrelated settings do not rearm the timer.
         """
         payload = _optional_payload(
             noisewarn_mv=noisewarn_mv,
@@ -5446,7 +5458,6 @@ class HispecFibPcb:
                 power=str(data["power"]),
                 powered=bool(data["powered"]),
                 autooff_s=int(data["autooff_s"]),
-                off_in_s=None if data.get("off_in_s") is None else int(data["off_in_s"]),
             )
         return self._request_ok(f"pd/settings/{channel}", payload)
 

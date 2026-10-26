@@ -966,6 +966,8 @@ these values feed the existing throughput and splitting calculations.
   request when `tune_nm` is nonzero, sets the laser current, and restarts the
   auto-off timer. Setting value 0 writes zero current without STOP, retains driver/TEC
   readiness, and preserves an existing auto-off deadline unless `autooff_s` is supplied.
+  Auto-off writes are rejected during laser or attenuator calibration, including
+  zero-current writes that supply `autooff_s`.
   It does not power up/start an idle driver or clear the stored `laser/tune` request.
   Use `{"name":"1028y","stop":true}` for explicit shutdown: zero current, STOP,
   and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, `value`
@@ -1209,7 +1211,11 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - Settings `autooff_s` is the default for later manual `laser` commands;
     command `autooff_s` overrides one operation. Throughput uses `off_in_s` for
     its own duration and disables the separate laser auto-off while controlling
-    it. Changing the stored default does not rearm an active deadline.
+    it. Changing the stored default restarts the countdown from now for a
+    started laser, including at zero current; zero cancels it. Idle lasers stay
+    idle. An unchanged value or unrelated setting does not rearm. Settings
+    writes still stop that laser's throughput monitor. Auto-off writes are
+    rejected during laser or attenuator calibration.
   - Driver identity is checked at first contact after bank power-up. Profile
     preparation synchronizes PCB-owned driver settings at the first explicit
     start after bank power-up; merely reading status does not program them.
@@ -1886,7 +1892,8 @@ unchanged so an OTA rollback can still read the existing calibration.
         "power_err_uw": 0.0
       },
       "pd_powered": true,
-      "pd_on_s": 0
+      "pd_on_s": 0,
+      "off_in_s": 300
     },
     "hk": {}
   }
@@ -1898,7 +1905,10 @@ unchanged so an OTA rollback can still read the existing calibration.
 
 - **Notes:**
   - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
-    In auto power mode, a query enables the selected photodiode relay or relays.
+    In auto power mode, a query enables the selected photodiode relay or relays
+    and rearms auto-off. `pd_on_s` is powered-on time; `off_in_s` is the remaining
+    countdown in integer seconds, or `null` when unarmed or inhibited by a
+    calibration/throughput owner.
   - `raw`, `mv`, `net_mv`, `net_err_mv`, `power_uw`, and `power_err_uw` are the
     latest successful conversion and its reading/offset error. An ADC failure
     leaves this diagnostic state unchanged; throughput does not re-emit it.
@@ -1987,8 +1997,7 @@ unchanged so an OTA rollback can still read the existing calibration.
     "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
     "powered": false,
-    "autooff_s": 300,
-    "off_in_s": null
+    "autooff_s": 300
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -2016,7 +2025,11 @@ unchanged so an OTA rollback can still read the existing calibration.
   command keys and separate app NVS records. `power` is the relay intent for
   this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
   channel's automatic power-off delay used when firmware auto-enables the
-  relay; `off_in_s` is `null` unless a channel auto-off countdown is armed.
+  relay. Changing it restarts a powered auto-mode channel's countdown from now;
+  zero cancels it. It never enables an idle PD. Unchanged values and unrelated
+  settings do not rearm. Auto-off writes are rejected during laser or attenuator
+  calibration; throughput inhibition remains in force. Read `off_in_s` through
+  `pd`, where it belongs with live status.
   `powered` is the read-only actual state of this channel. Querying settings
   neither enables it nor rearms auto-off; unlike `pd`, it is suitable for preflight.
   Dark and lowest-dark values are queried and updated through

@@ -104,7 +104,12 @@ silently reused on another.
   not the Maiman current limit. `initial_level` is a per-measurement fraction,
   defaults to 0.5 in firmware, and is not persisted.
 - Laser settings `autooff_s` supplies the manual-command default; an explicit
-  command value overrides it. Throughput owns its separate `off_in_s` deadline.
+  command value overrides it. Changing the setting restarts a started laser's
+  countdown from now; zero cancels it without starting idle hardware. PD settings
+  behave the same for powered channels in auto mode. Unchanged values and unrelated
+  edits do not rearm. Calibration rejects auto-off writes. Throughput owns its
+  separate `off_in_s` deadline and retains PD inhibition; laser settings writes
+  still stop that laser's monitor. PD `off_in_s` is status returned by `pd`.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)

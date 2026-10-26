@@ -21,6 +21,10 @@ LLMs Agents: Do NOT change heading names in this file.
   speculative interlock, scheduling or calibration-algorithm change was made.
   The commissioning notebook now preserves the primary error and archives
   context even if record retrieval fails.
+- [ ] Bench-check changed PD/laser auto-off settings: shorten, lengthen, zero,
+  unchanged and unrelated writes; powered-off/idle state; calibration busy
+  rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
+  to `pd_on_s`, with no countdown field in `pd/settings`.
 - [ ] Validate the integrated OTA flow before making MCUboot the only build:
   provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal

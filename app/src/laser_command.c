@@ -5,6 +5,7 @@
 
 #include "laser_command.h"
 #include "laser_calibration.h"
+#include "attenuator_calibration.h"
 
 #include <errno.h>
 #include <float.h>
@@ -406,6 +407,9 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	    (stop && autooff_present)) {
 		return coo_cmd_error(out, cmd, "invalid autooff_s; not allowed with stop");
 	}
+	if (autooff_present && (laser_calibration_active() || attenuator_calibration_active())) {
+		return coo_cmd_busy_response(out, cmd);
+	}
 
 	/* Preserve calibration's current/attenuation relationship. Zero or STOP
 	 * is an explicit cancellation; positive manual drive waits for its owner. */
@@ -787,6 +791,11 @@ int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_respons
 	}
 	if (hispec_laser_validate_channel_settings(id, &settings) != 0) {
 		return coo_cmd_error(out, cmd, "laser settings out of range, see catalog");
+	}
+	uint32_t autooff_s;
+	if (coo_json_extract_u32(settings_json, "autooff_s", &autooff_s) == COO_JSON_EXTRACT_OK &&
+	    attenuator_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
 	}
 
 	rc = throughput_monitor_update_laser_settings(id, &settings, persist, out->payload, sizeof(out->payload));
