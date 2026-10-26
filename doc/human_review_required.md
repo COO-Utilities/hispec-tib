@@ -25,7 +25,7 @@ LLMs Agents: Do NOT change heading names in this file.
   unchanged and unrelated writes; powered-off/idle state; calibration busy
   rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
   to `pd_on_s`, with no countdown field in `pd/settings`.
-- [ ] Validate the integrated OTA flow before making MCUboot the only build:
+- [ ] Validate the integrated MCUboot OTA/USB flow on hardware:
   provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
   and maximum-size network updates, exact-hash confirmation and rollback.
@@ -33,9 +33,10 @@ LLMs Agents: Do NOT change heading names in this file.
   wrong/late confirmation, network loss, running hangs and power cuts during
   swap/revert. Observe bank power and measure the 30-second MCUboot to 15-second
   application IWDG handoff/feed gaps. USB updates may install a confirmed image
-  directly; they do not need to test rollback. Once these results are recorded,
-  make MCUboot/sysbuild the default and remove the temporary standalone build
-  and its instructions. Software builds do not validate hardware behavior.
+  directly; they do not need to test rollback. MCUboot is now the only build;
+  normal/timing builds and offline checks do not validate hardware behavior.
+  Check manual-default confirmation, explicit `--auto-confirm` reasoning, and
+  both renamed CLion profiles' flash/debug/reset flows with ST-Link attached.
   See [firmware updates and OTA](ota.md).
 - [ ] Resolve the drawing/as-built differences exposed by the documentation
   audit against the PCB evidence committed in `2fd8e87`. Record the assembly

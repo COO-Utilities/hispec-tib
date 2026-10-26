@@ -117,7 +117,7 @@ the PCB checks the coefficient values, completeness and model validity.
 | `AttenuatorGridDataset` | Grid/slice fitting, NPZ save/load and plots | Offline; grid shape terms are not a complete firmware model |
 | `AttenuatorGridProbe` | Background handle for a manual DAC grid acquisition | Changes laser and DACs; `wait()` joins/rethrows; it is not an automatic shutdown guard |
 | `get_some_signal()` | Bounded manual search for a useful PD level | Changes output/routes as documented below; blocks until completion |
-| `hispec_ota.py` | Validate, upload, test-boot and confirm firmware | Changes flash and reboots; requires an explicitly provisioned OTA board and prepared hardware |
+| `hispec_ota.py` | Validate, upload and test-boot firmware; manual confirmation by default | Changes flash and reboots; requires an explicitly provisioned OTA board and prepared hardware |
 | `parameter_table()` | Display nested settings with API field names | Pure formatting, no I/O |
 | `read_route_losses()` | Tabulate transmission and dB | Queries each requested route, no writes |
 | `attenuator_noise()`, `throughput_noise()` | Explicit model/noise scenarios | Pure numerical calculations, no settings changes |
@@ -125,7 +125,7 @@ the PCB checks the coefficient values, completeness and model validity.
 ## Firmware maintenance
 
 `ota()`, `set_ota_window()` and `confirm_image()` wrap individual MQTT operations
-and return `OtaStatus`. They require an OTA-enabled firmware build; they do not
+and return `OtaStatus`. They use the MCUboot firmware; they do not
 perform an image upload or turn bank power off. `tools/hispec_ota.py` combines
 those commands with the Python SMP client to perform a verified network update.
 Omitting `duration_s` from `set_ota_window(True)` uses the firmware's 600-second
@@ -136,7 +136,10 @@ Follow [firmware updates and OTA](ota.md) for workspace/tool installation, USB
 provisioning, artifact selection, the complete helper workflow and recovery.
 Unlike ordinary notebook use, that tool also needs the pinned MCUboot checkout
 and generated sysbuild configuration. `--dry-run` validates locally without
-connecting; a real update writes firmware and reboots the target.
+connecting; a real update writes firmware and reboots the target. The default
+leaves the trial unconfirmed and prints `pcb.confirm_image(hash)`, the MQTT
+equivalent and remaining time. `--auto-confirm` explicitly opts into confirmation
+and prints the checks that justify it before accepting the image.
 
 ## Throughput collection and plotting
 

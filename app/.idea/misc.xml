@@ -16,9 +16,17 @@
   </component>
   <component name="WestSettings"><![CDATA[{
   "westProfiles": {
-    "West": {
+    "MCUboot": {
       "westExecutable": "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/scripts/clion-west-builddir-wrapper.sh",
-      "boardName": "nucleo_h563zi/stm32h563xx"
+      "boardName": "nucleo_h563zi/stm32h563xx",
+      "buildDir": "build-ota",
+      "buildOptions": "--sysbuild"
+    },
+    "MCUboot Timing": {
+      "westExecutable": "/Users/jibailey/src/hispec-zephyr-mlang/hispec-tib/scripts/clion-west-builddir-wrapper.sh",
+      "boardName": "nucleo_h563zi/stm32h563xx",
+      "buildDir": "build-ota-timing",
+      "buildOptions": "--sysbuild"
     }
   }
 }]]></component>

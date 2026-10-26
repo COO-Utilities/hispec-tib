@@ -6,25 +6,16 @@ application: it checks image integrity, starts a trial image, and returns to the
 previous confirmed image if the trial is not confirmed. The bootloader itself
 is installed through ST-Link and is not updated over the network.
 
-**The existing standalone USB/CLion build remains the default during validation.**
-An explicit `--sysbuild` build enables MCUboot and OTA. These are temporary build
-choices: after USB and network workflows pass [bench acceptance](#bench-acceptance-and-retiring-the-standalone-build),
-MCUboot will become the single build flow. USB and network transfer will both
-remain useful ways to install that firmware.
+All builds use MCUboot and support both network OTA and USB app updates. The
+normal and timing profiles share the same image layout and update policy.
 
 ## Choose the operation
 
 | Task | Build / artifact | Connection |
 |---|---|---|
-| Continue ordinary bench development | Standalone application in `app/build` | Existing USB/ST-Link and CLion workflow |
-| Bring up a fresh board for MCUboot/OTA | MCUboot plus a confirmed application from `app/build-ota` | USB/ST-Link; one-time full erase and provisioning |
-| Edit and reflash a provisioned board locally | Confirmed application from `app/build-ota` | USB/ST-Link; no trial or rollback test required |
-| Update a provisioned board remotely | Unpadded `zephyr.signed.bin` from `app/build-ota` | MQTT control plus direct IPv4 UDP upload |
-
-The standalone application starts at `0x08000000`; MCUboot occupies that address
-on a provisioned board. Flashing a standalone image there replaces MCUboot.
-Returning that board to network updates requires provisioning again. Keep the
-build directories distinct and select the artifact for the operation being done.
+| Update a provisioned board remotely | Unpadded `zephyr.signed.bin` | MQTT control plus direct IPv4 UDP upload; manual trial confirmation by default |
+| Edit and reflash a provisioned board locally | `zephyr.signed.confirmed.hex` in the app domain | USB/ST-Link; preserves MCUboot and saved settings |
+| Bring up a fresh board for MCUboot/OTA | MCUboot plus a confirmed application | USB/ST-Link; separate one-time provisioning below |
 
 This firmware uses **SHA256 integrity checks without signature authentication**,
 for use on the trusted instrument network. The generated filename `signed` is
@@ -95,22 +86,8 @@ using it for programming; its installation alone does not verify USB access.
 
 ## Build and select the image
 
-### Current standalone bench build
-
-The existing command and CLion profiles remain valid:
-
-```bash
-./.venv/bin/west build \
-  --board=nucleo_h563zi/stm32h563xx \
-  --build-dir hispec-tib/app/build hispec-tib/app
-```
-
-Use the existing standalone USB workflow with this build. The timing profile
-continues to add `-- -DEXTRA_CONF_FILE=debug.conf` in its separate
-`app/build-timing` directory. These builds omit the `ota` command and MCUboot.
-
 (ota-build)=
-### Explicit MCUboot/OTA build
+### MCUboot build: normal or timing
 
 ```bash
 ./.venv/bin/west build --sysbuild \
@@ -118,12 +95,20 @@ continues to add `-- -DEXTRA_CONF_FILE=debug.conf` in its separate
   --build-dir hispec-tib/app/build-ota hispec-tib/app
 ```
 
-Sysbuild loads `app/sysbuild.conf`, the app-only `app/sysbuild/app.conf`, and the
-MCUboot configuration/overlay. It packages the app for offset swapping and reserves
-the required image/trailer space. For a stale directory, repeat with `-p always`;
-never reuse a standalone directory for sysbuild. Avoid a workspace-wide
-`west config build.sysbuild True` during the transition, because it changes the
-meaning of ordinary bench builds.
+For timing diagnostics, use a separate build with the app-only debug fragment:
+
+```bash
+./.venv/bin/west build --sysbuild \
+  --board=nucleo_h563zi/stm32h563xx \
+  --build-dir hispec-tib/app/build-ota-timing hispec-tib/app \
+  -- -Dapp_EXTRA_CONF_FILE=debug.conf
+```
+
+Sysbuild loads `app/sysbuild.conf`, `app/prj.conf`, and the MCUboot
+configuration/overlay. OTA is part of the normal app configuration. The build
+rejects configurations without MCUboot, OTA, or confirmed USB artifacts. When
+updating an existing build directory that cached `sysbuild/app.conf`, run once
+with `-p always` to remove that stale fragment reference.
 
 One application serves TIB, CAL YJ, CAL HK and AS; the board straps select its
 profile. The generated artifacts have different purposes:
@@ -137,8 +122,8 @@ profile. The generated artifacts have different purposes:
 | `app/zephyr/zephyr.bin` | Raw build output used internally by packaging/fixtures; not an OTA candidate |
 
 The helper rejects padded/preconfirmed images, malformed containers, bad hashes,
-and files above the generated upload limit. Keep the confirmed baseline image
-and its matching ELF before testing another image.
+and files above the generated upload limit. The timing directory contains the same artifact names. Keep the confirmed
+baseline image and its matching ELF before testing another image.
 
 ## USB provisioning and local development
 
@@ -216,7 +201,7 @@ first. Start with no pending test image; allow an unfinished OTA trial to confir
 or revert before reflashing.
 
 ```bash
-./.venv/bin/west flash \
+hispec-tib/scripts/clion-west-builddir-wrapper.sh flash \
   --build-dir hispec-tib/app/build-ota \
   --domain app --runner stm32cubeprogrammer
 ```
@@ -230,17 +215,26 @@ broken local application.
 For debugging, flash the packaged image first and attach with its matching ELF:
 
 ```bash
-./.venv/bin/west attach --no-rebuild \
+hispec-tib/scripts/clion-west-builddir-wrapper.sh attach --no-rebuild \
   --build-dir hispec-tib/app/build-ota \
   --domain app --runner stlink_gdbserver --port-number 3333
 ```
 
-`--no-rebuild` keeps the symbols matched to the image just programmed. In a
-separate CLion OTA configuration, use the app domain's ELF and attach without
-an automatic raw-ELF download; the existing standalone configurations need no
-change. A raw ELF download does not create MCUboot's header/hash/trailer and can
-invalidate an otherwise packaged image. Confirm this flash/attach/reset workflow
-on the bench before replacing the default CLion flow.
+`--no-rebuild` keeps the symbols matched to the image just programmed. The
+wrapper restricts flash to the app domain's confirmed HEX, rejects mass erase
+and alternate raw artifacts, and forces debugging without an ELF download.
+Use `build-ota-timing` in the same commands for the timing image.
+
+### CLion
+
+Select **MCUboot** or **MCUboot Timing** in both the build and run configuration
+selectors. They use `build-ota` and `build-ota-timing`, respectively, through
+`scripts/clion-west-builddir-wrapper.sh`. Reload CMake after changing profiles.
+The corresponding `zephyr_final` target supplies `app/zephyr/zephyr.elf` symbols.
+Run flashes the confirmed app HEX. Debug starts the ST-Link GDB server with
+`--no-load --no-rebuild`; flash that same profile first, then debug it. The
+wrapper supplies `--domain app` for both operations, preserving MCUboot and NVS.
+USB flash/debug/reset still requires bench validation with an attached board.
 
 ### Flash layout
 
@@ -292,7 +286,7 @@ Serial activity can activate serial guard, which rejects MQTT effects including
 OTA entry/confirmation. Let it expire or use `serialguard off` before starting
 the MQTT-driven update. See the [command permissions](commands.md#commands-while-ota-is-active).
 
-### Validate, upload and confirm
+### Validate, upload and accept the trial
 
 Validate the candidate locally first; this opens no network connection:
 
@@ -328,7 +322,7 @@ sequenceDiagram
   B->>B: Validate body hash,<br/>swap candidate into primary
   B->>A: Start unconfirmed trial<br/>UDP closed, TIB bank off
   H->>A: Fresh MQTT boot count,<br/>exact hash and readiness
-  alt Candidate verified before deadline
+  alt Operator accepts, or explicit --auto-confirm passes checks
     H->>A: MQTT confirm exact hash
     Note over H,A: Operator explicitly<br/>restores TIB bank mode
   else Candidate remains unconfirmed
@@ -342,13 +336,30 @@ upload limits. It compares the SMP running hash against MQTT identity before
 uploading, verifies the secondary image's reported hash, and requests a **test**
 boot rather than permanent installation. Upload transport failures have at most
 three attempts, using transfer SHA/offset recovery. After reboot, it requires a
-new boot count, the exact candidate hash, board readiness, and TIB bank off before
-confirming. A lost confirmation acknowledgment is recovered by querying state.
+new boot count, the exact candidate hash, board readiness, and TIB bank off.
+The default leaves the candidate **unconfirmed** and prints its remaining trial
+time plus copyable Python and MQTT confirmation commands. Inspect the candidate
+and accept that exact hash before the five-minute trial expires:
 
-Progress reports image size/hash, upload percentages, and finally
-`Confirmed <hash>`. If that exact image is already running and confirmed, it
-reports a no-op. These checks establish identity and reported readiness, not an
-optical or electrical acceptance test of the new application.
+```python
+pcb.confirm_image("<candidate hash printed by the update script>")
+```
+
+The MQTT equivalent is topic `cmd/<device>/req/ota` with payload
+`{"confirm":true,"image_hash":"<candidate hash>"}`. Refresh `pcb.ota()` to see
+remaining time and verify the hash before accepting. A successful upload alone
+does not accept the new image.
+
+For unattended acceptance, add `--auto-confirm`. Before sending confirmation the
+helper prints why: explicit opt-in, a new boot, matching hash, board readiness,
+a live trial window, and (on TIB) an unpowered bank in `override_off`. It then
+queries and reports confirmed state. A lost confirmation acknowledgment is
+recovered by querying state. These checks establish identity and reported
+readiness, not optical or electrical acceptance.
+
+Progress reports image size/hash, upload percentages, and whether the trial was
+left unconfirmed, explicitly confirmed, or was already confirmed. An identical
+already-running confirmed image is a no-op.
 
 **After successful network confirmation, explicitly restore TIB bank mode to
 `auto` when ready to resume work.** Closing the window and confirming the image
@@ -367,11 +378,11 @@ OTA does not persist bank mode.
 | `--duration-s` | Upload-window budget, 30–1800 s, default 600; does not extend a trial |
 | `--boot-timeout-s` | Host wait for the new boot/confirmation, 1–300 s, default 180 |
 | `--dry-run` | Validate the file against the build locally, then exit without a connection |
-| `--skip-confirm` | Lab trial: verify the candidate boot, deliberately leave it unconfirmed, then exit |
+| `--auto-confirm` | Explicitly accept the trial after the reported checks; default is manual confirmation |
 
 `update` exits with status 1 and `OTA failed: ...` on the handled validation,
 transport or verification failures. Status 0 also covers a dry-run, an
-already-running image, or a deliberately unconfirmed `--skip-confirm` trial;
+already-running image, or the default unconfirmed trial;
 read the reported outcome. `fixtures` is the separate offline image-generation
 subcommand described below.
 
@@ -398,7 +409,7 @@ The confirmation flag write and expiry decision share the OTA mutex.
 
 | Observation | Interpretation and next action |
 |---|---|
-| `ota` is unavailable | Check that this is the explicit OTA build and that MCUboot was provisioned |
+| `ota` is unavailable | Install a current MCUboot app through the supported USB path; provision MCUboot only on a fresh board |
 | Entry rejected | Query bank state, pending/trial state and serial guard; do not assume the helper powered anything off |
 | UDP upload fails while MQTT works | Check direct host-to-board routing/firewall access on UDP 1337 and window state |
 | Close succeeded but `active` remains true | An admitted operation, pending candidate or unconfirmed trial still owns restrictions |
@@ -435,7 +446,7 @@ but internal-flash stalls still need measurement. A debugger halt is not a
 watchdog validation: the application requests watchdog pause while halted.
 Pre-main protection begins when MCUboot starts IWDG, after its early clock setup.
 
-## Bench acceptance and retiring the standalone build
+## Bench acceptance
 
 Software builds and offline checks do not establish flash timing, bank-power
 behavior or power-failure recovery. Record actual results in the
@@ -458,11 +469,6 @@ with compatible settings schemas:
    Recovery must produce the exact unconfirmed candidate or the confirmed
    baseline, never execute a partial image.
 
-After acceptance is recorded, switch the standard build and CLion workflow to
-MCUboot, remove the standalone build path and its instructions, and keep one
-canonical artifact table. Continue to support USB confirmed-image installation
-and network trial installation from that one build.
-
 ### Maximum-size and negative fixtures
 
 ```bash
@@ -484,10 +490,10 @@ changing linked code or RAM use. Merely padding a finished image would not test 
 | `manifest.json` | Fixture sizes and MCUboot hashes |
 
 `fixtures --build-dir PATH --output PATH` selects another matching build/output
-directory. Use `maximum.bin` in both normal update and `--skip-confirm` cases,
-restoring a different confirmed baseline between them: an already-running hash
-is intentionally a no-op. `--skip-confirm` verifies the trial and reports remaining
-time; observe the subsequent reset and baseline hash separately.
+directory. Use `maximum.bin` for both explicitly confirmed and default
+unconfirmed trials, restoring a different confirmed baseline between them: an
+already-running hash is intentionally a no-op. For rollback tests, leave the
+default trial unconfirmed and observe the subsequent reset and baseline hash.
 
 Device-side rejection needs a temporary lab script that bypasses only the host
 validator. With a manually opened window, send

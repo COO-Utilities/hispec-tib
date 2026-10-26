@@ -553,8 +553,8 @@ while serial guard is active and attenuator DAC-range clamping.
 (ota)=
 ### `ota`
 
-Available only in the explicit MCUboot/OTA build (`CONFIG_COO_OTA`). The default
-standalone bench build omits this command. See [firmware updates](ota.md).
+Every HISPEC build includes MCUboot and `CONFIG_COO_OTA`.
+See [firmware updates](ota.md) for network and USB installation.
 
 - **No payload:** query running MCUboot identity and maintenance/trial state.
   ```json

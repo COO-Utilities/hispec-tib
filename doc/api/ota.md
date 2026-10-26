@@ -13,9 +13,8 @@ their existing main loop.
 
 ## Configuration
 
-HISPEC enables `CONFIG_COO_OTA` only through `app/sysbuild/app.conf` in the
-explicit sysbuild. The ordinary bench build omits the lifecycle and `ota`
-command. The [operator guide](../ota.md#explicit-mcubootota-build) owns build,
+HISPEC enables `CONFIG_COO_OTA` in `app/prj.conf` and requires MCUboot sysbuild
+for both normal and timing profiles. The [operator guide](../ota.md#mcuboot-build-normal-or-timing) owns build,
 installation and artifact instructions; the Kconfig dependencies enforce the
 required MCUboot/MCUmgr capabilities for other consuming applications.
 

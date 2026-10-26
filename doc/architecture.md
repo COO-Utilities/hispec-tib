@@ -18,7 +18,7 @@ scheduling.
 Runtime ownership is:
 
 - `main.c`: boot order, watchdog, serial polling, network/MQTT loop, outbound
-  queue draining and optional OTA deadline polling.
+  queue draining and OTA deadline polling.
 - `command.c`: app command queues, static command spec table, support
   predicates, custom request classification callbacks, reboot-prepare hook, and
   app/cross-domain command handlers. It supplies `app_output_emit()` for domain
@@ -84,8 +84,7 @@ APIs directly.
 
 ## Boot Sequence
 
-The standalone bench build enters the application directly. The explicit OTA
-sysbuild runs MCUboot first, with HSI clocks, a PB2 bank-off GPIO hog and a
+Every application build uses sysbuild and runs MCUboot first, with HSI clocks, a PB2 bank-off GPIO hog and a
 30-second watchdog. It validates/selects the application before chainload. See
 [firmware updates](ota.md) for provisioning, flash layout and recovery.
 
@@ -93,7 +92,7 @@ sysbuild runs MCUboot first, with HSI clocks, a PB2 bank-off GPIO hog and a
 2. Load app defaults/NVS; detect exactly one strap; apply the board-change reset policy.
 3. Restore UTC from a valid RTC and increment the boot counter.
 4. Configure the command runtime and fixed queues (no command execution yet).
-5. Check required devices. In OTA builds, initialize image state and select bank
+5. Check required devices. Initialize image state and select bank
    `override_off` on an unconfirmed TIB trial before any workers or ingress.
 6. Build the MEMS router, initialize attenuators and load coefficients.
 7. Start the app blocking queue; bind laser auto-off and housekeeping before their consumers.
@@ -101,7 +100,7 @@ sysbuild runs MCUboot first, with HSI clocks, a PB2 bank-off GPIO hog and a
 9. Start SNTP and network policy, initialize MQTT and its command subscription.
 10. Poll serial and OTA deadlines, feed the watchdog, reconnect MQTT, drain output
     and process socket events in main. Trial expiry schedules delayed reboot and
-    withholds watchdog feeds; standalone builds always feed during each main pass.
+    withholds watchdog feeds.
 
 ## Board Profiles
 

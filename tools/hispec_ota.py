@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Update one HISPEC controller, or generate lab images from its sysbuild.
 
-MQTT opens the maintenance window and confirms the exact running image. SMP
+MQTT opens the maintenance window and verifies the exact running image. SMP
 uploads to the secondary slot and requests a test boot. This tool never changes
-bank power mode. Hash-only images require the trusted observatory network.
+bank power mode. Confirmation is manual unless --auto-confirm is requested.
+Hash-only images require the trusted observatory network.
 
 Run from a full Zephyr workspace with its Python requirements installed. Image
 validation (including --dry-run) reads the matching sysbuild configuration and
@@ -201,12 +202,12 @@ async def upload_test(ip: str, data: bytes, digest: bytes, running_hash: str,
 
 
 def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
-                   timeout_s: int, skip_confirm: bool) -> None:
-    """Verify a new boot using fresh MQTT replies and confirm only the exact hash.
+                   timeout_s: int, auto_confirm: bool) -> None:
+    """Verify a new boot; confirm its exact hash only with explicit opt-in.
 
     Requires board readiness and TIB bank off. A lost confirmation ACK is
-    recoverable by querying again. ``skip_confirm`` returns with the trial still
-    unconfirmed; a timeout does not prove rollback has already occurred. Sleeps
+    recoverable by querying again. By default, print manual confirmation
+    instructions; a timeout does not prove rollback has already occurred. Sleeps
     between retries and leaves hardware/bank mode to the operator.
     """
     deadline = time.monotonic() + timeout_s
@@ -231,16 +232,28 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
                 bank = pcb.laser_bankpower()
                 if bank.mode != "override_off" or bank.powered:
                     raise RuntimeError("candidate did not keep the laser bank off; refusing confirmation")
-            if skip_confirm:
-                if ota.confirmed:
-                    raise RuntimeError("rollback test requires an unconfirmed candidate")
-                print(f"Trial running; confirmation skipped. Rollback in {ota.trial_remaining_s}s.")
+            if ota.confirmed:
+                print(f"Verified {digest.hex()} is already confirmed; no further confirmation needed.")
                 return
-            if not ota.confirmed:
-                # If the ACK is lost, the next loop reads confirmed state before
-                # deciding whether an identical confirmation must be retried.
-                pcb.confirm_image(digest.hex())
-                ota = pcb.ota()
+            if ota.trial_remaining_s <= 0:
+                raise RuntimeError("candidate confirmation window expired; leaving it unconfirmed")
+            if not auto_confirm:
+                print(f"Trial verified, UNCONFIRMED; {ota.trial_remaining_s}s remaining before rollback.")
+                print("After checking the candidate, confirm the exact running image:")
+                print(f'  pcb.confirm_image("{digest.hex()}")')
+                print(f"  MQTT topic: cmd/{pcb.device}/req/ota")
+                print("  MQTT payload: " + json.dumps({"confirm": True, "image_hash": digest.hex()}))
+                if board.board == "tib":
+                    print("TIB bank remains override_off; restore auto after accepting the image.")
+                return
+            print("Confirming because --auto-confirm was requested: a fresh boot reports the exact "
+                  "candidate hash, board_ok=true, an open trial window, and "
+                  + ("the TIB laser bank is override_off and unpowered."
+                     if board.board == "tib" else "no TIB laser-bank check is required."), flush=True)
+            # If the ACK is lost, the next loop reads confirmed state before
+            # deciding whether an identical confirmation must be retried.
+            pcb.confirm_image(digest.hex())
+            ota = pcb.ota()
             if ota.image_hash != digest.hex() or not ota.confirmed:
                 raise RuntimeError("exact running-image confirmation was not verified")
             print(f"Confirmed {digest.hex()}. Bank mode remains override_off on TIB; operator restores auto.")
@@ -249,7 +262,7 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
             raise  # Explicit command rejection is not a transport retry.
         except HispecFibError:
             time.sleep(1)
-    raise TimeoutError("no verified confirmation before host timeout; an unconfirmed trial will roll back")
+    raise TimeoutError("candidate boot/confirmation was not verified before host timeout; an unconfirmed trial will roll back")
 
 
 def update(args: argparse.Namespace, layout: BuildLayout) -> None:
@@ -261,6 +274,9 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
         return
     if args.broker is None:
         raise ValueError("--broker is required for an update")
+    print("Confirmation: " + ("automatic after candidate checks (--auto-confirm)."
+                              if args.auto_confirm else "manual; this script will leave the trial unconfirmed."),
+          flush=True)
     with HispecFibPcb(args.broker, port=args.broker_port, device=args.device) as pcb:
         if pcb.help().device != args.device:
             raise RuntimeError("MQTT device identity mismatch")
@@ -298,14 +314,14 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
             raise
         except HispecFibError:
             print("Reboot ACK lost; checking fresh boot state.", file=sys.stderr)
-        wait_for_trial(pcb, digest, board.boots, args.boot_timeout_s, args.skip_confirm)
+        wait_for_trial(pcb, digest, board.boots, args.boot_timeout_s, args.auto_confirm)
 
 
 def main() -> int:
     """Parse one offline-fixture or update action; report handled failures as exit 1."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    upload = sub.add_parser("update", help="verify, upload, test boot and confirm one image")
+    upload = sub.add_parser("update", help="verify, upload and test boot one image; confirmation is manual by default")
     upload.add_argument("image", type=Path, help="unpadded zephyr.signed.bin candidate")
     upload.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD,
                         help="matching sysbuild directory (default: workspace/hispec-tib/app/build-ota)")
@@ -318,8 +334,8 @@ def main() -> int:
     upload.add_argument("--boot-timeout-s", type=int, default=180,
                         help="host boot/confirmation wait, 1..300 seconds (default: 180)")
     upload.add_argument("--dry-run", action="store_true", help="validate locally without connecting")
-    upload.add_argument("--skip-confirm", action="store_true",
-                        help="verify trial then leave it unconfirmed; observe rollback separately")
+    upload.add_argument("--auto-confirm", action="store_true",
+                        help="confirm after exact-hash, fresh-boot, board-ready and TIB-bank-off checks; prints the reason")
     fixtures = sub.add_parser("fixtures", help="generate maximum, oversized and corrupt lab images")
     fixtures.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD,
                           help="matching sysbuild directory (default: workspace/hispec-tib/app/build-ota)")

@@ -333,10 +333,15 @@ Use this venv for Python, west commands, and documentation commands.
 For Nucleo build validation, use:
 
 ```bash
-./.venv/bin/west build --board=nucleo_h563zi/stm32h563xx --build-dir ./hispec-tib/app/build ./hispec-tib/app
+./.venv/bin/west build --sysbuild --board=nucleo_h563zi/stm32h563xx --build-dir ./hispec-tib/app/build-ota ./hispec-tib/app
 ```
 
 Build discipline:
+
+* MCUboot is required. Normal and timing builds use `app/build-ota` and `app/build-ota-timing`.
+* Timing adds `-- -Dapp_EXTRA_CONF_FILE=debug.conf`. Routine USB flash uses the wrapper
+  in `scripts/clion-west-builddir-wrapper.sh`, which writes only the confirmed app HEX.
+  See `doc/ota.md` for manual OTA confirmation and the separate fresh-board provisioning path.
 
 * Do not run parallel builds sharing one build directory.
 * If running `--cmake-only` and a full build, run sequentially.
@@ -888,7 +893,7 @@ and assertions human-readable. Do not recreate deleted check tooling without an 
 Useful command:
 
 ```bash
-./.venv/bin/west build --board=nucleo_h563zi/stm32h563xx --build-dir ./hispec-tib/app/build ./hispec-tib/app
+./.venv/bin/west build --sysbuild --board=nucleo_h563zi/stm32h563xx --build-dir ./hispec-tib/app/build-ota ./hispec-tib/app
 ```
 
 Debug tooling may be in:
@@ -901,7 +906,7 @@ Debug tooling may be in:
 Example addr2line:
 
 ```bash
-~/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-addr2line -a -f -C -i -e hispec-tib/app/build/zephyr/zephyr.elf 0x0800f028 0x08010a95
+~/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-addr2line -a -f -C -i -e hispec-tib/app/build-ota/app/zephyr/zephyr.elf 0x0800f028 0x08010a95
 ```
 
 Always report exactly what was run.

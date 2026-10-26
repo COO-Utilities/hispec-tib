@@ -38,15 +38,15 @@ west packages pip --install
 For an already initialized workspace, use its environment and build:
 
 ```bash
-./.venv/bin/west build \
+./.venv/bin/west build --sysbuild \
   --board=nucleo_h563zi/stm32h563xx \
-  --build-dir ./hispec-tib/app/build \
+  --build-dir ./hispec-tib/app/build-ota \
   ./hispec-tib/app
 ```
 
-The standalone build above remains the bench default. MCUboot/OTA is an explicit
-`--sysbuild` build in `app/build-ota`; follow the [update guide](doc/ota.md)
-before provisioning a board.
+MCUboot is required for every build. Select **MCUboot** or **MCUboot Timing**
+in CLion. Follow the [update guide](doc/ota.md) for network OTA (manual confirmation
+by default), USB confirmed-app updates, and separate fresh-board provisioning.
 
 CLion users should enable RTOS integration and select GDB from the Zephyr SDK.
 ST-Link firmware and runner selection depend on the local workstation.
