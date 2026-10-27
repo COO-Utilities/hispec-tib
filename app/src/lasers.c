@@ -178,8 +178,6 @@ static K_WORK_DELAYABLE_DEFINE(laser_autooff_work, laser_autooff_work_handler);
 
 static void ensure_laser_runtime_settings_locked(void)
 {
-	struct app_laser_settings stored = {0};
-
 	if (laser_runtime_initialized) {
 		return;
 	}
@@ -188,17 +186,22 @@ static void ensure_laser_runtime_settings_locked(void)
 	 * boot entry initializes the owner before worker threads start. Hardware
 	 * writers also call here under io_lock; state-only getters never initialize.
 	 */
-	app_settings_get_laser(&stored);
-	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	/* Copy one channel at a time without nesting settings and state locks. */
 	for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-		laser_settings[i] = stored.channel[i];
+		struct app_laser_channel_settings stored;
+
+		(void)app_settings_get_laser_channel(i, &stored);
+		k_mutex_lock(&laser_state_lock, K_FOREVER);
+		laser_settings[i] = stored;
 		laser_output_estimate[i].current_ma = 0.0;
 		laser_output_estimate[i].tec_temperature_c =
-			stored.channel[i].properties.operating_temp_c;
+			stored.properties.operating_temp_c;
 		laser_output_estimate[i].control = LASER_CONTROL_CONFIRMED;
 		laser_autooff_deadline_ms[i] = LASER_AUTOFF_NO_DEADLINE;
+		k_mutex_unlock(&laser_state_lock);
 	}
 
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	laser_runtime_initialized = true;
 	k_mutex_unlock(&laser_state_lock);
 }

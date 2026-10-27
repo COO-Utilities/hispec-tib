@@ -1362,17 +1362,6 @@ void app_settings_update_laserbank(const struct app_laserbank_settings *laserban
 	}
 }
 
-void app_settings_get_laser(struct app_laser_settings *out)
-{
-	if (out == NULL) {
-		return;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	*out = g_settings.snapshot.laser;
-	k_mutex_unlock(&g_settings.lock);
-}
-
 int app_settings_get_laser_channel(uint8_t channel,
 				   struct app_laser_channel_settings *out)
 {

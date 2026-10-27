@@ -1903,8 +1903,9 @@ static int apply_fit_to_settings_locked(void)
  * Start/stop commands cancel and join this calculation before changing its data.
  * Lowest application priority lets health, UART polling and logging preempt the
  * math. Change/restore priority with no mutex held, avoiding priority inheritance.
+ * Keep this out of line so acquisition does not carry the fitting stack frame.
  */
-static void auto_fit(void)
+static __noinline void auto_fit(void)
 {
 	int priority = k_thread_priority_get(k_current_get());
 	int first_error = 0;

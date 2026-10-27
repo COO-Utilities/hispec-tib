@@ -278,8 +278,6 @@ void app_settings_get_laserbank(struct app_laserbank_settings *out);
 /** @brief Replace laser-bank heater mode setting. */
 void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist);
-/** @brief Copy app-owned laser settings and lifetime counters. */
-void app_settings_get_laser(struct app_laser_settings *out);
 /** @brief Copy one app-owned laser channel's settings. */
 int app_settings_get_laser_channel(uint8_t channel,
 				   struct app_laser_channel_settings *out);
