@@ -3,8 +3,9 @@
  * @brief Bridge-normalized automatic FVOA attenuator calibration.
  *
  * This is a board servicing routine driven by the throughput monitor thread.
- * It uses the configured photodiode dark value indirectly (it never measures its own)
- * through use of net pd signal and retains raw measurement even when the final fit is not accepted. The routine
+ * It uses the configured photodiode dark value through net PD signal. Source-off
+ * windows bracket the run to diagnose background drift; they do not change that
+ * dark value or the fit. Raw measurements survive rejected fits. The routine
  * deliberately does not use a datasheet voltage schedule: it finds usable
  * companion settings by binary search, then sweeps the DUT FVOA linearly until
  * the photodiode signal reaches the dim edge of the current segment.
@@ -67,6 +68,8 @@ LOG_MODULE_REGISTER(attenuator_calibration, LOG_LEVEL_INF);
 #define ATTEN_CAL_MIN_DWELL_MS 100U
 #define ATTEN_CAL_MAX_DWELL_MS 2000U
 #define ATTEN_CAL_SETTLE_MS 100U
+#define ATTEN_CAL_DARK_SETTLE_MS 10000U
+#define ATTEN_CAL_DARK_DWELL_MS 2000U
 /* Peak target for reference/bridge searches, below the PD's 2000 mV usable limit. */
 #define ATTEN_CAL_SEARCH_MAX_MV 1850.0f
 /* Minimum bracket width for companion-FVOA binary searches. */
@@ -113,6 +116,7 @@ enum atten_cal_mode {
 
 enum atten_cal_phase {
 	ATTEN_CAL_PHASE_NONE = 0,
+	ATTEN_CAL_PHASE_DARK_SETTLE,
 	ATTEN_CAL_PHASE_WAIT_WINDOW,
 	ATTEN_CAL_PHASE_FITTING,
 };
@@ -121,12 +125,16 @@ enum atten_cal_measure_kind {
 	ATTEN_CAL_MEASURE_INITIAL_PROBE=0,
 	ATTEN_CAL_MEASURE_SWEEP,
 	ATTEN_CAL_MEASURE_BRIDGE_PROBE,
+	ATTEN_CAL_MEASURE_DARK_BEFORE,
+	ATTEN_CAL_MEASURE_DARK_AFTER,
 };
 
 enum atten_cal_record_event {
 	ATTEN_CAL_EVENT_POINT = 0,
 	ATTEN_CAL_EVENT_INITIAL_PROBE,
 	ATTEN_CAL_EVENT_BRIDGE_PROBE,
+	ATTEN_CAL_EVENT_DARK_BEFORE,
+	ATTEN_CAL_EVENT_DARK_AFTER,
 };
 
 enum atten_cal_record_classification {
@@ -177,7 +185,7 @@ struct atten_cal_state_data {
 	/* Held-DUT bridge measurement selected from retained point records. */
 	uint8_t bridge_before_index;
 	bool bridge_before_index_valid;
-	/* Others */
+	/* Start of the source-off settling interval or the active PD window. */
 	int64_t window_started_ms;
 	int last_error;
 	bool shutdown_pending; /* Keep laser identity after a failed fault shutdown. */
@@ -255,6 +263,10 @@ static const char *record_event_name(uint8_t event)
 		return "initial_probe";
 	case ATTEN_CAL_EVENT_BRIDGE_PROBE:
 		return "bridge_probe";
+	case ATTEN_CAL_EVENT_DARK_BEFORE:
+		return "dark_before";
+	case ATTEN_CAL_EVENT_DARK_AFTER:
+		return "dark_after";
 	default:
 		return "unknown";
 	}
@@ -520,7 +532,10 @@ static bool append_record_locked(enum atten_cal_record_event event,
 	if (physical >= ATTENUATOR_PHYSICAL_COUNT) {
 		return false;
 	}
-	if (cal.record_count[physical] >= ATTENUATOR_CAL_RECORD_COUNT) {
+	/* DAC1's first slot holds dark_before; reserve DAC2's last for dark_after. */
+	uint8_t limit = ATTENUATOR_CAL_RECORD_COUNT -
+		(physical == 1U && event != ATTEN_CAL_EVENT_DARK_AFTER ? 1U : 0U);
+	if (cal.record_count[physical] >= limit) {
 		cal.record_overflow[physical] = true;
 		return false;
 	}
@@ -740,6 +755,17 @@ static void auto_schedule_measure_locked(enum atten_cal_measure_kind kind,
 	cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;  // From here execution resumes at auto_tick_locked()
 }
 
+/** Arm a diagnostic window after confirmed STOP. Tick-based settling keeps STOP
+ * responsive; the route, DACs, PD power and configured dark remain unchanged.
+ */
+static void auto_schedule_dark_locked(enum atten_cal_measure_kind kind)
+{
+	cal.measure_kind = kind;
+	cal.laser_percent = 0U;
+	cal.window_started_ms = k_uptime_get();
+	cal.phase = ATTEN_CAL_PHASE_DARK_SETTLE;
+}
+
 /** Initialize acquisition state for the current physical FVOA and schedule its first probe. */
 static void auto_start_next_physical_locked(void)
 {
@@ -765,7 +791,7 @@ static void auto_start_next_physical_locked(void)
 	atten_cal_emit_simple("physical_start");
 }
 
-/** Finish acquisition, stopping the source before handing immutable records to fitting. */
+/** Finish the sweeps and stop the source; the final dark window precedes fitting. */
 static void auto_finish_physical_locked(void)
 {
 	LOG_INF("atten cal physical complete physical=%s records=%u overflow=%d",
@@ -779,9 +805,9 @@ static void auto_finish_physical_locked(void)
 		return;
 	}
 	int rc = hispec_laser_stop_output(cal.laser, false, NULL, 0);
-	housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 	if (rc != 0) {
 		/* Preserve the data and shutdown responsibility without retrying STOP. */
+		housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
 		cal.shutdown_pending = true;
 		cal.last_error = rc;
 		cal.state = ATTEN_CAL_STATE_ERROR;
@@ -789,10 +815,7 @@ static void auto_finish_physical_locked(void)
 		atten_cal_emit_simple("error");
 		return;
 	}
-	cal.laser_percent = 0;
-	atomic_clear(&cal_fit_cancel);
-	k_sem_reset(&cal_fit_done);
-	cal.phase = ATTEN_CAL_PHASE_FITTING;
+	auto_schedule_dark_locked(ATTEN_CAL_MEASURE_DARK_AFTER);
 }
 
 /** Handle companion-search probes used to find the initial usable open reference. */
@@ -1967,15 +1990,17 @@ static void auto_tick_locked(const struct photodiode_status *pd_status)
 	}
 
 	switch (cal.phase) {
+		case ATTEN_CAL_PHASE_DARK_SETTLE:
 		case ATTEN_CAL_PHASE_WAIT_WINDOW:
 			if (pd_status == NULL) {
 				auto_error_locked(-EINVAL);
 				return;
 			}
 
-			/* Source health and confirmed emission are acquisition preconditions,
+			/* Source health and the expected emission state are acquisition preconditions,
 			 * separate from the current-based numerical power estimate. An
 			 * unconfirmed source permits passive streaming, not calibration.
+			 * Diagnostic darks follow a confirmed STOP and require continued non-emission.
 			 * No hardware I/O here.
 			 */
 			bool powered;
@@ -1984,21 +2009,56 @@ static void auto_tick_locked(const struct photodiode_status *pd_status)
 				auto_error_locked(power_rc != 0 ? power_rc : -EIO);
 				return;
 			}
+			bool dark = cal.measure_kind == ATTEN_CAL_MEASURE_DARK_BEFORE ||
+				cal.measure_kind == ATTEN_CAL_MEASURE_DARK_AFTER;
 			bool emitting;
 			int source_rc = hispec_laser_output_status(cal.laser, &emitting);
-			if (source_rc != 0 || !emitting) {
+			if (source_rc != 0 || emitting == dark) {
 				auto_error_locked(source_rc != 0 ? source_rc : -EIO);
+				return;
+			}
+			if (cal.phase == ATTEN_CAL_PHASE_DARK_SETTLE) {
+				if (k_uptime_get() - cal.window_started_ms < ATTEN_CAL_DARK_SETTLE_MS) return;
+				int rc = photodiode_set_configurable_window_duration(cal.channel, ATTEN_CAL_DARK_DWELL_MS);
+				if (rc < 0) {
+					auto_error_locked(rc);
+					return;
+				}
+				cal.window_started_ms = k_uptime_get();
+				cal.phase = ATTEN_CAL_PHASE_WAIT_WINDOW;
 				return;
 			}
 
 			window = &pd_status->channel[cal.channel].configurable_window;
+			uint32_t dwell_ms = dark ? ATTEN_CAL_DARK_DWELL_MS : cal.dwell_ms;
 			if (window->end_ms <= cal.window_started_ms ||
-			    window->sample_length < cal.dwell_ms / PHOTODIODE_SAMPLE_INTERVAL_MS) {
+			    window->sample_length < dwell_ms / PHOTODIODE_SAMPLE_INTERVAL_MS) {
 				return;
 			}
 			build_measurement_from_pd_window(window, &measurement);
 
 			switch (cal.measure_kind) {
+				case ATTEN_CAL_MEASURE_DARK_BEFORE:
+				case ATTEN_CAL_MEASURE_DARK_AFTER: {
+					struct atten_cal_record *record;
+					bool before = cal.measure_kind == ATTEN_CAL_MEASURE_DARK_BEFORE;
+					if (!append_record_locked(before ? ATTEN_CAL_EVENT_DARK_BEFORE :
+								  ATTEN_CAL_EVENT_DARK_AFTER, &measurement, &record)) {
+						auto_error_locked(-ENOSPC);
+					} else if (measurement.classification == ATTEN_CAL_CLASSIFICATION_ADC_ERROR ||
+						   measurement.classification == ATTEN_CAL_CLASSIFICATION_SATURATED) {
+						auto_error_locked(measurement.classification == ATTEN_CAL_CLASSIFICATION_ADC_ERROR ? -EIO : -ERANGE);
+					} else if (before) {
+						/* Zero/negative offsets are expected; SNR is not a dark validity test. */
+						auto_start_next_physical_locked();
+					} else {
+						housekeeping_photodiode_autooff_inhibit((enum housekeeping_power_output)cal.channel, false);
+						atomic_clear(&cal_fit_cancel);
+						k_sem_reset(&cal_fit_done);
+						cal.phase = ATTEN_CAL_PHASE_FITTING;
+					}
+					break;
+				}
 				case ATTEN_CAL_MEASURE_INITIAL_PROBE:
 					auto_handle_initial_probe_locked(&measurement);
 					break;
@@ -2157,7 +2217,7 @@ int attenuator_calibration_start_auto(
 
 	k_mutex_lock(&cal_lock, K_FOREVER);
 	atten_cal_emit_simple("start");
-	auto_start_next_physical_locked();
+	auto_schedule_dark_locked(ATTEN_CAL_MEASURE_DARK_BEFORE);
 	publish_status_locked(status);
 	k_mutex_unlock(&cal_lock);
 	return 0;

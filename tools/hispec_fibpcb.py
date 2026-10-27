@@ -130,7 +130,7 @@ _ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
 _ATTEN_CAL_BRIDGE_BINARY = struct.Struct("<2B")
 _ATTEN_CAL_CHUNK_MAGIC = b"HAC4"
 _ATTEN_CAL_METADATA_KIND = 0
-_ATTEN_CAL_EVENTS = ("point", "initial_probe", "bridge_probe")
+_ATTEN_CAL_EVENTS = ("point", "initial_probe", "bridge_probe", "dark_before", "dark_after")
 _ATTEN_CAL_CLASSIFICATIONS = ("ok", "saturated", "below_snr", "adc_error")
 _ATTEN_CAL_STATES = ("inactive", "running", "complete", "error")
 _ATTEN_CAL_MODES = ("none", "tib_auto")
@@ -836,11 +836,15 @@ _ATTEN_CAL_EVENT_COLORS = {
     "point": "tab:blue",
     "initial_probe": "0.55",
     "bridge_probe": "tab:green",
+    "dark_before": "tab:purple",
+    "dark_after": "tab:purple",
 }
 _ATTEN_CAL_EVENT_MARKERS = {
     "point": "o",
     "initial_probe": "s",
     "bridge_probe": "P",
+    "dark_before": "<",
+    "dark_after": ">",
 }
 _ATTEN_CAL_ROLE_COLORS = {
     "reference": "tab:cyan",
@@ -2845,7 +2849,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
         Explicit coefficients override downloaded fit metadata. Missing reference
         or model information leaves unavailable derived values as NaN; raw values
-        remain unchanged. This does not download, fit or install coefficients."""
+        remain unchanged. Source-off records retain raw signals only: they do not
+        measure transmission. This does not download, fit or install coefficients."""
         out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
         for name in ATTEN_CAL_DTYPE.names:
             out[name] = self.records[name]
@@ -2904,6 +2909,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
 
             for i, row in enumerate(rec):
+                if str(row.event) in ("dark_before", "dark_after"):
+                    continue
                 segment = int(row.segment)
                 if str(row.classification) != "ok" or segment not in segment_scale:
                     continue
