@@ -126,7 +126,8 @@ _THROUGHPUT_FLOAT_FIELDS = (
     "atten2_slope_db_per_fvoa_mv",
 )
 _ATTEN_CAL_RECORD_BINARY = struct.Struct("<6f3B")
-_ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B")
+_ATTEN_CAL_METADATA_HEADER = struct.Struct("<4s15B4fB16s")
+_ATTEN_CAL_FIT_REASONS = ("pending", "background", "bridge", "peak", "support", "model", "residual", "accepted", "range")
 _ATTEN_CAL_BRIDGE_BINARY = struct.Struct("<2B")
 _ATTEN_CAL_CHUNK_MAGIC = b"HAC4"
 _ATTEN_CAL_METADATA_KIND = 0
@@ -160,6 +161,9 @@ ATTEN_CAL_DERIVED_DTYPE = np.dtype(
     ATTEN_CAL_DTYPE.descr
     + [
         ("acq_snr", "f8"),
+        ("corrected_signal_mv", "f8"),
+        ("corrected_signal_err_mv", "f8"),
+        ("corrected_snr", "f8"),
         ("bridge_index", "i2"),
         ("segment_scale", "f8"),
         ("segment_scale_rel_var", "f8"),
@@ -641,6 +645,9 @@ class AttenuatorCoeff(ResponseRepr):
 @dataclass(frozen=True, repr=False)
 class AttenuatorFitMetrics(ResponseRepr):
     valid: bool
+    reason: str = "pending"
+    open_mv: float | None = None
+    open_loss_db: float | None = None
     accepted: bool = False
     points: int = 0
     fvoa_50pct_mv: float | None = None
@@ -658,10 +665,10 @@ class AttenuatorFitMetrics(ResponseRepr):
 
     def __repr__(self) -> str:
         if not self.valid:
-            return "AttenuatorFitMetrics(valid=False)"
+            return f"AttenuatorFitMetrics(valid=False, reason={self.reason!r})"
         return (
             "AttenuatorFitMetrics("
-            f"accepted={self.accepted}, points={self.points}, "
+            f"accepted={self.accepted}, reason={self.reason!r}, points={self.points}, open_mv={_format_repr(self.open_mv)}, "
             f"fvoa_50pct_mv={_format_repr(self.fvoa_50pct_mv)}, "
             f"slope_inv_fvoa_mv={_format_repr(self.slope_inv_fvoa_mv)}, "
             f"max_atten_db={_format_repr(self.max_atten_db)}, "
@@ -2801,6 +2808,12 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             roles["bridge_after"].append(int(bridge["after_record"]))
         return roles
 
+    def _corrected_signal(self, physical: str, record) -> tuple[float, float]:
+        """Apply the firmware's retained background estimate without editing raw records."""
+        meta = self._physical_meta(physical) or {}
+        return (float(record.signal_mv) - float(meta.get("background_mv", 0.0)),
+                math.hypot(float(record.signal_err_mv), float(meta.get("background_err_mv", 0.0))))
+
     def _accepted_bridges(self, physical: str, rec: np.recarray) -> list[dict[str, Any]]:
         meta = self._physical_meta(physical)
         if meta is None:
@@ -2811,15 +2824,17 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             after = self._record_by_index(rec, int(bridge["after_record"]))
             if before is None or after is None:
                 continue
-            if before.signal_mv <= 0.0 or after.signal_mv <= 0.0:
+            bs, be = self._corrected_signal(physical, before)
+            als, ae = self._corrected_signal(physical, after)
+            if (str(before.classification) in ("adc_error", "saturated") or
+                    str(after.classification) in ("adc_error", "saturated") or
+                    not (before.max_mv < PD_ADC_USABLE_MV and after.max_mv < PD_ADC_USABLE_MV) or
+                    before.sweep_mv != after.sweep_mv or
+                    not np.all(np.isfinite((bs, be, als, ae))) or
+                    not (be > 0 and ae > 0 and bs / be >= 5 and als / ae >= 5)):
                 continue
-            if before.signal_err_mv <= 0.0 or after.signal_err_mv <= 0.0:
-                continue
-            ratio = float(after.signal_mv / before.signal_mv)
-            rel_var = float(
-                (before.signal_err_mv / before.signal_mv) ** 2
-                + (after.signal_err_mv / after.signal_mv) ** 2
-            )
+            ratio = als / bs
+            rel_var = (be / bs) ** 2 + (ae / als) ** 2
             bridges.append(
                 {
                     "bridge_index": len(bridges),
@@ -2831,8 +2846,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     "sweep_mv": float(after.sweep_mv),
                     "other_before_mv": float(before.other_mv),
                     "other_after_mv": float(after.other_mv),
-                    "signal_before_mv": float(before.signal_mv),
-                    "signal_after_mv": float(after.signal_mv),
+                    "signal_before_mv": bs,
+                    "signal_after_mv": als,
                     "ratio": ratio,
                     "ratio_rel_var": rel_var,
                 }
@@ -2849,8 +2864,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
         Explicit coefficients override downloaded fit metadata. Missing reference
         or model information leaves unavailable derived values as NaN; raw values
-        remain unchanged. Source-off records retain raw signals only: they do not
-        measure transmission. This does not download, fit or install coefficients."""
+        remain unchanged. Source-off drift is carried in derived uncertainty;
+        source-off records themselves do not measure transmission. This does not download, fit or install coefficients."""
         out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
         for name in ATTEN_CAL_DTYPE.names:
             out[name] = self.records[name]
@@ -2880,6 +2895,10 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.acq_snr[:] = signal / signal_err
 
             meta = self._physical_meta(physical)
+            rec.corrected_signal_mv[:] = signal - float((meta or {}).get("background_mv", 0.0))
+            rec.corrected_signal_err_mv[:] = np.hypot(signal_err, float((meta or {}).get("background_err_mv", 0.0)))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rec.corrected_snr[:] = rec.corrected_signal_mv / rec.corrected_signal_err_mv
             if meta is None or not meta.get("reference_valid"):
                 out[mask] = rec
                 continue
@@ -2887,15 +2906,13 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if ref is None:
                 out[mask] = rec
                 continue
-            if not (
-                str(ref.classification) == "ok"
-                and ref.signal_mv > 0.0
-                and ref.signal_err_mv > 0.0
-            ):
+            open_signal, open_err = self._corrected_signal(physical, ref)
+            if (str(ref.classification) in ("adc_error", "saturated") or
+                    not ref.max_mv < PD_ADC_USABLE_MV or
+                    not np.all(np.isfinite((open_signal, open_err))) or
+                    not (open_err > 0 and open_signal / open_err >= 5)):
                 out[mask] = rec
                 continue
-            open_signal = float(ref.signal_mv)
-            open_err = float(ref.signal_err_mv)
             open_rel_var = (open_err / open_signal) ** 2
             segment_scale: dict[int, float] = {0: 1.0}
             segment_rel_var: dict[int, float] = {0: 0.0}
@@ -2908,21 +2925,28 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 segment_rel_var[to_segment] = segment_rel_var[from_segment] + float(bridge["ratio_rel_var"])
                 rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
 
+            reference_segment = int(ref.segment)
+            if reference_segment not in segment_scale:
+                out[mask] = rec
+                continue
+            open_signal /= segment_scale[reference_segment]
             for i, row in enumerate(rec):
                 if str(row.event) in ("dark_before", "dark_after"):
                     continue
                 segment = int(row.segment)
-                if str(row.classification) != "ok" or segment not in segment_scale:
-                    continue
-                if not (row.signal_mv > 0.0 and row.signal_err_mv > 0.0):
+                if (str(row.classification) in ("adc_error", "saturated") or
+                        not row.max_mv < PD_ADC_USABLE_MV or
+                        not np.all(np.isfinite((row.corrected_signal_mv, row.corrected_signal_err_mv))) or
+                        segment not in segment_scale or not row.corrected_snr >= 5):
                     continue
                 scale = segment_scale[segment]
                 scale_rel_var = segment_rel_var[segment]
-                scaled_signal = float(row.signal_mv) / scale
-                scaled_rel_var = (float(row.signal_err_mv) / float(row.signal_mv)) ** 2 + scale_rel_var
+                own_rel_var = (float(row.corrected_signal_err_mv) / float(row.corrected_signal_mv)) ** 2
+                scaled_signal = float(row.corrected_signal_mv) / scale
+                scaled_rel_var = own_rel_var + scale_rel_var
                 scaled_err = abs(scaled_signal) * np.sqrt(max(scaled_rel_var, 0.0))
                 tx = scaled_signal / open_signal
-                tx_rel_var = scaled_rel_var + open_rel_var
+                tx_rel_var = own_rel_var + open_rel_var + abs(scale_rel_var - segment_rel_var[reference_segment])
                 tx_err = abs(tx) * np.sqrt(max(tx_rel_var, 0.0))
                 db = float(_atten_db_from_tx([tx])[0])
                 db_err = (10.0 / np.log(10.0)) * np.sqrt(max(tx_rel_var, 0.0))
@@ -2936,6 +2960,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
                 rec.fit_candidate[i] = (
                     str(row.event) == "point"
+                    and float(row.sweep_mv) >= float(meta.get("open_mv", 0.0))
                     and np.isfinite(db) and np.isfinite(db_err)
                     and tx >= ATTEN_CAL_MIN_TX
                 )
@@ -2943,21 +2968,11 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if coeff is not None:
                 model_db = _atten_db_from_coeff(coeff, rec.sweep_mv)
                 rec.residual_db[:] = model_db - rec.db
-                # Eligibility includes the full sweep. Only infer captured support
-                # when its count agrees with today's prefix, including the boundary
-                # anchor. Older fits may have excluded readings above the reference;
-                # a count alone cannot identify those historical record indices.
-                for item in self.meta:
-                    fit = item.get("fits", {}).get(physical)
-                    if isinstance(fit, AttenuatorFitMetrics) and fit.valid:
-                        support = np.flatnonzero(rec.fit_candidate)
-                        above = np.flatnonzero(np.asarray(rec.db[support], dtype=np.float32)
-                                               > ATTENUATOR_CALIBRATED_MAX_DB)
-                        if len(above):
-                            support = support[:int(above[0]) + 1]
-                        if len(support) == int(fit.points or 0):
-                            rec.included[support] = True
-                        break
+            support = meta.get("fit_support", ())
+            for i, row in enumerate(rec):
+                index = int(row.record)
+                if index < len(support):
+                    rec.included[i] = bool(support[index])
             out[mask] = rec
         return out.view(np.recarray)
 
@@ -3001,8 +3016,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
     ):
         """Plot retained records with event shapes and classification colors.
 
-        Black outlines mark inferred fitting support when its count agrees with
-        the captured fit. Hollow symbols overlay reference and bridge roles.
+        Black outlines mark the firmware-selected fitting support. Hollow symbols overlay reference and bridge roles.
         """
         import matplotlib.pyplot as plt
 
@@ -3025,7 +3039,16 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         finite_atten_err = np.isfinite(x) & np.isfinite(attenuation_db) & np.isfinite(attenuation_sigma_db) & (attenuation_sigma_db > 0.0)
 
         fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=True, constrained_layout=True)
-        fig.suptitle(f"{physical} retained attenuator calibration records")
+        meta = self._physical_meta(physical) or {}
+        fig.suptitle(f"{physical} retained attenuator calibration records — {meta.get('fit_reason', 'result unavailable')}")
+        if meta.get("open_mv", 0.0) > 0:
+            gain = ATTENUATOR_DEFAULT_GAIN if x_axis == "fvoa_mv" else 1.0
+            for ax in axes:
+                ax.axvline(float(meta["open_mv"]) * gain, color="tab:purple", linestyle=":", label="operational open")
+        if "background_mv" in meta:
+            axes[0].axhline(float(meta["background_mv"]), color="tab:orange", linestyle="--", label="source-off residual")
+            axes[0].axhspan(float(meta["background_mv"]) - float(meta["background_err_mv"]),
+                           float(meta["background_mv"]) + float(meta["background_err_mv"]), color="tab:orange", alpha=.12)
 
         axes[0].set_title("raw dark-subtracted photodiode signal")
         if np.any(finite_signal_err):
@@ -3041,7 +3064,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             )
         axes[0].set_ylabel("signal_mv")
 
-        axes[1].set_title("bridge-scaled signal")
+        axes[1].set_title("background-corrected, bridge-scaled signal")
         if np.any(finite_scaled_err):
             axes[1].errorbar(
                 x[finite_scaled_err],
@@ -3186,7 +3209,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 label="captured fit support",
             )
         elif self._fit_coeff_for_physical(physical) is not None:
-            axes[3].text(.02, .04, "Captured fit support unavailable: point counts disagree.",
+            axes[3].text(.02, .04, "No retained fit-support indices are available.",
                          transform=axes[3].transAxes, fontsize=8)
         for segment in np.unique(np.asarray(rec.segment, dtype=int)):
             mask = np.asarray(rec.segment, dtype=int) == segment
@@ -3765,9 +3788,12 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
 def _decode_atten_cal_status(data: Mapping[str, Any]) -> AttenuatorCalibrationStatus:
     def fit(data: Mapping[str, Any]) -> AttenuatorFitMetrics:
         if not bool(data.get("valid", False)):
-            return AttenuatorFitMetrics(valid=False)
+            return AttenuatorFitMetrics(valid=False, reason=str(data.get("reason", "pending")),
+                                        open_mv=data.get("open_mv"), open_loss_db=data.get("open_loss_db"))
         return AttenuatorFitMetrics(
             valid=True,
+            reason=str(data.get("reason", "pending")),
+            open_mv=data.get("open_mv"), open_loss_db=data.get("open_loss_db"),
             accepted=bool(data.get("accepted", False)),
             points=int(data.get("points", 0)),
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
@@ -5110,11 +5136,14 @@ class HispecFibPcb:
             reference_valid,
             reference_record,
             bridge_count,
+            background_mv, background_err_mv, open_mv, open_loss_db, fit_reason, fit_support,
         ) = _ATTEN_CAL_METADATA_HEADER.unpack_from(payload)
-        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 3 or kind != _ATTEN_CAL_METADATA_KIND:
+        if magic != _ATTEN_CAL_CHUNK_MAGIC or version != 4 or kind != _ATTEN_CAL_METADATA_KIND:
             raise HispecFibError("unsupported attenuator calibration metadata")
         if physical_index >= 2:
             raise HispecFibError("invalid physical attenuator in metadata")
+        if record_count > 128 or fit_reason >= len(_ATTEN_CAL_FIT_REASONS):
+            raise HispecFibError("invalid attenuator calibration fit metadata")
         if record_size != _ATTEN_CAL_RECORD_BINARY.size:
             raise HispecFibError(
                 f"attenuator calibration record is {record_size} bytes, expected {_ATTEN_CAL_RECORD_BINARY.size}"
@@ -5155,6 +5184,10 @@ class HispecFibPcb:
             "reference_record": int(reference_record),
             "bridge_count": int(bridge_count),
             "bridges": tuple(bridges),
+            "background_mv": float(background_mv), "background_err_mv": float(background_err_mv),
+            "open_mv": float(open_mv), "open_loss_db": float(open_loss_db),
+            "fit_reason": _ATTEN_CAL_FIT_REASONS[fit_reason],
+            "fit_support": tuple(bool(fit_support[i // 8] & (1 << (i % 8))) for i in range(record_count)),
         }
 
     def _atten_calibration_record_chunk(
@@ -5287,7 +5320,11 @@ class HispecFibPcb:
         dwell_ms: int = 300,
         persist: bool = False,
     ) -> AttenuatorCalibrationStatus:
-        """Query calibration status or start firmware acquisition with laser and output; persist saves accepted fits."""
+        """Query status or sweep both FVOAs from 3300 to 0 mV at fixed laser output.
+
+        Accepted pair fits install coefficients and operational open voltages;
+        persist also saves them to NVS. Raw records survive fit rejection.
+        """
         if laser is None and output is None and fiber == "M" and dwell_ms == 300 and persist is False:
             return _decode_atten_cal_status(self._request_json("atten/calibrate"))
         payload = _optional_payload(laser=laser, output=output, fiber=fiber,

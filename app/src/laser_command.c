@@ -124,6 +124,10 @@ int laserbank_power(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			}
 			(void)laser_calibration_stop(NULL); /* Bank-off remains available after a failed STOP. */
 		}
+		if (attenuator_calibration_active()) {
+			if (mode != HISPEC_LASER_BANK_POWER_OVERRIDE_OFF) return coo_cmd_busy_response(out, cmd);
+			(void)attenuator_calibration_stop(NULL);
+		}
 		rc = hispec_laser_bank_power_mode_set(mode);
 		if (rc != 0) {
 			if (rc == -EBUSY) {
@@ -422,6 +426,11 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 			return laser_cmd_failure(out, cmd, id, "calibration stop", rc, NULL);
 		}
 	}
+	if (attenuator_calibration_active()) {
+		if (value > 0.0) return coo_cmd_busy_response(out, cmd);
+		rc = attenuator_calibration_stop(NULL);
+		if (rc != 0) return laser_cmd_failure(out, cmd, id, "calibration stop", rc, NULL);
+	}
 	throughput_monitor_note_laser_changed(id, false);
 	if (stop) {
 		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
@@ -454,7 +463,7 @@ int laser_tune_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	/* Tuning would invalidate the reference temperature/wavelength snapshot. */
-	if (laser_calibration_active()) {
+	if (laser_calibration_active() || attenuator_calibration_active()) {
 		return coo_cmd_busy_response(out, cmd);
 	}
 
@@ -747,7 +756,7 @@ static int laser_parse_settings_update(const char *json,
 int laser_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	/* Keep driver/model settings fixed while acquisition owns the source. */
-	if (laser_calibration_active()) {
+	if (laser_calibration_active() || attenuator_calibration_active()) {
 		return coo_cmd_busy_response(out, cmd);
 	}
 
