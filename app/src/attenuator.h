@@ -21,6 +21,7 @@
 #define ATTENUATOR_PHYSICAL_COUNT 2
 /* Firmware command/model span for DAC output before the FVOA-drive op amp. */
 #define ATTENUATOR_DRIVE_MAX_MV 3300.0f
+#define ATTENUATOR_DEFAULT_OPEN_MV 1250.0f
 #define ATTENUATOR_DEFAULT_GAIN 1.533
 /* Default maximum attenuation of one physical FVOA, set by residual leakage. */
 #define FVOA_DEFAULT_MAX_ATTEN_DB 55.0
@@ -60,6 +61,7 @@ struct attenuator_dac_cfg {
     struct dac_channel_cfg cfg;
     float ideal_full_scale_mv;
     float drive_limit_mv;
+    float open_mv; /* Operational full open; engineering voltage commands ignore it. */
     float voltage;
     bool valid; /* Successful DAC write/read; cleared on an I/O failure. */
     double attenuation_db;
@@ -113,7 +115,16 @@ bool attenuator_set_pair(struct attenuator *drv, const struct attenuator_target 
  */
 void attenuator_snapshot(const struct attenuator *drv, struct attenuator *out);
 
-/** Initialize a DAC channel. May block on I2C through the DAC driver. */
+/** Quantize operational full open upward; no I/O, full scale uses the last code. */
+float attenuator_open_voltage(const struct attenuator_dac_cfg *cfg);
+
+/** Replace operational open settings under the I/O/state locks, without DAC writes. */
+bool attenuator_set_open_voltages(struct attenuator *drv, const float open_mv[2]);
+
+/** Modeled loss at the operational open pair; snapshots state, without DAC I/O. */
+double attenuator_min_db(const struct attenuator *drv);
+
+/** Initialize both channels and command both closed. May block on DAC I2C. */
 bool attenuator_init(struct attenuator *drv,
                      const struct device *dac1, uint8_t channel1,
                      const struct device *dac2, uint8_t channel2);
@@ -205,7 +216,8 @@ bool attenuator_model_coefficients_valid(
 /**
  * @brief Set one physical attenuator by modeled dB. May block on I2C.
  *
- * @p physical_index is zero for dac1 and one for dac2.
+ * @p physical_index is zero for dac1 and one for dac2. Requests brighter than
+ * operational open stop at that voltage; its modeled idle loss is retained.
  */
 bool attenuator_set_physical_db(struct attenuator *drv, uint8_t physical_index, double attenuation_db);
 
@@ -214,7 +226,8 @@ bool attenuator_set_physical_db(struct attenuator *drv, uint8_t physical_index, 
  * @brief Set one physical attenuator by raw DAC-output millivolts. May block on I2C.
  *
  * @p physical_index is zero for dac1 and one for dac2. This bypasses the
- * calibration model and is intended for calibration sweeps.
+ * calibration model and operational open setting, allowing the full 0–3300 mV
+ * engineering range with ordinary nearest-code quantization.
  */
 bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_index, float voltage);
 
@@ -224,8 +237,9 @@ bool attenuator_set_physical_voltage(struct attenuator *drv, uint8_t physical_in
  * Add dB to the less-attenuated device first, remove dB from the more-attenuated
  * device first, then share changes once balanced. Neither device moves against
  * the requested total direction; an unchanged total retains the allocation.
- * calibrated_only bounds each device by its calibrated range. Entering that
- * range from manual settings may rebalance devices in opposite directions.
+ * Operational open bounds both devices; calibrated_only also bounds their
+ * maximum dB. Entering this range from manual settings may rebalance devices
+ * in opposite directions.
  * May block on DAC I2C and enqueue a clamp warning. A partial failure retains
  * confirmed writes and returns false; no automatic rollback is attempted.
  */
@@ -266,11 +280,11 @@ bool attenuator_estimate_transmission(struct attenuator *drv,
  * @brief Replace both physical model coefficients and preserve logical dB.
  *
  * Reads the current logical attenuation, installs the supplied coefficients,
- * and reapplies that logical attenuation using the new model. This may block on
- * DAC I2C through attenuator_get() and attenuator_set_db(). On failure while
- * applying the new model, the previous coefficients are restored in RAM.
+ * and reapplies that attenuation using the new model and operational open.
+ * A pair parked at the maximum DAC codes keeps those voltages. May block on
+ * DAC I2C. On application failure the previous coefficients are restored in RAM.
  *
- * @retval 0 Coefficients were applied and logical attenuation was reissued.
+ * @retval 0 Coefficients applied; attenuation reissued or closed pair retained.
  * @retval -EINVAL Bad arguments.
  * @retval -EIO DAC read or write failed.
  */

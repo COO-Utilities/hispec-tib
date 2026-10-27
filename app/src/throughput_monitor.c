@@ -276,7 +276,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	bool high = pd->mv >= PHOTODIODE_ADC_USABLE_MV ||
 		pd->net_mv > PHOTODIODE_ADC_USABLE_MV * TP_HIGH_FRACTION;
 	bool low = !high && pd->net_mv < PHOTODIODE_ADC_USABLE_MV * TP_LOW_FRACTION;
-	double max_tx = 1.0;
+	double max_tx = pow(10.0, -attenuator_min_db(atten) / 10.0);
 	double laser_flux = source->laser_output_power_uw * 1.0e-6 *
 		(source->wavelength_nm * 1.0e-9) / (6.62607015e-34 * 299792458.0);
 	struct app_laser_channel_settings settings;
@@ -296,7 +296,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	 * static route losses. Optical power is used everywhere else in the stream.
 	 */
 	if (state->max_flux_ph_s > 0.0 && laser_flux > 0.0) {
-		max_tx = MIN(1.0, state->max_flux_ph_s / laser_flux);
+		max_tx = MIN(max_tx, state->max_flux_ph_s / laser_flux);
 	}
 	/* Try each actuator once; a clamped/quantized no-op yields to the other.
 	 * The same actuator code serves both build-time priority choices.

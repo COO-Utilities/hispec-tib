@@ -83,6 +83,11 @@ struct app_attenuator_fit_policy {
 	double max_fit_residual_db[APP_ATTENUATOR_PHYSICAL_COUNT];
 };
 
+/** Operational open voltages, stored separately from model coefficients. */
+struct app_attenuator_open_settings {
+	float mv[APP_ATTENUATOR_PHYSICAL_COUNT];
+};
+
 /** Persisted/runtime calibration for one logical attenuator channel. */
 struct app_attenuator_channel_settings {
 	struct app_attenuator_physical_settings physical[APP_ATTENUATOR_PHYSICAL_COUNT];
@@ -191,6 +196,7 @@ struct app_settings_snapshot {
 	struct app_mqtt_settings mqtt;
 	struct app_attenuator_settings attenuator;
 	struct app_attenuator_fit_policy attenuator_fit[APP_ATTENUATOR_CHANNEL_COUNT];
+	struct app_attenuator_open_settings attenuator_open[APP_ATTENUATOR_CHANNEL_COUNT];
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
@@ -236,6 +242,10 @@ void app_settings_get_mqtt(struct app_mqtt_settings *out);
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
 /** Copy acceptance policy under the settings mutex; no I/O. */
 void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out);
+/** Copy operational open settings; neither function performs DAC I/O. */
+void app_settings_get_attenuator_open(uint8_t channel, struct app_attenuator_open_settings *out);
+/** Update the settings snapshot, optionally blocking on NVS persistence. */
+int app_settings_update_attenuator_open(uint8_t channel, const struct app_attenuator_open_settings *open, bool persist);
 /** Validate/update policy only; optional NVS write, never changes DAC outputs. */
 int app_settings_update_attenuator_fit(uint8_t channel, const struct app_attenuator_fit_policy *policy, bool persist);
 

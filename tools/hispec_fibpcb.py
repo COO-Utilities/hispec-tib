@@ -4957,8 +4957,9 @@ class HispecFibPcb:
     ) -> AttenuatorGridDataset:
         """Acquire a manual DAC-output mV grid with the named laser at laser_pct percent.
 
-        Reads existing dark, sets laser output and each DAC pair, then reads PD
-        windows after dwell_s. It neither configures the optical path nor stops
+        Reads existing dark, closes both DACs, then sets laser output and reads
+        the grid after dwell_s per pair. The default grid starts closed and steps
+        down. It neither configures the optical path nor stops
         the laser afterward. Caller owns routing, PD power and cleanup. Supplied
         drive_gain only labels post-amplifier volts; it does not calibrate gain."""
         if channel is None:
@@ -4975,7 +4976,7 @@ class HispecFibPcb:
         if dac1_mv is None and dac2_mv is None:
             coarse_low = np.array((0.0, 300.0, 600.0, 900.0), dtype=float)
             knee = np.arange(1300.0, ATTENUATOR_DRIVE_MAX_MV + 0.5, 100.0)
-            dac1_values = np.concatenate((coarse_low, knee))
+            dac1_values = np.concatenate((coarse_low, knee))[::-1]
             dac2_values = dac1_values.copy()
         else:
             source1 = dac2_mv if dac1_mv is None else dac1_mv
@@ -4985,6 +4986,7 @@ class HispecFibPcb:
         if len(dac1_values) == 0 or len(dac2_values) == 0:
             raise HispecFibError("dac1_mv and dac2_mv must not be empty")
         pd_dark_mv = self.pd_dark(channel).dark.mean_mv
+        self.atten(laser, value1_mv=ATTENUATOR_DRIVE_MAX_MV, value2_mv=ATTENUATOR_DRIVE_MAX_MV)
         self.laser(laser, value=laser_pct / 100.0)
 
         rows: list[tuple[Any, ...]] = []
@@ -5030,14 +5032,21 @@ class HispecFibPcb:
         return AttenuatorGridProbe(self, (laser,), kwargs).start()
 
     def atten_settings(self, laser: str, *, dac1: Mapping[str, float] | None = None,
-                       dac2: Mapping[str, float] | None = None, persist: bool = False) -> dict[str, dict[str, float]]:
-        """Query/update per-FVOA fit policy without changing coefficients or outputs.
+                       dac2: Mapping[str, float] | None = None, open1_mv: float | None = None,
+                       open2_mv: float | None = None, persist: bool = False) -> dict[str, Any]:
+        """Query/update per-FVOA open voltage and fit policy without moving outputs.
+
+        Open voltages define modeled full open; engineering value1_mv/value2_mv
+        still accept the full 0–3300 mV span. Defaults are 1250 mV.
 
         Example: atten_settings('1430yj', dac1={'max_fit_residual_db': 1.5}).
         Thresholds are finite positive maximum absolute calibrated-region
         residuals in dB; defaults are 2.0. Either physical device may be omitted.
         """
         payload: dict[str, Any] = {}
+        for name, value in (("open1_mv", open1_mv), ("open2_mv", open2_mv)):
+            if value is not None:
+                payload[name] = _require_float(name, value, 0.0, ATTENUATOR_DRIVE_MAX_MV)
         for name, policy in (("dac1", dac1), ("dac2", dac2)):
             if policy is not None:
                 payload[name] = policy

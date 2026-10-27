@@ -231,10 +231,12 @@ int atten_setting_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	switch (setting) {
 	case ATTENUATOR_SETTING_POLICY: {
 		struct app_attenuator_fit_policy policy;
+		struct app_attenuator_open_settings open;
 		app_settings_get_attenuator_fit(attenuator_index, &policy);
+		app_settings_get_attenuator_open(attenuator_index, &open);
 		snprintk(payload, sizeof(payload),
-			 "{\"dac1\":{\"max_fit_residual_db\":%.9g},\"dac2\":{\"max_fit_residual_db\":%.9g}}",
-			 policy.max_fit_residual_db[0], policy.max_fit_residual_db[1]);
+			 "{\"open1_mv\":%.6f,\"open2_mv\":%.6f,\"dac1\":{\"max_fit_residual_db\":%.9g},\"dac2\":{\"max_fit_residual_db\":%.9g}}",
+			 (double)open.mv[0], (double)open.mv[1], policy.max_fit_residual_db[0], policy.max_fit_residual_db[1]);
 		break;
 	}
 	case ATTENUATOR_SETTING_COEFF:
@@ -524,7 +526,7 @@ static int attenuator_set_compact_value(const struct coo_cmd_request *cmd,
 int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	/* A manual DAC/model change would invalidate the run's fixed-gain segments. */
-	if (laser_calibration_active()) {
+	if (laser_calibration_active() || attenuator_calibration_active()) {
 		return coo_cmd_busy_response(out, cmd);
 	}
 
@@ -550,7 +552,8 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	}
 
 	rc = coo_json_validate_top_level_keys(cmd->payload,
-		setting != ATTENUATOR_SETTING_COMPACT ? "dac1,dac2,persist" :
+		setting == ATTENUATOR_SETTING_POLICY ? "dac1,dac2,open1_mv,open2_mv,persist" :
+		setting == ATTENUATOR_SETTING_COEFF ? "dac1,dac2,persist" :
 		"value,value_db,value1,value2,value1_db,value2_db,value1_mv,value2_mv",
 		invalid, sizeof(invalid));
 	if (rc != 0) {
@@ -563,12 +566,19 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 	switch (setting) {
 	case ATTENUATOR_SETTING_POLICY: {
 		struct app_attenuator_fit_policy policy;
+		struct app_attenuator_open_settings open;
 		bool persist = false;
-		if (attenuator_calibration_active()) return coo_cmd_error(out, cmd, "attenuator calibration active");
 		app_settings_get_attenuator_fit(attenuator_index, &policy);
+		app_settings_get_attenuator_open(attenuator_index, &open);
 		if (coo_json_extract_optional_bool(cmd->payload, "persist", &persist, NULL) != 0)
 			return coo_cmd_error(out, cmd, "invalid persist");
 		for (uint8_t i = 0; i < ATTENUATOR_PHYSICAL_COUNT; ++i) {
+			double mv = open.mv[i];
+			bool present;
+			if (attenuator_extract_optional_double(cmd->payload, i == 0 ? "open1_mv" : "open2_mv", &mv, &present) != 0 ||
+			    !isfinite(mv) || mv < 0.0 || mv > (double)ATTENUATOR_DRIVE_MAX_MV)
+				return coo_cmd_error(out, cmd, "open1_mv/open2_mv must be 0..3300");
+			open.mv[i] = (float)mv;
 			char object[128];
 			int found = coo_json_extract_object(cmd->payload, i == 0 ? "dac1" : "dac2", object, sizeof(object));
 			if (found == COO_JSON_EXTRACT_MISSING) continue;
@@ -579,6 +589,9 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 		}
 		int rc = app_settings_update_attenuator_fit(attenuator_index, &policy, persist);
 		if (rc != 0) return coo_cmd_error_rc(out, cmd, "fit policy update failed", rc);
+		(void)attenuator_set_open_voltages(&attenuators[attenuator_index], open.mv);
+		rc = app_settings_update_attenuator_open(attenuator_index, &open, persist);
+		if (rc != 0) return coo_cmd_error_rc(out, cmd, "open settings persistence failed", rc);
 		return atten_setting_get(cmd, out);
 	}
 	case ATTENUATOR_SETTING_COEFF: {

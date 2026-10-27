@@ -1039,6 +1039,9 @@ void setup_attenuators(void)
 		memcpy(attenuators[attenuator_index].coeff2.correction_coeff,
 		       atten_settings.channel[attenuator_index].physical[1].correction_coeff,
 		       sizeof(attenuators[attenuator_index].coeff2.correction_coeff));
+		struct app_attenuator_open_settings open;
+		app_settings_get_attenuator_open(attenuator_index, &open);
+		(void)attenuator_set_open_voltages(&attenuators[attenuator_index], open.mv);
 	}
 }
 

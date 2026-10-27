@@ -47,6 +47,7 @@ enum app_nvs_id {
 	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
+	APP_NVS_ID_ATTEN_OPEN_CH0 = 0x0180,
 	APP_NVS_ID_PD_CH0 = 0x0200,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
@@ -58,8 +59,12 @@ enum app_nvs_id {
 
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT < 0x8000,
 	     "app NVS IDs must stay below Zephyr settings backend IDs");
-BUILD_ASSERT(APP_NVS_ID_ATTEN_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_PD_CH0,
-	     "attenuator NVS ID block overlaps photodiode block");
+BUILD_ASSERT(APP_NVS_ID_ATTEN_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_ATTEN_FIT_CH0,
+	     "attenuator coefficient NVS block overlaps fit policy block");
+BUILD_ASSERT(APP_NVS_ID_ATTEN_FIT_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_ATTEN_OPEN_CH0,
+	     "attenuator fit policy NVS block overlaps open settings block");
+BUILD_ASSERT(APP_NVS_ID_ATTEN_OPEN_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_PD_CH0,
+	     "attenuator open settings NVS block overlaps photodiode block");
 BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY_CH0,
 	     "photodiode NVS ID block overlaps laser policy block");
 BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_TOTAL_CH0,
@@ -249,6 +254,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
 		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
 				s->attenuator_fit[ch].max_fit_residual_db[physical] = 2.0;
+				s->attenuator_open[ch].mv[physical] = ATTENUATOR_DEFAULT_OPEN_MV;
 				/* Default centers the nominal 0-3300 mV DAC span near the
 				 * FVOA half-shutter point until lab-measured coefficients
 				 * are stored.
@@ -987,6 +993,13 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 		    isfinite(policy.max_fit_residual_db[1]) && policy.max_fit_residual_db[1] > 0.0) {
 			s->attenuator_fit[channel] = policy;
 		}
+		struct app_attenuator_open_settings open;
+		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_OPEN_CH0 + channel, &open,
+				      sizeof(open), "attenuator open") &&
+		    isfinite(open.mv[0]) && open.mv[0] >= 0.0f && open.mv[0] <= ATTENUATOR_DRIVE_MAX_MV &&
+		    isfinite(open.mv[1]) && open.mv[1] >= 0.0f && open.mv[1] <= ATTENUATOR_DRIVE_MAX_MV) {
+			s->attenuator_open[channel] = open;
+		}
 	}
 	app_nvs_load_photodiode(s);
 	app_nvs_load_laserbank(s);
@@ -1024,6 +1037,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(attenuator_nvs_id(channel), &first_rc);
 		delete_setting_record(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &first_rc);
+		delete_setting_record(APP_NVS_ID_ATTEN_OPEN_CH0 + channel, &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(pd_nvs_id(channel), &first_rc);
@@ -1225,6 +1239,27 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	if (persist) {
 		app_nvs_persist_mqtt(mqtt);
 	}
+}
+
+void app_settings_get_attenuator_open(uint8_t channel, struct app_attenuator_open_settings *out)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || out == NULL) return;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	*out = g_settings.snapshot.attenuator_open[channel];
+	k_mutex_unlock(&g_settings.lock);
+}
+
+int app_settings_update_attenuator_open(uint8_t channel,
+		const struct app_attenuator_open_settings *open, bool persist)
+{
+	if (channel >= APP_ATTENUATOR_CHANNEL_COUNT || open == NULL) return -EINVAL;
+	for (uint8_t i = 0; i < APP_ATTENUATOR_PHYSICAL_COUNT; ++i) {
+		if (!isfinite(open->mv[i]) || open->mv[i] < 0.0f || open->mv[i] > ATTENUATOR_DRIVE_MAX_MV) return -EINVAL;
+	}
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	g_settings.snapshot.attenuator_open[channel] = *open;
+	k_mutex_unlock(&g_settings.lock);
+	return persist ? app_nvs_write(APP_NVS_ID_ATTEN_OPEN_CH0 + channel, open, sizeof(*open)) : 0;
 }
 
 void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out)

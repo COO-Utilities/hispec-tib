@@ -309,6 +309,7 @@ static struct {
 	int64_t temperature_started_ms;
 	int64_t next_temperature_ms;
 	double atten_db;
+	double min_atten_db; /* Loss at the frozen operational open pair. */
 	double search_low_db;
 	double search_high_db;
 	int64_t condition_started_ms;
@@ -1158,9 +1159,9 @@ bool laser_calibration_active(void)
 	return active;
 }
 
-/* Stop only this run's emission, leaving its TEC operating. Blocks on laser I/O
- * under calibration_lock. Shutdown failure retains the source identity for an
- * explicit stop retry; current_ma changes only after confirmed shutdown. */
+/* Stop this run's emission and park both FVOAs closed, leaving its TEC operating.
+ * Blocks on laser/DAC I/O under calibration_lock. Shutdown failure retains the
+ * source identity; current_ma changes only after confirmed laser shutdown. */
 static int stop_source(void)
 {
 	int rc = hispec_laser_stop_output(result.laser, false, NULL, 0);
@@ -1168,6 +1169,10 @@ static int stop_source(void)
 	if (rc == 0) {
 		result.current_ma = 0.0f;
 	}
+	/* Attempt both closures even if the source or the first DAC write fails. */
+	bool first = attenuator_set_physical_voltage(&attenuators[run.attenuator], 0U, ATTENUATOR_DRIVE_MAX_MV);
+	bool second = attenuator_set_physical_voltage(&attenuators[run.attenuator], 1U, ATTENUATOR_DRIVE_MAX_MV);
+	if (rc == 0 && (!first || !second)) rc = CAL_ATTEN_WRITE;
 	return rc;
 }
 
@@ -1488,7 +1493,7 @@ static int start_search(unsigned limit)
 	run.condition_window = 0;
 	run.search_tries = 0;
 	run.search_limit = limit;
-	run.search_low_db = 0.0;
+	run.search_low_db = run.min_atten_db;
 	run.search_high_db = fmin(meta.coeff[0].max_calibrated_db, 55.0) +
 		fmin(meta.coeff[1].max_calibrated_db, 55.0);
 	return begin_window(EVENT_PROBE);
@@ -1507,9 +1512,9 @@ static int search_step(const struct photodiode_window_result *w)
 	bool headroom = w->max_mv < PEAK_TARGET_MV;
 	bool preferred = (latest->flags & 3U) == POINT_OK && headroom && signal >= 0.65 * meta.pd_target_mv &&
 		signal <= 1.15 * meta.pd_target_mv;
-	/* Zero attenuation can expose the optical floor. Retain that evidence and
+	/* Operational full open can expose the optical floor. Retain that evidence and
 	 * continue downward even if it is too dim to support a fit. */
-	bool at_floor = run.atten_db < 0.05 && (latest->flags & 3U) != POINT_SATURATED;
+	bool at_floor = run.atten_db < run.min_atten_db + 0.05 && (latest->flags & 3U) != POINT_SATURATED;
 
 	if (!preferred && !at_floor && run.search_tries < run.search_limit) {
 		if (headroom && signal < meta.pd_target_mv) {
@@ -1826,6 +1831,7 @@ int laser_calibration_start(const struct laser_calibration_request *request,
 	meta.dac_limit_mv[1] = a.dac_cfg2.drive_limit_mv;
 
 	run.attenuator = index;
+	run.min_atten_db = attenuator_min_db(&attenuators[index]);
 	result.laser = request->laser;
 	result.first_fei = fei;
 	result.state = LASER_CAL_RUNNING;
@@ -2091,7 +2097,7 @@ static int advance_window(const struct photodiode_window_result *w)
 			run.stage = STAGE_END;
 			return set_current(0.0, EVENT_DARK);
 		}
-		if (run.primary_count >= 6 || run.atten_db < 0.05) {
+		if (run.primary_count >= 6 || run.atten_db < run.min_atten_db + 0.05) {
 			/* At the optical floor, continue all remaining paired currents at
 			 * this transmission. Lack of signal is evidence, not a stop reason. */
 			run.stage = STAGE_SWEEP;
