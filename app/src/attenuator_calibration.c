@@ -1497,8 +1497,12 @@ static int fit_correction_coeff(const struct atten_cal_fit_point *points,
 		if (rc == 0) {
 			reason = "endpoint";
 			if (atten_model_eval(coeffs, failed_mv, &eval)) {
+				/* Anchor continuation to the fit at the last supported voltage.
+				 * Clipping to its measurement can start the tail inside the
+				 * fitted range and distort an otherwise valid correction.
+				 */
 				coeffs->max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB,
-					MIN((double)last->measured_db, MIN(eval.db, coeffs->max_atten_db)));
+					MIN(eval.db, coeffs->max_atten_db));
 				if (coeffs->max_calibrated_db > 0.0) {
 					reason = "curve";
 					if (fit_curve_valid(coeffs, points, records, point_count, open_mv, &failed_mv, &eval)) {
