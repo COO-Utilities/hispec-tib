@@ -59,10 +59,13 @@ struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 struct mems_router router;
 
 
+/* TIB names list the state A/B paths. For the FFLS return selectors,
+ * pin 2/state A selects silkscreen B/SM; pin 3/state B selects C/MM.
+ */
 static const char *const tib_switch_names[8] = {
 	"yj_forward_retro", "yj_laser_cal", "yj_ao_fei",
 	"hk_forward_retro", "hk_laser_cal", "hk_ao_fei",
-	"yj_mm_sm", "hk_mm_sm",
+	"yj_sm_mm", "hk_sm_mm",
 };
 
 
@@ -402,10 +405,10 @@ static const struct mems_route_step tib_yj_laser_to_yj_fei[] = {
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_mm_to_yj_pd[] = {
-	{"yj_mm_sm", 'A'},
+	{"yj_sm_mm", 'B'},
 };
 static const struct mems_route_step tib_yj_sm_to_yj_pd[] = {
-	{"yj_mm_sm", 'B'},
+	{"yj_sm_mm", 'A'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_ao[] = {
 	{"hk_laser_cal", 'A'},
@@ -434,10 +437,10 @@ static const struct mems_route_step tib_hk_laser_to_hk_fei[] = {
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_mm_to_hk_pd[] = {
-	{"hk_mm_sm", 'A'},
+	{"hk_sm_mm", 'B'},
 };
 static const struct mems_route_step tib_hk_sm_to_hk_pd[] = {
-	{"hk_mm_sm", 'B'},
+	{"hk_sm_mm", 'A'},
 };
 
 static const struct mems_route tib_routes[] = {

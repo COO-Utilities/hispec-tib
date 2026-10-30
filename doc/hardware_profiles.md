@@ -2,9 +2,10 @@
 
 These diagrams connect API names to PCB designators. **Arrow labels `state A/B`
 are firmware control states**, not optical port names. FFSW drawings use common
-optical port A and branches B/C; FFLS uses common A and B1/B2. Vendor datasheets
-also use numeric port names. Do not translate one alphabet to another without
-the installed switch/patch mapping.
+optical port A and branches B/C; the FFLS schematic uses common A and B1/B2,
+with the TIB silkscreen labeling the branches B/C. Vendor datasheets also use
+numeric port names. Do not translate one alphabet to another without the
+installed switch/patch mapping.
 
 The functional paths follow `devices.c` route tables, with component and port
 labels from the [schematic and placement files](hardware.md#source-drawings-and-revision-boundaries).
@@ -38,6 +39,8 @@ to identify the component fitted at a particular switch position.
 TIB selects laser/CAL light and an AO/FEI destination independently for YJ and HK.
 The return selector chooses MM/SM light for each detector. The two logical
 wavelength channels share the same topology; their components and API names differ.
+Return-selector names follow state A/B order: A selects SM (silkscreen B), and
+B selects MM (silkscreen C).
 
 ```{mermaid}
 flowchart LR
@@ -50,8 +53,8 @@ flowchart LR
   Y2 --> Y3["yj_ao_fei<br/>SW1_TIBB3 / sw3"]
   Y3 -->|state A| YA["yj_ao<br/>TIB B output: AO branch"]
   Y3 -->|state B| YF["yj_fei<br/>TIB B output: FEI branch"]
-  YM["yj_mm / YJ MM return"] -->|state A| Y7["yj_mm_sm<br/>SW2_FFLS1 / sw7"]
-  YS["yj_sm / YJ SM return"] -->|state B| Y7
+  YS["yj_sm / YJ SM return"] -->|state A; optical B| Y7["yj_sm_mm<br/>SW2_FFLS1 / sw7"]
+  YM["yj_mm / YJ MM return"] -->|state B; optical C| Y7
   Y7 --> YP["yj_pd / YJ detector<br/>J13 → ADC A0"]
   H1430["1430hk / HKATC FVOA pair<br/>hk_1430: TIB R ATC input"] --> H1["hk_forward_retro<br/>SW1_TIBR1 / sw4"]
   H1 -->|state A: forward| HL["hk_laser / combined HK laser path<br/>WDM2"]
@@ -62,8 +65,8 @@ flowchart LR
   H2 --> H3["hk_ao_fei<br/>SW1_TIBR3 / sw6"]
   H3 -->|state A| HA["hk_ao<br/>TIB R output: AO branch"]
   H3 -->|state B| HF["hk_fei<br/>TIB R output: FEI branch"]
-  HM["hk_mm / HK MM return"] -->|state A| H8["hk_mm_sm<br/>SW2_FFLS2 / sw8"]
-  HS["hk_sm / HK SM return"] -->|state B| H8
+  HS["hk_sm / HK SM return"] -->|state A; optical B| H8["hk_sm_mm<br/>SW2_FFLS2 / sw8"]
+  HM["hk_mm / HK MM return"] -->|state B; optical C| H8
   H8 --> HP["hk_pd / HK detector<br/>J12 → ADC A2"]
 ```
 
@@ -154,5 +157,5 @@ channel wherever populated.
 | sw4 | `hk_forward_retro` / SW1_TIBR1 | `yj_as1` / SW1_ASB1 | `cal4` / SW1_Cal4 |
 | sw5 | `hk_laser_cal` / SW1_TIBR2 | `yj_as2` / SW1_ASB2 | `cal5` / SW1_Cal5 |
 | sw6 | `hk_ao_fei` / SW1_TIBR3 | `yj_as3` / SW1_ASB3 | `cal6` / SW1_Cal6 |
-| sw7 | `yj_mm_sm` / SW2_FFLS1 | unpopulated | `cal7` / SW1_Cal7 |
-| sw8 | `hk_mm_sm` / SW2_FFLS2 | unpopulated | unpopulated |
+| sw7 | `yj_sm_mm` / SW2_FFLS1 | unpopulated | `cal7` / SW1_Cal7 |
+| sw8 | `hk_sm_mm` / SW2_FFLS2 | unpopulated | unpopulated |

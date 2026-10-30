@@ -659,6 +659,9 @@ See [firmware updates](ota.md) for network and USB installation.
   }
   ```
 - **Notes:**
+  - TIB return selectors are `yj_sm_mm` (sw7) and `hk_sm_mm` (sw8). Their
+    names list the A/B paths: state A selects SM and state B selects MM.
+    Named `*_sm -> *_pd` routes select A; `*_mm -> *_pd` routes select B.
   - Request payloads accept `state:"A"`/`"B"` and lowercase `state:"a"`/`"b"`;
     responses always use uppercase `A`/`B`.
   - `force:true` is valid only for static A/B requests. It queues one actuation

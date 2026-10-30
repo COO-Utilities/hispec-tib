@@ -130,6 +130,12 @@ high A, but firmware does not consume this feedback. See the bundled
 {download}`FFSW datasheet <datasheets/FFSW 1x2 Switch.pdf>` and
 {download}`FFLS datasheet <datasheets/FFLS 1x2 Switch.pdf>`.
 
+TIB return selectors `yj_sm_mm` (sw7 / SW2_FFLS1) and `hk_sm_mm`
+(sw8 / SW2_FFLS2) follow state A/B name order. Common optical A connects to the
+detector; silkscreen B is the SM return and C is the MM return. Pulsing FFLS
+pin 2 with the A-state GPIO selects SM; pin 3 with the B-state GPIO selects MM.
+The schematic labels these optical branches B1/B2.
+
 | PCB channel | PCAL A/B GPIO indices | Port bits |
 |---|---|---|
 | sw1 | 6 / 7 | P0.6 / P0.7 |
