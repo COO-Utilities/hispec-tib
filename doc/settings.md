@@ -77,6 +77,11 @@ silently reused on another.
 - UTC is restored from a valid RTC calendar on warm boot. There is no NVS
   last-time fallback; its former record ID is reserved. Manual/SNTP updates use
   the serialized RTC guard described in [architecture](architecture.md).
+- FVOA outputs initialize closed at a 3300 mV request, quantized to the highest
+  representable DAC code. Operational `open1_mv`/`open2_mv` default to 1250 mV;
+  they constrain modeled full open, never engineering-voltage commands. Updates
+  do not move outputs. Open settings use records 0x0180–0x0185; fit acceptance
+  policies use 0x0140–0x0145. Both retain schema 14.
 - Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
   1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
   `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical

@@ -1643,11 +1643,16 @@ command wait budget, this command returns `{"error":"busy"}`.
     returned by coefficient queries. It is the corrected-curve operating endpoint,
     separate from the leakage-floor parameter `max_atten_db`. Automatic fitting
     uses the usable measured prefix through the first point above
-    `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB). The operating limit is the minimum
-    of 55 dB, the last supporting measurement, its model prediction and the floor.
+    `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB). The operating limit follows the fitted
+    branch to the last supporting voltage or its first 55 dB crossing, bounded
+    by the floor. It is not clipped to the last point's noisy measurement. The raw
+    supported branch must pass monotonicity before continuation is constructed.
     Above the endpoint, the endpoint residual fades linearly
     in base-model dB to zero at the existing floor; the polynomial is not extrapolated.
-  - Manual dB/linear and voltage commands retain full-range access. Values beyond
+  - Engineering `value1_mv`/`value2_mv` commands retain the entire 0–3300 mV
+    span, independent of open settings. Modeled dB/linear commands use each
+    operational open voltage through maximum drive. Full open can have nonzero
+    loss; it does not redefine zero dB. Outputs initialize at maximum drive. Values beyond
     the calibrated endpoint are rough estimates. Autolevel uses individual
     calibrated limits and switches to laser adjustment when they are exhausted.
   - Schema 14 clears the app NVS store when the schema marker differs; see
@@ -1727,21 +1732,27 @@ available without waiting for the other fit.
   ```
   The metadata query has no chunk suffix. The response is not JSON and is
   MQTT-only because the serial response printer is string-oriented. The
-  metadata response starts with `<4s 15B>`: magic `HAC4`, version, kind
+  metadata response has a 52-byte header `<4s 15B 4f B 16s>`: magic `HAC4`,
+  version `4`, kind
   (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
   overflow, record-size, records-per-chunk, record-count, record-chunk-count,
-  reference-valid, reference-record, and bridge-count. It is followed by
+  reference-valid, reference-record, bridge-count, `background_mv`,
+  `background_err_mv`, `open_mv`, `open_loss_db`, rejection-reason byte, and
+  16-byte fit-support bitmap (bit `i % 8` of byte `i / 8` names raw record `i`).
+  Reason codes are `0=pending`, `1=background`, `2=bridge`, `3=peak`, `4=support`,
+  `5=model`, `6=residual`, `7=accepted`, and `8=range`. The header is followed by
   `bridge-count` little-endian `<2B>` bridge entries containing
   `before_record` and `after_record` indices. The reference and bridge entries
   name roles for retained raw records; they are not separate copied records.
 
   Each numbered chunk response contains only raw records and no header. Chunk
   `0` starts at record `0`; subsequent chunks use the fixed
-  `records-per-chunk` value reported by metadata. Version 3 uses record size
+  `records-per-chunk` value reported by metadata. Version 4 uses record size
   27 bytes, and each raw record has little-endian layout `<6f 3B>`:
   `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
   `event`, `classification`, and `segment`. Event codes are `0=point`,
-  `1=initial_probe`, and `2=bridge_probe`; classification codes are `0=ok`,
+  `1=initial_probe` (reserved; no longer emitted), `2=bridge_probe`,
+  `3=dark_before`, and `4=dark_after`; classification codes are `0=ok`,
   `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
   `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
   `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
@@ -1795,8 +1806,8 @@ available without waiting for the other fit.
     "max_mv": 124.6
   }
   ```
-  Other `event` values include `start`, `physical_start`, `initial_probe_set`,
-  `point_set`, `bridge_probe_set`, `initial_probe`, `point`, `bridge_probe`,
+  Other `event` values include `start`, `physical_start`,
+  `point_set`, `bridge_probe_set`, `point`, `bridge_probe`, `dark_before`, `dark_after`,
   `fit`, `complete`, `stop`, and `error`. Fit input and residual diagnostics
   are retained in calibration state and queried through
   `atten/calibrate/records` instead of being emitted as an end-of-run telemetry
@@ -1809,8 +1820,9 @@ available without waiting for the other fit.
     coefficients are not persisted, and retained data remains available for lab
     analysis. Fit state is `ok` when both physical attenuators are accepted,
     `failed` after an unsuccessful fit, and `none` before a fit exists.
-    Accepted calibration coefficients are applied to runtime attenuator control;
-    they are persisted to NVS only when `persist` is requested.
+    Accepted coefficients, RMS and operational open voltages apply to runtime
+    control together; they are persisted to NVS only when `persist` is requested.
+    There is no attenuator `apply=False` option.
   - One static dataset is retained through stop, errors, rejected fits, and host
     cleanup. Raw records, references, bridges, run identity, and completed fit
     results are cleared only by an accepted new start or reboot. A status query
@@ -1833,8 +1845,14 @@ available without waiting for the other fit.
     selects the photodiode route as in `measure_throughput`.
   - Start requires the selected photodiode to be powered, with valid sampler
     data and a configured dark. `dwell_ms` is rounded to whole 50 ms attempts;
-    the 100 ms FVOA settling wait is additional. Calibration does not measure a
-    private dark or turn on the photodiode.
+    the 100 ms FVOA settling wait is additional. Calibration does not turn on
+    the PD or change its configured dark. It captures source-off backgrounds
+    before/after the pair (10 s settling plus 2 s averaging after STOP).
+  - Both physical sweeps run 3300→0 mV in 50 mV steps at fixed 100% laser setting.
+    Each companion starts at its frozen operational open voltage. Bright points
+    trigger companion-closing bridges using the first measured usable reduction;
+    below-SNR points remain in the sweep. Missing usable bridges reject the fit
+    while retaining the remaining nominal grid. Completion/cleanup closes both DACs.
   - Records marked saturated, below-SNR or ADC-error remain available as
     diagnostics. Classification `ok` alone does not guarantee inclusion in the
     fitted prefix. `points` includes the above-limit supporting anchor;
@@ -1853,19 +1871,24 @@ explains retained-record inspection and fitting tools.
 
 ### `atten/<laser>/settings`
 
-Query the two physical fit acceptance limits with no payload. Set either or both:
+Query operational open voltages and physical fit acceptance limits with no payload.
+Set either or both, optionally persisting:
 
 ```json
-{"dac1":{"max_fit_residual_db":2.0},"dac2":{"max_fit_residual_db":2.0},"persist":true}
+{"open1_mv":1250,"open2_mv":1250,"dac1":{"max_fit_residual_db":2.0},"dac2":{"max_fit_residual_db":2.0},"persist":false}
 ```
 
-Each limit is finite and strictly positive; defaults are 2 dB. Unknown nested
-fields are errors. Updates are rejected while calibration is active. Replies
-contain `dac1` and `dac2` objects with `max_fit_residual_db`; no DAC is moved.
-`pcb.atten_settings(laser, dac1={"max_fit_residual_db":1.0}, persist=True)` uses the
-same schema. Omitted devices retain their limit. Persistence uses separate NVS
-records at 0x0140–0x0145, leaving calibration/dark records and settings schema 13
-unchanged so an OTA rollback can still read the existing calibration.
+`open1_mv` and `open2_mv` are finite DAC millivolts in 0–3300, default 1250.
+They define modeled full open, rounded upward to a representable DAC code.
+Updates do not move outputs; engineering-voltage commands can still select any
+0–3300 mV value. The open point need not have zero modeled loss.
+
+Each fit limit is finite and strictly positive; defaults are 2 dB. Unknown fields
+are errors. Updates are rejected during calibration. Replies contain `open1_mv`,
+`open2_mv`, and the `dac1`/`dac2` policy objects. Omitted values are retained.
+`pcb.atten_settings(laser, open1_mv=1400, dac1={"max_fit_residual_db":1.0}, persist=False)`
+uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings use
+0x0180–0x0185, and the settings schema remains 14.
 
 (pd)=
 ### `pd`

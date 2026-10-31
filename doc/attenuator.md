@@ -70,7 +70,10 @@ C_{\rm tail}(B)=C(B_c)\frac{L-B}{L-B_c}.
 ```
 
 This joins continuously and returns to the leakage floor; the derivative can
-have a corner. Values beyond the calibrated endpoint remain estimates.
+have a corner. The fitted branch must be monotonic before constructing this continuation, so
+the endpoint cannot be an earlier crossing hidden by the tail. Values beyond the
+calibrated endpoint remain estimates. Neither a measured endpoint nor the assumed
+leakage floor establishes the physical high-drive limit or total extinction.
 `max_atten_db` is the asymptotic model floor, `max_calibrated_db` the supported
 operating ceiling, and the finite DAC limit may reach neither exactly.
 
@@ -78,7 +81,7 @@ operating ceiling, and the finite DAC limit may reach neither exactly.
 
 A `level` request is linear transmission: convert it to $A=-10\log_{10}T$,
 allocate total dB between devices, then invert each monotonic model. The firmware
-uses 24 bisections over the reachable DAC span, with endpoint comparisons tolerant
+uses 24 bisections from operational open through the reachable maximum DAC drive, with endpoint comparisons tolerant
 to float roundoff (four ULPs, at least $10^{-6}$ dB). It writes the nearest legal
 12-bit DAC code and reports the forward model at that confirmed code.
 
@@ -88,11 +91,18 @@ v_{\rm DAC}=3300\,\frac{n}{4096}\ {\rm mV},\quad n\in\{0,\ldots,4095\},
 ```
 
 For example, code 2048 means 1650 mV DAC and 2529.45 mV FVOA drive at gain 1.533.
-A millivolt command takes the direct code path; the readback dB/level is still a
+Boot and calibration cleanup request 3300 mV on both outputs (the highest
+representable code is 4095, about 3299.194 mV). Per-device `open1_mv` and
+`open2_mv` settings default to 1250 mV and define full open for modeled commands;
+they round upward to a representable code and may have nonzero modeled loss.
+Changing them does not move either DAC or redefine zero dB.
+
+A millivolt command takes the unrestricted 0–3300 mV direct code path; the readback dB/level is still a
 model estimate. A requested dB need not be exactly representable by a code.
 
 Adding total dB uses the less-attenuated device until balanced, then shares the
-remaining change. Removing dB starts with the more-attenuated device. Thus
+remaining change. Removing dB starts with the more-attenuated device. For models
+whose operational open limits permit these losses,
 $(36,0)\to41$ dB gives $(36,5)$, and $(39,35)\to40$ dB gives $(20,20)$.
 An unchanged total makes no allocation change. This avoids driving one FVOA
 straight into its poorly constrained plateau. Automatic control can rebalance

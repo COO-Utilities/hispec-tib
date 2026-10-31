@@ -70,6 +70,18 @@ LLMs Agents: Do NOT change heading names in this file.
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-10-30: fixed repeated first-block acquisition when operational full open
+    has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
+    standard 1430hk run in 171 records without overflow; the fit accepted with
+    1.02% RMS and 2.93% maximum residual. Neither fit nor route/noise settings were
+    applied or persisted. The standard 2330k attenuator run accepted both physical
+    fits (0.21/0.17 dB maximum residual, zero bridges); prior RAM coefficients/open
+    settings were restored and nothing persisted. Both sources were stopped and
+    DACs closed. Captures are `laser_cal_1430hk_20261031T030044_091108Z.pkl` and
+    `cal_2330k_20261031T025632_422126Z.pkl` in `tools/commissioning_data/` (UTC names).
+    These checks do not resolve the broader thermal, recabling or persistence
+    validation above; the owner has identified 1028y nonlinearity as physical and
+    outside this patch.
   - 2026-10-23 full-range acceptance revision: calibration now preserves maximum
     and nominal current, fits through the configured maximum with its reference
     inside support, and searches only the floor. Residuals allow 5% plus three
@@ -270,6 +282,11 @@ LLMs Agents: Do NOT change heading names in this file.
   intended, or whether the estimator must change. The
   [calibration mathematics](attenuator_calibration.md#records-telemetry-and-fit)
   now distinguishes this constraint from the calibrated operating range.
+  - 2026-10-30: the owner deferred a physical voltage cutoff to a separate
+    decision. Plots now distinguish measured support, the 55 dB software ceiling
+    and modeled continuation, with a post-amplifier drive-voltage axis. Low HK
+    measured dynamic range does not establish low physical FVOA extinction, and
+    accepted residuals alone do not validate the physical high-drive branch.
 
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled

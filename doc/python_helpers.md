@@ -248,14 +248,19 @@ only when firmware publishes them; their absence is not proof of no restart.
 Start arguments run the physical procedures described in
 [attenuator calibration](attenuator_calibration.md) and
 [laser calibration](laser_calibration.md); `persist=False` still permits accepted
-results to change RAM settings. `*_stop()` cancels and retains acquired data.
+results to change RAM settings. Attenuator calibration installs an accepted pair
+and its open voltages in RAM; laser calibration can suppress application with
+`apply=False`. `*_stop()` cancels and retains acquired data.
 Download before starting either calibration again: firmware has one shared raw
 dataset, replaced by an accepted new run and cleared by reboot.
 
 `atten_calibration_data()` downloads metadata and record chunks into an
 `AttenuatorCalibrationDataset`. Use `.physical("dac1")`, `.derived()`,
 `.bridge_table()`, `.plot_physical()` and `.plot_surface()` to inspect measured
-records separately from derived normalization and model predictions.
+records separately from derived normalization and model predictions. Reverse
+attenuator acquisition holds laser output fixed, sweeps 3300→0 mV, and uses
+source-off backgrounds plus measured companion-closing bridges. Metadata records
+the selected reference, operational open point and exact fitting support.
 `laser_calibration_data()` returns `LaserCalibrationDataset` with `.records` and
 `.meta`. A replacement run during a multi-request download invalidates that
 snapshot. The dataset does not automatically reapply a saved calibration.
@@ -280,6 +285,19 @@ finite-floor, corrected model. `fit.coeff_args()` returns only shape/gain terms;
 `atten_coeff()` additionally requires a leakage floor and calibrated limit for
 each drive. Treat the grid result as a diagnostic, not a directly installable
 replacement for firmware calibration.
+
+The commissioning notebook keeps YJ/HK attenuator sections and all six laser
+run/review cells independent of its live experiment `CHANNEL`. Each run retains
+its archive path; an ordered replay list can include several runs of one laser.
+Use the isolated `%matplotlib inline` cells for historical reviews and the widget
+setup cells before live acquisition. Static review displays and closes each figure.
+
+PCB command methods are synchronous. MQTT reception and throughput collection
+already run independently, so ordinary notebook commands do not need
+`await asyncio.to_thread(...)`. A busy cell can delay widget redraws. Commissioning
+retains asynchronous holds and read-only metadata queries where the fast sample
+guard must run concurrently. Command searches execute on the caller thread so an
+interrupt cannot leave a background search issuing commands during cleanup.
 
 ## Terminal queries
 

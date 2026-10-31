@@ -41,10 +41,13 @@ use the valid probe closest to the target, restoring its exact DAC pair if neede
 Validity uses the normal recorded classification: peak below 2000 mV and mean
 above five times its standard error. Thus a 1931 mV peak or a much lower signal
 can be usable. Fresh early/late windows follow; probes themselves do not enter
-the fit. Ranging fails only when no valid probe was found, except at zero
-attenuation where dim observations are retained and acquisition continues.
+the fit. Ranging fails only when no valid probe was found, except at operational
+full open, where dim observations are retained and acquisition continues. Full open
+is the frozen pair of per-FVOA open voltages and can have nonzero modeled loss.
 
-A primary block ends when the mean falls below target/6. Its companion attenuation
+A primary block ends early when the mean falls below target/6 **and** another
+range can open farther. At operational full open, or after six primary ranges,
+low signal does not repeatedly restart the first block. Its companion attenuation
 is +6.02 dB (one quarter signal); the upper
 middle setting is +2.22 dB (0.6 signal). The next range begins at the old boundary
 but resumes acquisition at the next grid current. At the optical floor, acquisition
@@ -69,14 +72,18 @@ There is no provisional-fit-driven refinement. The optional other output reserve
 
 The worst-case first-output budget is 138 positive-current records, nine dark
 records, 18 revisit records, 15 middle-level records and 36 ranging probes.
+The upper middle-level sweep occurs once. Zero-current darks and boundary revisits
+are bounded by those blocks; reaching full open cannot repeat them indefinitely.
 A full buffer reports incomplete acquisition and never overwrites evidence.
 Partial ADC failures use surviving samples; zero valid samples or a window timeout
 is an acquisition failure. Fit rejection does not change acquisition completion.
 Raw data survive rejection and STOP until either optical calibration starts again
 or the controller reboots.
 
-The commissioning notebook provides three successive source subsections for the
-selected channel, each with its own run switch and saved-data review. It reports
+The commissioning notebook provides six explicit source subsections, with
+independent YJ/HK routes, run switches and saved-data reviews. Ordinary commands
+and progress polling are synchronous; MQTT collection remains independent.
+Replay uses static figures, while live widgets have separate setup cells. It reports
 acquisition failure separately from fit rejection. When acquisition fails before
 fitting, raw diagnostic panels remain available and residual panels explain the
 missing curve and report the acquisition error.
