@@ -1371,9 +1371,10 @@ static int solve_correction_normal_equation(
 	return 0;
 }
 
-/** Check the final operational curve, above the selected open boundary. Sparse fit
- * points. A 1 mV grid checks the operational branch and slopes between samples; retained
- * voltages and the calibrated join are also checked. This is numerical validation,
+/** Check the curve above the selected open boundary. A zero calibrated limit
+ * checks the raw correction only through measured support or 55 dB; otherwise
+ * check the complete runtime curve and its join. A 1 mV grid and retained
+ * voltages check slopes between samples. This is numerical validation,
  * not a proof between grid locations. No I/O; returns the first failing location.
  */
 static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
@@ -1382,10 +1383,13 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
                             float open_mv, float *failed_mv, struct atten_model_eval *eval)
 {
 	float join_mv = 0.0f;
+	bool raw = coeffs->max_calibrated_db == 0.0;
+	float end_mv = raw ? records[points[point_count - 1U].record_index].sweep_mv :
+		ATTENUATOR_DRIVE_MAX_MV;
 
-	for (uint8_t pass = 0U; pass < 3U; ++pass) {
+	for (uint8_t pass = 0U; pass < (raw ? 2U : 3U); ++pass) {
 		double previous_db = -INFINITY;
-		uint16_t count = pass == 0U ? (uint16_t)ATTENUATOR_DRIVE_MAX_MV + 1U :
+		uint16_t count = pass == 0U ? (uint16_t)ceilf(end_mv) + 1U :
 			(pass == 1U ? point_count : 3U);
 
 		if (pass == 2U) {
@@ -1405,7 +1409,7 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
 				mv = i == 1U ? join_mv : nextafterf(join_mv, i == 0U ? -INFINITY : INFINITY);
 			}
 			if (mv < open_mv) continue;
-			*failed_mv = CLAMP(mv, open_mv, ATTENUATOR_DRIVE_MAX_MV);
+			*failed_mv = CLAMP(mv, open_mv, end_mv);
 			*eval = (struct atten_model_eval){.db = NAN, .d_db_d_voltage_mv = NAN};
 			/* Validate the actual float control curve; fitting and metrics above
 			 * still use the double model and its full coefficient derivatives.
@@ -1422,6 +1426,12 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
 			}
 			previous_db = eval->db;
 			if (atomic_get(&cal_fit_cancel)) return false;
+			if (raw && eval->db >= ATTENUATOR_CALIBRATED_MAX_DB) {
+				/* Retained above-limit anchors must not inspect unused tail
+				 * polynomial behavior on the next pass. */
+				end_mv = *failed_mv;
+				break;
+			}
 		}
 	}
 	return true;
@@ -1434,8 +1444,9 @@ static bool fit_curve_valid(const struct attenuator_model_coeffs *coeffs,
  * fewer leading Chebyshev terms when the solve or the final curve is invalid;
  * dropping every term is the last fallback. The six stored slots never change.
  * All candidates use the same measured prefix, including its above-limit anchor.
- * Each candidate's calibrated limit and continuation are established BEFORE
- * validation, so unused polynomial behavior in the tail cannot reject a good fit.
+ * Validate the raw supported branch first: continuation must not hide a turnover
+ * and select an earlier endpoint crossing. Then establish and validate the final
+ * continuation; unused polynomial behavior beyond support does not reject a fit.
  * Numerical work only; one best-effort warning summarizes a reduced-order result.
  */
 static int fit_correction_coeff(const struct atten_cal_fit_point *points,
@@ -1495,9 +1506,13 @@ static int fit_correction_coeff(const struct atten_cal_fit_point *points,
 				solve_correction_normal_equation(normal, rhs, (uint8_t)terms, coeffs->correction_coeff);
 		}
 		if (rc == 0) {
+			reason = "supported curve";
+			if (!fit_curve_valid(coeffs, points, records, point_count, open_mv, &failed_mv, &eval)) rc = -ERANGE;
+		}
+		if (rc == 0) {
 			reason = "endpoint";
 			if (atten_model_eval(coeffs, failed_mv, &eval)) {
-				/* Anchor continuation to the fit at the last supported voltage.
+				/* Anchor at the last supported voltage, or the 55 dB crossing.
 				 * Clipping to its measurement can start the tail inside the
 				 * fitted range and distort an otherwise valid correction.
 				 */

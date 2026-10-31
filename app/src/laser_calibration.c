@@ -2040,8 +2040,10 @@ static int advance_window(const struct photodiode_window_result *w)
 	}
 	case STAGE_SWEEP: {
 		bool last = run.grid_index + 2U >= run.grid_count;
+		/* Full open can have nonzero loss. Only end a dim block early when
+		 * ranging can still open farther; otherwise the first block repeats. */
 		bool low = w->mean_net_mv < meta.pd_target_mv / 6.0 &&
-			run.primary_count < 6 && run.primary_db >= 0.05;
+			run.primary_count < 6 && run.primary_db >= run.min_atten_db + 0.05;
 		if (!last && !low && w->max_mv < PEAK_TARGET_MV) {
 			return next_sweep_current();
 		}
