@@ -220,8 +220,176 @@ as part of the software closeout.
 
 ### Build, OTA and board verification
 
-Pending entry by the implementation owner: build identity/result, OTA trial and confirmation reason,
-2330 attenuator calibration, the previously overflowing laser-calibration flow, dark/control checks,
-settings readbacks and source cleanup. No new board execution or OTA result is claimed by this report's
-offline analysis. The final full YJ/HK commissioning run and owner sign-off remain separate from these
-software checks.
+The normal and timing MCUboot builds passed, using respectively 493,072/175,700 and
+497,516/192,148 application FLASH/RAM bytes. The strict documentation build passed.
+OTA installed firmware `a4a69d7001c4`, boot 29, on `hsfib-tib`. Confirmation was explicitly
+requested after observing the fresh boot, exact image hash, readiness and bank-off state:
+`8b87a9e816faddf43bbf93b10caaad531a9a3d4067d9e122e0e86cd2e71ee0b6`.
+The subsequent notebook-only follow-up `34f9f0a` does not change that flashed firmware.
+
+Four existing firmware calibration flows completed on 2026-11-03 UTC without overflow or reset, using
+the existing `hk_fei → hk_mm` and `yj_fei → yj_sm` loopbacks. Laser acquisition used 1000 ms
+windows and 2000 ms settling; attenuator acquisition used 550 ms windows. No laser model,
+noise or route loss was applied, and nothing was persisted. The attenuator flow's accepted
+coefficients and operational opens were installed in RAM by the normal flow, then the
+pre-run pair was restored and verified.
+
+| Run | Retained records | Selected support | Fit RMS | Maximum residual | Decision |
+|---|---:|---|---|---|---|
+| 2330k attenuator | 136 (68 per DAC) | 44/42 points; 29.07/28.37 dB | 0.0880/0.1003 dB | 0.2003/0.2121 dB | Both accepted; zero bridges |
+| 1430hk laser | 171 | 94 windows; 5.3–60 mA | 0.7161% | 2.2094% | Accepted |
+| 1270j laser | 191 | 94 windows; 9.8–65 mA | 2.4084% | 6.1194% | Accepted |
+| 1430yj laser | 185 | 96 windows; 6–60 mA | 1.2672% | 5.8985% | Accepted |
+
+Laser maximum residuals are raw percentages; acceptance includes the documented three-measured-SE
+allowance beyond 5%. Every accepted laser interval reaches its configured sweep maximum.
+The previously overflowing 1430hk flow completed in 171 records. Local raw captures are in
+`tools/commissioning_data/`:
+
+- `cal_2330k_20261103T041850_711129Z_closeout.pkl`
+- `laser_cal_1430hk_20261103T042048_042217Z_closeout.pkl`
+- `laser_cal_1270j_20261103T042500_921024Z_closeout.pkl`
+- `laser_cal_1430yj_20261103T042935_882896Z_closeout.pkl`
+
+The new laser runs preserve useful variation diagnostics despite their accepted decisions:
+
+| Laser | Constant noise (mW) | Fractional noise | Repeated-condition change | PD-band disagreement |
+|---|---:|---:|---:|---:|
+| 1430hk | 0 | 0.8932% | Not estimated | 1.1384% |
+| 1270j | 0 | 4.2050% | 4.7452% | 8.0991% |
+| 1430yj | 0.003179 | 1.6893% | 5.8568% | 7.5321% |
+
+These are the firmware's conditional diagnostics and effective noise estimates. They do not
+isolate intrinsic diode noise, and zero fitted constant noise is a constrained estimate.
+The separate unadjusted same-current plots still expose differences among DAC pairs.
+The archived HK diagnostic reports zero, but inspection found no eligible illuminated revisit:
+its only exact repeat was at 1.8 mA, with both conditions classified below SNR. Zero therefore
+did not measure perfect repeatability. The final reporting fix emits an unavailable fraction
+when no eligible comparison exists; it does not change fitting or acceptance.
+
+Both YJ runs used a configured dark of −2.27656 mV. The three same-run source-off observations
+show why that single value is insufficient throughout a capture. Here raw means add the
+configured dark back to the two late windows' recorded mean; fitted offsets are relative to
+that configured dark, not absolute ADC readings:
+
+| Laser | Dark-condition times (s) | Observed raw dark means (mV) | Fitted offset knots (mV) |
+|---|---|---|---|
+| 1270j | 6.810 / 146.797 / 270.167 | −2.27656 / −2.16562 / −0.89531 | +0.05447 / +0.06355 / +1.34409 |
+| 1430yj | 6.791 / 143.475 / 264.543 | −2.15625 / −2.04375 / −2.12656 | +0.19132 / +0.28489 / +0.15123 |
+
+Observed dark spans are 1.38125 mV and 0.11250 mV, respectively. Maximum observed-versus-fitted
+dark differences are 0.05447 and 0.07101 mV. The piecewise baseline represents these observations;
+this short post-OTA sequence neither establishes their physical cause nor validates half-hour
+warmup or long-duration dark stability.
+
+After the calibration sequence, independent readbacks found all six sources stopped, all
+attenuator DACs closed, and all original laser policies, coefficients and operational opens
+matching the pre-update snapshot; boot count remained 29. The new automatic upper bounds
+initialized to nominal current. Reboot did not retain the snapshot's 1028y threshold or
+operational-open pairs; those values were restored in RAM before acquisition, without persistence.
+
+All four fresh captures replayed through the commissioning review functions. Rendered figures
+were inspected; source identities, selected support and integer-midpoint baseline knots agree
+with the metadata. The new 1430hk candidate differs by at most 0.05414% from the latest October
+31 candidate over 20–60 mA, using the older curve as denominator. This comparison spans both
+new measurements and the baseline-model revision. Notebook follow-up fixes preserve stored
+outputs, show missing optional context explicitly, and distinguish installed automatic bounds
+from candidate support and engineering limits.
+
+### Current commands, autolevel and shutdown ownership
+
+Both 1430 sources accepted engineering current below the automatic minimum and at the 60 mA
+engineering maximum while the automatic ceiling was temporarily 36.7 mA. Negative/over-limit
+current and incompatible drive/STOP requests were rejected by firmware. A 0.04 mA request
+rounded to zero while preserving the existing deadline; an explicit three-second deadline
+stopped the source. These checks used closed attenuators and RAM-only policy changes.
+
+Four 15-second holds retained 299–300 samples each, with feedback active, no overrange samples,
+no observed current/DAC setpoint transitions and no sample gap above 51 ms:
+
+| Path and mode | Net PD range (mV) | Median (mV) | Initial condition |
+|---|---:|---:|---|
+| 1430yj, existing band | 471.78–547.78 | 525.84 | Entered startup band |
+| 1430yj, quiet 0.1 Hz | 507.96–561.71 | 539.59 | Entered startup band |
+| 1430hk, existing band | 335.86–349.17 | 342.17 | Reached available-flux limit |
+| 1430hk, quiet 0.1 Hz | 338.48–348.55 | 342.48 | Reached available-flux limit |
+
+The first HK verification attempt expected the 400–1600 mV startup band and failed that
+assumption: the source was already at its 49 mA automatic ceiling with both DACs at operational
+open. The revised check explicitly recognized useful signal at those limits. No control change
+was needed. Same-setting requests are suppressed by the existing current quantizer and
+attenuator epsilon checks. These captures observe setpoints, not individual bus transactions.
+YJ quiet mode left a useful signal near 540 mV alone instead of steering toward 1000 mV.
+
+On both channels, a manual current command disabled feedback but retained streaming and source
+shutdown on measurement STOP. A noise-policy edit retained streaming and the original measurement
+deadline; expiry stopped the source. Settings were restored and cleanup readbacks passed. Local
+reports are `controls_20261103T043424_252367Z_closeout.json` (engineering checks, YJ and the initial
+HK limit observation) and `controls_20261103T044120_963153Z_closeout.json` (completed HK checks).
+The associated raw throughput captures are saved beside them.
+
+Temporary tests of the actual C control functions also covered useful-signal ramps/steps at
+0.1/0.5 Hz, noise-floor excursions, raw saturation, actuator limits and shutdown ownership.
+The useful-signal cases issued zero setter calls. Those simulated excursions were not reproduced
+as physical external-system sweeps, and detector saturation was not deliberately induced.
+
+### Bounded tandem check and throughput normalization
+
+Three temporary 1430yj investigations are retained. The first stopped because one device was
+on its open plateau. The second completed but its first-axis effect was unresolved; its small
+closure is not evidence for separability. Their files are
+`tandem_1430yj_20261103T043716_618437Z_closeout.json` and
+`tandem_1430yj_20261103T043853_615499Z_closeout.json`.
+
+The final bounded probe, `tandem_1430yj_20261103T044318_855134Z_closeout.json`, used fixed
+approximately 80 mV changes on each axis. Exact 12-bit code corners were A=(2566,2668),
+B=(2665,2668), C=(2665,2767), D=(2566,2767). Both axes were resolved: the first changed loss
+by 0.32–0.49 dB, the second by 2.77–2.86 dB. At each fixed current the sequence was
+A–B–C–D–A–D–C–B–A, with source-off measurements bracketing the experiment and a final return
+to the original current. All main-sequence net signals were approximately 61–208 mV.
+
+Closure is `10 log10(S_A S_C / (S_B S_D))`, using dark-corrected window means. The quoted
+conditional SE propagates within-window scatter, paired-window variation and shared measured
+dark uncertainty; it excludes unobserved path changes between holds. Public PD windows expose
+no firmware endpoint timestamp, so approximate host times and timing uncertainty are retained.
+Codes were reconstructed and checked against confirmed mV and the 3.3 V, 12-bit DAC transfer.
+
+| Current | Forward/reverse mean closure (dB) | Conditional SE (dB) |
+|---|---:|---:|
+| 28.5 mA | −0.0981 | 0.0525 |
+| 19.9 mA | −0.0750 | 0.0567 |
+| Difference between currents | +0.0231 | 0.0773 |
+
+This is a useful local bound, not proof of perfect separability. Small, approximately 2%
+nonclosure remains possible. It does not explain or erase the earlier 1.9–2.4 dB six-edge
+results on another source. Repeated corners changed by roughly 0.06–0.16 dB, and the final
+original-current A return changed −0.118 dB (−2.68%). During the initial A–B–A pilot, signal
+fell approximately 31% despite unchanged reported current (28.5 mA) and temperature (24.97°C).
+The 0.14 mV change between bracket darks cannot explain that optical-sized change. Source,
+FVOA, coupling and detector history remain possible contributors. No time correction or
+new bridge policy was introduced to conceal this behavior.
+
+The same raw measurements directly test the motivation for laser calibration. For identical
+DAC settings, recompute the throughput change between currents by dividing the measured
+signal ratio by the model's source-power ratio. Across the four corners:
+
+| Denominator | Predicted P(19.9)/P(28.5) | Apparent throughput change | Conditional SE |
+|---|---:|---:|---:|
+| Pre-existing active linear model, threshold 8.0 mA | 0.58049 | +9.43% | 0.49 percentage points |
+| Fresh candidate, threshold 4.2705 mA | 0.64506 | −1.52% | 0.44 percentage points |
+
+The measured geometric-mean signal ratio was about 0.63525. Efficiency cancels in these linear
+ratios: correcting the fitted threshold is what removes most of the artificial current
+dependence here. Individual candidate residual changes were −2.53% to −0.40%, comparable to
+the observed return drift. The earlier weak-axis experiment independently gave +9.87% versus
+−1.13%. This is offline substitution of the saved candidate into the denominator; the model
+was not installed. It supports improved relative normalization at these two currents, not
+absolute vendor power accuracy or every current/attenuator configuration.
+
+Final independent readback after these investigations again confirmed all six sources stopped,
+all DACs closed, original laser policies/coefficient/open pairs restored, the image confirmed,
+and boot count unchanged at 29. No experimental settings were persisted.
+
+These short checks do not establish long-term optical stability, absolute power accuracy, the
+OTA power-cut/rollback matrix or full fault recovery. Final full YJ/HK commissioning and owner
+sign-off remain separate.

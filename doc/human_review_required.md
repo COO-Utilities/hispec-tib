@@ -66,10 +66,31 @@ LLMs Agents: Do NOT change heading names in this file.
 
 - [ ] Bench-validate revised laser calibration after FVOA calibration: thermal
   qualification/settling, calibrated FVOA weighting, corrected curve and automatic
-  floor and full configured range, AO/FEI loss, effective noise, recabling/STOP, default restoration
+  lower/upper current bounds, AO/FEI loss, effective noise, recabling/STOP, default restoration
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-11-02 closeout implementation, offline verification only: three measured
+    dark knots now constrain the shared fitted baseline; restricted current
+    intervals and repeat-inconsistent candidates require human review. Effective
+    noise estimates remain available for valid rejected candidates. Temporary
+    real-C replay covered 21 saved captures; all 11 tracked notebooks' 291 code
+    cells compiled, and saved-data review/manual-adoption checks passed. Adoption
+    includes both automatic current bounds, while engineering current retains the
+    configured full range. Attenuator adoption includes coefficients and saved
+    operational opens, with RAM readback before separately requested persistence.
+    These changes supersede the October 23 full-range-only acceptance/install
+    rules below. See the following board verification and the
+    [closeout evidence and limitations](calibration_closeout.md).
+  - 2026-11-03 UTC: explicitly confirmed OTA firmware `a4a69d7001c4` completed
+    standard 2330k attenuator and 1430hk/1270j/1430yj laser calibrations without
+    overflow/reset. Both attenuator fits and all three full-range laser fits
+    accepted; laser noise estimates were available. Fresh records replayed and
+    plotted successfully. No laser model/noise/loss was applied or persisted;
+    the attenuator flow's RAM adoption was restored to its pre-run coefficients
+    and opens. Independent readback confirmed all sources stopped, DACs closed
+    and original laser settings restored. Full commissioning, recabling/fault
+    recovery and new-setting persistence/reboot validation remain owner work.
   - 2026-10-30: fixed repeated first-block acquisition when operational full open
     has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
     standard 1430hk run in 171 records without overflow; the fit accepted with
@@ -256,18 +277,21 @@ LLMs Agents: Do NOT change heading names in this file.
 - [x] Python CLI `atten-db` calls `atten()` and prints the full `AttenuatorState`,
   including dB loss. Offline CLI dispatch and request/response checks pass.
 
-- [ ] Decide throughput shutdown ownership across tuning and policy-only
-  settings changes. `laser_tune_set()` releases a matching monitor before
-  applying the tune, including a failed tune. Successful
-  `throughput_monitor_update_laser_settings()` also releases it; some settings
-  (for example fractional noise or auto-off policy) do not stop emission.
-  `release_locked()` clears the monitor deadline and owned-laser shutdown
-  obligation. An autolevel source can therefore remain emitting after its
-  stream disappears, outside the original measurement expiry. Decide whether
-  to stop the owned source or retain ownership while disabling feedback;
-  reconcile `laser_command.c`, `throughput_monitor.c`, `lasers.c` and the
-  [operation contract](throughput.md#lifetime-manual-changes-and-failure).
-  This audit documents the current path without changing behavior.
+- [ ] Bench-validate retained throughput shutdown ownership across manual current,
+  tuning and policy-only settings changes, including failed writes. The November
+  2 implementation disables feedback while retaining collection, the measurement
+  deadline and any existing owned-laser shutdown obligation; passive monitoring
+  does not acquire ownership of a manually started source. Verify stop/expiry
+  after each change, plus quiet re-ranging with zero actuator writes inside the
+  usable signal envelope and prompt saturation/no-signal handling. Code and the
+  [operation contract](throughput.md#lifetime-manual-changes-and-failure) now agree;
+  temporary actual-C checks cover the broader decision paths. On-target
+  verification on 2026-11-03 UTC passed manual-current → measurement STOP and
+  noise-policy edit → original measurement expiry on both 1430 channels, with
+  streams retained and feedback disabled. Four 15-second band/quiet holds had
+  zero observed setpoint transitions; HK reached its available-flux limit below
+  the startup band. Physical external-system sweeps, tuning/error permutations
+  and deliberate saturation were not exercised. See the closeout report.
 
 
 ### LLM Resolved; Human Review Requested
@@ -287,6 +311,11 @@ LLMs Agents: Do NOT change heading names in this file.
     and modeled continuation, with a post-amplifier drive-voltage axis. Low HK
     measured dynamic range does not establish low physical FVOA extinction, and
     accepted residuals alone do not validate the physical high-drive branch.
+  - 2026-11-02: saved-repeat and closure analysis is in the
+    [closeout report](calibration_closeout.md). Configuration and reference changes
+    prevent interpreting every curve difference as physical FVOA drift. Existing
+    captures do not isolate intrinsic tandem interaction; the fixed-source,
+    measured-ratio bridge acquisition is unchanged.
 
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled
