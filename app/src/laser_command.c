@@ -389,6 +389,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	struct app_laser_channel_settings settings;
 	char name[16] = {0};
 	double value = 0.0;
+	double value_ma = 0.0;
 	uint32_t autooff_s;
 	bool stop = false, autooff_present = false;
 	int rc;
@@ -400,12 +401,26 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		return coo_cmd_error(out, cmd, "invalid stop");
 	}
 	int parsed = coo_json_extract_double(cmd->payload, "value", &value);
-	if ((parsed != COO_JSON_EXTRACT_OK && !(stop && parsed == COO_JSON_EXTRACT_MISSING)) ||
-	    !(value >= 0.0 && value <= 1.0) || (stop && value != 0.0)) {
-		return coo_cmd_error(out, cmd, "value must be 0..1; stop requires zero or omitted value");
+	int current_parsed = coo_json_extract_double(cmd->payload, "value_ma", &value_ma);
+	bool engineering = current_parsed == COO_JSON_EXTRACT_OK;
+	if (parsed == COO_JSON_EXTRACT_ERR || current_parsed == COO_JSON_EXTRACT_ERR ||
+	    (parsed == COO_JSON_EXTRACT_OK && engineering) ||
+	    (!stop && parsed != COO_JSON_EXTRACT_OK && !engineering) ||
+	    !(value >= 0.0 && value <= 1.0) || !isfinite(value_ma) || value_ma < 0.0 ||
+	    (stop && (value != 0.0 || value_ma != 0.0))) {
+		return coo_cmd_error(out, cmd, "use value=0..1 or value_ma; stop requires zero or omitted drive");
 	}
 	rc = hispec_laser_get_channel_settings(id, &settings);
 	if (rc != 0) return laser_cmd_failure(out, cmd, id, "settings read", rc, NULL);
+	if (value_ma > settings.properties.max_current_ma) {
+		return coo_cmd_error(out, cmd, "value_ma exceeds configured max_current_ma");
+	}
+	if (engineering) {
+		/* A request that rounds to zero has the same deadline/cancellation
+		 * behavior as explicit zero current. Limits were checked before rounding. */
+		value_ma = hispec_laser_quantize_current_ma(value_ma, 0.0, settings.properties.max_current_ma);
+	}
+	double drive = engineering ? value_ma : value;
 	autooff_s = settings.autooff_s;
 	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
 	    (stop && autooff_present)) {
@@ -418,7 +433,7 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	/* Preserve calibration's current/attenuation relationship. Zero or STOP
 	 * is an explicit cancellation; positive manual drive waits for its owner. */
 	if (laser_calibration_active()) {
-		if (value > 0.0) {
+		if (drive > 0.0) {
 			return coo_cmd_busy_response(out, cmd);
 		}
 		rc = laser_calibration_stop(NULL);
@@ -427,20 +442,23 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		}
 	}
 	if (attenuator_calibration_active()) {
-		if (value > 0.0) return coo_cmd_busy_response(out, cmd);
+		if (drive > 0.0) return coo_cmd_busy_response(out, cmd);
 		rc = attenuator_calibration_stop(NULL);
 		if (rc != 0) return laser_cmd_failure(out, cmd, id, "calibration stop", rc, NULL);
 	}
-	throughput_monitor_note_laser_changed(id, false);
+	throughput_monitor_note_laser_changed(id);
 	if (stop) {
 		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
-	} else if (value == 0.0 && !autooff_present) {
+	} else if (drive == 0.0 && !autooff_present) {
 		/* A momentary zero level preserves the existing shutdown deadline. */
 		rc = hispec_laser_set_current_ma(id, 0.0, out->payload, sizeof(out->payload));
+	} else if (engineering) {
+		rc = hispec_laser_set_current_ma_autooff(id, value_ma, autooff_s, out->payload, sizeof(out->payload));
 	} else {
 		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, out->payload, sizeof(out->payload));
 	}
-	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : value == 0.0 ? "zero current" : "set level/start", rc, out->payload);
+	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : drive == 0.0 ? "zero current" :
+		engineering ? "set current/start" : "set level/start", rc, out->payload);
 	return coo_cmd_ok(out, cmd);
 }
 
@@ -480,7 +498,7 @@ int laser_tune_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *o
 	if (parse_rc != COO_JSON_EXTRACT_OK) {
 		return coo_cmd_error(out, cmd, "missing or invalid tune_nm");
 	}
-	throughput_monitor_note_laser_changed(id, true);
+	throughput_monitor_note_laser_changed(id);
 	rc = hispec_laser_set_tune_delta_nm(id, delta_nm, true, out->payload, sizeof(out->payload));
 	if (rc != 0) {
 		return laser_cmd_failure(out, cmd, id, "set tune", rc, out->payload);
@@ -507,7 +525,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		"\"threshold_current_ma\":%.9g,\"efficiency_mw_per_ma\":%.9g,"
 		"\"efficiency_mw_per_ma2\":%.9g,\"efficiency_ref_ma\":%.9g,"
 		"\"ref_mw\":%.9g,\"ref_ma\":%.1f,\"ref_temp_c\":%.2f,"
-		"\"min_autolevel_current_ma\":%.1f,"
+		"\"min_autolevel_current_ma\":%.1f,\"max_autolevel_current_ma\":%.1f,"
 		"\"wave_ref_nm\":%.6f,\"wave_ref_ma\":%.6f,\"wave_ref_temp_c\":%.6f,\"operating_temp_range_c\":[%.2f,%.2f],"
 		"\"default_operating_temp_c\":%.2f,\"thermistor_kohm\":%.2f,"
 		"\"isolation_db\":%.2f,\"tec_curr_lim_a\":%.3f,"
@@ -525,7 +543,7 @@ static int laser_settings_payload(char *payload, size_t payload_len,
 		(double)p->efficiency_mw_per_ma2,
 		p->efficiency_ref_ma,
 		p->ref_mw, p->ref_ma, p->ref_temp_c,
-		settings->min_autolevel_current_ma,
+		settings->min_autolevel_current_ma, settings->max_autolevel_current_ma,
 		p->wave_ref_nm, p->wave_ref_ma, p->wave_ref_temp_c,
 		(double)p->operating_temp_range_c.min_c,
 		(double)p->operating_temp_range_c.max_c,
@@ -592,7 +610,7 @@ static int laser_parse_settings_update(const char *json,
 		return -EINVAL;
 	}
 	if (coo_json_validate_top_level_keys(json,
-		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,efficiency_mw_per_ma,efficiency_mw_per_ma2,efficiency_ref_ma,"
+		"nominal_current_ma,max_current_ma,threshold_current_ma,min_autolevel_current_ma,max_autolevel_current_ma,efficiency_mw_per_ma,efficiency_mw_per_ma2,efficiency_ref_ma,"
 		"wave_ref_nm,wave_ref_ma,wave_ref_temp_c,current_cal_pct,fractional_noise,constant_noise_mw,ref_mw,ref_ma,ref_temp_c,"
 		"default_operating_temp_c,operating_temp_range_c,tec_curr_lim_a,tec_pid,ntc_coeff_pct_per_c,"
 		"dlambda_dT_nm_per_k,dlambda_dA_nm_per_ma,disable_tec_at_autooff,autooff_s,expected_serial",
@@ -611,6 +629,7 @@ static int laser_parse_settings_update(const char *json,
 	LASER_PARSE_FLOAT("nominal_current_ma", settings->properties.nominal_current_ma);
 	LASER_PARSE_FLOAT("max_current_ma", settings->properties.max_current_ma);
 	LASER_PARSE_FLOAT("min_autolevel_current_ma", settings->min_autolevel_current_ma);
+	LASER_PARSE_FLOAT("max_autolevel_current_ma", settings->max_autolevel_current_ma);
 
 	/* Never combine coefficients from two calibrations. A linear replacement
 	 * explicitly supplies zero curvature; no retained fit or datasheet values

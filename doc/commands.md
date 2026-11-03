@@ -962,6 +962,12 @@ these values feed the existing throughput and splitting calculations.
   }
   ```
 
+- **Engineering current:** `{"name":"1270j","value_ma":30.0}` requests 30 mA,
+  rounded to the driver's 0.1 mA grid within `0..max_current_ma`. `value_ma` and
+  `value` are mutually exclusive. Engineering current bypasses the optical model,
+  automatic-current bounds and stored tune request, with the same preparation,
+  zero-current, STOP and autooff behavior below. Output current is never persisted.
+
 - **Notes:** `value` is a fraction from 0 to 1 of modeled optical emission at nominal current.
   Firmware uses the calibrated inverse to select current; reported `value` uses the
   confirmed current and the same forward curve. Setting a positive value powers
@@ -973,7 +979,7 @@ these values feed the existing throughput and splitting calculations.
   zero-current writes that supply `autooff_s`.
   It does not power up/start an idle driver or clear the stored `laser/tune` request.
   Use `{"name":"1028y","stop":true}` for explicit shutdown: zero current, STOP,
-  and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, `value`
+  and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, either drive field
   must be omitted or zero and `autooff_s` must be omitted. Laser auto-off and
   measurement-owned expiry use this shutdown path. Zero-current time does not
   count toward emission time. Identity and applied configuration remain valid
@@ -1101,6 +1107,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "constant_noise_mw": 0.13505925,
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
+      "max_autolevel_current_ma": 52.0,
       "efficiency_mw_per_ma": 0.0,
       "efficiency_mw_per_ma2": 0.0,
       "efficiency_ref_ma": 52.0,
@@ -1166,14 +1173,17 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - `min_autolevel_current_ma` is the autolevel-only floor. A finite nonnegative
     request is raised to at least `threshold_current_ma + 0.1 mA`, then rounded
     upward to the 0.1 mA register grid. Raising threshold also raises this floor
-    silently. Updates with no representable interval through nominal current
-    are rejected. Manual output and calibration keep their existing minimum rules.
+    silently. `max_autolevel_current_ma` defaults to nominal current, rounds
+    downward to the register grid, and cannot exceed `max_current_ma`. Reject
+    an empty automatic interval. Neither bound restricts manual current/level
+    commands; calibration retains the configured engineering sweep maximum.
   - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
     app-owned optical-power uncertainty settings. The estimator reads its
     existing per-laser cache and computes `hypot(power_mw * fractional_noise,
     constant_noise_mw)` before converting power and uncertainty to photon flux.
     These fields do not program Maiman or stop emission by themselves; the
-    settings command still stops throughput monitoring.
+    settings command disables feedback while retaining streaming, its deadline
+    and any owned-source shutdown responsibility.
   - Defaults are 0.1% fractional plus a constant 0.31% of each diode's **compiled**
     maximum modeled power. Constant defaults in mW: 1028 = 0.13505925;
     1270 = 0.041912; 1430yj = 0.038688; 1430hk = 0.039432;

@@ -53,6 +53,7 @@ enum app_nvs_id {
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
 	APP_NVS_ID_LASER_NTC_CH0 = 0x0380,
 	APP_NVS_ID_LASER_REF_CH0 = 0x03c0,
+	APP_NVS_ID_LASER_AUTO_MAX_CH0 = 0x03e0,
 	APP_NVS_ID_ROUTE_LOSS_CH0 = 0x0400,
 	APP_NVS_ID_MEMS = 0x0500,
 };
@@ -73,8 +74,10 @@ BUILD_ASSERT(APP_NVS_ID_LASER_TOTAL_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_
 	     "laser total NVS ID block overlaps NTC block");
 BUILD_ASSERT(APP_NVS_ID_LASER_NTC_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_REF_CH0,
 	     "laser NTC NVS ID block overlaps reference block");
-BUILD_ASSERT(APP_NVS_ID_LASER_REF_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
-	     "laser reference NVS ID block overlaps route-loss block");
+BUILD_ASSERT(APP_NVS_ID_LASER_REF_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_AUTO_MAX_CH0,
+	     "laser reference NVS ID block overlaps autolevel ceiling block");
+BUILD_ASSERT(APP_NVS_ID_LASER_AUTO_MAX_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_ROUTE_LOSS_CH0,
+	     "laser autolevel ceiling NVS ID block overlaps route-loss block");
 BUILD_ASSERT(APP_NVS_ID_ROUTE_LOSS_CH0 + APP_ROUTE_LOSS_RECORD_COUNT <= APP_NVS_ID_MEMS,
 	     "route-loss NVS ID block overlaps MEMS settings");
 BUILD_ASSERT(APP_NVS_ID_MEMS < 0x8000,
@@ -327,6 +330,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 		double minimum = default_laser_props[i]->threshold_current_ma + 1.0 / DIVIDER_CURRENT;
 		s->laser.channel[i].min_autolevel_current_ma = hispec_laser_quantize_current_ma(
 			minimum, minimum, default_laser_props[i]->nominal_current_ma);
+		s->laser.channel[i].max_autolevel_current_ma = default_laser_props[i]->nominal_current_ma;
 		s->laser.channel[i].current_cal_pct = 100.0;
 		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
 		/* Use the immutable diode table, not user settings or current output. */
@@ -592,6 +596,12 @@ static int app_nvs_persist_laser_channel(uint8_t channel,
 	}
 
 	rc = app_nvs_write(APP_NVS_ID_LASER_REF_CH0 + channel, reference, sizeof(reference));
+	if (first == 0) {
+		first = rc;
+	}
+	/* Separate record keeps the existing calibrated policy layout intact. */
+	rc = app_nvs_write(APP_NVS_ID_LASER_AUTO_MAX_CH0 + channel,
+			   &laser->max_autolevel_current_ma, sizeof(laser->max_autolevel_current_ma));
 	if (first == 0) {
 		first = rc;
 	}
@@ -897,10 +907,29 @@ static void app_nvs_load_laser(struct app_settings_snapshot *s)
 
 		/* A policy is a self-contained curve. An old-length or invalid record
 		 * keeps compiled policy defaults without discarding independent inputs. */
-		if (app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
-				       sizeof(policy), "laser policy")) {
-			laser = s->laser.channel[channel];
+		laser = s->laser.channel[channel];
+		bool have_policy = app_nvs_read_exact(laser_policy_nvs_id(channel), &policy,
+						     sizeof(policy), "laser policy");
+		if (have_policy) {
 			app_nvs_apply_laser_policy(&laser, &policy);
+		}
+		/* Restore both bounds before validation: a new support interval may lie
+		 * above nominal. An absent ceiling follows the restored nominal value. */
+		laser.max_autolevel_current_ma = laser.properties.nominal_current_ma;
+		double upper;
+		bool have_upper = app_nvs_read_exact(APP_NVS_ID_LASER_AUTO_MAX_CH0 + channel,
+						    &upper, sizeof(upper), "laser autolevel ceiling");
+		if (have_upper) {
+			double minimum = MAX(laser.min_autolevel_current_ma,
+				laser.properties.threshold_current_ma + 1.0 / DIVIDER_CURRENT);
+			if (isfinite(upper) && upper > 0.0 && upper <= laser.properties.max_current_ma &&
+			    isfinite(hispec_laser_quantize_current_ma(minimum, minimum, upper))) {
+				laser.max_autolevel_current_ma = upper;
+			} else {
+				LOG_WRN("Ignoring invalid stored autolevel ceiling channel %u", channel);
+			}
+		}
+		if (have_policy || have_upper) {
 			if (hispec_laser_validate_channel_settings((enum hispec_laser_id)channel, &laser) == 0) {
 				s->laser.channel[channel] = laser;
 			} else {
@@ -1046,6 +1075,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
 		delete_setting_record(laser_ntc_nvs_id(channel), &first_rc);
 		delete_setting_record(APP_NVS_ID_LASER_REF_CH0 + channel, &first_rc);
+		delete_setting_record(APP_NVS_ID_LASER_AUTO_MAX_CH0 + channel, &first_rc);
 		delete_setting_record(laser_total_nvs_id(channel), &first_rc);
 	}
 	for (uint8_t i = 0U; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {

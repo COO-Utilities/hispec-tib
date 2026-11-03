@@ -321,7 +321,7 @@ static int autolevel_adjust(struct throughput_state *state,
 			continue;
 		}
 		const laserprops_t *props = &settings.properties;
-		double max_ma = props->nominal_current_ma;
+		double max_ma = settings.max_autolevel_current_ma;
 		double power = hispec_laser_estimate_power_mw(props, source->laser_current_ma);
 		double max_power = hispec_laser_estimate_power_mw(props, max_ma);
 		if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
@@ -339,11 +339,9 @@ static int autolevel_adjust(struct throughput_state *state,
 					       next_ma >= source->laser_current_ma)) {
 			continue;
 		}
-		/* The level API consumes emission fractions, including when the
-		 * autolevel floor or register grid changed the proposed current. */
-		double percent = MIN(100.0, 100.0 * hispec_laser_estimate_power_mw(props, next_ma) /
-			hispec_laser_estimate_power_mw(props, props->nominal_current_ma));
-		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false, NULL, 0);
+		/* The current is already selected from the calibrated inverse and
+		 * bounded on the driver grid; do not round-trip it through a level. */
+		rc = hispec_laser_set_current_ma_autooff(state->laser, next_ma, 0U, NULL, 0);
 		if (rc != 0) {
 			return rc;
 		}
@@ -679,15 +677,13 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 		 * independent current floor. Initial level zero therefore uses the floor. */
 		double initial_ma = hispec_laser_quantize_current_ma(
 			hispec_laser_current_for_power_mw(props, nominal_power * request->initial_level),
-			settings.min_autolevel_current_ma, props->nominal_current_ma);
+			settings.min_autolevel_current_ma, settings.max_autolevel_current_ma);
 		stage = "initial attenuation";
 		rc = attenuator_set_db(&attenuators[attenuator_index],
 			2.0 * ATTENUATOR_CALIBRATED_MAX_DB, true) ? 0 : -EIO;
 		if (rc == 0) {
 			stage = "initial laser current";
-			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				MIN(100.0, 100.0 * hispec_laser_estimate_power_mw(props, initial_ma) / nominal_power),
-				0U, false, NULL, 0);
+			rc = hispec_laser_set_current_ma_autooff(request->laser, initial_ma, 0U, NULL, 0);
 		}
 		if (rc != 0) {
 			goto failed;
@@ -783,19 +779,15 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 	k_mutex_unlock(&monitors_lock);
 }
 
-void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring)
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		if (monitors[i].has_laser && monitors[i].laser == laser) {
-			if (stop_monitoring) {
-				release_locked((enum photodiode_channel)i);
-			} else {
-				/* Disable control before the manual write. The sampling loop
-				 * picks up confirmed setpoints after I/O; retain run ownership.
-				 */
-				monitors[i].autolevel = false;
-			}
+			/* Disable control before the manual write. The sampling loop
+			 * picks up confirmed setpoints after I/O; retain run ownership.
+			 */
+			monitors[i].autolevel = false;
 		}
 	}
 	k_mutex_unlock(&monitors_lock);
@@ -807,19 +799,10 @@ int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		if (monitors[i].has_laser && monitors[i].laser == laser) {
-			housekeeping_photodiode_autooff_inhibit(pd_power_output(i), false);
-			monitors[i].phase = TP_INACTIVE;
 			monitors[i].autolevel = false;
 		}
 	}
 	int rc = hispec_laser_update_channel_settings(laser, settings, persist, error, error_len);
-	if (rc == 0) {
-		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-			if (monitors[i].has_laser && monitors[i].laser == laser) {
-				release_locked(i);
-			}
-		}
-	}
 	k_mutex_unlock(&monitors_lock);
 	return rc;
 }

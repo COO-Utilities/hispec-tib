@@ -121,26 +121,29 @@ bounded/no-op actuator yields to the other.
 Startup selects maximum calibrated attenuation and `initial_level` (default
 0.5 of nominal modeled power). Automatic FVOA allocation is limited by each
 model's supported range, the 55 dB per-device ceiling, and reachable DAC drive.
-Laser current is bounded by `min_autolevel_current_ma` and nominal current.
+Laser current is bounded by `min_autolevel_current_ma` and
+`max_autolevel_current_ma`; manual engineering current commands keep their full
+range through `max_current_ma`.
 `max_flux_ph_s` limits modeled flux after FVOAs, before static launch loss; it is
 not a measured transient peak guarantee. See [attenuator allocation](attenuator.md)
 for why the pair is balanced without reversing ordinary moves.
 
 ## Lifetime, manual changes and failure
 
-A successful manual laser-level or attenuation change disables autolevel while
-retaining collection and any existing owned-laser shutdown obligation. Passive
+A manual laser current/level, tuning or settings operation disables autolevel
+while retaining collection, the measurement deadline and any existing owned-laser
+shutdown obligation, including when the manual operation fails. Manual attenuation
+changes also disable feedback without releasing the measurement. Passive
 streams never acquire ownership of an unrelated manually started source.
 Stop, expiry and owner faults stop an owned laser; a failed shutdown retains its
 identity for a subsequent stop retry. Bank power, TECs and other sources are
 unchanged. Explicit `laser stop:true` and laser auto-off separately consult
 `disable_tec_at_autooff`; throughput STOP passes `stop_tec=false`.
 
-Tuning and successful settings updates currently relinquish a matching stream.
-Some policy-only changes can do this without stopping emission. Whether these
-paths must retain the measurement's shutdown obligation is an explicit
-[owner-review item](human_review_required.md#commandapi-mismatches). Do not infer
-that ending collection always implies an optical STOP.
+Settings changes that require the laser owner to stop emission still do so.
+The retained stream then shows zero modeled source power and undefined throughput,
+as after a manual zero-current command. Policy-only edits need not stop emission;
+the original measurement expiry and explicit measurement stop still own shutdown.
 
 Source communication faults and confirmed controller faults stop dependent
 acquisition. Recovery reports availability but never silently restarts a run.

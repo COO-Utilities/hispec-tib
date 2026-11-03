@@ -43,6 +43,10 @@ Current app NVS records include:
 - One independent laser reference triplet per channel (`ref_mw`, `ref_ma`,
   `ref_temp_c`, three doubles at NVS IDs 0x03c0–0x03c5). Missing/invalid values
   retain the compiled vendor anchor; reset deletes the record.
+- One autolevel upper-current bound per laser (`max_autolevel_current_ma`, a
+  double at NVS IDs 0x03e0–0x03e5). A missing bound defaults to the restored
+  policy's nominal current. Keeping this separate preserves the existing policy
+  records and calibration; reset deletes it with the other channel records.
 - One route-loss table-entry record per configured route/source or split output,
   up to 32 records per PCB (16 per TIB channel). AS split records live on their
   own PCB. Broadband TIB CAL/return records use source `generic`.
@@ -105,8 +109,10 @@ silently reused on another.
   replacement driver is physically associated with the intended diode.
 - Laser `min_autolevel_current_ma` defaults to threshold plus 0.1 mA rounded up
   to the current-register grid. Validation normalizes it upward after threshold
-  changes and rejects an empty range through nominal current. It is app policy,
-  not the Maiman current limit. `initial_level` is a per-measurement fraction,
+  changes. `max_autolevel_current_ma` defaults to nominal current and rounds down
+  to the register grid. Validation rejects an empty automatic range or a ceiling
+  above the engineering maximum. These bounds are app policy and do not restrict
+  manual current/level commands. `initial_level` is a per-measurement fraction,
   defaults to 0.5 in firmware, and is not persisted.
 - Laser settings `autooff_s` supplies the manual-command default; an explicit
   command value overrides it. Changing the setting restarts a started laser's
@@ -114,7 +120,8 @@ silently reused on another.
   behave the same for powered channels in auto mode. Unchanged values and unrelated
   edits do not rearm. Calibration rejects auto-off writes. Throughput owns its
   separate `off_in_s` deadline and retains PD inhibition; laser settings writes
-  still stop that laser's monitor. PD `off_in_s` is status returned by `pd`.
+  disable feedback while retaining the stream and owned-source shutdown.
+  PD `off_in_s` is status returned by `pd`.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)

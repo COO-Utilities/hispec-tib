@@ -2005,6 +2005,29 @@ int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, cha
 	return hispec_laser_set_current_ma(id, current_ma, error, error_len);
 }
 
+/* Update the shutdown deadline only after an acknowledged output command.
+ * Serializes with STOP and the autooff worker; does not perform hardware I/O. */
+static void laser_output_autooff(enum hispec_laser_id id, uint32_t autooff_s)
+{
+	k_mutex_lock(&laser_io_lock, K_FOREVER);
+	k_mutex_lock(&laser_state_lock, K_FOREVER);
+	laser_autooff_deadline_ms[id] = laser_output_estimate[id].started && autooff_s != 0U ?
+		k_uptime_get() + (int64_t)autooff_s * 1000LL : LASER_AUTOFF_NO_DEADLINE;
+	k_mutex_unlock(&laser_state_lock);
+	k_mutex_unlock(&laser_io_lock);
+	laser_autooff_reschedule();
+}
+
+int hispec_laser_set_current_ma_autooff(enum hispec_laser_id id, double current_ma,
+				      uint32_t autooff_s, char *error, size_t error_len)
+{
+	int rc = hispec_laser_set_current_ma(id, current_ma, error, error_len);
+	if (rc == 0) {
+		laser_output_autooff(id, autooff_s);
+	}
+	return rc;
+}
+
 int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 					    double percent,
 					    uint32_t autooff_s, bool apply_tune, char *error, size_t error_len)
@@ -2045,18 +2068,7 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 	}
 
 	if (rc == 0) {
-		k_mutex_lock(&laser_io_lock, K_FOREVER);
-		k_mutex_lock(&laser_state_lock, K_FOREVER);
-		if (laser_output_estimate[id].started) {
-			laser_autooff_deadline_ms[id] =
-				autooff_s == 0U ? LASER_AUTOFF_NO_DEADLINE :
-				k_uptime_get() + (int64_t)autooff_s * 1000LL;
-		} else {
-			laser_autooff_deadline_ms[id] = LASER_AUTOFF_NO_DEADLINE;
-		}
-		k_mutex_unlock(&laser_state_lock);
-		k_mutex_unlock(&laser_io_lock);
-		laser_autooff_reschedule();
+		laser_output_autooff(id, autooff_s);
 	}
 
 	return rc;
@@ -2177,6 +2189,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	    !float_is_valid(props->max_current_ma) ||
 	    !float_is_valid(props->threshold_current_ma) ||
 	    !float_is_valid(settings->min_autolevel_current_ma) || settings->min_autolevel_current_ma < 0.0 ||
+	    !float_is_valid(settings->max_autolevel_current_ma) || settings->max_autolevel_current_ma <= 0.0 ||
+	    settings->max_autolevel_current_ma > props->max_current_ma ||
 	    !float_is_valid(props->efficiency_mw_per_ma) ||
 	    !isfinite(props->efficiency_mw_per_ma2) ||
 	    !isfinite(props->efficiency_ref_ma) ||
@@ -2240,11 +2254,14 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	 */
 	double minimum = MAX(settings->min_autolevel_current_ma,
 		props->threshold_current_ma + 1.0 / DIVIDER_CURRENT);
-	minimum = hispec_laser_quantize_current_ma(minimum, minimum, props->nominal_current_ma);
+	double maximum = hispec_laser_quantize_current_ma(settings->max_autolevel_current_ma,
+		0.0, settings->max_autolevel_current_ma);
+	minimum = hispec_laser_quantize_current_ma(minimum, minimum, maximum);
 	if (!isfinite(minimum)) {
 		return -ERANGE;
 	}
 	settings->min_autolevel_current_ma = minimum;
+	settings->max_autolevel_current_ma = maximum;
 	settings->properties.ntc_coeff_pct_per_c = ntc_coeff_from_b(ntc_b);
 	return 0;
 }
@@ -2347,7 +2364,8 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 		previous.properties.wave_ref_temp_c != settings->properties.wave_ref_temp_c ||
 		previous.properties.dlambda_dT_nm_per_k != settings->properties.dlambda_dT_nm_per_k ||
 		previous.properties.dlambda_dA_nm_per_ma != settings->properties.dlambda_dA_nm_per_ma ||
-		previous.min_autolevel_current_ma != settings->min_autolevel_current_ma;
+		previous.min_autolevel_current_ma != settings->min_autolevel_current_ma ||
+		previous.max_autolevel_current_ma != settings->max_autolevel_current_ma;
 
 	/* Stop before changing the model or operating envelope. For app-only/range
 	 * updates this never powers an idle bank merely to program settings.

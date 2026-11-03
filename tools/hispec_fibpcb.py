@@ -538,6 +538,8 @@ class LaserSettings(ResponseRepr):
     autooff_s: int
     tune_nm: float
     emit_total_s: int
+    # Older saved Python captures predate this field; current wire replies require it.
+    max_autolevel_current_ma: float | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -4714,7 +4716,7 @@ class HispecFibPcb:
 
     def laser(
         self, name: str, value: float | None = None, *, autooff_s: int | None = None,
-        stop: bool = False,
+        stop: bool = False, value_ma: float | None = None,
     ) -> LaserStatus | CommandOk:
         """Query/set laser level; zero current retains readiness and the off deadline.
 
@@ -4722,10 +4724,15 @@ class HispecFibPcb:
         A level is a fraction of modeled nominal emission; firmware inverts the
         calibrated curve and reports the emission fraction at the confirmed current.
         Setting a level disables autolevel while throughput streaming continues.
+        ``value_ma`` instead commands engineering current, independently of the
+        optical model, autolevel bounds and stored tune request. It is mutually
+        exclusive with ``value`` and uses the configured current maximum.
         """
-        if value is None and autooff_s is None and stop is False:
+        if value is not None and value_ma is not None:
+            raise ValueError("use value or value_ma, not both")
+        if value is None and value_ma is None and autooff_s is None and stop is False:
             return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
-        payload = _optional_payload(name=name, value=value, autooff_s=autooff_s,
+        payload = _optional_payload(name=name, value=value, value_ma=value_ma, autooff_s=autooff_s,
                                     stop=None if stop is False else stop)
         return self._request_ok("laser", payload)
 
@@ -4755,6 +4762,7 @@ class HispecFibPcb:
         max_current_ma: float | None = None,
         threshold_current_ma: float | None = None,
         min_autolevel_current_ma: float | None = None,
+        max_autolevel_current_ma: float | None = None,
         efficiency_mw_per_ma: float | None = None,
         efficiency_mw_per_ma2: float | None = None,
         efficiency_ref_ma: float | None = None,
@@ -4793,8 +4801,8 @@ class HispecFibPcb:
         Other policy/noise/power-reference settings remain partial updates.
         Optical-power sigma is hypot(power_mw * fractional_noise,
         constant_noise_mw). Both fields are finite and nonnegative and do not
-        program Maiman. Existing settings-command emission/monitor stop behavior
-        still applies; restart measurement after changing calibration.
+        program Maiman. Settings disable feedback while retaining the throughput
+        stream and its shutdown ownership; model/profile changes stop emission.
         ntc_coeff_pct_per_c is resistance change in %/C at 25 C, using a
         constant-B approximation. Firmware rounds to integer B internally and
         returns the representable coefficient. This PCB-owned setting follows
@@ -4804,13 +4812,14 @@ class HispecFibPcb:
         Changing autooff_s restarts a started laser's countdown, including at
         zero current; zero cancels it. It never starts an idle laser. Unchanged
         values and unrelated settings do not rearm; calibration rejects autooff
-        writes. Settings writes still stop that laser's throughput monitor.
+        writes. Automatic current bounds do not limit manual current/level requests.
         """
         settings = _optional_payload(
             nominal_current_ma=nominal_current_ma,
             max_current_ma=max_current_ma,
             threshold_current_ma=threshold_current_ma,
             min_autolevel_current_ma=min_autolevel_current_ma,
+            max_autolevel_current_ma=max_autolevel_current_ma,
             efficiency_mw_per_ma=efficiency_mw_per_ma,
             efficiency_mw_per_ma2=efficiency_mw_per_ma2,
             efficiency_ref_ma=efficiency_ref_ma,
@@ -4859,6 +4868,7 @@ class HispecFibPcb:
                 constant_noise_mw=float(settings["constant_noise_mw"]),
                 threshold_current_ma=float(settings["threshold_current_ma"]),
                 min_autolevel_current_ma=float(settings["min_autolevel_current_ma"]),
+                max_autolevel_current_ma=float(settings["max_autolevel_current_ma"]),
                 efficiency_mw_per_ma=float(settings["efficiency_mw_per_ma"]),
                 efficiency_mw_per_ma2=float(settings["efficiency_mw_per_ma2"]),
                 efficiency_ref_ma=float(settings["efficiency_ref_ma"]),

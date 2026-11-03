@@ -313,6 +313,11 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, char *error, size_t error_len);
 
+/** Set engineering current and rearm autooff after success. Bypasses the optical
+ * model and stored tune request; may block on preparation/Modbus I/O. */
+int hispec_laser_set_current_ma_autooff(enum hispec_laser_id id, double current_ma,
+				      uint32_t autooff_s, char *error, size_t error_len);
+
 /** Round to Maiman current steps within inward-rounded bounds, or return NaN
  * when no step exists. Pure calculation, no I/O or state changes. Control
  * callers use this same conversion to predict moves and enforce flux limits.
