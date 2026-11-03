@@ -390,6 +390,30 @@ Final independent readback after these investigations again confirmed all six so
 all DACs closed, original laser policies/coefficient/open pairs restored, the image confirmed,
 and boot count unchanged at 29. No experimental settings were persisted.
 
+### Final image and reporting correction
+
+After the bench investigations, `eebba1b` changed only the unavailable repeat-fraction diagnostic
+to NaN. Actual-C replay of all three fresh laser captures preserved all 16 checked fit,
+acceptance and noise outputs and error strings. HK became unavailable, both YJ repeat values
+were unchanged, and a synthetic eligible identical repeat remained exactly zero. Actual C
+encoding and Python decoding of the 634-byte HK metadata preserved NaN; the notebook displays
+it as “Not estimated.” Acquisition and acceptance policy did not change.
+
+Final firmware `dfb0a000a1f4` was OTA-flashed and explicitly confirmed at boot 30 with hash
+`f9a09c38975d2e9179bc2941c2c7841ae0a4860e51b204328c38d527a976ab33`, after exact-hash,
+fresh-boot, board-ready and bank-off checks. UDP upload timeouts recovered by resuming the
+upload; complete image verification and the final confirmation readback succeeded. The normal
+and timing MCUboot builds passed at 493,080/175,700 and 497,524/192,148 FLASH/RAM bytes.
+The timing build retained its expected assertions-enabled warning; no new source warnings arose.
+The four optical calibrations and control/corner measurements above ran on `a4a69d7001c4`;
+they were not repeated for this diagnostic-only correction.
+
+After the final reboot, snapshot RAM values were restored again. Independent queries confirmed
+all six sources stopped, all attenuators closed, original laser policies/coefficients/opens
+restored, and OTA confirmed with its maintenance window closed. PDs were left powered in their
+existing ten-hour auto mode; this reboot restarted their powered age. All 11 tracked notebooks'
+291 code cells compiled, fresh captures replayed, and the strict Sphinx build passed.
+
 These short checks do not establish long-term optical stability, absolute power accuracy, the
 OTA power-cut/rollback matrix or full fault recovery. Final full YJ/HK commissioning and owner
 sign-off remain separate.

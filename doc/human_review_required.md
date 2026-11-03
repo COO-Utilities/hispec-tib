@@ -91,6 +91,10 @@ LLMs Agents: Do NOT change heading names in this file.
     and opens. Independent readback confirmed all sources stopped, DACs closed
     and original laser settings restored. Full commissioning, recabling/fault
     recovery and new-setting persistence/reboot validation remain owner work.
+    Final OTA-confirmed image `dfb0a000a1f4` adds only the missing-repeat-diagnostic
+    correction: no eligible illuminated repeat now reports unavailable rather
+    than zero. Actual-C replay and encoder/decoder checks passed with unchanged
+    fits/acceptance; final boot-30 settings and shutdown readbacks passed.
   - 2026-10-30: fixed repeated first-block acquisition when operational full open
     has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
     standard 1430hk run in 171 records without overflow; the fit accepted with
