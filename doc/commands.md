@@ -2150,11 +2150,20 @@ still stop the stream.
 `autolevel:true`. Firmware alone supplies the default, 0.5. Startup sets maximum
 calibrated attenuation, then requests this fraction of modeled nominal emission.
 The inverse curve selects current, bounded by `min_autolevel_current_ma` and nominal
-current and quantized to 0.1 mA.
+current by default; `max_autolevel_current_ma` sets the automatic upper bound.
+Both bounds round inward to the 0.1 mA grid.
 Thus `initial_level:0` starts at the autolevel minimum; it does not turn the laser
 off. This applies to both compiled dimming priorities. Throughput ignores stored
 `tune_nm` and retains the live TEC target when already prepared; cold preparation
 still applies `default_operating_temp_c`.
+Optional `autolevel_response_hz` is finite and nonnegative, and requires
+`autolevel:true`. Omitted/zero keeps the existing 400–1600 mV band behavior.
+A positive value such as `0.1` filters the need to re-range. After initial
+positioning, useful signal with adequate noise headroom causes no actuator
+writes, even far below 400 mV. Sustained low signal/headroom loss causes one
+bounded correction; raw saturation responds immediately. It does not center
+continuously on 1000 mV or smooth telemetry. See
+[quiet re-ranging](throughput.md#quiet-re-ranging) for the noise and persistence rules.
 Stopping an autolevel operation also stops the laser it was using, even if
 manual laser level or attenuation changes have since disabled automatic adjustments.
 A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the

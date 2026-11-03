@@ -5576,6 +5576,7 @@ class HispecFibPcb:
         *,
         fiber: Literal["M", "S"] = "M",
         autolevel: bool = True,
+        autolevel_response_hz: float | None = None,
         initial_level: float | None = None,
         input: str | None = None,
         output: str | None = None,
@@ -5602,11 +5603,16 @@ class HispecFibPcb:
         continue while throughput is undefined at zero source power. This does
         not prepare or start the laser; actual source faults still stop capture.
         Autolevel starts at maximum calibrated attenuation and initial_level
-        (firmware default 0.5), clamped to min_autolevel_current_ma. Zero selects
-        that minimum, not off. Autolevel ignores stored wavelength tuning.
+        (firmware default 0.5), clamped to the automatic current bounds. Zero
+        selects the minimum, not off. Autolevel ignores stored wavelength tuning.
+        Omitted/zero autolevel_response_hz retains band control. Positive Hz
+        filters the need to re-range; after initial positioning, useful signal
+        with adequate saturation headroom causes no actuator writes. This does
+        not continuously center the detector or smooth the streamed samples.
         """
         payload = _optional_payload(laser=laser, channel=channel, fiber=fiber,
                                     autolevel=autolevel, off_in_s=off_in_s, format=format,
+                                    autolevel_response_hz=autolevel_response_hz,
                                     output=output, input=input, max_flux_ph_s=max_flux_ph_s,
                                     initial_level=initial_level)
         monitor = None

@@ -33,6 +33,8 @@ struct throughput_monitor_request {
 	uint32_t off_in_s;
 	double max_flux_ph_s;
 	double initial_level;
+	/* Zero retains band control; positive Hz filters only the need to re-range. */
+	double autolevel_response_hz;
 };
 
 struct throughput_monitor_status {

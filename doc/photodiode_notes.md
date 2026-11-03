@@ -14,8 +14,9 @@ conversion time per round, before I2C and scheduling overhead. A conversion is
 never reused as a new stream reading. One binary semaphore wakes throughput after
 the round; delayed consumers may miss acquisitions, but do not replay them.
 
-The fixed 500 ms window serves diagnostics; a configurable window up to 2000 ms
-serves dark capture and calibration. Neither is the input to autolevel. Resetting
+The fixed 500 ms window serves diagnostics and the optional quiet autolevel
+mode's noise/headroom decision; ordinary band control uses fresh readings.
+A configurable window up to 2000 ms serves dark capture and calibration. Resetting
 the configurable window excludes conversions begun before the reset and counts
 subsequent conversion attempts, including failures, until the rounded duration
 is filled. Surviving samples determine the mean/RMS. Zero valid samples fails the

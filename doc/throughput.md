@@ -90,7 +90,8 @@ losses at start. Restart the measurement after editing a route loss.
 
 ## Autolevel control
 
-Autolevel uses each fresh reading, not a rolling mean. Its useful band is
+With `autolevel_response_hz` omitted or zero, autolevel uses each fresh reading.
+Its useful band is
 20–80% of the 2000 mV detector range: **400–1600 mV net**. Raw overrange takes
 precedence over a small or negative dark-subtracted reading. The requested
 source-flux multiplier is
@@ -127,6 +128,49 @@ range through `max_current_ma`.
 `max_flux_ph_s` limits modeled flux after FVOAs, before static launch loss; it is
 not a measured transient peak guarantee. See [attenuator allocation](attenuator.md)
 for why the pair is balanced without reversing ordinary moves.
+
+### Quiet re-ranging
+
+A positive `autolevel_response_hz` selects quiet re-ranging; `0.1` Hz is the
+recommended starting value. It filters the **need to change range**, not the
+published measurement or a continuously tracked brightness target. Once a
+noise-resolved signal has sufficient headroom, it causes **no actuator writes**,
+even when it is far below 400 mV or far from 1000 mV.
+
+A new run first uses the 400–1600 mV band for initial positioning, making bounded
+corrections toward 1000 mV. A reading already in that band completes positioning
+without a write. That initial episode never resumes during the run. Thereafter:
+
+- The low boundary is five times the single-reading `pd_net_err_mv`, which
+  includes measured dark noise and shared dark-offset uncertainty. This is
+  a signal-to-noise criterion, not a multiple of the dark offset. Both the
+  current net reading and the 500 ms window mean must be below it.
+- Headroom uses three times the larger of `pd_net_err_mv` and the observed
+  500 ms window RMS. Both the current raw reading and window raw mean must
+  approach 2000 mV within that margin before ordinary dimming is considered.
+  Illuminated scatter contributes to headroom, but does not raise the low
+  boundary: increasing emission cannot remove fractional optical variation.
+- These five-sigma/three-RMS rules are control heuristics, not guarantees of
+  detector accuracy or Gaussian coverage. The window must be complete and
+  fresh, with its entire interval after the last actuator change.
+
+The signed out-of-range need passes through a first-order response with the
+requested cutoff. Re-ranging requires half response and at least one full
+500 ms window of persistent need. At 0.1 Hz, half response takes about 1.1 s.
+Returning to a usable signal clears the pending need immediately; a safe external
+step or one noisy low sample does not leave a delayed centering command behind.
+
+A necessary correction aims toward 1000 mV, limited to a factor of three and
+the same actuator/current/flux bounds as band control. A noisy headroom threat
+below 1000 mV still dims instead of increasing power. Each confirmed move clears
+the need and waits for fresh window statistics; limits and quantized no-ops do
+not accumulate a larger pending command. Once useful signal is recovered,
+adjustment stops wherever it landed. Raw saturation at 2000 mV always bypasses
+this persistence and requests an immediate threefold reduction.
+
+No stream values, uncertainty fields or throughput calculations are smoothed.
+Slow re-ranging reduces actuator changes; accurate source models are still
+required for continuity when a necessary change occurs.
 
 ## Lifetime, manual changes and failure
 
