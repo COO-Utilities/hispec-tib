@@ -737,6 +737,7 @@ class LaserCalibrationFit(ResponseRepr):
     rms_fraction: float | None
     max_residual_fraction: float | None
     threshold_se_ma: float | None
+    restricted: bool = False
 
 
 @dataclass(frozen=True, repr=False)
@@ -3655,12 +3656,12 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 614-byte metadata packet; no requests or state changes.
+    """Decode the fixed 634-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 614 or payload[:5] != b"HLC1\x04":
+    if len(payload) != 634 or payload[:5] != b"HLC1\x05":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
@@ -3697,21 +3698,21 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
-    # Bytes 316..613: policy, calibrated gains, exact support and diagnostics.
+    # Bytes 316..633: policy, calibrated gains, exact support and fitted dark knots.
     residual_limit, target_mv = struct.unpack_from("<2d", payload, 316)
     segment_gain = struct.unpack_from("<16d", payload, 332)
-    baseline, dark_variance = struct.unpack_from("<2d", payload, 460)
-    support = np.unpackbits(np.frombuffer(payload[476:506], dtype=np.uint8), bitorder="little")
+    dark_variance = struct.unpack_from("<d", payload, 460)[0]
+    support = np.unpackbits(np.frombuffer(payload[468:498], dtype=np.uint8), bitorder="little")
     meta.update(
         max_fit_residual_pct=residual_limit,
         pd_target_mv=target_mv,
         segment_mv_per_mw=segment_gain,
-        baseline_mv=baseline,
-        settle_ms=struct.unpack_from("<I", payload, 506)[0],
-        baseline_slope_mv_per_s=struct.unpack_from("<d", payload, 510)[0],
-        segment_gain_shift=struct.unpack_from("<16f", payload, 518),
+        settle_ms=struct.unpack_from("<I", payload, 498)[0],
+        baseline_knots_ms=struct.unpack_from("<3I", payload, 502),
+        baseline_knots_mv=struct.unpack_from("<3d", payload, 514),
+        segment_gain_shift=struct.unpack_from("<16f", payload, 538),
         diagnostics=dict(zip(("revisit_fraction", "band_fraction", "atten_shift_sigma", "dark_residual_mv"),
-                             struct.unpack_from("<4d", payload, 582))),
+                             struct.unpack_from("<4d", payload, 602))),
         dark_variance_mv2=dark_variance,
         fit_support=tuple(bool(v) for v in support[:count]),
         state=_LASER_CAL_STATES[state],
@@ -5364,21 +5365,25 @@ class HispecFibPcb:
 
         Start stops throughput/laser outputs, routes to a powered and dark-calibrated
         PD, holds ref_temp_c, and steps current from configured maximum to zero.
-        Accepted threshold/efficiency/correction/floor apply automatically
-        unless apply=False. The firmware performs acceptance and application;
-        no external review is needed. persist opts into NVS and requires apply.
+        Automatically accepted full-range models apply unless apply=False.
+        Restricted or inconsistent candidates require explicit settings review;
+        acquisition and raw-data download still complete. persist opts into NVS
+        and requires apply.
         Efficiency is the uncorrected linear-fit slope on the same support.
         Every sampled current has high/low PD conditions; the upper block has
         a middle level too. Retain one early and two late windows per condition;
         settle_ms measures from actuation to the first late window. The joint
         raw-PD fit uses calibrated FVOA transmission with shared RMS uncertainty.
-        The fitted interval includes the power reference and configured maximum;
-        maximum and nominal are never changed. Residuals allow the requested
+        Three measured dark knots constrain the shared interpolated baseline.
+        Full-range fits are preferred; restricted candidates retain a separately
+        measured vendor-reference amplitude even when outside their support.
+        Engineering maximum and nominal are never changed. Residuals allow the requested
         fraction plus three measured standard errors. Vendor comparison uses
         that fraction of vendor reference power plus three fitted-power SEs.
-        Revisit/dark inconsistency rejects the selected curve without retrying
-        another floor; cross-attenuation/gain-shift diagnostics have no veto.
-        Noise remains diagnostic unless update_noise=True. Loss fitting requires
+        Revisit checks run once after selection; cross-attenuation/gain-shift
+        diagnostics have no separate veto. Noise estimates are retained for
+        identifiable review-needed candidates and remain diagnostic unless
+        update_noise=True on an automatically accepted run. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
         other_output requires loss fitting and pauses for physical recabling;
         call laser_calibrate_continue explicitly. First-stage changes survive a

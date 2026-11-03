@@ -190,7 +190,7 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 ## Scoped laser calibration restore
 
 `laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
-compiled threshold/efficiency/curve reference/zero correction/maximum/nominal/autolevel floor/datasheet reference/noise
+compiled threshold/efficiency/curve reference/zero correction/maximum/nominal/autolevel bounds/datasheet reference/noise
 settings and removes only that exact named outbound route override. Independent wavelength references,
 driver identity and current calibration, other TEC policy, return loss and other-output overrides
 remain. Optional persistence writes the laser records and deletes the route's NVS
@@ -204,12 +204,7 @@ is a float at offset 140, and `efficiency_ref_ma` is a double at offset 144.
 `wave_ref_nm` replaces the previous wavelength field at offset 40; the independent
 `wave_ref_ma` and `wave_ref_temp_c` doubles are appended at offsets 152 and 160.
 Size and offsets are build-asserted. Datasheet references load independently and
-do not redefine the installed curve. Existing exact-length validation rejects
-older policy records and keeps compiled policy defaults; no firmware migration,
-new NVS key or global schema reset is introduced. Before flashing this revision,
-archive the laser settings and reinstall them explicitly through `laser/settings`
-with all four curve coefficients and the complete `wave_ref_*` triplet. To preserve
-an old policy's wavelength predictions, copy its former `wavelength_nm`,
-`nominal_current_ma`, and `default_operating_temp_c` into the new triplet, retaining
-its tune offset. This is an explicit host-side reinstallation, not firmware migration.
-Compiled defaults instead use the coordinates printed in each diode's test report.
+do not redefine the installed curve. The closeout keeps that policy layout and
+schema unchanged; the separate autolevel-ceiling record does not require calibration
+reinstallation. Older records of a different length still fail the existing validation.
+Compiled wavelength defaults use the coordinates printed in each diode's test report.

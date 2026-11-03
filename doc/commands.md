@@ -1363,7 +1363,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
   loss replaces the external loss for the second output. Restore stops the owned
   operations and restores compiled threshold, efficiency, curve reference, zero quadratic
-  correction, maximum and nominal, automatic floor, reference and noise; it removes the named
+  correction, maximum and nominal, automatic floor/ceiling, reference and noise; it removes the named
   outbound override. Identity, current calibration, independent `wave_ref_*`, other TEC
   settings, return loss and the other output's override are preserved.
 - **Response:** status separates acquisition (`state`, `acquisition_complete`,
@@ -1380,8 +1380,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
-  - `apply:true` automatically installs an accepted threshold, linear-fit
-    efficiency, quadratic coefficient, curve reference and automatic floor. Maximum
+  - `apply:true` automatically installs an accepted full-range threshold, linear-fit
+    efficiency, quadratic coefficient, curve reference and automatic floor/ceiling. Engineering maximum
     and nominal current, wavelength references and the datasheet power triplet
     are preserved. This is the
     field default and requires no notebook. Loss and noise adoption are opt-in.
@@ -1389,8 +1389,10 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - Commissioning uses `apply:false,persist:false`, saves raw data, reviews the
     normalized curve/residual plot, then installs the complete coefficients through
     `laser/settings` and selected losses through `mems/route/loss`. No retained run
-    is needed for manual installation; the saved model supplies its own reference.
-    A failed core fit cannot apply a route or noise estimate. A persistence
+    is needed for manual installation; install the complete curve and its automatic
+    current bounds together. Valid restricted or repeat-inconsistent candidates
+    require explicit review, with noise and route adoption separate. Automatic
+    route/noise application still requires an accepted core fit. A persistence
     failure may leave RAM updated; inspect each result's errors/flags.
   - Start stops throughput/laser outputs and owns the loopback through acquisition
     and recabling. Other mutations are busy; STOP/zero and bank-off remain available.
@@ -1399,14 +1401,19 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - Fitting uses calibrated FVOA transmission and stored RMS as common gain
     uncertainty for each exact DAC pair. Same-current ratios and revisits test
     consistency; they do not set the normalization. Every fitted current must
-    have two usable PD levels. Search only the lowest usable floor, with a line
-    preferred when both orders pass; the fit must include the power reference
-    and reach the configured maximum. PD residuals allow the requested fraction
+    have two usable PD levels. Try full-range fits first. If no full-range core
+    curve passes, retain the widest passing restricted interval for human review
+    (`fit.restricted:true`, `fit.accepted:false`); preserve every excluded record.
+    A reference outside that interval remains a separately measured scale anchor,
+    not a point the restricted polynomial is forced to reproduce. The three measured
+    dark conditions constrain an interpolated baseline with shared uncertainty.
+    PD residuals allow the requested fraction
     plus three measured standard errors. Immutable unit-specific vendor traces
     allow that fraction of vendor reference power plus three fitted-power SEs.
-    Cross-attenuation/gain-shift diagnostics have no separate veto. Check repeats
-    and darks once after selecting the curve; measurement inconsistency rejects
-    the whole calibration without another floor search. See
+    Cross-attenuation/gain-shift diagnostics have no separate veto. Check all exact
+    repeats once after selection; inconsistency requires review without another
+    interval search. Identifiable within-window noise estimates are reported even
+    when the candidate needs review. See
     [acceptance](laser_calibration.md#curve-meaning-and-acceptance) for equations.
   - MQTT binary queries `laser/calibrate/records` and
     `laser/calibrate/records/<chunk>` retrieve metadata and raw chunks. Starting

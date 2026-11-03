@@ -15,6 +15,8 @@
 #define LASER_CAL_RECORD_COUNT 240U
 #define LASER_CAL_SEGMENTS 16U
 #define LASER_CAL_GRID_COUNT 24U
+#define LASER_CAL_DARK_KNOTS 3U
+#define LASER_CAL_FIT_PARAMETERS 7U
 
 enum calibration_data_kind {
 	CALIBRATION_DATA_NONE,
@@ -81,9 +83,9 @@ struct laser_cal_metadata {
 	/* Published normalization, conditional on this run's dark and reference.
 	 * Copied from fit scratch under calibration_lock, never reconstructed by host. */
 	double segment_mv_per_mw[LASER_CAL_SEGMENTS];
-	double baseline_mv;
+	double baseline_knots_mv[LASER_CAL_DARK_KNOTS];
+	uint32_t baseline_knots_ms[LASER_CAL_DARK_KNOTS];
 	double dark_variance_mv2;
-	double baseline_slope_mv_per_s;
 	float segment_gain_shift[LASER_CAL_SEGMENTS]; /* GLS nuisance estimates; not new FVOA coefficients. */
 	uint8_t fit_support[LASER_CAL_RECORD_COUNT / 8U];
 	uint64_t started_ms;
@@ -120,7 +122,7 @@ union calibration_scratch {
 		double segment_rel_var[CALIBRATION_RECORD_COUNT];
 	} atten;
 	struct {
-		/* Late-condition means/variances; all six-parameter math is streamed.
+		/* Late-condition means/variances; all seven-parameter math is streamed.
 		 * These matrices reuse attenuator scratch and avoid an N-by-N matrix. */
 		float mean[LASER_CAL_RECORD_COUNT];
 		float variance[LASER_CAL_RECORD_COUNT];
@@ -129,13 +131,13 @@ union calibration_scratch {
 		double gain[LASER_CAL_SEGMENTS];
 		double transmission[LASER_CAL_SEGMENTS];
 		float gain_shift[LASER_CAL_SEGMENTS];
-		double normal[6][7];
-		double equations[6][7];
-		double beta[6];
+		double normal[LASER_CAL_FIT_PARAMETERS][LASER_CAL_FIT_PARAMETERS + 1U];
+		double equations[LASER_CAL_FIT_PARAMETERS][LASER_CAL_FIT_PARAMETERS + 1U];
+		double beta[LASER_CAL_FIT_PARAMETERS];
+		uint8_t dark_record[LASER_CAL_DARK_KNOTS];
 		double dark_variance;
 		double baseline_weight;
 		double baseline_mean;
-		double time_scale_s;
 		double atten_sigma;
 		double reference_tx;
 	} laser;
