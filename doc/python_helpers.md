@@ -178,8 +178,10 @@ controls that source. With `collect=True`, the helper also queries laser policy
 and attenuator coefficients for display limits and needs a channel for the local
 collector; supply `channel` if it cannot infer one from the laser name. With
 `collect=False`, the command goes to firmware without a local channel lookup.
-Firmware defaults to a 300-second
-measurement lifetime; zero disables expiry. Manual laser/attenuator changes,
+The Python helper defaults `off_in_s` to 300 seconds. Autolevel and continuations
+retaining its laser shutdown require a positive duration; raw firmware commands
+must supply one. Zero allows an unlimited purely passive stream, while manual
+laser starts still have their own finite timer. Manual laser/attenuator changes,
 tuning and settings operations disable adjustment but retain streaming, its
 deadline and owned-laser shutdown. Automatic control uses
 `min_autolevel_current_ma` / `max_autolevel_current_ma`; engineering commands keep

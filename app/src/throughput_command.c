@@ -187,6 +187,9 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 					  &off_in_s, NULL) != 0) {
 		return coo_cmd_error(out, cmd, "invalid off_in_s");
 	}
+	if (autolevel && off_in_s == 0U) {
+		return coo_cmd_error(out, cmd, "autolevel requires positive off_in_s");
+	}
 
 	if (coo_json_extract_optional_double_range(cmd->payload, "max_flux_ph_s",
 						   &request.max_flux_ph_s,
@@ -293,6 +296,9 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		(void)app_settings_get_route_loss(route, source, &request.launch_route_tx);
 	}
 	rc = throughput_monitor_prepare_start(&request);
+	if (rc == -ERANGE) {
+		return coo_cmd_error(out, cmd, "measurement still owns laser shutdown; positive off_in_s required");
+	}
 	if (rc != 0) {
 		goto start_error;
 	}

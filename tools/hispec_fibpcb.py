@@ -434,7 +434,7 @@ class MemsSwitchDetail(ResponseRepr):
     cycle_ms: int = 0
     a_ms: int = 0
     b_ms: int = 0
-    stop_in_s: int = 0
+    off_in_s: int = 0
 
 
 @dataclass(frozen=True, repr=False)
@@ -3451,6 +3451,7 @@ class PhotodiodeSettings(ResponseRepr):
     powered: bool
     power: str
     autooff_s: int
+    off_in_s: int | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -3471,7 +3472,7 @@ class SplitState(ResponseRepr):
     split_transmission: tuple[float, float, float]
     cycle_ms: int
     switches: tuple[SplitSwitchState, SplitSwitchState, SplitSwitchState]
-    stop_in_s: int
+    off_in_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -3825,7 +3826,7 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
         cycle_ms=int(data.get("cycle_ms", 0)),
         a_ms=int(data.get("a_ms", 0)),
         b_ms=int(data.get("b_ms", 0)),
-        stop_in_s=int(data.get("stop_in_s", 0)),
+        off_in_s=int(data.get("off_in_s", 0)),
     )
 
 
@@ -3926,7 +3927,7 @@ def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
         split_transmission=_as_tuple3(data["split_transmission"], "split_transmission"),
         cycle_ms=int(data["cycle_ms"]),
         switches=tuple(_dataclass_from(SplitSwitchState, item) for item in data["switches"]),  # type: ignore[arg-type]
-        stop_in_s=int(data["stop_in_s"]),
+        off_in_s=int(data["off_in_s"]),
     )
 
 
@@ -4028,8 +4029,9 @@ class ThroughputMonitor:
         Purely passive measurements leave manual laser output unchanged. Manual
         laser level or attenuation changes disable adjustments but retain
         autolevel's laser shutdown.
-        Bank power and TECs remain unchanged. Detach collection even if the
-        command fails; calling stop again retries the firmware shutdown.
+        Bank power is unchanged; the owned laser's TEC follows disable_tec_at_autooff.
+        Detach collection even if the command fails; calling stop again retries
+        the firmware shutdown.
         """
         try:
             self.client.stop_throughput(self.channel)
@@ -4757,12 +4759,15 @@ class HispecFibPcb:
         return self._request_ok("mems/route/loss", payload)
 
     def laser(
-        self, name: str, value: float | None = None, *, autooff_s: int | None = None,
+        self, name: str, value: float | None = None, *, off_in_s: int | None = None,
         stop: bool = False, value_ma: float | None = None,
     ) -> LaserStatus | CommandOk:
         """Query/set laser level; zero current retains readiness and the off deadline.
 
         ``stop=True`` shuts down the diode and applies the configured TEC-off policy.
+        off_in_s overrides the operation's duration and must be positive; omission
+        uses laser_settings.autooff_s on a positive-current start. Zero current
+        without a duration preserves the existing deadline.
         A level is a fraction of modeled nominal emission; firmware inverts the
         calibrated curve and reports the emission fraction at the confirmed current.
         Setting a level disables autolevel while throughput streaming continues.
@@ -4770,9 +4775,9 @@ class HispecFibPcb:
         optical model, autolevel bounds and stored tune request. It is mutually
         exclusive with ``value`` and uses the configured current maximum.
         """
-        if value is None and value_ma is None and autooff_s is None and stop is False:
+        if value is None and value_ma is None and off_in_s is None and stop is False:
             return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
-        payload = _optional_payload(name=name, value=value, value_ma=value_ma, autooff_s=autooff_s,
+        payload = _optional_payload(name=name, value=value, value_ma=value_ma, off_in_s=off_in_s,
                                     stop=None if stop is False else stop)
         return self._request_ok("laser", payload)
 
@@ -4850,9 +4855,9 @@ class HispecFibPcb:
         profile preparation syncs it after bank power-up, not at MCU startup.
         Engineering status separately reports actual readback in the same units.
         Changing autooff_s restarts a started laser's countdown, including at
-        zero current; zero cancels it. It never starts an idle laser. Unchanged
-        values and unrelated settings do not rearm; calibration rejects autooff
-        writes. Automatic current bounds do not limit manual current/level requests.
+        zero current. Zero defaults are rejected. It never starts an idle laser.
+        Unchanged values and unrelated settings do not rearm; calibration rejects
+        autooff writes. Automatic current bounds do not limit manual current/level requests.
         """
         settings = _optional_payload(
             nominal_current_ma=nominal_current_ma,
@@ -5571,6 +5576,10 @@ class HispecFibPcb:
         Changing autooff_s restarts a powered auto-mode PD's countdown; zero
         cancels it. It never powers on an idle PD. Calibration rejects autooff
         writes; unchanged values and unrelated settings do not rearm the timer.
+        Read-only off_in_s gives the remaining countdown without rearming it.
+        Returning to auto leaves an off PD off, or arms a missing timer if powered.
+        Power-only overrides are allowed during calibration; override_off faults
+        active acquisition. Releasing a use hold starts a fresh idle interval.
         """
         payload = _optional_payload(
             noisewarn_mv=noisewarn_mv,
@@ -5590,6 +5599,7 @@ class HispecFibPcb:
                 power=str(data["power"]),
                 powered=bool(data["powered"]),
                 autooff_s=int(data["autooff_s"]),
+                off_in_s=None if data["off_in_s"] is None else int(data["off_in_s"]),
             )
         return self._request_ok(f"pd/settings/{channel}", payload)
 
@@ -5600,13 +5610,17 @@ class HispecFibPcb:
         ratio2: float | None = None,
         *,
         cycle_ms: int | None = None,
-        stop_in_s: int = 0,
+        off_in_s: int = 0,
     ) -> SplitState:
-        """Query a split or set delivered ratios 1/2; ratio 3 is the remainder and firmware compensates path loss."""
-        if ratio1 is None and ratio2 is None and cycle_ms is None and stop_in_s == 0:
+        """Query/set split ratios; ratio 3 is the remainder, with path-loss correction.
+
+        off_in_s is up to four hours; zero uses four hours for a switching split.
+        Expiry holds the last switch positions and ends the time-averaged split.
+        """
+        if ratio1 is None and ratio2 is None and cycle_ms is None and off_in_s == 0:
             return _decode_split_state(self._request_json(f"mems/split/{channel}"))
         payload = _optional_payload(channel=channel, ratio1=ratio1, ratio2=ratio2,
-                                    stop_in_s=stop_in_s, cycle_ms=cycle_ms)
+                                    off_in_s=off_in_s, cycle_ms=cycle_ms)
         return _decode_split_state(self._request_json("mems/split", payload))
 
     def measure_throughput(
@@ -5637,6 +5651,10 @@ class HispecFibPcb:
         can stream; firmware permits only one autolevel owner.
         Manual laser level and attenuation changes disable autolevel while this
         collector and its live plot continue; the measurement deadline is retained.
+        Autolevel and any continuation retaining its laser shutdown require positive
+        off_in_s. Zero is unlimited only for purely passive measurements; manual
+        laser starts still have their own finite timeout. Python defaults to 300 s.
+        Owned-laser shutdown applies that laser's disable_tec_at_autooff policy.
         With autolevel=False, a named laser can be monitored before its first
         command, including through bank power-on and laser preparation. PD samples
         continue while throughput is undefined at zero source power. This does
@@ -5756,7 +5774,7 @@ class HispecFibPcb:
             unit = "db" if use_atten_db else "mv"
             drive = self.atten(laser, **{f"value{i}_{unit}": limits[i] for i in attenuators})
             requested = dict(limits)
-            self.laser(laser, value=level, autooff_s=0)
+            self.laser(laser, value=level)
             steps = {i: 5.0 if use_atten_db else 150.0 for i in attenuators}
             directions = dict.fromkeys(attenuators, 0)
             last_atten = attenuators[0] if attenuators else None
@@ -5817,7 +5835,7 @@ class HispecFibPcb:
                     reason = "above range at dim limit" if high else "below range at bright limit"
                     break
                 level = next_level
-                self.laser(laser, value=level, autooff_s=0)
+                self.laser(laser, value=level)
             actual = self.laser(laser)
             if not found:
                 self.laser(laser, stop=True)
@@ -5836,7 +5854,8 @@ class HispecFibPcb:
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
         """Stop measurement and its autolevel laser; preserve passive/manual output.
 
-        Bank power and TECs remain unchanged. See ThroughputMonitor.stop().
+        Bank power is unchanged; the owned laser's TEC follows disable_tec_at_autooff.
+        See ThroughputMonitor.stop().
         """
         result = self._request_ok("measure_throughput", {"stop": channel})
         with self._throughput_lock:

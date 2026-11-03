@@ -535,7 +535,7 @@ static int split_channel_response(const struct coo_cmd_request *cmd,
              "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u},"
              "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u},"
              "{\"name\":\"%s\",\"state\":\"%c\",\"duty_cycle\":%.4f,\"a_ms\":%u,\"b_ms\":%u}],"
-             "\"stop_in_s\":%u}",
+             "\"off_in_s\":%u}",
              channel_name,
              (double)state->requested[0],
              (double)state->requested[1],
@@ -565,7 +565,7 @@ static int split_channel_response(const struct coo_cmd_request *cmd,
              (double)state->switches[2].duty_cycle,
              state->switches[2].a_ms,
              state->switches[2].b_ms,
-             state->stop_in_s);
+             state->off_in_s);
 
     if (written < 0 || written >= (int)sizeof(payload)) {
         return coo_cmd_error(out, cmd, "split response too large");
@@ -670,7 +670,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     double requested[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double ratio3_probe = 0.0;
     uint32_t cycle_ms = 0U;
-    uint32_t stop_in_s = 0U;
+    uint32_t off_in_s = 0U;
     const char *failed_switch = NULL;
     bool has_cycle_ms = false;
     int parse_rc;
@@ -709,10 +709,10 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
     requested[2] = 1.0 - requested[0] - requested[1];
 
-    if (coo_json_extract_optional_u32(cmd->payload, "stop_in_s",
-                                      &stop_in_s, NULL) != 0 ||
-        stop_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
-        return coo_cmd_error(out, cmd, "invalid stop_in_s");
+    if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",
+                                      &off_in_s, NULL) != 0 ||
+        off_in_s > MEMS_SWITCH_MAX_TOGGLE_DURATION_S) {
+        return coo_cmd_error(out, cmd, "invalid off_in_s");
     }
 
     if (coo_json_extract_optional_u32(cmd->payload, "cycle_ms",
@@ -726,7 +726,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "cycle_ms replaces toggle_rate_hz");
     }
 
-    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, stop_in_s,
+    rc = mems_split_apply_channel(&router, channel_index, requested, cycle_ms, off_in_s,
                                   &state, &failed_switch);
     if (rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "split route references missing switch");
@@ -870,11 +870,11 @@ static int mems_append_timing_fields(char *buf, size_t buf_len, size_t *offset,
     }
 
     written = snprintk(buf + *offset, buf_len - *offset,
-                       ",\"cycle_ms\":%u,\"a_ms\":%u,\"b_ms\":%u,\"stop_in_s\":%u",
+                       ",\"cycle_ms\":%u,\"a_ms\":%u,\"b_ms\":%u,\"off_in_s\":%u",
                        status->cycle_ms,
                        status->a_ms,
                        status->b_ms,
-                       status->stop_in_s);
+                       status->off_in_s);
     if (written < 0 || written >= (int)(buf_len - *offset)) {
         return -ENOSPC;
     }

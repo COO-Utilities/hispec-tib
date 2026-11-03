@@ -489,13 +489,24 @@ void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output outp
 					     bool inhibited)
 {
 	uint8_t index;
+	struct app_photodiode_settings settings;
 
 	if (!power_output_to_pd_index(output, &index)) {
 		return;
 	}
 
 	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+	app_settings_get_photodiode(&settings);
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	/* Last use starts a fresh idle interval, never an overdue pre-use timer.
+	 * A repeated release is inert; an explicit power override still wins. */
+	if (pd_autooff_inhibited[index] && !inhibited) {
+		const struct app_pd_channel_settings *pd = &settings.channel[index];
+		pd_autooff_deadline_ms[index] = power_on_time[index].active &&
+			pd->power == APP_PD_POWER_AUTO && pd->autooff_s > 0U ?
+			k_uptime_get() + (int64_t)pd->autooff_s * 1000 :
+			HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+	}
 	pd_autooff_inhibited[index] = inhibited;
 	pd_autooff_reschedule_locked();
 	k_mutex_unlock(&housekeeping_state_lock);
@@ -567,17 +578,20 @@ static void temperature_work_handler(struct k_work *work)
 static void pd_autooff_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	struct app_photodiode_settings settings;
 	/* Serialize final eligibility and GPIO write against inhibit/enable. The
 	 * state mutex is released for I/O, so throughput can always read state.
 	 */
 	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+	app_settings_get_photodiode(&settings);
 	for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 		bool expired = pd_autooff_deadline_ms[i] != HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE &&
 			!pd_autooff_inhibited[i] && k_uptime_get() >= pd_autooff_deadline_ms[i];
 		if (expired) pd_autooff_deadline_ms[i] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
 		k_mutex_unlock(&housekeeping_state_lock);
-		if (expired) {
+		/* An override may have followed the release that armed this deadline. */
+		if (expired && settings.channel[i].power == APP_PD_POWER_AUTO) {
 			int rc = power_set_locked(i, false);
 			if (rc != 0) LOG_WRN("Failed to auto-off photodiode relay %u (%d)", i, rc);
 		}

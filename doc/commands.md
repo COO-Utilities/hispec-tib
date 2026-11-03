@@ -131,7 +131,7 @@ Requests with payload use the key followed by a payload. There are no `get` or
 ```text
 serialguard seconds=60
 mems/yj_laser_cal state=A duty_cycle=0.5 cycle_ms=400 off_in_s=30
-mems/split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 stop_in_s=300
+mems/split channel=yj ratio1=0.25 ratio2=0.25 cycle_ms=800 off_in_s=300
 laser/bankpower/override_on
 ```
 
@@ -655,7 +655,7 @@ See [firmware updates](ota.md) for network and USB installation.
     "cycle_ms": 400,
     "a_ms": 200,
     "b_ms": 200,
-    "stop_in_s": 30
+    "off_in_s": 30
   }
   ```
 - **Notes:**
@@ -675,8 +675,14 @@ See [firmware updates](ota.md) for network and USB installation.
     stretch the requested cycle beyond MEMS tick granularity.
   - `cycle_ms` replaces `toggle_rate_hz`; `toggle_rate_hz` is rejected.
   - `{"state":"A","duty_cycle":0.0}` is valid and equivalent to static `B`.
-  - Request `off_in_s` is integer seconds, with max 4 hours. Response
-    `stop_in_s` is remaining toggle time.
+  - `off_in_s` tells the switch how many seconds to keep alternating (maximum
+    14,400 seconds / four hours). Omission uses four hours; explicit zero is
+    rejected for alternating operation. Repeating the request restarts its duration.
+    The response's `off_in_s` counts down the remaining switching time.
+  - When time expires, the switch holds whichever position it last reached.
+    This does not guarantee blocked light. Send a static A/B request when you
+    need a particular final route. Static requests hold their position without
+    a timeout and ignore `off_in_s`.
   - Static switch requests persist as user intent. With
     `CONFIG_SET_SWITCH_STATE_AT_BOOT=y`, boot initializes each switch target
     from that intent and resends the pulse shortly after startup. This reasserts
@@ -686,7 +692,7 @@ See [firmware updates](ota.md) for network and USB installation.
     `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT=y`, boot restarts the stored request
     using its original commanded duration. Runtime remaining time is not
     preserved across reboot.
-  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `stop_in_s` are omitted for
+  - `duty_cycle`, `cycle_ms`, `a_ms`, `b_ms`, and `off_in_s` are omitted for
     constant A or B profiles.
   - `a_ms` and `b_ms` are the actual scheduled dwell times in the hardware A
     and B states. The firmware keeps all A/B actuation pulses at least
@@ -835,7 +841,7 @@ these values feed the existing throughput and splitting calculations.
     "ratio1": 0.25,
     "ratio2": 0.25,
     "cycle_ms": 800,
-    "stop_in_s": 0
+    "off_in_s": 0
   }
   ```
 - **No payload to `mems/split/yj` or `mems/split/hk` -> get splitter state.**
@@ -873,7 +879,7 @@ these values feed the existing throughput and splitting calculations.
         "b_ms": 400
       }
     ],
-    "stop_in_s": 0
+    "off_in_s": 14400
   }
   ```
 
@@ -902,8 +908,12 @@ these values feed the existing throughput and splitting calculations.
     `MEMS_SWITCH_MAX_TOGGLE_HZ`. If supplied, the firmware keeps the requested
     cycle except for MEMS tick quantization and quantizes the split ratios
     inside that fixed cycle. `toggle_rate_hz` is rejected.
-  - `stop_in_s` is integer seconds, with max 4 hours. `0` disables the split
-    auto-stop.
+  - `off_in_s` sets how long the splitter keeps switching, up to 14,400 seconds
+    (four hours). Zero or omission uses four hours. Repeating the request restarts
+    the duration; response `off_in_s` reports the remaining switching time.
+    On expiry, switches hold their last positions, so the requested time-averaged
+    split ends and light may still reach an output. Apply a new route or static
+    split when you need a particular final path. A fully static split has no timer.
   - Split switch timing may take a few MEMS cycles to settle after a new
     request; startup phase is not guaranteed cycle-exact.
   - `ratio_ask`, `ratio_actual`, `ratio_out`, and `split_transmission` are
@@ -957,8 +967,8 @@ these values feed the existing throughput and splitting calculations.
   ```json
   {
     "name": "<lasername>",
-    "value": 0.0,
-    "autooff_s": 0
+    "value": 0.5,
+    "off_in_s": 600
   }
   ```
 
@@ -974,13 +984,14 @@ these values feed the existing throughput and splitting calculations.
   the laser bank as needed, prepares the TEC, applies the stored `laser/tune`
   request when `tune_nm` is nonzero, sets the laser current, and restarts the
   auto-off timer. Setting value 0 writes zero current without STOP, retains driver/TEC
-  readiness, and preserves an existing auto-off deadline unless `autooff_s` is supplied.
+  readiness, and preserves an existing auto-off deadline unless `off_in_s` is supplied.
   Auto-off writes are rejected during laser or attenuator calibration, including
-  zero-current writes that supply `autooff_s`.
-  It does not power up/start an idle driver or clear the stored `laser/tune` request.
+  zero-current writes that supply `off_in_s`.
+  A zero-current request does not power up/start an idle driver or clear the stored
+  `laser/tune` request. Positive current requests do start the laser as described above.
   Use `{"name":"1028y","stop":true}` for explicit shutdown: zero current, STOP,
   and TEC shutdown according to `disable_tec_at_autooff`. With `stop:true`, either drive field
-  must be omitted or zero and `autooff_s` must be omitted. Laser auto-off and
+  must be omitted or zero and `off_in_s` must be omitted. Laser auto-off and
   measurement-owned expiry use this shutdown path. Zero-current time does not
   count toward emission time. Identity and applied configuration remain valid
   until bank power cycles or an explicit configuration/reset operation changes them. Laser output current is
@@ -1007,9 +1018,12 @@ these values feed the existing throughput and splitting calculations.
   update output state without changing existing safety-latch clearing rules.
   `i_mA` and `power_mw` retain their setpoint/model-estimate meanings. Active time fields are integer seconds while active and `null`
   when inactive. The persisted lifetime
-  total remains available through `laser/settings`. `autooff_s` is optional and
-  non-persistent; if supplied, it overrides the default configured through
-  `laser/settings` for this start. If another laser-bank operation occupies the
+  total remains available through `laser/settings`. `off_in_s` is optional and
+  non-persistent and must be positive if supplied. It overrides
+  `laser/settings.autooff_s` for this operation; omission uses that positive default
+  for a positive-current start. A saved zero default must be corrected or overridden
+  with a positive duration before starting emission. Zero current without a duration
+  preserves the existing deadline. If another laser-bank operation occupies the
   shared Maiman Modbus bus past the command wait budget, laser commands return
   `{"error":"busy"}`.
 
@@ -1129,7 +1143,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "ntc_coeff_pct_per_c": -4.4,
       "dlambda_dT_nm_per_k": 0.0,
       "dlambda_dA_nm_per_ma": 0.0,
-      "autooff_s": 0,
+      "autooff_s": 10800,
       "tune_nm": 0.0,
       "emit_total_s": 0
     }
@@ -1221,14 +1235,14 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     preparation; it is programmed at the next start without powering an idle
     bank for the edit. Combining it with a driver-backed change programs both
     immediately. Absolute device limits are never written.
-  - Settings `autooff_s` is the default for later manual `laser` commands;
-    command `autooff_s` overrides one operation. Throughput uses `off_in_s` for
-    its own duration and disables the separate laser auto-off while controlling
-    it. Changing the stored default restarts the countdown from now for a
-    started laser, including at zero current; zero cancels it. Idle lasers stay
-    idle. An unchanged value or unrelated setting does not rearm. Settings
-    writes still stop that laser's throughput monitor. Auto-off writes are
-    rejected during laser or attenuator calibration.
+  - Settings `autooff_s` is the positive default interval for later manual
+    `laser` commands; command `off_in_s` overrides one operation. Zero settings
+    updates are rejected. Changing the default restarts a started laser's countdown
+    from now, including at zero current; idle lasers stay idle. An unchanged value
+    or unrelated setting does not rearm. Settings writes disable throughput feedback
+    while retaining collection and its existing laser shutdown obligation.
+    Finite autolevel measurements own their requested `off_in_s` deadline, which
+    may exceed this default. Auto-off writes are rejected during calibration.
   - Driver identity is checked at first contact after bank power-up. Profile
     preparation synchronizes PCB-owned driver settings at the first explicit
     start after bank power-up; merely reading status does not program them.
@@ -2045,7 +2059,8 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
     "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
     "powered": false,
-    "autooff_s": 300
+    "autooff_s": 300,
+    "off_in_s": null
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -2077,15 +2092,24 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
   channel's automatic power-off delay used when firmware auto-enables the
   relay. Changing it restarts a powered auto-mode channel's countdown from now;
   zero cancels it. It never enables an idle PD. Unchanged values and unrelated
-  settings do not rearm. Returning a powered channel to AUTO starts a fresh
-  countdown. At boot saved overrides apply; AUTO restores the last confirmed
+  settings do not rearm. Returning a powered channel to AUTO arms the configured
+  interval only if no countdown is running; an existing countdown is preserved.
+  At boot saved overrides apply; AUTO restores the last confirmed
   relay state, or off if no state was saved, with a fresh full countdown. Relay
   state changes are saved separately from calibration even without `persist:true`.
   Driver initialization can briefly switch the relay off; `on_time_s` restarts
   at boot. A failed relay operation does not save a new state.
-  Auto-off writes are rejected during laser or attenuator
-  calibration; throughput inhibition remains in force. Read `off_in_s` through
-  `pd`, where it belongs with live status.
+  `power:"override_off"` switches the PD off now, even during calibration or
+  measurement. A repeated override still applies the requested power state.
+  Acquisition faults on power loss and needs an explicit restart. Returning to
+  `auto` leaves an off PD off until its next use. Power-only changes are allowed
+  during calibration; auto-off writes remain rejected.
+  Measurement and calibration keep automatic power-off on hold while using the PD.
+  Release starts a fresh configured interval if the PD is still powered in auto
+  mode; it never turns a PD on or changes an override.
+  Read-only `off_in_s` reports remaining integer seconds in both `pd/settings` and
+  `pd`, or `null` when no countdown is active (including a use hold). Settings
+  queries do not rearm it; ordinary `pd` queries intentionally enable/rearm in auto.
   `powered` is the read-only actual state of this channel. Querying settings
   neither enables it nor rearms auto-off; unlike `pd`, it is suitable for preflight.
   Dark and lowest-dark values are queried and updated through
@@ -2141,6 +2165,15 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
   }
   ```
 
+`off_in_s` is the operation's duration in integer seconds. Autolevel requires a
+positive duration, as does continuing a run that still owns its autolevel laser's
+shutdown. Zero or omission is rejected for these runs before routes or outputs
+change. Automatic adjustments do not extend the deadline. A purely passive run
+can use zero/omission to stream indefinitely; any manually started laser still has
+its own positive timer. Python supplies 300 seconds by default; raw commands have
+no positive default. To start an unlimited passive run after autolevel, stop the
+owned operation first, then start a new passive measurement.
+
 `measure_throughput` is the only command that starts or stops photodiode
 streaming. It measures throughput by comparing the route-corrected optical power at the
 selected photodiode with the route- and attenuator-corrected laser power
@@ -2182,8 +2215,8 @@ manual laser level or attenuation changes have since disabled automatic adjustme
 A purely passive measurement leaves manual laser output unchanged when stopped. Continuing the
 same source with `autolevel:false` retains an existing operation's laser
 shutdown obligation; replacing its source first stops that autolevel laser.
-Bank power, TECs and unrelated lasers are left unchanged. This differs from an
-explicit `laser stop:true` or laser auto-off, which uses `disable_tec_at_autooff`.
+The owned laser's TEC follows `disable_tec_at_autooff`, just as with explicit
+`laser stop:true` and laser auto-off. Bank power and unrelated lasers are unchanged.
 Valid `stop` requests take priority over accompanying start fields, whose values
 are ignored even if invalid. Unknown top-level fields are still rejected.
 

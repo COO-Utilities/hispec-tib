@@ -120,15 +120,18 @@ silently reused on another.
   above the engineering maximum. These bounds are app policy and do not restrict
   manual current/level commands. `initial_level` is a per-measurement fraction,
   defaults to 0.5 in firmware, and is not persisted.
-- Laser settings `autooff_s` supplies the manual-command default; an explicit
-  command value overrides it. Changing the setting restarts a started laser's
-  countdown from now; zero cancels it without starting idle hardware. PD settings
-  behave the same for powered channels in auto mode. Unchanged values and unrelated
-  edits do not rearm. Returning a powered PD from override to AUTO starts a fresh
-  countdown. Calibration rejects auto-off writes. Throughput owns its
-  separate `off_in_s` deadline and retains PD inhibition; laser settings writes
-  disable feedback while retaining the stream and owned-source shutdown.
-  PD `off_in_s` is status returned by `pd`.
+- Laser settings `autooff_s` supplies the positive manual-command default;
+  command `off_in_s` overrides one operation. Zero laser default updates and
+  zero command durations are rejected. Changing the default restarts a started
+  laser's countdown from now without starting idle hardware. PD settings behave
+  similarly for powered AUTO channels, but PD `autooff_s=0` cancels its countdown.
+  Unchanged values and unrelated edits do not rearm. Returning a powered PD to
+  AUTO arms a missing countdown and preserves a running one; an off PD stays off.
+  Releasing a measurement/calibration PD hold starts a fresh configured interval.
+  Calibration rejects timer writes but permits power-only overrides.
+  Finite throughput owns its `off_in_s` deadline. Laser settings writes disable
+  feedback while retaining collection and owned-source shutdown. PD read-only
+  `off_in_s` is available through `pd` and `pd/settings`; only `pd` queries rearm it.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)

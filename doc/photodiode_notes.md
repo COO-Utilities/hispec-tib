@@ -56,6 +56,12 @@ and lab cells on their own schedule. Avoid saturation and account for room light
 when comparing darks. See the
 [closeout evidence](calibration_closeout.md#dark-current-closeout-and-operating-guidance).
 
+`pd` queries intentionally enable/rearm a PD in AUTO. Query `pd/settings` to
+inspect its read-only remaining `off_in_s` without changing power or the timer.
+Measurement/calibration holds off automatic power-down while using the PD; release
+starts a fresh configured idle interval. `override_off` still forces it off now,
+and returning to AUTO leaves an off detector off until its next use.
+
 In AUTO, reboot restores the last successfully commanded PD power state and starts
 a fresh autooff countdown. A saved override takes precedence. This restores intent;
 early GPIO initialization may still interrupt power, and `pd_on_s` restarts at boot.

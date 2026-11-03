@@ -174,15 +174,24 @@ required for continuity when a necessary change occurs.
 
 ## Lifetime, manual changes and failure
 
+Autolevel requires positive `off_in_s`, including a continuation that retains
+its laser shutdown obligation after feedback is disabled. The requested duration
+may exceed the laser's configured default; feedback adjustments never extend it.
+Zero/omission is rejected for an owned operation. Purely passive measurement may
+stream indefinitely, but manual laser starts still use their own positive timer.
+Python supplies 300 seconds by default; raw commands must supply a positive
+value for autolevel. An unlimited passive continuation requires stopping the
+owned operation first, then starting a new passive run.
+
 A manual laser current/level, tuning or settings operation disables autolevel
 while retaining collection, the measurement deadline and any existing owned-laser
 shutdown obligation, including when the manual operation fails. Manual attenuation
 changes also disable feedback without releasing the measurement. Passive
 streams never acquire ownership of an unrelated manually started source.
 Stop, expiry and owner faults stop an owned laser; a failed shutdown retains its
-identity for a subsequent stop retry. Bank power, TECs and other sources are
-unchanged. Explicit `laser stop:true` and laser auto-off separately consult
-`disable_tec_at_autooff`; throughput STOP passes `stop_tec=false`.
+identity for a subsequent stop retry. The owned laser's TEC follows its current
+`disable_tec_at_autooff` policy, as with explicit laser STOP and laser auto-off.
+Bank power and other sources are unchanged.
 
 Settings changes that require the laser owner to stop emission still do so.
 The retained stream then shows zero modeled source power and undefined throughput,
@@ -192,7 +201,9 @@ the original measurement expiry and explicit measurement stop still own shutdown
 Source communication faults and confirmed controller faults stop dependent
 acquisition. Recovery reports availability but never silently restarts a run.
 PD auto-off inhibition is held during route preparation and acquisition, and
-released on completion/failure. Release resumes the existing deadline, even if
-it has already expired. Calibration uses the same throughput thread, so its
-synchronous settling/I/O can delay another channel's processing while the ADC
+released on completion/failure. Release starts a fresh configured idle countdown
+for a powered PD in auto mode; it never enables power or changes an override.
+An explicit PD override-off takes effect during use and faults acquisition;
+returning to auto leaves it off until its next use. Calibration uses the same
+throughput thread, so its synchronous settling/I/O can delay another channel's processing while the ADC
 continues sampling. See [runtime ownership](architecture.md).

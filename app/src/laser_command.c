@@ -390,8 +390,8 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	char name[16] = {0};
 	double value = 0.0;
 	double value_ma = 0.0;
-	uint32_t autooff_s;
-	bool stop = false, autooff_present = false;
+	uint32_t off_in_s;
+	bool stop = false, off_in_present = false;
 	int rc;
 
 	if (command_laser_id_from_payload(cmd, &id, name, sizeof(name)) != 0) {
@@ -421,12 +421,16 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 		value_ma = hispec_laser_quantize_current_ma(value_ma, 0.0, settings.properties.max_current_ma);
 	}
 	double drive = engineering ? value_ma : value;
-	autooff_s = settings.autooff_s;
-	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s", &autooff_s, &autooff_present) != 0 ||
-	    (stop && autooff_present)) {
-		return coo_cmd_error(out, cmd, "invalid autooff_s; not allowed with stop");
+	off_in_s = settings.autooff_s;
+	if (coo_json_extract_optional_u32(cmd->payload, "off_in_s", &off_in_s, &off_in_present) != 0 ||
+	    (off_in_present && (stop || off_in_s == 0U))) {
+		return coo_cmd_error(out, cmd, "off_in_s must be positive and omitted with stop");
 	}
-	if (autooff_present && (laser_calibration_active() || attenuator_calibration_active())) {
+	/* Old saved zero defaults remain readable; never use one to start emission. */
+	if (drive > 0.0 && off_in_s == 0U) {
+		return coo_cmd_error(out, cmd, "set a positive laser/settings autooff_s or supply off_in_s");
+	}
+	if (off_in_present && (laser_calibration_active() || attenuator_calibration_active())) {
 		return coo_cmd_busy_response(out, cmd);
 	}
 
@@ -449,13 +453,13 @@ int laser_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 	throughput_monitor_note_laser_changed(id);
 	if (stop) {
 		rc = hispec_laser_stop_output(id, settings.disable_tec_at_autooff, out->payload, sizeof(out->payload));
-	} else if (drive == 0.0 && !autooff_present) {
+	} else if (drive == 0.0 && !off_in_present) {
 		/* A momentary zero level preserves the existing shutdown deadline. */
 		rc = hispec_laser_set_current_ma(id, 0.0, out->payload, sizeof(out->payload));
 	} else if (engineering) {
-		rc = hispec_laser_set_current_ma_autooff(id, value_ma, autooff_s, out->payload, sizeof(out->payload));
+		rc = hispec_laser_set_current_ma_autooff(id, value_ma, off_in_s, out->payload, sizeof(out->payload));
 	} else {
-		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, autooff_s, true, out->payload, sizeof(out->payload));
+		rc = hispec_laser_set_output_percent_autooff(id, value * 100.0, off_in_s, true, out->payload, sizeof(out->payload));
 	}
 	if (rc != 0) return laser_cmd_failure(out, cmd, id, stop ? "stop" : drive == 0.0 ? "zero current" :
 		engineering ? "set current/start" : "set level/start", rc, out->payload);
@@ -750,10 +754,13 @@ static int laser_parse_settings_update(const char *json,
 	}
 
 	strcpy(invalid, "autooff_s");
+	bool autooff_supplied = false;
 	if (coo_json_extract_optional_u32(json, "autooff_s",
-					  &settings->autooff_s, changed) != 0) {
+					  &settings->autooff_s, &autooff_supplied) != 0 ||
+	    (autooff_supplied && settings->autooff_s == 0U)) {
 		return -EINVAL;
 	}
+	*changed |= autooff_supplied;
 
 	strcpy(invalid, "expected_serial");
 	parsed_serial = settings->expected_serial;

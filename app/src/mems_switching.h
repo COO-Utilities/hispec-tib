@@ -77,7 +77,7 @@ struct mems_switch_status {
     uint32_t cycle_ms;
     uint32_t a_ms;
     uint32_t b_ms;
-    uint32_t stop_in_s;
+    uint32_t off_in_s;
 };
 
 /** One required switch state within a named route. */
@@ -112,7 +112,7 @@ struct mems_split_state {
     double transmission[MEMS_SPLIT_OUTPUT_COUNT];
     struct mems_split_switch_duty switches[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
     uint32_t cycle_ms;
-    uint32_t stop_in_s;
+    uint32_t off_in_s;
 };
 
 /** Board-selected router state and immutable route table pointer. */

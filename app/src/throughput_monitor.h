@@ -51,7 +51,8 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3);
  * Both channels can stream; only one autolevel operation may own the shared
  * optical path. Dark/calibration acquisition excludes monitoring. Replacing an
  * owned source stops its laser (may block on Modbus); a same-source continuation
- * retains the shutdown obligation. On error, no routing should be attempted.
+ * retains the shutdown obligation and requires a positive off_in_s, as does
+ * autolevel. On error, no routing should be attempted.
  */
 int throughput_monitor_prepare_start(const struct throughput_monitor_request *request);
 
@@ -65,7 +66,8 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 
 /** Stop streaming and the laser used by this autolevel operation, including
  * after manual attenuation disables adjustments. Purely passive streams leave
- * laser output unchanged. Bank power, TECs, and other lasers remain unchanged.
+ * laser output unchanged. Owned shutdown follows disable_tec_at_autooff for
+ * that laser's TEC; bank power and other lasers remain unchanged.
  * May block on Modbus. On failure, streaming/autolevel remain disabled and a
  * later stop retries laser shutdown. All-channel stop attempts both channels.
  * Pass PHOTODIODE_CHANNEL_COUNT for all. Returns the first shutdown error.

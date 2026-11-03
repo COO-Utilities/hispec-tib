@@ -21,10 +21,11 @@ LLMs Agents: Do NOT change heading names in this file.
   speculative interlock, scheduling or calibration-algorithm change was made.
   The commissioning notebook now preserves the primary error and archives
   context even if record retrieval fails.
-- [ ] Bench-check changed PD/laser auto-off settings: shorten, lengthen, zero,
-  unchanged and unrelated writes; powered-off/idle state; calibration busy
-  rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
-  to `pd_on_s`, with no countdown field in `pd/settings`.
+- [ ] Bench-check PD/laser timers: positive laser durations/defaults, zero rejection,
+  shorten/lengthen and unchanged writes; finite autolevel and retained shutdown
+  after manual changes; TEC policy at measurement end. Check PD fresh idle intervals,
+  power overrides during acquisition, AUTO transitions, and read-only `off_in_s`
+  in `pd/settings` without query rearming. PD zero still cancels its timer.
   - 2026-11-03: three board reboots verified the new PD last-state restoration,
     saved-override precedence and restored AUTO countdown expiry without a PD query.
     Original AUTO/36000-second policies were restored. Temporary actual-C checks

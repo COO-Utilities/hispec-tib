@@ -586,6 +586,8 @@ same-channel restart. It checks relay and source operational health before using
 each completed window. Faults terminate acquisition and attempt laser shutdown;
 a failed shutdown retains its identity for an explicit stop/restart. Numerical
 fitting needs no PD power and releases inhibition when acquisition completes.
+Release gives a still-powered AUTO PD a fresh configured idle countdown; calibration
+never commands its PD off. Explicit power overrides remain effective during use.
 Completion also stops the calibration-owned laser before entering fitting; a
 failed stop preserves measurements and shutdown responsibility and reports an
 error without fitting. An explicit stop during acquisition also stops that source.
