@@ -111,6 +111,9 @@ reset. Calibration waits for the full requested sample count and a result newer
 than that reset, including failed conversion attempts in the count. Settling is
 additional to `dwell_ms`: a 550 ms averaging window still collects 11 samples
 after the wait. Calibration reads the current window, not the last closed window.
+This covers the nominal actuator response, not proof that the complete optical
+path has settled. Fixed-setting bench records also show slower signal changes;
+see the [companion and time-dependence checks](calibration_closeout.md#companion-dependence-and-time-dependence).
 
 The sleep holds the calibration mutex and pauses its calling thread, normally
 the throughput monitor, delaying throughput processing and calibration stop
@@ -214,6 +217,12 @@ calibration. The before record is the latest usable ordinary point in the curren
 segment, or the last accepted bridge-after when no such point exists and its
 companion voltage still matches. Arbitrary search probes are not fallback anchors.
 There are no extra pre/post confirmation measurements.
+
+That ratio is measured at one DUT setting. Extending it across a segment still
+assumes the companion's effect remains sufficiently consistent there. Fixed laser
+current removes one confounder; it does not eliminate time dependence or guarantee
+that tandem attenuation is exactly additive in dB. Review the raw segments and
+repeat measurements when those effects dominate the fit residual.
 
 The companion search brackets its current voltage and maximum drive. It accepts
 the **first** usable reduction with raw peak below 1850 mV and propagated ratio

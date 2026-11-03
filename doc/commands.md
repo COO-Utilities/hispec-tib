@@ -1707,7 +1707,12 @@ The implementation flow, bridge-normalization sequence, and retained-record
 ownership are documented in `attenuator_calibration.md`.
 Status queries return a coherent snapshot without waiting for numerical fitting.
 The state remains `running` during fitting; each completed physical fit becomes
-available without waiting for the other fit.
+available without waiting for the other fit. A `valid:true`, `accepted:false` result
+with reason `bridge` is a restricted candidate from measurements still connected
+to its reference; it is retained for explicit review and never automatically installed.
+Fit selection uses the measured closing-region boundary as well as the 55 dB
+operating ceiling; the first measured point above 55 dB may anchor that boundary.
+The retained support does not establish physical extinction.
 
 - **No payload -> compact calibration state:**
   ```json

@@ -25,6 +25,11 @@ LLMs Agents: Do NOT change heading names in this file.
   unchanged and unrelated writes; powered-off/idle state; calibration busy
   rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
   to `pd_on_s`, with no countdown field in `pd/settings`.
+  - 2026-11-03: three board reboots verified the new PD last-state restoration,
+    saved-override precedence and restored AUTO countdown expiry without a PD query.
+    Original AUTO/36000-second policies were restored. Temporary actual-C checks
+    covered missing records, duplicate writes and failed-write retry. This covers
+    restart behavior; the broader auto-off/fault matrix above remains separate.
 - [ ] Validate the integrated MCUboot OTA/USB flow on hardware:
   provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
@@ -95,6 +100,12 @@ LLMs Agents: Do NOT change heading names in this file.
     correction: no eligible illuminated repeat now reports unavailable rather
     than zero. Actual-C replay and encoder/decoder checks passed with unchanged
     fits/acceptance; final boot-30 settings and shutdown readbacks passed.
+  - 2026-11-03 follow-up: OTA-confirmed `d43936221d13-dirty` completed a fresh
+    1430hk laser run with the new attenuator models in 170 records, without overflow
+    or reset. The 5.3–60 mA curve accepted at 0.710% RMS / 1.782% maximum residual.
+    A RAM-only candidate check reduced the 20/40 mA relative-throughput mismatch
+    from about 14% to 1.1–1.3%, comparable to return variation. No experimental
+    calibration was persisted. See the [current closeout record](calibration_closeout.md#laser-fit-and-relative-throughput-check-with-fresh-attenuator-models).
   - 2026-10-30: fixed repeated first-block acquisition when operational full open
     has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
     standard 1430hk run in 171 records without overflow; the fit accepted with
@@ -320,6 +331,15 @@ LLMs Agents: Do NOT change heading names in this file.
     prevent interpreting every curve difference as physical FVOA drift. Existing
     captures do not isolate intrinsic tandem interaction; the fixed-source,
     measured-ratio bridge acquisition is unchanged.
+  - 2026-11-03 follow-up: source-off-corrected bridge precision and measured
+    closing-interval selection now prevent weak links and flattened tails from
+    determining the fit. All six sources produced accepted pairs in fresh checks,
+    including the final-image 1430yj rerun; historical replay lost no accepted fit.
+    The fixed-current companion checks remain conditional on optical history.
+    The owner identified new SM980 YJ physical attenuator 2 as suspect/possibly faulty;
+    its pair is not a reference for normal SM980 behavior. No universal voltage
+    cutoff or new mandatory hold was introduced. See the
+    [attenuator follow-up](calibration_closeout.md#november-3-attenuator-follow-up).
 
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled
