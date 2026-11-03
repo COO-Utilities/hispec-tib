@@ -1332,7 +1332,6 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 	double closest_err = INFINITY;
 	double f50 = 0.5 * max_fvoa_mv;
 	double slope;
-	uint8_t closest = 0U;
 
 	for (uint8_t i = 0U; i < point_count; ++i) {
 		double x = (double)records[points[i].record_index].sweep_mv * gain;
@@ -1343,7 +1342,6 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 		if (err < closest_err) {
 			closest_err = err;
 			f50 = x;
-			closest = i;
 		}
 	}
 
@@ -1352,19 +1350,23 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 	} else {
 		slope = 8.0 / max_fvoa_mv;
 	}
-	/* A restricted interval need not traverse the full erfc. Starting at
-	 * 8/span can put nearly every prediction on the flat leakage floor, where
-	 * Gauss-Newton has no useful gradient. At half transmission the Gaussian
-	 * edge has dB/du = 20*s/(sqrt(pi)*ln(10)); seed from the measured neighbors
-	 * of that point instead. This does not change the fitted model or weights. */
-	uint8_t lo = closest > 0U ? closest - 1U : 0U;
-	uint8_t hi = MIN(closest + 1U, point_count - 1U);
-	double x0 = (double)records[points[lo].record_index].sweep_mv * gain;
-	double dx = (double)records[points[hi].record_index].sweep_mv * gain - x0;
-	double dy = (double)points[hi].measured_db - (double)points[lo].measured_db;
-	if (dx > 0.0 && dy > 0.0) {
-		slope = dy / dx * 1.772453850905516 * log(10.0) / 20.0;
-		f50 = x0 + (3.01029995664 - (double)points[lo].measured_db) * dx / dy;
+	/* A restricted interval need not traverse the full erfc: 8/span can start
+	 * on the flat floor with no useful gradient. Seed near half transmission,
+	 * where dB/du = 20*s/(sqrt(pi)*ln(10)). Reuse five-point, single-companion
+	 * slopes so one noisy sample or a bridge offset cannot define the gradient.
+	 * This only initializes the optimizer; it changes no model or fit weights. */
+	closest_err = INFINITY;
+	for (uint8_t i = 0; i + 5U <= point_count; ++i) {
+		double local_slope, local_error;
+		double db = (double)points[i + 2U].measured_db;
+		double distance = fabs(db - 3.01029995664);
+		if (distance >= closest_err || !closing_slope(points, records, i, &local_slope, &local_error) ||
+		    local_slope <= 3.0 * local_error) continue;
+		closest_err = distance;
+		double gradient = local_slope / gain;
+		slope = gradient * 1.772453850905516 * log(10.0) / 20.0;
+		f50 = (double)records[points[i + 2U].record_index].sweep_mv * gain +
+			(3.01029995664 - db) / gradient;
 	}
 	*fvoa_50pct_mv = CLAMP(f50, 1.0, 2.0 * max_fvoa_mv);
 	*slope_inv_fvoa_mv = CLAMP(slope, ATTEN_CAL_FIT_MIN_SLOPE,

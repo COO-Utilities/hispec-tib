@@ -397,7 +397,9 @@ the reference record and open-selection threshold remain separate metadata.
 The support bitmap records the actual selected points. Neither a good residual
 nor the datasheet's typical voltage certifies the physical behavior outside them.
 
-The base fit starts from the measured slope near half transmission. A restricted
+The base fit starts from a significant five-point slope near half transmission,
+measured at one companion setting. A noisy point or bridge offset does not
+define this starting gradient. A restricted
 interval need not traverse the full error-function response, so initializing its
 slope as `8 / voltage_span` can start on the flat leakage floor and prevent the
 optimizer from finding a useful solution. The model and acceptance tests are
