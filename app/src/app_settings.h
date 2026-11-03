@@ -262,6 +262,14 @@ void app_settings_get_attenuator(struct app_attenuator_settings *out);
 void app_settings_update_attenuator_channel(uint8_t channel,
 					    const struct app_attenuator_channel_settings *atten,
 					    bool persist);
+/** @brief Boot relay intent: saved override, or last confirmed state in AUTO.
+ * Missing last-state records mean off. Takes the settings mutex; no hardware I/O.
+ */
+bool app_settings_photodiode_power_at_boot(uint8_t channel);
+/** @brief Save a successfully applied PD relay state, separately from calibration.
+ * May block on NVS I/O when state changes; returns write errors. No publishing.
+ */
+int app_settings_record_photodiode_power(uint8_t channel, bool enabled);
 /** @brief Copy current photodiode calibration and warning settings. */
 void app_settings_get_photodiode(struct app_photodiode_settings *out);
 /**

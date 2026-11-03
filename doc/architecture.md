@@ -59,7 +59,9 @@ Runtime ownership is:
   commands and settings disable feedback while retaining the stream, deadline and
   owned-source shutdown obligation.
 - `housekeeping.c`: slow ambient-temperature sampling delayable work,
-  relay-box power state, and relay-output on-time tracking.
+  relay-box power state, and relay-output on-time tracking. Successful PD power
+  changes save a separate last-state byte through `app_settings.c`; device setup
+  restores override/AUTO intent and housekeeping starts a new AUTO deadline.
 - `laserbank_tempcontrol.c`: laser-bank heater policy delayable work and
   related status.
 - `sntp_sync.c`: low-priority SNTP sync thread and status.

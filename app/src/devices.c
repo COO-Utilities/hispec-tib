@@ -17,6 +17,7 @@
 #include "drivers/dac/dac7x78.h"
 #include "maiman.h"
 #include "mems_switching.h"
+#include "photodiode.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -803,8 +804,8 @@ static bool device_ready_or_log(const struct device *dev, const char *label)
 	return true;
 }
 
-static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpio,
-						  const char *label)
+static bool configure_gpio_output_or_log(const struct gpio_dt_spec *gpio,
+						  const char *label, bool enabled)
 {
 	int rc;
 
@@ -813,10 +814,9 @@ static bool configure_gpio_output_inactive_or_log(const struct gpio_dt_spec *gpi
 		return false;
 	}
 
-	/* gpio_pin_configure_dt() applies the devicetree active flag and sets the
-	 * output inactive so relays/supplies default off during firmware setup.
-	 */
-	rc = gpio_pin_configure_dt(gpio, GPIO_OUTPUT_INACTIVE);
+	/* Logical active/inactive includes the devicetree relay polarity. The driver
+	 * may have initialized off earlier; restoring PD intent is not uninterrupted power. */
+	rc = gpio_pin_configure_dt(gpio, enabled ? GPIO_OUTPUT_ACTIVE : GPIO_OUTPUT_INACTIVE);
 	if (rc != 0) {
 		LOG_ERR("Failed to configure %s GPIO (%d)", label, rc);
 		return false;
@@ -874,7 +874,7 @@ static void emit_relay_gpio_offline_warning_once(int error)
 		.delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
 		.out = &msg,
 		.code = "relay_gpio_offline",
-		.msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+		.msg = "off-board relay GPIO expander is offline; photodiode relay commands fail and laser bank heater is unavailable",
 		.context = context,
 	});
 }
@@ -891,9 +891,11 @@ static bool configure_relay_gpio_outputs(void)
 		return false;
 	}
 
-	if (!configure_gpio_output_inactive_or_log(&yj_power_gpio, "YJ photodiode power") ||
-		!configure_gpio_output_inactive_or_log(&hk_power_gpio, "HK photodiode power") ||
-		!configure_gpio_output_inactive_or_log(&heater_power_gpio, "laser bank heater")) {
+	if (!configure_gpio_output_or_log(&yj_power_gpio, "YJ photodiode power",
+		app_settings_photodiode_power_at_boot(PHOTODIODE_CHANNEL_YJ)) ||
+		!configure_gpio_output_or_log(&hk_power_gpio, "HK photodiode power",
+		app_settings_photodiode_power_at_boot(PHOTODIODE_CHANNEL_HK)) ||
+		!configure_gpio_output_or_log(&heater_power_gpio, "laser bank heater", false)) {
 		error = -EIO;
 		LOG_WRN("Relay GPIO expander setup failed");
 		set_relay_gpio_status(false, error);
@@ -902,7 +904,7 @@ static bool configure_relay_gpio_outputs(void)
 	}
 
 	set_relay_gpio_status(true, 0);
-	LOG_INF("Relay-box GPIO outputs configured inactive");
+	LOG_INF("Relay-box GPIO outputs configured; photodiode boot intent restored");
 	return true;
 }
 
@@ -1144,8 +1146,8 @@ bool devices_ready(void)
 	}
 
 	if (profile->board == HISPEC_BOARD_TIB) {
-		if (!configure_gpio_output_inactive_or_log(&laser_power_gpio,
-							   "laser bank power")) {
+		if (!configure_gpio_output_or_log(&laser_power_gpio,
+							   "laser bank power", false)) {
 			rc = false;
 		}
 		(void)configure_relay_gpio_outputs();

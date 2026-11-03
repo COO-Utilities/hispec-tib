@@ -565,7 +565,8 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 		}
 	}
 	if (channel_settings.power == APP_PD_POWER_AUTO &&
-	    channel_settings.autooff_s != settings.channel[channel].autooff_s) {
+	    (channel_settings.autooff_s != settings.channel[channel].autooff_s ||
+	     channel_settings.power != settings.channel[channel].power)) {
 		rc = housekeeping_photodiode_autooff_set(pd_power_output(channel),
 						       channel_settings.autooff_s);
 		if (rc != 0) {

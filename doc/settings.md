@@ -33,6 +33,10 @@ Current app NVS records include:
   responsivity, transimpedance, relay power intent, and auto-off delay.
   The compiled auto-off default is 36000 seconds (ten hours); persisted policies
   keep their saved values across firmware updates.
+- Last successfully applied PD relay state, one byte per channel at NVS IDs
+  `0x0240`/`0x0241`, separate from calibration/settings. Only changes write flash.
+  AUTO restores this state at boot (missing records mean off); persisted overrides
+  take precedence. No dark or response calibration is saved by relay use.
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical
@@ -120,7 +124,8 @@ silently reused on another.
   command value overrides it. Changing the setting restarts a started laser's
   countdown from now; zero cancels it without starting idle hardware. PD settings
   behave the same for powered channels in auto mode. Unchanged values and unrelated
-  edits do not rearm. Calibration rejects auto-off writes. Throughput owns its
+  edits do not rearm. Returning a powered PD from override to AUTO starts a fresh
+  countdown. Calibration rejects auto-off writes. Throughput owns its
   separate `off_in_s` deadline and retains PD inhibition; laser settings writes
   disable feedback while retaining the stream and owned-source shutdown.
   PD `off_in_s` is status returned by `pd`.
@@ -180,8 +185,13 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
   persisted policy and defaults to `auto`; in auto mode it may power the bank
   after boot for temperature monitoring. The heater starts off unless auto mode
   or an override turns it on.
-- DS2408 relay output state is not restored after reboot; relay outputs default
-  inactive/off when the off-board expander is online during app setup.
+- PD relay state is restored after device initialization: persisted override
+  intent wins, otherwise AUTO restores the last confirmed on/off state. AUTO
+  receives a fresh full countdown; on-time starts again at this boot. The DS2408
+  driver may turn outputs off during early initialization, so restoration does
+  not guarantee uninterrupted PD power. Ordinary reboot preparation preserves PD
+  intent; a settings-erasing reboot explicitly turns them off and clears it.
+  Heater policy is separate.
 - Serial guard active state and runtime holdoff changes are not restored after
   reboot.
 

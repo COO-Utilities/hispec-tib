@@ -522,10 +522,12 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data)
         struct throughput_monitor_status monitor_status;
         int rc;
         (void)throughput_monitor_stop(PHOTODIODE_CHANNEL_COUNT, &monitor_status);
-        (void)housekeeping_power_set(HOUSEKEEPING_POWER_YJ_PHOTODIODE, false);
-        (void)housekeeping_power_set(HOUSEKEEPING_POWER_HK_PHOTODIODE, false);
-
-
+        /* Ordinary reboot preserves PD intent. An intentional settings erase
+         * shuts them down before deleting their saved state. */
+        if (erase_non_ip_settings) {
+            (void)housekeeping_power_set(HOUSEKEEPING_POWER_YJ_PHOTODIODE, false);
+            (void)housekeeping_power_set(HOUSEKEEPING_POWER_HK_PHOTODIODE, false);
+        }
         rc = hispec_laser_stop_all_outputs(true);
         if (rc != 0) {
             LOG_WRN("Laser output shutdown before reboot failed (%d)", rc);

@@ -2072,7 +2072,13 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
   channel's automatic power-off delay used when firmware auto-enables the
   relay. Changing it restarts a powered auto-mode channel's countdown from now;
   zero cancels it. It never enables an idle PD. Unchanged values and unrelated
-  settings do not rearm. Auto-off writes are rejected during laser or attenuator
+  settings do not rearm. Returning a powered channel to AUTO starts a fresh
+  countdown. At boot saved overrides apply; AUTO restores the last confirmed
+  relay state, or off if no state was saved, with a fresh full countdown. Relay
+  state changes are saved separately from calibration even without `persist:true`.
+  Driver initialization can briefly switch the relay off; `on_time_s` restarts
+  at boot. A failed relay operation does not save a new state.
+  Auto-off writes are rejected during laser or attenuator
   calibration; throughput inhibition remains in force. Read `off_in_s` through
   `pd`, where it belongs with live status.
   `powered` is the read-only actual state of this channel. Querying settings
