@@ -216,8 +216,12 @@ companion voltage still matches. Arbitrary search probes are not fallback anchor
 There are no extra pre/post confirmation measurements.
 
 The companion search brackets its current voltage and maximum drive. It accepts
-the **first** probe classified usable, with raw peak below 1850 mV and a positive
-signal ratio below one. Too-dim probes move the closed side inward; other failed
+the **first** usable reduction with raw peak below 1850 mV and propagated ratio
+uncertainty at most **0.5 dB**, the existing model-fitting uncertainty floor.
+Both readings are corrected using the retained `dark_before` mean and error.
+This precision margin keeps a barely detectable bridge from placing the
+remaining open-side sweep at the detector floor; it does not target a brightness
+or a fraction of the anchor. Too-dim or imprecise reductions move the closed side inward; other failed
 probes move the open side inward. A 5 mV bracket, 16-probe limit, exhausted record
 budget, missing anchor, or already-closed companion ends the search. Failure parks
 the companion closed and marks the physical fit `range`; acquisition retains the
@@ -342,6 +346,14 @@ B=(D_0+D_1)/2,\qquad e_B=|D_1-D_0|/2+\max(e_0,e_1),
 Raw records and acquisition classifications remain unchanged. Fitting rechecks
 positive corrected signal at SNR ≥5; subtraction cannot recover clipped windows.
 Missing or invalid source-off records reject the fit as `background`.
+
+Final normalization starts with the most-open usable sweep segment and follows
+the measured links backwards. A link that fails corrected SNR or clipping checks
+leaves earlier, disconnected segments out of the fit. A numerically valid model
+from the remaining component has `valid:true`, `accepted:false`, and reason
+`bridge`; it is available for explicit review but cannot automatically replace
+the active pair. The acquisition precision margin is stricter than this final
+SNR-5 validity test; final uncertainty is propagated rather than silently removed.
 
 For corrected bridge readings $S_j^-,S_j^+$, cumulative companion scale $Q_k$,
 and a measured reference $S_r$ in segment $r$:
