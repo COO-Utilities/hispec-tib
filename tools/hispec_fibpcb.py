@@ -2832,7 +2832,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if (str(before.classification) in ("adc_error", "saturated") or
                     str(after.classification) in ("adc_error", "saturated") or
                     not (before.max_mv < PD_ADC_USABLE_MV and after.max_mv < PD_ADC_USABLE_MV) or
-                    before.sweep_mv != after.sweep_mv or
+                    before.sweep_mv != after.sweep_mv or before.laser_pct != after.laser_pct or
                     not np.all(np.isfinite((bs, be, als, ae))) or
                     not (be > 0 and ae > 0 and bs / be >= 5 and als / ae >= 5)):
                 continue
@@ -2862,12 +2862,17 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         *,
         dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+        include_low_snr: bool = False,
     ) -> np.recarray:
         """Copy raw records and add bridge-normalized attenuation and model diagnostics.
 
         Explicit coefficients override downloaded fit metadata. Missing reference
         or model information leaves unavailable derived values as NaN; raw values
-        remain unchanged. Source-off drift is carried in derived uncertainty;
+        remain unchanged. include_low_snr adds positive unsaturated readings for
+        display only; it does not change fitting eligibility or captured support.
+        Normalization follows valid bridges outward from the retained reference,
+        so a broken link does not discard its connected open-side measurements.
+        Source-off drift is carried in derived uncertainty;
         source-off records themselves do not measure transmission. This does not download, fit or install coefficients."""
         out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
         for name in ATTEN_CAL_DTYPE.names:
@@ -2917,22 +2922,23 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 out[mask] = rec
                 continue
             open_rel_var = (open_err / open_signal) ** 2
-            segment_scale: dict[int, float] = {0: 1.0}
-            segment_rel_var: dict[int, float] = {0: 0.0}
-            for bridge in self._accepted_bridges(physical, rec):
-                from_segment = int(bridge["from_segment"])
-                to_segment = int(bridge["to_segment"])
-                if from_segment not in segment_scale:
+            reference_segment = int(ref.segment)
+            segment_scale: dict[int, float] = {reference_segment: 1.0}
+            segment_rel_var: dict[int, float] = {reference_segment: 0.0}
+            bridges = self._accepted_bridges(physical, rec)
+            # A bridge chain can run either way. Root it at the actual reference;
+            # no bridge uncertainty is then shared between it and any other row.
+            for bridge in bridges + list(reversed(bridges)):
+                origin, dest = bridge["from_segment"], bridge["to_segment"]
+                ratio = float(bridge["ratio"])
+                if origin not in segment_scale and dest in segment_scale:
+                    origin, dest, ratio = dest, origin, 1.0 / ratio
+                if origin not in segment_scale or dest in segment_scale:
                     continue
-                segment_scale[to_segment] = segment_scale[from_segment] * float(bridge["ratio"])
-                segment_rel_var[to_segment] = segment_rel_var[from_segment] + float(bridge["ratio_rel_var"])
+                segment_scale[dest] = segment_scale[origin] * ratio
+                segment_rel_var[dest] = segment_rel_var[origin] + float(bridge["ratio_rel_var"])
                 rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
 
-            reference_segment = int(ref.segment)
-            if reference_segment not in segment_scale:
-                out[mask] = rec
-                continue
-            open_signal /= segment_scale[reference_segment]
             for i, row in enumerate(rec):
                 if str(row.event) in ("dark_before", "dark_after"):
                     continue
@@ -2940,7 +2946,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 if (str(row.classification) in ("adc_error", "saturated") or
                         not row.max_mv < PD_ADC_USABLE_MV or
                         not np.all(np.isfinite((row.corrected_signal_mv, row.corrected_signal_err_mv))) or
-                        segment not in segment_scale or not row.corrected_snr >= 5):
+                        segment not in segment_scale or row.corrected_signal_mv <= 0 or
+                        (not include_low_snr and not row.corrected_snr >= 5)):
                     continue
                 scale = segment_scale[segment]
                 scale_rel_var = segment_rel_var[segment]
@@ -2949,7 +2956,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 scaled_rel_var = own_rel_var + scale_rel_var
                 scaled_err = abs(scaled_signal) * np.sqrt(max(scaled_rel_var, 0.0))
                 tx = scaled_signal / open_signal
-                tx_rel_var = own_rel_var + open_rel_var + abs(scale_rel_var - segment_rel_var[reference_segment])
+                tx_rel_var = own_rel_var + open_rel_var + scale_rel_var
                 tx_err = abs(tx) * np.sqrt(max(tx_rel_var, 0.0))
                 db = float(_atten_db_from_tx([tx])[0])
                 db_err = (10.0 / np.log(10.0)) * np.sqrt(max(tx_rel_var, 0.0))
@@ -2962,7 +2969,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.db[i] = db
                 rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
                 rec.fit_candidate[i] = (
-                    str(row.event) == "point"
+                    str(row.event) == "point" and row.corrected_snr >= 5
                     and float(row.sweep_mv) >= float(meta.get("open_mv", 0.0))
                     and np.isfinite(db) and np.isfinite(db_err)
                     and tx >= ATTEN_CAL_MIN_TX
@@ -2978,6 +2985,26 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     rec.included[i] = bool(support[index])
             out[mask] = rec
         return out.view(np.recarray)
+
+    def _segment_relative_data(self, physical: str):
+        """Diagnostic curves when no common reference exists; no fit or board I/O.
+
+        Each segment is relative to its own brightest usable point, not to full
+        transmission. These curves must never be used as calibration attenuation.
+        """
+        rec = self.physical(physical).derived(include_low_snr=True)
+        for segment in np.unique(rec.segment):
+            group = rec[(rec.segment == segment) & (rec.event == "point") &
+                        ~np.isin(rec.classification, ("adc_error", "saturated")) &
+                        (rec.max_mv < PD_ADC_USABLE_MV) & (rec.corrected_snr >= 5)]
+            if not len(group):
+                continue
+            ref = group[np.argmax(group.corrected_signal_mv)]
+            db = -10 * np.log10(group.corrected_signal_mv / ref.corrected_signal_mv)
+            err = 10 / np.log(10) * np.hypot(
+                group.corrected_signal_err_mv / group.corrected_signal_mv,
+                ref.corrected_signal_err_mv / ref.corrected_signal_mv)
+            yield int(segment), group, db, err
 
     def bridge_table(self):
         """Return accepted normalization bridges as a pandas DataFrame; no I/O."""
@@ -3025,7 +3052,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
         x_axis = _require_choice("x_axis", x_axis, ("fvoa_mv", "sweep_mv"))  # type: ignore[assignment]
-        rec = self.physical(physical).derived()
+        rec = self.physical(physical).derived(include_low_snr=True)
         if len(rec) == 0:
             raise HispecFibError(f"no retained records for {physical}")
 
@@ -3227,6 +3254,20 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     fontsize=8,
                     color="0.35",
                 )
+        if not np.any(np.isfinite(attenuation_db)):
+            axes[1].text(.02, .5, "Common normalization unavailable; raw signal is shown above.",
+                         transform=axes[1].transAxes)
+            axes[2].set_title("Within-segment changes only — no common attenuation reference")
+            for segment, group, db, err in self._segment_relative_data(physical):
+                axes[2].errorbar(group[x_axis], db, yerr=err, fmt=".-", ms=3,
+                                 label=f"segment {segment}, own brightest point = 0 dB")
+            axes[2].legend(fontsize="small")
+            axes[3].text(.02, .5, "No normalized residuals available.", transform=axes[3].transAxes)
+        support = rec[np.asarray(rec.included, dtype=bool)]
+        if len(support):
+            for ax in axes:
+                ax.axvline(float(np.max(support[x_axis])), color="0.4", linestyle=":",
+                           linewidth=.7, label="last measured fit point")
         axes[0].legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize="small")
         return fig
 

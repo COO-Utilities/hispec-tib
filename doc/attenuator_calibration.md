@@ -601,3 +601,13 @@ The shape optimizer is shared with laser calibration; physical acceptance and
 the correction solver belong to the attenuator owner. The
 raw/bridge arrays and fit scratch reuse typed unions in `calibration_storage.c`;
 no additional large array is allocated for the laser sweep.
+
+Host diagnostics use `AttenuatorCalibrationDataset.derived()` as the single
+normalization path. `include_low_snr=True` displays positive unclipped readings
+without changing fitting eligibility or captured support. Normalization is rooted
+at the retained reference, so disconnected earlier segments cannot erase valid
+open-side data. If no common reference exists, diagnostic plots show each segment
+relative to its own brightest usable reading, explicitly labeled as local changes,
+not calibrated attenuation. The commissioning plot marks the last measured fit
+voltage separately from modeled continuation; the 55 dB ceiling alone does not
+define the well-behaved voltage interval.
