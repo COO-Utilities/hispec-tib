@@ -6,7 +6,7 @@
 #ifndef HISPEC_MEMS_COMMAND_H
 #define HISPEC_MEMS_COMMAND_H
 
-#include "command.h"
+#include <coo_commons/command_dispatch.h>
 
 /**
  * @file mems_command.h

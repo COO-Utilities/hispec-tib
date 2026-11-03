@@ -1,0 +1,133 @@
+# Digitized optical power versus current; approximate plot readings, not vendor raw data.
+# Source PDF: FLPD-2330-03-DFB-BTF_#D4520009_testreport.pdf; page 1; diode serial: D4520009.
+# Reference plane: vendor diode fiber output; no notebook path-loss correction applied.
+# Conditions: 25 C operating point in table; L-I panel temperature is not separately labeled.
+# Method: PDF rendered at 300 dpi; sampled center of the green power trace.
+# Power uses the right axis for Frankfurt reports and left axis for AeroDIODE reports.
+# Voltage trace excluded. No smoothing, slope fit, forced table anchor, or extrapolation.
+# Unresolved baseline portions are omitted; successive rows are not independent measurements.
+# Approximate reading precision: +/- 0.5 mA, +/- 0.03 mW (not statistical error bars).
+# Axis calibration in rendered-page pixels: x=341,1094 -> 0,120 mA;
+# y=2064,1473 -> 0,3.5 mW; origin at page top left.
+# Digitized 2026-10-22; trace overlaid on the original plot for visual verification.
+current_ma power_mw
+0.96 0.009
+2.07 0.009
+3.03 0.009
+3.98 0.009
+4.94 0.009
+6.06 0.009
+7.01 0.009
+7.97 0.009
+8.92 0.009
+10.04 0.009
+11.00 0.009
+11.95 0.009
+13.07 0.009
+14.02 0.009
+14.98 0.009
+15.94 0.009
+17.05 0.012
+18.01 0.027
+18.96 0.053
+19.92 0.077
+21.04 0.101
+21.99 0.124
+22.95 0.154
+24.06 0.187
+25.02 0.222
+25.98 0.252
+26.93 0.284
+28.05 0.317
+29.00 0.332
+29.96 0.376
+31.08 0.415
+32.03 0.456
+32.99 0.486
+33.94 0.512
+35.06 0.560
+36.02 0.592
+36.97 0.628
+37.93 0.663
+39.04 0.708
+40.00 0.734
+40.96 0.767
+42.07 0.808
+43.03 0.838
+43.98 0.874
+44.94 0.903
+46.06 0.953
+47.01 0.989
+47.97 1.016
+48.92 1.051
+50.04 1.102
+51.00 1.134
+51.95 1.167
+53.07 1.211
+54.02 1.250
+54.98 1.279
+55.94 1.306
+57.05 1.344
+58.01 1.371
+58.96 1.412
+60.08 1.442
+61.04 1.484
+61.99 1.519
+62.95 1.555
+64.06 1.590
+65.02 1.626
+65.98 1.649
+66.93 1.685
+68.05 1.726
+69.00 1.756
+69.96 1.791
+71.08 1.824
+72.03 1.857
+72.99 1.898
+73.94 1.925
+75.06 1.951
+76.02 1.981
+76.97 2.022
+77.93 2.049
+79.04 2.082
+80.00 2.117
+80.96 2.147
+82.07 2.188
+83.03 2.221
+83.98 2.250
+84.94 2.280
+86.06 2.327
+87.01 2.357
+87.97 2.375
+88.92 2.410
+90.04 2.437
+91.00 2.464
+91.95 2.490
+93.07 2.529
+94.02 2.558
+94.98 2.585
+95.94 2.615
+97.05 2.656
+98.01 2.659
+98.96 2.695
+99.92 2.712
+101.04 2.748
+101.99 2.766
+102.95 2.792
+104.06 2.825
+105.02 2.852
+105.98 2.878
+106.93 2.878
+108.05 2.911
+109.00 2.931
+109.96 2.961
+111.08 2.973
+112.03 3.000
+112.99 3.026
+113.94 3.044
+115.06 3.077
+116.02 3.103
+116.97 3.115
+117.93 3.142
+119.04 3.159
+119.52 3.159

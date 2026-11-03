@@ -33,6 +33,8 @@ struct throughput_monitor_request {
 	uint32_t off_in_s;
 	double max_flux_ph_s;
 	double initial_level;
+	/* Zero retains band control; positive Hz filters only the need to re-range. */
+	double autolevel_response_hz;
 };
 
 struct throughput_monitor_status {
@@ -78,16 +80,16 @@ bool throughput_monitor_any_active(void);
  */
 void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index);
 
-/** Disable autolevel before a manual laser level write, retaining streaming and
- * any owned laser shutdown. The sampling loop refreshes confirmed source state.
- * Pass stop_monitoring=true for tuning/settings changes to relinquish the run.
+/** Disable autolevel before a manual laser current/level, tune or settings write,
+ * retaining streaming, its deadline and any owned laser shutdown. The sampling
+ * loop refreshes confirmed source state, including after a failed manual write.
  * Takes the monitor lock; does not perform hardware I/O or change laser output.
  */
-void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring);
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser);
 
-/** Quiesce this laser's stream and apply validated settings while serializing
- * against autolevel. May block on laser I/O/NVS. Failed updates retain the
- * owned laser identity for stop retry; success relinquishes the stopped stream.
+/** Disable feedback and apply validated settings while serializing against
+ * autolevel. May block on laser I/O/NVS. Streaming, its deadline and the owned
+ * laser shutdown obligation survive both successful and failed updates.
  */
 int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
 	const struct app_laser_channel_settings *settings, bool persist, char *error, size_t error_len);

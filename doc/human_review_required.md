@@ -9,36 +9,238 @@ LLMs Agents: Do NOT change heading names in this file.
 ## Locked-down code
 
 ## PCB Validation
+- [ ] Diagnose the HK attenuator-calibration reset with USB console/ST-Link:
+  the 2026-10-26 UTC MQTT reproduction (`1430hk`, `hk_fei`, S, 550 ms,
+  `persist=False`) reached dac1 point 12/128, then replies timed out and boots
+  increased from 12 to 13. No reboot command was sent. Raw MQTT and independent
+  cleanup results are saved locally under
+  `tools/commissioning_data/hk_timeout_20261026T022852Z/`. Boot telemetry reports
+  `reset_cause:"pin,watchdog"`, `watchdog:true`, raw cause 17; the last acquisition
+  event set dac1 to 50 mV. The watchdog reset is confirmed, but the stalled
+  thread/lock and instruction remain unknown without console/debugger evidence. No
+  speculative interlock, scheduling or calibration-algorithm change was made.
+  The commissioning notebook now preserves the primary error and archives
+  context even if record retrieval fails.
+- [ ] Bench-check changed PD/laser auto-off settings: shorten, lengthen, zero,
+  unchanged and unrelated writes; powered-off/idle state; calibration busy
+  rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
+  to `pd_on_s`, with no countdown field in `pd/settings`.
+- [ ] Validate the integrated MCUboot OTA/USB flow on hardware:
+  provision a confirmed baseline from compiled defaults; exercise USB
+  confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
+  and maximum-size network updates, exact-hash confirmation and rollback.
+  Exercise all board profiles, command admission, pending-slot protection,
+  wrong/late confirmation, network loss, running hangs and power cuts during
+  swap/revert. Observe bank power and measure the 30-second MCUboot to 15-second
+  application IWDG handoff/feed gaps. USB updates may install a confirmed image
+  directly; they do not need to test rollback. MCUboot is now the only build;
+  normal/timing builds and offline checks do not validate hardware behavior.
+  Check manual-default confirmation, explicit `--auto-confirm` reasoning, and
+  both renamed CLion profiles' flash/debug/reset flows with ST-Link attached.
+  See [firmware updates and OTA](ota.md).
+- [ ] Resolve the drawing/as-built differences exposed by the documentation
+  audit against the PCB evidence committed in `2fd8e87`. Record the assembly
+  revision and measured result before changing firmware assumptions:
+  - Schematic page 39 has 2.43 kΩ / 4.7 kΩ feedback, implying gain 1.5170;
+    `ATTENUATOR_DEFAULT_GAIN` is 1.533. Confirm installed resistor values and
+    measured gain, then decide whether the drawing, default or calibration
+    interpretation needs correction.
+    - PCB has schematic values with 1-2% tolerance parts
+  - NoTIB placement connects ASR1 optical C to ASR2 and B to ASR3; blue uses
+    B to ASB2 and C to ASB3. Firmware's two channels use the same first-switch
+    state interpretation. Confirm electrical-state-to-optical-port mapping and
+    actual red patch before deciding whether routing or drawing labels are wrong.
+    - The intent was ASx1B>ASx2A>ASx2B/C=xCAL/xSPLIT1 & ASx1C>ASx3A>ASx3B/C=xSPLIT2/xSPLIT3, 
+      The labels FC17 and FC20 are off
+      like both the labels and code are off. People will assemble per labels:
+      - ASR1C>ASR2A>ASR2BC=RCAL/RSPLIT1
+      - ASR1B>ASR3A>ASR3BC=RSPLIT2/3
+      - ASB1B>ASB2A>ASB2BC=BCAL/BSPLIT1 
+      - ASB1C>ASB3A>ASB3BC=BSPLIT2/3
+  - Confirm the CAL `nm` route's physical source/termination: the drawing calls
+    the branch Dark. Confirm physical AO/FEI and splitter-output port assignments
+    before treating the API-route figures as an as-built patch certificate.
+    - nm=narcissus mirror, another (the formal) name for a "dark" source
+  See [electrical evidence](hardware.md#source-drawings-and-revision-boundaries)
+  and [fiber paths](hardware_profiles.md).
+
+- [ ] Bench-validate revised laser calibration after FVOA calibration: thermal
+  qualification/settling, calibrated FVOA weighting, corrected curve and automatic
+  lower/upper current bounds, AO/FEI loss, effective noise, recabling/STOP, default restoration
+  and NVS reboot behavior. Multi-level captures below show that the upper-current
+  compression persists at low PD signal. Its physical origin remains unresolved;
+  reference anchoring does not establish power independently of the vendor report.
+  - 2026-11-02 closeout implementation, offline verification only: three measured
+    dark knots now constrain the shared fitted baseline; restricted current
+    intervals and repeat-inconsistent candidates require human review. Effective
+    noise estimates remain available for valid rejected candidates. Temporary
+    real-C replay covered 21 saved captures; all 11 tracked notebooks' 291 code
+    cells compiled, and saved-data review/manual-adoption checks passed. Adoption
+    includes both automatic current bounds, while engineering current retains the
+    configured full range. Attenuator adoption includes coefficients and saved
+    operational opens, with RAM readback before separately requested persistence.
+    These changes supersede the October 23 full-range-only acceptance/install
+    rules below. See the following board verification and the
+    [closeout evidence and limitations](calibration_closeout.md).
+  - 2026-11-03 UTC: explicitly confirmed OTA firmware `a4a69d7001c4` completed
+    standard 2330k attenuator and 1430hk/1270j/1430yj laser calibrations without
+    overflow/reset. Both attenuator fits and all three full-range laser fits
+    accepted; laser noise estimates were available. Fresh records replayed and
+    plotted successfully. No laser model/noise/loss was applied or persisted;
+    the attenuator flow's RAM adoption was restored to its pre-run coefficients
+    and opens. Independent readback confirmed all sources stopped, DACs closed
+    and original laser settings restored. Full commissioning, recabling/fault
+    recovery and new-setting persistence/reboot validation remain owner work.
+    Final OTA-confirmed image `dfb0a000a1f4` adds only the missing-repeat-diagnostic
+    correction: no eligible illuminated repeat now reports unavailable rather
+    than zero. Actual-C replay and encoder/decoder checks passed with unchanged
+    fits/acceptance; final boot-30 settings and shutdown readbacks passed.
+  - 2026-10-30: fixed repeated first-block acquisition when operational full open
+    has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
+    standard 1430hk run in 171 records without overflow; the fit accepted with
+    1.02% RMS and 2.93% maximum residual. Neither fit nor route/noise settings were
+    applied or persisted. The standard 2330k attenuator run accepted both physical
+    fits (0.21/0.17 dB maximum residual, zero bridges); prior RAM coefficients/open
+    settings were restored and nothing persisted. Both sources were stopped and
+    DACs closed. Captures are `laser_cal_1430hk_20261031T030044_091108Z.pkl` and
+    `cal_2330k_20261031T025632_422126Z.pkl` in `tools/commissioning_data/` (UTC names).
+    These checks do not resolve the broader thermal, recabling or persistence
+    validation above; the owner has identified 1028y nonlinearity as physical and
+    outside this patch.
+  - 2026-10-23 full-range acceptance revision: calibration now preserves maximum
+    and nominal current, fits through the configured maximum with its reference
+    inside support, and searches only the floor. Residuals allow 5% plus three
+    measured SEs; immutable unit-specific vendor traces allow 5% of vendor
+    reference power plus three fitted-power SEs. Cross-attenuation/gain-shift
+    vetoes are removed; GLS uncertainty and raw diagnostics remain. Repeat/dark
+    controls run once after selection; failure rejects the whole calibration.
+    The fresh 18:19/18:24/18:28 UTC captures completed with the ranging fallback.
+    Offline real-C replay of those records rejects 1028y through 250 mA (best
+    full-range candidate has 10.04% raw maximum residual); 1430yj accepts 6–60 mA
+    with threshold 4.266 +/- 0.006 mA conditional SE. The lowest 1270j candidate,
+    9.8–65 mA, passes curve/vendor tests but fails the final dark check: 0.594 mV
+    residual versus 0.484 mV allowance. The earlier 11.7–65 estimate checked darks
+    during interval selection; the approved once-after-selection rule does not
+    retry that floor. This is a control/model inconsistency, not proof of diode
+    nonlinearity or a component-level physical diagnosis.
+    Temporary real-C saved/synthetic replays, acquisition/failure/application
+    simulations, independent dense GLS/covariance checks, all six vendor-table
+    compression bounds, offline plot/manual-install checks, normal/OTA builds
+    and strict Sphinx pass. Flash grows 2040 bytes; static RAM, shared buffers,
+    settings and retained-data layouts are unchanged. No permanent test tooling
+    was added. The notebook marks threshold/SE, floor and configured maximum,
+    separates supported curve from extrapolation, preserves all diagnostics and
+    refuses partial-range manual installs. Owner options, outputs and captures
+    are preserved. Evidence is in `/private/tmp/laser-fullrange-20261023/`.
+    No hardware action or OTA was performed for this revision; on-target behavior,
+    control interpretation and the 1028y measurement-chain cause remain bench
+    validation work.
+  - 2026-10-23 morning follow-up: the 179-window 1028y run accepted only
+    43.9–191.1 mA; the 168-window 1270j run stopped before fitting with
+    `usable pd range not found`. Its 19/219/1840 mV probes were valid, including
+    the final 1931 mV peak. Preferred 1850 mV ranging headroom was incorrectly
+    treated as a validity requirement. Fix `0a810f3` falls back to the closest
+    valid retained probe, restores its exact DAC pair and takes fresh windows;
+    fitting and classification thresholds are unchanged. Targeted real-C probe
+    checks, full acquisition simulations, normal/OTA builds and strict Sphinx
+    pass. Shared buffers and static RAM are unchanged; OTA flash grows 112 bytes.
+    OTA succeeded: firmware `0a810f371ffa-dirty`, boot 8, image 482748 bytes,
+    confirmed hash `6a5eaa451c959c5783d5277dd5c8b1bfca28af0fca93163591fc85be6ce41017`.
+    All six laser policies and both PD settings match pre-update readback; bank
+    policy restored to `auto`, all laser outputs stopped. No curve/noise/loss
+    applied. A fresh physical acquisition with the fallback remains to be run.
+    The notebook now has three explicit source subsections per channel, clear
+    acquisition/fit outcomes and explanations in absent-residual panels. Offline
+    morning and earlier accepted/rejected replays pass; original captures and
+    all diagnostic panels are retained. Local OTA snapshots and checks are in
+    `/private/tmp/laser-notebook-morning/`.
+  - 2026-10-22/23 multi-level revision (`51891ed`, settling recovery fix `fbe64e7`):
+    every emitting-current portion is sampled at high/low PD signal, with a third
+    upper-band level, early/two-late windows, same-DAC/current returns and three
+    dark groups. The fit uses calibrated transmission and shared per-DAC-pair
+    FVOA RMS uncertainty, not overlap-derived gains. Wavelength coordinates are
+    the independent `wave_ref_nm/ma/temp_c` triplet. Normal/OTA builds, strict
+    Sphinx, temporary real-C acquisition/failure/fit/runtime/dispatcher checks,
+    dense-covariance crosscheck and offline notebook replay pass. Shared data and
+    scratch remain 7680/3584 bytes; static RAM grows 232 bytes and flash about
+    4.7 kB versus the preceding image. On-target stack margins remain unmeasured.
+  - Both new OTAs **succeeded**. Final firmware `fbe64e711b90-dirty`, signed image
+    482636 bytes, confirmed MCUboot hash
+    `7d7524f9c7e8411e8fecc160d6e0d41f273da54fe7561eca489cca6751eea599`.
+    The six policies were explicitly reinstalled for the 168-byte record after
+    the first update and verified across a further reboot. Existing physical
+    wavelength predictions were preserved. Final readback matches all six
+    policies except elapsed-emission counters; source stopped at 0 mA, bank and
+    PD policies `auto`. No fitted curve, noise or route loss was applied.
+  - New 1028y captures: `laser_cal_1028y_20261023T052755_242609Z.pkl` has 192
+    windows at 2 s settling, accepted only 48.3–220.6 mA; the 191-window
+    `laser_cal_1028y_20261023T053942_629881Z.pkl` at 5 s settling is rejected.
+    Both acquisitions completed without overflow. The latter's identical
+    27.3 mA / DAC 3129/3000 return changes 176.48 to 195.91 mV (+11.0%), while
+    the measured dark varies only about 0.25 mV. This is time/history dependence
+    in the measurement chain, not proof of which component changed.
+  - Within fixed DAC pairs, the new 133/250-mA ratios are 0.797–0.853 across
+    305–1423 mV reference signals, versus 0.742–0.756 in the two earlier captures
+    and about 0.52 in the vendor trace. Constant gain normalization cancels in
+    this check. Driver readback follows commanded upper-band current. Neither
+    the fitter revision nor simple high-PD saturation alone explains the curves.
+    The commissioning notebook retains all diagnostic panels, compares these
+    captures and separates observed darks from the rejected candidate baseline.
+    Evidence is under `tools/commissioning_data/laser_multilevel_20261023/`.
+    Independent optical/current metrology and isolating attenuator/path history
+    remain bench questions; do not treat the rejected fit's gain shifts or
+    conditional threshold SE as physical estimates.
+  - 2026-10-22 API/curve follow-up (`b3a0056`): manual calibration now uses the
+    complete four-coefficient `laser/settings` update, independent of the retained
+    dataset and vendor triplet. Removed the retained-run apply API and lab aliases.
+    Levels, initial autolevel and tuning use emission fractions. Efficiency is the
+    uncorrected anchored line's slope on the selected support; the independent
+    `efficiency_ref_ma` preserves the corrected curve. Fixed both the missing
+    command-registry options and the required numeric-parser presence flag.
+    Normal/OTA builds, strict Sphinx, real dispatcher/JSON-handler checks, saved
+    and synthetic fits, acquisition/failure simulation, runtime level/inverse/
+    validation checks, NVS layout/loading, and offline notebook replay/application
+    checks pass. Shared buffers and the 1496-byte laser scratch are unchanged;
+    static RAM grows 100 bytes versus the preceding ELF.
+  - Follow-up OTA **succeeded**: `b3a0056b3196-dirty`, 477928-byte signed image,
+    confirmed MCUboot hash
+    `c9ac7ef7535cd13e4bd7efc7fdc7ddf9e5b3b7f504179cc45fa4f7488635c755`.
+    The real command accepted the new options and returned `pd off`; removed
+    arguments and incomplete curves returned explanatory strings. All six saved
+    policies were explicitly reinstalled into the 152-byte record and matched
+    readback after a further reboot. Existing NTC register quantization changed
+    the displayed -4.4 coefficients to -4.399651 on 1028y/2330k; no new NTC policy
+    was introduced. PD settings are unchanged. Bank remains `override_off`, both
+    PDs off; no optical sweep or new fitted-curve adoption was performed. The
+    parameter probe reported `ENOTSUP` and one transport retry recovered; upload,
+    boot and confirmation completed. Local before/after/reboot snapshots are in
+    `tools/commissioning_data/laser_policy_ota_20261023T011000Z`.
+  - 2026-10-22 iteration: normal and OTA Nucleo builds and strict Sphinx build pass.
+    Temporary real-C saved-data/synthetic fits, acquisition/failure/application
+    simulations, 5000 forward/inverse checks, packet/host decoding and offline
+    notebook replay/plots pass. The 87-window 1028y archive yields 46 selected
+    windows, 17.1–250 mA, threshold 13.436 mA and maximum residual 4.12% at the
+    new 5% tolerance. This replay is not another physical calibration.
+  - Static RAM increases 16 bytes versus the pre-iteration ELF; shared data/scratch
+    remain 7680/3584 bytes. On-target stack/timing margins remain unmeasured.
+  - OTA **succeeded** on `hsfib-tib` at `hispec.caltech.edu`, firmware
+    `03d32f8171fe-dirty`, 477880-byte image, confirmed MCUboot hash
+    `5dfe910057a649fdea47ca6a395f5f52268e3b2cd624f420eec08e7d54f9ecac`.
+    Acquisition was stopped and bank-off acknowledged before upload. Exact hash,
+    confirmed/inactive/nonpending OTA state, board readiness, all six correction
+    settings, per-channel PD power and new calibration/error replies were queried
+    after boot. Bank remains `override_off`; both PDs are off. No optical sweep or
+    calibration-setting adoption was performed. The MCUMgr parameter probe logged
+    `ENOTSUP`, but upload, trial boot and confirmation completed successfully.
+    Build label is dirty because existing notebook/ledger edits remain local.
+    See [laser calibration](laser_calibration.md) for the next bench workflow.
 - [ ] After flashing the generic TIB loss correction, verify schema 14's full
   app NVS reset, reapply needed settings, and bench-check generic CAL/return
   overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain
   provisional; equal AO/FEI loss needs optical validation. The Nucleo build,
   temporary C/host checks, and saved noise/failed-hold replay passed offline;
   no flashing, hardware commands, or physical persistence checks were performed.
-- [ ] Validate H's corrected internal LD coefficient I/O after flashing: both
-  programming and readback use 0x007F, replacing unused external 0x008A.
-  Check synchronization of vendor-based defaults, failed writes, persistence/reset
-  and powered/off readback. 1270j TEC calibration 100% matched three targets;
-  reversible 99% trials and verified restoration require no new setting or LD
-  rename. Independent R25/slope calibration remains unmeasured. See the report.
-- [ ] Bench-check heater override-on/off temperature observation with the bank
-  powered and unpowered, including shared-bus contention and return to auto.
-  Overrides enforce relay output before polling and never wake the bank;
-  temporary heater-cycle cases and the Nucleo build pass offline.
-- [ ] Bench-validate LD-only/TEC-only autonomous-stop detection and counter
-  freezing in the existing auto-off worker. Check shared-bus timing/contention,
-  failed/partial reads and foreground STOP races; no automatic restart was added.
-  Temporary worker/counter cases and the Nucleo build pass offline.
-- [ ] Validate freezer-follow-up output state/readiness on hardware: intentional
-  zero/STOP versus autonomous LD stop, recovered locks with stopped_fault, and
-  ambiguous writes with unknown. Public readiness no longer requires manual TEC
-  preparation or clearing a recoverable historical fault. Offline checks/build pass.
-- [ ] Validate the freezer-test heater band on hardware: heater on below 19 C
-  at any fresh idle probe, off only when all fresh idle probes exceed 21 C.
-  Measure minimum temperature after turn-on, duty, and relay cycling at -10 C
-  and 0 C, with a -15 C capacity check. Archived captures used the old 15/20 C
-  policy; predictions do not validate the new band. Preserve the existing
-  all-TECs-active shutoff, override behavior, and 15 C no-probe ambient fallback.
+
 - [ ] After flashing the FPU/runtime-float and priority changes, measure DWT
   call durations and stack margins; stacks have not been reduced. Verify MEMS 0
   splitter toggle/cleanup timing, PD 1 cadence and Modbus/system 2 completion
@@ -53,19 +255,12 @@ LLMs Agents: Do NOT change heading names in this file.
   saved/partial/noisy fit replays retained exact double coefficients/metrics.
   PD replay covered 127,100 window phases, invalid samples and ADC extremes;
   maximum saved-capture net-mean change was 0.00055 mV.
-- [ ] Bench-check noise warnings after PD power, attenuator, laser-output, and
-  MEMS changes: both channels wait five seconds after activity plus a fresh
-  500 ms window. Verify actual settling and steady-input fault detection;
-  temporary host checks cover gate timing, overlap, no-ops, and failure exits.
 - [ ] Commissioning changes: bench-check continuous 10 s dark settling after PD
   power/laser transitions, forced-dark lowest gating, and measured reset_lowest
   persistence. Existing historical minima are unchanged. Verify no-light startup
   and reboot laser STOP with Modbus RX free to run on the system queue.
-- [ ] Measure LSE uptime/UTC drift, SNTP updates, RTC reboot restoration, 20 Hz
-  cadence, and command ACK alignment under both streaming channels and command
-  load. Offline builds cannot validate crystal accuracy, physical timing, output
-  loss or watchdog behavior. Check queue counters and runtime stack margins.
-  Bench verification (2026-10-03, firmware 5489c84): periodic LPTIM gained
+
+- Bench verification (2026-10-03, firmware 5489c84): periodic LPTIM gained
   4.40 ms/min idle and 4.37 ms/min with both PD streams and command load.
   RTC remained continuous across three normal SNTP updates (UTC corrections
   3.84–4.14 ms). 200 zero-current commands interspersed with 733 cross-node
@@ -76,98 +271,56 @@ LLMs Agents: Do NOT change heading names in this file.
   Normal Nucleo build and 23 temporary RTC-guard boundary/error checks passed.
   Full autocal/notebook and long-run queue/stack validation remain; the original
   Modbus failure was not reproduced or proven fixed by these changes.
-- [ ] Validate per-FVOA residual limits and the constrained 65 dB leakage floor
-  with new 1028/1270/1430 captures. Saved-data replay checks numerical behavior;
-  it does not create high-attenuation calibration support. Check the ~0.18 ms
-  serial pair-write wire estimate with actual bus/actuator response if needed.
-  Oct 3 captures: all six fits passed on `1047f74-dirty`; the first three
-  `5dfd966-dirty` runs rejected DAC2, while repeats passed 1270, rejected
-  1028 DAC2, and rejected 1430 DAC1. Rejected curves validated numerically but
-  exceeded the 2 dB residual limit; bridge anchors near SNR 5 warrant fixed-point
-  repeat measurements before attributing the change to firmware or hardware.
-  Offline verification (2026-10-01): normal Nucleo build and an isolated merge
-  with `ota-flash` 155b447 plus MCUboot sysbuild passed. Host OTA dry-run verified
-  the signed image without network I/O. Separate policy NVS records retain
-  schema 13/calibration layout; OTA admission, bank-off/trial, watchdog, and
-  boot-uptime deadline paths were retained. Actual OTA/rollback is untested.
-  Temporary C checks exercised dark gates, forced-dark protection, paired-write
-  failure and output queues/ACK stamping. Sixty-four saved/partial/noisy-tail
-  fit replays checked peak rejection, supported endpoints and forward/inverse
-  curves. Python checks covered clock brackets, signal search, saved-data plots,
-  conditional noise analysis and scope acquisition doubles; no hardware was used.
+
 - [ ] Execute the scope investigation only with fresh bench authorization and
   verified probe floors/patch/actuator identities. Temporal-noise and excess-
   variance results remain conditional on explicit bandwidth and independence.
 
-- [ ] Bench-validate high-signal fit support after removing the upper transmission
-  exclusion. Valid readings at/above the measured reference now enter both fits
-  and signed residual statistics. Verify the open-region plots and installed RMS
-  in a fresh calibration; model, 55 dB boundary and reference selection are unchanged.
-- [ ] Run the notebook's `dac1_reversal` program after detector preparation:
-  alternate 2822.241211 / 2848.022461 mV with DAC2 at zero, retaining startup and
-  repeated visits. Compare final-30-second means, noise and drift before choosing
-  a device-failure threshold or attributing the asymmetry to the DAC1 capacitor.
-- [ ] After flashing, replay saved calibration records with the laser disabled
-  and confirm health polls and record/status downloads continue throughout both
-  fits without CRC/transport errors or false health timeouts. Fitting now uses
-  lowest application priority with no calibration mutex held over calculation.
-  Host replay matches pre-change coefficients/metrics; concurrent host checks
-  cover cancellation, replacement, shutdown failure and retained wire records.
-  Measure target fitting/cancellation time and verify laser shutdown before fit.
-  Confirm notebook stop/error cleanup retains records until the next start.
-- [ ] Verify acknowledged STOP followed by status with lock bit `0x0002` no
-  longer emits `laser_output_fault`; hard faults and active interlock still do.
-  Host tests exercise the production status path; repeat with the controller.
-- [ ] After flashing UART-backed 1-Wire and USART2 FIFO, verify cold DS2408
-  discovery/startup outputs and the first DS18B20 acquisition. Repeat concurrent
-  1028y status reads, relay commands and temperature polling; check presence
-  failures, corrupted replies, USART2 overruns and faults. All Zephyr patches,
-  build hooks and Maiman cross-bus locks are removed; stock-driver ownership and
-  accepted 3.3 V reset timing are documented in architecture.md and hardware.md.
-  Host tests cover public timeout cancellation and initialization on the next
-  requested transaction. Verify response loss followed by a later request with
-  the controller; emission is unnecessary for these communication checks.
-  Repeat the original dark/calibration sequence under the agreed laser limits.
-- [ ] Bench-validate both `TP_AUTOLEVEL_DIM_PRIORITY` choices, initial-level
-  startup, minimum-current fallback, and preference for lower attenuation.
-  Validate the laser-first default and two-sample low-side guard with live captures.
-  Verify actual Maiman TEC bound expand/target/narrow ordering and rejection
-  recovery with the installed modules. Host tests cover register order and
-  failures; firmware builds do not establish optical response or hardware timing.
-- [ ] Bench-validate 55 dB fitting with the first above-limit support point and
-  correction refits from six terms down to one. Check selected terms, calibrated
-  residuals, individual autolevel limits and continuous residual-to-floor
-  continuation using `atten_scan`. Offline replay checks numerical behavior;
-  fresh acquisition and embedded fitting duration still need bench validation.
-- [ ] Verify compact calibration status with both six-term corrections. Numeric
-  formatting and omission of three aggregate span/transmission diagnostics keep
-  compact fit replies; command capacity is now 1152 bytes for the added stream
-  fields. Those diagnostics remain in per-device fit telemetry.
-- [ ] Bench-validate zero-current versus `laser stop=true`, auto-off at zero, and
-  retained configuration across STOP. Capture the application Maiman timing logs
-  to verify 350 ms busy guards and assess the unchanged 75 ms ACK deadline; see
-  `doc/api/maiman_laser.md`. Retain log-drop warnings; application timings cannot
-  distinguish late device replies from delayed RX processing.
-- [ ] Bench-validate owner communication health and calibration repair: one-second
-  checks, five-second sustained-loss shutdown/recovery, relay auto-off during
-  restart, and six-term fits with no clipped reference/bridge anchors. Confirm
-  Modbus errors and ADC/MEMS timing after removing throughput-rate relay reads.
-- [ ] Keep an eye out MEMS loop and ADC loop timing overruns
-  - debug build see `timinglog`
-
 
 ## Command/API Mismatches
+- [x] Python CLI `atten-db` calls `atten()` and prints the full `AttenuatorState`,
+  including dB loss. Offline CLI dispatch and request/response checks pass.
+
+- [ ] Bench-validate retained throughput shutdown ownership across manual current,
+  tuning and policy-only settings changes, including failed writes. The November
+  2 implementation disables feedback while retaining collection, the measurement
+  deadline and any existing owned-laser shutdown obligation; passive monitoring
+  does not acquire ownership of a manually started source. Verify stop/expiry
+  after each change, plus quiet re-ranging with zero actuator writes inside the
+  usable signal envelope and prompt saturation/no-signal handling. Code and the
+  [operation contract](throughput.md#lifetime-manual-changes-and-failure) now agree;
+  temporary actual-C checks cover the broader decision paths. On-target
+  verification on 2026-11-03 UTC passed manual-current → measurement STOP and
+  noise-policy edit → original measurement expiry on both 1430 channels, with
+  streams retained and feedback disabled. Four 15-second band/quiet holds had
+  zero observed setpoint transitions; HK reached its available-flux limit below
+  the startup band. Physical external-system sweeps, tuning/error permutations
+  and deliberate saturation were not exercised. See the closeout report.
+
 
 ### LLM Resolved; Human Review Requested
-- [ ] Verify Maiman driver serial mismatches report
-  `blocked_reason:"driver_identity_mismatch"`, block driver-backed laser setting
-  programming, and can be resolved only by operator-updating
-  `laser/settings.expected_serial`.
-  Compact/engineering mismatch snapshots and strict programming identity pass
-  temporary native checks and the Nucleo build; hardware validation remains.
 
 
 ## Decisions To Make
+- [ ] Confirm the attenuator leakage-floor constraint. The previous calibration
+  description used the last three normalized points' mean; current
+  `estimate_max_atten_db()` uses `max(mean, 65 dB)` while retaining their measured
+  standard error. The 65 dB lower bound is a prior on the model, not measured
+  optical support. Decide whether this prior and its uncertainty treatment are
+  intended, or whether the estimator must change. The
+  [calibration mathematics](attenuator_calibration.md#records-telemetry-and-fit)
+  now distinguishes this constraint from the calibrated operating range.
+  - 2026-10-30: the owner deferred a physical voltage cutoff to a separate
+    decision. Plots now distinguish measured support, the 55 dB software ceiling
+    and modeled continuation, with a post-amplifier drive-voltage axis. Low HK
+    measured dynamic range does not establish low physical FVOA extinction, and
+    accepted residuals alone do not validate the physical high-drive branch.
+  - 2026-11-02: saved-repeat and closure analysis is in the
+    [closeout report](calibration_closeout.md). Configuration and reference changes
+    prevent interpreting every curve difference as physical FVOA drift. Existing
+    captures do not isolate intrinsic tandem interaction; the fixed-source,
+    measured-ratio bridge acquisition is unchanged.
+
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled
   acceptance ceilings also exceed vendor maxima. Normal commanded maxima agree.
@@ -175,14 +328,7 @@ LLMs Agents: Do NOT change heading names in this file.
   the exact hardware/vendor requirements, not from archive readback alone.
 - Decide whether a controlled PID comparison is merited for Aero DFB diodes
   using 100/1000/0 rather than Maiman's 20/1000/1000 DFB example. FLC already
-  uses that example. Confirm the 2330 sheet's ambiguous coefficient units with
-  the vendor before adopting −4.4 %/C as calibration. Physical R25/slope calibration
-  remains open; the report does not establish an instability cause.
-- Validate the implemented direct 20 Hz stream on Rev. 2: timing margin,
-  actuator response, illuminated PD noise, and dark-based error estimates.
-  No extra illuminated-stream settling holdoff is used. The existing overlay
-  selects 64 SPS; runtime margin/noise still need bench verification. See `photodiode_notes.md` for
-  the error budget and remaining physical calibration assumptions.
+  uses that example. 
 
 ## TODOs
 - Investigate detector startup and illuminated settling separately. The September 21
@@ -192,33 +338,18 @@ LLMs Agents: Do NOT change heading names in this file.
   captures. Verify the physical stabilization time; the code does not establish it. The same run
   shows a long transition after 182 seconds of laser emission, so laser warmup alone
   does not explain all settling. Keep the sampler-owned notification TODO below.
-- Investigate DAC1 reference/sweep disagreement before changing acquisition:
-  capture `cal_1028y_20260917T213847_376797Z.npz`, reference record 7 and first
-  sweep record 11 both command DUT 0 / companion 2810.156 mV, but raw peaks are
-  1767.688 / 2047.938 mV. The repeated sweep clips through DUT 2050 mV despite
-  warm PD context. Trace command/window timing; no reference-reselection loop.
-- Audit successful noise/default-autooff/TEC-autooff-policy settings, settings
-  no-ops, and `laser/tune` that release a throughput stream while leaving its
-  laser emitting. They can discard measurement shutdown responsibility. Model
-  and envelope edits now stop emission; failed settings updates retain the owned
-  shutdown for explicit retry. The other ownership cases are intentionally deferred.
-- Raw attenuator calibration records and completed fit results now survive
-  stop/error cleanup until a new start or reboot. Host lifecycle and binary-read
-  tests cover this; PCB/notebook validation remains in the item above.
+
+- Play with and explore laser/tune. make sure it doesn't break autooff for laser or with throughput measuring
+
 - Add sampler-owned illumination-change notification with settling duration.
   Laser/attenuator changes report the event; readings and windows remain marked
   settling until their acquisitions are clear of it. Consumers wait or skip.
   Keep the current local 100 ms autocalibration wait until this shared change.
 
-- algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor autoranging notices) should be going to console AND mqtt and that was the whole point of a combined dispatch helper. this needs a app-wide reevaluation.
-
-- test `pd/dark/<channel>` measurement, forced dark with optional `rms_mv`, lowest-dark reset, and dark-window persistence over reboot.
+- algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor 
+  autoranging notices) should be going to console AND mqtt and that was the whole point 
+  of a combined dispatch helper. this needs an app-wide reevaluation.
 - Status needs to gain things we actually want.
-
-
 - Lab-investigate safe laser-bank and external-relay shutdown on fatal faults.
   The current fatal path halts and relies on watchdog reset; formal shutdown
   safety is deferred pending hardware exploration.
-
-
-## Deferred Owner-Specified Capabilities

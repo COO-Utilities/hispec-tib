@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <math.h>
 #include <string.h>
+#include <zephyr/data/json.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 #include <hispec_build_version.h>
@@ -21,6 +23,7 @@
 #include "devices.h"
 #include "lasers.h"
 #include "app_identity.h"
+#include "app_output.h"
 #include "app_settings.h"
 #include "attenuator.h"
 #include "attenuator_command.h"
@@ -41,9 +44,6 @@
 
 LOG_MODULE_REGISTER(command, LOG_LEVEL_DBG);
 
-#define SERIAL_WRAP_COLUMN COO_CMD_SERIAL_WRAP_COLUMN
-#define COMMAND_REBOOT_DELAY_MS 3000U
-
 static uint16_t mqtt_msg_id = 1;
 
 /* MQTT and serial ingress use k_msgq so callbacks never execute hardware work.
@@ -52,7 +52,7 @@ static uint16_t mqtt_msg_id = 1;
  */
 K_MSGQ_DEFINE(inbound_queue,
               sizeof(struct coo_cmd_request),
-              MAX_PENDING_COMMANDS,      /* depth */
+              2,      /* depth */
               4);     /* 4‐byte align */
 
 /* Responses, warnings, and telemetry leave the executor through this bounded
@@ -83,17 +83,33 @@ static int serial_mems_switch_shorthand(const char *key, const char *payload,
                                         char *out, size_t out_len,
                                         void *user_data);
 static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
+/** Format configured network policy and runtime status; response publication belongs to main. */
+static int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Validate/apply network policy and optional NVS persistence; DHCP completion is asynchronous. */
+static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Copy broker configuration into the reply; no broker connection is attempted here. */
+static int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Validate/resolve and save broker intent; main owns reconnect/revert. May block on DNS/NVS. */
+static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Format current UTC and SNTP status; no synchronization request is sent. */
+static int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Set UTC through the shared RTC guard; may perform RTC I/O, never persists a last-time NVS value. */
+static int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Assemble bounded status; optional laser/DAC sections can block on hardware reads. */
+static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
+/** Read available temperatures without powering the bank; idle TECs alone define bank temperature. */
+static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 
 #define CMD_HELP(_usage, _args, _values, _notes, _flags) \
     .help = &(const struct coo_cmd_help_entry){ \
         .usage = (_usage), .args = (_args), .values = (_values), \
         .notes = (_notes), .flags = (_flags) }
 
-#define CMD_SPEC(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags, ...) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = (_class), .mqtt_query_allowed_during_serial_guard = (_guard), \
       .allowed_payload_keys = (_keys), \
-      CMD_HELP(_usage, _args, _values, _notes, _flags) }
+      CMD_HELP(_usage, _args, _values, _notes, _flags), __VA_ARGS__ }
 
 #define CMD_SPEC_PREFIX(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
@@ -115,12 +131,12 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
       .allowed_payload_keys = (_keys), \
       CMD_HELP(_usage, _args, _values, _notes, _flags) }
 
-#define CMD_SPEC_TIB_PREFIX(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags) \
+#define CMD_SPEC_TIB_PREFIX(_key, _get, _set, _class, _guard, _keys, _usage, _args, _values, _notes, _flags, ...) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
       .class_policy = (_class), .supported = command_tib_supported, \
       .mqtt_query_allowed_during_serial_guard = (_guard), \
       .key_prefix_match = true, .allowed_payload_keys = (_keys), \
-      CMD_HELP(_usage, _args, _values, _notes, _flags) }
+      CMD_HELP(_usage, _args, _values, _notes, _flags), __VA_ARGS__ }
 
 #define CMD_SPEC_TIB_CUSTOM(_key, _get, _set, _classify, _guard, _keys, _usage, _args, _values, _notes, _flags) \
     { .key = (_key), .query_handler = (_get), .effect_handler = (_set), \
@@ -136,8 +152,9 @@ static void command_prepare_reboot(bool erase_non_ip_settings, void *user_data);
 
 /*
  * One static row owns dispatch, classification, serial-guard query allowance,
- * and help for a command key. Help-only rows document parameterized command
- * forms whose real dispatch is handled by a shorter prefix row.
+ * and help for a command key. OTA denies queries/effects unless a row explicitly
+ * permits them; builtins carry their policy in COO dispatch. Help-only rows
+ * document parameterized forms dispatched by a shorter prefix row.
  */
 static const struct coo_cmd_spec command_specs[] = {
     CMD_SPEC("ip", ip_get, ip_set, COO_CMD_CLASS_DEFAULT, true,
@@ -146,11 +163,13 @@ static const struct coo_cmd_spec command_specs[] = {
              "query with no payload; effect when any listed field is supplied",
              "bool: true|false|on|off|yes|no",
              "reconfigures IPv4 immediately; persist=true stores app-owned IP settings",
-             COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+                 .ota_query_allowed = true),
     { .key = "mqtt", .query_handler = mqtt_get, .effect_handler = mqtt_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .serial_positional = { .field = { "broker", "persist" }, .required_count = 1U },
       .allowed_payload_keys = "broker,persist",
+      .ota_query_allowed = true,
       .mqtt_query_allowed_during_serial_guard = true,
       CMD_HELP("mqtt [broker=<host-or-ip:port> persist=<bool>]",
                "broker is required for effect; persist is optional",
@@ -162,6 +181,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .serial_positional = { .field = { "unix_ms" }, .required_count = 1U,
                              .numeric_mask = BIT(0) },
       .allowed_payload_keys = "unix_ms",
+      .ota_query_allowed = true,
       .mqtt_query_allowed_during_serial_guard = true,
       CMD_HELP("time [unix_ms=<utc-ms>]",
                "unix_ms required for effect",
@@ -169,21 +189,24 @@ static const struct coo_cmd_spec command_specs[] = {
                "sets running UTC and RTC calendar; does not persist stale UTC in NVS",
                COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY) },
     CMD_SPEC("temps", temps_get, NULL, COO_CMD_CLASS_DEFAULT, true, "",
-             "temps", "none", NULL, "cached housekeeping temperature status",
-             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+             "temps", "none", NULL, "cached ambient and fresh powered-bank TEC temperatures; idle probes define bank temperature",
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+                 .ota_query_allowed = true),
     CMD_SPEC("status", status_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
              "ip,lasers,attens",
              "status [ip=<bool> lasers=<bool> attens=<bool>]",
              "all fields optional",
              "bool: true|false|on|off|yes|no",
              "query-only firmware and subsystem status",
-             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+                 .ota_query_allowed = true),
     CMD_SPEC("help/options", help_options_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
              "help/options",
              "none",
              NULL,
              "query-only static laser names and selected board route names",
-             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+             COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+                 .ota_query_allowed = true),
     CMD_SPEC_CUSTOM("mems/route/loss", memsroute_get, memsroute_set,
                     classify_route_loss, true,
                     "route,1028y,1270j,1430yj,1430hk,1510h,2330k,generic,split,persist",
@@ -221,15 +244,26 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COO_CMD_CLASS_DEFAULT, false,
-                 "laser,channel,fiber,input,output,autolevel,initial_level,max_flux_ph_s,off_in_s,format,stop",
-                 "measure_throughput laser=<laser|none> [channel=<yj|hk> input=<name> output=<name> fiber=<M|S> autolevel=<bool> initial_level=<0..1> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
+                 "laser,channel,fiber,input,output,autolevel,autolevel_response_hz,initial_level,max_flux_ph_s,off_in_s,format,stop",
+                 "measure_throughput laser=<laser|none> [channel=<yj|hk> input=<name> output=<name> fiber=<M|S> autolevel=<bool> autolevel_response_hz=<Hz> initial_level=<0..1> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
                  "stop=<yj|hk|all>; known laser requires output; none requires channel and autolevel=false, with optional input/output pair",
                  "format: json,binary",
                  "TIB-only; always selects MM/SM return; passive launch unchanged if input/output omitted",
                  COO_CMD_HELP_EFFECT),
+    CMD_SPEC_TIB_PREFIX("laser/calibrate/records", laser_calibration_records_get, NULL,
+                 COO_CMD_CLASS_ALWAYS_QUERY, true, "",
+                 "laser/calibrate/records[/<chunk>]", "binary metadata or raw records", NULL,
+                 "MQTT-only latest shared calibration dataset", COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+    CMD_SPEC_TIB("laser/calibrate", laser_calibration_get, laser_calibration_set,
+                 COO_CMD_CLASS_DEFAULT, true,
+                 "laser,output,fiber,dwell_ms,settle_ms,apply,max_fit_residual_pct,pd_target_mv,determine_static_loss,loopback_loss_db,update_noise,other_output,persist,stop,continue,restore_defaults",
+                 "laser/calibrate [laser=<name> output=<route> ... | stop=true | continue=true | restore_defaults=true laser=<name> output=<route>]",
+                 "loss fitting requires external loopback_loss_db; defaults apply=true, dwell_ms=1000, settle_ms=2000, fiber=S, max_fit_residual_pct=5, pd_target_mv=1500, persist=false",
+                 "output: yj_ao,yj_fei,hk_ao,hk_fei", "reference-anchored current sweep; query for progress/results",
+                 COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser", laser_get, laser_set, classify_laser_request,
-                        true, "name,value,autooff_s,stop",
-                        "laser name=<laser> [value=<0..1> autooff_s=<s> stop=<bool>]",
+                        true, "name,value,value_ma,autooff_s,stop",
+                        "laser name=<laser> [value=<0..1>|value_ma=<mA> autooff_s=<s> stop=<bool>]",
                         "name required; value makes it an effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only laser output status/set command",
@@ -261,12 +295,13 @@ static const struct coo_cmd_spec command_specs[] = {
                  "mode required for effect; suffix form laser/bankpower/<mode> also works",
                  "mode: auto,override_on,override_off",
                  "TIB-only laser-bank supply override",
-                 COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
+                 COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY,
+                 .ota_query_allowed = true),
     CMD_SPEC_TIB("laser/clearfaults", NULL, laserbank_clearfaults,
                  COO_CMD_CLASS_ALWAYS_EFFECT, false, "",
                  "laser/clearfaults",
                  "none", NULL,
-                 "TIB-only power-cycles the laser bank to clear latched faults",
+                 "TIB-only checks LD overcurrent latches and power-cycles the bank only when one is set",
                  COO_CMD_HELP_EFFECT),
     CMD_SPEC_TIB_PREFIX("laser/bankheater", laserbank_heater, laserbank_heater,
                  COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
@@ -294,7 +329,7 @@ static const struct coo_cmd_spec command_specs[] = {
       .effect_handler = atten_setting_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
       .key_prefix_match = true,
-	      .allowed_payload_keys = "value,value_db,value1,value2,value1_db,value2_db,value1_mv,value2_mv,dac1,dac2,persist",
+	      .allowed_payload_keys = "value,value_db,value1,value2,value1_db,value2_db,value1_mv,value2_mv,dac1,dac2,open1_mv,open2_mv,persist",
       .mqtt_query_allowed_during_serial_guard = true },
     CMD_HELP_ONLY("atten/<name>", NULL,
                   "atten/<name> [value=<linear>|value_db=<dB>|value1=<linear>|value1_db=<dB>|value1_mv=<mV>|value2=<linear>|value2_db=<dB>|value2_mv=<mV>]",
@@ -303,13 +338,13 @@ static const struct coo_cmd_spec command_specs[] = {
                   "sets or queries total or per-physical attenuator transmission",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/settings", NULL,
-                  "atten/<name>/settings [dac1={max_fit_residual_db} dac2={max_fit_residual_db} persist=<bool>]",
+                  "atten/<name>/settings [open1_mv=<mV> open2_mv=<mV> dac1={max_fit_residual_db} dac2={max_fit_residual_db} persist=<bool>]",
                   "partial per-FVOA updates; finite positive maximum absolute calibrated-region residual in dB",
-                  "default: 2 dB per FVOA; persist defaults false",
+                  "defaults: open 1250 mV, residual 2 dB per FVOA; persist defaults false",
                   "policy only; no DAC writes; rejected while calibration is active",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/coeff", NULL,
-	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,gain,correction_coeff} dac2={...} persist=<bool>]",
+	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,max_calibrated_db,gain,correction_coeff} dac2={...} persist=<bool>]",
 	                  "dac1 and dac2 coefficient objects are required for effect",
                   "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
                   "send JSON for coeff updates; key=value shorthand cannot express arrays",
@@ -517,16 +552,12 @@ int command_runtime_init(struct k_work_q *blocking_work_q)
         .outbound_queue = &outbound_queue,
         .reply_queue = &reply_queue,
         .mqtt_msg_id = &mqtt_msg_id,
-        .serial_wrap_column = SERIAL_WRAP_COLUMN,
         .command_specs = command_specs,
         .command_spec_count = ARRAY_SIZE(command_specs),
         .lastcommand_nvs = app_settings_nvs_fs(),
         .lastcommand_nvs_id = APP_SETTINGS_NVS_ID_LAST_COMMAND,
-#if defined(CONFIG_COO_CMD_REBOOT)
-        .reboot_delay_ms = COMMAND_REBOOT_DELAY_MS,
         .reboot_prepare = command_prepare_reboot,
         .reboot_work_q = blocking_work_q,
-#endif
     };
     int rc;
 
@@ -543,6 +574,10 @@ struct coo_cmd_runtime *command_runtime_get(void)
     return &command_runtime;
 }
 
+int app_output_emit(const struct coo_cmd_runtime_emit_args *args)
+{
+    return coo_cmd_runtime_emit(&command_runtime, args);
+}
 
 
 
@@ -591,9 +626,9 @@ static int ip_status_payload(char *payload, size_t payload_len)
     return (written >= 0 && (size_t)written < payload_len) ? 0 : -ENOSPC;
 }
 
-int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int ip_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-    char payload[MAX_PAYLOAD_LEN];
+    char payload[COO_CMD_PAYLOAD_MAX];
 
     if (ip_status_payload(payload, sizeof(payload)) != 0) {
         return coo_cmd_error(out, cmd, "ip response too large");
@@ -659,10 +694,10 @@ static int command_extract_ipv4(const char *json, const char *key,
     return rc;
 }
 
-int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_ip_settings ip_cfg;
-    char response[MAX_PAYLOAD_LEN];
+    char response[COO_CMD_PAYLOAD_MAX];
 #if defined(CONFIG_NET_DHCPV4)
     const bool dhcp_supported = true;
 #else
@@ -835,12 +870,12 @@ int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_ok(out, cmd);
 }
 
-int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
     char endpoint[160] = {0};
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
 #if defined(CONFIG_DNS_RESOLVER)
     const bool dns_supported = true;
 #else
@@ -859,7 +894,7 @@ int mqtt_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct app_mqtt_settings mqtt_cfg = {0};
     struct coo_mqtt_broker_config broker_cfg = {0};
@@ -901,11 +936,11 @@ int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_ok(out, cmd);
 }
 
-int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct timespec ts = {0};
     uint64_t utc_ms;
-    char payload[MAX_PAYLOAD_LEN];
+    char payload[COO_CMD_PAYLOAD_MAX];
 
     if (sys_clock_gettime(SYS_CLOCK_REALTIME, &ts) != 0) {
         return coo_cmd_error(out, cmd, "clock read failed");
@@ -919,7 +954,7 @@ int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     uint64_t utc_ms = 0;
     struct timespec ts = {0};
@@ -1042,7 +1077,7 @@ static int help_options_append_routes(char *payload, size_t payload_len, size_t 
 static int help_options_get(const struct coo_cmd_request *cmd,
                        struct coo_cmd_response *out)
 {
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
 
     if (coo_json_append(payload, sizeof(payload), &off,
@@ -1064,7 +1099,7 @@ static int help_options_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
     bool include_ip = false;
@@ -1072,7 +1107,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     bool include_attens = false;
     struct coo_cmd_lastcommand lastcommand;
     bool has_lastcommand;
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
     uint64_t pd_on_s;
 
@@ -1115,7 +1150,7 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     }
 
     if (include_ip) {
-        char ip_payload[MAX_PAYLOAD_LEN];
+        char ip_payload[COO_CMD_PAYLOAD_MAX];
 
         if (ip_status_payload(ip_payload, sizeof(ip_payload)) != 0 ||
             coo_json_append(payload, sizeof(payload), &off,
@@ -1211,11 +1246,11 @@ int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
-int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     struct housekeeping_temperature_status ts = {0};
     struct hispec_laser_channel_temperature channel_temp[HISPEC_LASER_COUNT] = {0};
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
     double bank_sum = 0.0;
     uint8_t bank_count = 0U;

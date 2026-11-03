@@ -6,10 +6,12 @@
 #include "throughput_command.h"
 
 #include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
 #include <zephyr/sys/util.h>
+#include <zephyr/logging/log.h>
 
 #include "app_settings.h"
 #include "devices.h"
@@ -109,6 +111,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	bool autolevel = true;
 	bool max_flux_present = false;
 	bool initial_level_present = false;
+	bool response_present = false;
 	int choice_value;
 	int parse_rc;
 	int rc;
@@ -171,6 +174,13 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 	}
 	if (initial_level_present && !autolevel) {
 		return coo_cmd_error(out, cmd, "initial_level requires autolevel");
+	}
+	if (coo_json_extract_optional_double_range(cmd->payload, "autolevel_response_hz",
+		&request.autolevel_response_hz, &response_present, 0.0, DBL_MAX) != 0) {
+		return coo_cmd_error(out, cmd, "autolevel_response_hz must be finite and nonnegative");
+	}
+	if (response_present && !autolevel) {
+		return coo_cmd_error(out, cmd, "autolevel_response_hz requires autolevel");
 	}
 
 	if (coo_json_extract_optional_u32(cmd->payload, "off_in_s",

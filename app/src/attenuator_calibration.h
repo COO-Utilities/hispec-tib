@@ -25,6 +25,14 @@ struct attenuator_calibration_fit_metrics {
 	bool valid;
 	bool accepted;
 	uint8_t points; /* Fitting-support count, including the first above-limit point. */
+	uint8_t reason; /* Stage/result code serialized with retained diagnostics. */
+	float open_mv;
+	float open_loss_db; /* Measured selection threshold relative to the robust peak. */
+	float background_mv;
+	float background_err_mv;
+	bool reference_valid;
+	uint8_t reference_record;
+	uint8_t support[ATTENUATOR_CAL_RECORD_COUNT / 8U];
 	double fvoa_50pct_mv;
 	double slope_inv_fvoa_mv;
 	double max_atten_db;

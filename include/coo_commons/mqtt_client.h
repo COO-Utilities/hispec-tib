@@ -137,6 +137,8 @@ void coo_mqtt_set_message_callback(mqtt_message_cb_t cb, void *user_data);
  * prevents sleeping again when the bounded drain left work queued.
  *
  * @param client Pointer to connected MQTT client
+ * @param wake_fd Native output-wakeup eventfd, or a negative value to disable it
+ * @param output_pending True to poll without sleeping because output remains queued
  * @return 0 on success, negative error code on failure (e.g., disconnection)
  */
 int coo_mqtt_process(struct mqtt_client *client, int wake_fd, bool output_pending);

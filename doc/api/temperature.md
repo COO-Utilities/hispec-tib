@@ -10,3 +10,13 @@ Its `laserbank_c` averages valid probes with stopped TECs; it is unavailable
 when every TEC is active, the bank is off or no idle probe is readable.
 Individual diode temperatures remain present whether idle or regulated.
 The command does not enable power or substitute the heater's aged cache.
+
+```{eval-rst}
+.. doxygenfile:: app/src/laserbank_tempcontrol.h
+   :project: hispec_tib
+```
+
+```{eval-rst}
+.. doxygenfile:: include/coo_commons/pid.h
+   :project: hispec_tib
+```

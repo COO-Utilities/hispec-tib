@@ -19,7 +19,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#include "command.h"
+#include "app_output.h"
 #include "devices.h"
 #include "photodiode.h"
 
@@ -200,7 +200,7 @@ static void relay_health_warning(const char *code, const char *message, int erro
 {
 	char context[64];
 	snprintk(context, sizeof(context), "device=DS2408 rc=%d", error);
-	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.code = code, .msg = message, .context = context,
 	});
@@ -296,15 +296,13 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 	}
 	if (!devices_relay_gpio_online()) {
 		if (power_output_is_photodiode(output)) {
-			coo_cmd_runtime_emit(
-				command_runtime_get(),
-				&(const struct coo_cmd_runtime_emit_args){
-					.type = COO_CMD_RUNTIME_EMIT_WARNING,
-					.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					.code = "relay_gpio_offline",
-					.msg = "photodiode relay command ignored because relay GPIO expander is offline",
-					.context = enabled ? "enable" : "disable",
-				});
+			app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_WARNING,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.code = "relay_gpio_offline",
+				.msg = "photodiode relay command ignored because relay GPIO expander is offline",
+				.context = enabled ? "enable" : "disable",
+			});
 			return 0;
 		}
 		return -EIO;
@@ -454,20 +452,31 @@ int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
 	return rc;
 }
 
-void housekeeping_photodiode_autooff_cancel(enum housekeeping_power_output output)
+int housekeeping_photodiode_autooff_set(enum housekeeping_power_output output,
+				      uint32_t autooff_s)
 {
 	uint8_t index;
+	bool enabled = false;
+	int rc = 0;
 
 	if (!power_output_to_pd_index(output, &index)) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
-	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
-	pd_autooff_deadline_ms[index] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
-	pd_autooff_reschedule_locked();
-	k_mutex_unlock(&housekeeping_state_lock);
+	if (autooff_s > 0U) {
+		rc = power_get_locked(output, &enabled);
+	}
+	if (rc == 0) {
+		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+		pd_autooff_deadline_ms[index] = enabled && autooff_s > 0U ?
+			k_uptime_get() + (int64_t)autooff_s * 1000 :
+			HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+		pd_autooff_reschedule_locked();
+		k_mutex_unlock(&housekeeping_state_lock);
+	}
 	k_mutex_unlock(&housekeeping_io_lock);
+	return rc;
 }
 
 void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,

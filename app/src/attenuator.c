@@ -4,7 +4,7 @@
  */
 
 #include "attenuator.h"
-#include "command.h"
+#include "app_output.h"
 #include "photodiode.h"
 #include "drivers/dac/dac7x78.h"
 
@@ -450,7 +450,9 @@ static void attenuator_cfg_init(struct attenuator_dac_cfg *dac_cfg,
     dac_cfg->dev = dev;
     dac_cfg->ideal_full_scale_mv = ATTENUATOR_DRIVE_MAX_MV;
     dac_cfg->drive_limit_mv = ATTENUATOR_DRIVE_MAX_MV;
-    dac_cfg->voltage = 0.0f;
+    dac_cfg->open_mv = ATTENUATOR_DEFAULT_OPEN_MV;
+    dac_cfg->voltage = ATTENUATOR_DRIVE_MAX_MV;
+    dac_cfg->valid = false;
     dac_cfg->attenuation_db = 0.0;
     dac_cfg->cfg.channel_id = channel;
     dac_cfg->cfg.resolution = DAC_RESOLUTION_BITS;
@@ -517,9 +519,12 @@ bool attenuator_init(struct attenuator *drv,
     memset(drv->coeff2.correction_coeff, 0, sizeof(drv->coeff2.correction_coeff));
     drv->attenuation_db = 0.0;
 
-    struct attenuator_status status;
-    return attenuator_channel_setup(&drv->dac_cfg1) &&
-           attenuator_channel_setup(&drv->dac_cfg2) && attenuator_get(drv, &status);
+    /* A failed channel must not prevent closing the other physical output. */
+    bool first_ready = attenuator_channel_setup(&drv->dac_cfg1);
+    bool second_ready = attenuator_channel_setup(&drv->dac_cfg2);
+    bool first = first_ready && attenuator_set_physical_voltage(drv, 0U, ATTENUATOR_DRIVE_MAX_MV);
+    bool second = second_ready && attenuator_set_physical_voltage(drv, 1U, ATTENUATOR_DRIVE_MAX_MV);
+    return first && second;
 }
 
 double attenuator_model_voltage_to_db(const struct attenuator_model_coeffs *coeffs,
@@ -686,11 +691,12 @@ bool atten_model_db_sigma(const struct atten_model_eval *eval,
     return isfinite(*sigma_db);
 }
 
-bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
-                                    double attenuation_db, float *voltage)
+/* Invert only the requested monotonic branch. Modeled controls exclude the
+ * measured low-voltage anomaly; callers studying the model may use its full span. */
+static bool attenuator_model_db_to_voltage_between(const struct attenuator_model_coeffs *coeffs,
+                                    double attenuation_db, float lo_mv, float hi_mv, float *voltage)
 {
     struct atten_runtime_model model;
-    float lo_mv = 0.0f, hi_mv = ATTENUATOR_DRIVE_MAX_MV;
     float lo_db, hi_db;
 
     if (voltage == NULL || !isfinite(attenuation_db) || attenuation_db < 0.0 ||
@@ -726,6 +732,13 @@ bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs
     }
     *voltage = 0.5f * (lo_mv + hi_mv);
     return true;
+}
+
+bool attenuator_model_db_to_voltage(const struct attenuator_model_coeffs *coeffs,
+                                    double attenuation_db, float *voltage)
+{
+    return attenuator_model_db_to_voltage_between(coeffs, attenuation_db, 0.0f,
+                                                  ATTENUATOR_DRIVE_MAX_MV, voltage);
 }
 
 static bool attenuator_model_coeff_valid(const struct attenuator_model_coeffs *coeffs)
@@ -819,6 +832,36 @@ static uint32_t attenuator_voltage_to_code(const struct attenuator_dac_cfg *dac_
     return code;
 }
 
+float attenuator_open_voltage(const struct attenuator_dac_cfg *cfg)
+{
+    uint32_t code = (uint32_t)ceilf(CLAMP(cfg->open_mv, 0.0f, cfg->drive_limit_mv) *
+                                  (float)(1 << DAC_RESOLUTION_BITS) / cfg->ideal_full_scale_mv);
+    return attenuator_code_to_voltage(cfg, MIN(code, DAC_MAX_CODE));
+}
+
+bool attenuator_set_open_voltages(struct attenuator *drv, const float open_mv[2])
+{
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!isfinite(open_mv[i]) || open_mv[i] < 0.0f || open_mv[i] > ATTENUATOR_DRIVE_MAX_MV) return false;
+    }
+    struct attenuator next;
+    k_mutex_lock(&attenuator_io_lock, K_FOREVER);
+    attenuator_snapshot(drv, &next);
+    next.dac_cfg1.open_mv = open_mv[0];
+    next.dac_cfg2.open_mv = open_mv[1];
+    attenuator_commit(drv, &next);
+    k_mutex_unlock(&attenuator_io_lock);
+    return true;
+}
+
+double attenuator_min_db(const struct attenuator *drv)
+{
+    struct attenuator a;
+    attenuator_snapshot(drv, &a);
+    return attenuator_model_voltage_to_db(&a.coeff1, attenuator_open_voltage(&a.dac_cfg1)) +
+           attenuator_model_voltage_to_db(&a.coeff2, attenuator_open_voltage(&a.dac_cfg2));
+}
+
 static bool attenuator_prepare_voltage(struct attenuator_dac_cfg *dac_cfg,
                                      const struct attenuator_model_coeffs *coeffs,
                                      float voltage, uint32_t *code_out)
@@ -847,14 +890,13 @@ static bool attenuator_prepare_voltage(struct attenuator_dac_cfg *dac_cfg,
 		snprintk(context, sizeof(context),
 			 "channel=%u requested=%.3f clamped=%.3f",
 			 dac_cfg->cfg.channel_id, (double)unclamped_voltage, (double)voltage);
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "attenuator_clamped",
-					     .msg = "attenuator command exceeded drive range and was clamped",
-					     .context = context,
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "attenuator_clamped",
+			.msg = "attenuator command exceeded drive range and was clamped",
+			.context = context,
+		});
 	}
 
     code = attenuator_voltage_to_code(dac_cfg, voltage);
@@ -885,10 +927,13 @@ static bool attenuator_set_pair_staged(struct attenuator *drv,
         if (!target[i].voltage_mv) {
             if (target[i].value < 0.0) return false;
             float limit = attenuator_drive_limit_mv(dac[i]);
+            float open = attenuator_open_voltage(dac[i]);
+            double min_db = attenuator_model_voltage_to_db(coeff[i], open);
             double max_db = attenuator_model_voltage_to_db(coeff[i], limit);
-            if (target[i].value <= ATTENUATOR_DB_EPSILON) voltage = 0.0f;
+            if (target[i].value <= min_db + ATTENUATOR_DB_EPSILON) voltage = open;
             else if (max_db > 0.0 && target[i].value >= max_db - ATTENUATOR_DB_EPSILON) voltage = limit;
-            else if (!attenuator_model_db_to_voltage(coeff[i], target[i].value, &voltage)) return false;
+            else if (!attenuator_model_db_to_voltage_between(coeff[i], target[i].value, open, limit, &voltage)) return false;
+            voltage = MAX(voltage, open);
         }
         prepared[i] = *dac[i];
         if (!attenuator_prepare_voltage(&prepared[i], coeff[i], voltage, &code[i])) return false;
@@ -932,7 +977,10 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
     if (drv == NULL || !isfinite(attenuation_db) || attenuation_db < 0.0) {
         return false;
     }
-
+    float open1 = attenuator_open_voltage(&drv->dac_cfg1);
+    float open2 = attenuator_open_voltage(&drv->dac_cfg2);
+    double min1 = attenuator_model_voltage_to_db(&drv->coeff1, open1);
+    double min2 = attenuator_model_voltage_to_db(&drv->coeff2, open2);
     if ((!drv->dac_cfg1.valid && !attenuator_read_physical(&drv->dac_cfg1, &drv->coeff1)) ||
         (!drv->dac_cfg2.valid && !attenuator_read_physical(&drv->dac_cfg2, &drv->coeff2))) {
         return false;
@@ -949,28 +997,30 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
         max1 = MIN(max1, MIN(ATTENUATOR_CALIBRATED_MAX_DB, drv->coeff1.max_calibrated_db));
         max2 = MIN(max2, MIN(ATTENUATOR_CALIBRATED_MAX_DB, drv->coeff2.max_calibrated_db));
     }
-    if (!isfinite(current1) || !isfinite(current2) || !isfinite(max1) || !isfinite(max2)) {
+    if (!isfinite(current1) || !isfinite(current2) || !isfinite(max1) || !isfinite(max2) ||
+        !isfinite(min1) || !isfinite(min2) || min1 > max1 || min2 > max2) {
         return false;
     }
     drv->dac_cfg1.attenuation_db = current1;
     drv->dac_cfg2.attenuation_db = current2;
     drv->attenuation_db = current1 + current2;
+    attenuation_db = MAX(attenuation_db, min1 + min2);
+    bool below_open = drv->dac_cfg1.voltage < open1 || drv->dac_cfg2.voltage < open2;
 
     if (attenuation_db > max1 + max2) {
         snprintk(context, sizeof(context), "requested=%.3f clamped=%.3f",
                  attenuation_db, max1 + max2);
-        if (!calibrated_only) coo_cmd_runtime_emit(command_runtime_get(),
-            &(const struct coo_cmd_runtime_emit_args){
-                .type = COO_CMD_RUNTIME_EMIT_WARNING,
-                .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-                .code = "attenuator_clamped",
-                .msg = "attenuator command exceeded modeled range and was clamped",
-                .context = context,
-            });
+        if (!calibrated_only) app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+            .type = COO_CMD_RUNTIME_EMIT_WARNING,
+            .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+            .code = "attenuator_clamped",
+            .msg = "attenuator command exceeded modeled range and was clamped",
+            .context = context,
+        });
         attenuation_db = max1 + max2;
     }
     if (fabs(attenuation_db - drv->attenuation_db) <= ATTENUATOR_DB_EPSILON &&
-        current1 <= max1 && current2 <= max2) {
+        current1 <= max1 && current2 <= max2 && !below_open) {
         return true;
     }
 
@@ -980,22 +1030,22 @@ static bool attenuator_set_db_staged(struct attenuator *drv, double attenuation_
      * attenuated one first when removing dB, avoiding the first-device plateau
      * handoff where our optical model is least reliable.
      */
-    if (calibrated_only && (current1 > max1 || current2 > max2)) {
+    if (below_open || (calibrated_only && (current1 > max1 || current2 > max2))) {
         /* Manual settings can start outside either automatic range. */
-        lower1 = MAX(0.0, attenuation_db - max2);
-        upper1 = MIN(max1, attenuation_db);
+        lower1 = MAX(min1, attenuation_db - max2);
+        upper1 = MIN(max1, attenuation_db - min2);
     } else if (attenuation_db > drv->attenuation_db) {
         lower1 = MAX(current1, attenuation_db - max2);
         upper1 = MIN(max1, attenuation_db - current2);
     } else {
-        lower1 = MAX(0.0, attenuation_db - current2);
-        upper1 = MIN(current1, attenuation_db);
+        lower1 = MAX(min1, attenuation_db - current2);
+        upper1 = MIN(current1, attenuation_db - min2);
     }
     db1 = CLAMP(attenuation_db / 2.0, lower1, upper1);
     db2 = attenuation_db - db1;
     const struct attenuator_target target[2] = {
-        {.value = db1, .update = fabs(db1 - current1) > ATTENUATOR_DB_EPSILON},
-        {.value = db2, .update = fabs(db2 - current2) > ATTENUATOR_DB_EPSILON},
+        {.value = db1, .update = fabs(db1 - current1) > ATTENUATOR_DB_EPSILON || drv->dac_cfg1.voltage < open1},
+        {.value = db2, .update = fabs(db2 - current2) > ATTENUATOR_DB_EPSILON || drv->dac_cfg2.voltage < open2},
     };
     return attenuator_set_pair_staged(drv, target);
 }
@@ -1177,7 +1227,12 @@ int attenuator_apply_coefficients_preserve_db(
         total_db = next.dac_cfg1.attenuation_db + next.dac_cfg2.attenuation_db;
         next.coeff1 = physical[0];
         next.coeff2 = physical[1];
-        ok = attenuator_set_db_staged(&next, total_db, false);
+        /* A parked pair must stay closed when its model changes. Preserving
+         * the old modeled dB here could otherwise reopen a stopped source. */
+        if (attenuator_voltage_to_code(&next.dac_cfg1, next.dac_cfg1.voltage) != DAC_MAX_CODE ||
+            attenuator_voltage_to_code(&next.dac_cfg2, next.dac_cfg2.voltage) != DAC_MAX_CODE) {
+            ok = attenuator_set_db_staged(&next, total_db, false);
+        }
         if (!ok) {
             /* No rollback of DAC writes. Retain confirmed voltages and expose
              * failure, interpreting those voltages under the old calibration.

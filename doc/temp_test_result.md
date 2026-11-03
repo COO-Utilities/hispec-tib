@@ -301,9 +301,9 @@ FLC unit reports:
 | Source | Relevant evidence |
 | --- | --- |
 | [FLPD-1028-50-DFB-BTF](datasheets/FLPD-1028-50-DFB-BTF.pdf), p. 2 | R25 9.5–10.5 kΩ, coefficient −4.4 %/°C, operating 10–40°C, diode maximum 250 mA, TEC maximum 1.2 A |
-| [BF69016 report](datasheets/FLPD-1028-50-DFB-BTF_%23BF69016_testreport.pdf), p. 1 | R25 10,000 Ω at 25°C; threshold 14.5 mA; bias/maximum 250 mA; test operating temperature 25°C; no coefficient/B measurement |
+| {download}`BF69016 report <datasheets/FLPD-1028-50-DFB-BTF_#BF69016_testreport.pdf>`, p. 1 | R25 10,000 Ω at 25°C; threshold 14.5 mA; bias/maximum 250 mA; test operating temperature 25°C; no coefficient/B measurement |
 | [FLPD-2330-03-DFB-BTF](datasheets/FLPD-2330-03-DFB-BTF.pdf), p. 2 | R25 9.5–10.5 kΩ, coefficient printed −4.4 with units 1/°C; operating 10–40°C, diode maximum 120 mA, TEC maximum 1.2 A |
-| [D4520009 report](datasheets/FLPD-2330-03-DFB-BTF_%23D4520009_testreport.pdf), p. 1 | R25 10,000 Ω at 25°C; threshold 24.9 mA; bias/maximum 120 mA; test operating temperature 25°C; no coefficient/B measurement |
+| {download}`D4520009 report <datasheets/FLPD-2330-03-DFB-BTF_#D4520009_testreport.pdf>`, p. 1 | R25 10,000 Ω at 25°C; threshold 24.9 mA; bias/maximum 120 mA; test operating temperature 25°C; no coefficient/B measurement |
 | [Aero 1270](datasheets/1270-nm-laser-diode-Model-1-Datasheet.pdf), [1430](datasheets/1430-nm-laser-diode-Model-1-Datasheet.pdf), [1510](datasheets/1510-nm-laser-diode-Model-1-Datasheet.pdf), p. 1, rev. 08/23, vendor annotations | R25 9.5–10.5 kΩ; B=3900 K; model-sheet operating current typical 60 mA, maximum 70 mA; TEC maximum 1 A; case operating −20 to +60°C |
 | Maiman, printed pp. 15–16, 19–20 (PDF pp. 16–17, 20–21) | PID examples, oscillation cautions, separate internal/external B registers, and an ambiguously named TEC calibration register; its effect needs live testing |
 
@@ -516,8 +516,7 @@ Only after reviewing the idle record should the operator enable the high-load
 phase. Verify actual TEC/LD operation and measured currents, then isolate the
 FVOA ambient effect with single-subsystem steps. Stop and save through the
 notebook's explicit end-test action, preserving raw records even if analysis
-fails. The separate [notebook update prompt](temp_test_update_prompt.txt) describes
-the requested archived replay and future commissioning preamble.
+fails.
 
 ## Data provenance
 
@@ -533,21 +532,11 @@ These are analysis products, not new firmware telemetry or host APIs.
 | Run 2 log | `59f44057cab69426b219cc886b79c35ca3c1826cf62f6cf4012777698e2b9ca5` |
 | Oct 9 debugger capture | `3f95e7428cea342ad2ddd745f0e2dc27baf89294cf2aab6d340efd13e4df4137` |
 
-Software footnote: the archive records a 2330k output-fault warning a few seconds
-after an acknowledged start, followed by both TEC and LD stopped. The brief
-thermal excursion was not sampled at its trigger. The approved heater policy and all
-A–H changes in [temp_test_change_proposals.md](temp_test_change_proposals.md)
-are implemented. Failure replies retain available controller evidence; compact
-status adds output_state while readiness describes public start blockers;
-eligible background checks detect LD-only stops and freeze confirmed stopped
-component counters; heater overrides continue observation; temps() uses idle
-probes; notebook low-power transitions stop channels without bank cycling; the
-PCB power helper uses measured output currents; H synchronizes the thermistor
-coefficient in datasheet units; the follow-up corrects internal register selection.
-Original A–H verification used temporary native/fake-client/archive checks and
-the Nucleo build. The separate Oct 9 live investigation above adds register
-readbacks and bounded TEC-only trials. The mapping correction passes the Nucleo
-build and has not been flashed; no live notebook was executed by the agent.
-Target timing, post-flash synchronization and thermal/start behavior remain
-in [human_review_required.md](human_review_required.md). The refreshed editable
-presentation is intentionally uncommitted.
+The archive records a 2330k output-fault warning a few seconds after an
+acknowledged start, followed by both TEC and LD stopped. The brief thermal
+excursion was not sampled at its trigger. This is evidence for retaining
+controller diagnostics and distinguishing command acknowledgement from confirmed
+operation. Current behavior is documented in [laser operation](laser_operation.md);
+the [review ledger](human_review_required.md) retains physical protection and
+thermal validation decisions. These archived observations do not establish
+post-change target timing or cold-start behavior.

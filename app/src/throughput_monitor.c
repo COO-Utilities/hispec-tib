@@ -13,7 +13,8 @@
 #include "app_settings.h"
 #include "attenuator.h"
 #include "attenuator_calibration.h"
-#include "command.h"
+#include "laser_calibration.h"
+#include "app_output.h"
 #include "devices.h"
 #include "housekeeping.h"
 
@@ -85,6 +86,12 @@ struct throughput_state {
 	int64_t started_ms;
 	uint32_t off_in_s;
 	double max_flux_ph_s;
+	double autolevel_response_hz;
+	/* Filter a signed need to re-range, never a continuously tracked setpoint. */
+	double range_need;
+	int64_t range_sample_ms;
+	int64_t range_started_ms;
+	bool initially_positioned;
 	int64_t input_changed_ms;
 	struct throughput_source_reference source;
 	struct throughput_source_reference previous_source;
@@ -262,9 +269,96 @@ static int refresh_reference(struct throughput_state *state)
 	return rc;
 }
 
-/* One decision per fresh reading. A dark-subtracted low reading cannot override
- * a raw overrange reading. Dimming stays immediate; brightening waits for a
- * reading acquired at least two sample intervals after the last input change.
+/* Slow mode leaves every usable signal alone. The five-sigma detector floor
+ * follows calibration's detectability convention; three observed RMS of raw
+ * headroom is a control heuristic, not a Gaussian coverage guarantee. Optical
+ * fluctuations contribute to headroom, but not to the low-side detector floor:
+ * increasing emission cannot remove fractional fiber/laser variations.
+ * No hardware I/O. A confirmed move must clear the need and await a fresh window.
+ */
+static double autolevel_multiplier(struct throughput_state *state,
+				   const struct photodiode_channel_status *pd)
+{
+	bool saturated = pd->mv >= PHOTODIODE_ADC_USABLE_MV;
+	bool high = saturated || pd->net_mv > PHOTODIODE_ADC_USABLE_MV * TP_HIGH_FRACTION;
+	bool low = !high && pd->net_mv < PHOTODIODE_ADC_USABLE_MV * TP_LOW_FRACTION;
+	if (state->autolevel_response_hz == 0.0) {
+		return high ? 1.0 / 3.0 : low ? 3.0 : 1.0;
+	}
+	int64_t previous_sample_ms = state->range_sample_ms;
+	state->range_sample_ms = pd->sample_ms;
+	if (saturated) {
+		state->range_need = 0.0;
+		return 1.0 / 3.0;
+	}
+	if (!isfinite(pd->net_mv) || !isfinite(pd->net_err_mv)) {
+		state->range_need = 0.0;
+		return 1.0;
+	}
+	if (!state->initially_positioned) {
+		/* One initial positioning episode uses the existing broad band. Once
+		 * reached, even later re-ranging never resumes centering on 1000 mV.
+		 */
+		if (!high && !low) {
+			state->initially_positioned = true;
+			return 1.0;
+		}
+	} else {
+		const struct photodiode_window_result *window = &pd->fixed_window;
+		/* The rolling diagnostic window may straddle the last actuator move.
+		 * Require a complete current window entirely after it; stale scatter
+		 * must not trigger another move or re-enter startup positioning.
+		 */
+		if (!window->valid || window->sample_length * PHOTODIODE_SAMPLE_INTERVAL_MS <
+		    PHOTODIODE_FIXED_WINDOW_MS || window->sample_length - window->failed_samples < 2 ||
+		    window->end_ms - PHOTODIODE_FIXED_WINDOW_MS <= state->input_changed_ms ||
+		    pd->sample_ms - window->end_ms > PHOTODIODE_SAMPLE_INTERVAL_MS ||
+		    !isfinite(window->rms_mv)) {
+			state->range_need = 0.0;
+			return 1.0;
+		}
+		double headroom = 3.0 * fmax(pd->net_err_mv, window->rms_mv);
+		double floor = 5.0 * pd->net_err_mv;
+		/* Current reading and window must agree. A recovered reading clears
+		 * stale demand; a single noisy low reading cannot initiate re-ranging.
+		 */
+		high = pd->mv + headroom >= PHOTODIODE_ADC_USABLE_MV &&
+			window->mean_mv + headroom >= PHOTODIODE_ADC_USABLE_MV;
+		low = !high && pd->net_mv < floor && window->mean_net_mv < floor;
+		double need = high ? -1.0 : low ? 1.0 : 0.0;
+		if (need == 0.0 || need * state->range_need < 0.0) {
+			state->range_need = 0.0;
+		}
+		if (need == 0.0 || previous_sample_ms == 0) {
+			return 1.0;
+		}
+		if (state->range_need == 0.0) {
+			state->range_started_ms = pd->sample_ms;
+		}
+		double dt = (pd->sample_ms - previous_sample_ms) / 1000.0;
+		double alpha = -expm1(-2.0 * 3.14159265358979323846 * state->autolevel_response_hz * dt);
+		state->range_need += alpha * (need - state->range_need);
+		/* An external signal step can inflate a rolling window's RMS for
+		 * one window without threatening saturation. Do not chase that edge.
+		 */
+		if (fabs(state->range_need) < 0.5 ||
+		    pd->sample_ms - state->range_started_ms < PHOTODIODE_FIXED_WINDOW_MS) {
+			return 1.0;
+		}
+		/* Crossing half response triggers one discrete correction. Clear the
+		 * need even if both actuators are at their limits: there is no windup.
+		 */
+		state->range_need = 0.0;
+	}
+	double multiplier = pd->net_mv > 0.0 ? CLAMP(1000.0 / pd->net_mv, 1.0 / 3.0, 3.0) : 3.0;
+	/* Large fluctuations may consume headroom even below 1000 mV. Dimming
+	 * must never become a brightening request merely to reach that landing point.
+	 */
+	return high && multiplier >= 1.0 ? 1.0 / 3.0 : multiplier;
+}
+
+/* One decision per fresh reading. Raw saturation takes precedence over net
+ * signal. Brightening still waits two sample intervals after the last move.
  * Returns 1 after an input change, 0 without a change, or a hardware error.
  */
 static int autolevel_adjust(struct throughput_state *state,
@@ -272,10 +366,10 @@ static int autolevel_adjust(struct throughput_state *state,
 {
 	const struct throughput_source_reference *source = &state->source;
 	struct attenuator *atten = &attenuators[state->attenuator_index];
-	bool high = pd->mv >= PHOTODIODE_ADC_USABLE_MV ||
-		pd->net_mv > PHOTODIODE_ADC_USABLE_MV * TP_HIGH_FRACTION;
-	bool low = !high && pd->net_mv < PHOTODIODE_ADC_USABLE_MV * TP_LOW_FRACTION;
-	double max_tx = 1.0;
+	double multiplier = autolevel_multiplier(state, pd);
+	bool high = multiplier < 1.0;
+	bool low = multiplier > 1.0;
+	double max_tx = pow(10.0, -attenuator_min_db(atten) / 10.0);
 	double laser_flux = source->laser_output_power_uw * 1.0e-6 *
 		(source->wavelength_nm * 1.0e-9) / (6.62607015e-34 * 299792458.0);
 	struct app_laser_channel_settings settings;
@@ -295,7 +389,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	 * static route losses. Optical power is used everywhere else in the stream.
 	 */
 	if (state->max_flux_ph_s > 0.0 && laser_flux > 0.0) {
-		max_tx = MIN(1.0, state->max_flux_ph_s / laser_flux);
+		max_tx = MIN(max_tx, state->max_flux_ph_s / laser_flux);
 	}
 	/* Try each actuator once; a clamped/quantized no-op yields to the other.
 	 * The same actuator code serves both build-time priority choices.
@@ -303,7 +397,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	bool laser_first = high && TP_AUTOLEVEL_DIM_PRIORITY == TP_LASER_FIRST;
 	for (unsigned pass = 0; pass < 2; ++pass) {
 		if ((pass == 0) != laser_first) {
-			double next_tx = low ? MIN(source->atten_tx * 3.0, max_tx) : source->atten_tx / 3.0;
+			double next_tx = low ? MIN(source->atten_tx * multiplier, max_tx) : source->atten_tx * multiplier;
 			if (low && next_tx <= source->atten_tx) {
 				continue;
 			}
@@ -320,22 +414,27 @@ static int autolevel_adjust(struct throughput_state *state,
 			continue;
 		}
 		const laserprops_t *props = &settings.properties;
-		double excess_ma = source->laser_current_ma - props->threshold_current_ma;
-		double max_ma = props->nominal_current_ma;
+		double max_ma = settings.max_autolevel_current_ma;
+		double power = hispec_laser_estimate_power_mw(props, source->laser_current_ma);
+		double max_power = hispec_laser_estimate_power_mw(props, max_ma);
 		if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
-			max_ma = MIN(max_ma, props->threshold_current_ma + excess_ma *
+			max_power = MIN(max_power, power *
 				state->max_flux_ph_s / (laser_flux * source->atten_tx));
+			max_ma = hispec_laser_current_for_power_mw(props, max_power);
 		}
+		/* Optical steps and the flux cap must use the corrected
+		 * power curve; current overdrive is proportional only when q is zero. */
+		double next_power = MIN(power * multiplier, max_power);
 		double next_ma = hispec_laser_quantize_current_ma(
-			props->threshold_current_ma + (low ? excess_ma * 3.0 : excess_ma / 3.0),
+			hispec_laser_current_for_power_mw(props, next_power),
 			settings.min_autolevel_current_ma, max_ma);
 		if (!isfinite(next_ma) || (low ? next_ma <= source->laser_current_ma :
 					       next_ma >= source->laser_current_ma)) {
 			continue;
 		}
-		double percent = MIN(100.0, 100.0 * (next_ma - props->threshold_current_ma) /
-			(props->nominal_current_ma - props->threshold_current_ma));
-		rc = hispec_laser_set_output_percent_autooff(state->laser, percent, 0U, false, NULL, 0);
+		/* The current is already selected from the calibrated inverse and
+		 * bounded on the driver grid; do not round-trip it through a level. */
+		rc = hispec_laser_set_current_ma_autooff(state->laser, next_ma, 0U, NULL, 0);
 		if (rc != 0) {
 			return rc;
 		}
@@ -438,7 +537,7 @@ static void publish_sample(const struct throughput_state *state,
 		}
 	}
 	msg->payload_len = off;
-	(void)coo_cmd_runtime_emit(command_runtime_get(), &(const struct coo_cmd_runtime_emit_args){
+	(void)app_output_emit(&(const struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_DATA, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.suffix = topic_suffix, .out = msg,
 	});
@@ -453,7 +552,7 @@ static void warn_fault_stop(const struct throughput_state *state, const char *re
 	snprintk(context, sizeof(context), "channel=%s laser=%s rc=%d",
 		photodiode_channel_names[state->channel],
 		state->has_laser ? hispec_laser_name(state->laser) : "none", error);
-	coo_cmd_runtime_emit(command_runtime_get(), &(struct coo_cmd_runtime_emit_args){
+	app_output_emit(&(struct coo_cmd_runtime_emit_args){
 		.type = COO_CMD_RUNTIME_EMIT_WARNING, .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
 		.code = "throughput_stopped", .msg = reason, .context = context,
 	});
@@ -472,7 +571,10 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 		(void)photodiode_wait_for_sample(K_MSEC(PHOTODIODE_SAMPLE_INTERVAL_MS));
 		int64_t now = k_uptime_get();
 		photodiode_get_status(&throughput_pd_status);
+		/* Starts enforce mutual exclusion. Both calibrations use this worker
+		 * and sampler snapshot; the inactive owner returns without advancing. */
 		attenuator_calibration_tick(&throughput_pd_status);
+		laser_calibration_tick(&throughput_pd_status);
 		for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 			struct throughput_state *state = &monitors[i];
 			const struct photodiode_channel_status *pd = &throughput_pd_status.channel[i];
@@ -515,6 +617,7 @@ void throughput_monitor_thread(void *p1, void *p2, void *p3)
 			if (state->autolevel && pd->sample_ms > state->input_changed_ms) {
 				rc = autolevel_adjust(state, pd);
 				if (rc > 0) {
+					state->range_need = 0.0;
 					rc = refresh_reference(state);
 				}
 				if (rc < 0) {
@@ -547,7 +650,10 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 		return -EINVAL;
 	}
 	photodiode_get_status(&pd_status);
-	if (attenuator_calibration_active() || pd_status.channel[0].dark_pending ||
+	/* Throughput must not compete with a calibration for the source, DACs or
+	 * PD window, including a calibration's emission-off recabling pause. */
+	if (attenuator_calibration_active() || laser_calibration_active() ||
+	    pd_status.channel[0].dark_pending ||
 	    pd_status.channel[1].dark_pending) {
 		return -EBUSY;
 	}
@@ -647,6 +753,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.fiber = request->fiber;
 	next.off_in_s = request->off_in_s;
 	next.max_flux_ph_s = request->max_flux_ph_s;
+	next.autolevel_response_hz = request->autolevel_response_hz;
 	next.started_ms = k_uptime_get();
 	/* Continuing the same source with adjustments disabled retains its shutdown. */
 	next.stop_laser = request->autolevel || monitors[channel].stop_laser;
@@ -660,17 +767,18 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 			goto failed;
 		}
 		const laserprops_t *props = &settings.properties;
-		double range_ma = props->nominal_current_ma - props->threshold_current_ma;
+		double nominal_power = hispec_laser_estimate_power_mw(props, props->nominal_current_ma);
+		/* Start at the requested emission fraction, then enforce autolevel's
+		 * independent current bounds. Initial level zero therefore uses the floor. */
 		double initial_ma = hispec_laser_quantize_current_ma(
-			props->threshold_current_ma + range_ma * request->initial_level,
-			settings.min_autolevel_current_ma, props->nominal_current_ma);
+			hispec_laser_current_for_power_mw(props, nominal_power * request->initial_level),
+			settings.min_autolevel_current_ma, settings.max_autolevel_current_ma);
 		stage = "initial attenuation";
 		rc = attenuator_set_db(&attenuators[attenuator_index],
 			2.0 * ATTENUATOR_CALIBRATED_MAX_DB, true) ? 0 : -EIO;
 		if (rc == 0) {
 			stage = "initial laser current";
-			rc = hispec_laser_set_output_percent_autooff(request->laser,
-				MIN(100.0, 100.0 * (initial_ma - props->threshold_current_ma) / range_ma), 0U, false, NULL, 0);
+			rc = hispec_laser_set_current_ma_autooff(request->laser, initial_ma, 0U, NULL, 0);
 		}
 		if (rc != 0) {
 			goto failed;
@@ -766,19 +874,15 @@ void throughput_monitor_note_attenuator_changed(uint8_t attenuator_index)
 	k_mutex_unlock(&monitors_lock);
 }
 
-void throughput_monitor_note_laser_changed(enum hispec_laser_id laser, bool stop_monitoring)
+void throughput_monitor_note_laser_changed(enum hispec_laser_id laser)
 {
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		if (monitors[i].has_laser && monitors[i].laser == laser) {
-			if (stop_monitoring) {
-				release_locked((enum photodiode_channel)i);
-			} else {
-				/* Disable control before the manual write. The sampling loop
-				 * picks up confirmed setpoints after I/O; retain run ownership.
-				 */
-				monitors[i].autolevel = false;
-			}
+			/* Disable control before the manual write. The sampling loop
+			 * picks up confirmed setpoints after I/O; retain run ownership.
+			 */
+			monitors[i].autolevel = false;
 		}
 	}
 	k_mutex_unlock(&monitors_lock);
@@ -790,19 +894,10 @@ int throughput_monitor_update_laser_settings(enum hispec_laser_id laser,
 	k_mutex_lock(&monitors_lock, K_FOREVER);
 	for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		if (monitors[i].has_laser && monitors[i].laser == laser) {
-			housekeeping_photodiode_autooff_inhibit(pd_power_output(i), false);
-			monitors[i].phase = TP_INACTIVE;
 			monitors[i].autolevel = false;
 		}
 	}
 	int rc = hispec_laser_update_channel_settings(laser, settings, persist, error, error_len);
-	if (rc == 0) {
-		for (uint8_t i = 0U; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
-			if (monitors[i].has_laser && monitors[i].laser == laser) {
-				release_locked(i);
-			}
-		}
-	}
 	k_mutex_unlock(&monitors_lock);
 	return rc;
 }

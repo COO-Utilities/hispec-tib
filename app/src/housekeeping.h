@@ -66,8 +66,12 @@ int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
 					uint32_t autooff_s,
 					bool *was_off);
 
-/** Cancel one photodiode relay's auto-off deadline. */
-void housekeeping_photodiode_autooff_cancel(enum housekeeping_power_output output);
+/** Restart auto-off from now if the photodiode is powered; zero cancels it.
+ * Never enables power. May block on relay I/O and reschedules existing work;
+ * inhibition is preserved. Does not publish or persist settings.
+ */
+int housekeeping_photodiode_autooff_set(enum housekeeping_power_output output,
+				      uint32_t autooff_s);
 
 /** Prevent or allow one photodiode auto-off deadline from firing. */
 void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,

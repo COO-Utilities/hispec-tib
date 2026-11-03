@@ -56,7 +56,7 @@ struct app_mqtt_settings {
 #define APP_MEMS_SPLIT_CHANNEL_COUNT 2
 #define APP_MEMS_SPLIT_OUTPUT_COUNT 3
 #define APP_PD_DARK_DURATION_MAX_MS 2000U
-#define APP_PD_DEFAULT_AUTOOFF_S 300U
+#define APP_PD_DEFAULT_AUTOOFF_S 36000U
 
 enum app_pd_power_mode {
 	APP_PD_POWER_AUTO = 0,
@@ -81,6 +81,11 @@ struct app_attenuator_physical_settings {
 /** Fit acceptance policy; separate NVS record preserves calibration layout. */
 struct app_attenuator_fit_policy {
 	double max_fit_residual_db[APP_ATTENUATOR_PHYSICAL_COUNT];
+};
+
+/** Operational open voltages, stored separately from model coefficients. */
+struct app_attenuator_open_settings {
+	float mv[APP_ATTENUATOR_PHYSICAL_COUNT];
 };
 
 /** Persisted/runtime calibration for one logical attenuator channel. */
@@ -128,8 +133,9 @@ struct app_laserbank_settings {
 /** App-owned laser policy/calibration settings. Driver EEPROM owns raw driver persistence. */
 struct app_laser_channel_settings {
 	laserprops_t properties;
-	/* Throughput autolevel floor; manual current/level commands may go lower. */
+	/* Throughput autolevel support; manual current/level commands remain independent. */
 	double min_autolevel_current_ma;
+	double max_autolevel_current_ma;
 	double current_cal_pct;
 	/* App-owned optical-power uncertainty; never programmed into Maiman. */
 	double fractional_noise;
@@ -191,6 +197,7 @@ struct app_settings_snapshot {
 	struct app_mqtt_settings mqtt;
 	struct app_attenuator_settings attenuator;
 	struct app_attenuator_fit_policy attenuator_fit[APP_ATTENUATOR_CHANNEL_COUNT];
+	struct app_attenuator_open_settings attenuator_open[APP_ATTENUATOR_CHANNEL_COUNT];
 	struct app_photodiode_settings photodiode;
 	struct app_laserbank_settings laserbank;
 	struct app_laser_settings laser;
@@ -208,6 +215,7 @@ struct app_settings_snapshot {
  * storage is cleared and defaults are used.
  */
 int app_settings_init(void);
+/** Copy all app-owned settings under the settings mutex; no NVS or hardware I/O. */
 void app_settings_get_snapshot(struct app_settings_snapshot *out);
 /**
  * @brief Record the immutable PCB board type in persistent settings.
@@ -235,6 +243,10 @@ void app_settings_get_mqtt(struct app_mqtt_settings *out);
 void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
 /** Copy acceptance policy under the settings mutex; no I/O. */
 void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out);
+/** Copy operational open settings; neither function performs DAC I/O. */
+void app_settings_get_attenuator_open(uint8_t channel, struct app_attenuator_open_settings *out);
+/** Update the settings snapshot, optionally blocking on NVS persistence. */
+int app_settings_update_attenuator_open(uint8_t channel, const struct app_attenuator_open_settings *open, bool persist);
 /** Validate/update policy only; optional NVS write, never changes DAC outputs. */
 int app_settings_update_attenuator_fit(uint8_t channel, const struct app_attenuator_fit_policy *policy, bool persist);
 
@@ -277,8 +289,6 @@ void app_settings_get_laserbank(struct app_laserbank_settings *out);
 /** @brief Replace laser-bank heater mode setting. */
 void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist);
-/** @brief Copy app-owned laser settings and lifetime counters. */
-void app_settings_get_laser(struct app_laser_settings *out);
 /** @brief Copy one app-owned laser channel's settings. */
 int app_settings_get_laser_channel(uint8_t channel,
 				   struct app_laser_channel_settings *out);
@@ -287,6 +297,8 @@ int app_settings_get_laser_channel(uint8_t channel,
  *
  * Driver-backed values are only app intent here; lasers.c owns applying those
  * values to the Maiman module. Laser output current is intentionally absent.
+ * May wait on the settings mutex and optional flash writes. Persistence errors
+ * are returned after RAM application; writes to separate records are not atomic.
  */
 int app_settings_update_laser_channel(uint8_t channel,
 				      const struct app_laser_channel_settings *laser,
@@ -311,10 +323,16 @@ int app_settings_get_route_loss(const char *route, const char *laser,
  *
  * The record is keyed only by route and laser names. It does not change MEMS
  * route structs or switch state. If @p persist is true, the indexed route-loss
- * record is saved via Zephyr NVS and may block on flash I/O.
+ * record is saved via Zephyr NVS and may block on flash I/O. A flash error is
+ * returned without undoing the RAM update.
  */
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist);
+
+/** Remove one exact route/source override, optionally deleting its NVS record.
+ * Exposes compiled defaults; no switch I/O. May block on settings/flash. */
+int app_settings_reset_route_loss(const char *route, const char *laser, bool persist);
+
 /** @brief Copy MEMS user intent and optional restart metadata. */
 void app_settings_get_mems(struct app_mems_settings *out);
 /** @brief Replace MEMS user intent and optionally persist the MEMS NVS record. */

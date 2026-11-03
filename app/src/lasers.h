@@ -53,7 +53,6 @@ enum hispec_laser_bank_power_mode {
 struct hispec_laser_driver_profile {
 	enum hispec_laser_id id;
 	const char *name;
-	const char *modbus_name;
 	uint8_t node_id;
 	uint16_t expected_device_id;
 	const laserprops_t *properties;
@@ -161,8 +160,8 @@ struct hispec_laser_channel_temperature {
 /**
  * @brief Parse a command/API laser name into a laser-bank channel.
  *
- * Accepts command names such as "1430yj" and validation-notebook names such
- * as "yj1430". Returns 0 on success or -EINVAL for an unknown name.
+ * Accepts canonical command names such as "1430yj", case-insensitively.
+ * Returns 0 on success or -EINVAL for an unknown name. No I/O or state changes.
  */
 int hispec_laser_id_from_name(const char *name, enum hispec_laser_id *out);
 
@@ -196,7 +195,9 @@ uint32_t hispec_laser_bank_power_on_duration_s(void);
 
 /** @brief Get or set the runtime laser-bank power override mode. */
 enum hispec_laser_bank_power_mode hispec_laser_bank_power_mode_get(void);
+/** Return the static wire name of the bank-power policy; no I/O. */
 const char *hispec_laser_bank_power_mode_name(enum hispec_laser_bank_power_mode mode);
+/** Apply bank auto/override policy; may sleep on power sequencing and Modbus shutdown. */
 int hispec_laser_bank_power_mode_set(enum hispec_laser_bank_power_mode mode);
 
 /**
@@ -275,6 +276,9 @@ int hispec_laser_program_driver_profile(enum hispec_laser_id id, bool save_to_ee
 
 /** @brief Save or reset the Maiman module's own EEPROM-backed settings. */
 int hispec_laser_save_driver_settings(enum hispec_laser_id id);
+/** Reset the selected driver and invalidate preparation/output caches; may sleep.
+ * The next start prepares the driver again. Controller EEPROM behavior belongs
+ * to Maiman; app policy is restored separately. */
 int hispec_laser_reset_driver_settings(enum hispec_laser_id id);
 
 /** Read one channel. Engineering values are controller readbacks, or unavailable
@@ -309,6 +313,11 @@ int hispec_laser_stop_all_outputs(bool stop_tecs);
  */
 int hispec_laser_set_current_ma(enum hispec_laser_id id, double current_ma, char *error, size_t error_len);
 
+/** Set engineering current and rearm autooff after success. Bypasses the optical
+ * model and stored tune request; may block on preparation/Modbus I/O. */
+int hispec_laser_set_current_ma_autooff(enum hispec_laser_id id, double current_ma,
+				      uint32_t autooff_s, char *error, size_t error_len);
+
 /** Round to Maiman current steps within inward-rounded bounds, or return NaN
  * when no step exists. Pure calculation, no I/O or state changes. Control
  * callers use this same conversion to predict moves and enforce flux limits.
@@ -327,7 +336,9 @@ int hispec_laser_set_output_percent_autooff(enum hispec_laser_id id,
 /** @brief Set estimated output power in mW using the diode efficiency model. */
 int hispec_laser_set_output_mw(enum hispec_laser_id id, double power_mw, char *error, size_t error_len);
 
-/** @brief Set output as 0-100 percent of nominal current above threshold. */
+/** Set 0-100 percent of modeled nominal emission, using the curve inverse.
+ * Zero requests zero current. May prepare the driver and block on Modbus;
+ * the existing current bounds and 0.1 mA register quantization still apply. */
 int hispec_laser_set_output_percent(enum hispec_laser_id id, double percent, char *error, size_t error_len);
 
 /**
@@ -363,7 +374,11 @@ int hispec_laser_validate_channel_settings(enum hispec_laser_id id,
  * first; a failed stop rejects the update. Range-only edits invalidate preparation
  * without powering an idle bank; driver-backed edits, including the PCB-owned
  * NTC coefficient, program immediately through the existing stop/power flow.
- * May block on Modbus and requested NVS persistence.
+ * A changed autooff_s restarts the deadline for a started laser (including zero
+ * current); zero cancels it. Unchanged values leave the deadline alone. This
+ * never starts an idle laser and reschedules the existing auto-off work.
+ * May block on Modbus and requested NVS persistence. A persistence error is
+ * returned after application; it does not undo successfully installed settings.
  */
 int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 					 const struct app_laser_channel_settings *settings,
@@ -371,10 +386,15 @@ int hispec_laser_update_channel_settings(enum hispec_laser_id id,
 /** @brief Store the wavelength tune offset applied by future positive laser starts. */
 int hispec_laser_set_tune_delta_nm(enum hispec_laser_id id, double delta_nm,
 				   bool persist, char *error, size_t error_len);
+/** Copy the stored relative wavelength request under the state lock; no Modbus I/O. */
 double hispec_laser_get_tune_delta_nm(enum hispec_laser_id id);
 
 /** @brief Estimate optical power from current using the fixed diode properties. */
 double hispec_laser_estimate_power_mw(const laserprops_t *properties, double current_ma);
+
+/** Invert the corrected power curve; zero requests off and unreachable power
+ * returns NAN. Pure arithmetic; callers own quantization and operating floors. */
+double hispec_laser_current_for_power_mw(const laserprops_t *properties, double power_mw);
 
 /**
  * @brief Estimate emitted photon flux from the laser module's operating state.

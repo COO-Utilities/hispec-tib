@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "laser_calibration.h"
 #include "photodiode_command.h"
 
 #include <errno.h>
@@ -64,11 +65,11 @@ static int pd_apply_power_mode(enum photodiode_channel channel,
 	const enum housekeeping_power_output output = pd_power_output(channel);
 
 	if (mode == APP_PD_POWER_OVERRIDE_ON) {
-		housekeeping_photodiode_autooff_cancel(output);
+		(void)housekeeping_photodiode_autooff_set(output, 0U);
 		return housekeeping_power_set(output, true);
 	}
 	if (mode == APP_PD_POWER_OVERRIDE_OFF) {
-		housekeeping_photodiode_autooff_cancel(output);
+		(void)housekeeping_photodiode_autooff_set(output, 0U);
 		return housekeeping_power_set(output, false);
 	}
 
@@ -164,6 +165,7 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 {
 	bool pd_powered = !pd_channel_power_is_off(channel);
 	uint64_t ontime_s = (uint64_t)housekeeping_power_on_time_s(pd_power_output(channel));
+	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
 	const struct photodiode_window_result *dark =
 		status == NULL ? NULL : &status->dark_window;
 
@@ -191,9 +193,12 @@ static int pd_append_channel_json(char *payload, size_t payload_len, size_t *off
 	    coo_json_append(payload, payload_len, off, ",\"window\":") != 0 ||
 	    pd_append_window_json(payload, payload_len, off, &status->fixed_window) != 0 ||
 	    coo_json_append(payload, payload_len, off,
-			    ",\"pd_powered\":%s,\"pd_on_s\":%llu}",
+			    ",\"pd_powered\":%s,\"pd_on_s\":%llu,\"off_in_s\":",
 			    pd_powered ? "true" : "false",
-			    (unsigned long long)ontime_s) != 0) {
+			    (unsigned long long)ontime_s) != 0 ||
+	    coo_json_append_i64_or_null(payload, payload_len, off,
+				       off_in_s >= 0, off_in_s) != 0 ||
+	    coo_json_append(payload, payload_len, off, "}") != 0) {
 		return -ENOSPC;
 	}
 	return 0;
@@ -254,7 +259,7 @@ static void pd_auto_enable_selected(const bool include[PHOTODIODE_CHANNEL_COUNT]
 int pd_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct photodiode_status status;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	bool include[PHOTODIODE_CHANNEL_COUNT];
 	size_t off = 0U;
 	bool appended = false;
@@ -294,7 +299,7 @@ static int pd_dark_response(const struct coo_cmd_request *cmd,
 			    struct coo_cmd_response *out)
 {
 	struct photodiode_status status;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	size_t off = 0U;
 
 	photodiode_get_status(&status);
@@ -328,6 +333,11 @@ int pd_dark_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int pd_dark_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	/* Changing the subtracted offset mid-run invalidates the shared baseline. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
 	enum photodiode_channel channel;
 	uint32_t duration_ms = 0U;
 	double dark_mv = NAN;
@@ -428,32 +438,26 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 				    const struct app_pd_channel_settings *ch)
 {
 	size_t off = 0U;
-	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
+	/* Query actual channel power without enabling it or rearming auto-off.
+	 * Calibration preflight must distinguish policy "auto" from a live PD. */
+	bool powered;
+	int rc = housekeeping_power_get(pd_power_output(channel), &powered);
+	if (rc != 0) {
+		return rc;
+	}
 
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"channel\":\"%s\",\"noisewarn_mv\":%.3f,"
 			    "\"responsivity_a_per_w\":%.9f,"
 				    "\"transimpedance_v_per_a\":%.6e,"
-				    "\"power\":\"%s\",\"autooff_s\":%u,\"off_in_s\":",
+				    "\"power\":\"%s\",\"powered\":%s,\"autooff_s\":%u}",
 			    photodiode_channel_names[channel],
 				    (double)ch->noise_warn_rms_mv,
 				    ch->responsivity_a_per_w,
 				    ch->transimpedance_v_per_a,
 				    pd_power_mode_name(ch->power),
+				    powered ? "true" : "false",
 				    ch->autooff_s) != 0) {
-		return -ENOSPC;
-	}
-
-	if (off_in_s >= 0 &&
-	    coo_json_append(payload, payload_len, &off, "%lld",
-			    (long long)off_in_s) != 0) {
-		return -ENOSPC;
-	}
-	if (off_in_s < 0 &&
-	    coo_json_append(payload, payload_len, &off, "null") != 0) {
-		return -ENOSPC;
-	}
-	if (coo_json_append(payload, payload_len, &off, "}") != 0) {
 		return -ENOSPC;
 	}
 
@@ -463,7 +467,7 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
 	struct app_photodiode_settings settings;
-	char payload[MAX_PAYLOAD_LEN] = {0};
+	char payload[COO_CMD_PAYLOAD_MAX] = {0};
 	enum photodiode_channel channel;
 	int rc;
 
@@ -476,7 +480,8 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	rc = pd_settings_channel_json(payload, sizeof(payload), channel,
 				      &settings.channel[channel]);
 	if (rc != 0) {
-		return coo_cmd_error(out, cmd, "pd/settings response too large");
+		return coo_cmd_error(out, cmd, rc == -ENOSPC ?
+			"pd/settings response too large" : "pd power query failed");
 	}
 
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
@@ -484,11 +489,17 @@ int pd_settings_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 
 int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	/* Calibration snapshots PD gain/dark and owns the sampling configuration. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
 	struct app_photodiode_settings settings;
 	struct app_pd_channel_settings channel_settings;
 	enum photodiode_channel channel;
 	bool persist = false;
 	bool changed = false;
+	bool autooff_supplied = false;
 	int power_value;
 	int parse_rc;
 	int rc;
@@ -535,9 +546,13 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 	}
 	if (coo_json_extract_optional_u32(cmd->payload, "autooff_s",
 					  &channel_settings.autooff_s,
-					  &changed) != 0) {
+					  &autooff_supplied) != 0) {
 		return coo_cmd_error(out, cmd, "invalid autooff_s");
 	}
+	if (autooff_supplied && attenuator_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+	changed |= autooff_supplied;
 
 	if (!changed) {
 		return coo_cmd_error(out, cmd, "no pd/settings fields supplied");
@@ -547,6 +562,14 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 		rc = pd_apply_power_mode(channel, channel_settings.power);
 		if (rc != 0) {
 			return coo_cmd_error_rc(out, cmd, "photodiode power mode failed", rc);
+		}
+	}
+	if (channel_settings.power == APP_PD_POWER_AUTO &&
+	    channel_settings.autooff_s != settings.channel[channel].autooff_s) {
+		rc = housekeeping_photodiode_autooff_set(pd_power_output(channel),
+						       channel_settings.autooff_s);
+		if (rc != 0) {
+			return coo_cmd_error_rc(out, cmd, "photodiode auto-off update failed", rc);
 		}
 	}
 	app_settings_update_photodiode_channel((uint8_t)channel,

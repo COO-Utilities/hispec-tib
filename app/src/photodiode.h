@@ -32,11 +32,11 @@
 #define PHOTODIODE_NOISE_RMS_MAX_MV PHOTODIODE_ADC_FULL_SCALE_MV
 #define PHOTODIODE_RESPONSIVITY_MIN_A_PER_W 0.000001
 #define PHOTODIODE_RESPONSIVITY_MAX_A_PER_W 10.0
-#define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0e7
+#define PHOTODIODE_TRANSIMPEDANCE_MIN_V_PER_A 1.0e5
 #define PHOTODIODE_TRANSIMPEDANCE_MAX_V_PER_A 1.0e12
 /* RMS scatter in the fixed 500 ms window, in ADC-input mV reconstructed from
  * conversion codes. With the default effective gains and responsivities,
- * 10 mV RMS is nominally 0.538 pW RMS at YJ and 17.3 pW RMS at HK:
+ * 10 mV RMS is nominally 0.538 pW RMS at YJ and 17.3 nW RMS at HK:
  * P_rms = 0.010 V / (transimpedance_v_per_a * responsivity_a_per_w).
  * These are wavelength-dependent optical equivalents; real signal changes
  * within the window also contribute to this warning statistic.
@@ -49,11 +49,13 @@
 #define PHOTODIODE_HK_DEFAULT_RESPONSIVITY_A_PER_W 0.60971
 /* Effective transimpedance at the ADC input: detector datasheet gain combined
  * with the Rev. 2 0-10 V to 0-2 V divider and any intervening analog gain.
- * YJ: 1.0e11 V/A * 0.2; HK: 4.75e9 V/A * 0.2. Keep this as one calibrated
- * setting; the power conversion must not apply the divider a second time.
+ * YJ: 1.0e11 V/A * 0.2; HK: PDA10DT at 70 dB, 4.75e6 V/A * 0.2.
+ * R7/R8 present 100 kohm to the detectors (80 kohm above, 20 kohm below
+ * the ADC node), so the PDA10DT's 50-ohm-load half-gain does not apply.
+ * Keep this as one calibrated setting; do not apply the divider twice.
  */
 #define PHOTODIODE_YJ_DEFAULT_TRANSIMPEDANCE_V_PER_A 2.0e10
-#define PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A 9.5e8
+#define PHOTODIODE_HK_DEFAULT_TRANSIMPEDANCE_V_PER_A 9.5e5
 #define PHOTODIODE_FIXED_WINDOW_MS 500U
 #define PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV 1.5
 

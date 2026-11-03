@@ -6,6 +6,9 @@
 #include <coo_commons/command_dispatch.h>
 
 #include <coo_commons/json_utils.h>
+#if defined(CONFIG_COO_OTA)
+#include <coo_commons/ota.h>
+#endif
 
 #include <ctype.h>
 #include <errno.h>
@@ -17,9 +20,7 @@
 #include <zephyr/console/console.h>
 #include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
-#if defined(CONFIG_COO_CMD_REBOOT)
 #include <zephyr/sys/reboot.h>
-#endif
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/zvfs/eventfd.h>
@@ -41,9 +42,7 @@ static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime);
 static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 				   const struct coo_cmd_request *cmd,
 				   struct coo_cmd_response *out);
-#if defined(CONFIG_COO_CMD_REBOOT)
 static void reboot_work_handler(struct k_work *work);
-#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static void serial_guard_expire_work_handler(struct k_work *work);
 #endif
@@ -89,7 +88,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	/* Native, nonblocking eventfd wakes the network owner without a thread. */
 	runtime->output_event_fd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
 	if (runtime->output_event_fd < 0) return -errno;
-	runtime->execute_handler = cfg->execute_handler;
 	runtime->mqtt_msg_id = cfg->mqtt_msg_id;
 	runtime->serial_wrap_column = cfg->serial_wrap_column != 0U ?
 				      cfg->serial_wrap_column :
@@ -99,7 +97,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->lastcommand_nvs = cfg->lastcommand_nvs;
 	runtime->lastcommand_nvs_id = cfg->lastcommand_nvs_id;
 	runtime->user_data = cfg->user_data;
-#if defined(CONFIG_COO_CMD_REBOOT)
 	runtime->reboot_delay_ms = cfg->reboot_delay_ms != 0U ?
 				   cfg->reboot_delay_ms :
 				   COO_CMD_REBOOT_DEFAULT_DELAY_MS;
@@ -107,7 +104,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 	runtime->reboot_work_q = cfg->reboot_work_q;
 	k_work_init_delayable(&runtime->reboot_work, reboot_work_handler);
 	(void)atomic_clear(&runtime->reboot_pending);
-#endif
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	runtime->serial_guard_seconds = CONFIG_COO_CMD_SERIAL_GUARD_DEFAULT_SECONDS;
 	k_work_init_delayable(&runtime->serial_guard_work,
@@ -907,12 +903,10 @@ static int runtime_normalize_serial_payload(const struct coo_cmd_spec *spec,
 						user_data, out, out_len);
 }
 
-int coo_cmd_make_response(struct coo_cmd_response *out,
-			  const struct coo_cmd_request *cmd,
-			  enum coo_cmd_msg_type msg_type,
-			  const char *payload,
-			  coo_cmd_format_response_topic_fn format_topic,
-			  void *user_data)
+int coo_cmd_reply(struct coo_cmd_response *out,
+		  const struct coo_cmd_request *cmd,
+		  enum coo_cmd_msg_type msg_type,
+		  const char *payload)
 {
 	static const char overflow_msg[] = "{\"error\":\"response too large\"}";
 	bool payload_in_out;
@@ -946,11 +940,6 @@ int coo_cmd_make_response(struct coo_cmd_response *out,
 		   COO_CMD_OUT_SERIAL : COO_CMD_OUT_MQTT;
 	out->qos = MQTT_QOS_1_AT_LEAST_ONCE;
 
-	if (format_topic != NULL) {
-		(void)format_topic(cmd != NULL ? cmd->key : "",
-				   out->topic, sizeof(out->topic), user_data);
-	}
-
 	if (cmd != NULL && cmd->response_topic[0] != '\0' &&
 	    strlen(cmd->response_topic) < sizeof(out->topic)) {
 		strncpy(out->topic, cmd->response_topic, sizeof(out->topic) - 1U);
@@ -974,14 +963,6 @@ int coo_cmd_make_response(struct coo_cmd_response *out,
 	}
 	out->payload_len = strlen(out->payload);
 	return 0;
-}
-
-int coo_cmd_reply(struct coo_cmd_response *out,
-		  const struct coo_cmd_request *cmd,
-		  enum coo_cmd_msg_type msg_type,
-		  const char *payload)
-{
-	return coo_cmd_make_response(out, cmd, msg_type, payload, NULL, NULL);
 }
 
 int coo_cmd_ok(struct coo_cmd_response *out, const struct coo_cmd_request *cmd)
@@ -1360,62 +1341,106 @@ static bool payload_has_text(const char *payload)
 	return payload != NULL && payload[0] != '\0';
 }
 
-static const struct coo_cmd_help_entry builtin_help_entries[] = {
+/* Builtins keep validation, help, and OTA admission together. Their
+ * implementations below need the runtime (e.g. delayed reboot).
+ */
+static const struct coo_cmd_spec builtin_specs[] = {
 	{
 		.key = "help",
-		.usage = "help",
-		.args = "none",
-		.values = NULL,
-		.notes = "serial prints full command help directly; MQTT returns compact endpoints",
-		.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY |
-			 COO_CMD_HELP_BUILTIN,
+		.ota_query_allowed = true,
+		.help = &(const struct coo_cmd_help_entry){
+			.usage = "help", .args = "none",
+			.notes = "serial prints full command help directly; MQTT returns compact endpoints",
+			.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY |
+				 COO_CMD_HELP_BUILTIN,
+		},
 	},
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	{
 		.key = "serialguard",
-		.usage = "serialguard [seconds=<s>|off]",
-		.args = "[seconds=<s>] or [off]",
-		.values = "seconds: 0 disables MQTT holdoff until changed again",
-		.notes = "runtime-only local serial guard; not persisted across reboot",
-		.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT |
-			 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
+		.allowed_payload_keys = "seconds,persist",
+		.ota_query_allowed = true, .ota_effect_allowed = true,
+		.help = &(const struct coo_cmd_help_entry){
+			.usage = "serialguard [seconds=<s>|off]",
+			.args = "[seconds=<s>] or [off]",
+			.values = "seconds: 0 disables MQTT holdoff until changed again",
+			.notes = "runtime-only local serial guard; not persisted across reboot",
+			.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT |
+				 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
+		},
 	},
 #endif
-#if defined(CONFIG_COO_CMD_REBOOT)
 	{
 		.key = "reboot",
-		.usage = "reboot [erase_non_ip_settings]",
-		.args = "optional erase_non_ip_settings flag",
-		.values = "erase_non_ip_settings: true deletes persisted non-IP settings before reboot",
-		.notes = "schedules a non-cancelable reboot after the response window",
-		.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
+		.allowed_payload_keys = "erase_non_ip_settings,value",
+		.ota_effect_allowed = true,
+		.help = &(const struct coo_cmd_help_entry){
+			.usage = "reboot [erase_non_ip_settings]",
+			.args = "optional erase_non_ip_settings flag",
+			.values = "erase_non_ip_settings: true deletes persisted non-IP settings before reboot",
+			.notes = "schedules a non-cancelable reboot after the response window",
+			.flags = COO_CMD_HELP_EFFECT | COO_CMD_HELP_BUILTIN,
+		},
+	},
+#if defined(CONFIG_COO_OTA)
+	{
+		.key = "ota",
+		.allowed_payload_keys = "enable,duration_s,confirm,image_hash",
+		.ota_query_allowed = true, .ota_effect_allowed = true,
+		.help = &(const struct coo_cmd_help_entry){
+			.usage = "ota [enable=<bool> duration_s=<s> | confirm=true image_hash=<sha256>]",
+			.args = "no payload queries; confirmation requires the running image hash",
+			.values = "duration_s: 1..1800 (default 600)",
+			.notes = "entry checks application readiness; confirmation never restores hardware state",
+			.flags = COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT |
+				 COO_CMD_HELP_SERIAL_GUARD_QUERY | COO_CMD_HELP_BUILTIN,
+		},
 	},
 #endif
 };
+
+static const struct coo_cmd_spec *runtime_find_builtin(const char *key)
+{
+	for (size_t i = 0U; i < ARRAY_SIZE(builtin_specs); ++i) {
+		if (strcmp(key, builtin_specs[i].key) == 0) {
+			return &builtin_specs[i];
+		}
+	}
+	return NULL;
+}
+
+/* Admission belongs to execution, not ingress: a queued command may predate
+ * OTA entry. Control commands run on this same executor; SMP can only extend
+ * an existing restriction. Release the OTA mutex before any handler/hardware I/O.
+ */
+static bool runtime_ota_allowed(const struct coo_cmd_spec *spec,
+				enum coo_cmd_msg_type type)
+{
+#if defined(CONFIG_COO_OTA)
+	return !coo_ota_active() || (type == COO_CMD_EFFECT ?
+		spec->ota_effect_allowed : spec->ota_query_allowed);
+#else
+	ARG_UNUSED(spec);
+	ARG_UNUSED(type);
+	return true;
+#endif
+}
 
 static bool runtime_key_is_help(const char *key)
 {
 	return key != NULL && strcmp(key, "help") == 0;
 }
 
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static bool runtime_key_is_serial_guard(const char *key)
 {
-#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 	return key != NULL && strcmp(key, "serialguard") == 0;
-#else
-	ARG_UNUSED(key);
-	return false;
-#endif
 }
+#endif
 
 static bool runtime_key_is_reboot(const char *key)
 {
-#if defined(CONFIG_COO_CMD_REBOOT)
 	return key != NULL && strcmp(key, "reboot") == 0;
-#else
-	ARG_UNUSED(key);
-	return false;
-#endif
 }
 
 static void serial_line_end(void)
@@ -1523,9 +1548,9 @@ static void runtime_print_serial_help(const struct coo_cmd_runtime *runtime,
 	printk("  [] marks optional payload fields or serial tokens");
 	serial_line_end();
 
-	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
-		serial_print_help_entry(runtime, builtin_help_entries[i].key,
-					&builtin_help_entries[i], NULL,
+	for (size_t i = 0U; i < ARRAY_SIZE(builtin_specs); ++i) {
+		serial_print_help_entry(runtime, builtin_specs[i].key,
+					builtin_specs[i].help, &builtin_specs[i],
 					wrap_column);
 	}
 	if (runtime != NULL) {
@@ -1582,9 +1607,9 @@ static int runtime_help_response(struct coo_cmd_runtime *runtime,
 			  response_prefix) != 0) {
 		return coo_cmd_error(out, cmd, "help response too large");
 	}
-	for (size_t i = 0U; i < ARRAY_SIZE(builtin_help_entries); ++i) {
+	for (size_t i = 0U; i < ARRAY_SIZE(builtin_specs); ++i) {
 		if (append_help_key(out->payload, sizeof(out->payload), &off,
-				    builtin_help_entries[i].key, &first) != 0) {
+				    builtin_specs[i].key, &first) != 0) {
 			return coo_cmd_error(out, cmd, "help response too large");
 		}
 	}
@@ -1672,6 +1697,10 @@ static bool runtime_mqtt_allowed_during_serial_guard(struct coo_cmd_runtime *run
 		return false;
 	}
 
+	spec = runtime_find_builtin(cmd->key);
+	if (spec != NULL) {
+		return (spec->help->flags & COO_CMD_HELP_SERIAL_GUARD_QUERY) != 0U;
+	}
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
 	return spec != NULL &&
 	       spec->query_handler != NULL &&
@@ -1743,7 +1772,6 @@ static int runtime_serial_guard_set(struct coo_cmd_runtime *runtime,
 }
 #endif
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 static int runtime_parse_reboot_options(const struct coo_cmd_request *cmd,
 					bool *erase_non_ip_settings)
 {
@@ -1803,6 +1831,29 @@ static bool runtime_reboot_pending(const struct coo_cmd_runtime *runtime)
 	return runtime != NULL && atomic_get(&runtime->reboot_pending) != 0;
 }
 
+int coo_cmd_runtime_schedule_reboot(struct coo_cmd_runtime *runtime,
+				    bool erase_non_ip_settings)
+{
+	int rc;
+
+	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
+		return -EALREADY;
+	}
+
+	runtime->reboot_erase_non_ip_settings = erase_non_ip_settings;
+	LOG_WRN("Reboot scheduled in %u ms%s",
+		runtime->reboot_delay_ms,
+		erase_non_ip_settings ? " after erasing non-IP settings" : "");
+	rc = k_work_schedule_for_queue(runtime->reboot_work_q, &runtime->reboot_work,
+			     K_MSEC(runtime->reboot_delay_ms));
+	if (rc < 0) {
+		(void)atomic_clear(&runtime->reboot_pending);
+		runtime->reboot_erase_non_ip_settings = false;
+		return rc;
+	}
+	return 0;
+}
+
 static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_request *cmd,
 			      struct coo_cmd_response *out)
@@ -1816,20 +1867,10 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	if (runtime_parse_reboot_options(cmd, &erase_non_ip_settings) != 0) {
 		return coo_cmd_error(out, cmd, "invalid reboot options");
 	}
-	if (!atomic_cas(&runtime->reboot_pending, 0, 1)) {
-		return coo_cmd_error(out, cmd, "reboot already pending");
-	}
-
-	runtime->reboot_erase_non_ip_settings = erase_non_ip_settings;
-	LOG_WRN("Reboot command accepted; rebooting in %u ms%s",
-		runtime->reboot_delay_ms,
-		erase_non_ip_settings ? " after erasing non-IP settings" : "");
-	rc = k_work_schedule_for_queue(runtime->reboot_work_q, &runtime->reboot_work,
-			     K_MSEC(runtime->reboot_delay_ms));
-	if (rc < 0) {
-		(void)atomic_clear(&runtime->reboot_pending);
-		runtime->reboot_erase_non_ip_settings = false;
-		return coo_cmd_error(out, cmd, "failed to schedule reboot");
+	rc = coo_cmd_runtime_schedule_reboot(runtime, erase_non_ip_settings);
+	if (rc != 0) {
+		return coo_cmd_error(out, cmd, rc == -EALREADY ?
+				     "reboot already pending" : "failed to schedule reboot");
 	}
 
 	runtime_record_lastcommand(runtime, cmd);
@@ -1845,56 +1886,127 @@ static int runtime_reboot_set(struct coo_cmd_runtime *runtime,
 	}
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
+
+#if defined(CONFIG_COO_OTA)
+/* Shared MQTT/serial syntax only; coo_ota owns state, deadlines and flash writes. */
+static int runtime_ota_command(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
+{
+	bool enable = false;
+	bool confirm = false;
+	uint32_t seconds = COO_OTA_DEFAULT_WINDOW_S;
+	char hash_hex[COO_OTA_HASH_SIZE * 2 + 1];
+	uint8_t hash[COO_OTA_HASH_SIZE];
+	struct coo_ota_status status;
+	char payload[320];
+	const char *error = NULL;
+	const char *json = coo_cmd_payload_empty(cmd) ? "{}" : cmd->payload;
+	int enable_rc = coo_json_extract_bool(json, "enable", &enable);
+	int seconds_rc = coo_json_extract_u32(json, "duration_s", &seconds);
+	int confirm_rc = coo_json_extract_bool(json, "confirm", &confirm);
+	int hash_rc = coo_json_extract_string(json, "image_hash", hash_hex, sizeof(hash_hex));
+	int rc = 0;
+
+	if (enable_rc == COO_JSON_EXTRACT_ERR || seconds_rc == COO_JSON_EXTRACT_ERR ||
+	    confirm_rc == COO_JSON_EXTRACT_ERR || hash_rc == COO_JSON_EXTRACT_ERR) {
+		return coo_cmd_error(out, cmd, "invalid OTA field type or value");
+	}
+	if (cmd->msg_type == COO_CMD_EFFECT) {
+		if (enable_rc == COO_JSON_EXTRACT_OK) {
+			if (confirm_rc != COO_JSON_EXTRACT_MISSING || hash_rc != COO_JSON_EXTRACT_MISSING ||
+			    (!enable && seconds_rc != COO_JSON_EXTRACT_MISSING) ||
+			    seconds < 1U || seconds > COO_OTA_MAX_WINDOW_S) {
+				return coo_cmd_error(out, cmd, "use enable with duration_s 1..1800 only when opening");
+			}
+		} else if (!confirm || confirm_rc != COO_JSON_EXTRACT_OK ||
+			   seconds_rc != COO_JSON_EXTRACT_MISSING || hash_rc != COO_JSON_EXTRACT_OK ||
+			   strlen(hash_hex) != COO_OTA_HASH_SIZE * 2 ||
+			   hex2bin(hash_hex, strlen(hash_hex), hash, sizeof(hash)) != sizeof(hash)) {
+			return coo_cmd_error(out, cmd, "confirmation requires confirm=true and a 64-digit image_hash");
+		}
+	}
+
+	if (cmd->msg_type == COO_CMD_EFFECT && enable_rc == COO_JSON_EXTRACT_OK) {
+		rc = coo_ota_set_window(enable, seconds);
+		if (rc == -EBUSY) {
+			error = "OTA window requires confirmed firmware, no pending/closing operation, and application readiness";
+		} else if (rc == -EPERM) {
+			error = "OTA entry requirements not met";
+		}
+	} else if (cmd->msg_type == COO_CMD_EFFECT) {
+		rc = coo_ota_confirm(hash);
+		if (rc == -EINVAL) {
+			error = "image_hash does not match the running firmware";
+		} else if (rc == -ETIMEDOUT) {
+			error = "image confirmation deadline expired";
+		}
+	}
+	if (error != NULL) {
+		return coo_cmd_error(out, cmd, error);
+	}
+	if (rc != 0) {
+		return coo_cmd_error_rc(out, cmd, "OTA operation failed", rc);
+	}
+	coo_ota_get_status(&status);
+	(void)bin2hex(status.image_hash, sizeof(status.image_hash), hash_hex, sizeof(hash_hex));
+	snprintk(payload, sizeof(payload),
+		 "{\"enabled\":%s,\"active\":%s,\"remaining_s\":%u,"
+		 "\"image_hash\":\"%s\",\"confirmed\":%s,\"pending\":%s,\"trial_remaining_s\":%u,"
+		 "\"max_image_size\":%u}",
+		 status.enabled ? "true" : "false", status.active ? "true" : "false",
+		 status.remaining_s, hash_hex, status.confirmed ? "true" : "false",
+		 status.pending ? "true" : "false", status.trial_remaining_s, status.max_image_size);
+	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
+}
+
 #endif
 
 static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 					   const struct coo_cmd_request *cmd,
 					   struct coo_cmd_response *out)
 {
+	const struct coo_cmd_spec *spec;
+
 	if (runtime == NULL || cmd == NULL || out == NULL) {
 		return false;
 	}
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_reboot_pending(runtime) && !runtime_key_is_reboot(cmd->key)) {
 		(void)coo_cmd_error(out, cmd, "reboot pending");
 		return true;
 	}
-#endif
-
-	if (runtime_key_is_help(cmd->key)) {
-		if (runtime_validate_payload_keys("", cmd, out) != 0) {
-			return true;
-		}
-		(void)runtime_help_response(runtime, cmd, out);
+	spec = runtime_find_builtin(cmd->key);
+	if (spec == NULL) {
+		return false;
+	}
+	if (runtime_validate_payload_keys(spec->allowed_payload_keys, cmd, out) != 0) {
+		return true;
+	}
+	if (!runtime_ota_allowed(spec, cmd->msg_type)) {
+		(void)coo_cmd_error(out, cmd, "command unavailable during OTA");
 		return true;
 	}
 
+	if (runtime_key_is_help(cmd->key)) {
+		(void)runtime_help_response(runtime, cmd, out);
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
-	if (runtime_key_is_serial_guard(cmd->key)) {
-		if (runtime_validate_payload_keys("seconds,persist", cmd, out) != 0) {
-			return true;
-		}
+	} else if (runtime_key_is_serial_guard(cmd->key)) {
 		if (cmd->msg_type == COO_CMD_EFFECT) {
 			(void)runtime_serial_guard_set(runtime, cmd, out);
 		} else {
 			(void)runtime_serial_guard_get(runtime, cmd, out);
 		}
-		return true;
-	}
 #endif
-
-#if defined(CONFIG_COO_CMD_REBOOT)
-	if (runtime_key_is_reboot(cmd->key)) {
-		if (runtime_validate_payload_keys("erase_non_ip_settings,value", cmd, out) != 0) {
-			return true;
-		}
+	} else if (runtime_key_is_reboot(cmd->key)) {
 		(void)runtime_reboot_set(runtime, cmd, out);
-		return true;
-	}
+#if defined(CONFIG_COO_OTA)
+	} else if (strcmp(cmd->key, "ota") == 0) {
+		if (cmd->msg_type == COO_CMD_EFFECT) {
+			runtime_record_lastcommand(runtime, cmd);
+		}
+		(void)runtime_ota_command(cmd, out);
 #endif
-
-	return false;
+	}
+	return true;
 }
 
 int coo_cmd_publish_mqtt(struct mqtt_client *client,
@@ -1939,11 +2051,9 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 		return coo_cmd_invalid_response(out, cmd);
 	}
 
-#if defined(CONFIG_COO_CMD_REBOOT)
 	if (runtime_reboot_pending(runtime)) {
 		return coo_cmd_error(out, cmd, "reboot pending");
 	}
-#endif
 
 	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
 	LOG_INF("Dispatching: %s", cmd->key);
@@ -1968,6 +2078,9 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 		  spec->effect_handler : spec->query_handler;
 	if (handler == NULL) {
 		return coo_cmd_unsupported_response(out, cmd);
+	}
+	if (!runtime_ota_allowed(spec, cmd->msg_type)) {
+		return coo_cmd_error(out, cmd, "command unavailable during OTA");
 	}
 
 	if (cmd->msg_type == COO_CMD_EFFECT) {
@@ -1998,13 +2111,7 @@ void coo_cmd_runtime_executor_thread(void *p1, void *p2, void *p3)
 	while (1) {
 		/* K_FOREVER sleeps until ingress queues a complete command. */
 		k_msgq_get(runtime->inbound_queue, cmd, K_FOREVER);
-		if (runtime_handle_builtin_request(runtime, cmd, out)) {
-			/* Built-ins stay library-owned even when the app provides a
-			 * custom executor hook.
-			 */
-		} else if (runtime->execute_handler != NULL) {
-			(void)runtime->execute_handler(cmd, out);
-		} else {
+		if (!runtime_handle_builtin_request(runtime, cmd, out)) {
 			(void)runtime_execute_default(runtime, cmd, out);
 		}
 		runtime_enqueue_response(runtime, out);
@@ -2128,6 +2235,8 @@ void coo_cmd_runtime_handle_serial_line(struct coo_cmd_runtime *runtime, char *l
 	if (runtime_key_is_help(key)) {
 		if (payload_has_text(payload)) {
 			runtime_enqueue_serial_error(runtime, "help takes no arguments");
+		} else if (!runtime_ota_allowed(runtime_find_builtin(key), COO_CMD_QUERY)) {
+			runtime_enqueue_serial_error(runtime, "command unavailable during OTA");
 		} else {
 			runtime_print_serial_help(runtime, runtime->serial_wrap_column);
 		}

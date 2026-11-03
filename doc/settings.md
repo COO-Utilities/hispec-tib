@@ -23,7 +23,6 @@ Current app NVS records include:
 - Schema marker.
 - Board type.
 - Boot count.
-- Last known UTC time in milliseconds.
 - IP settings as one record.
 - MQTT broker host/port as one record.
 - Last command metadata as one command-dispatch record.
@@ -32,6 +31,8 @@ Current app NVS records include:
 - One photodiode settings record per photodiode channel, including active dark
   window result, lowest stored dark window result, noise threshold,
   responsivity, transimpedance, relay power intent, and auto-off delay.
+  The compiled auto-off default is 36000 seconds (ten hours); persisted policies
+  keep their saved values across firmware updates.
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical
@@ -41,19 +42,20 @@ Current app NVS records include:
 - One laser thermistor-coefficient record per channel (`ntc_coeff_pct_per_c`,
   double in %/°C at 25°C, NVS IDs 0x0380–0x0385). Missing or invalid values
   retain the compiled coefficient. Reset deletes this record with channel policy.
+- One independent laser reference triplet per channel (`ref_mw`, `ref_ma`,
+  `ref_temp_c`, three doubles at NVS IDs 0x03c0–0x03c5). Missing/invalid values
+  retain the compiled vendor anchor; reset deletes the record.
+- One autolevel upper-current bound per laser (`max_autolevel_current_ma`, a
+  double at NVS IDs 0x03e0–0x03e5). A missing bound defaults to the restored
+  policy's nominal current. Keeping this separate preserves the existing policy
+  records and calibration; reset deletes it with the other channel records.
 - One route-loss table-entry record per configured route/source or split output,
   up to 32 records per PCB (16 per TIB channel). AS split records live on their
   own PCB. Broadband TIB CAL/return records use source `generic`.
 - One MEMS intent record containing per-switch static state intent, per-switch
   direct-toggle restart metadata, and per-channel split restart metadata.
 
-The autolevel-minimum addition changed the laser-policy record size under
-schema 13. An incorrect record size selects compiled policy defaults for that
-channel. Schema 14 now resets all older app settings as described below.
-
-The thermistor-coefficient addition introduced a separate eight-byte record
-under schema 13 without changing the laser-policy/calibration layout. The PCB
-owns the configured coefficient; Maiman EEPROM retains driver-side values.
+The PCB owns the thermistor coefficient; Maiman EEPROM retains driver-side values.
 Profile preparation synchronizes the PCB value at the first explicit start after
 bank power-up, and driver-backed settings updates program it immediately through
 the existing stop/power flow. `persist:true` saves app NVS intent; it adds no
@@ -62,7 +64,7 @@ persistence behavior. Settings queries always report PCB configuration;
 engineering status reports controller readbacks while powered and null while off.
 Before preparation, readbacks can differ from configuration. The coefficient
 uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
-is unused; the mapping correction changes no NVS layout or configured values.
+is unused.
 
 ## Board-Type Reset Policy
 
@@ -78,9 +80,14 @@ silently reused on another.
 - MQTT defaults come from `CONFIG_COO_MQTT_BROKER_HOSTNAME` and
   `CONFIG_COO_MQTT_BROKER_PORT`; persistence stores host and port directly.
 - Serial guard defaults to 30 s from Kconfig but is runtime-only.
-- Last known UTC defaults to unset. Once SNTP or a `time` command sets the
-  realtime clock, the value is persisted and restored on later boots until a
-  fresher time source updates it.
+- UTC is restored from a valid RTC calendar on warm boot. There is no NVS
+  last-time fallback; its former record ID is reserved. Manual/SNTP updates use
+  the serialized RTC guard described in [architecture](architecture.md).
+- FVOA outputs initialize closed at a 3300 mV request, quantized to the highest
+  representable DAC code. Operational `open1_mv`/`open2_mv` default to 1250 mV;
+  they constrain modeled full open, never engineering-voltage commands. Updates
+  do not move outputs. Open settings use records 0x0180–0x0185; fit acceptance
+  policies use 0x0140–0x0145. Both retain schema 14.
 - Physical FVOA coefficients default to the nominal 0-3300 mV DAC span, gain
   1.533, and `FVOA_DEFAULT_MAX_ATTEN_DB` until calibrated/stored. The
   `max_atten_db` coefficient is a per-FVOA leakage floor, not a logical
@@ -104,11 +111,19 @@ silently reused on another.
   replacement driver is physically associated with the intended diode.
 - Laser `min_autolevel_current_ma` defaults to threshold plus 0.1 mA rounded up
   to the current-register grid. Validation normalizes it upward after threshold
-  changes and rejects an empty range through nominal current. It is app policy,
-  not the Maiman current limit. `initial_level` is a per-measurement fraction,
+  changes. `max_autolevel_current_ma` defaults to nominal current and rounds down
+  to the register grid. Validation rejects an empty automatic range or a ceiling
+  above the engineering maximum. These bounds are app policy and do not restrict
+  manual current/level commands. `initial_level` is a per-measurement fraction,
   defaults to 0.5 in firmware, and is not persisted.
 - Laser settings `autooff_s` supplies the manual-command default; an explicit
-  command value overrides it. Throughput owns its separate `off_in_s` deadline.
+  command value overrides it. Changing the setting restarts a started laser's
+  countdown from now; zero cancels it without starting idle hardware. PD settings
+  behave the same for powered channels in auto mode. Unchanged values and unrelated
+  edits do not rearm. Calibration rejects auto-off writes. Throughput owns its
+  separate `off_in_s` deadline and retains PD inhibition; laser settings writes
+  disable feedback while retaining the stream and owned-source shutdown.
+  PD `off_in_s` is status returned by `pd`.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)
@@ -148,15 +163,13 @@ reinitialize storage before trusting persisted calibration or network intent. A
 first boot with no app schema marker clears the old storage layout, writes the
 current schema marker, and uses defaults.
 
-Schema v14 replaces the obsolete `none` loss selector with `generic` and reduces
-the override table to 32 slots. On first boot with an older or missing marker,
+### Schema reset
+
+The current schema is v14. On boot with a different or missing schema marker,
 firmware clears **all app NVS records**, writes v14, and uses defaults. This
 includes calibration, network settings, board/switch intent, counters, and other
 app records, not just route losses. Reapply needed settings from reviewed lab
 records; there is no migration. Maiman EEPROM is separate and is not cleared.
-The earlier v13 reset invalidated calibrations from the mean-only clipping test
-or incomplete six-term correction basis. Coefficient records still include the
-physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 
 ## Intentionally Not Persisted
 
@@ -172,6 +185,28 @@ physical-attenuator residual RMS and laser uncertainty introduced in v12/v11.
 - Serial guard active state and runtime holdoff changes are not restored after
   reboot.
 
-## Not Currently Persisted
+- Active output/current and live TEC/tuner results. The stored `tune_delta_nm`
+  request is persisted configuration and is applied by a later positive level
+  command; restoring it does not resume emission.
 
-- Laser output current, temperature, pulse, or tuning state.
+## Scoped laser calibration restore
+
+`laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
+compiled threshold/efficiency/curve reference/zero correction/maximum/nominal/autolevel bounds/datasheet reference/noise
+settings and removes only that exact named outbound route override. Independent wavelength references,
+driver identity and current calibration, other TEC policy, return loss and other-output overrides
+remain. Optional persistence writes the laser records and deletes the route's NVS
+record; a volatile restore does not erase saved values. Laser/route application
+and persistence errors are reported separately. Raw calibration data occupies one
+shared RAM dataset for attenuator/laser runs, never NVS. See
+[laser calibration](laser_calibration.md) for mathematical assumptions and stages.
+
+The self-contained laser policy record is 168 bytes: the quadratic coefficient
+is a float at offset 140, and `efficiency_ref_ma` is a double at offset 144.
+`wave_ref_nm` replaces the previous wavelength field at offset 40; the independent
+`wave_ref_ma` and `wave_ref_temp_c` doubles are appended at offsets 152 and 160.
+Size and offsets are build-asserted. Datasheet references load independently and
+do not redefine the installed curve. The closeout keeps that policy layout and
+schema unchanged; the separate autolevel-ceiling record does not require calibration
+reinstallation. Older records of a different length still fail the existing validation.
+Compiled wavelength defaults use the coordinates printed in each diode's test report.

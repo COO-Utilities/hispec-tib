@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "laser_calibration.h"
 #include "mems_command.h"
 
 #include <ctype.h>
@@ -16,7 +17,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "mems_switching.h"
 
 #include <coo_commons/command_dispatch.h>
@@ -320,7 +321,7 @@ static int route_loss_query_response(const struct coo_cmd_request *cmd,
 				     const char *route,
 				     struct coo_cmd_response *out)
 {
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t offset = 0U;
 
     if (coo_json_append(payload, sizeof(payload), &offset,
@@ -469,7 +470,7 @@ int memsroute_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     const char *outputs[MEMS_ROUTER_MAX_ROUTES];
     uint8_t n_active = mems_router_active_routes(&router, active, MEMS_ROUTER_MAX_ROUTES);
     uint8_t n_outputs = 0U;
-    char buf[MAX_PAYLOAD_LEN] = {0};
+    char buf[COO_CMD_PAYLOAD_MAX] = {0};
     size_t offset = 0U;
 
     if (memsroute_is_route_loss_key(cmd->key)) {
@@ -516,7 +517,7 @@ static int split_channel_response(const struct coo_cmd_request *cmd,
 				  struct coo_cmd_response *out)
 {
     const char *channel_name = mems_split_channel_name(channel_index);
-    char payload[MAX_PAYLOAD_LEN];
+    char payload[COO_CMD_PAYLOAD_MAX];
     int written;
 
     if (state == NULL || channel_name == NULL) {
@@ -598,14 +599,13 @@ static void split_emit_quantization_warning(uint8_t channel_index,
              (double)state->output[0],
              (double)state->output[1],
              (double)state->output[2]);
-	coo_cmd_runtime_emit(command_runtime_get(),
-			     &(const struct coo_cmd_runtime_emit_args){
-				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-				     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-				     .code = "split_ratio_quantized",
-				     .msg = "requested split ratio was quantized to MEMS ticks",
-				     .context = context,
-			     });
+	app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING,
+		.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+		.code = "split_ratio_quantized",
+		.msg = "requested split ratio was quantized to MEMS ticks",
+		.context = context,
+	});
 }
 
 static int split_channel_index_from_key(const char *key, uint8_t *index)
@@ -732,7 +732,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "split route references missing switch");
     }
     if (rc != 0) {
-        char payload[MAX_PAYLOAD_LEN];
+        char payload[COO_CMD_PAYLOAD_MAX];
 
         if (failed_switch != NULL) {
             snprintk(payload, sizeof(payload),
@@ -751,20 +751,24 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                  "channel=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                  channel_name == NULL ? "?" : channel_name,
                  cycle_ms, state.cycle_ms);
-		coo_cmd_runtime_emit(command_runtime_get(),
-				     &(const struct coo_cmd_runtime_emit_args){
-					     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-					     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-					     .code = "mems_timing_quantized",
-					     .msg = "requested MEMS cycle was quantized",
-					     .context = context,
-				     });
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "mems_timing_quantized",
+			.msg = "requested MEMS cycle was quantized",
+			.context = context,
+		});
     }
     return split_channel_response(cmd, &state, channel_index, out);
 }
 
 int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	/* Calibration owns the optical path through acquisition and recabling pause. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
     char input[MEMS_SOURCEDEST_MAX_LEN] = {0};
     char output[MEMS_SOURCEDEST_MAX_LEN] = {0};
     const struct mems_route *route;
@@ -797,7 +801,7 @@ int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
         return coo_cmd_error(out, cmd, "route references missing switch");
     }
     if (rc != 0) {
-        char payload[MAX_PAYLOAD_LEN] = {0};
+        char payload[COO_CMD_PAYLOAD_MAX] = {0};
 
         snprintk(payload, sizeof(payload),
                  "{\"error\":\"Setting switch %s to %c failed\"}",
@@ -885,7 +889,7 @@ static int mems_response_for_switch(const struct coo_cmd_request *cmd,
 {
     struct mems_switch_status status = {0};
     char state_buf[4] = {0};
-    char payload[MAX_PAYLOAD_LEN] = {0};
+    char payload[COO_CMD_PAYLOAD_MAX] = {0};
     size_t off = 0U;
     int written;
 
@@ -915,7 +919,7 @@ static int mems_response_for_switch(const struct coo_cmd_request *cmd,
 int mems_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
     if (strcmp(cmd->key, "mems") == 0) {
-        char payload[MAX_PAYLOAD_LEN] = {0};
+        char payload[COO_CMD_PAYLOAD_MAX] = {0};
         size_t off = 0U;
         int written;
         struct mems_switch_status status = {0};
@@ -984,6 +988,11 @@ int mems_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 
 int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
+	/* Direct switch writes would bypass the route held by laser calibration. */
+	if (laser_calibration_active()) {
+		return coo_cmd_busy_response(out, cmd);
+	}
+
     char requested_state[8] = {0};
     char mems_switch[MEMS_SWITCH_NAME_LEN] = {0};
     double duty_cycle = 0.0;
@@ -1097,14 +1106,13 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
             snprintk(context, sizeof(context),
                      "switch=%s requested_cycle_ms=%u actual_cycle_ms=%u",
                      sw->name, cycle_ms, status.cycle_ms);
-			coo_cmd_runtime_emit(command_runtime_get(),
-					     &(const struct coo_cmd_runtime_emit_args){
-						     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-						     .delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
-						     .code = "mems_timing_quantized",
-						     .msg = "requested MEMS cycle was quantized",
-						     .context = context,
-					     });
+			app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_WARNING,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.code = "mems_timing_quantized",
+				.msg = "requested MEMS cycle was quantized",
+				.context = context,
+			});
 		}
 	}
 

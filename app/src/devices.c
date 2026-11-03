@@ -13,7 +13,7 @@
 
 #include "devices.h"
 #include "app_settings.h"
-#include "command.h"
+#include "app_output.h"
 #include "drivers/dac/dac7x78.h"
 #include "maiman.h"
 #include "mems_switching.h"
@@ -59,10 +59,13 @@ struct mems_switch mems_switches[MEMS_ROUTER_MAX_SWITCHES];
 struct mems_router router;
 
 
+/* TIB names list the state A/B paths. For the FFLS return selectors,
+ * pin 2/state A selects silkscreen B/SM; pin 3/state B selects C/MM.
+ */
 static const char *const tib_switch_names[8] = {
 	"yj_forward_retro", "yj_laser_cal", "yj_ao_fei",
 	"hk_forward_retro", "hk_laser_cal", "hk_ao_fei",
-	"yj_mm_sm", "hk_mm_sm",
+	"yj_sm_mm", "hk_sm_mm",
 };
 
 
@@ -360,13 +363,12 @@ void devices_queue_boot_reset_telemetry(void)
 	}
 	msg.payload_len = (size_t)written;
 
-	rc = coo_cmd_runtime_emit(command_runtime_get(),
-				  &(const struct coo_cmd_runtime_emit_args){
-					  .type = COO_CMD_RUNTIME_EMIT_DATA,
-					  .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
-					  .suffix = "boot",
-					  .out = &msg,
-				  });
+	rc = app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_DATA,
+		.delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+		.suffix = "boot",
+		.out = &msg,
+	});
 	if (rc != 0) {
 		LOG_WRN("Outbound queue full; boot watchdog telemetry not queued");
 	}
@@ -403,10 +405,10 @@ static const struct mems_route_step tib_yj_laser_to_yj_fei[] = {
 	{"yj_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_yj_mm_to_yj_pd[] = {
-	{"yj_mm_sm", 'A'},
+	{"yj_sm_mm", 'B'},
 };
 static const struct mems_route_step tib_yj_sm_to_yj_pd[] = {
-	{"yj_mm_sm", 'B'},
+	{"yj_sm_mm", 'A'},
 };
 static const struct mems_route_step tib_hk_1430_to_hk_ao[] = {
 	{"hk_laser_cal", 'A'},
@@ -435,10 +437,10 @@ static const struct mems_route_step tib_hk_laser_to_hk_fei[] = {
 	{"hk_ao_fei", 'B'},
 };
 static const struct mems_route_step tib_hk_mm_to_hk_pd[] = {
-	{"hk_mm_sm", 'A'},
+	{"hk_sm_mm", 'B'},
 };
 static const struct mems_route_step tib_hk_sm_to_hk_pd[] = {
-	{"hk_mm_sm", 'B'},
+	{"hk_sm_mm", 'A'},
 };
 
 static const struct mems_route tib_routes[] = {
@@ -867,15 +869,14 @@ static void emit_relay_gpio_offline_warning_once(int error)
 	k_mutex_unlock(&relay_gpio_lock);
 
 	snprintf(context, sizeof(context), "rc=%d", error);
-	coo_cmd_runtime_emit(command_runtime_get(),
-			     &(const struct coo_cmd_runtime_emit_args){
-				     .type = COO_CMD_RUNTIME_EMIT_WARNING,
-				     .delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
-				     .out = &msg,
-				     .code = "relay_gpio_offline",
-				     .msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
-				     .context = context,
-			     });
+	app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+		.type = COO_CMD_RUNTIME_EMIT_WARNING,
+		.delivery = COO_CMD_RUNTIME_EMIT_REQUIRED,
+		.out = &msg,
+		.code = "relay_gpio_offline",
+		.msg = "off-board relay GPIO expander is offline; photodiode relay commands are ignored and laser bank heater is unavailable",
+		.context = context,
+	});
 }
 
 static bool configure_relay_gpio_outputs(void)
@@ -1041,6 +1042,9 @@ void setup_attenuators(void)
 		memcpy(attenuators[attenuator_index].coeff2.correction_coeff,
 		       atten_settings.channel[attenuator_index].physical[1].correction_coeff,
 		       sizeof(attenuators[attenuator_index].coeff2.correction_coeff));
+		struct app_attenuator_open_settings open;
+		app_settings_get_attenuator_open(attenuator_index, &open);
+		(void)attenuator_set_open_voltages(&attenuators[attenuator_index], open.mv);
 	}
 }
 

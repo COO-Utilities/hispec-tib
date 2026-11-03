@@ -6,13 +6,15 @@
 
 cmake_minimum_required(VERSION 3.13.1)
 
-# Default to pyOCD for this application so west flash/debug use the open
-# source runner unless a developer explicitly overrides it on the command line.
-#set(BOARD_FLASH_RUNNER pyocd CACHE STRING "Default west flash runner")
-#set(BOARD_DEBUG_RUNNER pyocd CACHE STRING "Default west debug runner")
-
+if(NOT SYSBUILD)
+    message(FATAL_ERROR "HISPEC requires MCUboot: use west build --sysbuild and app/build-ota (or app/build-ota-timing).")
+endif()
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+
+if(NOT CONFIG_COO_OTA OR NOT CONFIG_BOOTLOADER_MCUBOOT OR NOT CONFIG_MCUBOOT_GENERATE_CONFIRMED_IMAGE)
+    message(FATAL_ERROR "HISPEC requires OTA and MCUboot confirmed USB images in every build.")
+endif()
 
 project(app LANGUAGES C)
 
@@ -39,6 +41,9 @@ target_sources(app PRIVATE
         src/app_settings.c
         src/attenuator.c
         src/attenuator_calibration.c
+        src/calibration_fit.c
+        src/calibration_storage.c
+        src/laser_calibration.c
         src/attenuator_command.c
         src/command.c
         src/devices.c
