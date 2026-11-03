@@ -57,7 +57,7 @@ detaches local collectors and disconnects without sending any board commands.
 Context-manager exit retains the default measurement-stopping behavior.
 Uncollected/manual laser activity is not a blanket responsibility of connection
 cleanup. Use explicit `laser(..., stop=True)` when the experiment owns a manual
-source. `laser(..., value=0)` only requests zero current and preserves readiness
+source. `laser(..., value=0)` or `laser(..., value_ma=0)` only requests zero current and preserves readiness
 and any existing deadline.
 
 ## Predictable command convention
@@ -71,6 +71,10 @@ query again. Read a method's return annotation when an endpoint has distinct
 query/update responses (`ip()` can also return `PartialSupport`).
 
 Laser `value` and attenuator `value` are **fractions**: `0.25` is 25%, not 0.25%.
+Laser `value_ma` instead requests engineering current from zero through the
+configured `max_current_ma`; it bypasses the optical inverse, automatic current
+bounds and stored tune request. Supply either `value` or `value_ma`; firmware
+rejects a request containing both.
 Attenuator `_db` is positive power loss, `_mv` is pre-amplifier DAC drive.
 `mems_route_loss(..., loss=0.5)` is a lost fraction (transmission 0.5);
 `loss="3.0103 dB"` requests the same loss. These conventions come from the wire
@@ -79,6 +83,7 @@ specification, not a separate host-unit system.
 ```python
 pcb.laser("1028y")                       # Query
 pcb.laser("1028y", value=0.25)           # Set 25% modeled power
+pcb.laser("1028y", value_ma=100.0)       # Engineering current in mA
 pcb.laser("1028y", value=0)              # Zero current, not STOP
 pcb.laser("1028y", stop=True)            # Explicit shutdown
 pcb.atten("1028y")                       # Query
@@ -174,9 +179,19 @@ and attenuator coefficients for display limits and needs a channel for the local
 collector; supply `channel` if it cannot infer one from the laser name. With
 `collect=False`, the command goes to firmware without a local channel lookup.
 Firmware defaults to a 300-second
-measurement lifetime; zero disables expiry. Manual laser/attenuator changes
-disable adjustment but retain streaming and owned-laser shutdown. See
+measurement lifetime; zero disables expiry. Manual laser/attenuator changes,
+tuning and settings operations disable adjustment but retain streaming, its
+deadline and owned-laser shutdown. Automatic control uses
+`min_autolevel_current_ma` / `max_autolevel_current_ma`; engineering commands keep
+their full ranges. See
 [throughput lifetime](throughput.md#lifetime-manual-changes-and-failure).
+
+Use `autolevel_response_hz=0.1` to request quiet re-ranging. After one initial
+positioning episode, useful signal with adequate saturation headroom causes no
+actuator writes, even far from 1000 mV. The response filters the need to change
+range; it neither continuously centers the detector nor smooths streamed samples.
+Omitting the option or supplying zero retains band control. See the exact
+[re-ranging rules](throughput.md#quiet-re-ranging).
 
 The collector decodes outside Paho's callback, retains a finite sample deque
 (default 20,000), and counts all decoded records in `samples_received`, including
@@ -210,8 +225,11 @@ collection are also shown; old samples are never replaced with zeros.
 Display and draw an attached collector in a preceding cell when observing
 power-up, then start the measurement in the next cell. For example, commissioning's
 dark display is already listening before its acquisition cell enables the PD.
-Use `await asyncio.to_thread(...)` for blocking board calls during live acquisition
-so the kernel can process widget messages and animation timers. Close the live
+Ordinary board commands remain synchronous; collection continues independently,
+although a busy cell can delay widget redraws. Concurrent acquisition guards and
+display refresh belong in their focused helpers. Do not move a multi-command
+hardware search into `to_thread` merely to animate a widget: cancelling its await
+does not stop the worker or prevent it issuing commands during cleanup. Close the live
 figure before switching back to inline review plots. Save sample/event DataFrames and
 experiment context directly (for example with `pandas.to_pickle`); there is no
 separate commissioning archive codec. Unit definitions and uncertainty meanings
@@ -250,7 +268,10 @@ Start arguments run the physical procedures described in
 [laser calibration](laser_calibration.md); `persist=False` still permits accepted
 results to change RAM settings. Attenuator calibration installs an accepted pair
 and its open voltages in RAM; laser calibration can suppress application with
-`apply=False`. `*_stop()` cancels and retains acquired data.
+`apply=False`. A restricted or inconsistent laser candidate needs human review
+and automatically writes no curve, noise or route settings. Its acquisition,
+candidate and identifiable temporal-noise estimates remain available.
+`*_stop()` cancels and retains acquired data.
 Download before starting either calibration again: firmware has one shared raw
 dataset, replaced by an accepted new run and cleared by reboot.
 
@@ -264,8 +285,16 @@ the selected reference, operational open point and exact fitting support.
 `laser_calibration_data()` returns `LaserCalibrationDataset` with `.records` and
 `.meta`. A replacement run during a multi-request download invalidates that
 snapshot. The dataset does not automatically reapply a saved calibration.
+Current metadata carries the three fitted dark-knot times/values, exact support
+and common attenuation-gain diagnostics. `fit.valid` describes numerical
+availability; `fit.accepted` describes automated acceptance. A valid candidate
+can have noise estimates even when acceptance requires review. Within-window
+constant/fractional noise and observed repeat variability describe different
+timescales; neither identifies the laser alone as the cause of variation.
 Install a reviewed saved curve with `laser_settings`, supplying `threshold_current_ma`,
 `efficiency_mw_per_ma`, `efficiency_mw_per_ma2` and `efficiency_ref_ma` together.
+Supply the reviewed support as `min_autolevel_current_ma` and
+`max_autolevel_current_ma`; preserve the separate nominal and engineering maximum.
 Optional noise uses that same settings call; outbound loss uses `mems_route_loss`.
 No retained acquisition or notebook identifier is required by firmware.
 
@@ -320,19 +349,18 @@ $0<\mathtt{min\_mv}<\mathtt{max\_mv}\le2000$ mV. These are bounds on the
 search's dark-subtracted PD result; raw overrange is checked separately. A weak
 signal can use `min_mv=100, max_mv=200` rather than the default 800–1200 mV.
 
-**Current limitation:** when a search reaches the laser-adjustment step,
-`get_some_signal()` references an undefined `span` and raises `NameError`.
-`vary_laser=False` avoids that branch and searches with the selected FVOAs only.
-The laser-adjustment stopping criterion needs correction before using that path.
-
 The default dwell is 0.5 s followed by three fresh records after board ACK with
 matching confirmed current/DAC settings. At most 80 moves are tried. Success is
 a three-record mean inside the inclusive requested band with no raw overrange.
+When attenuation reaches its selected limit, laser emission fractions double or
+halve within their allowed manual range. An unchanged bounded fraction ends the
+search; the overall move limit also bounds repeated quantized no-ops.
 The result records achieved settings and a reason if bounds prevent success.
 Successful manual settings remain; failure/exception stops the selected laser.
 Only a temporary monitor is stopped on exit; an existing monitor retains its
-usual ownership. In a notebook, use `await asyncio.to_thread(...)` so widgets
-can refresh while this blocking search runs.
+usual ownership. Run this command-producing search synchronously, so an interrupt
+can enter its shutdown path without leaving a background worker issuing commands.
+Collection continues while widget redraws may wait for the cell to return.
 
 ## Noise calculations
 

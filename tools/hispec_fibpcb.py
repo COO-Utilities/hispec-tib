@@ -4729,8 +4729,6 @@ class HispecFibPcb:
         optical model, autolevel bounds and stored tune request. It is mutually
         exclusive with ``value`` and uses the configured current maximum.
         """
-        if value is not None and value_ma is not None:
-            raise ValueError("use value or value_ma, not both")
         if value is None and value_ma is None and autooff_s is None and stop is False:
             return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
         payload = _optional_payload(name=name, value=value, value_ma=value_ma, autooff_s=autooff_s,
@@ -5666,7 +5664,8 @@ class HispecFibPcb:
         vary_laser=False holds initial_level. Failed searches stop this laser.
         Limits or the bounded iteration count return found=False and a reason;
         communication failures raise normally. Blocks on commands and fresh
-        samples; use await asyncio.to_thread(...) in a running notebook widget.
+        samples; MQTT collection continues independently. Run synchronously so
+        interrupt cleanup cannot race an uncancelled background command sequence.
         """
         _require_choice("laser", laser, LASER_NAMES)
         min_mv = _require_float("min_mv", min_mv, 0.0, PD_ADC_USABLE_MV)
@@ -5773,7 +5772,7 @@ class HispecFibPcb:
                     last_atten = movable
                     continue
                 next_level = max(minimum, level/2) if high else min(1.0, level*2)
-                if not vary_laser or abs(next_level-level)*span < 0.05:
+                if not vary_laser or next_level == level:
                     reason = "above range at dim limit" if high else "below range at bright limit"
                     break
                 level = next_level
