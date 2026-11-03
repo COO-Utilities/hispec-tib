@@ -2066,7 +2066,9 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
 - **Notes:** not all settings need to be included when setting; failure on any
   settable setting results in none being set. YJ and HK settings use separate
   command keys and separate app NVS records. `power` is the relay intent for
-  this channel: `auto`, `override_on`, or `override_off`. `autooff_s` is the
+  this channel: `auto`, `override_on`, or `override_off`. The compiled `autooff_s`
+  default is 36000 seconds (ten hours); saved policies keep their configured value.
+  `autooff_s` is the
   channel's automatic power-off delay used when firmware auto-enables the
   relay. Changing it restarts a powered auto-mode channel's countdown from now;
   zero cancels it. It never enables an idle PD. Unchanged values and unrelated

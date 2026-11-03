@@ -31,6 +31,8 @@ Current app NVS records include:
 - One photodiode settings record per photodiode channel, including active dark
   window result, lowest stored dark window result, noise threshold,
   responsivity, transimpedance, relay power intent, and auto-off delay.
+  The compiled auto-off default is 36000 seconds (ten hours); persisted policies
+  keep their saved values across firmware updates.
 - Laser-bank heater policy.
 - One laser policy record per laser channel, including laser calibration/user
   intent and the operator-confirmed Maiman driver serial used as a physical

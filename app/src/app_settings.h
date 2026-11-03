@@ -56,7 +56,7 @@ struct app_mqtt_settings {
 #define APP_MEMS_SPLIT_CHANNEL_COUNT 2
 #define APP_MEMS_SPLIT_OUTPUT_COUNT 3
 #define APP_PD_DARK_DURATION_MAX_MS 2000U
-#define APP_PD_DEFAULT_AUTOOFF_S 300U
+#define APP_PD_DEFAULT_AUTOOFF_S 36000U
 
 enum app_pd_power_mode {
 	APP_PD_POWER_AUTO = 0,

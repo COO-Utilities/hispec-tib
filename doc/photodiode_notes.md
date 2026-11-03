@@ -41,6 +41,21 @@ and failures, not their original sampling rate.
 
 ## Dark acquisition and noise warnings
 
+Commissioning observations show some sensitivity to room lighting, detector
+powered-on age during roughly the first 20 minutes, and possible recovery after
+high illumination or saturation. A saved dark is conditional on those conditions;
+the three source-off measurements in laser calibration do not establish the
+baseline's full history between observations.
+
+For field scripts, the recommended starting practice is to power the PDs about
+half an hour before measurements and turn them off when finished. This is guidance,
+not a firmware wait or a required characterization sequence. The compiled autooff
+default is ten hours; existing saved settings remain authoritative. Users can query
+and change that policy and investigate dark behavior through the existing monitoring
+and lab cells on their own schedule. Avoid saturation and account for room lighting
+when comparing darks. See the
+[closeout evidence](calibration_closeout.md#dark-current-closeout-and-operating-guidance).
+
 ```{mermaid}
 flowchart TD
   Request[pd/dark capture] --> Quiesce[Stop throughput and its owned laser]
