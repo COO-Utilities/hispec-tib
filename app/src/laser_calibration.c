@@ -1171,6 +1171,9 @@ static int fit_laser(void)
 	 * residual at each fitted knot remains visible as a model diagnostic.
 	 * Repeat checks retain the measured late-window SE and raw mV difference;
 	 * no fitted time correction or pooled repeat multiplier can erase them. */
+	/* No illuminated exact-condition comparison means unavailable, not zero
+	 * observed variation. fmax below installs the first eligible fraction. */
+	result.fit.revisit_fraction = NAN;
 	if (result.fit.valid) {
 		double limit = meta.max_fit_residual_pct / 100.0;
 		for (unsigned i = 0; i < result.records; ++i) {

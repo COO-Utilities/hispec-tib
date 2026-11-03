@@ -219,8 +219,10 @@ After selecting the curve, check all usable exact-current/exact-DAC revisits onc
 against that selected baseline, even outside its support. A repeat requires
 $|s_i-s_j|\leq\tau\max(0,(s_i+s_j)/2)+3\sqrt{D_i+D_j}$.
 Failure requires review of the whole calibration; support is not searched again
-to evade the control. Near-dark fractional repeat diagnostics are omitted, but
-the absolute mV consistency test still applies. Dark movement is represented by
+to evade the control. Near-dark fractional repeat diagnostics are omitted; if no
+eligible illuminated comparison exists, the fraction is unavailable (NaN in binary
+metadata), not zero variation. The absolute mV consistency test still applies.
+Dark movement is represented by
 the measured knots, rather than rejected for departing from a global straight
 line. Knot residuals remain diagnostic. No universal repeat-derived noise floor
 or fitted multiplicative time correction is added to acceptance or fitting.
