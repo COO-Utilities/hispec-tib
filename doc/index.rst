@@ -56,6 +56,7 @@ the human-review ledger.
    :caption: Evidence and Human Review
 
    temp_test_result.md
+   calibration_closeout.md
    human_review_required.md
 
 * :ref:`genindex`

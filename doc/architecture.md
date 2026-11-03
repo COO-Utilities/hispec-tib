@@ -30,19 +30,22 @@ Runtime ownership is:
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
 - `laser_calibration.c`: paired high/low PD acquisition across the current range,
-  calibrated-attenuation raw-PD fitting with common RMS uncertainty, effective
-  noise estimates and accepted-core-gated application. Laser scratch uses 3296
+  calibrated-attenuation raw-PD fitting with shared dark knots and FVOA uncertainty,
+  effective noise estimates and accepted-core-gated application. Laser scratch uses 3528
   bytes within the existing 3584-byte shared union; 240 raw windows occupy 5760
-  bytes. The exact 30-byte support mask and fit diagnostics accompany 614-byte
-  metadata. Autonomous application remains the embedded default; the host can
-  review and install a saved complete curve through ordinary laser settings.
+  bytes. The exact 30-byte support mask, fitted dark knots and diagnostics accompany
+  634-byte metadata. Full-range acceptance can apply automatically; restricted or
+  inconsistent candidates retain their data and identifiable noise estimates for
+  human review. A reviewed complete curve and automatic current bounds can be
+  installed through ordinary laser settings without changing engineering limits.
 - `calibration_fit.c`: the allocation-free two-parameter double solver shared
   by attenuator and laser fits. `calibration_storage.c` owns their shared static
   dataset, scratch, data mutex and best-effort telemetry buffer.
 - `maiman.c`: raw/scaled Modbus register transactions.
 - `lasers.c`: laser-bank power sequencing, driver verification, laser settings
   validation, output estimates, auto-off delayable work, and higher-level Maiman
-  helper APIs.
+  helper APIs. Engineering current commands bypass the optical inverse and stored
+  tune request; automatic operation uses its independent minimum/maximum current.
 - `laser_command.c`: command-schema validation and response shaping for laser
   and laser-bank requests.
 - `photodiode.c`: ADC sampling, user/fixed moving windows, dark snapshots, and
@@ -51,7 +54,10 @@ Runtime ownership is:
 - `throughput_command.c`: validates `measure_throughput`, prepares ownership, applies
   launch/return MEMS routes and resolves route-loss settings before starting.
 - `throughput_monitor.c`: measure-throughput streaming, route-loss application,
-  and optional autolevel control.
+  and optional autolevel control. Per-run quiet re-ranging filters the need to
+  adjust, leaving useful signals and all streamed measurements unchanged. Manual
+  commands and settings disable feedback while retaining the stream, deadline and
+  owned-source shutdown obligation.
 - `housekeeping.c`: slow ambient-temperature sampling delayable work,
   relay-box power state, and relay-output on-time tracking.
 - `laserbank_tempcontrol.c`: laser-bank heater policy delayable work and
@@ -361,8 +367,8 @@ Laser fitting uses the same priority/cancellation discipline; it retains PD
 auto-off inhibition through paired sweeps, identical-condition revisits and the emission-off
 recabling pause, releasing it at completion, error or stop. The laser status uses an
 explicit `fitting` state. Data and scratch unions stay at 7680 and 3584 bytes;
-240 laser records use 5760 bytes, with 576-byte in-memory metadata and 3296-byte numerical
-scratch. The throughput stack remains 4096 bytes. Details are in
+240 laser records use 5760 bytes; metadata is bounded to 640 bytes and numerical
+scratch occupies 3528 bytes. The throughput stack remains 4096 bytes. Details are in
 [laser_calibration.md](laser_calibration.md).
 
 The Cortex-M33 single-precision FPU is enabled with Zephyr shared FP context.
@@ -374,7 +380,8 @@ before summation and linear transmission/error conversion. Throughput, single-PD
 dark subtraction and final uncertainty propagation remain double. Calibration
 keeps double coefficients, Jacobians, weights, solves and residual metrics; only
 its final grid, retained-point and continuation-join validation uses the deployed
-float evaluator. No persistent calibration or telemetry layout changes.
+float evaluator. These runtime float optimizations do not reduce persisted
+coefficient precision.
 
 Offline Cortex-M33 instruction replay (SDK 14.3, 2026-10-02) gives 7,023,042
 to 26,731 instructions for a corrected 30 dB inverse, and 280,255 to 4,470

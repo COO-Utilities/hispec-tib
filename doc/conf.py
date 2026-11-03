@@ -33,6 +33,8 @@ exclude_patterns = [
     "_doxygen",
     "Thumbs.db",
     ".DS_Store",
+    # Local raw characterization bundle; reconciled findings live in calibration_closeout.md.
+    "claude_DE_JB_1028y_characterization/**",
 ]
 
 html_theme = "alabaster"

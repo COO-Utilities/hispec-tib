@@ -23,8 +23,12 @@ The correction defaults to zero. Settings validation requires an increasing curv
 from threshold to maximum. Calibration chooses the true modeled zero and preserves the uncorrected
 straight-line fit slope as `efficiency_mw_per_ma`. It derives `efficiency_ref_ma`
 to express the corrected curve with that slope; this is not another fitted degree
-of freedom. Automatic operation starts
-at the independently validated `min_autolevel_current_ma`, above the knee.
+of freedom. Automatic current is confined to the independently validated
+`min_autolevel_current_ma` / `max_autolevel_current_ma` support interval. The lower
+bound is above threshold and rounds upward to a register code; the upper bound
+rounds downward and cannot exceed `max_current_ma`. Nominal current still defines
+the level-1 power reference. Startup `initial_level` is clamped to the automatic
+interval; it does not always start at its minimum.
 For positive requested power, the stable inverse is
 $I=I_t+2P/[a+\sqrt{a^2+4qP}]$, where $a=\eta-qx_{ref}$.
 Zero requested power means zero current. An unreachable/nonfinite power fails;
@@ -36,21 +40,31 @@ metres. Photon error uses the same power-to-flux scale. For example, 1 mW at
 current-based estimates, not measured emitted power. Operational health is checked
 separately; computing a finite estimate does not prove a laser is emitting.
 
+`laser.value_ma` commands engineering current directly from zero through
+`max_current_ma`, independently of the fitted support and stored tune request.
+It is mutually exclusive with the modeled emission-fraction `value` command.
+Neither automatic current bounds nor attenuator operational open settings limit
+engineering current or DAC-voltage commands. Reported optical power remains a
+model estimate even when engineering current is outside fitted support.
+
 ## Wavelength tuning
 
 The local linear model is
 
 ```{math}
-\lambda(I,T)=\lambda_0+k_T(T-T_0)+k_I(I-I_{\rm nom}),
+\lambda(I,T)=\lambda_r+k_T(T-T_r)+k_I(I-I_r),
 ```
 
-where wavelength is nm, $k_T$ is nm/K, $k_I$ is nm/mA, and $T_0$, $I_{\rm nom}$
-are the configured operating temperature and nominal current. At zero current
-the reported nominal wavelength is a convention; no optical line is implied.
+where wavelength is nm, $k_T$ is nm/K, $k_I$ is nm/mA, and
+$(\lambda_r,I_r,T_r)$ are the independent `wave_ref_nm`, `wave_ref_ma` and
+`wave_ref_temp_c` coordinates. Changing power calibration, nominal current or
+the operating temperature does not move that reference. At zero current the
+reported reference wavelength is a convention; no optical line is implied.
 
 For requested brightness $b=\texttt{desired\_power\_percent}/100$, the tuner
 first chooses $P_d=bP(I_{\rm nom})$ and $I_d=P^{-1}(P_d)$, bounded to the allowed current.
-At $T_0$, compute $\Delta\lambda=\lambda_{\rm requested}-\lambda(I_d,T_0)$.
+At the configured operating temperature $T_0$, compute
+$\Delta\lambda=\lambda_{\rm requested}-\lambda(I_d,T_0)$.
 Temperature is used first when enabled:
 
 ```{math}
@@ -79,9 +93,12 @@ wavelength and $P(I_d)-P(I_*)$; clamping flags explain unreachable requests.
 There is no wavemeter feedback or claim of thermal/optical settling.
 
 The `laser/tune` command stores a relative wavelength request; the next positive
-manual laser-level operation applies it. Throughput deliberately skips stored
-tuning and retains the live TEC target. Tuning/settings interactions with stream
-shutdown ownership remain in the [review ledger](human_review_required.md#commandapi-mismatches).
+manual laser-level operation applies it. Engineering `value_ma` and throughput
+skip stored tuning and retain the live TEC target. Manual level/current, tuning
+and settings operations disable feedback while retaining the throughput stream,
+its deadline and its owned-source shutdown obligation, including after a failed
+operation. A settings change that stops emission leaves the retained stream with
+undefined throughput until a source is emitting again.
 
 ## Emission updates and failures
 
@@ -105,8 +122,10 @@ or STOP write is still reported; acknowledged zero current is retained even if S
 fails. A confirmed repeated stop avoids redundant writes.
 
 `hispec_laser_set_output_percent_autooff(..., apply_tune)` makes stored tuning
-explicit: manual levels and calibration apply it; throughput skips it and keeps
-the live TEC target. Preparation still installs the configured default target.
+explicit: manual levels and attenuator calibration apply it. Engineering current
+and throughput use `hispec_laser_set_current_ma_autooff()` without tuning; laser
+calibration uses direct currents at its separately qualified reference temperature.
+Preparation still installs the configured default target.
 Profile programming uses writable TEC bounds 0x0072 (minimum) and 0x0071
 (maximum), signed values scaled by 100. It expands the existing envelope before
 moving the default target and narrowing bounds. Absolute limits are read-only.
@@ -346,7 +365,7 @@ console diagnostics, separate from owner messages and measurement `/dt/` traffic
 
 ### Laser zero level versus shutdown
 
-A manual `laser value=0` is a zero-current update; it preserves driver readiness and
+A manual `laser value=0` or `laser value_ma=0` is a zero-current update; it preserves driver readiness and
 any existing auto-off deadline. `laser stop=true` is explicit shutdown. Captures and
 notebook cleanup must use explicit stop when they intend shutdown. Laser auto-off
 and measurement-owned expiry retain shutdown ownership at zero current. Temporary
