@@ -371,14 +371,37 @@ $T=50/(1000\times0.1)=0.5$, or 3.0103 dB.
 
 Fit candidates are sorted by increasing voltage without reordering raw records.
 At duplicate voltages, the usable observation with smaller mean error is retained.
-Nine contiguous 50 mV samples supply each rolling median and robust scatter.
-The brightest median window supplies a real median record as the reference.
-The closed-side crossing of `0.2 + 3*scatter` dB loss must be confirmed by three
-following medians; a loss above 3 dB, insufficient contiguous support, or unresolved
-clipping rejects selection as `peak`. The selected voltage is rounded upward to
-a representable DAC code. Fitting excludes voltages below this operational open
-point; it does not redefine that point as zero dB. The reference and open loss
-are separate retained metadata.
+Three contiguous 50 mV samples supply each rolling median. The brightest window
+supplies a real median record as the reference; its uncertainty is the median
+measurement error, not scatter across the changing response. This avoids rejecting
+a narrow real peak merely because its neighboring optical levels differ.
+The last closed-side crossing of `0.2 + 3*uncertainty` dB loss must be confirmed
+by three successive readings. A threshold above 3 dB, insufficient contiguous
+support, or unrecovered clipping in the connected component rejects selection as
+`peak`.
+
+Five-point local weighted slopes use contiguous samples at one companion setting.
+The last statistically significant brightening before the strongest closing slope
+raises the open boundary past low-voltage reversals. A later decrease from that
+strongest slope exceeding three combined standard errors ends support at the
+strongest slope's center voltage. This identifies high-drive flattening or kinks
+even when the detector-limited curve never reaches 55 dB. These tests use measured
+errors; the 0.5 dB model-mismatch floor is not a measurement-noise estimate.
+Selection happens once, before model fitting; points are not repeatedly trimmed
+until acceptance passes.
+
+The operational open is rounded upward to a representable DAC code. Fitting
+excludes lower voltages and stops at the selected high boundary or the existing
+55 dB boundary anchor, whichever comes first. Open does not redefine zero dB;
+the reference record and open-selection threshold remain separate metadata.
+The support bitmap records the actual selected points. Neither a good residual
+nor the datasheet's typical voltage certifies the physical behavior outside them.
+
+The base fit starts from the measured slope near half transmission. A restricted
+interval need not traverse the full error-function response, so initializing its
+slope as `8 / voltage_span` can start on the flat leakage floor and prevent the
+optimizer from finding a useful solution. The model and acceptance tests are
+unchanged.
 
 Reference-relative readings can have `tx >= 1`; for example, `tx=1.04` is about
 −0.17 dB. These remain signed fit inputs when otherwise eligible. Discarding them
