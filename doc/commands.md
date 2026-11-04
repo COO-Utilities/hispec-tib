@@ -1424,7 +1424,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     top-current measurement remains visible but requires review. RMS and maximum
     residual remain descriptive.
     No conditional Gaussian fit uncertainty is reported. See
-    [curve meaning](laser_calibration.md#curve-meaning-and-acceptance) for equations.
+    [curve meaning](laser_calibration.md#model-and-vendor-constraint) for equations.
   - `repeat` reports `matched`, `usable`, and `in_range` comparison counts, then
     `worst_fraction`, `current_ma`, `dac1_code`, `dac2_code`, `before_mv`, `after_mv`,
     `elapsed_ms`, and `worst_in_range`. A comparison requires the same current and
