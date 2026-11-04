@@ -67,6 +67,15 @@ extreme ratios. Static `force` requests coalesce to one pulse.
 
 ## Ownership, expiry and persistence
 
+`off_in_s` chooses how many seconds to keep switching, up to four hours.
+Omission uses four hours. A split also accepts zero for this default; an
+individual alternating switch requires a positive value if supplied. Repeating
+the request restarts the duration, and readback `off_in_s` counts down.
+
+Expiry ends switching and holds the last positions. It does not guarantee that
+light is blocked or that the requested average split continues. Send a static
+route or split when you need a particular final path; static positions have no timer.
+
 The router thread owns GPIO-expander pulses and cleanup, using kernel-uptime
 deadlines. Commands update intent under the router lock and return before the
 next physical pulse. State is last commanded/pulsed intent, not optical feedback.

@@ -56,6 +56,20 @@ and lab cells on their own schedule. Avoid saturation and account for room light
 when comparing darks. See the
 [closeout evidence](calibration_closeout.md#dark-current-closeout-and-operating-guidance).
 
+`pd` status includes powered-on age and remaining `off_in_s`; querying it
+intentionally enables/rearms a PD in AUTO. `pd/settings` reports power policy,
+actual powered state and the configured `autooff_s`, without rearming the timer.
+Remaining time is status and is not part of the settings payload.
+Measurement/calibration holds off automatic power-down while using the PD; release
+starts a fresh configured idle interval. `override_off` still forces it off now,
+and returning to AUTO leaves an off detector off until its next use.
+
+In AUTO, reboot restores the last successfully commanded PD power state and starts
+a fresh autooff countdown. A saved override takes precedence. This restores intent;
+early GPIO initialization may still interrupt power, and `pd_on_s` restarts at boot.
+Power-state recording is separate from dark/settings persistence, so relay use does
+not save a temporary dark calibration. See [power state storage](settings.md).
+
 ```{mermaid}
 flowchart TD
   Request[pd/dark capture] --> Quiesce[Stop throughput and its owned laser]

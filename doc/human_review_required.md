@@ -21,10 +21,17 @@ LLMs Agents: Do NOT change heading names in this file.
   speculative interlock, scheduling or calibration-algorithm change was made.
   The commissioning notebook now preserves the primary error and archives
   context even if record retrieval fails.
-- [ ] Bench-check changed PD/laser auto-off settings: shorten, lengthen, zero,
-  unchanged and unrelated writes; powered-off/idle state; calibration busy
-  rejection and throughput inhibition/stop ownership. Check PD `off_in_s` next
-  to `pd_on_s`, with no countdown field in `pd/settings`.
+- [ ] Bench-check PD/laser timers: positive laser durations/defaults, zero rejection,
+  shorten/lengthen and unchanged writes; finite autolevel and retained shutdown
+  after manual changes; TEC policy at measurement end. Check PD fresh idle intervals,
+  power overrides during acquisition and AUTO transitions. `off_in_s` belongs to
+  `pd` status, while `pd/settings` queries report policy without rearming.
+  PD zero still cancels its timer.
+  - 2026-11-03: three board reboots verified the new PD last-state restoration,
+    saved-override precedence and restored AUTO countdown expiry without a PD query.
+    Original AUTO/36000-second policies were restored. Temporary actual-C checks
+    covered missing records, duplicate writes and failed-write retry. This covers
+    restart behavior; the broader auto-off/fault matrix above remains separate.
 - [ ] Validate the integrated MCUboot OTA/USB flow on hardware:
   provision a confirmed baseline from compiled defaults; exercise USB
   confirmed-image reflash, matching-ELF debug/attach and cold reset; then normal
@@ -70,6 +77,20 @@ LLMs Agents: Do NOT change heading names in this file.
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-11-04: the broad robust fit replaces fitted-dark adjustment, GLS
+    confidence allowances, repeat vetoes and tiny interval rescue. Observed dark
+    knots, per-DAC-pair gains and central residuals accommodate path variability;
+    raw excursions and noise remain separate. OTA-confirmed firmware `fb6edae1f343`
+    completed all six fresh laser captures in 162–185 records without overflow
+    or reset. Four accepted; H/K retained broad vendor-guided review candidates,
+    with noise estimates on all six. Actual-C replay and all notebook review
+    plots matched. Standalone MQTT settings installation/readback of all six
+    candidates passed in RAM, followed by restoration. Quiet autolevel left
+    useful HK/YJ signals alone, with no observed setting transitions in two
+    25-second checks. No experimental calibration/noise/loss was persisted.
+    This supersedes the older fitting/acceptance descriptions below. Remaining
+    physical limitations and the full owner commissioning pass are recorded in
+    the [closeout report](calibration_closeout.md).
   - 2026-11-02 closeout implementation, offline verification only: three measured
     dark knots now constrain the shared fitted baseline; restricted current
     intervals and repeat-inconsistent candidates require human review. Effective
@@ -95,6 +116,12 @@ LLMs Agents: Do NOT change heading names in this file.
     correction: no eligible illuminated repeat now reports unavailable rather
     than zero. Actual-C replay and encoder/decoder checks passed with unchanged
     fits/acceptance; final boot-30 settings and shutdown readbacks passed.
+  - 2026-11-03 follow-up: OTA-confirmed `d43936221d13-dirty` completed a fresh
+    1430hk laser run with the new attenuator models in 170 records, without overflow
+    or reset. The 5.3–60 mA curve accepted at 0.710% RMS / 1.782% maximum residual.
+    A RAM-only candidate check reduced the 20/40 mA relative-throughput mismatch
+    from about 14% to 1.1–1.3%, comparable to return variation. No experimental
+    calibration was persisted. See the [current closeout record](calibration_closeout.md#laser-fit-and-relative-throughput-check-with-fresh-attenuator-models).
   - 2026-10-30: fixed repeated first-block acquisition when operational full open
     has nonzero modeled loss. OTA-confirmed firmware `4a1107b4b0b8-dirty` completed the
     standard 1430hk run in 171 records without overflow; the fit accepted with
@@ -320,6 +347,23 @@ LLMs Agents: Do NOT change heading names in this file.
     prevent interpreting every curve difference as physical FVOA drift. Existing
     captures do not isolate intrinsic tandem interaction; the fixed-source,
     measured-ratio bridge acquisition is unchanged.
+  - 2026-11-04: the closed-response support screen preserved all 110 accepted
+    fits in 124 historical physical captures and removed the isolated HK tail
+    failure. Fresh four-source checks accepted seven of eight physical fits; suspect
+    Y physical 2 retained a valid but rejected model with a 2.715 dB residual at
+    useful signal. A final clean K run accepted both devices at 0.234/0.145 dB
+    maximum residual, with zero bridges and no overflow. All fresh fits/support
+    masks agree with actual-C replay. Original models/opens were restored with
+    independent readback; the physical-floor prior decision remains separate.
+  - 2026-11-03 follow-up: source-off-corrected bridge precision and measured
+    closing-interval selection now prevent weak links and flattened tails from
+    determining the fit. All six sources produced accepted pairs in fresh checks,
+    including the final-image 1430yj rerun; historical replay lost no accepted fit.
+    The fixed-current companion checks remain conditional on optical history.
+    The owner identified new SM980 YJ physical attenuator 2 as suspect/possibly faulty;
+    its pair is not a reference for normal SM980 behavior. No universal voltage
+    cutoff or new mandatory hold was introduced. See the
+    [attenuator follow-up](calibration_closeout.md#november-3-attenuator-follow-up).
 
 - Review the freezer report's protection comparison: physical FLC OCP readings
   were 261.5–265.5 / 131.3–134.3 mA versus sheet maxima 250 / 120 mA; compiled
@@ -331,6 +375,21 @@ LLMs Agents: Do NOT change heading names in this file.
   uses that example. 
 
 ## TODOs
+
+- laser value docs say "It does not power up/start an idle driver" that's either wrong, confusing AF, or behavior I really don't want
+- check payload headroom on JSON settins commands (laser has gotten VERY wordy)
+
+- This is muddy AF: will a laser autooff if "A manual laser current/level, tuning or settings operation disables autolevel
+  while retaining collection, the measurement deadline and any existing owned-laser
+  shutdown obligation, including when the manual operation fails. Manual attenuation
+  changes also disable feedback without releasing the measurement. Passive
+  streams never acquire ownership of an unrelated manually started source.
+  Stop, expiry and owner faults stop an owned laser; a failed shutdown retains its
+  identity for a subsequent stop retry. Bank power, TECs and other sources are
+  unchanged. Explicit `laser stop:true` and laser auto-off separately consult
+  `disable_tec_at_autooff`; throughput STOP passes `stop_tec=false`."
+  - 1. A manual laser adjustment does not release throughput’s shutdown obligation.  Starting autolevel for 300 seconds, then manually setting laser current, disables automatic adjustment but retains the measurement deadline and owned-laser shutdown. At expiry, the manually adjusted laser still stops. Continuing the same source with autolevel:false also retains ownership. This is documented and implemented, but difficult to infer from the current autolevel flag alone. Implementation, documentation.
+    - good, but a user might play with multiple lasers on the channel while monitoring. the monitor should shut down ALL lasers when it ends. 
 - Investigate detector startup and illuminated settling separately. The September 21
   19:05 UTC noise capture saved a clipped dark (mean 53.8 mV, RMS 319.5 mV), then
   a stable dark trace near -2 mV. Firmware now requires ten continuous seconds

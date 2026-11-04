@@ -1,419 +1,598 @@
 # Calibration closeout and commissioning evidence
 
-Evidence reviewed: saved commissioning captures from 2026-10-28 through 2026-10-31 UTC,
-older captures where explicitly identified, and the owner's 2026-11-02 external-meter
-1028y characterization. This report separates archived observations from verification of
-the closeout firmware. The latter is recorded at the end; an accepted numerical fit alone
-is not a commissioning sign-off.
+This report covers saved measurements from October 28 through November 4, 2026 UTC,
+older responses where identified, and the owner's external-meter characterization.
+It describes an embedded controller, its demonstration Python helper, and example
+analysis notebooks. It does not prescribe an AIT workflow for the larger instrument.
 
-## What the existing data establish
+## Conclusions and model scope
 
-The assembled system produces useful, repeatable characterization on several sources.
-1430hk and 1430yj have especially consistent fitted power curves across repeated runs.
-1028y and 1510h expose larger operating-condition dependence; 2330k has measurable upper-current
-curvature and a substantial same-condition return change. These observations concern the whole
-laser/FVOA/fiber/detector path. They do not isolate intrinsic laser noise or FVOA electrical noise.
+Useful laser and attenuator models coexist with substantial optical-path variability.
+The variation spans measurement windows, returns to the same settings, and separate
+runs. It is correlated and not well described by a single Gaussian noise parameter.
+A quiet one-second window does not establish the precision of a later visit.
 
-A useful model and an automatic acceptance decision are different results. A valid candidate
-that fails a repeatability or reference check should remain available for review, with its
-usable current interval, residuals and original decision visible. A numerical failure supplies
-no valid model to install. Noise, power-curve and route-loss adoption are separate decisions.
+The clearest recent example is 1028y at **27.3 mA**, with the exact same DAC codes
+**3166 / 3125**: corrected PD readings were **150.19 and 102.44 mV**, separated by
+**109.6 seconds**, an observed **31.8% difference** using the observed-dark baseline.
+Neither was near darkness or saturation. This describes that current and DAC
+pair, not every operating point. Its relevance to an intended measurement also
+depends on the attenuator voltages and measured response there. It is not
+evidence of an operator error, a Gaussian sigma, or a measured upper bound on
+future variation.
+
+Firmware estimates a central response within that variability. Acquisition completion,
+model availability, automatic acceptance, application and persistence are separate
+results. A review candidate can be useful without qualifying for automatic installation.
+Raw observations remain available. Numerical acceptance is not physical commissioning.
+
+The laser fit profiles one gain per exact DAC pair over the entire capture. That
+removes reliance on accurately summing two individual FVOA calibrations, but a
+constant pair gain cannot remove current-dependent optical-path distortion.
+The current revision therefore estimates threshold from the lowest informative
+local windows, anchors power to the configured reference, and takes required
+curvature from the vendor trace. The broad acquisition tests that proposal and
+describes path variation; it does not steer source curvature to fit FVOA physics.
+Independent high/low-band comparison uses raw signal-ratio shapes, so a shared
+vendor prior cannot manufacture their agreement. This improves the basis for
+relative-throughput tracking without claiming independent absolute radiometry.
 
 ## Attenuator repeatability in practice
 
-The comparison below uses raw, source-off-background-corrected, bridge-normalized sweep points
-at matching DUT drive voltage. Both runs must classify the point as a fit candidate and place
-it in the common 1–20 dB interval. Each entry is the RMS **difference across those matched voltage
-points**, not temporal RMS and not uncertainty of a single fixed setting. DAC1 and DAC2 retain
-separate references. No fitted polynomial is used to manufacture agreement between raw points.
+The following short-term comparisons match actual DUT voltage, companion voltage and
+laser percentage in both runs' measured 1–20 dB regions. Shape RMS removes the median
+raw signal difference. Reference RMS retains each run's selected normalization. These
+are descriptive differences across matched points, not temporal noise specifications.
 
-| Source | Separation | DAC1 RMS difference (dB) | DAC2 RMS difference (dB) | Largest point difference, either DAC (dB) |
+| Pair / physical FVOA | Matched points | Median signal difference (dB) | Shape RMS (dB) | Reference RMS / largest difference (dB) |
 |---|---:|---:|---:|---:|
-| 1028y | 4.2 h | 0.939 | 2.189 | 2.748 |
-| 1270j | 4.2 h | 0.202 | 0.277 | 0.623 |
-| 1430yj | 4.2 h | 0.269 | 0.297 | 0.605 |
-| 1430hk | 6.5 min | 0.045 | 0.106 | 0.205 |
-| 1510h | 6.5 min | 0.576 | 0.790 | 1.600 |
-| 2330k | 6.5 min | 0.109 | 0.074 | 0.273 |
+| 1430hk DAC1 | 15 | −0.058 | 0.033 | 0.095 / 0.139 |
+| 1430hk DAC2 | 18 | +0.015 | 0.045 | 0.045 / 0.110 |
+| 1510h DAC1 | 10 | +0.035 | 0.518 | 0.544 / 1.282 |
+| 1510h DAC2 | 16 | −0.151 | 0.353 | 0.394 / 0.830 |
+| 1028y SM980 DAC1 | 6 | +0.179 | 0.116 | 0.237 / 0.387 |
+| 1028y SM980 DAC2 | 9 | −0.019 | 0.159 | 0.139 / 0.341 |
 
-Capture pairs in `tools/commissioning_data/`, with the `cal_<source>_` prefix:
+These are the November 3 captures ending `_closeout_nov3.pkl`, from
+`20261103T215324_573429Z` through `20261103T220923_308334Z` in
+`tools/commissioning_data/`. Earlier 1028y SM28 measurements must not be pooled
+with the replacement SM980 pair. The owner identified **SM980 physical 2 as a
+suspect device**; its behavior can affect a sweep of physical 1 as its companion.
+These measurements do not qualify SM980 FVOAs generally.
 
-| Source | First capture | Second capture |
-|---|---|---|
-| 1028y | `20261030T231351_140878Z.pkl` | `20261031T032801_075500Z.pkl` |
-| 1270j | `20261030T231552_566508Z.pkl` | `20261031T033001_743180Z.pkl` |
-| 1430yj | `20261030T231753_971338Z.pkl` | `20261031T033202_644457Z.pkl` |
-| 1430hk | `20261031T031324_648586Z.pkl` | `20261031T031955_062170Z.pkl` |
-| 1510h | `20261031T031523_301321Z.pkl` | `20261031T032151_705934Z.pkl` |
-| 2330k | `20261031T031719_911078Z.pkl` | `20261031T032348_338952Z.pkl` |
+The older October 30–31 comparisons, separated by approximately 4.2 hours on YJ,
+gave reference-relative RMS differences of 0.202/0.277 dB for 1270j and
+0.269/0.297 dB for 1430yj. The earlier 1028y pair gave 0.939/2.189 dB. Companion
+settings and references can differ between runs, so these are repeatability of
+the complete characterization, not fixed-setting stability measurements.
 
-These are not controlled constant-configuration stability experiments. Accepted attenuator
-acquisition changes the operational open voltages in RAM even with `persist=False`; the next
-run may therefore use a different companion starting point. For the 1510h DAC2 comparison,
-the companion starts near 1250 versus 1881 mV and the post-bridge companion is near 2275 versus
-2591 mV. The reference signal changes from about 381 to 15.9 mV. The reported difference mixes
-optical configuration, reference/bridge uncertainty, signal-to-noise and time. Old YJ captures
-also include changed optics and an earlier SM980 FVOA; they must not be pooled as the same device.
+### November 3 attenuator follow-up
 
-All 26 pair captures reviewed from Oct28–31 completed acquisition. The ten pair captures carrying
-`4a1107b` have accepted fits for all 20 physical sweeps. Earlier fit rejections remain useful raw
-data. In particular, the first 2330k fit rejected at high drive is retained alongside the later
-accepted runs; replay does not rewrite that decision.
+Replacing H DAC1 improved both its own usable sweep and the unchanged DAC2 result.
+The saved H DAC1 fits supported 17 points spanning 1750–2550 mV, versus 13 points at
+1800–2400 mV before replacement. In those original saved fits, DAC2's maximum residual improved from about
+0.929 to 0.463 dB, and its low-drive variation from about 1.76 to 0.66 dB.
+Replaying the same captures with the revised support screen gives 1.050 to
+0.618 dB, retaining that improvement. This is evidence that the companion matters. A failed physical-sweep fit does
+not uniquely identify the swept FVOA as the faulty part.
 
-The latest physical bridge counts (DAC1/DAC2) are 3/3 for 1028y, 2/2 for 1270j, 2/1 for 1430yj,
-1/1 for 1510h and 0/0 for 1430hk and 2330k. There is no evidence of runaway bridging in these runs;
-there is also no basis for claiming that every sweep requires at most two bridges.
+The isolated 1430hk DAC2 failure had a different numerical trigger: a 3300 mV
+reading barely passed the short-window SNR test after a long run of unusable tail
+points. It entered the fit and produced a 30.18 dB maximum residual. At that
+closed drive, useful through-path transmission is not detectable in this system.
+Such a reading cannot establish the physical extinction floor.
+
+The current fit first selects the measured closing branch and physical curvature
+boundary. It then screens possible closed-response contamination at the same
+companion/current setting and prevents isolated high-drive points from re-entering
+across a gap. No background-scaling law or additional bridging is introduced.
+The full algorithm and guardband interpretation are in
+[attenuator calibration](attenuator_calibration.md).
+
+Actual-C replay of 124 physical captures preserves all 110 previously accepted
+fits, leaves 13 existing failures as failures, and makes the isolated HK result
+usable at 0.250 dB maximum residual. Open voltages, physical-floor assumptions
+and their weighting remain unchanged. The latest 1028y and 1270j models are
+numerically unchanged by this support screen.
 
 ### Measured support is not physical extinction
 
-An HK fit reaching fewer measured dB does not establish a lower extinction ratio or higher
-physical operating voltage. A weak source and detector background can stop useful measurement
-well before the device's closed attenuation is reached. Fitted support, the 55 dB software
-operating ceiling, the modeled continuation and FVOA drive voltage are distinct quantities.
-The higher-drive behavior in the FVOA datasheet remains physical context; a detector-limited
-run does not measure it. The plot therefore labels measured support and continuation separately
-and retains the post-amplifier voltage axis. See [attenuator calibration](attenuator_calibration.md)
-and the supplied [FVOA sheet](datasheets/FVOA_atten.pdf).
+Weak HK illumination cannot probe the FVOA's full physical attenuation. A smaller
+reported calibrated range does not establish lower extinction or a higher physical
+operating voltage. Measured support, operational open, model continuation, the
+55 dB software ceiling, and actual FVOA drive voltage are distinct quantities.
 
-### What bridging assumes, and what has actually been tested
+The [FVOA sheet](datasheets/FVOA_atten.pdf) supplies physical context for the SM28
+closing branch, not an individual device's voltage calibration. The 55 dB ceiling
+was intended to avoid poorly behaved high-drive operation; it cannot protect a
+fit by itself when measurable light runs out much sooner. The stored drive gain
+is 1.533, versus approximately 1.517 from the schematic resistor ratio. That
+roughly 1% difference cannot explain a volt-scale apparent displacement.
 
-The current procedure fixes the source at 100% nominal output, holds a DUT voltage while changing
-the companion, and uses the measured before/after signal ratio. It needs neither an accurate
-companion model nor a linear laser L-I curve. It does assume that the companion ratio measured
-at that DUT voltage applies to the subsequent segment, and that material path drift has not
-occurred between the linked observations. Changing laser current during a sweep would introduce
-an additional assumption and is deliberately avoided.
+### Companion dependence and time dependence
 
-The external 1028y measurements show current/time-dependent loss, but do **not** independently
-establish tandem interaction. Their six independent VOA configurations can be reproduced exactly
-by six individual losses at each current, with positive monotonic losses under either assignment
-of the unidentified single-10-dB device. A missing independent combination prevents a closure test.
+Acquisition holds laser current fixed and measures the companion's before/after
+ratio at a fixed DUT voltage. It preserves the first usable bridge. It assumes
+that this ratio is useful over the following segment; it does not require a
+linear laser L-I curve or an accurate companion model. Recent SM980 sweeps used
+four bridges per device; other sources used zero to three. These are observed
+counts, not a universal bound or a new acquisition rule.
 
-An exact-DAC graph check of the 26 saved attenuator runs found no four-corner rectangles. Two
-1510h runs do contain a six-edge cycle across their sequential DAC1/DAC2 sweeps:
+At fixed 250 mA, the suspect SM980 pair's apparent companion effect varied with
+DUT setting. For DUT DAC1, ratios ranged from −0.18 to 7.61 dB while repeated A
+settings differed by 0.78–3.07 dB. For DUT DAC2, companion ratios spanned
+7.86–8.57 dB, exceeding its 0.014–0.187 dB A-return differences. Thirteen-second
+holds also showed continuing variation. These records do not determine a
+settling time or isolate static coupling from time-dependent variation.
 
-| Capture | Closure error (dB) | Propagated window/background SE (dB) |
-|---|---:|---:|
-| `cal_1510h_20261028T004637_579151Z.pkl` | −1.870 | 0.149 |
-| `cal_1510h_20261031T031523_301321Z.pkl` | −2.380 | 0.217 |
+Two older H six-edge cycles had closure errors of −1.870 and −2.380 dB. A later
+local 1430yj four-corner check gave approximately −0.098 and −0.075 dB at
+28.5 and 19.9 mA. Together these support treating exact tandem additivity as
+unverified across the operating space, rather than assuming one universal
+interaction or assigning the discrepancy to one physical component.
 
-The six observations are DAC2 record 43, DAC1 records 25/27/44, and DAC2 records 28/30.
-Requested voltages were rounded to the actual 12-bit DAC codes before matching; only unsaturated
-records with corrected SNR at least five were used. Closure is the alternating sum of the six
-`−10 log10(signal)` values. The quoted SE propagates window mean errors and the common background;
-it excludes unmeasured temporal drift.
+![Companion-dependent response and fixed-setting time series](calibration_closeout_companion.png)
 
-These cycles contradict one time-invariant separable surface over those observations. They do
-not identify the cause: a global gain change of approximately 1.54× or 1.73× between the two
-physical sweeps is mathematically confounded with interaction. The 1028 calibration captures
-have no independent cycle. This evidence supports preserving measured first-usable bridging,
-not reinstating old pre/post confirmation, DUT backoff, source-level ranging or model-derived
-bridge ratios. It also prevents claiming that separability has been validated everywhere.
+The plotted return ranges are observed spans, not confidence intervals.
+Source records include `companion_1028y_20261103T221705_176024Z_closeout_nov3.json`,
+`companion_settling_1028y_20261103T221956_052939Z_closeout_nov3.json`, and
+`tandem_1430yj_20261103T044318_855134Z_closeout.json`, with their raw streams beside them.
 
-## Laser/path repeatability and model scope
+## Laser response and variability
 
-The following comparisons evaluate archived candidate curves at identical currents with
-`P(I)=(I−t)[η+q(I−I_e)]`. They are comparisons of fitted models, not absolute metrology or
-fixed-current temporal stability. The percentage denominator is the first listed curve.
+Earlier repeated fitted curves agreed within 0.100% for 1430hk and 0.153% for
+1430yj over 20–60 mA; three 1270j curves spanned 3.542%. Agreement of fitted
+central curves does not establish equally small instantaneous path variation.
+The six owner captures reviewed for this revision are:
 
-| Source and captures (`laser_cal_<source>_…`) | Compared range | Largest curve difference |
-|---|---:|---:|
-| 1430hk: `20261031T030044_091108Z`, `20261031T054425_817274Z` | 20–60 mA | 0.100% |
-| 1430yj: `20261031T003909_267849Z`, `20261031T034631_422486Z` | 20–60 mA | 0.153% |
-| 1270j: `20261031T002044_732415Z`, `20261031T034155_140178Z`, `20261031T060433_725407Z` | 20–65 mA | 3.542% total span |
+| Source | Capture timestamp (UTC) | Relevant observation |
+|---|---|---|
+| 1028y | `20261103T234742_475133Z` | 31.8% same-current/DAC difference at useful signal with observed-dark correction |
+| 1270j | `20261103T235512_668986Z` | Broad useful line; within-window fractional noise about 4.44% |
+| 1430yj | `20261103T235948_406354Z` | Broad useful line |
+| 1430hk | `20261104T000356_098218Z` | Broad useful line; old repeat veto concerned only 1.8 mA |
+| 1510h | `20261104T000813_695099Z` | High-current path response flattens/rolls over in both PD bands |
+| 2330k | `20261104T001322_866300Z` | Curvature; old large repeat percentage concerned only 6.2 mA |
 
-The two 1430yj curves agree closely even though one run was rejected for a 6.31% identical-condition
-return change. Both 1270j later candidates were rejected by the old dark-baseline consistency check;
-that decision does not erase their useful shape information. The latest 1430hk run has 0.98% RMS
-fit residual and 1.76% between-PD-level diagnostic disagreement. These are separate statistics.
+Files use `laser_cal_<source>_<timestamp>.pkl` in `tools/commissioning_data/`.
+HK's 1.8 mA comparison was approximately 0.148 and 0.0049 mV after baseline
+correction. K's 6.2 mA comparison was approximately 0.318 and 0.479 mV, below its
+lasing interval. Those observations remain available, but their percentages do
+not describe repeatability of the operating laser curve.
 
-The latest 1510h capture (`20261031T054846_323540Z`) has 22.55% RMS residual and an 88.66%
-between-level diagnostic difference. It is not a marginal acceptance-boundary case. Its result
-needs review as an assembled-path/model mismatch. The latest 2330k capture (`20261031T055355_284839Z`)
-has 3.11% RMS residual but a 16.96% same-condition return change. A small within-window noise estimate
-would not contradict such a larger change over the duration of a run.
+In that owner's H capture, the 60 mA usable windows each used a DAC pair measured at only that current.
+They show that light was measured; they cannot independently establish source
+shape when each pair has an unknown gain. Its directly constrained upper extent
+is 53.3 mA. The result and plot distinguish that coverage from model continuation.
 
-The latest 1028y candidate (`20261031T055951_741481Z`) fits 103.7–250 mA with 2.92% RMS residual
-but disagrees with the vendor characterization. The external-meter data provide valuable independent
-context: fitting an ordinary straight line over 31.75–250 mA gives about 181.06 µW/mA, an extrapolated
-zero at 16.02 mA and 2.58% maximum relative residual. This is an offline ordinary least-squares
-comparison, not a reproduction of firmware GLS acceptance. The fitted zero is not the measured
-physical knee near 12.2 mA. Real diode curvature remains visible and is not assigned to a software bug.
+### Independent source characterization
 
-The external VOA paths change by approximately 0.88 dB (both at their minimum), 3.54 dB
-(minimum/20 dB) and 2.36 dB (20 dB/minimum) over 24.5–250 mA. Fixed attenuation paths show much
-less trend. Current and elapsed time were swept together, so the cause remains unresolved.
-Within-current attenuator calibration can still work when transmission depends on current;
-using that same transfer curve at a different current is the unvalidated extrapolation.
+The owner's external-meter packet provides important evidence beyond the PCB PD.
+A straight-line comparison of direct 1028y output over 31.75–250 mA gives
+0.18106 mW/mA, an extrapolated zero of 16.02 mA, and 2.58% maximum relative
+residual. The physical knee is nearer 12.2 mA: a fitted curve's extrapolated zero
+and physical turn-on need not be identical. Real source curvature is retained
+in the characterization and is not classified as a software defect.
 
-These numbers were independently recalculated from `laser_LI_direct.csv` and
-`path_attenuation_vs_current.csv` supplied with the owner's 1028 characterization. Two corrections
-to its narrative matter: the large compiled-profile error is near threshold (about 15.7× at
-14.6 mA), not a persistent factor of two at 17 mA; and the quoted VOA1 14.9 dB is the *increment*
-from its minimum to the 20-dB command, not its absolute loss at that command. Excess insertion
-loss by itself does not prove an incorrect open-voltage reference. Reference planes, estimated
-path losses and unidentified single-device measurements must remain explicit.
+In those same experiments, the fixed-attenuation path varied very little with
+current, while FVOA configurations spanned approximately 0.88, 3.54 and 2.36 dB
+over 24.5–250 mA. Current and elapsed time were swept together. These observations
+support useful direct laser behavior and problematic assembled-path behavior,
+without uniquely identifying a physical mechanism. The packet predates the
+current SM980 installation and is not evidence for that particular pair.
 
-### Noise estimates and acceptance
+Source data are `laser_LI_direct.csv` and `path_attenuation_vs_current.csv` in
+`doc/claude_DE_JB_1028y_characterization/`. The report's approximate vendor curves
+are reference information, not raw vendor metrology with established uncertainties.
 
-Earlier firmware left constant/fractional noise unestimated after some fit rejections. That is a
-software reporting limitation, not absence of measurements. The closeout separates estimation
-from adoption: available noise information is reported even when a candidate requires human review.
-A term can remain unidentifiable when the sampled power range is narrow or the two variance terms
-are strongly correlated; that reason should be stated. Do not substitute zero for an unavailable
-estimate, equate fitted residual RMS with temporal laser noise, or interpret a fitted path noise
-term as proof of the physical source of variation. Historical archives retain their original
-`not estimated` result rather than being silently rewritten.
+### Noise interpretation
+
+The constant/fractional noise fit describes illuminated-path **within-window**
+variance after measured dark variance is subtracted. It includes source/path
+fluctuations and photon noise; it is not intrinsic laser RIN, calibration accuracy,
+or uncertainty of a later repeated condition. Zero is a valid nonnegative fitted
+component; unavailable means that the data did not identify that estimate.
+
+For the saved 1270j run, `0.044358` means **4.44% RMS**. At an explicitly assumed
+20 Hz equivalent noise bandwidth, its retained signal range gives a photon-noise
+comparison of approximately **0.029–0.158% RMS**, about **0.0605%** at the median
+signal. Bandwidth is an analysis assumption, not the stream sampling frequency.
+Do not add the photon estimate again to a fitted noise term that already contains it.
+Neither number describes the longer-timescale 1028y repeat difference.
 
 ## Dark-current closeout and operating guidance
 
-Source-off measurements, closed-attenuator leakage and fitted baseline are different observations.
-An attenuator driven closed does not establish a true dark. Same-run source-off measurements allow
-baseline correction without overwriting the configured dark; residual changes still carry
-uncertainty. Piecewise baseline knots account for the observed evolution rather than forcing all
-three dark observations onto one straight line.
+Source-off observations, source-on closed-FVOA residuals, and saved PD darks serve
+different purposes. Same-run dark knots correct the observed baseline evolution;
+they do not observe every intermediate fluctuation or require the saved dark to
+remain exact throughout a run.
 
-The owner's observed room-light sensitivity, early detector-on drift and possible post-saturation
-persistence remain physical limitations. They are not established as a single mechanism by these
-captures. Field scripts should power the detector, allow about half an hour before final dark and
-precision measurements, and turn it off when finished. The configured long auto-off period is a
-convenience, not a warmup test. Avoid intentional detector saturation; the usable raw ceiling is
-2000 mV, distinct from ADC clipping at 2048 mV. If lighting, startup or saturation history changes,
-review fresh source-off data instead of interpreting the resulting offset as optical throughput.
+The owner's room-light sensitivity, roughly first-20-minute powered drift, and
+possible post-saturation persistence remain practical physical findings. Field
+scripts should power the PDs about half an hour before precision use and turn
+them off when finished. This is guidance, not a firmware wait or mandatory test.
+The configured auto-off is ten hours. Avoid saturation; inspect fresh source-off
+readings when lighting, power history, or illumination history matters.
 
-The optional slow autolevel response acts on sustained excursions outside the usable signal envelope.
-Inside that envelope it issues **no current or attenuator writes**; it does not continually chase a
-center setpoint. Saturation/no-signal handling remains prompt. Filtering can reduce unnecessary
-actuator motion, but cannot repair an inaccurate denominator in reported throughput. The automatic
-current interval is the reviewed model's useful interval. Manual engineering current access retains
-the configured hard range and does not require changing the fitted threshold.
+AUTO restores the last successfully commanded PD power state after reboot, with
+a fresh timer and powered age. This does not guarantee uninterrupted detector
+power during early GPIO initialization. Earlier board tests covered on/off
+restoration, saved override precedence and a restored short timer's expiry.
+No new recovery sequence or long hold is part of this closeout.
 
-## Adoption and handoff
+## Integration, adoption and core autolevel
 
-The commissioning notebook now previews the complete selected attenuator pair: coefficients,
-uncertainty and both operational open voltages. RAM application/readback precedes a separate
-persistence choice. Laser adoption includes all four curve coefficients and both automatic-current
-bounds. Noise and complete outbound-loss totals have separate explicit writes/readbacks. Partial
-errors are displayed and archived; no rollback or persistence-after-reboot is inferred from RAM
-readback. The original acquisition's acceptance/application flags remain unchanged.
+The firmware provides complete calibration results over MQTT. The helper decodes
+those results and supplies ordinary settings dictionaries. The notebooks are
+examples of review and analysis, not a required acceptance application. See
+[laser calibration](laser_calibration.md), [commands](commands.md), and
+[Python helpers](python_helpers.md) for exact operations.
 
-Current physical verification paths are YJ FEI → YJ SM return and HK FEI → HK MM return.
-The two channels' capture selectors and plots remain independent. Replay is static; live widgets
-are confined to live display cells. The historical 1028 manual-model experiment is retained but
-disabled separately from the commissioning sequence. Raw archives are not rewritten or committed
-as part of the software closeout.
+Manual adoption uses the existing `laser/settings` request with all four curve
+coefficients and both automatic-current bounds. `persist:false` applies in RAM;
+persistence is a separate explicit choice. Noise and route-loss settings have
+separate adoption decisions. Attenuator calibration can install coefficients and
+opens in RAM even with `persist:false`, so verification restores both explicitly.
 
-## Closeout verification record
+Autolevel remains a core function. Its slow response filters the need to change
+range, not a continuously chased brightness setpoint. Useful signal inside its
+envelope causes no current or attenuator writes; saturation/no-signal response
+remains prompt. Improving the source-power model improves relative throughput
+when source current changes. Absolute throughput calibration remains conditional
+on detector gain, reference power and optical losses.
 
-### Offline verification completed
+### Laser fit and relative-throughput check with fresh attenuator models
 
-- All 11 tracked notebooks' 291 code cells compiled after IPython transformation with top-level
-  await support. Notebook checkpoint files were not treated as maintained sources.
-- Latest saved laser captures for all six sources and five failed/accepted 2330 attenuator captures
-  replayed without board requests. The 1028 review figure was rendered and visually inspected;
-  its comparison panel contains the vendor, recorded current-settings and candidate curves.
-- A temporary fake-client check applied a valid automatically rejected 1430yj candidate, including
-  the upper automatic bound; applied/read back all six saved attenuator coefficient/open pairs;
-  and confirmed that an injected open-setting write failure remains an explicit partial result.
-- Repeatability and closure calculations above used temporary analysis scripts and existing data.
-  No permanent test harness or new acquisition protocol was added.
+An earlier fixed-DAC 40 → 20 → 40 mA check on 1430hk directly tested that purpose:
 
-### Build, OTA and board verification
-
-The normal and timing MCUboot builds passed, using respectively 493,072/175,700 and
-497,516/192,148 application FLASH/RAM bytes. The strict documentation build passed.
-OTA installed firmware `a4a69d7001c4`, boot 29, on `hsfib-tib`. Confirmation was explicitly
-requested after observing the fresh boot, exact image hash, readiness and bank-off state:
-`8b87a9e816faddf43bbf93b10caaad531a9a3d4067d9e122e0e86cd2e71ee0b6`.
-The subsequent notebook-only follow-up `34f9f0a` does not change that flashed firmware.
-
-Four existing firmware calibration flows completed on 2026-11-03 UTC without overflow or reset, using
-the existing `hk_fei → hk_mm` and `yj_fei → yj_sm` loopbacks. Laser acquisition used 1000 ms
-windows and 2000 ms settling; attenuator acquisition used 550 ms windows. No laser model,
-noise or route loss was applied, and nothing was persisted. The attenuator flow's accepted
-coefficients and operational opens were installed in RAM by the normal flow, then the
-pre-run pair was restored and verified.
-
-| Run | Retained records | Selected support | Fit RMS | Maximum residual | Decision |
-|---|---:|---|---|---|---|
-| 2330k attenuator | 136 (68 per DAC) | 44/42 points; 29.07/28.37 dB | 0.0880/0.1003 dB | 0.2003/0.2121 dB | Both accepted; zero bridges |
-| 1430hk laser | 171 | 94 windows; 5.3–60 mA | 0.7161% | 2.2094% | Accepted |
-| 1270j laser | 191 | 94 windows; 9.8–65 mA | 2.4084% | 6.1194% | Accepted |
-| 1430yj laser | 185 | 96 windows; 6–60 mA | 1.2672% | 5.8985% | Accepted |
-
-Laser maximum residuals are raw percentages; acceptance includes the documented three-measured-SE
-allowance beyond 5%. Every accepted laser interval reaches its configured sweep maximum.
-The previously overflowing 1430hk flow completed in 171 records. Local raw captures are in
-`tools/commissioning_data/`:
-
-- `cal_2330k_20261103T041850_711129Z_closeout.pkl`
-- `laser_cal_1430hk_20261103T042048_042217Z_closeout.pkl`
-- `laser_cal_1270j_20261103T042500_921024Z_closeout.pkl`
-- `laser_cal_1430yj_20261103T042935_882896Z_closeout.pkl`
-
-The new laser runs preserve useful variation diagnostics despite their accepted decisions:
-
-| Laser | Constant noise (mW) | Fractional noise | Repeated-condition change | PD-band disagreement |
+| Requested DAC losses | Observed 20/40 mA ratio | Apparent throughput difference with original model | With calibrated model | 40 mA return difference |
 |---|---:|---:|---:|---:|
-| 1430hk | 0 | 0.8932% | Not estimated | 1.1384% |
-| 1270j | 0 | 4.2050% | 4.7452% | 8.0991% |
-| 1430yj | 0.003179 | 1.6893% | 5.8568% | 7.5321% |
+| 3 + 3 dB | 0.45076 | +14.42% | +1.33% | +1.38% |
+| 8 + 3 dB | 0.44979 | +14.18% | +1.11% | −1.15% |
 
-These are the firmware's conditional diagnostics and effective noise estimates. They do not
-isolate intrinsic diode noise, and zero fitted constant noise is a constrained estimate.
-The separate unadjusted same-current plots still expose differences among DAC pairs.
-The archived HK diagnostic reports zero, but inspection found no eligible illuminated revisit:
-its only exact repeat was at 1.8 mA, with both conditions classified below SNR. Zero therefore
-did not measure perfect repeatability. The final reporting fix emits an unavailable fraction
-when no eligible comparison exists; it does not change fitting or acceptance.
+This is prior hardware evidence for calibration's practical value, not verification
+of the revised numerical implementation. Earlier 35-second autolevel holds on HK
+and the suspect 1028y path retained about 700 samples each with no observed
+setpoint movement, no clipping, and no gap above 51 ms. Useful signals around
+429–576 mV were left alone. These temporary test intervals impose no operational
+hold requirement. Records are in
+`candidate_controls_20261103T223025_397550Z_closeout_nov3.json` and its named streams.
 
-Both YJ runs used a configured dark of −2.27656 mV. The three same-run source-off observations
-show why that single value is insufficient throughout a capture. Here raw means add the
-configured dark back to the two late windows' recorded mean; fitted offsets are relative to
-that configured dark, not absolute ADC readings:
+## Current revision: saved-data replay
 
-| Laser | Dark-condition times (s) | Observed raw dark means (mV) | Fitted offset knots (mV) |
-|---|---|---|---|
-| 1270j | 6.810 / 146.797 / 270.167 | −2.27656 / −2.16562 / −0.89531 | +0.05447 / +0.06355 / +1.34409 |
-| 1430yj | 6.791 / 143.475 / 264.543 | −2.15625 / −2.04375 / −2.12656 | +0.19132 / +0.28489 / +0.15123 |
+Actual-C host replay of the six latest owner captures and the six preceding
+`_closeout_final` captures produced twelve valid broad candidates with identifiable
+noise estimates. These are offline results from existing observations, not new
+board measurements. The following table shows the latest owner set; files are
+`laser_cal_<source>_20261104T<timestamp>.pkl` in `tools/commissioning_data/`.
 
-Observed dark spans are 1.38125 mV and 0.11250 mV, respectively. Maximum observed-versus-fitted
-dark differences are 0.05447 and 0.07101 mV. The piecewise baseline represents these observations;
-this short post-OTA sequence neither establishes their physical cause nor validates half-hour
-warmup or long-duration dark stability.
+| Source | Capture UTC timestamp | Threshold (mA) | Proposed range (mA) | Central median residual | Raw band-shape difference | Automatic decision |
+|---|---|---:|---|---:|---:|---|
+| 1028y | `042839_802193Z` | 12.324 | 13.1–250 | 3.25% | 7.98% | Review: band shapes differ |
+| 1270j | `043325_011272Z` | 9.691 | 9.8–65 | 1.11% | 2.27% | Accepted |
+| 1430yj | `043801_780463Z` | 4.247 | 6–60 | 0.72% | 0.43% | Accepted |
+| 1430hk | `044423_280876Z` | 3.956 | 5.3–60 | 0.89% | 0.70% | Accepted |
+| 1510h | `044900_546395Z` | 3.602 | 4.5–60 | 17.57% | 11.08% | Review: central residual |
+| 2330k | `045420_511833Z` | 16.621 | 18.7–120 | 8.16% | 1.89% | Review: central residual |
 
-After the calibration sequence, independent readbacks found all six sources stopped, all
-attenuator DACs closed, and all original laser policies, coefficients and operational opens
-matching the pre-update snapshot; boot count remained 29. The new automatic upper bounds
-initialized to nominal current. Reboot did not retain the snapshot's 1028y threshold or
-operational-open pairs; those values were restored in RAM before acquisition, without persistence.
+Both percentages describe disagreement with, or within, the observed optical
+path. They are not Gaussian uncertainties on the proposed laser power. The raw
+band statistic removes a constant high/low gain ratio before comparing their
+current-dependent shapes; agreement cannot be created by constraining two
+separate fitted curves to the same vendor trace.
 
-All four fresh captures replayed through the commissioning review functions. Rendered figures
-were inspected; source identities, selected support and integer-midpoint baseline knots agree
-with the metadata. The new 1430hk candidate differs by at most 0.05414% from the latest October
-31 candidate over 20–60 mA, using the older curve as denominator. This comparison spans both
-new measurements and the baseline-model revision. Notebook follow-up fixes preserve stored
-outputs, show missing optional context explicitly, and distinguish installed automatic bounds
-from candidate support and engineering limits.
+K now retains the vendor-supported curvature: its quadratic coefficient is
+approximately **−5.10 × 10⁻⁵ mW/mA²**, with reference current 120 mA. Its two
+measured bands have similar shapes, but the assembled-path observations still
+differ from the reference-supported proposal enough to require review. H retains
+a line anchored at its measured local threshold and configured reference, rather
+than interpreting the broad path's rolloff as laser curvature. Its large residual
+and band difference remain visible. These are useful source proposals with
+explicitly unresolved path disagreement, not a claim that fitting fixed the
+optical hardware. All six retain the existing requested upper current.
 
-### Current commands, autolevel and shutdown ownership
+The latest 1028y capture also exposed an acquisition-context error: its recorded
+attenuator coefficients exactly match `cal_1028y_20261031T032801_075500Z.pkl`,
+before the SM980 replacement. The notebook's reviewed-adoption selection still
+named that capture and its RAM application switch was enabled. The valid current-
+hardware pair in `cal_1028y_20261103T224307_036146Z.pkl` was therefore replaced
+by older hardware's map. This affects ranging and modeled attenuation/loss;
+it does not by itself prove the cause of the recorded band disagreement.
+The preceding current-hardware 1028y run replays with a 12.302 mA threshold,
+3.89% central residual and 1.30% band difference. That comparison supports
+retaining a useful source model while checking map provenance and actual transfer
+ratios. It is not a controlled before/after hardware test.
 
-Both 1430 sources accepted engineering current below the automatic minimum and at the 60 mA
-engineering maximum while the automatic ceiling was temporarily 36.7 mA. Negative/over-limit
-current and incompatible drive/STOP requests were rejected by firmware. A 0.04 mA request
-rounded to zero while preserving the existing deadline; an explicit three-second deadline
-stopped the source. These checks used closed attenuators and RAM-only policy changes.
+Reviewed attenuator installation now starts with an empty explicit selection and
+disabled application, and its updates are separate from the acquisition-file
+list. Calibration acquisition, bridge behavior, engineering voltage access and
+quiet autolevel are unchanged. Current board checks are reported in the final
+section below; the historical verification that follows used the previous fitter.
 
-Four 15-second holds retained 299–300 samples each, with feedback active, no overrange samples,
-no observed current/DAC setpoint transitions and no sample gap above 51 ms:
+## Earlier verification: firmware `fb6edae1f343`
 
-| Path and mode | Net PD range (mV) | Median (mV) | Initial condition |
+The numerical and board results below record the preceding broad, vendor-envelope
+fit implementation. They remain evidence for acquisition, transport and control,
+but are not verification of the local-threshold/vendor-curvature revision above.
+
+Actual-C historical laser replay covered 38 retained captures: 19 accepted, 13
+broad review candidates, and six lacking the required three observed dark knots.
+Six additional older/incomplete snapshots could not supply the replay inputs.
+No modern previously accepted fit became unavailable or review-needed. This is a
+qualified historical comparison, not a claim that old captures acquire missing
+measurements retroactively.
+
+The six owner captures above replay as follows. All six supply identifiable noise
+estimates; all candidates retain the requested upper current instead of selecting
+a tiny residual-clean interval.
+
+| Source | Proposed current range (mA) | Central median residual | Result |
 |---|---:|---:|---|
-| 1430yj, existing band | 471.78–547.78 | 525.84 | Entered startup band |
-| 1430yj, quiet 0.1 Hz | 507.96–561.71 | 539.59 | Entered startup band |
-| 1430hk, existing band | 335.86–349.17 | 342.17 | Reached available-flux limit |
-| 1430hk, quiet 0.1 Hz | 338.48–348.55 | 342.48 | Reached available-flux limit |
+| 1028y | 13.1–250 | 3.619% | Accepted |
+| 1270j | 11.7–65 | 0.698% | Accepted |
+| 1430yj | 6–60 | 0.717% | Accepted |
+| 1430hk | 5.3–60 | 0.434% | Accepted |
+| 1510h | 4.5–60 | 8.439% | Vendor-guided review; top coverage is incomplete |
+| 2330k | 18.7–120 | 4.927% | Vendor-guided review |
 
-The first HK verification attempt expected the 400–1600 mV startup band and failed that
-assumption: the source was already at its 49 mA automatic ceiling with both DACs at operational
-open. The revised check explicitly recognized useful signal at those limits. No control change
-was needed. Same-setting requests are suppressed by the existing current quantizer and
-attenuator epsilon checks. These captures observe setpoints, not individual bus transactions.
-YJ quiet mode left a useful signal near 540 mV alone instead of steering toward 1000 mV.
+Normal and timing MCUboot builds pass. Normal RAM is 198500 bytes of 262144;
+timing RAM is 214948 bytes. Temporary ASan/UBSan checks cover the numerical fit,
+stop/cancellation, complete MQTT reception, bounds and formatter cases. All 291
+code cells in 11 tracked notebooks compile. Strict Sphinx documentation builds
+pass. No permanent verification infrastructure was added.
 
-On both channels, a manual current command disabled feedback but retained streaming and source
-shutdown on measurement STOP. A noise-policy edit retained streaming and the original measurement
-deadline; expiry stopped the source. Settings were restored and cleanup readbacks passed. Local
-reports are `controls_20261103T043424_252367Z_closeout.json` (engineering checks, YJ and the initial
-HK limit observation) and `controls_20261103T044120_963153Z_closeout.json` (completed HK checks).
-The associated raw throughput captures are saved beside them.
+The normal image was OTA-flashed and explicitly confirmed on boot 40 after exact
+hash, board readiness, zero relay error, bank-off and live trial-window checks.
+The image was built from firmware commit `fb6edae1f343`; its MCUboot identity is
+`ced04ec2c8272bf486ab42f88bb9bfe2de9c011e91317f46ddb77e12510a8b2a`.
+The dirty suffix reflects unrelated owner working files and is not the image
+identity. The raw pre-update settings and retained calibration were saved first.
 
-Temporary tests of the actual C control functions also covered useful-signal ramps/steps at
-0.1/0.5 Hz, noise-floor excursions, raw saturation, actuator limits and shutdown ownership.
-The useful-signal cases issued zero setter calls. Those simulated excursions were not reproduced
-as physical external-system sweeps, and detector saturation was not deliberately induced.
+Fresh attenuator captures from `20261104T012902` through `20261104T035414`
+(`*_closeout_final.pkl`) yielded the following maximum residuals. All downloaded
+fits and support masks agree with actual-C host replay.
 
-### Bounded tandem check and throughput normalization
+| Source | DAC1 max residual | DAC2 max residual | Result |
+|---|---:|---:|---|
+| 1028y | 0.188 dB | 2.715 dB | DAC1 accepted; suspect DAC2 remains review-needed |
+| 1430hk | 0.210 dB | 0.311 dB | Both accepted; zero bridges |
+| 1510h | 0.177 dB | 0.518 dB | Both accepted; one bridge each |
+| 2330k, recovered repeat | 0.225 dB | 0.269 dB | Both recovered fits accepted; zero bridges |
+| 2330k, final connected run | 0.234 dB | 0.145 dB | Both accepted; zero bridges; clean host flow |
 
-Three temporary 1430yj investigations are retained. The first stopped because one device was
-on its open plateau. The second completed but its first-axis effect was unresolved; its small
-closure is not evidence for separability. Their files are
-`tandem_1430yj_20261103T043716_618437Z_closeout.json` and
-`tandem_1430yj_20261103T043853_615499Z_closeout.json`.
+The 1028y DAC2 discrepancy is at useful signal: at fixed companion drive
+2414.172 mV, DUT readings at 2750, 2700 and 2650 mV were approximately
+141.418, 100.157 and 730.077 mV. The middle point has the largest residual.
+This nonmonotonic sequence does not isolate a component fault from time/path
+variation, and was not removed to make the fit pass.
 
-The final bounded probe, `tandem_1430yj_20261103T044318_855134Z_closeout.json`, used fixed
-approximately 80 mV changes on each axis. Exact 12-bit code corners were A=(2566,2668),
-B=(2665,2668), C=(2665,2767), D=(2566,2767). Both axes were resolved: the first changed loss
-by 0.32–0.49 dB, the second by 2.77–2.86 dB. At each fixed current the sequence was
-A–B–C–D–A–D–C–B–A, with source-off measurements bracketing the experiment and a final return
-to the original current. All main-sequence net signals were approximately 61–208 mV.
+The first K attempt coincided with Mac clamshell sleep. A repeat suffered a host
+broker-connection interruption before a later sleep. Both full datasets were
+recovered, but both carry host acquisition/cleanup errors and are not claimed as
+clean end-to-end runs. Subsequent cleanup and settings restoration verified;
+the board remained at boot 40 with zero relay error. At identical settings in
+both runs' 1–20 dB regions, K shape RMS differences were 0.160/0.053 dB
+(DAC1/DAC2), with reference-relative maxima 0.513/0.122 dB. These are descriptive
+repeat differences, not Gaussian noise specifications.
 
-Closure is `10 log10(S_A S_C / (S_B S_D))`, using dark-corrected window means. The quoted
-conditional SE propagates within-window scatter, paired-window variation and shared measured
-dark uncertainty; it excludes unobserved path changes between holds. Public PD windows expose
-no firmware endpoint timestamp, so approximate host times and timing uncertainty are retained.
-Codes were reconstructed and checked against confirmed mV and the 3.3 V, 12-bit DAC transfer.
+The six fresh laser runs completed without transport errors, overflow or reset,
+using 162–185 of 240 available records. Acquisition requested `apply:false`,
+`update_noise:false`, `determine_static_loss:false` and `persist:false`.
+The accepted fresh attenuator pairs were used in RAM. Both 1028y models remained
+unchanged because DAC2's rejection prevented installation of either new model;
+its successful laser run used the previously installed SM980 pair. The recovered
+complete K coefficients were read back
+before use. Every raw capture includes the exact active coefficients.
 
-| Current | Forward/reverse mean closure (dB) | Conditional SE (dB) |
+| Source | Records | Proposed range (mA) | Result | Central median residual | Useful repeat difference | Fractional within-window RMS |
+|---|---:|---:|---|---:|---:|---:|
+| 1028y | 182 | 13.1–250 | Accepted | 3.89% | 19.33% | 0.859% |
+| 1270j | 184 | 11.7–65 | Accepted | 1.01% | 2.51% | 4.239% |
+| 1430yj | 185 | 6–60 | Accepted | 0.71% | 6.49% | 1.746% |
+| 1430hk | 168 | 5.3–60 | Accepted | 0.47% | Unavailable | 1.494% |
+| 1510h | 181 | 4.5–60 | Review | 16.15% | 15.36% | 4.099% |
+| 2330k | 162 | 18.7–120 | Review | 3.29% | Unavailable | 0.265% |
+
+All six provide constant and fractional noise estimates, including both review
+candidates. K's matched paired observation is below its operating floor. HK has raw
+1.8 mA revisits at identical DAC codes, but their low-SNR windows do not form
+an eligible paired comparison. Neither unavailable percentage means zero
+variability. Fresh H has top-current shape coverage; it still needs review
+because the central curve reaches the vendor allowance and retains large
+residuals (23.01% RMS, 55.49% maximum). K also reaches the vendor allowance.
+
+Comparing these candidates with the six owner captures above, all refitted
+with the same current algorithm:
+
+| Source | Comparison interval (mA) | Maximum central-curve difference |
 |---|---:|---:|
-| 28.5 mA | −0.0981 | 0.0525 |
-| 19.9 mA | −0.0750 | 0.0567 |
-| Difference between currents | +0.0231 | 0.0773 |
+| 1028y | 30–250 | 0.012% |
+| 1270j | 20–65 | 0.969% |
+| 1430yj | 20–60 | 0.132% |
+| 1430hk | 20–60 | 0.124% |
+| 1510h | 20–60 | 0.788% |
+| 2330k | 30–120 | 1.339% |
 
-This is a useful local bound, not proof of perfect separability. Small, approximately 2%
-nonclosure remains possible. It does not explain or erase the earlier 1.9–2.4 dB six-edge
-results on another source. Repeated corners changed by roughly 0.06–0.16 dB, and the final
-original-current A return changed −0.118 dB (−2.68%). During the initial A–B–A pilot, signal
-fell approximately 31% despite unchanged reported current (28.5 mA) and temperature (24.97°C).
-The 0.14 mV change between bracket darks cannot explain that optical-sized change. Source,
-FVOA, coupling and detector history remain possible contributors. No time correction or
-new bridge policy was introduced to conceal this behavior.
+These are reference-normalized, partly vendor-constrained models. Their close
+agreement is not independent evidence that instantaneous source/path power
+is this stable, especially for H/K. Relative differences increase near the
+extrapolated zero. The fresh 1028y example still spans 126.928 to 102.391 mV
+at 27.3 mA, exact codes 3162/3120, 104.1 seconds apart: a 19.33% excursion.
 
-The same raw measurements directly test the motivation for laser calibration. For identical
-DAC settings, recompute the throughput change between currents by dividing the measured
-signal ratio by the model's source-power ratio. Across the four corners:
+Every fresh laser fit, gain, dark knot, repeat/band diagnostic and support
+mask agrees with actual-C host replay. All six notebook reviews render with
+the vendor/active/proposed curves, explicit shot-noise scenario and exact
+manual installation payload. Ordinary `laser/settings` MQTT requests
+successfully installed and read back all six candidates in RAM, including
+the review candidates, then restored each original model. No persistence
+was requested.
 
-| Denominator | Predicted P(19.9)/P(28.5) | Apparent throughput change | Conditional SE |
-|---|---:|---:|---:|
-| Pre-existing active linear model, threshold 8.0 mA | 0.58049 | +9.43% | 0.49 percentage points |
-| Fresh candidate, threshold 4.2705 mA | 0.64506 | −1.52% | 0.44 percentage points |
+Fresh laser files are `laser_cal_<source>_<UTC>_closeout_final.pkl`, from
+`20261104T031921_362893Z` through `20261104T034224_393282Z`.
+Raw runs are in `tools/commissioning_data/`; the source/file index, replay
+summaries, review plots, OTA identity and readbacks are retained in
+`tools/commissioning_data/closeout_final_20261104/`.
 
-The measured geometric-mean signal ratio was about 0.63525. Efficiency cancels in these linear
-ratios: correcting the fitted threshold is what removes most of the artificial current
-dependence here. Individual candidate residual changes were −2.53% to −0.40%, comparable to
-the observed return drift. The earlier weak-axis experiment independently gave +9.87% versus
-−1.13%. This is offline substitution of the saved candidate into the denominator; the model
-was not installed. It supports improved relative normalization at these two currents, not
-absolute vendor power accuracy or every current/attenuator configuration.
+The fresh fixed-DAC current-return checks used 20-second observations at each
+current, after two seconds for the commanded transition. These are one-off lab
+checks, not required operating holds:
 
-Final independent readback after these investigations again confirmed all six sources stopped,
-all DACs closed, original laser policies/coefficient/open pairs restored, the image confirmed,
-and boot count unchanged at 29. No experimental settings were persisted.
+| Source | Current sequence (mA) | Low/high relative-throughput difference | Return/first-high difference |
+|---|---|---:|---:|
+| 1430hk | 38.1 → 21.7 → 38.1 | −1.06% | −0.66% |
+| 1028y | 155.2 → 84.2 → 155.2 | −3.02% | −0.97% |
 
-### Final image and reporting correction
+The initial HK probe requested more signal than was available at its fixed
+38.1 mA current and correctly stopped at the bright limit. The completed probe
+used the available useful signal; firmware settings/policy were unchanged.
+At 0.1 Hz quiet autolevel, both sources retained 514 samples in the requested
+25-second observation (25.675 seconds including readback overhead)
+with **zero current/DAC setting transitions**. HK remained around 429 mV net at
+its available-flux limit; 1028y remained around 843 mV net. Both had usable signal
+without clipping. The streamed measurements were not low-pass filtered.
+These bounded observations support quiet control behavior; they do not qualify
+arbitrary external-system sweeps, absolute throughput or long-term stability.
+The suspect YJ pair still showed considerable fixed-setting variation and
+photodiode-noise warnings during the current-return check.
 
-After the bench investigations, `eebba1b` changed only the unavailable repeat-fraction diagnostic
-to NaN. Actual-C replay of all three fresh laser captures preserved all 16 checked fit,
-acceptance and noise outputs and error strings. HK became unavailable, both YJ repeat values
-were unchanged, and a synthetic eligible identical repeat remained exactly zero. Actual C
-encoding and Python decoding of the 634-byte HK metadata preserved NaN; the notebook displays
-it as “Not estimated.” Acquisition and acceptance policy did not change.
+Temporary actual-C control checks passed 21 cases covering useful-signal holds,
+saturation/no-signal response, stale windows, actuator limits and shutdown
+ownership. Deliberate physical saturation and the full external-system sweep
+were not performed. Control data are the `controls_*_20261104T035011_237357Z_*`
+captures and `controls_20261104T035011_237357Z.json` in the evidence bundle.
 
-Final firmware `dfb0a000a1f4` was OTA-flashed and explicitly confirmed at boot 30 with hash
-`f9a09c38975d2e9179bc2941c2c7841ae0a4860e51b204328c38d527a976ab33`, after exact-hash,
-fresh-boot, board-ready and bank-off checks. UDP upload timeouts recovered by resuming the
-upload; complete image verification and the final confirmation readback succeeded. The normal
-and timing MCUboot builds passed at 493,080/175,700 and 497,524/192,148 FLASH/RAM bytes.
-The timing build retained its expected assertions-enabled warning; no new source warnings arose.
-The four optical calibrations and control/corner measurements above ran on `a4a69d7001c4`;
-they were not repeated for this diagnostic-only correction.
+The final K attenuation run (`cal_2330k_20261104T035414_530144Z_closeout_final.pkl`)
+completed cleanly with 136 records, no overflow and no host errors. Both fits
+accepted, with maximum residuals 0.234/0.145 dB and zero bridges. Host replay
+agrees within numerical tolerance; support masks match exactly. This supplies
+the clean end-to-end verification missing from the two interrupted attempts.
 
-After the final reboot, snapshot RAM values were restored again. Independent queries confirmed
-all six sources stopped, all attenuators closed, original laser policies/coefficients/opens
-restored, and OTA confirmed with its maintenance window closed. PDs were left powered in their
-existing ten-hour auto mode; this reboot restarted their powered age. All 11 tracked notebooks'
-291 code cells compiled, fresh captures replayed, and the strict Sphinx build passed.
+Final independent readback confirmed boot 40, the same confirmed image, no pending
+OTA image/window, and zero relay error. All six sources were stopped at zero
+current, all DACs closed, and the original laser policies, attenuator coefficients,
+opens, PD policies/powered intent and MEMS states restored. Bank policy is AUTO;
+both PDs remain powered with their original ten-hour auto-off. The full
+IP/laser/attenuator status reply parsed successfully at 1150 bytes. No experimental
+calibration, noise or route-loss settings were persisted.
 
-These short checks do not establish long-term optical stability, absolute power accuracy, the
-OTA power-cut/rollback matrix or full fault recovery. Final full YJ/HK commissioning and owner
-sign-off remain separate.
+The physical paths remain YJ FEI → YJ SM and HK FEI → HK MM. The owner will run
+the complete commissioning notebook for each channel for final handoff signoff.
+Long-term stability, independent absolute power and qualification of a known-good
+SM980 pair remain distinct from the bounded firmware and lab checks here.
+
+## Current revision: November 3 local / November 4 UTC board verification
+
+The local-threshold/vendor-curvature firmware was OTA-flashed and explicitly
+confirmed on boot **41** after checking the image identity, board readiness and
+zero relay error. The running build reports `87457b451dc0-dirty`; its confirmed
+MCUboot image hash is
+`bbd5d914a6c60ba0984941aebdbb5cdb31618aca758e474f5ece362716559d7b`.
+The readback shows no pending image or trial window.
+
+The ordinary 2330k attenuation calibration completed with **136 records**, no
+capture or cleanup errors, and both fits accepted. DAC1/DAC2 maximum residuals
+were **0.206/0.235 dB**, with supported attenuation **22.74/17.84 dB**. These are
+the measured supported ranges, not estimates of the FVOAs' physical extinction.
+The request used `persist:false`; the accepted pair applied in RAM as designed.
+Its raw file is `cal_2330k_20261104T061314_497750Z_relative_closeout.pkl`.
+
+The three requested laser checks completed through the standard firmware flow,
+with no record overflow or capture/cleanup errors. They used the existing
+one-second dwell and two-second settling settings, with `apply:false`,
+`update_noise:false`, `determine_static_loss:false` and `persist:false`.
+
+| Source | Capture UTC timestamp | Records | Proposed range (mA) | Threshold (mA) | Central median residual | Raw band-shape difference | Automatic decision |
+|---|---|---:|---|---:|---:|---:|---|
+| 1028y | `061516_702400Z` | 183 | 13.1–250 | 12.298 | 4.49% | 0.68% | Accepted |
+| 1510h | `062101_690381Z` | 176 | 4.5–60 | 3.549 | 11.99% | 14.54% | Review: central residual |
+| 2330k | `062518_835985Z` | 162 | 18.7–120 | 16.656 | 9.05% | 0.93% | Review: central residual |
+
+Files are `laser_cal_<source>_20261104T<timestamp>_relative_closeout.pkl` in
+`tools/commissioning_data/`. All three provide valid candidates and noise
+estimates. K's coefficient remains curved at **−5.13 × 10⁻⁵ mW/mA²**; H remains
+a reference-anchored line rather than absorbing its path rolloff. No candidate,
+noise estimate or route loss was automatically installed by these laser runs.
+Review status records disagreement with the measured path; it does not erase
+the proposed source model or require a narrower current interval.
+
+Actual-C host replay agrees with the board's serialized coefficients and
+acceptance outcomes, exact support masks, measured dark knots, pair gains and
+noise results for all three captures. The largest diagnostic rounding
+difference is below 2 × 10⁻¹⁷. The raw records and metadata remain the evidence
+for later analysis; this comparison verifies implementation agreement, not
+independent optical accuracy.
+
+Twelve additional archived captures also replayed with valid broad candidates:
+eight accepted, four H/K review results. Temporary address/undefined-behavior
+sanitizer and cancellation checks passed, as did 21 existing-control scenarios.
+The shared data and scratch buffers did not grow. Production ARM stack analysis
+confirms the existing **4096-byte** throughput-thread allocation; the laser tick
+frame is 744 bytes versus the previous 664-byte frame plus a separate 280-byte
+search callee. These compiler frame sizes are not runtime stack high-water
+measurements and exclude transitive library/kernel frames.
+
+### Relative throughput across actual setting changes
+
+The fresh candidates were temporarily installed in RAM for short current and
+attenuator checks, then restored. Each fixed-setting observation lasted about
+eight seconds after the existing two-second transition wait. These are bounded
+lab probes, not added firmware holds or a prescribed operating sequence.
+The table uses median published throughput, already normalized by modeled
+source power and attenuation. A perfectly stable and correctly modeled path
+would give zero differences.
+
+| Source | Current sequence (mA) | Fixed DAC pair (mV) | Low / first high difference | Returned high / first high difference |
+|---|---|---|---:|---:|
+| 1028y | 155.2 → 84.2 → 155.2 | 2118.9 / 2803.7 | +5.61% | +8.22% |
+| 1510h | 37.8 → 21.2 → 37.8 | 1723.3 / 2134.2 | +50.34% | +0.55% |
+| 2330k | 79.5 → 49.1 → 79.5 | 507.6 / 1860.3 | −1.07% | +1.72% |
+
+K supplies useful evidence that the curved source proposal supports relative
+normalization at these currents. The 1028y current difference lies within its
+observed high-return change, so this short check cannot separate model error
+from path variation. H is materially different: about **50%** normalized change
+at lower current, with a **0.55%** high-current return, remains a large
+current-dependent source/path transfer effect at that DAC pair. The revised
+source model does not resolve it, and this measurement alone cannot assign it
+to the diode or one FVOA.
+
+At the higher current, the next checks added approximately 6 dB and returned,
+then redistributed approximately 1 dB between the devices at the same modeled
+total and returned again. Each difference below uses the immediately preceding
+baseline setting, keeping unrelated earlier variation out of the comparison.
+
+| Source | Additional 6 dB: normalized difference | Return from 6 dB change | Alternate split: normalized difference | Return from alternate split |
+|---|---:|---:|---:|---:|
+| 1028y | −16.99% | +0.88% | −10.96% | +21.40% |
+| 1510h | −9.23% | +7.35% | −17.62% | −7.37% |
+| 2330k | +0.69% | +0.19% | +0.10% | −0.90% |
+
+These are observed transfer and return differences, not pure fit errors or a
+universal tandem-coupling correction. K behaved consistently in this local
+test; 1028y and H retain substantial setting/history-dependent path effects.
+The results support useful control maps, not precision additivity or verified
+linearity across the full 50–100 dB command span.
+
+All three 0.1 Hz quiet-autolevel checks retained useful signal without any
+current or DAC changes during their requested 25-second observations. Median
+net PD levels were approximately **613, 927 and 536 mV** for 1028y, H and K,
+respectively. Each retained 512–513 samples; the longest sample gap was 51 ms.
+No clipping occurred. The measurements were not smoothed, and the controller
+did not chase the observed fluctuations back toward its initial setpoint.
+
+Final independent readback confirmed boot 41, zero relay error, all six lasers
+stopped, all DACs closed, and original laser/attenuator policies, coefficients,
+opens and static MEMS states restored. PD power policies and powered intent
+were restored; the freshly measured **RAM dark values were retained**. No
+calibration, noise, route-loss or dark updates were saved to NVS. The full
+1150-byte status response, including IP information and all six laser and
+attenuator entries, decoded successfully. Cleanup reported no errors.
+
+The manifest, OTA confirmation, replay/board comparisons and final readbacks
+are retained in `tools/commissioning_data/relative_closeout_20261104/`. Raw
+control streams remain alongside that directory in `tools/commissioning_data/`.
+Control files are
+`controls_<source>_20261104T063156_885678Z_<phase>_relative_closeout.pkl`, with
+`controls_20261104T063156_885678Z.json` recording the complete sequence. These
+records preserve the remaining optical limitations alongside the completed
+firmware verification.

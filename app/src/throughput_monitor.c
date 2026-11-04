@@ -172,7 +172,9 @@ static int stop_locked(enum photodiode_channel channel)
 	state->phase = TP_INACTIVE;
 	state->autolevel = false;
 	if (state->stop_laser) {
-		int rc = hispec_laser_stop_output(state->laser, false, NULL, 0);
+		struct app_laser_channel_settings settings;
+		int rc = hispec_laser_get_channel_settings(state->laser, &settings);
+		if (rc == 0) rc = hispec_laser_stop_output(state->laser, settings.disable_tec_at_autooff, NULL, 0);
 
 		if (rc != 0) {
 			LOG_ERR("Throughput stopped; laser %s shutdown failed (%d), retry stop",
@@ -645,7 +647,7 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	if (request->fiber != 'M' && request->fiber != 'S') {
 		return -EINVAL;
 	}
-	if (request->autolevel && (!isfinite(request->initial_level) ||
+	if (request->autolevel && (request->off_in_s == 0U || !isfinite(request->initial_level) ||
 	    request->initial_level < 0.0 || request->initial_level > 1.0)) {
 		return -EINVAL;
 	}
@@ -689,6 +691,12 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	bool stop_previous = monitors[channel].stop_laser &&
 		(monitors[channel].phase != TP_RUNNING || !request->has_laser ||
 		 monitors[channel].laser != request->laser);
+	/* Disabling feedback must not erase the deadline of a source we still own.
+	 * Reject before quiescing the run or changing routes/power. */
+	if (request->off_in_s == 0U && monitors[channel].stop_laser && !stop_previous) {
+		k_mutex_unlock(&monitors_lock);
+		return -ERANGE;
+	}
 	/* Hold the PD across replacement, including a different laser on the same
 	 * channel. Preparing suppresses publishing/control until routes are ready.
 	 */
@@ -696,7 +704,9 @@ int throughput_monitor_prepare_start(const struct throughput_monitor_request *re
 	monitors[channel].phase = TP_PREPARING;
 	monitors[channel].autolevel = false;
 	if (stop_previous) {
-		rc = hispec_laser_stop_output(monitors[channel].laser, false, NULL, 0);
+		struct app_laser_channel_settings settings;
+		rc = hispec_laser_get_channel_settings(monitors[channel].laser, &settings);
+		if (rc == 0) rc = hispec_laser_stop_output(monitors[channel].laser, settings.disable_tec_at_autooff, NULL, 0);
 		if (rc != 0) {
 			/* Keep failed shutdown responsibility for a later explicit stop. */
 			housekeeping_photodiode_autooff_inhibit(pd_power_output(channel), false);

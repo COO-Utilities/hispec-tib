@@ -992,7 +992,7 @@ void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_sta
     out->b_ms = out->cycle_ms > out->a_ms ? out->cycle_ms - out->a_ms : 0U;
 
     if (sw->remaining_toggle_cycles!=0) {
-        out->stop_in_s =
+        out->off_in_s =
             (sw->remaining_toggle_cycles * mems_switch_pulse_ms(sw) + 999U)/ 1000U;
     }
 
@@ -1517,7 +1517,7 @@ int mems_split_read_channel_state(const struct mems_router *router,
             status.cycle_ms == 0U ? 0.0 :
             (double)selected_ms / (double)status.cycle_ms;
         next.cycle_ms = MAX(next.cycle_ms, status.cycle_ms);
-        next.stop_in_s = MAX(next.stop_in_s, status.stop_in_s);
+        next.off_in_s = MAX(next.off_in_s, status.off_in_s);
     }
 
     sw1_duty = next.switches[0].duty_cycle;

@@ -20,6 +20,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_output.h"
+#include "app_settings.h"
 #include "devices.h"
 #include "photodiode.h"
 
@@ -303,7 +304,7 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 				.msg = "photodiode relay command ignored because relay GPIO expander is offline",
 				.context = enabled ? "enable" : "disable",
 			});
-			return 0;
+			return -EIO;
 		}
 		return -EIO;
 	}
@@ -323,6 +324,11 @@ static int power_set_locked(enum housekeeping_power_output output, bool enabled)
 		k_mutex_unlock(&housekeeping_state_lock);
 	}
 	if (changing) photodiode_noise_change_end();
+	if (rc == 0 && power_output_is_photodiode(output)) {
+		int saved = app_settings_record_photodiode_power((uint8_t)output, enabled);
+		if (saved != 0) relay_health_warning("pd_power_not_saved",
+			"photodiode power changed but restart state was not saved", saved);
+	}
 	return rc;
 }
 
@@ -483,13 +489,24 @@ void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output outp
 					     bool inhibited)
 {
 	uint8_t index;
+	struct app_photodiode_settings settings;
 
 	if (!power_output_to_pd_index(output, &index)) {
 		return;
 	}
 
 	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+	app_settings_get_photodiode(&settings);
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
+	/* Last use starts a fresh idle interval, never an overdue pre-use timer.
+	 * A repeated release is inert; an explicit power override still wins. */
+	if (pd_autooff_inhibited[index] && !inhibited) {
+		const struct app_pd_channel_settings *pd = &settings.channel[index];
+		pd_autooff_deadline_ms[index] = power_on_time[index].active &&
+			pd->power == APP_PD_POWER_AUTO && pd->autooff_s > 0U ?
+			k_uptime_get() + (int64_t)pd->autooff_s * 1000 :
+			HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
+	}
 	pd_autooff_inhibited[index] = inhibited;
 	pd_autooff_reschedule_locked();
 	k_mutex_unlock(&housekeeping_state_lock);
@@ -561,17 +578,20 @@ static void temperature_work_handler(struct k_work *work)
 static void pd_autooff_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	struct app_photodiode_settings settings;
 	/* Serialize final eligibility and GPIO write against inhibit/enable. The
 	 * state mutex is released for I/O, so throughput can always read state.
 	 */
 	k_mutex_lock(&housekeeping_io_lock, K_FOREVER);
+	app_settings_get_photodiode(&settings);
 	for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
 		k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 		bool expired = pd_autooff_deadline_ms[i] != HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE &&
 			!pd_autooff_inhibited[i] && k_uptime_get() >= pd_autooff_deadline_ms[i];
 		if (expired) pd_autooff_deadline_ms[i] = HOUSEKEEPING_PD_AUTOFF_NO_DEADLINE;
 		k_mutex_unlock(&housekeeping_state_lock);
-		if (expired) {
+		/* An override may have followed the release that armed this deadline. */
+		if (expired && settings.channel[i].power == APP_PD_POWER_AUTO) {
 			int rc = power_set_locked(i, false);
 			if (rc != 0) LOG_WRN("Failed to auto-off photodiode relay %u (%d)", i, rc);
 		}
@@ -587,6 +607,20 @@ void housekeeping_start(struct k_work_q *work_q)
 	__ASSERT_NO_MSG(work_q != NULL);
 
 	housekeeping_work_q = work_q;
+	/* devices_ready() applied persisted intent. Read it back before starting
+	 * on-time tracking and a fresh AUTO deadline; elapsed time is not persisted. */
+	struct app_photodiode_settings pd;
+	app_settings_get_photodiode(&pd);
+	for (uint8_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+		bool enabled;
+		if (housekeeping_power_get(i, &enabled) != 0) continue;
+		int rc = app_settings_record_photodiode_power(i, enabled);
+		if (rc != 0) relay_health_warning("pd_power_not_saved",
+			"photodiode boot state was not saved", rc);
+		if (pd.channel[i].power == APP_PD_POWER_AUTO) {
+			(void)housekeeping_photodiode_autooff_set(i, pd.channel[i].autooff_s);
+		}
+	}
 	k_mutex_lock(&housekeeping_state_lock, K_FOREVER);
 	/* Initial grace, not a claim that the relay has already responded. */
 	relay_response_deadline_ms = k_uptime_get() + RELAY_RESPONSE_TIMEOUT_MS;

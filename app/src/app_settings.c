@@ -49,6 +49,7 @@ enum app_nvs_id {
 	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_ATTEN_OPEN_CH0 = 0x0180,
 	APP_NVS_ID_PD_CH0 = 0x0200,
+	APP_NVS_ID_PD_POWER_CH0 = 0x0240,
 	APP_NVS_ID_LASER_POLICY_CH0 = 0x0300,
 	APP_NVS_ID_LASER_TOTAL_CH0 = 0x0340,
 	APP_NVS_ID_LASER_NTC_CH0 = 0x0380,
@@ -66,7 +67,9 @@ BUILD_ASSERT(APP_NVS_ID_ATTEN_FIT_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_
 	     "attenuator fit policy NVS block overlaps open settings block");
 BUILD_ASSERT(APP_NVS_ID_ATTEN_OPEN_CH0 + APP_ATTENUATOR_CHANNEL_COUNT <= APP_NVS_ID_PD_CH0,
 	     "attenuator open settings NVS block overlaps photodiode block");
-BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY_CH0,
+BUILD_ASSERT(APP_NVS_ID_PD_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_PD_POWER_CH0,
+	     "photodiode NVS block overlaps power state block");
+BUILD_ASSERT(APP_NVS_ID_PD_POWER_CH0 + APP_PD_CHANNEL_COUNT <= APP_NVS_ID_LASER_POLICY_CH0,
 	     "photodiode NVS ID block overlaps laser policy block");
 BUILD_ASSERT(APP_NVS_ID_LASER_POLICY_CH0 + APP_LASER_CHANNEL_COUNT <= APP_NVS_ID_LASER_TOTAL_CH0,
 	     "laser policy NVS ID block overlaps laser total block");
@@ -173,6 +176,7 @@ static const uint16_t default_laser_expected_serial[APP_LASER_CHANNEL_COUNT] = {
 
 struct app_settings_state {
 	struct app_settings_snapshot snapshot;
+	bool pd_power_saved[APP_PD_CHANNEL_COUNT];
 	struct k_mutex lock;
 };
 
@@ -837,7 +841,12 @@ static void app_nvs_load_photodiode(struct app_settings_snapshot *s)
 		struct app_nvs_pd_channel stored;
 		struct app_pd_channel_settings *pd = &s->photodiode.channel[channel];
 		struct app_pd_channel_settings candidate;
+		uint8_t power = 0;
 
+		if (app_nvs_read_exact(APP_NVS_ID_PD_POWER_CH0 + channel, &power,
+				      sizeof(power), "photodiode power") && power <= 1) {
+			g_settings.pd_power_saved[channel] = power != 0;
+		}
 		if (!app_nvs_read_exact(pd_nvs_id(channel), &stored,
 					sizeof(stored), "photodiode")) {
 			continue;
@@ -1070,6 +1079,7 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 	}
 	for (uint8_t channel = 0U; channel < APP_PD_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(pd_nvs_id(channel), &first_rc);
+		delete_setting_record(APP_NVS_ID_PD_POWER_CH0 + channel, &first_rc);
 	}
 	for (uint8_t channel = 0U; channel < APP_LASER_CHANNEL_COUNT; ++channel) {
 		delete_setting_record(laser_policy_nvs_id(channel), &first_rc);
@@ -1117,6 +1127,7 @@ int app_settings_init(void)
 
 	k_mutex_init(&g_settings.lock);
 	settings_defaults(&g_settings.snapshot);
+	memset(g_settings.pd_power_saved, 0, sizeof(g_settings.pd_power_saved));
 
 	/* Direct NVS keeps Zephyr's flash wear-leveling and recovery behavior
 	 * without storing human-readable setting names alongside small values.
@@ -1169,6 +1180,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		LOG_WRN("Board type changed from %s to %s; clearing persisted settings",
 			previous, board_type);
 		settings_defaults(&g_settings.snapshot);
+		memset(g_settings.pd_power_saved, 0, sizeof(g_settings.pd_power_saved));
 		str_set(g_settings.snapshot.board_type,
 			sizeof(g_settings.snapshot.board_type),
 			board_type);
@@ -1204,6 +1216,7 @@ int app_settings_erase_non_ip_settings(void)
 	ip = g_settings.snapshot.ip;
 	boot_count = g_settings.snapshot.boot_count;
 	settings_defaults(&g_settings.snapshot);
+	memset(g_settings.pd_power_saved, 0, sizeof(g_settings.pd_power_saved));
 	g_settings.snapshot.ip = ip;
 	g_settings.snapshot.boot_count = boot_count;
 	k_mutex_unlock(&g_settings.lock);
@@ -1339,6 +1352,33 @@ void app_settings_update_attenuator_channel(uint8_t channel,
 	if (persist) {
 		app_nvs_persist_attenuator_channel(channel, atten);
 	}
+}
+
+bool app_settings_photodiode_power_at_boot(uint8_t channel)
+{
+	if (channel >= APP_PD_CHANNEL_COUNT) return false;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	enum app_pd_power_mode mode = g_settings.snapshot.photodiode.channel[channel].power;
+	bool enabled = mode == APP_PD_POWER_OVERRIDE_ON ||
+		(mode == APP_PD_POWER_AUTO && g_settings.pd_power_saved[channel]);
+	k_mutex_unlock(&g_settings.lock);
+	return enabled;
+}
+
+int app_settings_record_photodiode_power(uint8_t channel, bool enabled)
+{
+	if (channel >= APP_PD_CHANNEL_COUNT) return -EINVAL;
+	int rc = 0;
+	uint8_t value = enabled ? 1 : 0;
+	k_mutex_lock(&g_settings.lock, K_FOREVER);
+	/* Separate from calibration/settings: relay use must not save RAM-only darks.
+	 * Flash is touched only on a change; a failed write remains eligible to retry. */
+	if (g_settings.pd_power_saved[channel] != enabled) {
+		rc = app_nvs_write(APP_NVS_ID_PD_POWER_CH0 + channel, &value, sizeof(value));
+		if (rc == 0) g_settings.pd_power_saved[channel] = enabled;
+	}
+	k_mutex_unlock(&g_settings.lock);
+	return rc;
 }
 
 void app_settings_get_photodiode(struct app_photodiode_settings *out)

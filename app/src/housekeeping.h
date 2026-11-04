@@ -73,7 +73,10 @@ int housekeeping_photodiode_auto_enable(enum housekeeping_power_output output,
 int housekeeping_photodiode_autooff_set(enum housekeeping_power_output output,
 				      uint32_t autooff_s);
 
-/** Prevent or allow one photodiode auto-off deadline from firing. */
+/** Hold PD power during use. Releasing a held, powered AUTO channel starts a
+ * fresh configured idle interval; repeated release does nothing. Never enables
+ * power or overrides explicit relay intent. May wait on I/O/settings locks and
+ * reschedules existing work, without performing relay I/O or persistence. */
 void housekeeping_photodiode_autooff_inhibit(enum housekeeping_power_output output,
 					     bool inhibited);
 

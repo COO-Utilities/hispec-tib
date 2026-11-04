@@ -111,8 +111,10 @@ Startup/recovery and TEC-only tuning changes still perform the required I/O.
 Requests that round to zero have the same accounting as explicit zero.
 Zero current pauses emission-time accounting but preserves started state, tuning,
 and the existing auto-off deadline. Explicit `laser stop=true`, auto-off, and
-measurement-owned expiry use zero-current plus STOP. Throughput leaves TECs on;
-explicit laser STOP and laser auto-off use `disable_tec_at_autooff`.
+measurement-owned expiry use zero-current plus STOP and the laser's current
+`disable_tec_at_autooff` policy for TEC shutdown. Public laser `off_in_s` overrides
+must be positive; omission uses the positive `laser/settings.autooff_s` default
+for a positive-current start. Calibration owns its separate shutdown sequence.
 
 Identity is verified once per driver per bank-power interval. Configuration is
 applied once and retained across STOP and communication errors; explicit settings
@@ -353,8 +355,9 @@ throughput loop reads only confirmed state/health. Auto-off inhibition takes the
 I/O lock, serializing against a queued worker's final deadline check and write.
 Throughput owns inhibition while preparing routes and while running; calibration
 owns it throughout acquisition. Completion, cancellation, and failed startup
-release ownership. Releasing inhibition resumes the existing deadline, including
-an already expired deadline. No ownership counter is needed.
+release ownership. Releasing a held, powered AUTO channel starts a fresh configured
+idle countdown. Repeated release does nothing; an off PD remains off and explicit
+power overrides are preserved. No ownership counter is needed.
 
 Owner communication warnings use the existing console/MQTT warning emitter.
 The first failure is immediate; repeated failures are limited to one per device

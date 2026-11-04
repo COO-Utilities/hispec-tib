@@ -434,7 +434,7 @@ class MemsSwitchDetail(ResponseRepr):
     cycle_ms: int = 0
     a_ms: int = 0
     b_ms: int = 0
-    stop_in_s: int = 0
+    off_in_s: int = 0
 
 
 @dataclass(frozen=True, repr=False)
@@ -717,7 +717,14 @@ class AttenuatorCalibrationStatus(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class LaserCalibrationFit(ResponseRepr):
-    """Curve estimates and separate acceptance, RAM-application and NVS outcomes."""
+    """Source-model coefficients and separate acceptance, RAM and NVS outcomes.
+
+    Power is (I-threshold)*(efficiency + quadratic*(I-efficiency_ref_ma)).
+    Current firmware anchors efficiency at the reference current/power and uses
+    vendor characterization for broad curvature; the local data determine the
+    threshold. Older saved candidates retain their original reference coordinate.
+    A valid model can require review when the measured optical paths disagree.
+    """
 
     valid: bool
     accepted: bool
@@ -736,13 +743,61 @@ class LaserCalibrationFit(ResponseRepr):
     baseline_mv: float | None
     rms_fraction: float | None
     max_residual_fraction: float | None
-    threshold_se_ma: float | None
-    restricted: bool = False
+    median_fraction: float | None = None
+    top_supported: bool = False
+
+    def settings(self) -> dict[str, float]:
+        """Return the complete candidate for ``laser_settings(name, **settings)``.
+
+        This only translates field names. A valid candidate may still require
+        review; nothing is sent, applied or persisted by this method.
+        """
+        fields = dict(threshold_current_ma=self.threshold_ma,
+                      efficiency_mw_per_ma=self.efficiency_mw_per_ma,
+                      efficiency_mw_per_ma2=self.efficiency_mw_per_ma2,
+                      efficiency_ref_ma=self.efficiency_ref_ma,
+                      min_autolevel_current_ma=self.floor_ma,
+                      max_autolevel_current_ma=self.max_ma)
+        if not self.valid or any(value is None or not math.isfinite(value) for value in fields.values()):
+            raise HispecFibError("No finite laser calibration candidate is available")
+        return fields
+
+
+@dataclass(frozen=True, repr=False)
+class LaserCalibrationRepeat(ResponseRepr):
+    """Observed same-current/DAC-pair differences; not a Gaussian noise estimate.
+
+    matched counts same-current/exact-DAC comparisons whose two conditions have
+    eligible paired late windows; it does not count every raw revisit. usable
+    additionally requires illuminated comparisons at or above the independently
+    selected lasing floor, and
+    in_range counts those within the candidate operating range. Unavailable worst
+    values are None, not zero. The largest usable difference is retained even
+    when it lies outside that range.
+    """
+
+    matched: int
+    usable: int
+    in_range: int
+    worst_fraction: float | None
+    current_ma: float | None
+    dac1_code: int | None
+    dac2_code: int | None
+    before_mv: float | None
+    after_mv: float | None
+    elapsed_ms: int | None
+    worst_in_range: bool | None
 
 
 @dataclass(frozen=True, repr=False)
 class LaserCalibrationNoise(ResponseRepr):
-    """Effective source noise estimates; application requires update_noise=True."""
+    """Illuminated-path within-window noise; application requires update_noise=True.
+
+    Fractional 0.044 means 4.4% RMS. This is not intrinsic laser noise or the
+    variability between time-separated repeats. None means unavailable; inspect
+    error and acquisition/fit state for the reason. A fitted zero is a
+    nonnegative model boundary, not a missing estimate.
+    """
 
     valid: bool
     applied: bool
@@ -784,6 +839,7 @@ class LaserCalibrationStatus(ResponseRepr):
     fit: LaserCalibrationFit
     noise: LaserCalibrationNoise
     routes: tuple[LaserCalibrationRoute, ...]
+    repeat: LaserCalibrationRepeat | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -1210,6 +1266,20 @@ def attenuator_noise(
     return out
 
 
+def photodiode_shot_noise_mv(net_mv, *, enbw_hz: float, transimpedance_v_per_a: float):
+    """Ideal photoelectron shot RMS in mV for an explicit bandwidth scenario.
+
+    The effective transimpedance includes the ADC divider. ENBW describes the
+    whole detector/acquisition response, not the sample rate or its Nyquist
+    frequency. This excludes dark/electronic and optical-path noise. Negative
+    baseline-subtracted signals have no inferred photocurrent contribution.
+    """
+    bandwidth = _require_float('enbw_hz', enbw_hz, 1e-300, math.inf)
+    gain = _require_float('transimpedance_v_per_a', transimpedance_v_per_a, 1e-300, math.inf)
+    voltage = np.maximum(np.asarray(net_mv, dtype=float), 0.) / 1000
+    return 1000 * np.sqrt(2 * 1.602176634e-19 * voltage * gain * bandwidth)
+
+
 def throughput_noise(samples, *, enbw_hz: float, transimpedance_v_per_a: float,
                      dark_rms_mv: float, fvoa_rms_mv: Sequence[float] = (10.0, 10.0),
                      electrical_basis: str = 'firmware assumption: 10 mV RMS per FVOA',
@@ -1241,7 +1311,7 @@ def throughput_noise(samples, *, enbw_hz: float, transimpedance_v_per_a: float,
     if not electrical_basis or (tuple(rms) != (10.0, 10.0) and electrical_basis.startswith('firmware assumption')):
         raise HispecFibError('provide electrical_basis for the supplied drive-noise estimate')
     mean = np.broadcast_to(np.asarray(frame.pd_net_mv if reference_net_mv is None else reference_net_mv, dtype=float), (len(frame),))
-    photon = 1000*np.sqrt(2*1.602176634e-19*np.maximum(mean, 0)/1000*gain*bandwidth)
+    photon = photodiode_shot_noise_mv(mean, enbw_hz=bandwidth, transimpedance_v_per_a=gain)
     slopes = [f'atten{i}_slope_db_per_fvoa_mv' for i in (1, 2)]
     individual = np.full((len(frame), 2), np.nan)
     if all(name in frame for name in slopes):
@@ -2832,7 +2902,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
             if (str(before.classification) in ("adc_error", "saturated") or
                     str(after.classification) in ("adc_error", "saturated") or
                     not (before.max_mv < PD_ADC_USABLE_MV and after.max_mv < PD_ADC_USABLE_MV) or
-                    before.sweep_mv != after.sweep_mv or
+                    before.sweep_mv != after.sweep_mv or before.laser_pct != after.laser_pct or
                     not np.all(np.isfinite((bs, be, als, ae))) or
                     not (be > 0 and ae > 0 and bs / be >= 5 and als / ae >= 5)):
                 continue
@@ -2862,12 +2932,17 @@ class AttenuatorCalibrationDataset(ResponseRepr):
         *,
         dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
+        include_low_snr: bool = False,
     ) -> np.recarray:
         """Copy raw records and add bridge-normalized attenuation and model diagnostics.
 
         Explicit coefficients override downloaded fit metadata. Missing reference
         or model information leaves unavailable derived values as NaN; raw values
-        remain unchanged. Source-off drift is carried in derived uncertainty;
+        remain unchanged. include_low_snr adds positive unsaturated readings for
+        display only; it does not change fitting eligibility or captured support.
+        Normalization follows valid bridges outward from the retained reference,
+        so a broken link does not discard its connected open-side measurements.
+        Source-off drift is carried in derived uncertainty;
         source-off records themselves do not measure transmission. This does not download, fit or install coefficients."""
         out = np.empty(len(self.records), dtype=ATTEN_CAL_DERIVED_DTYPE)
         for name in ATTEN_CAL_DTYPE.names:
@@ -2917,22 +2992,23 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 out[mask] = rec
                 continue
             open_rel_var = (open_err / open_signal) ** 2
-            segment_scale: dict[int, float] = {0: 1.0}
-            segment_rel_var: dict[int, float] = {0: 0.0}
-            for bridge in self._accepted_bridges(physical, rec):
-                from_segment = int(bridge["from_segment"])
-                to_segment = int(bridge["to_segment"])
-                if from_segment not in segment_scale:
+            reference_segment = int(ref.segment)
+            segment_scale: dict[int, float] = {reference_segment: 1.0}
+            segment_rel_var: dict[int, float] = {reference_segment: 0.0}
+            bridges = self._accepted_bridges(physical, rec)
+            # A bridge chain can run either way. Root it at the actual reference;
+            # no bridge uncertainty is then shared between it and any other row.
+            for bridge in bridges + list(reversed(bridges)):
+                origin, dest = bridge["from_segment"], bridge["to_segment"]
+                ratio = float(bridge["ratio"])
+                if origin not in segment_scale and dest in segment_scale:
+                    origin, dest, ratio = dest, origin, 1.0 / ratio
+                if origin not in segment_scale or dest in segment_scale:
                     continue
-                segment_scale[to_segment] = segment_scale[from_segment] * float(bridge["ratio"])
-                segment_rel_var[to_segment] = segment_rel_var[from_segment] + float(bridge["ratio_rel_var"])
+                segment_scale[dest] = segment_scale[origin] * ratio
+                segment_rel_var[dest] = segment_rel_var[origin] + float(bridge["ratio_rel_var"])
                 rec.bridge_index[rec.record == int(bridge["after_record"])] = int(bridge["bridge_index"])
 
-            reference_segment = int(ref.segment)
-            if reference_segment not in segment_scale:
-                out[mask] = rec
-                continue
-            open_signal /= segment_scale[reference_segment]
             for i, row in enumerate(rec):
                 if str(row.event) in ("dark_before", "dark_after"):
                     continue
@@ -2940,7 +3016,8 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 if (str(row.classification) in ("adc_error", "saturated") or
                         not row.max_mv < PD_ADC_USABLE_MV or
                         not np.all(np.isfinite((row.corrected_signal_mv, row.corrected_signal_err_mv))) or
-                        segment not in segment_scale or not row.corrected_snr >= 5):
+                        segment not in segment_scale or row.corrected_signal_mv <= 0 or
+                        (not include_low_snr and not row.corrected_snr >= 5)):
                     continue
                 scale = segment_scale[segment]
                 scale_rel_var = segment_rel_var[segment]
@@ -2949,7 +3026,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 scaled_rel_var = own_rel_var + scale_rel_var
                 scaled_err = abs(scaled_signal) * np.sqrt(max(scaled_rel_var, 0.0))
                 tx = scaled_signal / open_signal
-                tx_rel_var = own_rel_var + open_rel_var + abs(scale_rel_var - segment_rel_var[reference_segment])
+                tx_rel_var = own_rel_var + open_rel_var + scale_rel_var
                 tx_err = abs(tx) * np.sqrt(max(tx_rel_var, 0.0))
                 db = float(_atten_db_from_tx([tx])[0])
                 db_err = (10.0 / np.log(10.0)) * np.sqrt(max(tx_rel_var, 0.0))
@@ -2962,7 +3039,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                 rec.db[i] = db
                 rec.db_err[i] = max(db_err, ATTEN_CAL_MIN_DB_ERR)
                 rec.fit_candidate[i] = (
-                    str(row.event) == "point"
+                    str(row.event) == "point" and row.corrected_snr >= 5
                     and float(row.sweep_mv) >= float(meta.get("open_mv", 0.0))
                     and np.isfinite(db) and np.isfinite(db_err)
                     and tx >= ATTEN_CAL_MIN_TX
@@ -2978,6 +3055,26 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     rec.included[i] = bool(support[index])
             out[mask] = rec
         return out.view(np.recarray)
+
+    def _segment_relative_data(self, physical: str):
+        """Diagnostic curves when no common reference exists; no fit or board I/O.
+
+        Each segment is relative to its own brightest usable point, not to full
+        transmission. These curves must never be used as calibration attenuation.
+        """
+        rec = self.physical(physical).derived(include_low_snr=True)
+        for segment in np.unique(rec.segment):
+            group = rec[(rec.segment == segment) & (rec.event == "point") &
+                        ~np.isin(rec.classification, ("adc_error", "saturated")) &
+                        (rec.max_mv < PD_ADC_USABLE_MV) & (rec.corrected_snr >= 5)]
+            if not len(group):
+                continue
+            ref = group[np.argmax(group.corrected_signal_mv)]
+            db = -10 * np.log10(group.corrected_signal_mv / ref.corrected_signal_mv)
+            err = 10 / np.log(10) * np.hypot(
+                group.corrected_signal_err_mv / group.corrected_signal_mv,
+                ref.corrected_signal_err_mv / ref.corrected_signal_mv)
+            yield int(segment), group, db, err
 
     def bridge_table(self):
         """Return accepted normalization bridges as a pandas DataFrame; no I/O."""
@@ -3025,7 +3122,7 @@ class AttenuatorCalibrationDataset(ResponseRepr):
 
         physical = _require_choice("physical", physical, ("dac1", "dac2"))  # type: ignore[assignment]
         x_axis = _require_choice("x_axis", x_axis, ("fvoa_mv", "sweep_mv"))  # type: ignore[assignment]
-        rec = self.physical(physical).derived()
+        rec = self.physical(physical).derived(include_low_snr=True)
         if len(rec) == 0:
             raise HispecFibError(f"no retained records for {physical}")
 
@@ -3227,6 +3324,20 @@ class AttenuatorCalibrationDataset(ResponseRepr):
                     fontsize=8,
                     color="0.35",
                 )
+        if not np.any(np.isfinite(attenuation_db)):
+            axes[1].text(.02, .5, "Common normalization unavailable; raw signal is shown above.",
+                         transform=axes[1].transAxes)
+            axes[2].set_title("Within-segment changes only — no common attenuation reference")
+            for segment, group, db, err in self._segment_relative_data(physical):
+                axes[2].errorbar(group[x_axis], db, yerr=err, fmt=".-", ms=3,
+                                 label=f"segment {segment}, own brightest point = 0 dB")
+            axes[2].legend(fontsize="small")
+            axes[3].text(.02, .5, "No normalized residuals available.", transform=axes[3].transAxes)
+        support = rec[np.asarray(rec.included, dtype=bool)]
+        if len(support):
+            for ax in axes:
+                ax.axvline(float(np.max(support[x_axis])), color="0.4", linestyle=":",
+                           linewidth=.7, label="last measured fit point")
         axes[0].legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize="small")
         return fig
 
@@ -3430,7 +3541,7 @@ class SplitState(ResponseRepr):
     split_transmission: tuple[float, float, float]
     cycle_ms: int
     switches: tuple[SplitSwitchState, SplitSwitchState, SplitSwitchState]
-    stop_in_s: int
+    off_in_s: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -3650,25 +3761,27 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
     return _dataclass_from(
         LaserCalibrationStatus, data,
         fit=_dataclass_from(LaserCalibrationFit, data["fit"]),
+        repeat=_dataclass_from(LaserCalibrationRepeat, data["repeat"]),
         noise=_dataclass_from(LaserCalibrationNoise, data["noise"]),
         routes=tuple(_dataclass_from(LaserCalibrationRoute, r) for r in data["routes"]),
     )
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 634-byte metadata packet; no requests or state changes.
+    """Decode the fixed 588-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 634 or payload[:5] != b"HLC1\x05":
+    if len(payload) != 588 or payload[:5] != b"HLC1\x06":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
     state, laser, channel, fiber, fei, options, size, count, per_chunk, segments = payload[5:15]
     if (state >= len(_LASER_CAL_STATES) or laser >= len(LASER_NAMES) or channel > 1
             or chr(fiber) not in FIBERS or fei > 1 or size != LASER_CAL_DTYPE.itemsize
-            or count > 240 or per_chunk == 0 or segments > 16):
+            or count > 240 or per_chunk == 0 or segments > 16
+            or payload[586] > 1 or payload[587] > 1):
         raise HispecFibError("invalid laser calibration metadata")
 
     # Bytes 16..27: acquisition timing; no host archive identifier is on the wire.
@@ -3698,21 +3811,31 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
-    # Bytes 316..633: policy, calibrated gains, exact support and fitted dark knots.
+    # Bytes 316..537: policy, fitted DAC-pair gains, exact support and dark knots.
     residual_limit, target_mv = struct.unpack_from("<2d", payload, 316)
     segment_gain = struct.unpack_from("<16d", payload, 332)
     dark_variance = struct.unpack_from("<d", payload, 460)[0]
     support = np.unpackbits(np.frombuffer(payload[468:498], dtype=np.uint8), bitorder="little")
+    median, band, revisit = struct.unpack_from("<3d", payload, 538)
+    matched, usable, in_range, current, dac1, dac2 = struct.unpack_from("<6H", payload, 562)
+    elapsed, before, after, worst_in_range = struct.unpack_from("<IffB", payload, 574)
     meta.update(
+        format_version=6,
         max_fit_residual_pct=residual_limit,
         pd_target_mv=target_mv,
         segment_mv_per_mw=segment_gain,
         settle_ms=struct.unpack_from("<I", payload, 498)[0],
         baseline_knots_ms=struct.unpack_from("<3I", payload, 502),
         baseline_knots_mv=struct.unpack_from("<3d", payload, 514),
-        segment_gain_shift=struct.unpack_from("<16f", payload, 538),
-        diagnostics=dict(zip(("revisit_fraction", "band_fraction", "atten_shift_sigma", "dark_residual_mv"),
-                             struct.unpack_from("<4d", payload, 602))),
+        diagnostics=dict(median_fraction=median, band_fraction=band),
+        top_supported=bool(payload[587]),
+        repeat=dict(matched=matched, usable=usable, in_range=in_range,
+                    worst_fraction=revisit if usable else None,
+                    current_ma=current / 10 if usable else None,
+                    dac1_code=dac1 if usable else None, dac2_code=dac2 if usable else None,
+                    before_mv=before if usable else None, after_mv=after if usable else None,
+                    elapsed_ms=elapsed if usable else None,
+                    worst_in_range=bool(worst_in_range) if usable else None),
         dark_variance_mv2=dark_variance,
         fit_support=tuple(bool(v) for v in support[:count]),
         state=_LASER_CAL_STATES[state],
@@ -3784,7 +3907,7 @@ def _decode_mems_detail(name: str, data: Mapping[str, Any]) -> MemsSwitchDetail:
         cycle_ms=int(data.get("cycle_ms", 0)),
         a_ms=int(data.get("a_ms", 0)),
         b_ms=int(data.get("b_ms", 0)),
-        stop_in_s=int(data.get("stop_in_s", 0)),
+        off_in_s=int(data.get("off_in_s", 0)),
     )
 
 
@@ -3885,7 +4008,7 @@ def _decode_split_state(data: Mapping[str, Any]) -> SplitState:
         split_transmission=_as_tuple3(data["split_transmission"], "split_transmission"),
         cycle_ms=int(data["cycle_ms"]),
         switches=tuple(_dataclass_from(SplitSwitchState, item) for item in data["switches"]),  # type: ignore[arg-type]
-        stop_in_s=int(data["stop_in_s"]),
+        off_in_s=int(data["off_in_s"]),
     )
 
 
@@ -3987,8 +4110,9 @@ class ThroughputMonitor:
         Purely passive measurements leave manual laser output unchanged. Manual
         laser level or attenuation changes disable adjustments but retain
         autolevel's laser shutdown.
-        Bank power and TECs remain unchanged. Detach collection even if the
-        command fails; calling stop again retries the firmware shutdown.
+        Bank power is unchanged; the owned laser's TEC follows disable_tec_at_autooff.
+        Detach collection even if the command fails; calling stop again retries
+        the firmware shutdown.
         """
         try:
             self.client.stop_throughput(self.channel)
@@ -4716,12 +4840,15 @@ class HispecFibPcb:
         return self._request_ok("mems/route/loss", payload)
 
     def laser(
-        self, name: str, value: float | None = None, *, autooff_s: int | None = None,
+        self, name: str, value: float | None = None, *, off_in_s: int | None = None,
         stop: bool = False, value_ma: float | None = None,
     ) -> LaserStatus | CommandOk:
         """Query/set laser level; zero current retains readiness and the off deadline.
 
         ``stop=True`` shuts down the diode and applies the configured TEC-off policy.
+        off_in_s overrides the operation's duration and must be positive; omission
+        uses laser_settings.autooff_s on a positive-current start. Zero current
+        without a duration preserves the existing deadline.
         A level is a fraction of modeled nominal emission; firmware inverts the
         calibrated curve and reports the emission fraction at the confirmed current.
         Setting a level disables autolevel while throughput streaming continues.
@@ -4729,9 +4856,9 @@ class HispecFibPcb:
         optical model, autolevel bounds and stored tune request. It is mutually
         exclusive with ``value`` and uses the configured current maximum.
         """
-        if value is None and value_ma is None and autooff_s is None and stop is False:
+        if value is None and value_ma is None and off_in_s is None and stop is False:
             return _dataclass_from(LaserStatus, self._request_json("laser", {"name": name}))
-        payload = _optional_payload(name=name, value=value, value_ma=value_ma, autooff_s=autooff_s,
+        payload = _optional_payload(name=name, value=value, value_ma=value_ma, off_in_s=off_in_s,
                                     stop=None if stop is False else stop)
         return self._request_ok("laser", payload)
 
@@ -4809,9 +4936,9 @@ class HispecFibPcb:
         profile preparation syncs it after bank power-up, not at MCU startup.
         Engineering status separately reports actual readback in the same units.
         Changing autooff_s restarts a started laser's countdown, including at
-        zero current; zero cancels it. It never starts an idle laser. Unchanged
-        values and unrelated settings do not rearm; calibration rejects autooff
-        writes. Automatic current bounds do not limit manual current/level requests.
+        zero current. Zero defaults are rejected. It never starts an idle laser.
+        Unchanged values and unrelated settings do not rearm; calibration rejects
+        autooff writes. Automatic current bounds do not limit manual current/level requests.
         """
         settings = _optional_payload(
             nominal_current_ma=nominal_current_ma,
@@ -5363,23 +5490,24 @@ class HispecFibPcb:
 
         Start stops throughput/laser outputs, routes to a powered and dark-calibrated
         PD, holds ref_temp_c, and steps current from configured maximum to zero.
-        Automatically accepted full-range models apply unless apply=False.
-        Restricted or inconsistent candidates require explicit settings review;
-        acquisition and raw-data download still complete. persist opts into NVS
-        and requires apply.
-        Efficiency is the uncorrected linear-fit slope on the same support.
+        Automatically accepted models apply unless apply=False. Other valid
+        candidates remain available for review; acquisition and raw-data download
+        still complete. persist opts into NVS and requires apply.
+        Local turn-on observations determine threshold. Reference power/current
+        anchors efficiency, and vendor characterization supplies curvature when
+        the anchored line is inadequate. Broad optical-path distortion does not
+        independently redefine the source curve.
         Every sampled current has high/low PD conditions; the upper block has
         a middle level too. Retain one early and two late windows per condition;
-        settle_ms measures from actuation to the first late window. The joint
-        raw-PD fit uses calibrated FVOA transmission with shared RMS uncertainty.
-        Three measured dark knots constrain the shared interpolated baseline.
-        Full-range fits are preferred; restricted candidates retain a separately
-        measured vendor-reference amplitude even when outside their support.
-        Engineering maximum and nominal are never changed. Residuals allow the requested
-        fraction plus three measured standard errors. Vendor comparison uses
-        that fraction of vendor reference power plus three fitted-power SEs.
-        Revisit checks run once after selection; cross-attenuation/gain-shift
-        diagnostics have no separate veto. Noise estimates are retained for
+        settle_ms measures from actuation to the first late window. A separate
+        fitted gain for each exact DAC pair describes its measured response to
+        the source model. Three observed dark knots set the interpolated baseline.
+        The broad candidate range is not shortened to suppress path variability.
+        Engineering maximum and nominal are never changed. Central-model
+        residuals and measured PD-band signal ratios assess agreement; the band
+        comparison imposes no reference shape. Repeat differences describe
+        observed variability and do not veto the model. No Gaussian confidence
+        interval is claimed. Noise estimates are retained for
         identifiable review-needed candidates and remain diagnostic unless
         update_noise=True on an automatically accepted run. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
@@ -5530,6 +5658,10 @@ class HispecFibPcb:
         Changing autooff_s restarts a powered auto-mode PD's countdown; zero
         cancels it. It never powers on an idle PD. Calibration rejects autooff
         writes; unchanged values and unrelated settings do not rearm the timer.
+        Remaining off_in_s is status returned by pd(), not a settings field.
+        Returning to auto leaves an off PD off, or arms a missing timer if powered.
+        Power-only overrides are allowed during calibration; override_off faults
+        active acquisition. Releasing a use hold starts a fresh idle interval.
         """
         payload = _optional_payload(
             noisewarn_mv=noisewarn_mv,
@@ -5559,13 +5691,17 @@ class HispecFibPcb:
         ratio2: float | None = None,
         *,
         cycle_ms: int | None = None,
-        stop_in_s: int = 0,
+        off_in_s: int = 0,
     ) -> SplitState:
-        """Query a split or set delivered ratios 1/2; ratio 3 is the remainder and firmware compensates path loss."""
-        if ratio1 is None and ratio2 is None and cycle_ms is None and stop_in_s == 0:
+        """Query/set split ratios; ratio 3 is the remainder, with path-loss correction.
+
+        off_in_s is up to four hours; zero uses four hours for a switching split.
+        Expiry holds the last switch positions and ends the time-averaged split.
+        """
+        if ratio1 is None and ratio2 is None and cycle_ms is None and off_in_s == 0:
             return _decode_split_state(self._request_json(f"mems/split/{channel}"))
         payload = _optional_payload(channel=channel, ratio1=ratio1, ratio2=ratio2,
-                                    stop_in_s=stop_in_s, cycle_ms=cycle_ms)
+                                    off_in_s=off_in_s, cycle_ms=cycle_ms)
         return _decode_split_state(self._request_json("mems/split", payload))
 
     def measure_throughput(
@@ -5596,6 +5732,10 @@ class HispecFibPcb:
         can stream; firmware permits only one autolevel owner.
         Manual laser level and attenuation changes disable autolevel while this
         collector and its live plot continue; the measurement deadline is retained.
+        Autolevel and any continuation retaining its laser shutdown require positive
+        off_in_s. Zero is unlimited only for purely passive measurements; manual
+        laser starts still have their own finite timeout. Python defaults to 300 s.
+        Owned-laser shutdown applies that laser's disable_tec_at_autooff policy.
         With autolevel=False, a named laser can be monitored before its first
         command, including through bank power-on and laser preparation. PD samples
         continue while throughput is undefined at zero source power. This does
@@ -5715,7 +5855,7 @@ class HispecFibPcb:
             unit = "db" if use_atten_db else "mv"
             drive = self.atten(laser, **{f"value{i}_{unit}": limits[i] for i in attenuators})
             requested = dict(limits)
-            self.laser(laser, value=level, autooff_s=0)
+            self.laser(laser, value=level)
             steps = {i: 5.0 if use_atten_db else 150.0 for i in attenuators}
             directions = dict.fromkeys(attenuators, 0)
             last_atten = attenuators[0] if attenuators else None
@@ -5776,7 +5916,7 @@ class HispecFibPcb:
                     reason = "above range at dim limit" if high else "below range at bright limit"
                     break
                 level = next_level
-                self.laser(laser, value=level, autooff_s=0)
+                self.laser(laser, value=level)
             actual = self.laser(laser)
             if not found:
                 self.laser(laser, stop=True)
@@ -5795,7 +5935,8 @@ class HispecFibPcb:
     def stop_throughput(self, channel: Literal["yj", "hk", "all"] = "all") -> CommandOk:
         """Stop measurement and its autolevel laser; preserve passive/manual output.
 
-        Bank power and TECs remain unchanged. See ThroughputMonitor.stop().
+        Bank power is unchanged; the owned laser's TEC follows disable_tec_at_autooff.
+        See ThroughputMonitor.stop().
         """
         result = self._request_ok("measure_throughput", {"stop": channel})
         with self._throughput_lock:

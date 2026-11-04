@@ -66,8 +66,8 @@ There is no provisional-fit-driven refinement. The optional other output reserve
 | Primary high/low blocks | 6 |
 | First-output worst-case records | 216 |
 | Optional other-output reservation | 24 |
-| Binary metadata, including 30-byte support mask | 634 bytes |
-| Laser data / numerical scratch members | 6664 / 3528 bytes |
+| Binary metadata, including 30-byte support mask | 588 bytes |
+| Laser data / numerical scratch members | 6616 / 2888 bytes |
 | Existing shared data / scratch unions | 7680 / 3584 bytes, unchanged |
 
 The worst-case first-output budget is 138 positive-current records, nine dark
@@ -88,153 +88,98 @@ acquisition failure separately from fit rejection. When acquisition fails before
 fitting, raw diagnostic panels remain available and residual panels explain the
 missing curve and report the acquisition error.
 
-## Raw-PD fit and uncertainty
+## Central response and observed variability
 
-At current $I_i$, elapsed time $t_i$ and exact DAC pair $j$, fit
+The two settled late windows at one commanded current and exact DAC pair form
+one condition. Their mean is corrected using linear interpolation between the
+three measured same-run dark means, at the midpoint of the two timestamps.
+Light observations must be bracketed by the measured darks. This correction
+cannot identify unobserved baseline changes between anchors.
 
-```{math}
-V_i=\sum_{k=0}^{2} w_k(t_i)b_k+T_j Q(I_i)+\epsilon_i,\qquad
-T_j=10^{-A_j/10},\qquad Q(I)=K P(I).
-```
+The source model combines the locally measured threshold with vendor-supported
+curvature and the configured reference power. This is intended to improve
+relative throughput when current changes without teaching the source model a
+current-correlated FVOA response. A constant gain per exact DAC pair cannot
+separate those two effects over a broad sweep; more precise PD windows do not
+resolve that ambiguity.
 
-$A_j$ comes from the frozen calibrated FVOA models and recorded DAC codes. The
-three baseline values are shared nuisance parameters constrained by the initial,
-intermediate and final same-run dark conditions. $w_k(t)$ linearly interpolates
-adjacent measured dark times. A paired condition uses the midpoint of its two
-late timestamps, rounded down to whole milliseconds, for both dark knots and
-light observations. The fit propagates their shared uncertainty rather
-than treating a subtracted baseline as exact. Light observations must be bracketed
-by these measurements; no extrapolated time law is used. Interpolation cannot
-identify unobserved changes between dark measurements. $K$ combines PD conversion
-and unknown fixed path transmission.
-The measured `ref_mw` at `ref_ma,ref_temp_c` fixes the power scale. PD conversion
-is needed to infer static loss, but not to infer the reference-relative curve.
-Absolute power remains conditional on the vendor reference; this experiment cannot
-separate an overall current calibration error from optical efficiency.
+For corrected signal $S_i$, source power $P(I_i)$ and pair gain $G_j$, the local
+threshold fit minimizes the mean absolute logarithmic residual
+$|\log S_i-\log G_j-\log P(I_i)|$. Each condition has equal weight, and the
+optimal log gain is the median for that pair. The same positive pair gains are
+then estimated over the full retained support for diagnostics and noise. They
+are shared across visits, so no fitted time-dependent gain removes an observed
+excursion. This does not require the individual FVOA models to add accurately in
+dB. A pair measured at only one distinct current retains a display gain but
+cannot identify source shape or enter central-quality statistics.
 
-Scale current to $z\in[-1,1]$. The curve is linear or uses the degree-two Chebyshev
-basis $T_1(z)=z$, $T_2(z)=2z^2-1$. When the reference lies inside fitted support,
-$Q=R+c_1(z-z_r)+2c_2(z^2-z_r^2)$. When it lies outside support, the measured
-reference response $R$ is a separate coordinate and the restricted curve is
-$Q=c_0+c_1z+c_2(2z^2-1)$. In both cases $K=R/P_{ref}$: the existing vendor
-reference supplies absolute scale. An outside reference is not a demand that the
-restricted polynomial extrapolate through that power/current point. Such a fit
-must be labeled with both its support and outside reference, and requires human
-adoption. No external meter result silently replaces the vendor anchor.
+`median_fraction` is `exp(median(abs(log(S/predicted))))-1`: a descriptive,
+symmetric multiplicative central residual. RMS and maximum retain ordinary
+`S/predicted-1` fractional residuals. These are not Gaussian sigmas, confidence
+limits, or bounds on possible variability. Fixed pair gains cannot disentangle
+current-dependent coupling from intrinsic laser response. Absolute source power
+remains conditional on the existing vendor reference current/power; the captured
+calibrations alone do not establish an independent absolute optical scale.
 
-At most seven scalar unknowns are needed, including the three dark knots. A
-degree-two Chebyshev model and a quadratic span the same functions; more flexible
-knee and high-end shapes remain offline sensitivity checks.
+### Local threshold and broad diagnostic support
 
-For each window, convert population RMS $r$ to sample variance $s^2=r^2n/(n-1)$.
-The pooled dark variance, bounded below by ADC quantization variance, supplies the
-floor. For the two late means $v_1,v_2$, fit their average with variance
+Sparse ranging islands with fewer than four distinct currents cannot identify
+a lasing knee. For the two lowest-current informative DAC pairs, use the first six
+distinct currents (or all four/five available); median repeated visits and scale
+each pair by its largest local signal. This local window avoids interpreting
+high-current rolloff as a lasing knee.
 
-```{math}
-D_i=\max\left[\frac{1}{4}\left(\frac{\max(s_1^2,d^2)}{n_1}
- +\frac{\max(s_2^2,d^2)}{n_2}\right),\ \frac{(v_1-v_2)^2}{2}\right].
-```
+The small diagnostic model is `a + b*max(0, I-k)`, with nonnegative baseline and
+positive slope. Search the knee on a bounded grid, retaining at least three
+currents above it. A knee qualifies when its baseline is at most the configured
+fractional tolerance, its squared residual cost is at most half that of a
+straight line.
+These are engineering selection criteria, not confidence tests. If a knee does
+not qualify, the local line's nonnegative extrapolated zero sets the lower
+eligibility boundary. Both cases retain the existing 0.1 mA headroom before
+selecting the first current measured by both pairs above both independently
+estimated boundaries. A dim companion need not detect below-lasing light, and
+a one-grid-step difference does not invalidate their common usable support.
+If their local windows have no usable common current, report unavailable support;
+do not start a search for a passing interval.
+The local knee is a support diagnostic, distinct from the installed model's
+extrapolated zero. Only positive paired late observations from those same local
+windows, at or above the selected floor, determine the installed threshold.
+High-current path curvature cannot move that threshold. The complete broad
+capture remains available for model diagnostics, noise and review.
 
-The second term is deliberately not divided away as independent-sample noise.
-Two late windows cannot fully characterize long correlations; the reversed sweep
-and identical-condition revisit provide additional checks.
+At least six distinct usable currents are required above the selected floor.
+The broad candidate extends to the unchanged requested maximum. No upper-end
+rescue or repeated floor adjustment is performed. An isolated maximum-current
+point with its own DAC pair does not validate the continuation of the response
+model to that current and requires review.
 
-For each exact DAC pair, the combined calibration uncertainty is
-$\sigma_A=\operatorname{hypot}(rms_{dB,1},rms_{dB,2})$ and
-$\sigma_f=\ln(10)\sigma_A/10$. All records at that pair share one gain uncertainty:
+### Model and vendor constraint
 
-```{math}
-C_j=D_j+\sigma_f^2\mu_j\mu_j^T,\qquad
-C_j^{-1}=D_j^{-1}-\frac{D_j^{-1}u_j u_j^T D_j^{-1}}{1+u_j^TD_j^{-1}u_j},
-\quad u_j=\sigma_f\mu_j.
-```
-
-The firmware streams these rank-one corrections into small normal equations.
-It never allocates an observation covariance matrix. Different DAC pairs are
-assumed independent because the attenuator fit does not provide their covariance;
-this approximation is explicit, not a claim that calibration errors are white noise.
-Scalar nuisance elimination leaves a two-coordinate solve using the existing
-[`calibration_solve_2x2`](calibration_fitting.md). Predicted signals update the gain
-covariance for at most 20 iterations, stopping at relative prediction change below
-$10^{-6}$. Failure to converge rejects the fit. Numerical work is cancellable and
-runs at the existing lowest application priority without the calibration lock.
-
-The profiled common gain shifts are published separately in metadata. They are
-neither bridge normalizations nor updates to FVOA coefficients. Mean residuals
-and PD-level agreement are evaluated after these uncertainty-constrained shifts.
-Plots also show normalization using the unshifted calibrated transmission so the
-size and consequence of the shifts remain visible.
-
-## Curve meaning and acceptance
-
-The installed model remains, above threshold,
+Write the reference-normalized response as
 
 ```{math}
-P(I)=(I-t)[\eta+q(I-I_e)].
+\frac{P(I)}{P_{ref}}=\frac{I-t}{I_{ref}-t}
+\left[1+c\frac{I-I_{ref}}{I_{ref}-t}\right].
 ```
 
-`threshold_current_ma` is the corrected curve's zero. `efficiency_mw_per_ma`
-is the **uncorrected linear fit's slope on the same observations**.
-`efficiency_mw_per_ma2` is the correction $q$; `efficiency_ref_ma` is the derived
-coordinate $I_e$ that reproduces the corrected polynomial while preserving that
-linear efficiency. It is independent of the vendor triplet and need not lie on
-an attainable current. With zero correction the reference coordinate has no effect.
-The rationalized increasing root avoids cancellation near a linear curve; stored
-correction uses float precision. The runtime forward model, inverse, level requests
-and power budgets use these four coefficients. `value=0.5` requests half nominal
-**emission**, not half nominal current.
+The threshold search is bounded by zero and the selected floor minus 0.1 mA.
+At each trial threshold, the reference fixes the linear efficiency. Use zero
+curvature when that line agrees with the vendor trace within the existing
+characterization allowance. Otherwise fit one quadratic coefficient to the
+vendor trace, weighting by current spacing so dense digitization does not
+dominate it, and retain a physical increasing response. Broad in-situ residuals
+do not choose curvature or refit the threshold. Numerical work is cancellable,
+uses the existing shared static scratch, and runs at the existing lowest
+application priority.
 
-First search the lowest usable floor through the configured maximum, with at
-least six distinct supporting currents on the 0.1-mA driver grid. Prefer a line
-when both orders pass at the same floor. If no full-range core curve passes,
-search contiguous restricted intervals using the same coverage, residual and
-vendor checks. Select the widest passing interval; ties prefer the lower floor,
-then a line. All usable late conditions inside an interval participate; no PD
-band or individual outlier is dropped. Each fitted current needs two usable PD
-levels separated by at least a factor of two.
-
-The threshold must be nonnegative and at least 0.1 mA below the floor. The model
-must retain positive derivative through the unchanged engineering maximum, so a
-restricted fit does not bypass settings validation. This condition permits safe
-model inversion; it does not establish calibration accuracy outside support.
-Maximum and nominal current remain unchanged. Adopted support bounds constrain
-`min_autolevel_current_ma` and `max_autolevel_current_ma`, not engineering
-`value_ma` commands.
-
-For each baseline-subtracted observed signal $v_i$ and predicted PD signal $\mu_i$
-including its profiled common gain shift, require
-
-```{math}
-|v_i-\mu_i|\leq \tau\mu_i+3\sqrt{D_i},\qquad
-\tau=\texttt{max\_fit\_residual\_pct}/100.
-```
-
-The default is 5% **beyond three measured standard errors**. Large measured
-uncertainty is not itself evidence of nonlinearity. Reported maximum/RMS residuals
-remain raw fractions, with no uncertainty subtracted. Cross-attenuation differences
-and gain shifts remain diagnostic; neither has a separate acceptance cutoff.
-Their uncertainty still contributes to GLS weights and fitted covariance.
-
-After selecting the curve, check all usable exact-current/exact-DAC revisits once
-against that selected baseline, even outside its support. A repeat requires
-$|s_i-s_j|\leq\tau\max(0,(s_i+s_j)/2)+3\sqrt{D_i+D_j}$.
-Failure requires review of the whole calibration; support is not searched again
-to evade the control. Near-dark fractional repeat diagnostics are omitted; if no
-eligible illuminated comparison exists, the fraction is unavailable (NaN in binary
-metadata), not zero variation. The absolute mV consistency test still applies.
-Dark movement is represented by
-the measured knots, rather than rejected for departing from a global straight
-line. Knot residuals remain diagnostic. No universal repeat-derived noise floor
-or fitted multiplicative time correction is added to acceptance or fitting.
-
-### Unit-specific vendor comparison
-
-Calibration fine-tunes trusted characterization and detects system upsets requiring
-investigation. Immutable piecewise-linear tables in `laser_calibration.c` come from
-the existing digitizations in `doc/datasheets/`. Those text files identify each source
-report, optical reference plane, temperature and approximate reading precision.
-They are not raw vendor measurements. Compression preserves every original point
-to within 0.1% of the vendor reference power; the trace is never extrapolated.
+Immutable tables in `laser_calibration.c` come from the existing report
+extractions in `doc/datasheets/`. They are approximate digitizations, not raw
+vendor measurements. At each retained knot inside support require
+`abs(Pfit-Pvendor) <= tolerance * vendor_reference_power`; the default tolerance
+is 5%. The trace is not extrapolated. A physical candidate outside that allowance
+requires review. The reference guides the proposed shape; this is not evidence
+that the in-situ optical path independently measured its curvature.
 
 | Laser | Report serial | Trace range (mA) | Retained knots | Reference power (mW) |
 |---|---|---:|---:|---:|
@@ -245,29 +190,53 @@ to within 0.1% of the vendor reference power; the trace is never extrapolated.
 | 1510h | 8882ACT | 5.03–55.53 | 23 | 10 |
 | 2330k | D4520009 | 0.96–119.52 | 68 | 3.18 |
 
-The fitted interval must overlap the vendor trace. At each retained vendor knot
-inside that interval, require
+Automatic acceptance retains the existing central median-residual tolerance and
+requires compatible measured high/low PD-band shapes. Select the widest pair of
+bands with at least six common measured currents and a factor-two signal
+separation. At each current, take the median across repeated conditions, then
+compare the bands' logarithmic signal ratios after removing their constant gain
+ratio. `band_fraction` is the median absolute log-ratio deviation, converted to a
+fraction with `expm1`. This is a raw shape diagnostic, not agreement between two
+curves both pulled toward the same vendor trace. It uses the same default 5%
+tolerance; absent coverage is unavailable, not evidence of agreement. Raw
+acquisition and every excursion remain available regardless of acceptance.
+
+The installed representation is unchanged:
 
 ```{math}
-|P_{fit}(I)-P_{vendor}(I)|\leq\tau P_{vendor,ref}+3\sigma_{P_{fit}}(I).
+P(I)=(I-t)[\eta+q(I-I_e)].
 ```
 
-The allowance uses vendor **reference power**, not local near-threshold power.
-For $P=P_{ref}Q/R$, project its gradient through the full GLS covariance to obtain
-$\sigma_P$. This includes fitted baseline, measured reference and common FVOA
-uncertainty, conditional on the model and fixed vendor anchor. Threshold SE uses
-the same covariance with the implicit-root gradient. Neither SE includes unknown
-systematic error or vendor-reference uncertainty. Baseline/gain adjustments do
-not identify which diode, driver, attenuator or coupling effect caused a discrepancy.
+`threshold_current_ma` is the curve's extrapolated zero.
+`efficiency_mw_per_ma` is $P_{ref}/(I_{ref}-t)$.
+`efficiency_mw_per_ma2` is the vendor-supported quadratic correction and
+`efficiency_ref_ma` equals the configured reference current. The curve therefore
+passes through the reference power without carrying a discarded broad-fit slope
+in its representation. Supply all four coefficients when adopting a model. Engineering
+maximum/nominal currents remain unchanged; the automatic current bounds express
+adopted support and do not limit engineering `value_ma` commands.
 
-Every restricted result has `restricted=true`, `accepted=false`, and requires
-explicit human adoption, even when its core checks pass. Excluded high-current
-behavior remains in the retained records and plots. A tiny passing interval is
-not a claim that the full laser or optical path is characterized. If neither a
-full-range nor restricted interval passes, retain the physically valid full-range
-candidate with the smallest maximum raw residual for review. Report residual,
-vendor or control failure with acquisition complete and raw data retained.
-Review-needed results automatically write no curve, noise or route-loss settings.
+### Repeat summaries
+
+Repeated current and exact DAC codes characterize the system's observed
+variability. They never veto a central model. `repeat.matched` counts all matched
+paired conditions whose two late windows each passed acquisition validity,
+including its signal-to-noise classification. Below-SNR windows remain in the raw
+records but do not form counted pairs; an acquisition-valid below-lasing pair can
+still count as matched. `repeat.usable` counts comparisons at or above the
+independently selected lasing floor with both signals
+above ten measured condition standard errors. `repeat.in_range` counts usable
+comparisons inside the selected model support. The latter standard-error check
+is only an illumination eligibility check, not a claim about slow variability.
+
+The worst eligible excursion is `abs(after/before-1)`, with commanded current,
+exact DAC codes, both dark-corrected signals, elapsed time and support membership.
+It is neither a Gaussian sigma nor a maximum possible excursion. Current-range
+membership alone does not say whether its attenuator setting is representative:
+review the DAC voltages and that pair's measured usable response. If no eligible
+comparison exists, the worst value is unavailable; all original records remain
+visible. There is no misleading percentage from below-lasing spontaneous light.
+Review-needed calibration automatically changes no curve, noise or route settings.
 
 ## Noise, static loss and application
 
@@ -305,7 +274,7 @@ and both automatic range bounds, validate them against current engineering
 settings, and explicitly acknowledge a review-needed result. Its power panel
 separates fitted support, the vendor scale reference and configured maximum;
 out-of-support portions are identified as extrapolation. Vendor discrepancy is reported as a
-percentage of vendor reference power, with the uncertainty allowance explained.
+percentage of vendor reference power, with the fixed characterization allowance explained.
 
 Restore returns to compiled curve, automatic floor/ceiling, maximum **and nominal**, power reference,
 noise and selected outbound-route defaults. It preserves current calibration,
@@ -317,16 +286,18 @@ losses. This is a return to datasheet defaults, not an undo to a previous run.
 Status exposes `state`, `laser`, `output`, `records`, `dwell_ms`, `settle_ms`,
 `current_ma`, `acquisition_complete`, `overflow`, `shutdown_pending`, and `error`.
 States are inactive/running/fitting/awaiting_output/complete/stopped/error.
-`fit` contains numerical availability, `restricted`, acceptance/application/persistence
+`fit` contains numerical availability, acceptance/application/persistence
 flags, text errors, exact supporting window count `n`, the four curve coefficients,
-floor/maximum, first fitted dark value (`baseline_mv`), residual RMS/maximum and
-threshold SE. The complete shared dark model is in binary metadata.
+floor/maximum, `top_supported`, first measured dark value (`baseline_mv`), and central median,
+RMS and maximum residuals. The measured dark anchors are in binary metadata.
+The top-level `repeat` object provides the counts and worst eligible comparison
+described above; it is available independently of automatic acceptance.
 `noise` reports constant/fractional estimates and independent flags/error.
 `routes` contains first and other-output loss outcomes. All errors are strings or
 null; unexpected errno uses `unexpected error (<ENAME>)`. Unavailable numbers are null.
 
-`laser/calibrate/records` returns **634 bytes**, little endian, magic `HLC1`,
-version **5**. No old wire layout is accepted by the live decoder.
+`laser/calibrate/records` returns **588 bytes**, little endian, magic `HLC1`,
+version **6**. No old wire layout is accepted by the live decoder.
 
 | Offset | Contents |
 |---:|---|
@@ -336,19 +307,23 @@ version **5**. No old wire layout is accepted by the live decoder.
 | 148 | Six floats: DAC full scales, limits, observed temperature min/max |
 | 172, 244 | Each FVOA: six doubles (f50, slope, max attenuation, calibrated max, gain, RMS) and six float corrections |
 | 316 | Two doubles: residual tolerance %, PD target mV |
-| 332 | 16 doubles: nominal calibrated segment gain mV/mW, before nuisance shifts |
+| 332 | 16 doubles: fitted free DAC-pair gain mV/mW |
 | 460 | Double pooled dark variance |
 | 468 | 30-byte exact fit-support mask, low bit first; both late windows per fitted condition |
 | 498 | `uint32 settle_ms` |
 | 502 | Three `uint32 baseline_knots_ms` values, in elapsed-time order |
-| 514 | Three double fitted `baseline_knots_mv` values |
-| 538 | 16 float fractional common-gain shifts |
-| 602 | Four doubles: maximum revisit fraction, PD-band fraction, attenuation shift in calibration sigma, dark residual mV |
+| 514 | Three double measured `baseline_knots_mv` values |
+| 538 | Three doubles: median residual fraction, raw PD-band log-ratio shape deviation as a fraction, worst eligible repeat fraction |
+| 562 | Three uint16 counts: matched repeats, usable repeats, usable repeats in support |
+| 568 | Three uint16 values: worst-repeat current in 0.1 mA, DAC1 code, DAC2 code |
+| 574 | uint32 elapsed time between worst-repeat conditions, ms |
+| 578 | Two floats: before/after corrected signals, mV |
+| 586 | uint8 worst-repeat support membership; byte 587: source-curve maximum supported by a multi-current DAC pair |
 
-Unavailable fitted knots have NaN values and zero times. A reader must not
+Unavailable dark anchors have NaN values and zero times. A reader must not
 interpolate them; retained measured dark windows still support raw diagnostic
-plots after an incomplete or invalid fit. The out-of-support reference conditions
-supply scale but are excluded from the reported curve-support mask and `n`.
+plots after an incomplete or invalid fit. Conditions belonging to a singleton-current DAC pair have a display gain but
+are excluded from the reported curve-support mask and `n`.
 
 `laser/calibrate/records/<chunk>` returns headerless `<IffHHHhBBBB` records:
 elapsed ms, net mV, population RMS, current in 0.1 mA, two physical DAC codes,

@@ -780,6 +780,34 @@ static void auto_handle_sweep_locked(const struct atten_cal_measurement *measure
 	}
 }
 
+/** Reassess a retained window against the run's source-off background. Raw
+ * classifications stay acquisition facts; subtraction never recovers clipping. */
+static bool corrected_measurement(const struct atten_cal_record *r,
+		double background, double background_error, double *signal, double *error)
+{
+	*signal = (double)r->signal_mv - background;
+	*error = hypot((double)r->signal_err_mv, background_error);
+	return r->classification != ATTEN_CAL_CLASSIFICATION_ADC_ERROR &&
+		r->classification != ATTEN_CAL_CLASSIFICATION_SATURATED &&
+		(double)r->max_mv < PHOTODIODE_ADC_USABLE_MV && isfinite(*signal) &&
+		isfinite(*error) && *error > 0.0 && *signal / *error >= (double)ATTEN_CAL_SNR_USABLE;
+}
+
+/** Derive a measured link and its relative variance; no model or I/O. Acquisition
+ * additionally requires a reduction and a precision margin before moving on. */
+static bool bridge_measurement(const struct atten_cal_record *before,
+		const struct atten_cal_record *after, double background, double background_error,
+		double *ratio, double *variance)
+{
+	double bs, be, as, ae;
+	if (before->sweep_mv != after->sweep_mv || before->laser_pct != after->laser_pct ||
+	    !corrected_measurement(before, background, background_error, &bs, &be) ||
+	    !corrected_measurement(after, background, background_error, &as, &ae)) return false;
+	*ratio = as / bs;
+	*variance = (be / bs) * (be / bs) + (ae / as) * (ae / as);
+	return isfinite(*ratio) && *ratio > 0.0 && isfinite(*variance);
+}
+
 /** Hold the latest usable point, or the last accepted bridge-after if this
  * segment has no usable point. Never use an arbitrary search probe as an anchor.
  * These retained measurements replace the old pre/post confirmation windows. */
@@ -788,14 +816,17 @@ static void auto_begin_bridge_locked(void)
 	uint8_t physical = cal.physical_index;
 	uint8_t anchor_index = 0U;
 	const struct atten_cal_record *anchor = NULL;
+	const struct atten_cal_record *dark = &calibration_data.atten.records[0][0];
 	if (cal.other_mv >= ATTENUATOR_DRIVE_MAX_MV - ATTEN_CAL_SEARCH_MIN_STEP_MV || !bridge_has_room_locked()) {
 		auto_range_failed_locked();
 		return;
 	}
 	for (uint8_t i = cal.record_count[physical]; i > 0U; --i) {
 		const struct atten_cal_record *record = &calibration_data.atten.records[physical][i - 1U];
+		double signal, error;
 		if (record->segment == cal.segment_id && record->event == ATTEN_CAL_EVENT_POINT &&
-		    record->classification == ATTEN_CAL_CLASSIFICATION_OK) {
+		    corrected_measurement(record, dark->signal_mv, dark->signal_err_mv, &signal, &error) &&
+		    10.0 / log(10.0) * error / signal < ATTENUATOR_FIT_MIN_SIGMA_DB) {
 			anchor = record;
 			anchor_index = i - 1U;
 			break;
@@ -804,7 +835,9 @@ static void auto_begin_bridge_locked(void)
 	if (anchor == NULL && cal.bridge_count[physical] > 0U) {
 		const struct atten_cal_bridge *bridge = &calibration_data.atten.bridges[physical][cal.bridge_count[physical] - 1U];
 		const struct atten_cal_record *record = &calibration_data.atten.records[physical][bridge->after_record_index];
-		if (record->classification == ATTEN_CAL_CLASSIFICATION_OK &&
+		double signal, error;
+		if (corrected_measurement(record, dark->signal_mv, dark->signal_err_mv, &signal, &error) &&
+		    10.0 / log(10.0) * error / signal < ATTENUATOR_FIT_MIN_SIGMA_DB &&
 		    record->segment == cal.segment_id && record->other_mv == cal.other_mv) {
 			anchor = record;
 			anchor_index = bridge->after_record_index;
@@ -822,8 +855,11 @@ static void auto_begin_bridge_locked(void)
 	auto_schedule_measure_locked(ATTEN_CAL_MEASURE_BRIDGE_PROBE, anchor->sweep_mv, search_midpoint_locked());
 }
 
-/** Keep the first measured usable reduction. The bracket is a voltage search,
- * not an assumed transmission curve or a requested fraction of the anchor. */
+/** Keep the first measured reduction with enough ratio precision for fitting.
+ * The initial source-off window supplies the available background estimate;
+ * final fitting rechecks it with the bracketed background. The 0.5 dB precision
+ * budget leaves margin above the SNR-5 validity boundary without targeting a
+ * brightness or a fraction of the anchor. No pre/post confirmation is added. */
 static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *measurement)
 {
 	struct atten_cal_record *record;
@@ -837,13 +873,16 @@ static void auto_handle_bridge_probe_locked(const struct atten_cal_measurement *
 	}
 	cal.search_tries++;
 	const struct atten_cal_record *before = &calibration_data.atten.records[cal.physical_index][cal.bridge_before_index];
-	float ratio = record->signal_mv / before->signal_mv;
-	if (record->classification == ATTEN_CAL_CLASSIFICATION_OK && record->max_mv < ATTEN_CAL_SEARCH_MAX_MV &&
-	    isfinite(ratio) && ratio > 0.0f && ratio < 1.0f) {
+	const struct atten_cal_record *dark = &calibration_data.atten.records[0][0];
+	double ratio = NAN, variance = INFINITY;
+	bool usable = bridge_measurement(before, record, dark->signal_mv, dark->signal_err_mv,
+					 &ratio, &variance);
+	bool precise = usable && 10.0 / log(10.0) * sqrt(variance) <= ATTENUATOR_FIT_MIN_SIGMA_DB;
+	if (precise && ratio < 1.0 && record->max_mv < ATTEN_CAL_SEARCH_MAX_MV) {
 		auto_close_bridge_locked(cal.point_index);
 		return;
 	}
-	if (record->classification == ATTEN_CAL_CLASSIFICATION_BELOW_SNR && record->max_mv < ATTEN_CAL_SEARCH_MAX_MV) {
+	if ((!usable || (ratio < 1.0 && !precise)) && record->max_mv < ATTEN_CAL_SEARCH_MAX_MV) {
 		cal.search_high_mv = cal.other_mv;
 	} else {
 		cal.search_low_mv = cal.other_mv;
@@ -903,138 +942,192 @@ static int fit_background(struct attenuator_calibration_fit_metrics *fit)
 	return 0;
 }
 
-/** Reassess measured signal against the source-off background; raw classifications
- * remain acquisition facts. A clipped window can never be recovered by subtraction. */
-static bool corrected_measurement(const struct atten_cal_record *r,
-		const struct attenuator_calibration_fit_metrics *fit, double *signal, double *error)
-{
-	*signal = (double)r->signal_mv - (double)fit->background_mv;
-	*error = hypot((double)r->signal_err_mv, (double)fit->background_err_mv);
-	return r->classification != ATTEN_CAL_CLASSIFICATION_ADC_ERROR &&
-		r->classification != ATTEN_CAL_CLASSIFICATION_SATURATED &&
-		(double)r->max_mv < PHOTODIODE_ADC_USABLE_MV && isfinite(*signal) &&
-		isfinite(*error) && *error > 0.0 && *signal / *error >= (double)ATTEN_CAL_SNR_USABLE;
-}
-
-/** Derive cumulative gains from measured links only. This math works in either
- * direction; acquisition separately requires a reduction when closing a companion.
- * Reference-relative variance later includes only links between the two segments. */
+/** Normalize backwards from the most-open usable sweep segment. A failed link
+ * leaves the disconnected closed-side records unscaled, rather than discarding
+ * useful open-side data. Return 1 for that restricted component, 0 for a complete
+ * chain, or errno when no usable sweep exists. Restricted fits require review.
+ * Reference-relative variance includes only links between the two segments. */
 static int build_segment_scales(uint8_t physical, double *scale, double *variance,
 		const struct attenuator_calibration_fit_metrics *fit)
 {
 	for (uint8_t i = 0; i < ATTENUATOR_CAL_RECORD_COUNT; ++i) scale[i] = variance[i] = NAN;
-	scale[0] = 1.0;
-	variance[0] = 0.0;
-	for (uint8_t i = 0; i < cal.bridge_count[physical]; ++i) {
+	const struct atten_cal_record *records = calibration_data.atten.records[physical];
+	int root = -1;
+	float lowest_mv = INFINITY;
+	for (uint8_t i = 0; i < cal.record_count[physical]; ++i) {
+		double signal, error;
+		if (records[i].event == ATTEN_CAL_EVENT_POINT && records[i].sweep_mv <= lowest_mv &&
+		    corrected_measurement(&records[i], fit->background_mv, fit->background_err_mv, &signal, &error)) {
+			root = records[i].segment;
+			lowest_mv = records[i].sweep_mv;
+		}
+	}
+	if (root < 0 || root >= ATTENUATOR_CAL_RECORD_COUNT) return -ERANGE;
+	scale[root] = 1.0;
+	variance[root] = 0.0;
+	bool complete = root == cal.bridge_count[physical];
+	for (int i = cal.bridge_count[physical] - 1; i >= 0; --i) {
 		const struct atten_cal_bridge *b = &calibration_data.atten.bridges[physical][i];
 		if (b->before_record_index >= cal.record_count[physical] || b->after_record_index >= cal.record_count[physical]) return -ERANGE;
-		const struct atten_cal_record *before = &calibration_data.atten.records[physical][b->before_record_index];
-		const struct atten_cal_record *after = &calibration_data.atten.records[physical][b->after_record_index];
-		double bs, be, as, ae;
-		if (before->segment >= ATTENUATOR_CAL_RECORD_COUNT || after->segment >= ATTENUATOR_CAL_RECORD_COUNT ||
-		    !isfinite(scale[before->segment]) || before->sweep_mv != after->sweep_mv ||
-		    !corrected_measurement(before, fit, &bs, &be) || !corrected_measurement(after, fit, &as, &ae)) return -ERANGE;
-		double ratio = as / bs;
-		if (!(ratio > 0.0) || !isfinite(ratio)) return -ERANGE;
-		scale[after->segment] = scale[before->segment] * ratio;
-		variance[after->segment] = variance[before->segment] + (be / bs) * (be / bs) + (ae / as) * (ae / as);
+		const struct atten_cal_record *before = &records[b->before_record_index];
+		const struct atten_cal_record *after = &records[b->after_record_index];
+		if (before->segment >= ATTENUATOR_CAL_RECORD_COUNT || after->segment >= ATTENUATOR_CAL_RECORD_COUNT) return -ERANGE;
+		double ratio, relative_variance;
+		if (!isfinite(scale[after->segment]) ||
+		    !bridge_measurement(before, after, fit->background_mv, fit->background_err_mv, &ratio, &relative_variance)) {
+			complete = false;
+			continue;
+		}
+		scale[before->segment] = scale[after->segment] / ratio;
+		variance[before->segment] = variance[after->segment] + relative_variance;
 	}
-	return 0;
+	return complete ? 0 : 1;
 }
 
-/** Sort a fixed nine-sample statistic in place; bounded stack use, no allocation. */
-static float median9(float values[9])
+/** Median of the smallest window that rejects an isolated bright outlier. */
+static float median3(float values[3])
 {
-	for (unsigned i = 1; i < 9; ++i) {
+	for (unsigned i = 1; i < 3; ++i) {
 		float value = values[i];
 		unsigned j = i;
 		while (j > 0 && values[j - 1] > value) { values[j] = values[j - 1]; --j; }
 		values[j] = value;
 	}
-	return values[4];
+	return values[1];
 }
 
-/** A rolling median needs actual contiguous grid support, not interpolation over
- * clipped gaps. Return its real median record and robust local dB uncertainty. */
+/** Use real contiguous grid points for the reference, with measured uncertainty.
+ * The response's curvature is signal, not an estimate of measurement noise: the
+ * former nine-point MAD rejected narrow peaks and moved the operational open. */
 static bool peak_window(const struct atten_cal_fit_point *points, const struct atten_cal_record *records,
 			uint8_t start, uint8_t *median_index, float *level, float *sigma)
 {
-	float values[9], errors[9];
-	for (uint8_t j = 0; j < 9; ++j) {
+	float values[3], errors[3];
+	for (uint8_t j = 0; j < 3; ++j) {
 		const struct atten_cal_fit_point *p = &points[start + j];
 		if (j > 0 && fabsf(records[p->record_index].sweep_mv -
 		    records[points[start + j - 1].record_index].sweep_mv - ATTEN_CAL_SWEEP_STEP_MV) > 1.0f) return false;
 		values[j] = p->measured_db;
 		errors[j] = p->measured_db_err;
 	}
-	*level = median9(values);
-	*sigma = median9(errors);
-	for (uint8_t j = 0; j < 9; ++j) {
-		if (points[start + j].measured_db == *level) *median_index = start + j;
-		values[j] = fabsf(points[start + j].measured_db - *level);
+	*level = median3(values);
+	*sigma = median3(errors);
+	for (int j = 2; j >= 0; --j) {
+		if (points[start + j].measured_db == *level) {
+			*median_index = start + j;
+			return true;
+		}
 	}
-	*sigma = MAX(*sigma, 1.4826f * median9(values));
-	return true;
+	return false;
 }
 
-/** Select a stable closed-side open point without making it the 0 dB reference.
- * Nine-point medians suppress isolated bright outliers; three following medians
- * must confirm the crossing. Excess scatter or unresolved clipping rejects it. */
+/** Weighted local dB/mV slope and its measurement SE. Five contiguous points at
+ * one companion setting avoid interpreting bridge offsets as physical curvature.
+ * These measurement errors test response changes; the model's 0.5 dB mismatch
+ * floor is not measurement noise. No fit, I/O or extra acquisition is performed. */
+static bool closing_slope(const struct atten_cal_fit_point *points, const struct atten_cal_record *records,
+			  uint8_t start, double *slope, double *error)
+{
+	double w = 0.0, wx = 0.0, wy = 0.0, wxx = 0.0, wxy = 0.0;
+	float center = records[points[start + 2U].record_index].sweep_mv;
+	uint8_t segment = records[points[start].record_index].segment;
+	for (uint8_t j = 0; j < 5; ++j) {
+		const struct atten_cal_fit_point *p = &points[start + j];
+		const struct atten_cal_record *r = &records[p->record_index];
+		if (r->segment != segment || (j > 0 && fabsf(r->sweep_mv -
+		    records[points[start + j - 1].record_index].sweep_mv - ATTEN_CAL_SWEEP_STEP_MV) > 1.0f)) return false;
+		double weight = 1.0 / ((double)p->measured_db_err * (double)p->measured_db_err);
+		double x = (double)r->sweep_mv - (double)center;
+		w += weight; wx += weight * x; wy += weight * (double)p->measured_db;
+		wxx += weight * x * x; wxy += weight * x * (double)p->measured_db;
+	}
+	double information = wxx - wx * wx / w;
+	if (!(information > 0.0)) return false;
+	*slope = (wxy - wx * wy / w) / information;
+	*error = sqrt(1.0 / information);
+	return isfinite(*slope) && isfinite(*error);
+}
+
+/** Select one supported closing interval before fitting. The last significant
+ * low-drive brightening bounds its open side. A significant slope decrease past
+ * the steepest closing response identifies the high-drive flattening/kink; the
+ * interval then ends at that strongest supported slope, even below 55 dB.
+ * This is one measured selection, never repeated trimming until a fit passes.
+ * The reference remains separate from operational open, which rounds upward. */
 static int select_open(uint8_t physical, struct atten_cal_fit_point *points, uint8_t count,
-		       struct attenuator_calibration_fit_metrics *fit)
+		       struct attenuator_calibration_fit_metrics *fit, float *max_mv)
 {
 	const struct atten_cal_record *records = calibration_data.atten.records[physical];
-	if (count < 12U) return -ERANGE;
+	if (count < ATTEN_CAL_MIN_FIT_POINTS) return -ERANGE;
 	for (uint8_t i = 0; i < cal.record_count[physical]; ++i) {
-		if (records[i].event != ATTEN_CAL_EVENT_POINT || records[i].classification != ATTEN_CAL_CLASSIFICATION_SATURATED) continue;
+		if (records[i].event != ATTEN_CAL_EVENT_POINT || records[i].classification != ATTEN_CAL_CLASSIFICATION_SATURATED ||
+		    !isfinite(calibration_scratch.atten.segment_scale[records[i].segment])) continue;
 		bool recovered = false;
 		for (uint8_t j = 0; j < count; ++j) {
 			if (records[points[j].record_index].sweep_mv == records[i].sweep_mv) recovered = true;
 		}
 		if (!recovered) return -ERANGE;
 	}
-	float peak = INFINITY, scatter = 0.0f;
-	uint8_t peak_start = 0, reference = 0;
-	for (uint8_t i = 0; i + 9U <= count; ++i) {
+	float peak = INFINITY, uncertainty = 0.0f;
+	uint8_t reference = 0;
+	for (uint8_t i = 0; i + 3U <= count; ++i) {
 		uint8_t index; float level, sigma;
-		if (peak_window(points, records, i, &index, &level, &sigma) && level <= peak) {
-			peak = level; scatter = sigma; peak_start = i; reference = index;
+		if (peak_window(points, records, i, &index, &level, &sigma) &&
+		    (level < peak || (level == peak && records[points[index].record_index].sweep_mv >
+						      records[points[reference].record_index].sweep_mv))) {
+			peak = level; uncertainty = sigma; reference = index;
 		}
 	}
-	float loss = 0.2f + 3.0f * scatter;
+	float loss = 0.2f + 3.0f * uncertainty;
 	if (!isfinite(peak) || loss > 3.0f) return -ERANGE;
+	fit->reference_record = points[reference].record_index;
+	fit->reference_valid = true;
 	float open = NAN;
-	for (uint8_t i = peak_start + 1U; i + 12U <= count; ++i) {
-		uint8_t index; float previous, current, sigma;
-		if (!peak_window(points, records, i - 1U, &index, &previous, &sigma) ||
-		    !peak_window(points, records, i, &index, &current, &sigma) ||
-		    previous > peak + loss || current < peak + loss || !(current > previous)) continue;
+	for (uint8_t i = 1; i + 3U <= count; ++i) {
+		float previous = points[i - 1U].measured_db, current = points[i].measured_db;
+		if (previous >= peak + loss || current < peak + loss) continue;
 		bool confirmed = true;
-		for (uint8_t j = 1; j <= 3; ++j) {
-			float level;
-			if (!peak_window(points, records, i + j, &index, &level, &sigma) || level < peak + loss) confirmed = false;
+		for (uint8_t j = 0; j < 3; ++j) {
+			if (points[i + j].measured_db < peak + loss || fabsf(records[points[i + j].record_index].sweep_mv -
+			    records[points[i + j - 1U].record_index].sweep_mv - ATTEN_CAL_SWEEP_STEP_MV) > 1.0f) confirmed = false;
 		}
-		if (confirmed) {
-			float mv = records[points[i + 3U].record_index].sweep_mv;
-			open = mv + ATTEN_CAL_SWEEP_STEP_MV * (peak + loss - previous) / (current - previous);
-		}
+		if (confirmed) open = records[points[i - 1U].record_index].sweep_mv +
+			ATTEN_CAL_SWEEP_STEP_MV * (peak + loss - previous) / (current - previous);
 	}
 	if (!isfinite(open)) return -ERANGE;
+	double strongest = 0.0, strongest_error = 0.0;
+	int strongest_start = -1;
+	for (uint8_t i = 0; i + 5U <= count; ++i) {
+		double slope, error;
+		if (closing_slope(points, records, i, &slope, &error) && slope > strongest) {
+			strongest = slope; strongest_error = error; strongest_start = i;
+		}
+	}
+	if (strongest_start < 0) return -ERANGE;
+	*max_mv = ATTENUATOR_DRIVE_MAX_MV;
+	for (uint8_t i = 0; i + 5U <= count; ++i) {
+		double slope, error;
+		if (!closing_slope(points, records, i, &slope, &error)) continue;
+		if (i < strongest_start && slope + 3.0 * error < 0.0) {
+			open = MAX(open, records[points[i + 4U].record_index].sweep_mv);
+		} else if (i > strongest_start && strongest - slope > 3.0 * hypot(strongest_error, error)) {
+			*max_mv = records[points[strongest_start + 2].record_index].sweep_mv;
+			break;
+		}
+	}
 	struct attenuator a;
 	attenuator_snapshot(&attenuators[cal.attenuator_index], &a);
 	struct attenuator_dac_cfg *cfg = physical == 0 ? &a.dac_cfg1 : &a.dac_cfg2;
 	cfg->open_mv = open;
 	fit->open_mv = attenuator_open_voltage(cfg);
 	fit->open_loss_db = loss;
-	fit->reference_record = points[reference].record_index;
-	fit->reference_valid = true;
 	return 0;
 }
 
 /** Normalize once, then select the operational branch. Raw acquisition order is
  * retained; only the small fit-index array is sorted into increasing voltage. */
 static int build_fit_points(uint8_t physical, struct atten_cal_fit_point *points, uint8_t *count_out,
-			    struct attenuator_calibration_fit_metrics *fit)
+			    struct attenuator_calibration_fit_metrics *fit, bool *complete, float *max_mv)
 {
 	double *scale = calibration_scratch.atten.segment_scale;
 	double *variance = calibration_scratch.atten.segment_rel_var;
@@ -1043,12 +1136,15 @@ static int build_fit_points(uint8_t physical, struct atten_cal_fit_point *points
 	fit->reason = FIT_BACKGROUND;
 	if (fit_background(fit) != 0) return -ERANGE;
 	fit->reason = FIT_BRIDGE;
-	if (build_segment_scales(physical, scale, variance, fit) != 0) return -ERANGE;
+	int rc = build_segment_scales(physical, scale, variance, fit);
+	if (rc < 0) return rc;
+	*complete = rc == 0;
 	for (uint8_t i = 0; i < cal.record_count[physical]; ++i) {
 		const struct atten_cal_record *r = &records[i];
 		double signal, error;
 		if (r->event != ATTEN_CAL_EVENT_POINT || r->segment >= ATTENUATOR_CAL_RECORD_COUNT ||
-		    !isfinite(scale[r->segment]) || !corrected_measurement(r, fit, &signal, &error)) continue;
+		    !isfinite(scale[r->segment]) ||
+		    !corrected_measurement(r, fit->background_mv, fit->background_err_mv, &signal, &error)) continue;
 		struct atten_cal_fit_point point = {
 			.record_index = i,
 			.measured_db = (float)(-10.0 * log10(signal / scale[r->segment])),
@@ -1064,17 +1160,17 @@ static int build_fit_points(uint8_t physical, struct atten_cal_fit_point *points
 		points[j] = point; ++count;
 	}
 	fit->reason = FIT_PEAK;
-	if (select_open(physical, points, count, fit) != 0) return -ERANGE;
+	if (select_open(physical, points, count, fit, max_mv) != 0) return -ERANGE;
 	const struct atten_cal_record *ref = &records[fit->reference_record];
 	double rs, re;
-	if (!corrected_measurement(ref, fit, &rs, &re)) return -ERANGE;
+	if (!corrected_measurement(ref, fit->background_mv, fit->background_err_mv, &rs, &re)) return -ERANGE;
 	double ref_db = -10.0 * log10(rs / scale[ref->segment]);
 	uint8_t selected = 0;
 	for (uint8_t i = 0; i < count; ++i) {
 		const struct atten_cal_record *r = &records[points[i].record_index];
 		if (r->sweep_mv < fit->open_mv) continue;
 		double signal, error;
-		(void)corrected_measurement(r, fit, &signal, &error);
+		(void)corrected_measurement(r, fit->background_mv, fit->background_err_mv, &signal, &error);
 		double rel_var = (error / signal) * (error / signal) + (re / rs) * (re / rs) +
 			fabs(variance[r->segment] - variance[ref->segment]);
 		points[selected] = points[i];
@@ -1253,6 +1349,24 @@ static void fit_initial_guess(const struct atten_cal_fit_point *points,
 		slope = 8.0 / (max_x - min_x);
 	} else {
 		slope = 8.0 / max_fvoa_mv;
+	}
+	/* A restricted interval need not traverse the full erfc: 8/span can start
+	 * on the flat floor with no useful gradient. Seed near half transmission,
+	 * where dB/du = 20*s/(sqrt(pi)*ln(10)). Reuse five-point, single-companion
+	 * slopes so one noisy sample or a bridge offset cannot define the gradient.
+	 * This only initializes the optimizer; it changes no model or fit weights. */
+	closest_err = INFINITY;
+	for (uint8_t i = 0; i + 5U <= point_count; ++i) {
+		double local_slope, local_error;
+		double db = (double)points[i + 2U].measured_db;
+		double distance = fabs(db - 3.01029995664);
+		if (distance >= closest_err || !closing_slope(points, records, i, &local_slope, &local_error) ||
+		    local_slope <= 3.0 * local_error) continue;
+		closest_err = distance;
+		double gradient = local_slope / gain;
+		slope = gradient * 1.772453850905516 * log(10.0) / 20.0;
+		f50 = (double)records[points[i + 2U].record_index].sweep_mv * gain +
+			(3.01029995664 - db) / gradient;
 	}
 	*fvoa_50pct_mv = CLAMP(f50, 1.0, 2.0 * max_fvoa_mv);
 	*slope_inv_fvoa_mv = CLAMP(slope, ATTEN_CAL_FIT_MIN_SLOPE,
@@ -1577,6 +1691,8 @@ static int fit_one_physical(uint8_t physical,
 	double sum_model_measured = 0.0;
 	uint8_t point_count = 0U;
 	uint8_t scored_count = 0U;
+	bool complete = false;
+	float max_mv = ATTENUATOR_DRIVE_MAX_MV;
 	struct attenuator_model_coeffs coeffs;
 	int rc;
 
@@ -1587,7 +1703,7 @@ static int fit_one_physical(uint8_t physical,
 
 	out->reason = FIT_RANGE;
 	if (cal.range_failed[physical]) return -ERANGE;
-	rc = build_fit_points(physical, cal_fit_points, &point_count, out);
+	rc = build_fit_points(physical, cal_fit_points, &point_count, out, &complete, &max_mv);
 	if (rc != 0) {
 		return rc;
 	}
@@ -1596,11 +1712,52 @@ static int fit_one_physical(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
-	/* The full sweep supplies the leakage floor. Include the first measured
-	 * point above the operating limit to anchor both fits across that boundary,
+	/* A fully closed FVOA is below this system's optical detection range. Its
+	 * residual screens possible background contamination, not measured leakage.
+	 * Compare only the same companion/current segment: no background scaling
+	 * across bridges is assumed. Three measurement errors are a guard margin,
+	 * not a confidence bound on the system's slower, non-Gaussian variability.
+	 * Keep the full-curve open/curvature and leakage-floor calculations above;
+	 * screening first could hide a kink or change the floor's fitting weights.
+	 */
+	const struct atten_cal_record *closed = NULL;
+	for (uint8_t i = 0; i < cal.record_count[physical]; ++i) {
+		const struct atten_cal_record *r = &records[i];
+		if (r->event == ATTEN_CAL_EVENT_POINT && r->sweep_mv == ATTENUATOR_DRIVE_MAX_MV &&
+		    r->classification != ATTEN_CAL_CLASSIFICATION_ADC_ERROR &&
+		    r->classification != ATTEN_CAL_CLASSIFICATION_SATURATED) {
+			closed = r;
+			break;
+		}
+	}
+	double closed_limit = closed == NULL ? 0.0 :
+		(MAX(0.0, (double)closed->signal_mv - (double)out->background_mv) +
+		 3.0 * hypot((double)closed->signal_err_mv, (double)out->background_err_mv)) /
+		(1.0 - pow(10.0, -ATTENUATOR_FIT_MIN_SIGMA_DB / 10.0));
+	uint8_t selected = 0;
+	for (uint8_t i = 0; i < point_count; ++i) {
+		const struct atten_cal_record *r = &records[cal_fit_points[i].record_index];
+		if (closed != NULL && r->segment == closed->segment && r->other_mv == closed->other_mv &&
+		    r->laser_pct == closed->laser_pct && (double)r->signal_mv - (double)out->background_mv < closed_limit) continue;
+		/* Allow one missing grid sample, but do not re-enter a disconnected
+		 * high-drive island after two or more missing samples. Fit indices only:
+		 * raw classifications and bridge measurements remain untouched.
+		 */
+		if (selected > 0 && r->sweep_mv - records[cal_fit_points[selected - 1U].record_index].sweep_mv >
+		    2.0f * ATTEN_CAL_SWEEP_STEP_MV + 1.0f) break;
+		cal_fit_points[selected++] = cal_fit_points[i];
+	}
+	point_count = selected;
+	/* The full usable tail supplies the constrained leakage floor; it does not
+	 * establish operating support. Stop at the measured voltage boundary. Within
+	 * it, include the first point above 55 dB to anchor both fits across that boundary,
 	 * rather than extrapolating from the last point below it. Keep all raw records.
 	 */
 	for (uint8_t i = 0U; i < point_count; ++i) {
+		if (records[cal_fit_points[i].record_index].sweep_mv > max_mv) {
+			point_count = i;
+			break;
+		}
 		if ((double)cal_fit_points[i].measured_db > ATTENUATOR_CALIBRATED_MAX_DB) {
 			point_count = i + 1U;
 			break;
@@ -1697,7 +1854,7 @@ static int fit_one_physical(uint8_t physical,
 	       sizeof(out->correction_coeff));
 	struct app_attenuator_fit_policy policy;
 	app_settings_get_attenuator_fit(cal.attenuator_index, &policy);
-	out->accepted = max_abs_db <= policy.max_fit_residual_db[physical] &&
+	out->accepted = complete && max_abs_db <= policy.max_fit_residual_db[physical] &&
 			isfinite(out->correlation) &&
 			out->correlation >= ATTEN_CAL_MIN_FIT_CORR &&
 			isfinite(out->fvoa_50pct_mv) &&
@@ -1705,7 +1862,7 @@ static int fit_one_physical(uint8_t physical,
 			out->slope_inv_fvoa_mv > 0.0 &&
 			isfinite(out->max_atten_db) &&
 			out->max_atten_db > 0.0;
-	out->reason = out->accepted ? FIT_ACCEPTED : FIT_RESIDUAL;
+	out->reason = !complete ? FIT_BRIDGE : out->accepted ? FIT_ACCEPTED : FIT_RESIDUAL;
 	return out->accepted ? 0 : -ERANGE;
 }
 

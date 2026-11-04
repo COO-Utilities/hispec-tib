@@ -6,13 +6,11 @@
  * settling, actuator history and PD-level dependence observable. Acquisition
  * completes before fitting; a rejected model never removes raw evidence.
  *
- * The raw-PD GLS fit uses calibrated FVOA transmission, one common calibration
- * uncertainty per DAC pair, and a shared drifting baseline constrained by darks.
- * The vendor power reference establishes scale inside a fit that must reach the
- * configured maximum and agree with the unit's vendor trace. Scalar nuisance
- * elimination and the existing 2x2 solver avoid an observation covariance matrix.
- * Efficiency remains the uncorrected linear-fit slope; a separate curve reference
- * expresses the quadratic correction without redefining that slope.
+ * Observed dark anchors and local, fixed-DAC measurements identify the threshold.
+ * The vendor trace supplies broad source shape: path-dependent rolloff must not
+ * become laser curvature. A reference-anchored line is preferred; any quadratic
+ * correction is fitted to the vendor trace alone. Full-capture exact-pair gains
+ * and raw PD-band ratios describe remaining optical-path variation independently.
  *
  * Noise estimates describe within-window temporal variance, not static FVOA fit
  * error. Absolute loss remains conditional on PD gain, vendor power, return and
@@ -58,7 +56,7 @@ LOG_MODULE_REGISTER(laser_calibration, LOG_LEVEL_INF);
 #define OTHER_RECORDS 24U
 #define WIRE_RECORD_SIZE 24U
 #define WIRE_CHUNK_RECORDS (COO_CMD_PAYLOAD_MAX / WIRE_RECORD_SIZE)
-#define WIRE_METADATA_SIZE 634U
+#define WIRE_METADATA_SIZE 588U
 #define FLAG_EARLY 0x20U
 #define FLAG_LATE_SECOND 0x40U
 
@@ -194,8 +192,9 @@ enum calibration_error {
 	CAL_TEMPERATURE_UNAVAILABLE,
 	CAL_ROUTE_WRITE,
 	CAL_PD_COVERAGE,
-	CAL_REVISIT_SHIFT,
-	CAL_RESTRICTED,
+	CAL_KNEE_UNAVAILABLE,
+	CAL_BAND_DISAGREEMENT,
+	CAL_TOP_UNSUPPORTED,
 };
 
 const char *laser_calibration_error_message(int error)
@@ -215,11 +214,13 @@ const char *laser_calibration_error_message(int error)
 	case CAL_FIT_FAILED: return "fit failed";
 	case CAL_NONMONOTONIC: return "fit is not increasing";
 	case CAL_THRESHOLD_RANGE: return "fit threshold outside usable range";
-	case CAL_NONLINEAR: return "curve residual exceeds uncertainty allowance";
-	case CAL_RESTRICTED: return "restricted current range requires human review";
+	case CAL_NONLINEAR: return "review needed: central curve residual exceeds tolerance";
+	case CAL_KNEE_UNAVAILABLE: return "review needed: current support knee is not identified";
+	case CAL_BAND_DISAGREEMENT: return "review needed: measured pd-band ratios vary with current";
+	case CAL_TOP_UNSUPPORTED: return "review needed: top current has no same-pair shape support";
 	case CAL_MAXIMUM_UNAVAILABLE: return "usable measurement at configured maximum required";
-	case CAL_VENDOR_MISMATCH: return "curve disagrees with vendor characterization";
-	case CAL_NOISE_FIT_FAILED: return "noise fit failed";
+	case CAL_VENDOR_MISMATCH: return "review needed: source model differs from vendor characterization";
+	case CAL_NOISE_FIT_FAILED: return "constant/fractional noise split is not identifiable";
 	case CAL_LOSS_FIT_FAILED: return "static loss fit failed";
 	case CAL_ATTEN_RANGE: return "reference outside calibrated attenuation";
 	case CAL_NOT_ACCEPTED: return "core fit not accepted";
@@ -237,7 +238,7 @@ const char *laser_calibration_error_message(int error)
 	case CAL_TEMPERATURE_UNAVAILABLE: return "laser temperature unavailable";
 	case CAL_ROUTE_WRITE: return "loopback route change failed";
 	case CAL_PD_COVERAGE: return "two pd levels required at each fitted current";
-	case CAL_REVISIT_SHIFT: return "measurement inconsistency: repeated condition changed";
+	
 	case -ECANCELED: return "stopped";
 	case -EBUSY: return "calibration or hardware busy";
 	case -ENODATA: return "no retained laser calibration";
@@ -431,26 +432,93 @@ static int fit_baseline(bool other, double *baseline, double *weight)
 	return 0;
 }
 
-/* A condition is two consecutive late windows at identical current/DAC codes.
- * Their scatter is a floor on mean variance: slow FVOA changes do not disappear
- * by dividing a within-window RMS by the ADC sample count. The early window is
- * retained only for settling diagnostics. No hardware or settings side effects. */
+/* Medians are descriptive central values, not independent-sample precision.
+ * Sorting uses the existing shared scratch; no per-fit stack-sized datasets. */
+static double median(unsigned n)
+{
+	for (unsigned i = 1; i < n; ++i) {
+		float value = work.ordered[i];
+		unsigned j = i;
+		while (j > 0 && work.ordered[j - 1U] > value) {
+			work.ordered[j] = work.ordered[j - 1U];
+			--j;
+		}
+		work.ordered[j] = value;
+	}
+	return n == 0 ? (double)NAN : 0.5 * ((double)work.ordered[(n - 1U) / 2U] + (double)work.ordered[n / 2U]);
+}
+
+static uint32_t condition_time_ms(unsigned i)
+{
+	return ((uint64_t)data.records[i - 1U].elapsed_ms + data.records[i].elapsed_ms) / 2U;
+}
+
+/* Observed same-run dark anchors; never extrapolate or fit an unobserved drift law. */
+static double fitted_baseline(unsigned i)
+{
+	uint32_t time = condition_time_ms(i);
+	for (unsigned j = 0; j + 1U < LASER_CAL_DARK_KNOTS; ++j) {
+		uint32_t a = condition_time_ms(work.dark_record[j]);
+		uint32_t b = condition_time_ms(work.dark_record[j + 1U]);
+		if (time >= a && time <= b && b > a) {
+			double fraction = (double)(time - a) / (b - a);
+			return work.baseline[j] + fraction * (work.baseline[j + 1U] - work.baseline[j]);
+		}
+	}
+	return NAN;
+}
+
+/* Only used for repeat illumination eligibility, never to weight the central curve. */
+static double condition_variance(unsigned i)
+{
+	const struct laser_cal_record *a = &data.records[i - 1U], *b = &data.records[i];
+	double difference = (double)a->net_mv - (double)b->net_mv;
+	return fmax(0.25 * (1.0 / mean_weight(a) + 1.0 / mean_weight(b)), 0.5 * difference * difference);
+}
+
+/* Collect distinct driver-grid currents, optionally for one exact DAC pair. */
+static unsigned current_levels(int group, double low, bool positive)
+{
+	unsigned count = 0;
+	for (unsigned i = 1; i < result.records; ++i) {
+		const struct laser_cal_record *r = &data.records[i];
+		if (!isfinite(work.mean[i]) || event_of(r) == EVENT_DARK ||
+		    (group >= 0 && r->segment != group) || current_of(r) < low ||
+		    (positive && (!isfinite(work.log_signal[i]) ||
+			(group < 0 && work.group_levels[r->segment] < 2)))) {
+			continue;
+		}
+		unsigned at = 0;
+		while (at < count && work.levels[at] < r->current_tenth_ma) {
+			++at;
+		}
+		if (at < count && work.levels[at] == r->current_tenth_ma) {
+			continue;
+		}
+		if (count == LASER_CAL_GRID_COUNT) {
+			return 0;
+		}
+		memmove(&work.levels[at + 1U], &work.levels[at], (count - at) * sizeof(work.levels[0]));
+		work.levels[at] = r->current_tenth_ma;
+		++count;
+	}
+	return count;
+}
+
 static int prepare_fit(void)
 {
 	memset(&work, 0, sizeof(work));
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		work.gain[group] = NAN;
+	}
 	int rc = fit_baseline(false, &work.baseline_mean, &work.baseline_weight);
 	if (rc != 0) {
 		return CAL_DARK_UNAVAILABLE;
 	}
-	unsigned dark_count = 0;
-	work.atten_sigma = log(10.0) / 10.0 * hypot(meta.coeff[0].rms_db, meta.coeff[1].rms_db);
-	if (!isfinite(work.atten_sigma) || work.atten_sigma < 0.0) {
-		return CAL_ATTEN_RANGE;
-	}
-
+	unsigned darks = 0;
+	bool reference = false;
 	for (unsigned i = 0; i < result.records; ++i) {
-		work.mean[i] = NAN;
-		work.variance[i] = NAN;
+		work.mean[i] = work.log_signal[i] = NAN;
 		const struct laser_cal_record *r = &data.records[i];
 		if (i == 0 || is_other(r) || !(r->flags & FLAG_LATE_SECOND)) {
 			continue;
@@ -463,469 +531,314 @@ static int prepare_fit(void)
 			continue;
 		}
 		work.mean[i] = 0.5 * ((double)r->net_mv + (double)a->net_mv);
-		double independent = 0.25 * (1.0 / mean_weight(r) + 1.0 / mean_weight(a));
-		double difference = (double)r->net_mv - (double)a->net_mv;
-		work.variance[i] = fmax(independent, 0.5 * difference * difference);
 		if (dark) {
-			if (dark_count == LASER_CAL_DARK_KNOTS) {
+			if (darks == LASER_CAL_DARK_KNOTS) {
 				return CAL_DARK_UNAVAILABLE;
 			}
-			work.dark_record[dark_count++] = i;
-			continue;
-		}
-
-		double db = 0.0;
-		for (unsigned j = 0; j < 2; ++j) {
-			struct atten_model_eval e;
-			double mv = (double)r->dac_code[j] * (double)meta.dac_full_scale_mv[j] / 4096.0;
-			if (!atten_model_eval(&meta.coeff[j], (float)mv, &e) ||
-			    e.db > fmin(meta.coeff[j].max_calibrated_db, 55.0) + 0.05) {
-				return CAL_ATTEN_RANGE;
-			}
-			db += e.db;
-		}
-		work.transmission[r->segment] = pow(10.0, -db / 10.0);
-		if (fabs(current_of(r) - meta.ref_ma) < 0.05 && work.reference_tx == 0.0) {
-			work.reference_tx = work.transmission[r->segment];
+			work.dark_record[darks] = i;
+			work.baseline[darks++] = work.mean[i];
+		} else {
+			reference |= fabs(current_of(r) - meta.ref_ma) < 0.05;
 		}
 	}
-	if (dark_count != LASER_CAL_DARK_KNOTS) {
+	if (darks != LASER_CAL_DARK_KNOTS) {
 		return CAL_DARK_UNAVAILABLE;
 	}
-	if (!(work.reference_tx > 0.0)) {
+	if (!reference) {
 		return CAL_REFERENCE_UNAVAILABLE;
 	}
-	for (unsigned j = 0; j < LASER_CAL_SEGMENTS; ++j) {
-		work.transmission[j] /= work.reference_tx;
+	for (unsigned i = 1; i < result.records; ++i) {
+		const struct laser_cal_record *r = &data.records[i];
+		if (!isfinite(work.mean[i]) || event_of(r) == EVENT_DARK) {
+			continue;
+		}
+		double signal = (double)work.mean[i] - fitted_baseline(i);
+		if (signal > 0.0) {
+			work.log_signal[i] = log(signal);
+		}
+	}
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		work.group_levels[group] = current_levels(group, 0.0, false);
 	}
 	return 0;
 }
 
-/* A paired late mean belongs to the midpoint of its two windows. Use the same
- * whole-millisecond convention for light rows, measured darks and downloaded
- * knots; a second-window timestamp would bias a changing baseline. */
-static uint32_t condition_time_ms(unsigned i)
+/* Select support and retain the same local windows for threshold estimation.
+ * Six nearby distinct currents keep high-current path rolloff out of both.
+ * One/two-current ranging islands cannot establish a knee or constrain a root. */
+static int support_floor(double *floor, uint16_t local_last[LASER_CAL_SEGMENTS])
 {
-	return ((uint64_t)data.records[i - 1U].elapsed_ms + data.records[i].elapsed_ms) / 2U;
+	uint16_t starts[2] = {UINT16_MAX, UINT16_MAX};
+	int selected_group[2] = {-1, -1};
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		if (work.group_levels[group] >= 4 && current_levels(group, 0.0, false) >= 4) {
+			if (work.levels[0] < starts[0]) {
+				starts[1] = starts[0]; selected_group[1] = selected_group[0];
+				starts[0] = work.levels[0]; selected_group[0] = group;
+			} else if (work.levels[0] < starts[1]) {
+				starts[1] = work.levels[0]; selected_group[1] = group;
+			}
+		}
+	}
+	unsigned groups = 0;
+	double boundary = 0.0;
+	uint16_t common[6];
+	unsigned common_count = 0;
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		if ((int)group != selected_group[0] && (int)group != selected_group[1]) {
+			continue;
+		}
+		unsigned n = MIN(current_levels(group, 0.0, false), 6U);
+		local_last[group] = work.levels[n - 1U];
+		double current[6], signal[6], peak = 0.0;
+		for (unsigned j = 0; j < n; ++j) {
+			current[j] = work.levels[j] / 10.0;
+			unsigned count = 0;
+			for (unsigned i = 1; i < result.records; ++i) {
+				if (data.records[i].segment == group && isfinite(work.mean[i]) &&
+				    data.records[i].current_tenth_ma == work.levels[j]) {
+					work.ordered[count++] = (double)work.mean[i] - fitted_baseline(i);
+				}
+			}
+			signal[j] = median(count);
+			peak = fmax(peak, signal[j]);
+		}
+		if (!(peak > 0.0)) {
+			continue;
+		}
+		double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+		for (unsigned j = 0; j < n; ++j) {
+			signal[j] /= peak;
+			sx += current[j]; sy += signal[j];
+			sxx += current[j] * current[j]; sxy += current[j] * signal[j];
+		}
+		double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+		double intercept = (sy - slope * sx) / n;
+		double line_cost = 0.0;
+		for (unsigned j = 0; j < n; ++j) {
+			double residual = signal[j] - intercept - slope * current[j];
+			line_cost += residual * residual;
+		}
+		double best = INFINITY, knee = NAN, baseline = NAN;
+		unsigned steps = MIN(4096U, (unsigned)ceil((current[n - 3U] - current[0]) / 0.01));
+		for (unsigned step = 0; step <= steps; ++step) {
+			if (atomic_get(&fit_cancel)) {
+				return -ECANCELED;
+			}
+			double k = current[0] + (current[n - 3U] - current[0]) * step / MAX(steps, 1U);
+			sx = sxx = sxy = 0.0;
+			for (unsigned j = 0; j < n; ++j) {
+				double x = fmax(0.0, current[j] - k);
+				sx += x; sxx += x * x; sxy += x * signal[j];
+			}
+			double b = fmax(0.0, (n * sxy - sx * sy) / (n * sxx - sx * sx));
+			double a = (sy - b * sx) / n;
+			if (a < 0.0) {
+				a = 0.0; b = fmax(0.0, sxy / sxx);
+			}
+			double cost = 0.0;
+			for (unsigned j = 0; j < n; ++j) {
+				double residual = signal[j] - a - b * fmax(0.0, current[j] - k);
+				cost += residual * residual;
+			}
+			if (b > 0.0 && cost < best) {
+				best = cost; knee = k; baseline = a;
+			}
+		}
+		bool hinge = knee > current[0] && baseline <= meta.max_fit_residual_pct / 100.0 &&
+			best <= 0.5 * line_cost;
+		double zero = hinge ? knee : -intercept / slope;
+		if (!(slope > 0.0) || !(zero >= 0.0)) {
+			return CAL_KNEE_UNAVAILABLE;
+		}
+		boundary = fmax(boundary, zero + 0.1);
+		if (groups == 0) {
+			memcpy(common, work.levels, n * sizeof(common[0]));
+			common_count = n;
+		} else {
+			unsigned retained = 0;
+			for (unsigned j = 0; j < common_count; ++j) {
+				for (unsigned k = 0; k < n; ++k) {
+					if (common[j] == work.levels[k]) {
+						common[retained++] = common[j];
+						break;
+					}
+				}
+			}
+			common_count = retained;
+		}
+		++groups;
+	}
+	if (groups == 2) {
+		/* Intersect usable support rather than demanding identical rounded
+		 * choices: a dim companion need not detect spontaneous emission. */
+		for (unsigned j = 0; j < common_count; ++j) {
+			double current = common[j] / 10.0;
+			if (current >= boundary - 1e-7 && current <= meta.ref_ma) {
+				*floor = current;
+				return 0;
+			}
+		}
+	}
+	return CAL_KNEE_UNAVAILABLE;
 }
 
-/* The three measured dark conditions are shared nuisance coordinates. Linear
- * interpolation between them propagates each anchor's uncertainty to every
- * affected observation; it makes no claim about unobserved changes between knots.
- * Acquisition brackets light measurements with darks: never extrapolate them. */
-static bool baseline_weights(unsigned i, double x[LASER_CAL_FIT_PARAMETERS])
+struct source_curve {
+	double threshold;
+	double curvature;
+	double cost;
+};
+
+static double normalized_power(const struct source_curve *curve, double current)
 {
-	uint32_t time = condition_time_ms(i);
-	for (unsigned j = 0; j + 1U < LASER_CAL_DARK_KNOTS; ++j) {
-		uint32_t a = condition_time_ms(work.dark_record[j]);
-		uint32_t b = condition_time_ms(work.dark_record[j + 1U]);
-		if (time >= a && time <= b && b > a) {
-			x[j + 1U] = (double)(time - a) / (b - a);
-			x[j] = 1.0 - x[j + 1U];
+	double span = meta.ref_ma - curve->threshold;
+	return (current - curve->threshold) / span *
+		(1.0 + curve->curvature * (current - meta.ref_ma) / span);
+}
+
+/* At each measured threshold, prefer the anchored line when it represents the
+ * vendor trace within the existing allowance. Otherwise solve its one quadratic
+ * coefficient against that trace alone. Current-spacing weights prevent dense
+ * digitization near a kink from becoming extra physical evidence. No assembled-
+ * path measurement supplies curvature or pulls the curve to an allowance edge. */
+static bool reference_curvature(struct source_curve *curve, double floor)
+{
+	const float (*point)[2] = vendor_reference[result.laser].point;
+	unsigned first = 0, end = vendor_reference[result.laser].count;
+	while (first < end && (double)point[first][0] < floor) ++first;
+	while (end > first && (double)point[end - 1U][0] > meta.max_ma) --end;
+	if (end - first < 2) return false;
+
+	double span = meta.ref_ma - curve->threshold;
+	double numerator = 0.0, denominator = 0.0, maximum = 0.0;
+	for (unsigned j = first; j < end; ++j) {
+		double current = point[j][0];
+		double base = (current - curve->threshold) / span;
+		double coefficient = base * (current - meta.ref_ma) / span;
+		double error = (double)point[j][1] / meta.ref_mw - base;
+		double weight = 0.5 * ((double)point[j + (j + 1U < end)][0] -
+				       (double)point[j - (j > first)][0]);
+		numerator += weight * coefficient * error;
+		denominator += weight * coefficient * coefficient;
+		maximum = fmax(maximum, fabs(error));
+	}
+	double limit = meta.max_fit_residual_pct / 100.0 * vendor_reference[result.laser].ref_mw / meta.ref_mw;
+	curve->curvature = maximum <= limit ? 0.0 : numerator / denominator;
+	double c = curve->curvature;
+	return isfinite(c) && normalized_power(curve, floor) > 0.0 &&
+		1.0 + c * (2.0 * floor - curve->threshold - meta.ref_ma) / span > 0.0 &&
+		1.0 + c * (2.0 * meta.max_ma - curve->threshold - meta.ref_ma) / span > 0.0;
+}
+
+/* Profile a positive free gain per exact DAC pair. Every paired condition has
+ * equal influence on the L1 log loss; quiet ADC windows cannot dominate it.
+ * Repeated visits share their pair's gain and retain their observed differences. */
+static double curve_cost(const struct source_curve *curve, double floor,
+			 const uint16_t *local_last)
+{
+	double cost = 0.0;
+	unsigned total = 0;
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		if (local_last != NULL && local_last[group] == 0) {
+			continue;
+		}
+		unsigned count = 0;
+		for (unsigned i = 1; i < result.records; ++i) {
+			if (data.records[i].segment == group && isfinite(work.log_signal[i]) &&
+			    current_of(&data.records[i]) >= floor &&
+			    (local_last == NULL || data.records[i].current_tenth_ma <= local_last[group])) {
+				double power = normalized_power(curve, current_of(&data.records[i]));
+				if (!(power > 0.0)) {
+					return INFINITY;
+				}
+				work.ordered[count++] = (double)work.log_signal[i] - log(power);
+			}
+		}
+		double gain = median(count);
+		work.gain[group] = gain;
+		if (work.group_levels[group] < 2) {
+			continue; /* Its free gain cannot identify source shape. */
+		}
+		for (unsigned j = 0; j < count; ++j) {
+			cost += fabs((double)work.ordered[j] - gain);
+		}
+		total += count;
+	}
+	return total > 0 ? cost / total : (double)INFINITY;
+}
+
+/* Only the local knee windows estimate threshold. A 65-point grid and four
+ * 17-point refinements retain the bounded cancellable search; curvature comes
+ * from the vendor at every trial, never from high-current path distortion. */
+static int search_curve(double floor, const uint16_t *local_last, struct source_curve *best)
+{
+	best->cost = INFINITY;
+	double ta = 0.0, tb = floor - 0.1;
+	for (unsigned pass = 0; pass < 5; ++pass) {
+		unsigned steps = pass == 0 ? 64U : 16U;
+		double dt = (tb - ta) / steps;
+		for (unsigned it = 0; it <= steps; ++it) {
+			if (atomic_get(&fit_cancel)) {
+				return -ECANCELED;
+			}
+			struct source_curve trial = {.threshold = ta + it * dt};
+			if (!reference_curvature(&trial, floor)) {
+				continue;
+			}
+			trial.cost = curve_cost(&trial, floor, local_last);
+			if (trial.cost < best->cost) {
+				*best = trial;
+			}
+		}
+		if (!isfinite(best->cost)) {
+			return CAL_VENDOR_MISMATCH;
+		}
+		ta = fmax(0.0, best->threshold - dt);
+		tb = fmin(floor - 0.1, best->threshold + dt);
+	}
+	return 0;
+}
+
+static bool vendor_mismatch(const struct source_curve *curve, double floor)
+{
+	double limit = meta.max_fit_residual_pct / 100.0 * vendor_reference[result.laser].ref_mw;
+	for (unsigned j = 0; j < vendor_reference[result.laser].count; ++j) {
+		double current = vendor_reference[result.laser].point[j][0];
+		if (current >= floor && current <= meta.max_ma &&
+		    fabs(meta.ref_mw * normalized_power(curve, current) - (double)vendor_reference[result.laser].point[j][1]) >=
+			limit + 1e-5 * meta.ref_mw) {
 			return true;
 		}
 	}
 	return false;
 }
 
-/* Evaluate only the selected shared dark model; no optical-curve assumptions. */
-static double fitted_baseline(unsigned i)
+/* Populate ordinary fractional residual diagnostics; central acceptance uses
+ * the symmetric multiplicative median, not a maximum or a Gaussian SE. */
+static void curve_diagnostics(const struct source_curve *curve, double floor)
 {
-	double x[LASER_CAL_FIT_PARAMETERS] = {0};
-	if (!baseline_weights(i, x)) {
-		return NAN;
-	}
-	double baseline = 0.0;
-	for (unsigned j = 0; j < LASER_CAL_DARK_KNOTS; ++j) {
-		baseline += x[j] * work.beta[j];
-	}
-	return baseline;
-}
-
-/* Build one raw-mV row. Reference response R always remains measured and shares
- * baseline/FVOA uncertainty. Inside support the curve passes through R; outside
- * support R is a separate amplitude, never an extrapolation constraint on Q(I).
- * In either case Pref/R preserves the configured vendor absolute power anchor. */
-static bool fit_row(unsigned i, double low, double high, bool quadratic,
-		    double x[LASER_CAL_FIT_PARAMETERS])
-{
-	const struct laser_cal_record *r = &data.records[i];
-	if (!isfinite((double)work.mean[i])) {
-		return false;
-	}
-	memset(x, 0, LASER_CAL_FIT_PARAMETERS * sizeof(*x));
-	if (!baseline_weights(i, x)) {
-		return false;
-	}
-	if (event_of(r) == EVENT_DARK) {
-		return true;
-	}
-
-	double ma = current_of(r);
-	bool reference = fabs(ma - meta.ref_ma) < 0.05;
-	if ((ma < low || ma > high) && !reference) {
-		return false;
-	}
-	double t = work.transmission[r->segment];
-	double z = (2.0 * ma - low - high) / (high - low);
-	if (meta.ref_ma >= low && meta.ref_ma <= high) {
-		double zr = (2.0 * meta.ref_ma - low - high) / (high - low);
-		x[3] = t;
-		x[4] = t * (z - zr);
-		x[5] = quadratic ? t * 2.0 * (z * z - zr * zr) : 0.0;
-	} else if (reference) {
-		x[3] = t;
-	} else {
-		x[4] = t;
-		x[5] = t * z;
-		x[6] = quadratic ? t * (2.0 * z * z - 1.0) : 0.0;
-	}
-	return true;
-}
-
-/* Accumulate GLS without an N-by-N covariance matrix. A DAC pair has one common
- * fractional calibration error (ln(10)/10 times the pair's RMS dB), shared by
- * every current and revisit at those exact codes. Different pairs are treated
- * as independent because the atten calibration does not supply covariance.
- * Sherman-Morrison profiles that rank-one term; it is not added independently
- * to each point, and measured bridge ratios never define the normalization. */
-static void fit_normal(double low, double high, bool quadratic, unsigned n)
-{
-	memset(work.normal, 0, sizeof(work.normal));
-	for (unsigned group = 0; group <= LASER_CAL_SEGMENTS; ++group) {
-		double v[LASER_CAL_FIT_PARAMETERS] = {0};
-		double uy = 0.0;
-		double denominator = 1.0;
-		for (unsigned i = 0; i < result.records; ++i) {
-			const struct laser_cal_record *r = &data.records[i];
-			unsigned g = event_of(r) == EVENT_DARK ? LASER_CAL_SEGMENTS : r->segment;
-			double x[LASER_CAL_FIT_PARAMETERS];
-			if (g != group || !fit_row(i, low, high, quadratic, x)) {
-				continue;
-			}
-			double w = 1.0 / (double)work.variance[i];
-			double signal = 0.0;
-			for (unsigned k = 3; k < n; ++k) {
-				signal += x[k] * work.beta[k];
-			}
-			double u = work.atten_sigma * signal;
-			denominator += w * u * u;
-			uy += w * u * (double)work.mean[i];
-			for (unsigned j = 0; j < n; ++j) {
-				v[j] += w * x[j] * u;
-				work.normal[j][n] += w * x[j] * (double)work.mean[i];
-				for (unsigned k = 0; k < n; ++k) {
-					work.normal[j][k] += w * x[j] * x[k];
-				}
-			}
-		}
-		for (unsigned j = 0; j < n; ++j) {
-			work.normal[j][n] -= v[j] * uy / denominator;
-			for (unsigned k = 0; k < n; ++k) {
-				work.normal[j][k] -= v[j] * v[k] / denominator;
-			}
-		}
-	}
-}
-
-/* Profile the scalar nuisance coordinates, then reuse the validated 2x2 solve
- * for the remaining shape coordinates. Diagonal scaling avoids comparing PD
- * baseline units with large deattenuated amplitudes. Seven is a fixed upper bound;
- * both matrices live in the existing shared scratch union, not on this stack.
- * A supplied RHS solves a covariance projection without inverting the matrix. */
-static int solve_normal(unsigned n, const double *rhs, double solution[LASER_CAL_FIT_PARAMETERS])
-{
-	double scale[LASER_CAL_FIT_PARAMETERS];
-	for (unsigned j = 0; j < n; ++j) {
-		scale[j] = sqrt(work.normal[j][j]);
-		if (!(scale[j] > 0.0) || !isfinite(scale[j])) {
-			return CAL_FIT_FAILED;
-		}
-	}
-	for (unsigned j = 0; j < n; ++j) {
-		for (unsigned k = 0; k < n; ++k) {
-			work.equations[j][k] = work.normal[j][k] / scale[j] / scale[k];
-		}
-		work.equations[j][n] = (rhs == NULL ? work.normal[j][n] : rhs[j]) / scale[j];
-	}
-	for (unsigned p = 0; p + 2U < n; ++p) {
-		double pivot = work.equations[p][p];
-		if (!(pivot > 1e-12)) {
-			return CAL_FIT_FAILED;
-		}
-		for (unsigned j = p + 1U; j < n; ++j) {
-			double multiplier = work.equations[j][p] / pivot;
-			for (unsigned k = p + 1U; k <= n; ++k) {
-				work.equations[j][k] -= multiplier * work.equations[p][k];
-			}
-		}
-	}
-	unsigned a = n - 2U;
-	int rc = calibration_solve_2x2(work.equations[a][a], work.equations[a][a + 1U],
-		work.equations[a + 1U][a + 1U], work.equations[a][n], work.equations[a + 1U][n], &solution[a]);
-	if (rc != 0) {
-		return CAL_FIT_FAILED;
-	}
-	for (int j = (int)n - 3; j >= 0; --j) {
-		double value = work.equations[j][n];
-		for (unsigned k = j + 1U; k < n; ++k) {
-			value -= work.equations[j][k] * solution[k];
-		}
-		solution[j] = value / work.equations[j][j];
-	}
-	for (unsigned j = 0; j < n; ++j) {
-		solution[j] /= scale[j];
-		if (!isfinite(solution[j])) {
-			return CAL_FIT_FAILED;
-		}
-	}
-	return 0;
-}
-
-/* Fit in raw PD units with shared baseline/reference/attenuation uncertainty.
- * Reweight the gain covariance using predicted signal, not a noisy observation.
- * The linear efficiency argument is from the separate uncorrected linear fit
- * on exactly this support. The quadratic's curve reference translates that
- * slope into the installed representation without changing its interpretation. */
-static int fit_interval(double low, double high, bool quadratic, double linear_efficiency,
-			struct laser_calibration_fit *fit)
-{
-	memset(fit, 0, sizeof(*fit));
-	fit->floor_ma = low;
-	fit->max_ma = high;
-	fit->threshold_se_ma = NAN;
-	fit->rms_fraction = fit->max_residual_fraction = NAN;
-	bool anchored = meta.ref_ma >= low && meta.ref_ma <= high;
-	unsigned shape = anchored ? 4U : 5U;
-	unsigned n = shape + (quadratic ? 2U : 1U);
-	fit->restricted = high < meta.max_ma - 0.05;
-	memset(work.beta, 0, sizeof(work.beta));
-	for (unsigned j = 0; j < LASER_CAL_DARK_KNOTS; ++j) {
-		work.beta[j] = work.mean[work.dark_record[j]];
-	}
-
-	bool converged = false;
-	for (unsigned iteration = 0; iteration < 20; ++iteration) {
-		if (atomic_get(&fit_cancel)) {
-			return -ECANCELED;
-		}
-		fit_normal(low, high, quadratic, n);
-		double next[LASER_CAL_FIT_PARAMETERS] = {0};
-		int rc = solve_normal(n, NULL, next);
-		if (rc != 0) {
-			return rc;
-		}
-		double change = 0.0;
-		for (unsigned i = 0; i < result.records; ++i) {
-			double x[LASER_CAL_FIT_PARAMETERS];
-			if (!fit_row(i, low, high, quadratic, x)) {
-				continue;
-			}
-			double old = 0.0;
-			double updated = 0.0;
-			for (unsigned k = 0; k < n; ++k) {
-				old += x[k] * work.beta[k];
-				updated += x[k] * next[k];
-			}
-			change = fmax(change, fabs(updated - old) / fmax(1.0, fabs(updated)));
-		}
-		memcpy(work.beta, next, sizeof(work.beta));
-		if (iteration > 0 && change < 1e-6) {
-			converged = true;
-			break;
-		}
-	}
-	if (!converged || !(work.beta[3] > 0.0)) {
-		return CAL_FIT_FAILED;
-	}
-	fit_normal(low, high, quadratic, n);
-	double center = 0.5 * (low + high);
-	double scale = 0.5 * (high - low);
-	double zr = (meta.ref_ma - center) / scale;
-	double k = work.beta[3] / meta.ref_mw;
-	double c = quadratic ? work.beta[shape + 1U] : 0.0;
-	double p0 = anchored ? work.beta[3] - work.beta[shape] * zr - 2.0 * c * zr * zr :
-		work.beta[4] - c;
-	p0 /= k;
-	double slope = work.beta[shape] / (scale * k);
-	fit->efficiency_mw_per_ma2 = (float)(2.0 * c / (scale * scale * k));
-	double q = fit->efficiency_mw_per_ma2;
-	double discriminant = slope * slope - 4.0 * q * p0;
-	if (!(discriminant > 0.0) || !(slope > 0.0)) {
-		return CAL_NONMONOTONIC;
-	}
-	fit->threshold_ma = center - 2.0 * p0 / (slope + sqrt(discriminant));
-	fit->efficiency_mw_per_ma = quadratic ? linear_efficiency : slope;
-	fit->efficiency_ref_ma = q == 0.0 ? meta.ref_ma : fit->threshold_ma +
-		(fit->efficiency_mw_per_ma - sqrt(discriminant)) / q;
-	fit->baseline_mv = work.beta[0];
-	if (!isfinite(fit->threshold_ma) || !(fit->efficiency_mw_per_ma > 0.0) ||
-	    !isfinite(fit->efficiency_ref_ma)) {
-		return CAL_FIT_FAILED;
-	}
-	if (fit->threshold_ma < 0.0 || low < fit->threshold_ma + 0.1 - 1e-7 ||
-	    slope + 2.0 * q * (meta.max_ma - center) <= 0.0 ||
-	    (q != 0.0 && fit->efficiency_ref_ma <= fit->threshold_ma)) {
-		return CAL_THRESHOLD_RANGE;
-	}
-
-	/* Implicit-root derivative and full GLS covariance include the nuisance
-	 * baseline, reference measurement and common FVOA errors. Vendor power is
-	 * still assumed exact; this is conditional precision, not absolute accuracy. */
-	double z0 = (fit->threshold_ma - center) / scale;
-	double gradient[LASER_CAL_FIT_PARAMETERS] = {0};
-	gradient[anchored ? 3U : 4U] = -1.0 / (k * sqrt(discriminant));
-	gradient[shape] = -(anchored ? z0 - zr : z0) / (k * sqrt(discriminant));
-	if (quadratic) {
-		gradient[shape + 1U] = -(anchored ? 2.0 * (z0 * z0 - zr * zr) : 2.0 * z0 * z0 - 1.0) /
-			(k * sqrt(discriminant));
-	}
-	double covariance[LASER_CAL_FIT_PARAMETERS] = {0};
-	if (solve_normal(n, gradient, covariance) != 0) {
-		return CAL_FIT_FAILED;
-	}
-	double variance = 0.0;
-	for (unsigned j = 0; j < n; ++j) {
-		variance += gradient[j] * covariance[j];
-	}
-	fit->threshold_se_ma = sqrt(fmax(0.0, variance));
-
-	/* Report the profiled gain shifts separately. These estimates explain
-	 * allowed common calibration error; they do not update attenuator settings. */
-	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
-		double numerator = 0.0;
-		double denominator = 1.0;
-		for (unsigned i = 0; i < result.records; ++i) {
-			double x[LASER_CAL_FIT_PARAMETERS];
-			if (data.records[i].segment != group || !fit_row(i, low, high, quadratic, x)) {
-				continue;
-			}
-			double signal = 0.0;
-			for (unsigned j = 3; j < n; ++j) {
-				signal += x[j] * work.beta[j];
-			}
-			double residual = (double)work.mean[i] - fitted_baseline(i) - signal;
-			double w = work.atten_sigma * work.atten_sigma / (double)work.variance[i];
-			numerator += w * signal * residual;
-			denominator += w * signal * signal;
-		}
-		work.gain_shift[group] = numerator / denominator;
-		work.gain[group] = k * work.transmission[group];
-		if (work.atten_sigma > 0.0) {
-			fit->atten_shift_sigma = fmax(fit->atten_shift_sigma, fabs(work.gain_shift[group]) / work.atten_sigma);
-		}
-	}
-
-	double limit = meta.max_fit_residual_pct / 100.0;
-	double residual_sum = 0.0;
-	bool residuals_pass = true;
-	bool covered = true;
-	fit->max_residual_fraction = 0.0;
-	for (unsigned i = 0; i < result.records; ++i) {
+	(void)curve_cost(curve, floor, NULL);
+	unsigned count = 0;
+	double sum = 0.0, maximum = 0.0;
+	for (unsigned i = 1; i < result.records; ++i) {
 		const struct laser_cal_record *r = &data.records[i];
-		double x[LASER_CAL_FIT_PARAMETERS];
-		if (!fit_row(i, low, high, quadratic, x)) {
+		if (!isfinite(work.log_signal[i]) || current_of(r) < floor || work.group_levels[r->segment] < 2) {
 			continue;
 		}
-		double baseline = fitted_baseline(i);
-		double observed = (double)work.mean[i] - baseline;
-		if (event_of(r) == EVENT_DARK) {
-			fit->dark_residual_mv = fmax(fit->dark_residual_mv, fabs(observed));
-			continue;
-		}
-		if (current_of(r) < low || current_of(r) > high) {
-			continue; /* Separate out-of-support power reference. */
-		}
-		double signal = 0.0;
-		for (unsigned j = 3; j < n; ++j) {
-			signal += x[j] * work.beta[j];
-		}
-		double predicted = signal * (1.0 + (double)work.gain_shift[r->segment]);
-		if (!(predicted > 0.0)) {
-			return CAL_THRESHOLD_RANGE;
-		}
-		double residual = observed / predicted - 1.0;
-		residual_sum += residual * residual;
-		fit->max_residual_fraction = fmax(fit->max_residual_fraction, fabs(residual));
-		/* Measured scatter is uncertainty, not evidence of nonlinearity.
-		 * Keep the reported residual raw; apply the allowance only here. */
-		residuals_pass &= fabs(observed - predicted) <=
-			limit * predicted + 3.0 * sqrt((double)work.variance[i]);
-		fit->points += 2; /* Exact transmitted support contains both late windows. */
-
-		bool paired = false;
-		for (unsigned j = 0; j < result.records; ++j) {
-			const struct laser_cal_record *rj = &data.records[j];
-			if (j == i || !isfinite(work.mean[j]) || rj->current_tenth_ma != r->current_tenth_ma) {
-				continue;
-			}
-			double bj = fitted_baseline(j);
-			double sj = (double)work.mean[j] - bj;
-			if (!(observed > 0.0) || !(sj > 0.0)) {
-				continue;
-			}
-			if (rj->segment != r->segment) {
-				double ratio = sj / observed;
-				paired |= ratio >= 2.0 || ratio <= 0.5;
-				double corrected = ratio * work.gain[r->segment] * (1.0 + (double)work.gain_shift[r->segment]) /
-					(work.gain[rj->segment] * (1.0 + (double)work.gain_shift[rj->segment]));
-				fit->band_fraction = fmax(fit->band_fraction, fabs(corrected - 1.0));
-			}
-		}
-		covered &= paired;
+		double log_residual = (double)work.log_signal[i] - work.gain[r->segment] -
+			log(normalized_power(curve, current_of(r)));
+		work.ordered[count++] = fabs(log_residual);
+		double residual = expm1(log_residual);
+		sum += residual * residual; maximum = fmax(maximum, fabs(residual));
+		work.include[i] = work.include[i - 1U] = 1;
 	}
-	fit->rms_fraction = sqrt(residual_sum / (fit->points / 2U));
-	fit->valid = true;
-	if (!covered) {
-		return CAL_PD_COVERAGE;
+	result.fit.median_fraction = expm1(median(count));
+	result.fit.rms_fraction = sqrt(sum / count);
+	result.fit.max_residual_fraction = maximum;
+	result.fit.points = 2U * count;
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		work.gain[group] = exp(work.gain[group]) / meta.ref_mw;
 	}
-	if (!residuals_pass) {
-		return CAL_NONLINEAR;
-	}
-
-	/* Fine-tune trusted characterization; do not reinterpret a system upset
-	 * as a new diode curve. Use a fixed fraction of vendor reference power so
-	 * the allowance does not collapse near threshold. Project the full GLS
-	 * covariance through P(I)=Pref*Q(I)/R, including the measured scale and
-	 * baseline/gain nuisance uncertainty. Neither those nuisance estimates nor
-	 * this conditional SE identify the physical cause of a discrepancy. */
-	bool vendor_overlap = false;
-	for (unsigned i = 0; i < vendor_reference[result.laser].count; ++i) {
-		double ma = vendor_reference[result.laser].point[i][0];
-		if (ma < low || ma > high) {
-			continue;
-		}
-		vendor_overlap = true;
-		double z = (ma - center) / scale;
-		double power = anchored ? meta.ref_mw + (work.beta[shape] * (z - zr) +
-			2.0 * c * (z * z - zr * zr)) / k :
-			(work.beta[4] + work.beta[shape] * z + c * (2.0 * z * z - 1.0)) / k;
-		memset(gradient, 0, sizeof(gradient));
-		gradient[3] = ((anchored ? meta.ref_mw : 0.0) - power) / work.beta[3];
-		if (!anchored) {
-			gradient[4] = 1.0 / k;
-		}
-		gradient[shape] = (anchored ? z - zr : z) / k;
-		gradient[shape + 1U] = quadratic ?
-			(anchored ? 2.0 * (z * z - zr * zr) : 2.0 * z * z - 1.0) / k : 0.0;
-		if (solve_normal(n, gradient, covariance) != 0) {
-			fit->valid = false;
-			return CAL_FIT_FAILED;
-		}
-		variance = 0.0;
-		for (unsigned j = 0; j < n; ++j) {
-			variance += gradient[j] * covariance[j];
-		}
-		if (fabs(power - (double)vendor_reference[result.laser].point[i][1]) >
-		    limit * vendor_reference[result.laser].ref_mw + 3.0 * sqrt(fmax(0.0, variance))) {
-			return CAL_VENDOR_MISMATCH;
-		}
-	}
-	if (!vendor_overlap) {
-		return CAL_VENDOR_MISMATCH;
-	}
-	fit->accepted = true;
-	return 0;
 }
 
 /* Two-column NNLS by testing the interior, both axes, and the origin. Columns
@@ -957,10 +870,10 @@ static int fit_noise(void)
 			}
 
 			/* Variance model: dark + gain^2*c2 + mean_signal^2*f2.
-			 * Weight the variance estimate using the Gaussian approximation
-			 * Var(s^2) = 2*v^2/(n-1) for n independent readings. */
+			 * Relative variance weights balance bright/dim windows. They do
+			 * not establish Gaussian confidence or describe long-time tails. */
 			const struct laser_cal_record *r = &data.records[i];
-			double gain = work.gain[r->segment] * (1.0 + (double)work.gain_shift[r->segment]);
+			double gain = work.gain[r->segment];
 			double x = current_of(r) - result.fit.threshold_ma;
 			double x_ref = result.fit.efficiency_ref_ma - result.fit.threshold_ma;
 			double mu = gain * x * (result.fit.efficiency_mw_per_ma +
@@ -1023,199 +936,202 @@ static int fit_noise(void)
 	return isfinite(c2) && isfinite(f2) ? 0 : CAL_NOISE_FIT_FAILED;
 }
 
-/* Pure numerical phase: immutable raw records, no hardware or publication.
- * Prefer a full-range core curve. Only when none passes, retain the widest
- * passing restricted interval for explicit human review; never hide excluded
- * high-current behavior by automatically applying it. Every usable observation
- * inside an interval participates and the measured reference always sets scale. */
+/* Median observed signal at one current/DAC condition; repeated visits remain
+ * in the capture but do not give that current extra weight in band comparison.
+ * Uses only the shared ordered scratch and does not alter fitted gains. */
+static double band_signal(unsigned group, uint16_t current)
+{
+	unsigned count = 0;
+	for (unsigned i = 1; i < result.records; ++i) {
+		if (data.records[i].segment == group && data.records[i].current_tenth_ma == current &&
+		    isfinite(work.log_signal[i])) {
+			work.ordered[count++] = (double)work.mean[i] - fitted_baseline(i);
+		}
+	}
+	return median(count);
+}
+
+/* Compare the two measured bands with the broadest current overlap. A constant
+ * median log ratio removes their relative gain; the median absolute departure
+ * describes shape disagreement without assuming Gaussian noise. Fitting both
+ * bands against a shared vendor constraint would hide disagreement at its edge. */
+static int check_bands(double floor)
+{
+	double widest = -1.0;
+	for (unsigned a = 0; a < LASER_CAL_SEGMENTS; ++a) {
+		if (work.group_levels[a] < 6) {
+			continue;
+		}
+		for (unsigned b = a + 1U; b < LASER_CAL_SEGMENTS; ++b) {
+			if (atomic_get(&fit_cancel)) return -ECANCELED;
+			if (work.group_levels[b] < 6) {
+				continue;
+			}
+			unsigned levels = current_levels(a, floor, true), count = 0;
+			float ratios[LASER_CAL_GRID_COUNT];
+			double bottom = 0.0, top = 0.0;
+			for (unsigned j = 0; j < levels; ++j) {
+				double first = band_signal(a, work.levels[j]);
+				double second = band_signal(b, work.levels[j]);
+				if (!(first > 0.0) || !(second > 0.0)) continue;
+				double ratio = log(first / second);
+				if (fabs(ratio) < log(2.0)) continue;
+				if (count == 0) bottom = work.levels[j] / 10.0;
+				top = work.levels[j] / 10.0;
+				ratios[count++] = ratio;
+			}
+			if (count >= 6 && top - bottom > widest) {
+				widest = top - bottom;
+				memcpy(work.ordered, ratios, count * sizeof(ratios[0]));
+				double center = median(count);
+				for (unsigned j = 0; j < count; ++j) {
+					work.ordered[j] = fabs((double)ratios[j] - center);
+				}
+				result.fit.band_fraction = expm1(median(count));
+			}
+		}
+	}
+	if (widest < 0.0) {
+		return CAL_PD_COVERAGE;
+	}
+	return result.fit.band_fraction <= meta.max_fit_residual_pct / 100.0 ? 0 : CAL_BAND_DISAGREEMENT;
+}
+
+/* Exact-condition differences remain available independently of curve quality.
+ * They characterize observed multiscale variation and never veto a central fit. */
+static void summarize_repeats(void)
+{
+	result.fit.revisit_fraction = NAN;
+	for (unsigned i = 1; i < result.records; ++i) {
+		const struct laser_cal_record *r = &data.records[i];
+		if (!isfinite(work.mean[i]) || event_of(r) != EVENT_REVISIT) {
+			continue;
+		}
+		for (unsigned j = 1; j < i; ++j) {
+			const struct laser_cal_record *a = &data.records[j];
+			if (!isfinite(work.mean[j]) || event_of(a) == EVENT_DARK ||
+			    a->current_tenth_ma != r->current_tenth_ma ||
+			    a->dac_code[0] != r->dac_code[0] || a->dac_code[1] != r->dac_code[1]) {
+				continue;
+			}
+			++result.fit.repeat_matched;
+			double before = (double)work.mean[j] - fitted_baseline(j);
+			double after = (double)work.mean[i] - fitted_baseline(i);
+			if (!isfinite(result.fit.floor_ma) || current_of(r) < result.fit.floor_ma ||
+			    !(before > 10.0 * sqrt(condition_variance(j))) ||
+			    !(after > 10.0 * sqrt(condition_variance(i)))) {
+				continue;
+			}
+			++result.fit.repeat_usable;
+			bool in_range = result.fit.valid && current_of(r) >= result.fit.floor_ma &&
+				current_of(r) <= result.fit.max_ma;
+			result.fit.repeat_in_range += in_range;
+			double fraction = fabs(after / before - 1.0);
+			if (!isfinite(result.fit.revisit_fraction) || fraction > result.fit.revisit_fraction) {
+				result.fit.revisit_fraction = fraction;
+				result.fit.repeat_current_tenth_ma = r->current_tenth_ma;
+				memcpy(result.fit.repeat_dac_code, r->dac_code, sizeof(r->dac_code));
+				result.fit.repeat_before_mv = before; result.fit.repeat_after_mv = after;
+				result.fit.repeat_elapsed_ms = condition_time_ms(i) - condition_time_ms(j);
+				result.fit.repeat_worst_in_range = in_range;
+			}
+		}
+	}
+}
+
+/* Local threshold plus vendor source shape, validated against the full capture.
+ * No rescue interval, path-learned curvature, noise inflation, or time-dependent
+ * gain correction. Review leaves the broad candidate available for adoption. */
 static int fit_laser(void)
 {
 	memset(&result.fit, 0, sizeof(result.fit));
-	memset(work.include, 0, sizeof(work.include));
+	result.fit.revisit_fraction = result.fit.band_fraction = NAN;
+	result.fit.floor_ma = NAN;
 	int rc = prepare_fit();
 	if (rc != 0) {
-		/* An incomplete preparation cannot establish absolute mV/mW gains. */
-		for (unsigned j = 0; j < LASER_CAL_SEGMENTS; ++j) {
-			work.gain[j] = NAN;
-		}
 		return rc;
 	}
-
-	unsigned levels = 0;
-	for (uint8_t i = 0; i < result.records; ++i) {
-		if (!isfinite((double)work.mean[i]) || event_of(&data.records[i]) == EVENT_DARK) {
-			continue;
-		}
-		uint16_t current = data.records[i].current_tenth_ma;
-		unsigned at = 0;
-		while (at < levels && work.levels[at] < current) {
-			++at;
-		}
-		if (at < levels && work.levels[at] == current) {
-			continue;
-		}
-		memmove(&work.levels[at + 1U], &work.levels[at], (levels - at) * sizeof(work.levels[0]));
-		work.levels[at] = current;
-		++levels;
+	double floor = NAN;
+	uint16_t local_last[LASER_CAL_SEGMENTS] = {0};
+	rc = support_floor(&floor, local_last);
+	if (rc != 0) {
+		summarize_repeats();
+		return rc;
 	}
+	result.fit.floor_ma = floor;
+	result.fit.max_ma = meta.max_ma;
+	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
+		work.group_levels[group] = current_levels(group, floor, true);
+		if (local_last[group] != 0 && (work.group_levels[group] < 2 ||
+		    work.levels[1] > local_last[group])) {
+			return CAL_INSUFFICIENT_POINTS;
+		}
+	}
+	unsigned levels = current_levels(-1, floor, true);
 	if (levels < 6) {
+		summarize_repeats();
 		return CAL_INSUFFICIENT_POINTS;
 	}
-
-	/* Acquisition uses the 0.1-mA driver grid. Missing top data is incomplete
-	 * evidence, not permission to lower either physical or automatic limits. */
-	if (work.levels[levels - 1U] != (uint16_t)llround(meta.max_ma * 10.0)) {
+	bool measured_top = false;
+	for (unsigned i = 1; i < result.records; ++i) {
+		measured_top |= isfinite(work.log_signal[i]) &&
+			data.records[i].current_tenth_ma == (uint16_t)llround(meta.max_ma * 10.0);
+	}
+	if (!measured_top) {
+		summarize_repeats();
 		return CAL_MAXIMUM_UNAVAILABLE;
 	}
-	double high = work.levels[levels - 1U] / 10.0;
-	bool have_candidate = false;
-	int best_error = CAL_FIT_FAILED;
-	for (unsigned lower = 0; lower + 5U < levels && !result.fit.accepted; ++lower) {
-		double low = work.levels[lower] / 10.0;
-		if (low > meta.ref_ma) {
-			break;
-		}
-		double linear_efficiency = NAN;
-		for (unsigned order = 1; order <= 2; ++order) {
-			if (atomic_get(&fit_cancel)) {
-				return -ECANCELED;
-			}
-			struct laser_calibration_fit candidate;
-			int error = fit_interval(low, high, order == 2, linear_efficiency, &candidate);
-			if (order == 1) {
-				linear_efficiency = candidate.efficiency_mw_per_ma;
-			}
-			if (!have_candidate) {
-				best_error = error;
-			}
-			if (!candidate.valid) {
-				continue;
-			}
-			/* Ascending floors and line-first order resolve ties. A rejected
-			 * diagnostic candidate minimizes maximum raw residual, not span.
-			 * The first pass is the lowest usable floor, preferring a line. */
-			if (!have_candidate || candidate.accepted ||
-			    candidate.max_residual_fraction < result.fit.max_residual_fraction - 1e-12) {
-				result.fit = candidate;
-				best_error = error;
-				have_candidate = true;
-			}
-			if (result.fit.accepted) {
-				break;
-			}
+	struct source_curve curve;
+	rc = search_curve(floor, local_last, &curve);
+	if (rc != 0) {
+		summarize_repeats();
+		return rc;
+	}
+	struct laser_calibration_fit *f = &result.fit;
+	f->floor_ma = floor; f->max_ma = meta.max_ma;
+	f->threshold_ma = curve.threshold;
+	f->efficiency_mw_per_ma = meta.ref_mw / (meta.ref_ma - curve.threshold);
+	f->efficiency_mw_per_ma2 = f->efficiency_mw_per_ma * curve.curvature / (meta.ref_ma - curve.threshold);
+	f->efficiency_ref_ma = meta.ref_ma;
+	f->baseline_mv = work.baseline[0];
+	double q = f->efficiency_mw_per_ma2;
+	f->valid = isfinite(f->efficiency_ref_ma) && f->efficiency_mw_per_ma > 0.0 &&
+		(q == 0.0 || f->efficiency_ref_ma > f->threshold_ma) &&
+		f->efficiency_mw_per_ma + q * (f->threshold_ma - f->efficiency_ref_ma) > 0.0 &&
+		f->efficiency_mw_per_ma + q * (2.0 * meta.max_ma - f->threshold_ma - f->efficiency_ref_ma) > 0.0;
+	if (!f->valid) {
+		return CAL_FIT_FAILED;
+	}
+	rc = check_bands(floor);
+	if (rc == -ECANCELED) {
+		return rc;
+	}
+	/* Full-range measurements validate the proposal and estimate path gains;
+	 * they cannot move the local threshold or the vendor-derived curvature. */
+	curve_diagnostics(&curve, floor);
+	if (vendor_mismatch(&curve, floor)) {
+		rc = CAL_VENDOR_MISMATCH;
+	} else if (f->median_fraction > meta.max_fit_residual_pct / 100.0) {
+		rc = CAL_NONLINEAR;
+	}
+	bool supported_top = false;
+	for (unsigned i = 1; i < result.records; ++i) {
+		const struct laser_cal_record *r = &data.records[i];
+		if (isfinite(work.log_signal[i]) && r->current_tenth_ma == (uint16_t)llround(meta.max_ma * 10.0) &&
+		    work.group_levels[r->segment] >= 4) {
+			supported_top = true;
 		}
 	}
-
-	/* A full-range core failure may still leave a useful bounded model. Search
-	 * all contiguous intervals with six distinct measured currents; preserve the
-	 * widest passing interval, then lower floor, then line. These candidates use
-	 * the same vendor/coverage/residual checks and are never auto-installed. */
-	bool restricted_candidate = false;
-	if (!result.fit.accepted) {
-		for (unsigned lower = 0; lower + 5U < levels; ++lower) {
-			for (unsigned upper = lower + 5U; upper + 1U < levels; ++upper) {
-				double low = work.levels[lower] / 10.0;
-				double top = work.levels[upper] / 10.0;
-				double span = top - low;
-				if (restricted_candidate && (span < result.fit.max_ma - result.fit.floor_ma - 1e-7 ||
-				    (fabs(span - (result.fit.max_ma - result.fit.floor_ma)) < 1e-7 &&
-				     low >= result.fit.floor_ma))) {
-					continue;
-				}
-				double linear_efficiency = NAN;
-				for (unsigned order = 1; order <= 2; ++order) {
-					if (atomic_get(&fit_cancel)) {
-						return -ECANCELED;
-					}
-					struct laser_calibration_fit candidate;
-					int error = fit_interval(low, top, order == 2, linear_efficiency, &candidate);
-					if (order == 1) {
-						linear_efficiency = candidate.efficiency_mw_per_ma;
-					}
-					if (error == 0 && candidate.accepted) {
-						result.fit = candidate;
-						best_error = 0;
-						have_candidate = restricted_candidate = true;
-						break;
-					}
-				}
-			}
-		}
+	if (!supported_top && rc == 0) {
+		rc = CAL_TOP_UNSUPPORTED;
 	}
-
-	/* Re-solve only the selected interval to retain its normalization and
-	 * nuisance estimates. Other candidates must not leak into the download. */
-	if (have_candidate) {
-		double low = result.fit.floor_ma;
-		double high = result.fit.max_ma;
-		bool quadratic = result.fit.efficiency_mw_per_ma2 != 0.0f;
-		struct laser_calibration_fit line;
-		best_error = fit_interval(low, high, false, NAN, &line);
-		if (quadratic) {
-			best_error = fit_interval(low, high, true, line.efficiency_mw_per_ma, &result.fit);
-		} else {
-			result.fit = line;
-		}
-		work.baseline_mean = work.beta[0];
-		for (unsigned i = 1; i < result.records; ++i) {
-			double current = current_of(&data.records[i]);
-			if (isfinite((double)work.mean[i]) && event_of(&data.records[i]) != EVENT_DARK &&
-			    current >= low && current <= high) {
-				work.include[i] = work.include[i - 1U] = 1;
-			}
-		}
-	}
-	/* Test all exact-condition revisits once after selecting support: changing
-	 * the interval cannot evade a control. Measured dark movement is represented
-	 * by its knots, not rejected for failing an assumed global time law. The
-	 * residual at each fitted knot remains visible as a model diagnostic.
-	 * Repeat checks retain the measured late-window SE and raw mV difference;
-	 * no fitted time correction or pooled repeat multiplier can erase them. */
-	/* No illuminated exact-condition comparison means unavailable, not zero
-	 * observed variation. fmax below installs the first eligible fraction. */
-	result.fit.revisit_fraction = NAN;
-	if (result.fit.valid) {
-		double limit = meta.max_fit_residual_pct / 100.0;
-		for (unsigned i = 0; i < result.records; ++i) {
-			const struct laser_cal_record *r = &data.records[i];
-			if (!isfinite(work.mean[i])) {
-				continue;
-			}
-			double si = (double)work.mean[i] - fitted_baseline(i);
-
-			if (event_of(r) != EVENT_REVISIT) {
-				continue;
-			}
-			for (unsigned j = 0; j < i; ++j) {
-				const struct laser_cal_record *rj = &data.records[j];
-				if (!isfinite(work.mean[j]) || rj->current_tenth_ma != r->current_tenth_ma ||
-				    rj->dac_code[0] != r->dac_code[0] || rj->dac_code[1] != r->dac_code[1]) {
-					continue;
-				}
-				double sj = (double)work.mean[j] - fitted_baseline(j);
-				if (si > 10.0 * sqrt(work.variance[i]) && sj > 10.0 * sqrt(work.variance[j])) {
-					result.fit.revisit_fraction = fmax(result.fit.revisit_fraction, fabs(si / sj - 1.0));
-				}
-				if (fabs(si - sj) > limit * fmax(0.0, 0.5 * (si + sj)) +
-				    3.0 * sqrt((double)work.variance[i] + (double)work.variance[j])) {
-					best_error = CAL_REVISIT_SHIFT;
-					result.fit.accepted = false;
-				}
-			}
-		}
-	}
-
-	if (result.fit.restricted) {
-		result.fit.accepted = false;
-		if (best_error == 0) {
-			best_error = CAL_RESTRICTED;
-		}
-	}
-	if (result.fit.valid) {
-		result.fit.noise_error = fit_noise();
-		result.fit.noise_valid = result.fit.noise_error == 0;
-	}
-	return best_error;
+	f->top_supported = supported_top;
+	f->accepted = rc == 0;
+	summarize_repeats();
+	f->noise_error = fit_noise();
+	f->noise_valid = f->noise_error == 0;
+	if (f->noise_error == -ECANCELED) return -ECANCELED;
+	return rc;
 }
 
 /* Hardware ownership: only the throughput thread advances acquisition. Command
@@ -1981,10 +1897,30 @@ static int fit_route(unsigned output_index)
 	struct laser_calibration_route_fit *f = &result.route[output_index];
 	double response;
 	if (output_index == 0) {
-		if (!result.fit.valid || !(work.reference_tx > 0.0)) {
+		if (!result.fit.valid) {
 			return CAL_LOSS_FIT_FAILED;
 		}
-		response = work.beta[3] / meta.ref_mw / work.reference_tx;
+		/* Absolute route loss still depends on the calibrated attenuation sum.
+		 * Free source-fit gains must not be mistaken for bare route transmission. */
+		unsigned count = 0;
+		for (unsigned i = 1; i < result.records; ++i) {
+			const struct laser_cal_record *r = &data.records[i];
+			if (!isfinite(work.log_signal[i]) || fabs(current_of(r) - meta.ref_ma) >= 0.05) {
+				continue;
+			}
+			double db = 0.0;
+			for (unsigned j = 0; j < 2; ++j) {
+				struct atten_model_eval e;
+				double mv = (double)r->dac_code[j] * (double)meta.dac_full_scale_mv[j] / 4096.0;
+				if (!atten_model_eval(&meta.coeff[j], (float)mv, &e) ||
+				    e.db > fmin(meta.coeff[j].max_calibrated_db, 55.0) + 0.05) {
+					return CAL_ATTEN_RANGE;
+				}
+				db += e.db;
+			}
+			work.ordered[count++] = exp(work.log_signal[i]) / pow(10.0, -db / 10.0) / meta.ref_mw;
+		}
+		response = median(count);
 	} else {
 		double baseline;
 		double weight;
@@ -2352,9 +2288,8 @@ void laser_calibration_tick(const struct photodiode_status *pd)
 			for (unsigned j = 0; j < LASER_CAL_DARK_KNOTS; ++j) {
 				meta.baseline_knots_ms[j] = result.fit.valid ?
 					condition_time_ms(work.dark_record[j]) : 0U;
-				meta.baseline_knots_mv[j] = result.fit.valid ? work.beta[j] : (double)NAN;
+				meta.baseline_knots_mv[j] = result.fit.valid ? work.baseline[j] : (double)NAN;
 			}
-			memcpy(meta.segment_gain_shift, work.gain_shift, sizeof(meta.segment_gain_shift));
 			meta.dark_variance_mv2 = work.dark_variance;
 			memcpy(meta.segment_mv_per_mw, work.gain, sizeof(meta.segment_mv_per_mw));
 			memset(meta.fit_support, 0, sizeof(meta.fit_support));
@@ -2543,7 +2478,7 @@ int laser_calibration_format_status(char *payload, size_t size,
 } while (0)
 #define NUMBER(key, value, valid) do { \
 	APPEND(",\"" key "\":"); \
-	if ((valid) && isfinite(value)) { \
+	if ((valid) && isfinite((double)(value))) { \
 		APPEND("%.9g", (double)(value)); \
 	} else { \
 		APPEND("null"); \
@@ -2568,8 +2503,8 @@ int laser_calibration_format_status(char *payload, size_t size,
 		(double)s->current_ma, BOOL(s->acquisition_complete), BOOL(s->overflow), BOOL(s->shutdown_pending));
 	ERROR("error", s->error);
 
-	APPEND(",\"fit\":{\"valid\":%s,\"accepted\":%s,\"restricted\":%s,\"applied\":%s,\"persisted\":%s,\"n\":%u",
-		BOOL(f->valid), BOOL(f->accepted), BOOL(f->restricted), BOOL(f->applied), BOOL(f->persisted), f->points);
+	APPEND(",\"fit\":{\"valid\":%s,\"accepted\":%s,\"top_supported\":%s,\"applied\":%s,\"persisted\":%s,\"n\":%u",
+		BOOL(f->valid), BOOL(f->accepted), BOOL(f->top_supported), BOOL(f->applied), BOOL(f->persisted), f->points);
 	ERROR("error", f->error);
 	ERROR("apply_error", f->apply_error);
 	ERROR("persist_error", f->persist_error);
@@ -2582,7 +2517,18 @@ int laser_calibration_format_status(char *payload, size_t size,
 	NUMBER("baseline_mv", f->baseline_mv, f->points > 0);
 	NUMBER("rms_fraction", f->rms_fraction, f->valid);
 	NUMBER("max_residual_fraction", f->max_residual_fraction, f->valid);
-	NUMBER("threshold_se_ma", f->threshold_se_ma, f->valid);
+	NUMBER("median_fraction", f->median_fraction, f->valid);
+
+	APPEND("},\"repeat\":{\"matched\":%u,\"usable\":%u,\"in_range\":%u",
+		f->repeat_matched, f->repeat_usable, f->repeat_in_range);
+	NUMBER("worst_fraction", f->revisit_fraction, f->repeat_usable > 0);
+	NUMBER("current_ma", f->repeat_current_tenth_ma / 10.0, f->repeat_usable > 0);
+	NUMBER("dac1_code", f->repeat_dac_code[0], f->repeat_usable > 0);
+	NUMBER("dac2_code", f->repeat_dac_code[1], f->repeat_usable > 0);
+	NUMBER("before_mv", f->repeat_before_mv, f->repeat_usable > 0);
+	NUMBER("after_mv", f->repeat_after_mv, f->repeat_usable > 0);
+	NUMBER("elapsed_ms", f->repeat_elapsed_ms, f->repeat_usable > 0);
+	APPEND(",\"worst_in_range\":%s", f->repeat_usable > 0 ? BOOL(f->repeat_worst_in_range) : "null");
 
 	APPEND("},\"noise\":{\"valid\":%s,\"applied\":%s,\"persisted\":%s",
 		BOOL(f->noise_valid), BOOL(f->noise_applied), BOOL(f->noise_persisted));
@@ -2654,7 +2600,7 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 		/* Bytes 0..15: format identity and one-byte selectors/counts.
 		 * Byte 15 remains reserved/zero. Field order matches the host decoder. */
 		memcpy(bytes, "HLC1", 4);
-		bytes[4] = 5;
+		bytes[4] = 6;
 		bytes[5] = result.state;
 		bytes[6] = meta.laser;
 		bytes[7] = meta.channel;
@@ -2742,14 +2688,23 @@ int laser_calibration_write_data(void *payload, size_t size, int chunk, size_t *
 		for (unsigned j = 0; j < LASER_CAL_DARK_KNOTS; ++j, off += 8) {
 			put_double(bytes + off, meta.baseline_knots_mv[j]);
 		}
-		for (unsigned j = 0; j < LASER_CAL_SEGMENTS; ++j, off += 4) {
-			put_float(bytes + off, meta.segment_gain_shift[j]);
-		}
-		const double diagnostics[] = {result.fit.revisit_fraction, result.fit.band_fraction,
-			result.fit.atten_shift_sigma, result.fit.dark_residual_mv};
+		const double diagnostics[] = {result.fit.median_fraction, result.fit.band_fraction,
+			result.fit.revisit_fraction};
 		for (unsigned j = 0; j < ARRAY_SIZE(diagnostics); ++j, off += 8) {
-			put_double(bytes + off, result.fit.valid ? diagnostics[j] : (double)NAN);
+			put_double(bytes + off, (result.fit.valid || j == 2) ? diagnostics[j] : (double)NAN);
 		}
+		sys_put_le16(result.fit.repeat_matched, bytes + off);
+		sys_put_le16(result.fit.repeat_usable, bytes + off + 2);
+		sys_put_le16(result.fit.repeat_in_range, bytes + off + 4);
+		sys_put_le16(result.fit.repeat_current_tenth_ma, bytes + off + 6);
+		sys_put_le16(result.fit.repeat_dac_code[0], bytes + off + 8);
+		sys_put_le16(result.fit.repeat_dac_code[1], bytes + off + 10);
+		sys_put_le32(result.fit.repeat_elapsed_ms, bytes + off + 12);
+		put_float(bytes + off + 16, result.fit.repeat_usable ? result.fit.repeat_before_mv : NAN);
+		put_float(bytes + off + 20, result.fit.repeat_usable ? result.fit.repeat_after_mv : NAN);
+		bytes[off + 24] = result.fit.repeat_worst_in_range;
+		bytes[off + 25] = result.fit.top_supported;
+		off += 26;
 		__ASSERT_NO_MSG(off == WIRE_METADATA_SIZE);
 		*written = off;
 	} else {

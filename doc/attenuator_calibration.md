@@ -111,6 +111,9 @@ reset. Calibration waits for the full requested sample count and a result newer
 than that reset, including failed conversion attempts in the count. Settling is
 additional to `dwell_ms`: a 550 ms averaging window still collects 11 samples
 after the wait. Calibration reads the current window, not the last closed window.
+This covers the nominal actuator response, not proof that the complete optical
+path has settled. Fixed-setting bench records also show slower signal changes;
+see the [companion and time-dependence checks](calibration_closeout.md#companion-dependence-and-time-dependence).
 
 The sleep holds the calibration mutex and pauses its calling thread, normally
 the throughput monitor, delaying throughput processing and calibration stop
@@ -215,9 +218,19 @@ segment, or the last accepted bridge-after when no such point exists and its
 companion voltage still matches. Arbitrary search probes are not fallback anchors.
 There are no extra pre/post confirmation measurements.
 
+That ratio is measured at one DUT setting. Extending it across a segment still
+assumes the companion's effect remains sufficiently consistent there. Fixed laser
+current removes one confounder; it does not eliminate time dependence or guarantee
+that tandem attenuation is exactly additive in dB. Review the raw segments and
+repeat measurements when those effects dominate the fit residual.
+
 The companion search brackets its current voltage and maximum drive. It accepts
-the **first** probe classified usable, with raw peak below 1850 mV and a positive
-signal ratio below one. Too-dim probes move the closed side inward; other failed
+the **first** usable reduction with raw peak below 1850 mV and propagated ratio
+uncertainty at most **0.5 dB**, the existing model-fitting uncertainty floor.
+Both readings are corrected using the retained `dark_before` mean and error.
+This precision margin keeps a barely detectable bridge from placing the
+remaining open-side sweep at the detector floor; it does not target a brightness
+or a fraction of the anchor. Too-dim or imprecise reductions move the closed side inward; other failed
 probes move the open side inward. A 5 mV bracket, 16-probe limit, exhausted record
 budget, missing anchor, or already-closed companion ends the search. Failure parks
 the companion closed and marks the physical fit `range`; acquisition retains the
@@ -343,6 +356,14 @@ Raw records and acquisition classifications remain unchanged. Fitting rechecks
 positive corrected signal at SNR ≥5; subtraction cannot recover clipped windows.
 Missing or invalid source-off records reject the fit as `background`.
 
+Final normalization starts with the most-open usable sweep segment and follows
+the measured links backwards. A link that fails corrected SNR or clipping checks
+leaves earlier, disconnected segments out of the fit. A numerically valid model
+from the remaining component has `valid:true`, `accepted:false`, and reason
+`bridge`; it is available for explicit review but cannot automatically replace
+the active pair. The acquisition precision margin is stricter than this final
+SNR-5 validity test; final uncertainty is propagated rather than silently removed.
+
 For corrected bridge readings $S_j^-,S_j^+$, cumulative companion scale $Q_k$,
 and a measured reference $S_r$ in segment $r$:
 
@@ -359,14 +380,62 @@ $T=50/(1000\times0.1)=0.5$, or 3.0103 dB.
 
 Fit candidates are sorted by increasing voltage without reordering raw records.
 At duplicate voltages, the usable observation with smaller mean error is retained.
-Nine contiguous 50 mV samples supply each rolling median and robust scatter.
-The brightest median window supplies a real median record as the reference.
-The closed-side crossing of `0.2 + 3*scatter` dB loss must be confirmed by three
-following medians; a loss above 3 dB, insufficient contiguous support, or unresolved
-clipping rejects selection as `peak`. The selected voltage is rounded upward to
-a representable DAC code. Fitting excludes voltages below this operational open
-point; it does not redefine that point as zero dB. The reference and open loss
-are separate retained metadata.
+Three contiguous 50 mV samples supply each rolling median. The brightest window
+supplies a real median record as the reference; its uncertainty is the median
+measurement error, not scatter across the changing response. This avoids rejecting
+a narrow real peak merely because its neighboring optical levels differ.
+The last closed-side crossing of `0.2 + 3*uncertainty` dB loss must be confirmed
+by three successive readings. A threshold above 3 dB, insufficient contiguous
+support, or unrecovered clipping in the connected component rejects selection as
+`peak`.
+
+Five-point local weighted slopes use contiguous samples at one companion setting.
+The last statistically significant brightening before the strongest closing slope
+raises the open boundary past low-voltage reversals. A later decrease from that
+strongest slope exceeding three combined standard errors ends support at the
+strongest slope's center voltage. This identifies high-drive flattening or kinks
+even when the detector-limited curve never reaches 55 dB. These tests use measured
+errors; the 0.5 dB model-mismatch floor is not a measurement-noise estimate.
+Selection happens once, before model fitting; points are not repeatedly trimmed
+until acceptance passes.
+
+The 3300 mV fully closed observation is below this system's useful optical
+detection range. Its residual is a background-contamination screen, not evidence
+for a low physical extinction limit. After the full-curve open/curvature selection
+and leakage-floor calculation, fit candidates at that exact companion setting,
+laser level, and segment must satisfy:
+
+```{math}
+U=\max(0,S_{\rm closed})+3e_{\rm closed},\qquad
+S_i \ge \frac{U}{1-10^{-0.5/10}}.
+```
+
+This limits the attenuation error from a contribution of size $U$ to the existing
+0.5 dB measurement-quality budget. The three-error margin is an engineering
+guard, not a confidence bound on correlated or non-Gaussian variability. No
+closed residual is subtracted, and no scaling across companion settings is
+assumed. Bridge eligibility and raw diagnostics remain unchanged.
+
+The remaining support must stay connected from its open side: one missing
+50 mV sample is allowed, but two consecutive missing samples end the interval.
+Later isolated background readings cannot re-enter. These screens intersect the
+already-selected physical boundary; they never rerun selection on a shortened
+curve. The physical leakage-floor estimate and its uncertainty are unchanged.
+
+The operational open is rounded upward to a representable DAC code. Fitting
+excludes lower voltages and stops at the selected high boundary or the existing
+55 dB boundary anchor, whichever comes first. Open does not redefine zero dB;
+the reference record and open-selection threshold remain separate metadata.
+The support bitmap records the actual selected points. Neither a good residual
+nor the datasheet's typical voltage certifies the physical behavior outside them.
+
+The base fit starts from a significant five-point slope near half transmission,
+measured at one companion setting. A noisy point or bridge offset does not
+define this starting gradient. A restricted
+interval need not traverse the full error-function response, so initializing its
+slope as `8 / voltage_span` can start on the flat leakage floor and prevent the
+optimizer from finding a useful solution. The model and acceptance tests are
+unchanged.
 
 Reference-relative readings can have `tx >= 1`; for example, `tx=1.04` is about
 −0.17 dB. These remain signed fit inputs when otherwise eligible. Discarding them
@@ -540,6 +609,8 @@ same-channel restart. It checks relay and source operational health before using
 each completed window. Faults terminate acquisition and attempt laser shutdown;
 a failed shutdown retains its identity for an explicit stop/restart. Numerical
 fitting needs no PD power and releases inhibition when acquisition completes.
+Release gives a still-powered AUTO PD a fresh configured idle countdown; calibration
+never commands its PD off. Explicit power overrides remain effective during use.
 Completion also stops the calibration-owned laser before entering fitting; a
 failed stop preserves measurements and shutdown responsibility and reports an
 error without fitting. An explicit stop during acquisition also stops that source.
@@ -566,3 +637,13 @@ The shape optimizer is shared with laser calibration; physical acceptance and
 the correction solver belong to the attenuator owner. The
 raw/bridge arrays and fit scratch reuse typed unions in `calibration_storage.c`;
 no additional large array is allocated for the laser sweep.
+
+Host diagnostics use `AttenuatorCalibrationDataset.derived()` as the single
+normalization path. `include_low_snr=True` displays positive unclipped readings
+without changing fitting eligibility or captured support. Normalization is rooted
+at the retained reference, so disconnected earlier segments cannot erase valid
+open-side data. If no common reference exists, diagnostic plots show each segment
+relative to its own brightest usable reading, explicitly labeled as local changes,
+not calibrated attenuation. The commissioning plot marks the last measured fit
+voltage separately from modeled continuation; the 55 dB ceiling alone does not
+define the well-behaved voltage interval.
