@@ -760,8 +760,10 @@ class LaserCalibrationFit(ResponseRepr):
 class LaserCalibrationRepeat(ResponseRepr):
     """Observed same-current/DAC-pair differences; not a Gaussian noise estimate.
 
-    matched counts all comparisons, usable counts illuminated comparisons at or
-    above the independently selected lasing floor, and
+    matched counts same-current/exact-DAC comparisons whose two conditions have
+    eligible paired late windows; it does not count every raw revisit. usable
+    additionally requires illuminated comparisons at or above the independently
+    selected lasing floor, and
     in_range counts those within the candidate operating range. Unavailable worst
     values are None, not zero. The largest usable difference is retained even
     when it lies outside that range.

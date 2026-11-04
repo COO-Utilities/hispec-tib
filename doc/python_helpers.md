@@ -306,7 +306,10 @@ No retained acquisition or notebook identifier is required by firmware.
 
 `dataset.status.repeat` gives the number of matched and illuminated comparisons,
 the number inside the proposed range, and the largest illuminated comparison's
-current, exact DAC codes, two corrected PD signals and elapsed time. A missing
+current, exact DAC codes, two corrected PD signals and elapsed time. `matched`
+requires eligible paired late windows at both same-current/exact-DAC conditions;
+it does not count every raw revisit. Zero can therefore reflect ineligible windows
+rather than absent observations. A missing
 comparison is `None`, not zero variability. Usable comparisons must be above the
 independently selected lasing floor as well as above the local signal criterion.
 The largest difference remains visible

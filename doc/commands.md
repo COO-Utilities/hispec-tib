@@ -1427,8 +1427,11 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     [curve meaning](laser_calibration.md#model-and-vendor-constraint) for equations.
   - `repeat` reports `matched`, `usable`, and `in_range` comparison counts, then
     `worst_fraction`, `current_ma`, `dac1_code`, `dac2_code`, `before_mv`, `after_mv`,
-    `elapsed_ms`, and `worst_in_range`. A comparison requires the same current and
-    exact DAC pair. A useful comparison is at or above the independently selected
+    `elapsed_ms`, and `worst_in_range`. `matched` requires the same current and
+    exact DAC pair, with eligible paired late windows for both conditions
+    (each window classified `ok`, with valid samples). It does not count every raw
+    revisit; zero can mean the recorded windows were ineligible. A useful
+    comparison is at or above the independently selected
     lasing floor, with both corrected signals above the local background and
     within-condition scatter. The largest usable difference stays visible even
     outside the proposed current range. No usable
@@ -2129,7 +2132,7 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
   At boot saved overrides apply; AUTO restores the last confirmed
   relay state, or off if no state was saved, with a fresh full countdown. Relay
   state changes are saved separately from calibration even without `persist:true`.
-  Driver initialization can briefly switch the relay off; `on_time_s` restarts
+  Driver initialization can briefly switch the relay off; `pd_on_s` restarts
   at boot. A failed relay operation does not save a new state.
   `power:"override_off"` switches the PD off now, even during calibration or
   measurement. A repeated override still applies the requested power state.

@@ -212,8 +212,11 @@ adopted support and do not limit engineering `value_ma` commands.
 
 Repeated current and exact DAC codes characterize the system's observed
 variability. They never veto a central model. `repeat.matched` counts all matched
-conditions, including weak or below-lasing observations. `repeat.usable` counts
-comparisons at or above the independently selected lasing floor with both signals
+paired conditions whose two late windows each passed acquisition validity,
+including its signal-to-noise classification. Below-SNR windows remain in the raw
+records but do not form counted pairs; an acquisition-valid below-lasing pair can
+still count as matched. `repeat.usable` counts comparisons at or above the
+independently selected lasing floor with both signals
 above ten measured condition standard errors. `repeat.in_range` counts usable
 comparisons inside the selected model support. The latter standard-error check
 is only an illumination eligibility check, not a claim about slow variability.

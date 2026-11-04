@@ -24,8 +24,9 @@ LLMs Agents: Do NOT change heading names in this file.
 - [ ] Bench-check PD/laser timers: positive laser durations/defaults, zero rejection,
   shorten/lengthen and unchanged writes; finite autolevel and retained shutdown
   after manual changes; TEC policy at measurement end. Check PD fresh idle intervals,
-  power overrides during acquisition, AUTO transitions, and read-only `off_in_s`
-  in `pd/settings` without query rearming. PD zero still cancels its timer.
+  power overrides during acquisition and AUTO transitions. `off_in_s` belongs to
+  `pd` status, while `pd/settings` queries report policy without rearming.
+  PD zero still cancels its timer.
   - 2026-11-03: three board reboots verified the new PD last-state restoration,
     saved-override precedence and restored AUTO countdown expiry without a PD query.
     Original AUTO/36000-second policies were restored. Temporary actual-C checks
@@ -76,6 +77,20 @@ LLMs Agents: Do NOT change heading names in this file.
   and NVS reboot behavior. Multi-level captures below show that the upper-current
   compression persists at low PD signal. Its physical origin remains unresolved;
   reference anchoring does not establish power independently of the vendor report.
+  - 2026-11-04: the broad robust fit replaces fitted-dark adjustment, GLS
+    confidence allowances, repeat vetoes and tiny interval rescue. Observed dark
+    knots, per-DAC-pair gains and central residuals accommodate path variability;
+    raw excursions and noise remain separate. OTA-confirmed firmware `fb6edae1f343`
+    completed all six fresh laser captures in 162–185 records without overflow
+    or reset. Four accepted; H/K retained broad vendor-guided review candidates,
+    with noise estimates on all six. Actual-C replay and all notebook review
+    plots matched. Standalone MQTT settings installation/readback of all six
+    candidates passed in RAM, followed by restoration. Quiet autolevel left
+    useful HK/YJ signals alone, with no observed setting transitions in two
+    25-second checks. No experimental calibration/noise/loss was persisted.
+    This supersedes the older fitting/acceptance descriptions below. Remaining
+    physical limitations and the full owner commissioning pass are recorded in
+    the [closeout report](calibration_closeout.md).
   - 2026-11-02 closeout implementation, offline verification only: three measured
     dark knots now constrain the shared fitted baseline; restricted current
     intervals and repeat-inconsistent candidates require human review. Effective
@@ -332,6 +347,14 @@ LLMs Agents: Do NOT change heading names in this file.
     prevent interpreting every curve difference as physical FVOA drift. Existing
     captures do not isolate intrinsic tandem interaction; the fixed-source,
     measured-ratio bridge acquisition is unchanged.
+  - 2026-11-04: the closed-response support screen preserved all 110 accepted
+    fits in 124 historical physical captures and removed the isolated HK tail
+    failure. Fresh four-source checks accepted seven of eight physical fits; suspect
+    Y physical 2 retained a valid but rejected model with a 2.715 dB residual at
+    useful signal. A final clean K run accepted both devices at 0.234/0.145 dB
+    maximum residual, with zero bridges and no overflow. All fresh fits/support
+    masks agree with actual-C replay. Original models/opens were restored with
+    independent readback; the physical-floor prior decision remains separate.
   - 2026-11-03 follow-up: source-off-corrected bridge precision and measured
     closing-interval selection now prevent weak links and flattened tails from
     determining the fit. All six sources produced accepted pairs in fresh checks,
