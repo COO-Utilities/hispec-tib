@@ -399,6 +399,29 @@ errors; the 0.5 dB model-mismatch floor is not a measurement-noise estimate.
 Selection happens once, before model fitting; points are not repeatedly trimmed
 until acceptance passes.
 
+The 3300 mV fully closed observation is below this system's useful optical
+detection range. Its residual is a background-contamination screen, not evidence
+for a low physical extinction limit. After the full-curve open/curvature selection
+and leakage-floor calculation, fit candidates at that exact companion setting,
+laser level, and segment must satisfy:
+
+```{math}
+U=\max(0,S_{\rm closed})+3e_{\rm closed},\qquad
+S_i \ge \frac{U}{1-10^{-0.5/10}}.
+```
+
+This limits the attenuation error from a contribution of size $U$ to the existing
+0.5 dB measurement-quality budget. The three-error margin is an engineering
+guard, not a confidence bound on correlated or non-Gaussian variability. No
+closed residual is subtracted, and no scaling across companion settings is
+assumed. Bridge eligibility and raw diagnostics remain unchanged.
+
+The remaining support must stay connected from its open side: one missing
+50 mV sample is allowed, but two consecutive missing samples end the interval.
+Later isolated background readings cannot re-enter. These screens intersect the
+already-selected physical boundary; they never rerun selection on a shortened
+curve. The physical leakage-floor estimate and its uncertainty are unchanged.
+
 The operational open is rounded upward to a representable DAC code. Fitting
 excludes lower voltages and stops at the selected high boundary or the existing
 55 dB boundary anchor, whichever comes first. Open does not redefine zero dB;

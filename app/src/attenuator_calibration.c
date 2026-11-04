@@ -1712,6 +1712,42 @@ static int fit_one_physical(uint8_t physical,
 	if (rc != 0) {
 		return rc;
 	}
+	/* A fully closed FVOA is below this system's optical detection range. Its
+	 * residual screens possible background contamination, not measured leakage.
+	 * Compare only the same companion/current segment: no background scaling
+	 * across bridges is assumed. Three measurement errors are a guard margin,
+	 * not a confidence bound on the system's slower, non-Gaussian variability.
+	 * Keep the full-curve open/curvature and leakage-floor calculations above;
+	 * screening first could hide a kink or change the floor's fitting weights.
+	 */
+	const struct atten_cal_record *closed = NULL;
+	for (uint8_t i = 0; i < cal.record_count[physical]; ++i) {
+		const struct atten_cal_record *r = &records[i];
+		if (r->event == ATTEN_CAL_EVENT_POINT && r->sweep_mv == ATTENUATOR_DRIVE_MAX_MV &&
+		    r->classification != ATTEN_CAL_CLASSIFICATION_ADC_ERROR &&
+		    r->classification != ATTEN_CAL_CLASSIFICATION_SATURATED) {
+			closed = r;
+			break;
+		}
+	}
+	double closed_limit = closed == NULL ? 0.0 :
+		(MAX(0.0, (double)closed->signal_mv - out->background_mv) +
+		 3.0 * hypot((double)closed->signal_err_mv, (double)out->background_err_mv)) /
+		(1.0 - pow(10.0, -ATTENUATOR_FIT_MIN_SIGMA_DB / 10.0));
+	uint8_t selected = 0;
+	for (uint8_t i = 0; i < point_count; ++i) {
+		const struct atten_cal_record *r = &records[cal_fit_points[i].record_index];
+		if (closed != NULL && r->segment == closed->segment && r->other_mv == closed->other_mv &&
+		    r->laser_pct == closed->laser_pct && (double)r->signal_mv - out->background_mv < closed_limit) continue;
+		/* Allow one missing grid sample, but do not re-enter a disconnected
+		 * high-drive island after two or more missing samples. Fit indices only:
+		 * raw classifications and bridge measurements remain untouched.
+		 */
+		if (selected > 0 && r->sweep_mv - records[cal_fit_points[selected - 1U].record_index].sweep_mv >
+		    2.0f * ATTEN_CAL_SWEEP_STEP_MV + 1.0f) break;
+		cal_fit_points[selected++] = cal_fit_points[i];
+	}
+	point_count = selected;
 	/* The full usable tail supplies the constrained leakage floor; it does not
 	 * establish operating support. Stop at the measured voltage boundary. Within
 	 * it, include the first point above 55 dB to anchor both fits across that boundary,
