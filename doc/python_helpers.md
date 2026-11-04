@@ -134,7 +134,7 @@ the PCB checks the coefficient values, completeness and model validity.
 | `hispec_ota.py` | Validate, upload and test-boot firmware; manual confirmation by default | Changes flash and reboots; requires an explicitly provisioned OTA board and prepared hardware |
 | `parameter_table()` | Display nested settings with API field names | Pure formatting, no I/O |
 | `read_route_losses()` | Tabulate transmission and dB | Queries each requested route, no writes |
-| `attenuator_noise()`, `throughput_noise()` | Explicit model/noise scenarios | Pure numerical calculations, no settings changes |
+| `attenuator_noise()`, `throughput_noise()`, `photodiode_shot_noise_mv()` | Explicit model/noise scenarios | Pure numerical calculations, no settings changes |
 
 ## Firmware maintenance
 
@@ -270,9 +270,10 @@ Start arguments run the physical procedures described in
 [laser calibration](laser_calibration.md); `persist=False` still permits accepted
 results to change RAM settings. Attenuator calibration installs an accepted pair
 and its open voltages in RAM; laser calibration can suppress application with
-`apply=False`. A restricted or inconsistent laser candidate needs human review
-and automatically writes no curve, noise or route settings. Its acquisition,
-candidate and identifiable temporal-noise estimates remain available.
+`apply=False`. A valid laser candidate that needs review automatically writes no
+curve, noise or route settings. Its acquisition, candidate and identifiable
+within-window noise estimates remain available. Observed repeat variability is
+reported separately and does not by itself reject the candidate.
 `*_stop()` cancels and retains acquired data.
 Download before starting either calibration again: firmware has one shared raw
 dataset, replaced by an accepted new run and cleared by reboot.
@@ -287,18 +288,57 @@ the selected reference, operational open point and exact fitting support.
 `laser_calibration_data()` returns `LaserCalibrationDataset` with `.records` and
 `.meta`. A replacement run during a multi-request download invalidates that
 snapshot. The dataset does not automatically reapply a saved calibration.
-Current metadata carries the three fitted dark-knot times/values, exact support
-and common attenuation-gain diagnostics. `fit.valid` describes numerical
+Current metadata carries the three observed dark-knot times/values, exact support
+and fitted gain for each exact DAC pair. `fit.top_supported` distinguishes a
+maximum current supported by a same-DAC shape series from an isolated measurement.
+These gains normalize the laser fit;
+they are not installed attenuator coefficients. `fit.valid` describes numerical
 availability; `fit.accepted` describes automated acceptance. A valid candidate
 can have noise estimates even when acceptance requires review. Within-window
 constant/fractional noise and observed repeat variability describe different
 timescales; neither identifies the laser alone as the cause of variation.
 Install a reviewed saved curve with `laser_settings`, supplying `threshold_current_ma`,
 `efficiency_mw_per_ma`, `efficiency_mw_per_ma2` and `efficiency_ref_ma` together.
-Supply the reviewed support as `min_autolevel_current_ma` and
+Supply the reviewed operating range as `min_autolevel_current_ma` and
 `max_autolevel_current_ma`; preserve the separate nominal and engineering maximum.
 Optional noise uses that same settings call; outbound loss uses `mems_route_loss`.
 No retained acquisition or notebook identifier is required by firmware.
+
+`dataset.status.repeat` gives the number of matched and illuminated comparisons,
+the number inside the proposed range, and the largest illuminated comparison's
+current, exact DAC codes, two corrected PD signals and elapsed time. A missing
+comparison is `None`, not zero variability. Usable comparisons must be above the
+independently selected lasing floor as well as above the local signal criterion.
+The largest difference remains visible
+when it is outside the proposed range; background-level records remain available
+without a misleading percentage. This samples the assembled path over the run's
+timescales, not a Gaussian sigma or a bound on future variation.
+
+The fit's `settings()` method only translates its six candidate fields to the
+existing settings API; it performs no I/O and does not imply acceptance:
+
+```python
+settings = dataset.status.fit.settings()
+payload = {"name": dataset.status.laser, "settings": settings, "persist": False}
+print(json.dumps(payload, indent=2))  # MQTT: cmd/<device>/req/laser/settings
+# After reviewing the candidate:
+pcb.laser_settings(dataset.status.laser, **settings, persist=False)
+pcb.laser_settings(dataset.status.laser)  # Read back the RAM policy.
+```
+
+Noise `fractional=0.044` means 4.4% within-window RMS. It is an effective
+illuminated-path estimate after measured dark-variance subtraction, not intrinsic
+diode noise or the time-separated repeat variability. `noise.error` explains an
+attempted noise fit that could not provide estimates; if fitting never ran,
+inspect acquisition and curve-fit state instead. An incomplete or invalid-model
+capture need not identify an absolute source-referred constant-noise term, even
+though its raw PD means and RMS remain useful. A fitted zero is the nonnegative
+model boundary, distinct from an unavailable estimate.
+`photodiode_shot_noise_mv(net_mv, enbw_hz=20,
+transimpedance_v_per_a=...)` supplies an ideal photoelectron shot-RMS comparison
+for an **explicit 20 Hz ENBW scenario**. Use the effective PD gain including its
+divider. ENBW is not determined by the streaming sample rate; do not mistake this
+scenario for a measured detector/acquisition bandwidth.
 
 `attenuator_grid_probe()` sets the laser, steps explicit DAC coordinates, sleeps
 for `dwell_s` and reads the PD window. It assumes routing, PD power and dark were

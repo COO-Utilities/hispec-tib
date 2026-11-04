@@ -1731,14 +1731,14 @@ static int fit_one_physical(uint8_t physical,
 		}
 	}
 	double closed_limit = closed == NULL ? 0.0 :
-		(MAX(0.0, (double)closed->signal_mv - out->background_mv) +
+		(MAX(0.0, (double)closed->signal_mv - (double)out->background_mv) +
 		 3.0 * hypot((double)closed->signal_err_mv, (double)out->background_err_mv)) /
 		(1.0 - pow(10.0, -ATTENUATOR_FIT_MIN_SIGMA_DB / 10.0));
 	uint8_t selected = 0;
 	for (uint8_t i = 0; i < point_count; ++i) {
 		const struct atten_cal_record *r = &records[cal_fit_points[i].record_index];
 		if (closed != NULL && r->segment == closed->segment && r->other_mv == closed->other_mv &&
-		    r->laser_pct == closed->laser_pct && (double)r->signal_mv - out->background_mv < closed_limit) continue;
+		    r->laser_pct == closed->laser_pct && (double)r->signal_mv - (double)out->background_mv < closed_limit) continue;
 		/* Allow one missing grid sample, but do not re-enter a disconnected
 		 * high-drive island after two or more missing samples. Fit indices only:
 		 * raw classifications and bridge measurements remain untouched.

@@ -30,14 +30,15 @@ Runtime ownership is:
 - `attenuator_command.c`: command-schema validation for `atten` value and
   coefficient requests.
 - `laser_calibration.c`: paired high/low PD acquisition across the current range,
-  calibrated-attenuation raw-PD fitting with shared dark knots and FVOA uncertainty,
-  effective noise estimates and accepted-core-gated application. Laser scratch uses 3528
-  bytes within the existing 3584-byte shared union; 240 raw windows occupy 5760
-  bytes. The exact 30-byte support mask, fitted dark knots and diagnostics accompany
-  634-byte metadata. Full-range acceptance can apply automatically; restricted or
-  inconsistent candidates retain their data and identifiable noise estimates for
-  human review. A reviewed complete curve and automatic current bounds can be
-  installed through ordinary laser settings without changing engineering limits.
+  observed dark knots, independently selected lasing support, and a broad central
+  source curve with one profiled gain per exact DAC pair. Numerical scratch uses
+  2888 bytes within the existing 3584-byte shared union; 240 raw windows occupy
+  5760 bytes. The exact 30-byte support mask, observed dark knots, fitted gains and
+  diagnostics accompany 588-byte metadata. Repeat variation is reported without
+  vetoing the central fit. Automatic acceptance requires central-curve and coverage
+  checks; broad reference-guided candidates remain available for explicit review.
+  Ordinary laser settings install the reviewed curve and automatic current bounds
+  without changing engineering limits.
 - `calibration_fit.c`: the allocation-free two-parameter double solver shared
   by attenuator and laser fits. `calibration_storage.c` owns their shared static
   dataset, scratch, data mutex and best-effort telemetry buffer.
@@ -208,7 +209,10 @@ app registers the command runtime with `coo_cmd_runtime_mqtt_callback()` so MQTT
 ingress can enter command dispatch without an app-specific forwarding shim.
 The MQTT ingress payload buffer is static in the MQTT wrapper, and command
 runtime request/response buffers are owned by the runtime object rather than the
-main or executor thread stacks.
+main or executor thread stacks. A PUBLISH payload may span TCP reads. The
+wrapper collects the declared payload before invoking command handling, using
+one three-second network deadline for the whole payload. Oversize or incomplete
+payloads abort that connection; partial JSON never reaches the command executor.
 
 IPv4 configuration precedence is:
 
@@ -283,7 +287,10 @@ Command completion centrally adds MQTT5 `ack_utc_ms` before enqueueing; at prese
 epoch lengths this property costs 28 bytes (35 for a 20-digit uint64), plus at
 most one property-length varint byte. It does not alter response JSON.
 
-Command payload capacity is 1152 bytes, MQTT buffers 1280. Throughput binary is
+Command payload capacity is 2048 bytes, MQTT buffers 2304. Calibration results
+include a bounded quantitative repeat summary, including on error paths. Status
+formatting writes directly into the executor-owned reply and appends network
+status in place, avoiding two payload-sized stack copies. Throughput binary is
 227 bytes; even a pessimistic JSON frame with 24 worst-length double strings and
 uint64 timestamps is below 1152 bytes. Eventfd capacity 2 and fd capacity 10 allow
 the existing socket service plus output wakeup, MQTT/DNS/SNTP and OTA SMP resources.
@@ -370,7 +377,7 @@ auto-off inhibition through paired sweeps, identical-condition revisits and the 
 recabling pause, releasing it at completion, error or stop. The laser status uses an
 explicit `fitting` state. Data and scratch unions stay at 7680 and 3584 bytes;
 240 laser records use 5760 bytes; metadata is bounded to 640 bytes and numerical
-scratch occupies 3528 bytes. The throughput stack remains 4096 bytes. Details are in
+laser numerical scratch occupies 2888 bytes within the shared 3584-byte union. The throughput stack remains 4096 bytes. Details are in
 [laser_calibration.md](laser_calibration.md).
 
 The Cortex-M33 single-precision FPU is enabled with Zephyr shared FP context.

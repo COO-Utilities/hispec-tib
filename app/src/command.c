@@ -1109,7 +1109,8 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
     bool include_attens = false;
     struct coo_cmd_lastcommand lastcommand;
     bool has_lastcommand;
-    char payload[COO_CMD_PAYLOAD_MAX] = {0};
+    /* Reply storage belongs to the executor; do not duplicate it on this stack. */
+    char *payload = out->payload;
     size_t off = 0U;
     uint64_t pd_on_s;
 
@@ -1130,7 +1131,7 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
     has_lastcommand = coo_cmd_runtime_get_lastcommand(&command_runtime, &lastcommand);
     pd_on_s = (uint64_t)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
                             housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE));
-    if (coo_json_append(payload, sizeof(payload), &off,
+    if (coo_json_append(payload, sizeof(out->payload), &off,
                         "{\"fw\":\"%s\",\"boots\":%u,"
                         "\"board\":\"%s\",\"board_ok\":%s,"
                         "\"mems_switches\":%u,\"relay_err\":%d,"
@@ -1141,9 +1142,9 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
                         devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
                         router.num_switches,
                         housekeeping_relay_error()) != 0 ||
-        coo_json_append_float_or_null(payload, sizeof(payload), &off,
+        coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
                                       ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
-        coo_json_append(payload, sizeof(payload), &off,
+        coo_json_append(payload, sizeof(out->payload), &off,
                         ",\"pd_on_s\":%llu,"
                         "\"laserbank_on_s\":%u",
                         (unsigned long long)pd_on_s,
@@ -1152,45 +1153,43 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
     }
 
     if (include_ip) {
-        char ip_payload[COO_CMD_PAYLOAD_MAX];
-
-        if (ip_status_payload(ip_payload, sizeof(ip_payload)) != 0 ||
-            coo_json_append(payload, sizeof(payload), &off,
-                            ",\"ip\":%s", ip_payload) != 0) {
+        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"ip\":") != 0 ||
+            ip_status_payload(payload + off, sizeof(out->payload) - off) != 0) {
             return coo_cmd_error(out, cmd, "status response too large");
         }
+        off += strlen(payload + off);
     }
 
     if (include_lasers) {
-        if (coo_json_append(payload, sizeof(payload), &off, ",\"lasers\":{") != 0) {
+        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"lasers\":{") != 0) {
             return coo_cmd_error(out, cmd, "status response too large");
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
             struct hispec_laser_status laser = {0};
             int rc = hispec_laser_get_status((enum hispec_laser_id)i, false, &laser);
 
-            if (coo_json_append(payload, sizeof(payload), &off,
+            if (coo_json_append(payload, sizeof(out->payload), &off,
                                 "%s\"%s\":{\"power_mw\":",
                                 i == 0U ? "" : ",",
                                 hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
-                coo_json_append_float_or_null(payload, sizeof(payload), &off,
+                coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
                                               rc == 0 ? laser.estimated_power_mw : (double)NAN, 3) != 0 ||
-                coo_json_append(payload, sizeof(payload), &off,
+                coo_json_append(payload, sizeof(out->payload), &off,
                                 ",\"ready\":%s,\"tec_on_s\":",
                                 rc == 0 && laser.ready_to_operate ? "true" : "false") != 0 ||
-                coo_json_append_seconds_or_null(payload, sizeof(payload), &off,
+                coo_json_append_seconds_or_null(payload, sizeof(out->payload), &off,
                                                 rc == 0 && laser.tec_runtime_active,
                                                 laser.tec_on_time_s) != 0 ||
-                coo_json_append(payload, sizeof(payload), &off,
+                coo_json_append(payload, sizeof(out->payload), &off,
                                 ",\"off_in_s\":") != 0 ||
-                coo_json_append_i64_or_null(payload, sizeof(payload), &off,
+                coo_json_append_i64_or_null(payload, sizeof(out->payload), &off,
                                             rc == 0 && laser.autooff_active,
                                             laser.off_in_s) != 0 ||
-                coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+                coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }
         }
-        if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+        if (coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
             return coo_cmd_error(out, cmd, "status response too large");
         }
     }
@@ -1198,7 +1197,7 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
     if (include_attens) {
         bool first = true;
 
-        if (coo_json_append(payload, sizeof(payload), &off, ",\"attens\":{") != 0) {
+        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"attens\":{") != 0) {
             return coo_cmd_error(out, cmd, "status response too large");
         }
         for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
@@ -1213,24 +1212,24 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
 
             valid = attenuator_get(&attenuators[atten_index], &atten);
 
-            if (coo_json_append(payload, sizeof(payload), &off,
+            if (coo_json_append(payload, sizeof(out->payload), &off,
                                 "%s\"%s\":{\"value_db\":",
                                 first ? "" : ",",
                                 hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
-                coo_json_append_float_or_null(payload, sizeof(payload), &off,
+                coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
                                               valid ? atten.attenuation_db : (double)NAN, 3) != 0 ||
-                coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+                coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
                 return coo_cmd_error(out, cmd, "status response too large");
             }
             first = false;
         }
-        if (coo_json_append(payload, sizeof(payload), &off, "}") != 0) {
+        if (coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
             return coo_cmd_error(out, cmd, "status response too large");
         }
     }
 
     if (has_lastcommand &&
-        coo_json_append(payload, sizeof(payload), &off,
+        coo_json_append(payload, sizeof(out->payload), &off,
                         ",\"lastcmd\":{\"name\":\"%s\",\"src\":\"%s\","
                         "\"t_ms\":%lld}}",
                         lastcommand.request.key,
@@ -1239,7 +1238,7 @@ static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response
         return coo_cmd_error(out, cmd, "status response too large");
     }
     if (!has_lastcommand &&
-        coo_json_append(payload, sizeof(payload), &off,
+        coo_json_append(payload, sizeof(out->payload), &off,
                         ",\"lastcmd\":{\"name\":\"\",\"src\":\"unknown\","
                         "\"t_ms\":0}}") != 0) {
         return coo_cmd_error(out, cmd, "status response too large");

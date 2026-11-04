@@ -37,15 +37,22 @@ struct laser_calibration_fit {
 	double efficiency_ref_ma;
 	float efficiency_mw_per_ma2;
 	double floor_ma;
-	double max_ma; /* Fitted support endpoint; engineering maximum/nominal are preserved. */
+	double max_ma; /* Candidate endpoint; top_supported distinguishes measured shape coverage. */
 	double baseline_mv;
 	double rms_fraction; /* Mean-curve residuals, separate from temporal noise. */
 	double max_residual_fraction;
-	double threshold_se_ma;
+	double median_fraction; /* exp(median absolute log residual) - 1; not a standard error. */
 	double revisit_fraction;
 	double band_fraction;
-	double atten_shift_sigma;
-	double dark_residual_mv;
+	float repeat_before_mv;
+	float repeat_after_mv;
+	uint32_t repeat_elapsed_ms;
+	uint16_t repeat_matched;
+	uint16_t repeat_usable;
+	uint16_t repeat_in_range;
+	uint16_t repeat_current_tenth_ma;
+	uint16_t repeat_dac_code[2];
+	bool repeat_worst_in_range;
 	double constant_noise_mw;
 	double fractional_noise;
 	int error;
@@ -57,7 +64,7 @@ struct laser_calibration_fit {
 	 * are distinct facts; a rejected fit may still have diagnostic estimates. */
 	bool valid;
 	bool accepted;
-	bool restricted; /* Support ends below the sweep maximum; human adoption only. */
+	bool top_supported; /* Maximum has repeated-current DAC-pair shape information. */
 	bool applied;
 	bool persisted;
 	bool noise_valid;

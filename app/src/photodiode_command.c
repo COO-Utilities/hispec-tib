@@ -446,12 +446,11 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 		return rc;
 	}
 
-	int64_t off_in_s = housekeeping_photodiode_autooff_remaining_s(pd_power_output(channel));
 	if (coo_json_append(payload, payload_len, &off,
 			    "{\"channel\":\"%s\",\"noisewarn_mv\":%.3f,"
 			    "\"responsivity_a_per_w\":%.9f,"
 				    "\"transimpedance_v_per_a\":%.6e,"
-				    "\"power\":\"%s\",\"powered\":%s,\"autooff_s\":%u,\"off_in_s\":",
+				    "\"power\":\"%s\",\"powered\":%s,\"autooff_s\":%u",
 			    photodiode_channel_names[channel],
 				    (double)ch->noise_warn_rms_mv,
 				    ch->responsivity_a_per_w,
@@ -459,8 +458,6 @@ static int pd_settings_channel_json(char *payload, size_t payload_len,
 				    pd_power_mode_name(ch->power),
 				    powered ? "true" : "false",
 				    ch->autooff_s) != 0 ||
-	    coo_json_append_i64_or_null(payload, payload_len, &off,
-				       off_in_s >= 0, off_in_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off, "}") != 0) {
 		return -ENOSPC;
 	}

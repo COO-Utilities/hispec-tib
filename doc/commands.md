@@ -1381,10 +1381,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   outbound override. Identity, current calibration, independent `wave_ref_*`, other TEC
   settings, return loss and the other output's override are preserved.
 - **Response:** status separates acquisition (`state`, `acquisition_complete`,
-  `error`) from `fit`, `noise` and `routes`. Each result reports acceptance/validity,
+  `error`) from `fit`, `repeat`, `noise` and `routes`. Each result reports acceptance/validity,
   application and persistence separately. Errors are strings or `null`, for example
-  `"pd off"`, `"full-range residual exceeds uncertainty allowance"`,
-  `"curve disagrees with vendor characterization"`, or
+  `"pd off"`, a central-model review reason, or
   `"unexpected error (EIO)"`. The last form uses the actual errno name only when
   no more specific explanation is available. Numerical rejection retains data
   and does not turn completed acquisition into acquisition failure.
@@ -1394,7 +1393,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
-  - `apply:true` automatically installs an accepted full-range threshold, linear-fit
+  - `apply:true` automatically installs an accepted threshold, linear-fit
     efficiency, quadratic coefficient, curve reference and automatic floor/ceiling. Engineering maximum
     and nominal current, wavelength references and the datasheet power triplet
     are preserved. This is the
@@ -1404,31 +1403,49 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     normalized curve/residual plot, then installs the complete coefficients through
     `laser/settings` and selected losses through `mems/route/loss`. No retained run
     is needed for manual installation; install the complete curve and its automatic
-    current bounds together. Valid restricted or repeat-inconsistent candidates
-    require explicit review, with noise and route adoption separate. Automatic
+    current bounds together. Valid candidates that require review remain available,
+    with noise and route adoption separate. Automatic
     route/noise application still requires an accepted core fit. A persistence
     failure may leave RAM updated; inspect each result's errors/flags.
   - Start stops throughput/laser outputs and owns the loopback through acquisition
     and recabling. Other mutations are busy; STOP/zero and bank-off remain available.
     With automatic application, accepted first-stage changes survive a later
     second-stage failure. The source is off during the recabling pause.
-  - Fitting uses calibrated FVOA transmission and stored RMS as common gain
-    uncertainty for each exact DAC pair. Same-current ratios and revisits test
-    consistency; they do not set the normalization. Every fitted current must
-    have two usable PD levels. Try full-range fits first. If no full-range core
-    curve passes, retain the widest passing restricted interval for human review
-    (`fit.restricted:true`, `fit.accepted:false`); preserve every excluded record.
-    A reference outside that interval remains a separately measured scale anchor,
-    not a point the restricted polynomial is forced to reproduce. The three measured
-    dark conditions constrain an interpolated baseline with shared uncertainty.
-    PD residuals allow the requested fraction
-    plus three measured standard errors. Immutable unit-specific vendor traces
-    allow that fraction of vendor reference power plus three fitted-power SEs.
-    Cross-attenuation/gain-shift diagnostics have no separate veto. Check all exact
-    repeats once after selection; inconsistency requires review without another
-    interval search. Identifiable within-window noise estimates are reported even
-    when the candidate needs review. See
-    [acceptance](laser_calibration.md#curve-meaning-and-acceptance) for equations.
+  - The central curve profiles a gain for each exact DAC pair rather than assuming
+    that the two attenuator models add perfectly in dB. Three observed source-off
+    dark means set the interpolated baseline. The two lowest informative DAC-pair
+    series estimate the local lasing onset independently. The lower bound is the
+    first measured current shared by both local series above both onset estimates
+    plus 0.1 mA; their individually rounded choices need not agree. The robust fit
+    retains the broad useful current range; it does not search for a tiny interval to hide path
+    variability. Median multiplicative residual and independent PD-band curves
+    assess central-model quality. `fit.top_supported` reports whether the maximum
+    current belongs to a same-DAC series with enough distinct currents; an isolated
+    top-current measurement remains visible but requires review. RMS and maximum
+    residual remain descriptive.
+    No conditional Gaussian fit uncertainty is reported. See
+    [curve meaning](laser_calibration.md#curve-meaning-and-acceptance) for equations.
+  - `repeat` reports `matched`, `usable`, and `in_range` comparison counts, then
+    `worst_fraction`, `current_ma`, `dac1_code`, `dac2_code`, `before_mv`, `after_mv`,
+    `elapsed_ms`, and `worst_in_range`. A comparison requires the same current and
+    exact DAC pair. A useful comparison is at or above the independently selected
+    lasing floor, with both corrected signals above the local background and
+    within-condition scatter. The largest usable difference stays visible even
+    outside the proposed current range. No usable
+    pair means null worst-comparison values, not zero variability; raw background
+    comparisons remain in retained data. This describes the assembled optical
+    path over sampled timescales. It is not a Gaussian sigma or maximum possible
+    variation, and it does not veto a usable central model.
+  - Identifiable within-window noise estimates are reported even when the model
+    requires review. `noise.fractional:0.044` means 4.4% RMS after measured
+    dark-variance subtraction; it includes illuminated-path effects and is not
+    an intrinsic diode measurement. `noise.error` explains an attempted noise fit
+    that could not provide estimates. If noise fitting never ran, inspect the
+    acquisition and curve-fit state instead. An incomplete or invalid-model
+    capture need not identify an absolute source-referred constant-noise term;
+    its raw PD means and RMS remain available.
+    Noise and route application still require an accepted core fit and their
+    respective opt-ins.
   - MQTT binary queries `laser/calibrate/records` and
     `laser/calibrate/records/<chunk>` retrieve metadata and raw chunks. Starting
     either optical calibration replaces the shared dataset. Save it first.
@@ -1438,6 +1455,22 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `laser_calibrate_continue(loopback_loss_db=None)`, `laser_calibrate_stop()`,
     `laser_calibration_data()`, and
     `laser_calibrate_restore_defaults(name, *, output, persist=False)`.
+
+A reviewed candidate can be installed directly; there is no separate "accept"
+command or notebook token. For example, send a complete candidate to
+`cmd/<device>/req/laser/settings` (values below illustrate the payload):
+
+```json
+{"name":"1430hk","settings":{"threshold_current_ma":4.0,"efficiency_mw_per_ma":0.22,"efficiency_mw_per_ma2":0.0,"efficiency_ref_ma":49.0,"min_autolevel_current_ma":5.3,"max_autolevel_current_ma":60.0},"persist":false}
+```
+
+This stops emission and updates RAM. Read back with `{"name":"1430hk"}` on the
+same topic. `persist:true` explicitly saves the entire current laser policy,
+including unchanged fields. Automatic acceptance is not required for this manual
+settings path; the ordinary finite-value, monotonic-curve and current-limit
+validation still applies. Noise and route loss require their own chosen fields
+or command. The Python equivalent is
+`pcb.laser_settings(name, **dataset.status.fit.settings(), persist=False)`.
 
 (laserbank-power)=
 ### `laser/bankpower`
@@ -2059,8 +2092,7 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
     "transimpedance_v_per_a": 2.0e10,
     "power": "auto",
     "powered": false,
-    "autooff_s": 300,
-    "off_in_s": null
+    "autooff_s": 300
   }
   ```
 - **Payload:** update one channel's photodiode settings.
@@ -2107,9 +2139,10 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
   Measurement and calibration keep automatic power-off on hold while using the PD.
   Release starts a fresh configured interval if the PD is still powered in auto
   mode; it never turns a PD on or changes an override.
-  Read-only `off_in_s` reports remaining integer seconds in both `pd/settings` and
-  `pd`, or `null` when no countdown is active (including a use hold). Settings
-  queries do not rearm it; ordinary `pd` queries intentionally enable/rearm in auto.
+  Read-only `off_in_s` is status returned by `pd`, not a settings field. It reports
+  remaining integer seconds, or `null` when no countdown is active (including a
+  use hold). Settings queries do not rearm it; ordinary `pd` queries intentionally
+  enable/rearm in auto.
   `powered` is the read-only actual state of this channel. Querying settings
   neither enables it nor rearms auto-off; unlike `pd`, it is suitable for preflight.
   Dark and lowest-dark values are queried and updated through

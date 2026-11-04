@@ -736,13 +736,59 @@ class LaserCalibrationFit(ResponseRepr):
     baseline_mv: float | None
     rms_fraction: float | None
     max_residual_fraction: float | None
-    threshold_se_ma: float | None
-    restricted: bool = False
+    median_fraction: float | None = None
+    top_supported: bool = False
+
+    def settings(self) -> dict[str, float]:
+        """Return the complete candidate for ``laser_settings(name, **settings)``.
+
+        This only translates field names. A valid candidate may still require
+        review; nothing is sent, applied or persisted by this method.
+        """
+        fields = dict(threshold_current_ma=self.threshold_ma,
+                      efficiency_mw_per_ma=self.efficiency_mw_per_ma,
+                      efficiency_mw_per_ma2=self.efficiency_mw_per_ma2,
+                      efficiency_ref_ma=self.efficiency_ref_ma,
+                      min_autolevel_current_ma=self.floor_ma,
+                      max_autolevel_current_ma=self.max_ma)
+        if not self.valid or any(value is None or not math.isfinite(value) for value in fields.values()):
+            raise HispecFibError("No finite laser calibration candidate is available")
+        return fields
+
+
+@dataclass(frozen=True, repr=False)
+class LaserCalibrationRepeat(ResponseRepr):
+    """Observed same-current/DAC-pair differences; not a Gaussian noise estimate.
+
+    matched counts all comparisons, usable counts illuminated comparisons at or
+    above the independently selected lasing floor, and
+    in_range counts those within the candidate operating range. Unavailable worst
+    values are None, not zero. The largest usable difference is retained even
+    when it lies outside that range.
+    """
+
+    matched: int
+    usable: int
+    in_range: int
+    worst_fraction: float | None
+    current_ma: float | None
+    dac1_code: int | None
+    dac2_code: int | None
+    before_mv: float | None
+    after_mv: float | None
+    elapsed_ms: int | None
+    worst_in_range: bool | None
 
 
 @dataclass(frozen=True, repr=False)
 class LaserCalibrationNoise(ResponseRepr):
-    """Effective source noise estimates; application requires update_noise=True."""
+    """Illuminated-path within-window noise; application requires update_noise=True.
+
+    Fractional 0.044 means 4.4% RMS. This is not intrinsic laser noise or the
+    variability between time-separated repeats. None means unavailable; inspect
+    error and acquisition/fit state for the reason. A fitted zero is a
+    nonnegative model boundary, not a missing estimate.
+    """
 
     valid: bool
     applied: bool
@@ -784,6 +830,7 @@ class LaserCalibrationStatus(ResponseRepr):
     fit: LaserCalibrationFit
     noise: LaserCalibrationNoise
     routes: tuple[LaserCalibrationRoute, ...]
+    repeat: LaserCalibrationRepeat | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -1210,6 +1257,20 @@ def attenuator_noise(
     return out
 
 
+def photodiode_shot_noise_mv(net_mv, *, enbw_hz: float, transimpedance_v_per_a: float):
+    """Ideal photoelectron shot RMS in mV for an explicit bandwidth scenario.
+
+    The effective transimpedance includes the ADC divider. ENBW describes the
+    whole detector/acquisition response, not the sample rate or its Nyquist
+    frequency. This excludes dark/electronic and optical-path noise. Negative
+    baseline-subtracted signals have no inferred photocurrent contribution.
+    """
+    bandwidth = _require_float('enbw_hz', enbw_hz, 1e-300, math.inf)
+    gain = _require_float('transimpedance_v_per_a', transimpedance_v_per_a, 1e-300, math.inf)
+    voltage = np.maximum(np.asarray(net_mv, dtype=float), 0.) / 1000
+    return 1000 * np.sqrt(2 * 1.602176634e-19 * voltage * gain * bandwidth)
+
+
 def throughput_noise(samples, *, enbw_hz: float, transimpedance_v_per_a: float,
                      dark_rms_mv: float, fvoa_rms_mv: Sequence[float] = (10.0, 10.0),
                      electrical_basis: str = 'firmware assumption: 10 mV RMS per FVOA',
@@ -1241,7 +1302,7 @@ def throughput_noise(samples, *, enbw_hz: float, transimpedance_v_per_a: float,
     if not electrical_basis or (tuple(rms) != (10.0, 10.0) and electrical_basis.startswith('firmware assumption')):
         raise HispecFibError('provide electrical_basis for the supplied drive-noise estimate')
     mean = np.broadcast_to(np.asarray(frame.pd_net_mv if reference_net_mv is None else reference_net_mv, dtype=float), (len(frame),))
-    photon = 1000*np.sqrt(2*1.602176634e-19*np.maximum(mean, 0)/1000*gain*bandwidth)
+    photon = photodiode_shot_noise_mv(mean, enbw_hz=bandwidth, transimpedance_v_per_a=gain)
     slopes = [f'atten{i}_slope_db_per_fvoa_mv' for i in (1, 2)]
     individual = np.full((len(frame), 2), np.nan)
     if all(name in frame for name in slopes):
@@ -3451,7 +3512,6 @@ class PhotodiodeSettings(ResponseRepr):
     powered: bool
     power: str
     autooff_s: int
-    off_in_s: int | None
 
 
 @dataclass(frozen=True, repr=False)
@@ -3692,25 +3752,27 @@ def _decode_laser_cal_status(data: Mapping[str, Any]) -> LaserCalibrationStatus:
     return _dataclass_from(
         LaserCalibrationStatus, data,
         fit=_dataclass_from(LaserCalibrationFit, data["fit"]),
+        repeat=_dataclass_from(LaserCalibrationRepeat, data["repeat"]),
         noise=_dataclass_from(LaserCalibrationNoise, data["noise"]),
         routes=tuple(_dataclass_from(LaserCalibrationRoute, r) for r in data["routes"]),
     )
 
 
 def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
-    """Decode the fixed 634-byte metadata packet; no requests or state changes.
+    """Decode the fixed 588-byte metadata packet; no requests or state changes.
 
     Offsets mirror laser_calibration_write_data. Validate selectors before using
     them as indexes so a wrong packet cannot silently acquire plausible labels.
     """
-    if len(payload) != 634 or payload[:5] != b"HLC1\x05":
+    if len(payload) != 588 or payload[:5] != b"HLC1\x06":
         raise HispecFibError("unsupported laser calibration metadata")
 
     # Bytes 5..14: state/route selectors and raw-record dimensions.
     state, laser, channel, fiber, fei, options, size, count, per_chunk, segments = payload[5:15]
     if (state >= len(_LASER_CAL_STATES) or laser >= len(LASER_NAMES) or channel > 1
             or chr(fiber) not in FIBERS or fei > 1 or size != LASER_CAL_DTYPE.itemsize
-            or count > 240 or per_chunk == 0 or segments > 16):
+            or count > 240 or per_chunk == 0 or segments > 16
+            or payload[586] > 1 or payload[587] > 1):
         raise HispecFibError("invalid laser calibration metadata")
 
     # Bytes 16..27: acquisition timing; no host archive identifier is on the wire.
@@ -3740,21 +3802,31 @@ def _laser_cal_metadata(payload: bytes) -> dict[str, Any]:
         c["correction_coeff"] = values[6:]
         coeffs.append(c)
 
-    # Bytes 316..633: policy, calibrated gains, exact support and fitted dark knots.
+    # Bytes 316..537: policy, fitted DAC-pair gains, exact support and dark knots.
     residual_limit, target_mv = struct.unpack_from("<2d", payload, 316)
     segment_gain = struct.unpack_from("<16d", payload, 332)
     dark_variance = struct.unpack_from("<d", payload, 460)[0]
     support = np.unpackbits(np.frombuffer(payload[468:498], dtype=np.uint8), bitorder="little")
+    median, band, revisit = struct.unpack_from("<3d", payload, 538)
+    matched, usable, in_range, current, dac1, dac2 = struct.unpack_from("<6H", payload, 562)
+    elapsed, before, after, worst_in_range = struct.unpack_from("<IffB", payload, 574)
     meta.update(
+        format_version=6,
         max_fit_residual_pct=residual_limit,
         pd_target_mv=target_mv,
         segment_mv_per_mw=segment_gain,
         settle_ms=struct.unpack_from("<I", payload, 498)[0],
         baseline_knots_ms=struct.unpack_from("<3I", payload, 502),
         baseline_knots_mv=struct.unpack_from("<3d", payload, 514),
-        segment_gain_shift=struct.unpack_from("<16f", payload, 538),
-        diagnostics=dict(zip(("revisit_fraction", "band_fraction", "atten_shift_sigma", "dark_residual_mv"),
-                             struct.unpack_from("<4d", payload, 602))),
+        diagnostics=dict(median_fraction=median, band_fraction=band),
+        top_supported=bool(payload[587]),
+        repeat=dict(matched=matched, usable=usable, in_range=in_range,
+                    worst_fraction=revisit if usable else None,
+                    current_ma=current / 10 if usable else None,
+                    dac1_code=dac1 if usable else None, dac2_code=dac2 if usable else None,
+                    before_mv=before if usable else None, after_mv=after if usable else None,
+                    elapsed_ms=elapsed if usable else None,
+                    worst_in_range=bool(worst_in_range) if usable else None),
         dark_variance_mv2=dark_variance,
         fit_support=tuple(bool(v) for v in support[:count]),
         state=_LASER_CAL_STATES[state],
@@ -5409,23 +5481,19 @@ class HispecFibPcb:
 
         Start stops throughput/laser outputs, routes to a powered and dark-calibrated
         PD, holds ref_temp_c, and steps current from configured maximum to zero.
-        Automatically accepted full-range models apply unless apply=False.
-        Restricted or inconsistent candidates require explicit settings review;
-        acquisition and raw-data download still complete. persist opts into NVS
-        and requires apply.
+        Automatically accepted models apply unless apply=False. Other valid
+        candidates remain available for review; acquisition and raw-data download
+        still complete. persist opts into NVS and requires apply.
         Efficiency is the uncorrected linear-fit slope on the same support.
         Every sampled current has high/low PD conditions; the upper block has
         a middle level too. Retain one early and two late windows per condition;
         settle_ms measures from actuation to the first late window. The joint
-        raw-PD fit uses calibrated FVOA transmission with shared RMS uncertainty.
-        Three measured dark knots constrain the shared interpolated baseline.
-        Full-range fits are preferred; restricted candidates retain a separately
-        measured vendor-reference amplitude even when outside their support.
-        Engineering maximum and nominal are never changed. Residuals allow the requested
-        fraction plus three measured standard errors. Vendor comparison uses
-        that fraction of vendor reference power plus three fitted-power SEs.
-        Revisit checks run once after selection; cross-attenuation/gain-shift
-        diagnostics have no separate veto. Noise estimates are retained for
+        robust fit profiles a gain for each exact DAC pair. Three observed dark
+        knots set the interpolated baseline. The broad candidate range is not
+        shortened to suppress path variability. Engineering maximum and nominal
+        are never changed. Central-model residuals and independent PD-band curves
+        assess the model; repeat differences describe observed variability and do
+        not veto it. No Gaussian confidence interval is claimed. Noise estimates are retained for
         identifiable review-needed candidates and remain diagnostic unless
         update_noise=True on an automatically accepted run. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.
@@ -5576,7 +5644,7 @@ class HispecFibPcb:
         Changing autooff_s restarts a powered auto-mode PD's countdown; zero
         cancels it. It never powers on an idle PD. Calibration rejects autooff
         writes; unchanged values and unrelated settings do not rearm the timer.
-        Read-only off_in_s gives the remaining countdown without rearming it.
+        Remaining off_in_s is status returned by pd(), not a settings field.
         Returning to auto leaves an off PD off, or arms a missing timer if powered.
         Power-only overrides are allowed during calibration; override_off faults
         active acquisition. Releasing a use hold starts a fresh idle interval.
@@ -5599,7 +5667,6 @@ class HispecFibPcb:
                 power=str(data["power"]),
                 powered=bool(data["powered"]),
                 autooff_s=int(data["autooff_s"]),
-                off_in_s=None if data["off_in_s"] is None else int(data["off_in_s"]),
             )
         return self._request_ok(f"pd/settings/{channel}", payload)
 
