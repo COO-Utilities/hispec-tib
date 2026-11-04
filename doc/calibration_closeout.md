@@ -37,6 +37,52 @@ Independent high/low-band comparison uses raw signal-ratio shapes, so a shared
 vendor prior cannot manufacture their agreement. This improves the basis for
 relative-throughput tracking without claiming independent absolute radiometry.
 
+## Compiled attenuator defaults adopted November 4
+
+The six reviewed notebook selections below supply the twelve physical default
+models and their operational opens. They matched active readback at
+2026-11-04 22:41:58 UTC. Each row retains both complete coefficient sets, gain,
+residual RMS, physical-floor assumption and measured calibrated limits. Defaults
+are useful installed-device estimates; stored overrides still take precedence.
+
+| Laser | Capture in `tools/commissioning_data/` | Calibrated limit DAC1 / DAC2 (dB) | Open DAC1 / DAC2 (mV) |
+|---|---|---:|---:|
+| 1028y | `cal_1028y_20261104T064902_655153Z.pkl` | 55.000 / 55.000 | 2200.269 / 1946.484 |
+| 1270j | `cal_1270j_20261104T065103_949750Z.pkl` | 49.107 / 46.290 | 1064.282 / 1550.903 |
+| 1430yj | `cal_1430yj_20261104T065303_018083Z.pkl` | 39.300 / 41.838 | 1129.541 / 1106.177 |
+| 1430hk | `cal_1430hk_20261104T065457_950569Z.pkl` | 23.433 / 26.161 | 1465.503 / 1253.613 |
+| 1510h | `cal_1510h_20261104T065654_966569Z.pkl` | 23.399 / 30.351 | 1801.465 / 1266.504 |
+| 2330k | `cal_2330k_20261104T065850_186930Z.pkl` | 22.164 / 17.981 | 641.309 / 978.882 |
+
+Both good October 30 sets were considered: YJ captures at 23:13–23:17 UTC and
+03:28–03:32 UTC October 31, and HK at 00:56–01:00 and 03:19–03:23 UTC October 31
+(the same October 30 local lab date). In shared 1–20 dB support, compatible
+historical captures differed from the active curves by about 0.04–0.81 dB shape
+RMS after removing each capture's median offset. This supports retaining the
+active models rather than averaging nonlinear coefficients or extending their
+measured support with older high-drive tails. These differences are descriptive,
+not Gaussian uncertainty estimates. The first good K DAC1 fit was owner-reviewed
+despite a high-drive residual rejection; its useful low-drive observations remain
+part of this comparison.
+
+The older 1028 pair and pre-replacement 1510 DAC1 are historical hardware, not
+inputs to installed-device defaults. Post-replacement captures at
+`20261103T224307_036146Z` (1028) and `20261104T040924_602748Z` (1510) provide the
+compatible comparisons instead. Their companion-device results remain dependent
+on the pair and optical history.
+
+**1028 FVOA2 is the physical device driven by DAC2.** The owner considers its
+installed SM980 likely partially defective. Its active model is numerically
+valid and monotonic on the operational closing branch, but its 2.232 dB maximum
+residual failed the automatic 2 dB criterion. The owner explicitly adopted it;
+including it as a provisional default does not reclassify that fit as accepted
+or qualify SM980 behavior generally. Its companion FVOA1 can also be affected.
+
+TIB defaults are selected using the existing board identity before saved
+coefficient/open overrides load. First detection and resets select the same
+values. CAL retains the nominal model despite sharing TIB's 1510 channel index.
+No NVS schema, physical routing, fit algorithm or acceptance threshold changes.
+
 ## Attenuator repeatability in practice
 
 The following short-term comparisons match actual DUT voltage, companion voltage and

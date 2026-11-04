@@ -70,6 +70,16 @@ Before preparation, readbacks can differ from configuration. The coefficient
 uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
 is unused.
 
+## Attenuator default selection
+
+TIB uses the twelve November 4 installed-device models and operational opens
+listed in [calibration closeout](calibration_closeout.md#compiled-attenuator-defaults-adopted-november-4).
+The stored board identity selects defaults before coefficient/open records load;
+first detection and board-type resets select them through the existing hook.
+Saved valid coefficient, open and fit-policy records independently override their
+defaults. CAL keeps the nominal model and 1250 mV opens, including its shared
+logical index with TIB 1510. The NVS schema and record formats are unchanged.
+
 ## Board-Type Reset Policy
 
 The detected board type is treated as immutable hardware identity. If a stored
