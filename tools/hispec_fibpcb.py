@@ -4821,6 +4821,9 @@ class HispecFibPcb:
         strings when a fractional value would lose precision near an endpoint.
         Use laser="generic" for TIB CAL-to-AO/FEI or MM/SM-to-PD records.
         Named lasers keep independent records and do not inherit this override.
+        TIB replies include only that channel's lasers; cross-channel writes fail.
+        Use *_laser_to_*_ao/fei for every forward laser, including 1430. Dedicated
+        *_1430 inputs belong to physical routing, not the loss-setting interface.
         """
         if laser is None and loss is None and split is None and persist is False:
             data = self._request_json("mems/route/loss", {"route": route})

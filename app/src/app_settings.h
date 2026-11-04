@@ -321,6 +321,8 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
  * Explicit RAM/NVS records override defaults, including transmission 1.0.
  * Callers supply a named laser, "generic", or split-output key. Only an exact
  * source override applies; named lasers never inherit a stored generic override.
+ * Shared *_laser forward names resolve 1430 to its physical loss record; get,
+ * set and reset use the same identity without changing switch routes.
  * Unspecified paths return 1.0. May wait on the settings mutex; performs no
  * hardware or flash I/O. Throughput captures this value at start.
  */
@@ -329,7 +331,7 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 /**
  * @brief Store or update one route-loss record.
  *
- * The record is keyed only by route and laser names. It does not change MEMS
+ * The record is keyed by resolved route and laser names. It does not change MEMS
  * route structs or switch state. If @p persist is true, the indexed route-loss
  * record is saved via Zephyr NVS and may block on flash I/O. A flash error is
  * returned without undoing the RAM update.

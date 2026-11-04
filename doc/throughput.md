@@ -87,6 +87,9 @@ Route lookup selects an exact saved override, then compiled named-source loss,
 then compiled generic loss, then unity. A saved generic override is used for a
 generic measurement; it is not inherited by a named source. The command latches
 losses at start. Restart the measurement after editing a route loss.
+Configure all forward laser losses through the channel's shared
+`*_laser_to_*_ao/fei` names, including 1430. Settings resolve these to the same
+records as the dedicated physical 1430 routes; physical routing is unchanged.
 
 ## Autolevel control
 

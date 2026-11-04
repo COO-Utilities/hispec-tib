@@ -772,9 +772,6 @@ See [firmware updates](ota.md) for network and USB installation.
       "1028y": 0.4,
       "1270j": 0.4,
       "1430yj": 0.07,
-      "1430hk": 0.0,
-      "1510h": 0.0,
-      "2330k": 0.0,
       "generic": 0.4
     }
   }
@@ -790,6 +787,19 @@ See [firmware updates](ota.md) for network and USB installation.
 Route-loss records are app settings keyed by route name and source name or split.
 Each set request accepts exactly one top-level named laser, `generic`, or `split` tuple.
 The `lasers` object is a query response only. `persist` requires a loss value.
+On TIB, YJ paths expose only `1028y`, `1270j`, and `1430yj`; HK paths expose
+only `1430hk`, `1510h`, and `2330k`. Cross-channel writes are rejected. Forward
+launch losses use `yj_laser_to_yj_ao/fei` or `hk_laser_to_hk_ao/fei` for all
+three lasers in the channel. For example:
+```json
+{"route":"yj_laser_to_yj_fei","1430yj":"61.862828 dB","persist":true}
+```
+The settings layer resolves 1430 to the same physical loss record used by
+throughput, calibration and default restoration, preserving existing overrides.
+Dedicated `*_1430_to_*_ao/fei` names are not public loss keys. They remain
+physical `mems/route` names with their existing switch sequences. This does not
+add retro loss settings or change retro switching. Unknown loss routes are rejected.
+
 Numeric values are fractions of light lost: finite `0 <= loss < 1`. Zero means
 no loss; `0.5` means half the light is lost. Exactly `1` is rejected because
 transmission must remain positive. Missing records use the compiled TIB defaults
@@ -819,9 +829,10 @@ retain float precision. Prefer dB input when a fractional
 value would lose precision near an endpoint. The split value is a three-tuple
 and may mix numeric fractional losses with dB strings.
 
-For throughput, route keys join the applicable input/output pair from
-`help/options` with `_to_`, such as `yj_laser_to_yj_ao`; the laser name selects
-its wavelength-dependent loss record. The return path uses keys such as
+Public forward loss keys use the shared laser input even when the physical
+route in `help/options` uses the dedicated 1430 input; the laser name selects
+its wavelength-dependent loss record. Other keys join the applicable input/output
+pair with `_to_`. The return path uses keys such as
 `yj_mm_to_yj_pd`. AS splitting uses `yj_calin_to_yj_split` or
 `hk_calin_to_hk_split` and the three output losses. Storage remains transmission;
 these values feed the existing throughput and splitting calculations.

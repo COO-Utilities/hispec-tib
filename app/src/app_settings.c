@@ -1518,6 +1518,22 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 	return 0;
 }
 
+/* Shared forward-launch loss names resolve to the existing physical 1430
+ * records. Keep switch sequencing and saved records unchanged; every settings
+ * operation uses the same identity, including calibration/default restoration.
+ * Pure name resolution: no lock, hardware I/O or persistence. */
+static const char *route_loss_storage_route(const char *route, const char *laser)
+{
+	if (strcmp(laser, "1430yj") == 0) {
+		if (strcmp(route, "yj_laser_to_yj_ao") == 0) return "yj_1430_to_yj_ao";
+		if (strcmp(route, "yj_laser_to_yj_fei") == 0) return "yj_1430_to_yj_fei";
+	} else if (strcmp(laser, "1430hk") == 0) {
+		if (strcmp(route, "hk_laser_to_hk_ao") == 0) return "hk_1430_to_hk_ao";
+		if (strcmp(route, "hk_laser_to_hk_fei") == 0) return "hk_1430_to_hk_fei";
+	}
+	return route;
+}
+
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission)
 {
@@ -1532,6 +1548,7 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	*transmission = devices_route_loss_default(route, laser);
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);
@@ -1557,6 +1574,7 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	memset(&record, 0, sizeof(record));
 	record.configured = true;
 	str_set(record.route, sizeof(record.route), route);
@@ -1594,6 +1612,7 @@ int app_settings_reset_route_loss(const char *route, const char *laser, bool per
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	int first = 0;
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	for (uint8_t i = 0; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
