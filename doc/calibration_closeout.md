@@ -15,20 +15,27 @@ A quiet one-second window does not establish the precision of a later visit.
 The clearest recent example is 1028y at **27.3 mA**, with the exact same DAC codes
 **3166 / 3125**: corrected PD readings were **150.19 and 102.44 mV**, separated by
 **109.6 seconds**, an observed **31.8% difference** using the observed-dark baseline.
-Neither was near darkness or
-saturation. This is relevant operating variability, not evidence of an operator error,
-a Gaussian sigma, or a measured upper bound on future variation.
+Neither was near darkness or saturation. This describes that current and DAC
+pair, not every operating point. Its relevance to an intended measurement also
+depends on the attenuator voltages and measured response there. It is not
+evidence of an operator error, a Gaussian sigma, or a measured upper bound on
+future variation.
 
 Firmware estimates a central response within that variability. Acquisition completion,
 model availability, automatic acceptance, application and persistence are separate
 results. A review candidate can be useful without qualifying for automatic installation.
 Raw observations remain available. Numerical acceptance is not physical commissioning.
 
-The laser fit profiles one gain per exact DAC pair over the entire capture. That removes
-reliance on accurately summing two individual FVOA calibrations. It does not identify
-intrinsic laser response separately from every current-dependent optical-path effect.
-A vendor-constrained result says where external characterization guides the proposed
-curve; it is not proof that the in-situ optical path independently measured that shape.
+The laser fit profiles one gain per exact DAC pair over the entire capture. That
+removes reliance on accurately summing two individual FVOA calibrations, but a
+constant pair gain cannot remove current-dependent optical-path distortion.
+The current revision therefore estimates threshold from the lowest informative
+local windows, anchors power to the configured reference, and takes required
+curvature from the vendor trace. The broad acquisition tests that proposal and
+describes path variation; it does not steer source curvature to fit FVOA physics.
+Independent high/low-band comparison uses raw signal-ratio shapes, so a shared
+vendor prior cannot manufacture their agreement. This improves the basis for
+relative-throughput tracking without claiming independent absolute radiometry.
 
 ## Attenuator repeatability in practice
 
@@ -251,7 +258,62 @@ setpoint movement, no clipping, and no gap above 51 ms. Useful signals around
 hold requirement. Records are in
 `candidate_controls_20261103T223025_397550Z_closeout_nov3.json` and its named streams.
 
-## Verification of this revision
+## Current revision: saved-data replay
+
+Actual-C host replay of the six latest owner captures and the six preceding
+`_closeout_final` captures produced twelve valid broad candidates with identifiable
+noise estimates. These are offline results from existing observations, not new
+board measurements. The following table shows the latest owner set; files are
+`laser_cal_<source>_20261104T<timestamp>.pkl` in `tools/commissioning_data/`.
+
+| Source | Capture UTC timestamp | Threshold (mA) | Proposed range (mA) | Central median residual | Raw band-shape difference | Automatic decision |
+|---|---|---:|---|---:|---:|---|
+| 1028y | `042839_802193Z` | 12.324 | 13.1–250 | 3.25% | 7.98% | Review: band shapes differ |
+| 1270j | `043325_011272Z` | 9.691 | 9.8–65 | 1.11% | 2.27% | Accepted |
+| 1430yj | `043801_780463Z` | 4.247 | 6–60 | 0.72% | 0.43% | Accepted |
+| 1430hk | `044423_280876Z` | 3.956 | 5.3–60 | 0.89% | 0.70% | Accepted |
+| 1510h | `044900_546395Z` | 3.602 | 4.5–60 | 17.57% | 11.08% | Review: central residual |
+| 2330k | `045420_511833Z` | 16.621 | 18.7–120 | 8.16% | 1.89% | Review: central residual |
+
+Both percentages describe disagreement with, or within, the observed optical
+path. They are not Gaussian uncertainties on the proposed laser power. The raw
+band statistic removes a constant high/low gain ratio before comparing their
+current-dependent shapes; agreement cannot be created by constraining two
+separate fitted curves to the same vendor trace.
+
+K now retains the vendor-supported curvature: its quadratic coefficient is
+approximately **−5.10 × 10⁻⁵ mW/mA²**, with reference current 120 mA. Its two
+measured bands have similar shapes, but the assembled-path observations still
+differ from the reference-supported proposal enough to require review. H retains
+a line anchored at its measured local threshold and configured reference, rather
+than interpreting the broad path's rolloff as laser curvature. Its large residual
+and band difference remain visible. These are useful source proposals with
+explicitly unresolved path disagreement, not a claim that fitting fixed the
+optical hardware. All six retain the existing requested upper current.
+
+The latest 1028y capture also exposed an acquisition-context error: its recorded
+attenuator coefficients exactly match `cal_1028y_20261031T032801_075500Z.pkl`,
+before the SM980 replacement. The notebook's reviewed-adoption selection still
+named that capture and its RAM application switch was enabled. The valid current-
+hardware pair in `cal_1028y_20261103T224307_036146Z.pkl` was therefore replaced
+by older hardware's map. This affects ranging and modeled attenuation/loss;
+it does not by itself prove the cause of the recorded band disagreement.
+The preceding current-hardware 1028y run replays with a 12.302 mA threshold,
+3.89% central residual and 1.30% band difference. That comparison supports
+retaining a useful source model while checking map provenance and actual transfer
+ratios. It is not a controlled before/after hardware test.
+
+Reviewed attenuator installation now starts with an empty explicit selection and
+disabled application, and its updates are separate from the acquisition-file
+list. Calibration acquisition, bridge behavior, engineering voltage access and
+quiet autolevel are unchanged. New board checks are reported separately below
+when complete; the historical verification that follows used the previous fitter.
+
+## Earlier verification: firmware `fb6edae1f343`
+
+The numerical and board results below record the preceding broad, vendor-envelope
+fit implementation. They remain evidence for acquisition, transport and control,
+but are not verification of the local-threshold/vendor-curvature revision above.
 
 Actual-C historical laser replay covered 38 retained captures: 19 accepted, 13
 broad review candidates, and six lacking the required three observed dark knots.
@@ -316,8 +378,10 @@ repeat differences, not Gaussian noise specifications.
 The six fresh laser runs completed without transport errors, overflow or reset,
 using 162–185 of 240 available records. Acquisition requested `apply:false`,
 `update_noise:false`, `determine_static_loss:false` and `persist:false`.
-The accepted fresh attenuator models were used in RAM; 1028y retained its
-previous DAC2 model. The recovered complete K coefficients were read back
+The accepted fresh attenuator pairs were used in RAM. Both 1028y models remained
+unchanged because DAC2's rejection prevented installation of either new model;
+its successful laser run used the previously installed SM980 pair. The recovered
+complete K coefficients were read back
 before use. Every raw capture includes the exact active coefficients.
 
 | Source | Records | Proposed range (mA) | Result | Central median residual | Useful repeat difference | Fractional within-window RMS |
