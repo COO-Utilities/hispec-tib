@@ -810,7 +810,8 @@ transmission. Explicit records replace the complete default, including an explic
 `generic` stores a broadband/passive record, for example
 `{"route":"yj_cal_to_yj_ao","generic":"1 dB","persist":false}`.
 It is accepted and appears in the `lasers` query map only for the eight TIB
-CAL-to-AO/FEI and MM/SM-to-PD routes (four per channel). MM 0.98 and SM 0.60
+CAL-to-AO/FEI and MM/SM-to-PD routes (four per channel). SM 1.0 on both channels,
+YJ MM 0.389741142978 and HK MM 0.830050505051
 are the compiled generic defaults. Named sources use independent overrides and
 never inherit a stored generic override. Passive capture reports an explicitly
 selected CAL launch transmission, but unknown emission still prevents throughput.
@@ -2313,7 +2314,8 @@ Invalid input or an exclusion failure leaves an existing run untouched.
 All measurements divide detected power and its error by the selected return
 transmission. A known laser selects its route/laser override when present;
 unknown illumination selects the route's `generic` override or compiled generic
-default (MM 0.98, SM 0.60). Passive PD voltage, corrected power, errors, and
+default (SM 1.0; MM 0.389741142978 for YJ or 0.830050505051 for HK). Passive
+PD voltage, corrected power, errors, and
 detector S/N remain available; source power, wavelength, delivered power, and
 throughput are NaN/null because emission is unknown. `launch_route_tx` reports
 the resolved transmission for an explicitly selected launch; it is NaN/null for a

@@ -263,8 +263,10 @@ LLMs Agents: Do NOT change heading names in this file.
     See [laser calibration](laser_calibration.md) for the next bench workflow.
 - [ ] After flashing the generic TIB loss correction, verify schema 14's full
   app NVS reset, reapply needed settings, and bench-check generic CAL/return
-  overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain
-  provisional; equal AO/FEI loss needs optical validation. The Nucleo build,
+  overrides and persistence. The November 4 loopbacks now provide distinct
+  AO/FEI defaults and separate YJ/HK MM/SM means under SM = 1; independent
+  absolute path-loss validation remains outstanding. YJ CAL remains a 1 dB estimate.
+  The Nucleo build,
   temporary C/host checks, and saved noise/failed-hold replay passed offline;
   no flashing, hardware commands, or physical persistence checks were performed.
 
