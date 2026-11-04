@@ -2,7 +2,7 @@
  * @file mqtt_client.c
  * @brief Blocking MQTT connect/process helpers around Zephyr MQTT.
  *
- * Incoming payload bytes are copied into a stack buffer before the user
+ * Incoming payload bytes are copied into a static buffer before the user
  * callback runs. Outgoing publishes are intentionally left to the application.
  */
 /*
@@ -54,6 +54,8 @@ static int num_subscriptions = 0;
 #define MSECS_NET_POLL_TIMEOUT 3000
 /* Keep connected idle polling short enough for the application watchdog loop. */
 #define MSECS_PROCESS_POLL_TIMEOUT 100
+
+static int poll_mqtt_socket(struct mqtt_client *client, int timeout, int wake_fd);
 
 bool coo_mqtt_parse_broker_endpoint(const char *endpoint,
 				    struct coo_mqtt_broker_config *cfg)
@@ -262,18 +264,56 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 {
 	int rc;
 	struct mqtt_publish_param publish_param = evt->param.publish;
+	size_t expected = publish_param.message.payload.len;
+	size_t received = 0U;
+	int64_t deadline = k_uptime_get() + MSECS_NET_POLL_TIMEOUT;
 
-	/* mqtt_read_publish_payload() drains Zephyr's MQTT RX buffer into a local
-	 * buffer so the command layer can copy it before this event handler returns.
+	/* TCP may split one command across reads. Dispatch only its complete payload;
+	 * the existing network deadline bounds the whole receive, not each fragment.
+	 * Abort incomplete frames so their remaining bytes cannot become commands.
+	 * Zephyr releases its client mutex while invoking this event callback.
 	 */
-	rc = mqtt_read_publish_payload(client, publish_payload, CONFIG_COO_MQTT_PAYLOAD_SIZE);
-	if (rc < 0) {
-		LOG_ERR("Failed to read received MQTT payload [%d]", rc);
-		return;
+	if (expected > CONFIG_COO_MQTT_PAYLOAD_SIZE) {
+		rc = -EMSGSIZE;
+		goto incomplete;
+	}
+	while (received < expected) {
+		int64_t remaining_ms = deadline - k_uptime_get();
+		if (remaining_ms <= 0) {
+			rc = -ETIMEDOUT;
+			goto incomplete;
+		}
+		rc = mqtt_read_publish_payload(client, publish_payload + received, expected - received);
+		if (rc > 0) {
+			received += (size_t)rc;
+			continue;
+		}
+		if (rc == -EAGAIN) {
+			rc = poll_mqtt_socket(client, (int)remaining_ms, -1);
+			if (rc > 0 && !(fds[0].revents & (ZSOCK_POLLHUP | ZSOCK_POLLERR | ZSOCK_POLLNVAL))) continue;
+			if (rc == 0) rc = -ETIMEDOUT;
+			else if (rc > 0) rc = -ENOTCONN;
+		} else if (rc == 0) {
+			rc = -ENOTCONN;
+		}
+		goto incomplete;
 	}
 
 	/* Place null terminator at end of payload buffer */
-	publish_payload[rc] = '\0';
+	publish_payload[received] = '\0';
+
+	/* Acknowledge only complete messages; aborted payloads were not delivered. */
+	if (publish_param.message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
+		const struct mqtt_puback_param ack_param = {
+			.message_id = publish_param.message_id
+		};
+		mqtt_publish_qos1_ack(client, &ack_param);
+	} else if (publish_param.message.topic.qos == MQTT_QOS_2_EXACTLY_ONCE) {
+		const struct mqtt_pubrec_param rec_param = {
+			.message_id = publish_param.message_id
+		};
+		mqtt_publish_qos2_receive(client, &rec_param);
+	}
 
 	LOG_INF("MQTT payload received!");
 	LOG_INF("topic: '%.*s', payload: %s",
@@ -282,11 +322,16 @@ static void on_mqtt_publish(struct mqtt_client *const client, const struct mqtt_
 		publish_payload);
 
 	publish_param.message.payload.data = publish_payload;
-	publish_param.message.payload.len = rc;
+	publish_param.message.payload.len = received;
 
 	if (user_mqtt_cb) {
 		user_mqtt_cb(&publish_param, user_mqtt_cb_data);
 	}
+	return;
+
+incomplete:
+	LOG_ERR("Incomplete MQTT payload (%zu/%zu bytes, rc=%d); disconnecting", received, expected, rc);
+	(void)mqtt_abort(client);
 }
 
 /** Handler for asynchronous MQTT events */
@@ -366,20 +411,6 @@ static void mqtt_event_handler(struct mqtt_client *const client, const struct mq
 		break;
 
 	case MQTT_EVT_PUBLISH:
-		const struct mqtt_publish_param *p = &evt->param.publish;
-
-		if (p->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
-			const struct mqtt_puback_param ack_param = {
-				.message_id = p->message_id
-			};
-			mqtt_publish_qos1_ack(client, &ack_param);
-		} else if (p->message.topic.qos == MQTT_QOS_2_EXACTLY_ONCE) {
-			const struct mqtt_pubrec_param rec_param = {
-				.message_id = p->message_id
-			};
-			mqtt_publish_qos2_receive(client, &rec_param);
-		}
-
 		on_mqtt_publish(client, evt);
 		break;
 
