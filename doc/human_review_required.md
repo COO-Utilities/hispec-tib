@@ -375,6 +375,21 @@ LLMs Agents: Do NOT change heading names in this file.
   uses that example. 
 
 ## TODOs
+
+- laser value docs say "It does not power up/start an idle driver" that's either wrong, confusing AF, or behavior I really don't want
+- check payload headroom on JSON settins commands (laser has gotten VERY wordy)
+
+- This is muddy AF: will a laser autooff if "A manual laser current/level, tuning or settings operation disables autolevel
+  while retaining collection, the measurement deadline and any existing owned-laser
+  shutdown obligation, including when the manual operation fails. Manual attenuation
+  changes also disable feedback without releasing the measurement. Passive
+  streams never acquire ownership of an unrelated manually started source.
+  Stop, expiry and owner faults stop an owned laser; a failed shutdown retains its
+  identity for a subsequent stop retry. Bank power, TECs and other sources are
+  unchanged. Explicit `laser stop:true` and laser auto-off separately consult
+  `disable_tec_at_autooff`; throughput STOP passes `stop_tec=false`."
+  - 1. A manual laser adjustment does not release throughput’s shutdown obligation.  Starting autolevel for 300 seconds, then manually setting laser current, disables automatic adjustment but retains the measurement deadline and owned-laser shutdown. At expiry, the manually adjusted laser still stops. Continuing the same source with autolevel:false also retains ownership. This is documented and implemented, but difficult to infer from the current autolevel flag alone. Implementation, documentation.
+    - good, but a user might play with multiple lasers on the channel while monitoring. the monitor should shut down ALL lasers when it ends. 
 - Investigate detector startup and illuminated settling separately. The September 21
   19:05 UTC noise capture saved a clipped dark (mean 53.8 mV, RMS 319.5 mV), then
   a stable dark trace near -2 mV. Firmware now requires ten continuous seconds
