@@ -1176,10 +1176,11 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     requires the reference inside the configured current/temperature envelope.
     Reference edits stop emission and optionally persist the triplet.
   - The installed curve is `P=x*(efficiency_mw_per_ma + efficiency_mw_per_ma2*(current_ma-efficiency_ref_ma))`,
-    with `x=max(0,current_ma-threshold_current_ma)`. Calibration preserves the
-    uncorrected linear fit's slope as efficiency and derives its curve reference
-    to reproduce the corrected fit. That finite reference coordinate is independent
-    of `ref_ma`; it need not lie on the current grid or below the hardware maximum.
+    with `x=max(0,current_ma-threshold_current_ma)`. Calibration sets efficiency to
+    `ref_mw/(ref_ma-threshold_current_ma)` and `efficiency_ref_ma` to `ref_ma`,
+    anchoring the corrected curve at the configured reference power. Manual
+    settings can still use a different finite reference coordinate; it need not
+    lie on the current grid or below the hardware maximum.
     Nonzero correction requires it above threshold. Validate a positive derivative
     from threshold through maximum; compiled defaults use zero correction.
     All four coefficients must accompany a manual curve replacement. Their changes
@@ -1393,7 +1394,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
 - **Notes:**
-  - `apply:true` automatically installs an accepted threshold, linear-fit
+  - `apply:true` automatically installs an accepted threshold, reference-normalized
     efficiency, quadratic coefficient, curve reference and automatic floor/ceiling. Engineering maximum
     and nominal current, wavelength references and the datasheet power triplet
     are preserved. This is the
@@ -1416,10 +1417,16 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     dark means set the interpolated baseline. The two lowest informative DAC-pair
     series estimate the local lasing onset independently. The lower bound is the
     first measured current shared by both local series above both onset estimates
-    plus 0.1 mA; their individually rounded choices need not agree. The robust fit
-    retains the broad useful current range; it does not search for a tiny interval to hide path
-    variability. Median multiplicative residual and independent PD-band curves
-    assess central-model quality. `fit.top_supported` reports whether the maximum
+    plus 0.1 mA; their individually rounded choices need not agree. The threshold
+    is fitted only from positive paired observations in those local windows.
+    The configured power reference fixes efficiency, and the vendor trace supplies
+    curvature only when a line exceeds the existing characterization allowance.
+    Broad in-situ path curvature cannot refit those source parameters. The full
+    useful range remains available for diagnostics, rather than selecting a tiny
+    residual-clean interval. Median multiplicative residual and the raw high/low
+    PD-band log-ratio shape deviation assess agreement with the measured path;
+    the latter removes a constant gain ratio, without fitting both bands toward
+    the vendor. `fit.top_supported` reports whether the maximum
     current belongs to a same-DAC series with enough distinct currents; an isolated
     top-current measurement remains visible but requires review. RMS and maximum
     residual remain descriptive.

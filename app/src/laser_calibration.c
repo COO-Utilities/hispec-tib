@@ -6,12 +6,11 @@
  * settling, actuator history and PD-level dependence observable. Acquisition
  * completes before fitting; a rejected model never removes raw evidence.
  *
- * Observed dark anchors and free exact-pair gains separate central source shape
- * from calibrated tandem-FVOA loss assumptions. Equal-condition log-L1 fitting
- * retains real multiscale variability without letting quiet windows dominate.
- * The vendor reference anchors scale and bounds the broad candidate response.
- * Efficiency remains the uncorrected linear-fit slope; a separate curve reference
- * expresses the quadratic correction without redefining that slope.
+ * Observed dark anchors and local, fixed-DAC measurements identify the threshold.
+ * The vendor trace supplies broad source shape: path-dependent rolloff must not
+ * become laser curvature. A reference-anchored line is preferred; any quadratic
+ * correction is fitted to the vendor trace alone. Full-capture exact-pair gains
+ * and raw PD-band ratios describe remaining optical-path variation independently.
  *
  * Noise estimates describe within-window temporal variance, not static FVOA fit
  * error. Absolute loss remains conditional on PD gain, vendor power, return and
@@ -217,10 +216,10 @@ const char *laser_calibration_error_message(int error)
 	case CAL_THRESHOLD_RANGE: return "fit threshold outside usable range";
 	case CAL_NONLINEAR: return "review needed: central curve residual exceeds tolerance";
 	case CAL_KNEE_UNAVAILABLE: return "review needed: current support knee is not identified";
-	case CAL_BAND_DISAGREEMENT: return "review needed: independent pd-band curves disagree";
+	case CAL_BAND_DISAGREEMENT: return "review needed: measured pd-band ratios vary with current";
 	case CAL_TOP_UNSUPPORTED: return "review needed: top current has no same-pair shape support";
 	case CAL_MAXIMUM_UNAVAILABLE: return "usable measurement at configured maximum required";
-	case CAL_VENDOR_MISMATCH: return "review needed: curve reaches vendor characterization allowance";
+	case CAL_VENDOR_MISMATCH: return "review needed: source model differs from vendor characterization";
 	case CAL_NOISE_FIT_FAILED: return "constant/fractional noise split is not identifiable";
 	case CAL_LOSS_FIT_FAILED: return "static loss fit failed";
 	case CAL_ATTEN_RANGE: return "reference outside calibrated attenuation";
@@ -564,10 +563,10 @@ static int prepare_fit(void)
 	return 0;
 }
 
-/* A local knee is support selection only, not the installed source model.
- * Six nearby distinct currents keep high-current rolloff out of this decision.
+/* Select support and retain the same local windows for threshold estimation.
+ * Six nearby distinct currents keep high-current path rolloff out of both.
  * One/two-current ranging islands cannot establish a knee or constrain a root. */
-static int support_floor(double *floor)
+static int support_floor(double *floor, uint16_t local_last[LASER_CAL_SEGMENTS])
 {
 	uint16_t starts[2] = {UINT16_MAX, UINT16_MAX};
 	int selected_group[2] = {-1, -1};
@@ -590,6 +589,7 @@ static int support_floor(double *floor)
 			continue;
 		}
 		unsigned n = MIN(current_levels(group, 0.0, false), 6U);
+		local_last[group] = work.levels[n - 1U];
 		double current[6], signal[6], peak = 0.0;
 		for (unsigned j = 0; j < n; ++j) {
 			current[j] = work.levels[j] / 10.0;
@@ -696,64 +696,57 @@ static double normalized_power(const struct source_curve *curve, double current)
 		(1.0 + curve->curvature * (current - meta.ref_ma) / span);
 }
 
-/* Intersect a scalar linear inequality coefficient*c <= bound. */
-static bool curvature_bound(double coefficient, double bound, double *low, double *high)
+/* At each measured threshold, prefer the anchored line when it represents the
+ * vendor trace within the existing allowance. Otherwise solve its one quadratic
+ * coefficient against that trace alone. Current-spacing weights prevent dense
+ * digitization near a kink from becoming extra physical evidence. No assembled-
+ * path measurement supplies curvature or pulls the curve to an allowance edge. */
+static bool reference_curvature(struct source_curve *curve, double floor)
 {
-	if (fabs(coefficient) < 1e-15) {
-		return bound >= -1e-12;
-	}
-	if (coefficient > 0.0) {
-		*high = fmin(*high, bound / coefficient);
-	} else {
-		*low = fmax(*low, bound / coefficient);
-	}
-	return *low <= *high;
-}
+	const float (*point)[2] = vendor_reference[result.laser].point;
+	unsigned first = 0, end = vendor_reference[result.laser].count;
+	while (first < end && (double)point[first][0] < floor) ++first;
+	while (end > first && (double)point[end - 1U][0] > meta.max_ma) --end;
+	if (end - first < 2) return false;
 
-/* At fixed threshold all vendor and derivative constraints are linear in c.
- * No confidence allowance or attenuation-derived statistical prior is added. */
-static bool curvature_interval(double threshold, double floor, double *low, double *high)
-{
-	*low = -DBL_MAX; *high = DBL_MAX;
-	double span = meta.ref_ma - threshold;
-	double limit = meta.max_fit_residual_pct / 100.0 * vendor_reference[result.laser].ref_mw / meta.ref_mw;
-	unsigned overlap = 0;
-	for (unsigned j = 0; j < vendor_reference[result.laser].count; ++j) {
-		double current = vendor_reference[result.laser].point[j][0];
-		if (current < floor || current > meta.max_ma) {
-			continue;
-		}
-		double base = (current - threshold) / span;
+	double span = meta.ref_ma - curve->threshold;
+	double numerator = 0.0, denominator = 0.0, maximum = 0.0;
+	for (unsigned j = first; j < end; ++j) {
+		double current = point[j][0];
+		double base = (current - curve->threshold) / span;
 		double coefficient = base * (current - meta.ref_ma) / span;
-		double target = (double)vendor_reference[result.laser].point[j][1] / meta.ref_mw;
-		if (!curvature_bound(coefficient, target + limit - base, low, high) ||
-		    !curvature_bound(-coefficient, base - target + limit, low, high)) {
-			return false;
-		}
-		++overlap;
+		double error = (double)point[j][1] / meta.ref_mw - base;
+		double weight = 0.5 * ((double)point[j + (j + 1U < end)][0] -
+				       (double)point[j - (j > first)][0]);
+		numerator += weight * coefficient * error;
+		denominator += weight * coefficient * coefficient;
+		maximum = fmax(maximum, fabs(error));
 	}
-	return overlap > 0 &&
-		curvature_bound(-(floor - meta.ref_ma) / span, 1.0 - 1e-6, low, high) &&
-		curvature_bound(1.0, 1.0 - 1e-6, low, high) &&
-		curvature_bound(-(2.0 * meta.max_ma - threshold - meta.ref_ma) / span, 1.0 - 1e-6, low, high) &&
-		isfinite(*low) && isfinite(*high);
+	double limit = meta.max_fit_residual_pct / 100.0 * vendor_reference[result.laser].ref_mw / meta.ref_mw;
+	curve->curvature = maximum <= limit ? 0.0 : numerator / denominator;
+	double c = curve->curvature;
+	return isfinite(c) && normalized_power(curve, floor) > 0.0 &&
+		1.0 + c * (2.0 * floor - curve->threshold - meta.ref_ma) / span > 0.0 &&
+		1.0 + c * (2.0 * meta.max_ma - curve->threshold - meta.ref_ma) / span > 0.0;
 }
 
 /* Profile a positive free gain per exact DAC pair. Every paired condition has
  * equal influence on the L1 log loss; quiet ADC windows cannot dominate it.
  * Repeated visits share their pair's gain and retain their observed differences. */
-static double curve_cost(const struct source_curve *curve, double floor, int only_group)
+static double curve_cost(const struct source_curve *curve, double floor,
+			 const uint16_t *local_last)
 {
 	double cost = 0.0;
 	unsigned total = 0;
 	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
-		if (only_group >= 0 && group != (unsigned)only_group) {
+		if (local_last != NULL && local_last[group] == 0) {
 			continue;
 		}
 		unsigned count = 0;
 		for (unsigned i = 1; i < result.records; ++i) {
 			if (data.records[i].segment == group && isfinite(work.log_signal[i]) &&
-			    current_of(&data.records[i]) >= floor) {
+			    current_of(&data.records[i]) >= floor &&
+			    (local_last == NULL || data.records[i].current_tenth_ma <= local_last[group])) {
 				double power = normalized_power(curve, current_of(&data.records[i]));
 				if (!(power > 0.0)) {
 					return INFINITY;
@@ -774,32 +767,27 @@ static double curve_cost(const struct source_curve *curve, double floor, int onl
 	return total > 0 ? cost / total : (double)INFINITY;
 }
 
-/* Bounded two-coordinate search. A 65x65 initial grid is followed by four
- * 17x17 local refinements. The line uses the same threshold grid and c=0.
- * Each threshold checks cancellation; all datasets remain in static scratch. */
-static int search_curve(double floor, bool quadratic, int group, bool vendor, struct source_curve *best)
+/* Only the local knee windows estimate threshold. A 65-point grid and four
+ * 17-point refinements retain the bounded cancellable search; curvature comes
+ * from the vendor at every trial, never from high-current path distortion. */
+static int search_curve(double floor, const uint16_t *local_last, struct source_curve *best)
 {
 	best->cost = INFINITY;
-	double ta = 0.0, tb = floor - 0.1, ua = 0.0, ub = 1.0, best_u = 0.0;
+	double ta = 0.0, tb = floor - 0.1;
 	for (unsigned pass = 0; pass < 5; ++pass) {
 		unsigned steps = pass == 0 ? 64U : 16U;
-		double dt = (tb - ta) / steps, du = (ub - ua) / steps;
+		double dt = (tb - ta) / steps;
 		for (unsigned it = 0; it <= steps; ++it) {
 			if (atomic_get(&fit_cancel)) {
 				return -ECANCELED;
 			}
-			double threshold = ta + it * dt, ca = 0.0, cb = 0.0;
-			if (vendor && (!curvature_interval(threshold, floor, &ca, &cb) ||
-			    (!quadratic && (ca > 0.0 || cb < 0.0)))) {
+			struct source_curve trial = {.threshold = ta + it * dt};
+			if (!reference_curvature(&trial, floor)) {
 				continue;
 			}
-			for (unsigned ic = 0; ic <= (quadratic ? steps : 0U); ++ic) {
-				double u = ua + ic * du;
-				struct source_curve trial = {threshold, quadratic ? ca + u * (cb - ca) : 0.0, 0.0};
-				trial.cost = curve_cost(&trial, floor, group);
-				if (trial.cost < best->cost) {
-					*best = trial; best_u = u;
-				}
+			trial.cost = curve_cost(&trial, floor, local_last);
+			if (trial.cost < best->cost) {
+				*best = trial;
 			}
 		}
 		if (!isfinite(best->cost)) {
@@ -807,19 +795,18 @@ static int search_curve(double floor, bool quadratic, int group, bool vendor, st
 		}
 		ta = fmax(0.0, best->threshold - dt);
 		tb = fmin(floor - 0.1, best->threshold + dt);
-		ua = fmax(0.0, best_u - du); ub = fmin(1.0, best_u + du);
 	}
 	return 0;
 }
 
-static bool vendor_boundary(const struct source_curve *curve, double floor)
+static bool vendor_mismatch(const struct source_curve *curve, double floor)
 {
 	double limit = meta.max_fit_residual_pct / 100.0 * vendor_reference[result.laser].ref_mw;
 	for (unsigned j = 0; j < vendor_reference[result.laser].count; ++j) {
 		double current = vendor_reference[result.laser].point[j][0];
 		if (current >= floor && current <= meta.max_ma &&
 		    fabs(meta.ref_mw * normalized_power(curve, current) - (double)vendor_reference[result.laser].point[j][1]) >=
-			limit - 1e-5 * meta.ref_mw) {
+			limit + 1e-5 * meta.ref_mw) {
 			return true;
 		}
 	}
@@ -830,7 +817,7 @@ static bool vendor_boundary(const struct source_curve *curve, double floor)
  * the symmetric multiplicative median, not a maximum or a Gaussian SE. */
 static void curve_diagnostics(const struct source_curve *curve, double floor)
 {
-	(void)curve_cost(curve, floor, -1);
+	(void)curve_cost(curve, floor, NULL);
 	unsigned count = 0;
 	double sum = 0.0, maximum = 0.0;
 	for (unsigned i = 1; i < result.records; ++i) {
@@ -949,77 +936,65 @@ static int fit_noise(void)
 	return isfinite(c2) && isfinite(f2) ? 0 : CAL_NOISE_FIT_FAILED;
 }
 
-/* The two broadest independent PD bands must support the same central curve.
- * Compare fitted responses on common measured currents, not individual noisy
- * readings. A free gain absorbs each pair's static loss, never a time change. */
-static int check_bands(double floor, bool quadratic)
+/* Median observed signal at one current/DAC condition; repeated visits remain
+ * in the capture but do not give that current extra weight in band comparison.
+ * Uses only the shared ordered scratch and does not alter fitted gains. */
+static double band_signal(unsigned group, uint16_t current)
 {
-	int first = -1, second = -1;
-	double widest = -1.0, bottom = 0.0, top = 0.0;
+	unsigned count = 0;
+	for (unsigned i = 1; i < result.records; ++i) {
+		if (data.records[i].segment == group && data.records[i].current_tenth_ma == current &&
+		    isfinite(work.log_signal[i])) {
+			work.ordered[count++] = (double)work.mean[i] - fitted_baseline(i);
+		}
+	}
+	return median(count);
+}
+
+/* Compare the two measured bands with the broadest current overlap. A constant
+ * median log ratio removes their relative gain; the median absolute departure
+ * describes shape disagreement without assuming Gaussian noise. Fitting both
+ * bands against a shared vendor constraint would hide disagreement at its edge. */
+static int check_bands(double floor)
+{
+	double widest = -1.0;
 	for (unsigned a = 0; a < LASER_CAL_SEGMENTS; ++a) {
 		if (work.group_levels[a] < 6) {
 			continue;
 		}
 		for (unsigned b = a + 1U; b < LASER_CAL_SEGMENTS; ++b) {
+			if (atomic_get(&fit_cancel)) return -ECANCELED;
 			if (work.group_levels[b] < 6) {
 				continue;
 			}
-			unsigned count = 0;
-			for (unsigned i = 1; i < result.records; ++i) {
-				const struct laser_cal_record *r = &data.records[i];
-				if (r->segment != a || !isfinite(work.log_signal[i]) || current_of(r) < floor) {
-					continue;
-				}
-				bool covered = false;
-				for (unsigned j = 1; j < result.records; ++j) {
-					if (data.records[j].segment == b && isfinite(work.log_signal[j]) &&
-					    data.records[j].current_tenth_ma == r->current_tenth_ma &&
-					    fabs((double)work.log_signal[i] - (double)work.log_signal[j]) >= log(2.0)) {
-						covered = true;
-						break;
-					}
-				}
-				if (!covered) {
-					continue;
-				}
-				unsigned at = 0;
-				while (at < count && work.levels[at] < r->current_tenth_ma) {
-					++at;
-				}
-				if (at == count || work.levels[at] != r->current_tenth_ma) {
-					memmove(&work.levels[at + 1U], &work.levels[at], (count - at) * sizeof(work.levels[0]));
-					work.levels[at] = r->current_tenth_ma;
-					++count;
-				}
+			unsigned levels = current_levels(a, floor, true), count = 0;
+			float ratios[LASER_CAL_GRID_COUNT];
+			double bottom = 0.0, top = 0.0;
+			for (unsigned j = 0; j < levels; ++j) {
+				double first = band_signal(a, work.levels[j]);
+				double second = band_signal(b, work.levels[j]);
+				if (!(first > 0.0) || !(second > 0.0)) continue;
+				double ratio = log(first / second);
+				if (fabs(ratio) < log(2.0)) continue;
+				if (count == 0) bottom = work.levels[j] / 10.0;
+				top = work.levels[j] / 10.0;
+				ratios[count++] = ratio;
 			}
-			if (count >= 6 && (work.levels[count - 1U] - work.levels[0]) / 10.0 > widest) {
-				bottom = work.levels[0] / 10.0; top = work.levels[count - 1U] / 10.0;
-				widest = top - bottom; first = a; second = b;
+			if (count >= 6 && top - bottom > widest) {
+				widest = top - bottom;
+				memcpy(work.ordered, ratios, count * sizeof(ratios[0]));
+				double center = median(count);
+				for (unsigned j = 0; j < count; ++j) {
+					work.ordered[j] = fabs((double)ratios[j] - center);
+				}
+				result.fit.band_fraction = expm1(median(count));
 			}
 		}
 	}
-	if (first < 0) {
+	if (widest < 0.0) {
 		return CAL_PD_COVERAGE;
 	}
-	struct source_curve a, b;
-	int rc = search_curve(floor, quadratic, first, true, &a);
-	if (rc == 0) {
-		rc = search_curve(floor, quadratic, second, true, &b);
-	}
-	if (rc != 0) {
-		return rc;
-	}
-	double maximum = 0.0;
-	for (unsigned j = 0; j <= 64; ++j) {
-		double current = bottom + (top - bottom) * j / 64.0;
-		maximum = fmax(maximum, fabs(normalized_power(&a, current) - normalized_power(&b, current)) *
-			meta.ref_mw / vendor_reference[result.laser].ref_mw);
-	}
-	result.fit.band_fraction = maximum;
-	if (vendor_boundary(&a, floor) || vendor_boundary(&b, floor)) {
-		return CAL_VENDOR_MISMATCH;
-	}
-	return maximum <= meta.max_fit_residual_pct / 100.0 ? 0 : CAL_BAND_DISAGREEMENT;
+	return result.fit.band_fraction <= meta.max_fit_residual_pct / 100.0 ? 0 : CAL_BAND_DISAGREEMENT;
 }
 
 /* Exact-condition differences remain available independently of curve quality.
@@ -1064,8 +1039,9 @@ static void summarize_repeats(void)
 	}
 }
 
-/* One support decision followed by one broad central curve. No rescue interval,
- * per-condition residual veto, noise inflation, or time-dependent gain correction. */
+/* Local threshold plus vendor source shape, validated against the full capture.
+ * No rescue interval, path-learned curvature, noise inflation, or time-dependent
+ * gain correction. Review leaves the broad candidate available for adoption. */
 static int fit_laser(void)
 {
 	memset(&result.fit, 0, sizeof(result.fit));
@@ -1076,7 +1052,8 @@ static int fit_laser(void)
 		return rc;
 	}
 	double floor = NAN;
-	rc = support_floor(&floor);
+	uint16_t local_last[LASER_CAL_SEGMENTS] = {0};
+	rc = support_floor(&floor, local_last);
 	if (rc != 0) {
 		summarize_repeats();
 		return rc;
@@ -1085,6 +1062,10 @@ static int fit_laser(void)
 	result.fit.max_ma = meta.max_ma;
 	for (unsigned group = 0; group < LASER_CAL_SEGMENTS; ++group) {
 		work.group_levels[group] = current_levels(group, floor, true);
+		if (local_last[group] != 0 && (work.group_levels[group] < 2 ||
+		    work.levels[1] > local_last[group])) {
+			return CAL_INSUFFICIENT_POINTS;
+		}
 	}
 	unsigned levels = current_levels(-1, floor, true);
 	if (levels < 6) {
@@ -1100,41 +1081,18 @@ static int fit_laser(void)
 		summarize_repeats();
 		return CAL_MAXIMUM_UNAVAILABLE;
 	}
-	struct source_curve line, curve;
-	rc = search_curve(floor, false, -1, true, &line);
-	bool line_feasible = rc == 0;
-	if (rc != 0 && rc != -ECANCELED) {
-		/* A curved vendor trace can exclude every line. The ordinary physical
-		 * line still defines eta; only the retained curve needs that envelope. */
-		rc = search_curve(floor, false, -1, false, &line);
-	}
+	struct source_curve curve;
+	rc = search_curve(floor, local_last, &curve);
 	if (rc != 0) {
 		summarize_repeats();
 		return rc;
 	}
-	curve = line;
-	curve_diagnostics(&curve, floor);
-	if (!line_feasible || result.fit.median_fraction > meta.max_fit_residual_pct / 100.0) {
-		struct source_curve quadratic;
-		int error = search_curve(floor, true, -1, true, &quadratic);
-		if (error == -ECANCELED) {
-			return error;
-		}
-		if (error == 0 && (!line_feasible || quadratic.cost < curve.cost)) {
-			curve = quadratic;
-		} else if (!line_feasible) {
-			summarize_repeats();
-			return error;
-		}
-	}
 	struct laser_calibration_fit *f = &result.fit;
 	f->floor_ma = floor; f->max_ma = meta.max_ma;
 	f->threshold_ma = curve.threshold;
-	f->efficiency_mw_per_ma = meta.ref_mw / (meta.ref_ma - line.threshold);
-	double central_efficiency = meta.ref_mw / (meta.ref_ma - curve.threshold);
-	f->efficiency_mw_per_ma2 = central_efficiency * curve.curvature / (meta.ref_ma - curve.threshold);
-	f->efficiency_ref_ma = f->efficiency_mw_per_ma2 == 0.0f ? meta.ref_ma : meta.ref_ma +
-		(f->efficiency_mw_per_ma - central_efficiency) / (double)f->efficiency_mw_per_ma2;
+	f->efficiency_mw_per_ma = meta.ref_mw / (meta.ref_ma - curve.threshold);
+	f->efficiency_mw_per_ma2 = f->efficiency_mw_per_ma * curve.curvature / (meta.ref_ma - curve.threshold);
+	f->efficiency_ref_ma = meta.ref_ma;
 	f->baseline_mv = work.baseline[0];
 	double q = f->efficiency_mw_per_ma2;
 	f->valid = isfinite(f->efficiency_ref_ma) && f->efficiency_mw_per_ma > 0.0 &&
@@ -1144,13 +1102,14 @@ static int fit_laser(void)
 	if (!f->valid) {
 		return CAL_FIT_FAILED;
 	}
-	rc = check_bands(floor, curve.curvature != 0.0);
+	rc = check_bands(floor);
 	if (rc == -ECANCELED) {
 		return rc;
 	}
-	/* Independent fits use the same scratch; restore selected gains/support. */
+	/* Full-range measurements validate the proposal and estimate path gains;
+	 * they cannot move the local threshold or the vendor-derived curvature. */
 	curve_diagnostics(&curve, floor);
-	if (vendor_boundary(&curve, floor)) {
+	if (vendor_mismatch(&curve, floor)) {
 		rc = CAL_VENDOR_MISMATCH;
 	} else if (f->median_fraction > meta.max_fit_residual_pct / 100.0) {
 		rc = CAL_NONLINEAR;
@@ -1171,6 +1130,7 @@ static int fit_laser(void)
 	summarize_repeats();
 	f->noise_error = fit_noise();
 	f->noise_valid = f->noise_error == 0;
+	if (f->noise_error == -ECANCELED) return -ECANCELED;
 	return rc;
 }
 

@@ -33,9 +33,9 @@ struct laser_calibration_request {
 
 struct laser_calibration_fit {
 	double threshold_ma;
-	double efficiency_mw_per_ma;
-	double efficiency_ref_ma;
-	float efficiency_mw_per_ma2;
+	double efficiency_mw_per_ma; /* Reference-anchored line at the measured local threshold. */
+	double efficiency_ref_ma; /* Vendor reference current; quadratic correction is zero here. */
+	float efficiency_mw_per_ma2; /* Curvature from the vendor trace, not the assembled optical path. */
 	double floor_ma;
 	double max_ma; /* Candidate endpoint; top_supported distinguishes measured shape coverage. */
 	double baseline_mv;
@@ -43,7 +43,7 @@ struct laser_calibration_fit {
 	double max_residual_fraction;
 	double median_fraction; /* exp(median absolute log residual) - 1; not a standard error. */
 	double revisit_fraction;
-	double band_fraction;
+	double band_fraction; /* Median absolute log-ratio departure, transformed with expm1. */
 	float repeat_before_mv;
 	float repeat_after_mv;
 	uint32_t repeat_elapsed_ms;

@@ -96,16 +96,22 @@ three measured same-run dark means, at the midpoint of the two timestamps.
 Light observations must be bracketed by the measured darks. This correction
 cannot identify unobserved baseline changes between anchors.
 
-The source fit uses one free positive gain per exact DAC pair, shared across all
-visits to that pair. It does **not** assume that the two individually calibrated
-FVOAs add accurately in dB. For corrected signal $S_i$, source power $P(I_i)$ and
-pair gain $G_j$, it minimizes the mean absolute logarithmic residual
-$|\log S_i-\log G_j-\log P(I_i)|$. Each condition has equal weight. The optimal
-log gain is the median for that pair. No quiet ADC window acquires excessive
-weight through a small standard error, and no fitted time-dependent gain removes
-an observed excursion. A pair measured at only one distinct current cannot
-identify source shape: its gain is retained for display, but its observations do
-not enter the source support or central-quality statistics.
+The source model combines the locally measured threshold with vendor-supported
+curvature and the configured reference power. This is intended to improve
+relative throughput when current changes without teaching the source model a
+current-correlated FVOA response. A constant gain per exact DAC pair cannot
+separate those two effects over a broad sweep; more precise PD windows do not
+resolve that ambiguity.
+
+For corrected signal $S_i$, source power $P(I_i)$ and pair gain $G_j$, the local
+threshold fit minimizes the mean absolute logarithmic residual
+$|\log S_i-\log G_j-\log P(I_i)|$. Each condition has equal weight, and the
+optimal log gain is the median for that pair. The same positive pair gains are
+then estimated over the full retained support for diagnostics and noise. They
+are shared across visits, so no fitted time-dependent gain removes an observed
+excursion. This does not require the individual FVOA models to add accurately in
+dB. A pair measured at only one distinct current retains a display gain but
+cannot identify source shape or enter central-quality statistics.
 
 `median_fraction` is `exp(median(abs(log(S/predicted))))-1`: a descriptive,
 symmetric multiplicative central residual. RMS and maximum retain ordinary
@@ -115,7 +121,7 @@ current-dependent coupling from intrinsic laser response. Absolute source power
 remains conditional on the existing vendor reference current/power; the captured
 calibrations alone do not establish an independent absolute optical scale.
 
-### Support is chosen before the broad fit
+### Local threshold and broad diagnostic support
 
 Sparse ranging islands with fewer than four distinct currents cannot identify
 a lasing knee. For the two lowest-current informative DAC pairs, use the first six
@@ -137,7 +143,10 @@ a one-grid-step difference does not invalidate their common usable support.
 If their local windows have no usable common current, report unavailable support;
 do not start a search for a passing interval.
 The local knee is a support diagnostic, distinct from the installed model's
-extrapolated zero.
+extrapolated zero. Only positive paired late observations from those same local
+windows, at or above the selected floor, determine the installed threshold.
+High-current path curvature cannot move that threshold. The complete broad
+capture remains available for model diagnostics, noise and review.
 
 At least six distinct usable currents are required above the selected floor.
 The broad candidate extends to the unchanged requested maximum. No upper-end
@@ -155,24 +164,22 @@ Write the reference-normalized response as
 ```
 
 The threshold search is bounded by zero and the selected floor minus 0.1 mA.
-At fixed threshold, the vendor-envelope and positive-derivative conditions are
-linear inequalities in the scalar curvature. Their intersection gives its
-allowed interval; no covariance or confidence allowance enlarges that interval.
-A 65-by-65 coarse search followed by four 17-by-17 local refinements bounds the
-work. The line uses the same threshold search with zero curvature. If no line can
-satisfy the vendor envelope, its unconstrained physical slope is used only for
-the four-coefficient representation; the quadratic still must satisfy the
-envelope. Numerical
-work is cancellable, uses the existing shared static scratch, and runs at the
-existing lowest application priority.
+At each trial threshold, the reference fixes the linear efficiency. Use zero
+curvature when that line agrees with the vendor trace within the existing
+characterization allowance. Otherwise fit one quadratic coefficient to the
+vendor trace, weighting by current spacing so dense digitization does not
+dominate it, and retain a physical increasing response. Broad in-situ residuals
+do not choose curvature or refit the threshold. Numerical work is cancellable,
+uses the existing shared static scratch, and runs at the existing lowest
+application priority.
 
 Immutable tables in `laser_calibration.c` come from the existing report
 extractions in `doc/datasheets/`. They are approximate digitizations, not raw
 vendor measurements. At each retained knot inside support require
 `abs(Pfit-Pvendor) <= tolerance * vendor_reference_power`; the default tolerance
-is 5%. The trace is not extrapolated. Reaching this envelope produces a broad
-vendor-guided candidate for human review rather than pretending that the in-situ
-measurements independently identify its curvature.
+is 5%. The trace is not extrapolated. A physical candidate outside that allowance
+requires review. The reference guides the proposed shape; this is not evidence
+that the in-situ optical path independently measured its curvature.
 
 | Laser | Report serial | Trace range (mA) | Retained knots | Reference power (mW) |
 |---|---|---:|---:|---:|
@@ -183,15 +190,16 @@ measurements independently identify its curvature.
 | 1510h | 8882ACT | 5.03–55.53 | 23 | 10 |
 | 2330k | D4520009 | 0.96–119.52 | 68 | 3.18 |
 
-Prefer the line when its central median residual is within tolerance. Otherwise
-try the quadratic and retain the better broad central fit. Automatic acceptance
-also requires agreement between independently fitted high/low PD-band curves,
-using at least six common measured currents and at least a factor-two signal
-separation. Their maximum curve difference over common support must be within
-the same fraction of vendor reference power. This comparison concerns central
-curves, not the worst individual noisy pair. A band curve reaching the vendor
-envelope also requires review. Raw acquisition and every excursion remain
-available regardless of numerical acceptance.
+Automatic acceptance retains the existing central median-residual tolerance and
+requires compatible measured high/low PD-band shapes. Select the widest pair of
+bands with at least six common measured currents and a factor-two signal
+separation. At each current, take the median across repeated conditions, then
+compare the bands' logarithmic signal ratios after removing their constant gain
+ratio. `band_fraction` is the median absolute log-ratio deviation, converted to a
+fraction with `expm1`. This is a raw shape diagnostic, not agreement between two
+curves both pulled toward the same vendor trace. It uses the same default 5%
+tolerance; absent coverage is unavailable, not evidence of agreement. Raw
+acquisition and every excursion remain available regardless of acceptance.
 
 The installed representation is unchanged:
 
@@ -200,11 +208,11 @@ P(I)=(I-t)[\eta+q(I-I_e)].
 ```
 
 `threshold_current_ma` is the curve's extrapolated zero.
-`efficiency_mw_per_ma` retains the uncorrected broad linear fit's slope on the
-same support. `efficiency_mw_per_ma2` is the quadratic correction and
-`efficiency_ref_ma` is the coordinate that preserves that linear slope while
-reproducing the fitted polynomial. It need not equal the vendor reference
-current. Supply all four coefficients when adopting a model. Engineering
+`efficiency_mw_per_ma` is $P_{ref}/(I_{ref}-t)$.
+`efficiency_mw_per_ma2` is the vendor-supported quadratic correction and
+`efficiency_ref_ma` equals the configured reference current. The curve therefore
+passes through the reference power without carrying a discarded broad-fit slope
+in its representation. Supply all four coefficients when adopting a model. Engineering
 maximum/nominal currents remain unchanged; the automatic current bounds express
 adopted support and do not limit engineering `value_ma` commands.
 
@@ -223,7 +231,9 @@ is only an illumination eligibility check, not a claim about slow variability.
 
 The worst eligible excursion is `abs(after/before-1)`, with commanded current,
 exact DAC codes, both dark-corrected signals, elapsed time and support membership.
-It is neither a Gaussian sigma nor a maximum possible excursion. If no eligible
+It is neither a Gaussian sigma nor a maximum possible excursion. Current-range
+membership alone does not say whether its attenuator setting is representative:
+review the DAC voltages and that pair's measured usable response. If no eligible
 comparison exists, the worst value is unavailable; all original records remain
 visible. There is no misleading percentage from below-lasing spontaneous light.
 Review-needed calibration automatically changes no curve, noise or route settings.
@@ -303,7 +313,7 @@ version **6**. No old wire layout is accepted by the live decoder.
 | 498 | `uint32 settle_ms` |
 | 502 | Three `uint32 baseline_knots_ms` values, in elapsed-time order |
 | 514 | Three double measured `baseline_knots_mv` values |
-| 538 | Three doubles: median residual fraction, independent PD-band curve difference / vendor reference power, worst eligible repeat fraction |
+| 538 | Three doubles: median residual fraction, raw PD-band log-ratio shape deviation as a fraction, worst eligible repeat fraction |
 | 562 | Three uint16 counts: matched repeats, usable repeats, usable repeats in support |
 | 568 | Three uint16 values: worst-repeat current in 0.1 mA, DAC1 code, DAC2 code |
 | 574 | uint32 elapsed time between worst-repeat conditions, ms |

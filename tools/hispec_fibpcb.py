@@ -717,7 +717,14 @@ class AttenuatorCalibrationStatus(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class LaserCalibrationFit(ResponseRepr):
-    """Curve estimates and separate acceptance, RAM-application and NVS outcomes."""
+    """Source-model coefficients and separate acceptance, RAM and NVS outcomes.
+
+    Power is (I-threshold)*(efficiency + quadratic*(I-efficiency_ref_ma)).
+    Current firmware anchors efficiency at the reference current/power and uses
+    vendor characterization for broad curvature; the local data determine the
+    threshold. Older saved candidates retain their original reference coordinate.
+    A valid model can require review when the measured optical paths disagree.
+    """
 
     valid: bool
     accepted: bool
@@ -5486,16 +5493,21 @@ class HispecFibPcb:
         Automatically accepted models apply unless apply=False. Other valid
         candidates remain available for review; acquisition and raw-data download
         still complete. persist opts into NVS and requires apply.
-        Efficiency is the uncorrected linear-fit slope on the same support.
+        Local turn-on observations determine threshold. Reference power/current
+        anchors efficiency, and vendor characterization supplies curvature when
+        the anchored line is inadequate. Broad optical-path distortion does not
+        independently redefine the source curve.
         Every sampled current has high/low PD conditions; the upper block has
         a middle level too. Retain one early and two late windows per condition;
-        settle_ms measures from actuation to the first late window. The joint
-        robust fit profiles a gain for each exact DAC pair. Three observed dark
-        knots set the interpolated baseline. The broad candidate range is not
-        shortened to suppress path variability. Engineering maximum and nominal
-        are never changed. Central-model residuals and independent PD-band curves
-        assess the model; repeat differences describe observed variability and do
-        not veto it. No Gaussian confidence interval is claimed. Noise estimates are retained for
+        settle_ms measures from actuation to the first late window. A separate
+        fitted gain for each exact DAC pair describes its measured response to
+        the source model. Three observed dark knots set the interpolated baseline.
+        The broad candidate range is not shortened to suppress path variability.
+        Engineering maximum and nominal are never changed. Central-model
+        residuals and measured PD-band signal ratios assess agreement; the band
+        comparison imposes no reference shape. Repeat differences describe
+        observed variability and do not veto the model. No Gaussian confidence
+        interval is claimed. Noise estimates are retained for
         identifiable review-needed candidates and remain diagnostic unless
         update_noise=True on an automatically accepted run. Loss fitting requires
         the explicit external loopback loss, excluding the configured PD return.

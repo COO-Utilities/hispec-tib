@@ -297,6 +297,13 @@ availability; `fit.accepted` describes automated acceptance. A valid candidate
 can have noise estimates even when acceptance requires review. Within-window
 constant/fractional noise and observed repeat variability describe different
 timescales; neither identifies the laser alone as the cause of variation.
+The threshold comes from the lowest informative local current windows; curvature
+comes from the vendor trace when a reference-normalized line is inadequate.
+Broad path observations remain diagnostics rather than redefining source shape.
+`band_fraction` compares raw high/low signal-ratio shapes after removing their
+constant gain ratio; it is not agreement between two vendor-constrained fits.
+The installed efficiency is `ref_mw / (ref_ma - threshold_current_ma)`, and
+`efficiency_ref_ma` is the configured `ref_ma`.
 Install a reviewed saved curve with `laser_settings`, supplying `threshold_current_ma`,
 `efficiency_mw_per_ma`, `efficiency_mw_per_ma2` and `efficiency_ref_ma` together.
 Supply the reviewed operating range as `min_autolevel_current_ma` and
