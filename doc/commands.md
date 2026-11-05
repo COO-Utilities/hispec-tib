@@ -413,10 +413,11 @@ cause; it does not invent a pre-reset software diagnosis.
   `passive`/`autolevel`/`preparing`/`stopping`, laser calibration
   `running`/`fitting`/`awaiting_output`/`stop failed`, atten calibration
   (`running` or `stop failed`), PD dark
-  capture, serial guard, requested reboot and active OTA. Calibration results
+  capture, MEMS toggling, serial guard, requested reboot and active OTA. Calibration results
   remain at their own endpoints. An empty array means none of these is active.
   If the throughput owner is busy, its entry says
-  `measure_throughput: status busy`; other available activity is still listed.
+  `measure_throughput: status busy`; OTA uses `ota: status busy` if its snapshot
+  is busy. Other available activity is still listed.
 
 **Emission:** each of the selected channel's three entries has this shape:
 

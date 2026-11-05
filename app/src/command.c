@@ -1465,6 +1465,28 @@ enum status_error {
     STATUS_NTP_ERROR = BIT(6),
 };
 
+/* Shared active work on every profile; append to the caller's activity list. */
+static int status_activity_end(char *b, size_t *o, const struct status_optics *s,
+                               const struct coo_ota_status *ota, bool ota_valid, bool first)
+{
+    for (size_t i = 0; s->mems_valid && i < router.num_switches; ++i) if (s->mems[i].toggling) {
+        STATUS_ADD("%s\"mems: toggling\"", first ? "" : ","); first = false;
+        break;
+    }
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+    if (atomic_get(&command_runtime.serial_guard_active)) {
+        STATUS_ADD("%s\"serial guard active\"", first ? "" : ","); first = false;
+    }
+#endif
+    if (atomic_get(&command_runtime.reboot_pending)) {
+        STATUS_ADD("%s\"reboot requested\"", first ? "" : ","); first = false;
+    }
+    if (!ota_valid || ota->active)
+        STATUS_ADD("%s\"ota: %s\"", first ? "" : ",", ota_valid ? "active" : "status busy");
+    STATUS_ADD("]");
+    return 0;
+}
+
 static int status_tib_main(char *b, size_t *o, const struct status_optics *s,
                            const struct coo_ota_status *ota, bool ota_valid, unsigned *errors)
 {
@@ -1556,17 +1578,7 @@ static int status_tib_main(char *b, size_t *o, const struct status_optics *s,
     for (size_t ch = 0; ch < 2; ++ch) if (pd[ch].dark_pending) {
         STATUS_ADD("%s\"pd/dark %s: running\"", first ? "" : ",", ch ? "hk" : "yj"); first = false;
     }
-#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
-    if (atomic_get(&command_runtime.serial_guard_active)) {
-        STATUS_ADD("%s\"serial guard active\"", first ? "" : ","); first = false;
-    }
-#endif
-    if (atomic_get(&command_runtime.reboot_pending)) {
-        STATUS_ADD("%s\"reboot requested\"", first ? "" : ","); first = false;
-    }
-    if (ota_valid && ota->active) STATUS_ADD("%s\"ota: active\"", first ? "" : ",");
-    STATUS_ADD("]");
-    return 0;
+    return status_activity_end(b, o, s, ota, ota_valid, first);
 }
 
 static int status_system(char *b, size_t *o, const struct status_optics *s,
@@ -1678,18 +1690,8 @@ static int status_payload(char *b, size_t *o, int view, int channel)
         else {
             if (devices_board_type() != HISPEC_BOARD_UNKNOWN) STATUS_CALL(status_external_outputs(b, o, &optics));
             else errors |= STATUS_BOARD_ERROR;
-            bool first = true;
             STATUS_ADD(",\"activity\":[");
-#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
-            if (atomic_get(&command_runtime.serial_guard_active)) {
-                STATUS_ADD("\"serial guard active\""); first = false;
-            }
-#endif
-            if (atomic_get(&command_runtime.reboot_pending)) {
-                STATUS_ADD("%s\"reboot requested\"", first ? "" : ","); first = false;
-            }
-            if (ota_valid && ota.active) STATUS_ADD("%s\"ota: active\"", first ? "" : ",");
-            STATUS_ADD("]");
+            STATUS_CALL(status_activity_end(b, o, &optics, &ota, ota_valid, true));
         }
     }
     bool first = true;
