@@ -21,10 +21,6 @@
 #include "laser_properties.h"
 #include "laserbank_tempcontrol.h"
 
-#define APP_SETTINGS_NVS_ID_LAST_COMMAND 0x0009U
-
-struct nvs_fs;
-
 struct app_ip_settings {
 	bool try_dhcp_first;
 	bool prefer_dhcp_dns;
@@ -207,6 +203,19 @@ struct app_settings_snapshot {
 	uint32_t mqtt_revision;
 };
 
+/** Small read-only status projection; this is never stored in NVS. */
+struct app_status_settings {
+    uint32_t boot_count;
+    struct app_mqtt_settings mqtt;
+    double launch_tx[APP_LASER_CHANNEL_COUNT][2]; /* AO, FEI; includes source-specific overrides. */
+    double split_tx[APP_MEMS_SPLIT_CHANNEL_COUNT][APP_MEMS_SPLIT_OUTPUT_COUNT];
+    bool split_configured[APP_MEMS_SPLIT_CHANNEL_COUNT];
+};
+
+/** Try copying status inputs from RAM. False leaves out untouched. Copies under
+ * K_NO_WAIT, then resolves losses after unlocking; no flash, writes or logging. */
+bool app_settings_try_get_status(struct app_status_settings *out);
+
 /**
  * @brief Mount app NVS storage, load persisted values, and keep defaults on failure.
  *
@@ -353,8 +362,5 @@ uint32_t app_settings_get_mqtt_revision(void);
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */
 void app_settings_increment_boot_count(void);
-
-/** @brief Return app NVS storage for command-dispatch owned records, or NULL if unavailable. */
-struct nvs_fs *app_settings_nvs_fs(void);
 
 #endif /* HISPEC_APP_SETTINGS_H */

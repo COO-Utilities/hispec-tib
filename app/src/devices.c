@@ -314,6 +314,13 @@ static void format_reset_cause_list(uint32_t cause, char *buf, size_t buf_len)
 	}
 }
 
+bool devices_boot_reset_cause(char *out, size_t len)
+{
+    if (!boot_reset_cause_valid) return false;
+    format_reset_cause_list(boot_reset_cause, out, len);
+    return true;
+}
+
 void devices_capture_boot_reset_cause(void)
 {
 	uint32_t cause = 0U;

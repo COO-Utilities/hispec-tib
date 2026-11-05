@@ -383,33 +383,48 @@ class LastCommand(ResponseRepr):
 
 
 @dataclass(frozen=True, repr=False)
-class StatusLaserSummary(ResponseRepr):
-    power_mw: float | None = None
-    ready: bool = False
-    tec_on_s: int | None = None
-    off_in_s: int | None = None
-
-
-@dataclass(frozen=True, repr=False)
-class StatusAttenSummary(ResponseRepr):
-    value_db: float | None = None
-
-
-@dataclass(frozen=True, repr=False)
 class Status(ResponseRepr):
-    fw: str
-    boots: int
-    board: str
-    board_ok: bool
-    mems_switches: int
-    relay_err: int
-    amb_c: float | None
-    pd_on_s: int
-    laserbank_on_s: int
-    lastcmd: LastCommand
-    ip: IpConfig | None = None
-    lasers: tuple[NamedValue, ...] = ()
-    attens: tuple[NamedValue, ...] = ()
+    """One status reply. View/profile sections retain their JSON dictionaries.
+
+    None means absent or unavailable; optical strings carry split annotations.
+    PD power already includes wavelength_coeff. Retro flux is after its FVOAs,
+    before unrecorded retro-path loss. Reading status never powers hardware.
+    """
+
+    device: str
+    utc: int | None
+    uptime_s: int
+    reset_cause: str | None
+    fw: str | None = None
+    boots: int | None = None
+    view: str | None = None
+    channel: str | None = None
+    ambient_c: float | str | None = None
+    bank: dict[str, Any] | None = None
+    lasers: dict[str, str] | None = None
+    outputs: dict[str, Any] | None = None
+    pd: dict[str, Any] | None = None
+    activity: tuple[str, ...] | None = None
+    mems: dict[str, Any] | None = None
+    split: dict[str, Any] | None = None
+    atten: dict[str, Any] | None = None
+    emission: dict[str, Any] | None = None
+    ip: dict[str, Any] | None = None
+    mqtt: dict[str, Any] | None = None
+    ntp: dict[str, Any] | None = None
+    lastcmd: LastCommand | None = None
+    queues: dict[str, int] | None = None
+    ota: dict[str, Any] | None = None
+    serial_guard_s: int | None = None
+    reboot_in_s: int | None = None
+    dropped_best_effort: int | None = None
+    dropped_replies: int | None = None
+    publish_failures: int | None = None
+    errors: tuple[str, ...] = ()
+
+    def _repr_items(self) -> tuple[tuple[str, Any], ...]:
+        return tuple((name, value) for name, value in super()._repr_items()
+                     if value is not None and not (name == "errors" and not value))
 
 
 @dataclass(frozen=True, repr=False)
@@ -471,12 +486,13 @@ class LaserStatus(ResponseRepr):
     name: str
     powered: bool
     ready: bool
-    output_state: Literal["stopped", "running", "stopped_fault", "unknown"]
+    output_state: Literal["stopped", "running", "unexpected stop", "unknown"]
     blocked_reason: str | None
     tec_on_s: int | None
     emit_on_s: int | None
     emit_total_s: int | None
     temp_c: float | None
+    tec_temp_set_c: float | None
     i_mA: float | None
     value: float | None
     power_mw: float | None
@@ -615,15 +631,17 @@ class LaserBankHeater(ResponseRepr):
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorState(ResponseRepr):
-    db: float
+    loss_db: float
     linear: float
-    v1_mv: float
-    v2_mv: float
-    db1: float
-    db2: float
+    mv1: float
+    mv2: float
+    loss1_db: float
+    loss2_db: float
     linear1: float
     linear2: float
 
+    open1_mv: float
+    open2_mv: float
 
 @dataclass(frozen=True, repr=False)
 class AttenuatorPhysicalCoeff(ResponseRepr):
@@ -4620,38 +4638,26 @@ class HispecFibPcb:
             routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
         )
 
-    def status(self, *, ip: bool = False, lasers: bool = False, attens: bool = False) -> Status:
-        """Query board status; inactive laser timers remain None in the summaries."""
-        payload = _optional_payload(ip=None if ip is False else ip,
-                                    lasers=None if lasers is False else lasers,
-                                    attens=None if attens is False else attens)
-        data = self._request_json("status", payload)
-        return Status(
-            fw=str(data["fw"]),
-            boots=int(data["boots"]),
-            board=str(data["board"]),
-            board_ok=bool(data["board_ok"]),
-            mems_switches=int(data["mems_switches"]),
-            relay_err=int(data["relay_err"]),
-            amb_c=data.get("amb_c"),
-            pd_on_s=int(data["pd_on_s"]),
-            laserbank_on_s=int(data["laserbank_on_s"]),
-            lastcmd=_dataclass_from(LastCommand, data["lastcmd"]),
-            ip=_decode_ip_config(data["ip"]) if "ip" in data else None,
-            lasers=_named_values(
-                data.get("lasers", {}),
-                lambda _name, value: StatusLaserSummary(
-                    power_mw=value.get("power_mw"),
-                    ready=bool(value["ready"]),
-                    tec_on_s=None if value.get("tec_on_s") is None else int(value.get("tec_on_s")),
-                    off_in_s=None if value["off_in_s"] is None else int(value["off_in_s"]),
-                ),
-            ),
-            attens=_named_values(
-                data.get("attens", {}),
-                lambda _name, value: StatusAttenSummary(value_db=value.get("value_db")),
-            ),
-        )
+    def status(self, *, view: Literal["emission", "mems", "system"] | None = None,
+               channel: Literal["yj", "hk"] | None = None) -> Status:
+        """Read cached operating status without hardware I/O or persistence.
+
+        The default includes outputs, PD levels and all active work. TIB emission
+        requires a channel; mems has no selector. AS/CAL include MEMS details in
+        the default reply. System contains network/queue/OTA diagnostics.
+        No automatic sequence of requests or compatibility options is issued.
+        """
+        if view not in (None, "emission", "mems", "system"):
+            raise ValueError("invalid status view")
+        if view == "emission" and channel not in ("yj", "hk"):
+            raise ValueError("emission requires channel yj or hk")
+        if view != "emission" and channel is not None:
+            raise ValueError("channel is only used with emission")
+        data = self._request_json("status", _optional_payload(view=view, channel=channel))
+        return _dataclass_from(Status, data,
+            lastcmd=_dataclass_from(LastCommand, data["lastcmd"]) if data.get("lastcmd") else None,
+            activity=tuple(data["activity"]) if data.get("activity") is not None else None,
+            errors=tuple(data.get("errors", ())))
 
     def ip(
         self,
@@ -5717,7 +5723,7 @@ class HispecFibPcb:
         initial_level: float | None = None,
         input: str | None = None,
         output: str | None = None,
-        max_flux_ph_s: float | None = None,
+        max_flux_nw: float | None = None,
         off_in_s: int = 300,
         format: Literal["json", "binary"] = "binary",
         collect: bool = False,
@@ -5726,6 +5732,8 @@ class HispecFibPcb:
     ) -> CommandOk | ThroughputMonitor:
         """Start a measurement, using binary telemetry unless JSON is requested.
 
+        max_flux_nw caps optical power after FVOAs, before static launch loss;
+        omitted or zero disables that cap. It is valid only with autolevel.
         Applies launch and MM/SM return routes and captures their losses for the run.
         For laser="none", specify channel and autolevel=False: only the return is
         selected unless both input and output are supplied. Detected power is
@@ -5754,7 +5762,7 @@ class HispecFibPcb:
         payload = _optional_payload(laser=laser, channel=channel, fiber=fiber,
                                     autolevel=autolevel, off_in_s=off_in_s, format=format,
                                     autolevel_response_hz=autolevel_response_hz,
-                                    output=output, input=input, max_flux_ph_s=max_flux_ph_s,
+                                    output=output, input=input, max_flux_nw=max_flux_nw,
                                     initial_level=initial_level)
         monitor = None
         if collect:
@@ -5880,8 +5888,8 @@ class HispecFibPcb:
                     records = monitor.to_recarray()
                     fresh = records[(records.t_ms >= after_ms)
                         & np.isclose(records.laser_current_ma, actual.i_mA, atol=0.051, rtol=0)
-                        & np.isclose(records.dac1_mv, drive.v1_mv, atol=0.001, rtol=0)
-                        & np.isclose(records.dac2_mv, drive.v2_mv, atol=0.001, rtol=0)]
+                        & np.isclose(records.dac1_mv, drive.mv1, atol=0.001, rtol=0)
+                        & np.isclose(records.dac2_mv, drive.mv2, atol=0.001, rtol=0)]
                     if len(fresh) >= 3 and time.monotonic() >= settled_at:
                         break
                     if time.monotonic() >= deadline:
@@ -5925,8 +5933,8 @@ class HispecFibPcb:
                 self.laser(laser, stop=True)
             return dict(laser=laser, found=found, reason=reason, pd_net_mv=net,
                         level=actual.value, current_ma=actual.i_mA, steps=iteration+1,
-                        atten_db=drive.db, atten1_db=drive.db1, atten2_db=drive.db2,
-                        dac1_mv=drive.v1_mv, dac2_mv=drive.v2_mv,
+                        atten_db=drive.loss_db, atten1_db=drive.loss1_db, atten2_db=drive.loss2_db,
+                        dac1_mv=drive.mv1, dac2_mv=drive.mv2,
                         min_mv=min_mv, max_mv=max_mv, freshness="board_ack_and_confirmed_state")
         except BaseException:
             self.laser(laser, stop=True)
@@ -6193,7 +6201,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="hsfib-tib")
     parser.add_argument("--timeout", type=float, default=5.0)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("status")
+    status = sub.add_parser("status")
+    status.add_argument("--view", choices=("emission", "mems", "system"))
+    status.add_argument("--channel", choices=("yj", "hk"))
     sub.add_parser("smoke")
     laser_status = sub.add_parser("laser-status")
     laser_status.add_argument("laser")
@@ -6218,7 +6228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         connect=True,
     ) as fib:
         if args.command == "status":
-            print(fib.status(ip=True))
+            print(fib.status(view=args.view, channel=args.channel))
         elif args.command == "smoke":
             print(fib.smoke_test())
         elif args.command == "laser-status":

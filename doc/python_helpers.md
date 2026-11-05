@@ -65,7 +65,11 @@ and any existing deadline.
 Selectors alone read; supplying a setting writes. `None` means omitted, and
 zero/`False` are real supplied values within the field's domain. Action endpoints
 such as `reboot()` and `laser_clearfaults()` are explicit exceptions. `status()`
-flags select extra query content. Methods return dataclasses/tuples matching wire
+selectors choose one reply: `status(view="emission", channel="yj")`,
+`status(view="mems")`, or `status(view="system")`. The default returns operating
+state, output power, PD levels and all active work. No automatic fan-out occurs.
+Nested view/profile fields remain dictionaries; `status().pd["yj"]["from"]` is
+a scalar fiber name. Methods return dataclasses/tuples matching wire
 semantics, or `CommandOk` for data-less success; updates do not automatically
 query again. Read a method's return annotation when an endpoint has distinct
 query/update responses (`ip()` can also return `PartialSupport`).
@@ -76,6 +80,10 @@ configured `max_current_ma`; it bypasses the optical inverse, automatic current
 bounds and stored tune request. Supply either `value` or `value_ma`; firmware
 rejects a request containing both.
 Attenuator `_db` is positive power loss, `_mv` is pre-amplifier DAC drive.
+`atten()` returns `loss_db`, `loss1_db`, `loss2_db`, `mv1`, `mv2`, `open1_mv`,
+`open2_mv`, and the existing `linear`, `linear1`, `linear2`.
+`measure_throughput(max_flux_nw=193.232, ...)` caps power after the atten pair,
+before launch loss; zero/omission disables the cap.
 `mems_route_loss(..., loss=0.5)` is a lost fraction (transmission 0.5);
 `loss="3.0103 dB"` requests the same loss. These conventions come from the wire
 specification, not a separate host-unit system.
@@ -384,7 +392,8 @@ interrupt cannot leave a background search issuing commands during cleanup.
 
 From `tools/`, `python hispec_fibpcb.py --help` lists the small CLI. For example,
 `python hispec_fibpcb.py --host broker.example --device hsfib-tib status` connects,
-queries and closes. `warnings` keeps listening until interrupted. The `atten-db`
+queries and closes. Add `--view emission --channel yj`, `--view mems`, or
+`--view system` for one detailed reply. `warnings` keeps listening until interrupted. The `atten-db`
 CLI entry queries the attenuator pair and displays its state, including dB loss.
 Selector arguments are sent to the PCB for validation, just as in notebook calls.
 

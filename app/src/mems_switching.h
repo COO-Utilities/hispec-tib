@@ -125,6 +125,36 @@ struct mems_router {
     struct k_mutex lock;
 };
 
+struct mems_switch_snapshot {
+    char state;
+    bool known;
+    bool toggling;
+    double a_duty;
+    uint32_t cycle_ms;
+    uint32_t off_in_s;
+};
+
+/** Try copying every physical switch under the router lock. No I/O or writes;
+ * false means router work is in progress and out must not be used. */
+bool mems_router_snapshot(const struct mems_router *router,
+                          struct mems_switch_snapshot out[MEMS_ROUTER_MAX_SWITCHES]);
+
+/** Resolve a fixed route against one snapshot: -1 unknown, 0 disconnected,
+ * 1 static, 2 split. Split describes conditional connectivity, not phase or
+ * average power. Pure arithmetic/string matching; no locks or I/O. */
+int mems_route_snapshot_state(const struct mems_router *router,
+                              const struct mems_switch_snapshot *state,
+                              const struct mems_route *route);
+
+/** Existing three-way AS ratio calculation on a caller's snapshot. False for
+ * unknown state or independent toggles outside an AS split request. Static CAL
+ * bypass gives three zeroes. No state changes, I/O, locking or logging. */
+bool mems_split_ratio_snapshot(const struct mems_router *router,
+                               const struct mems_switch_snapshot *state,
+                               uint8_t channel, bool configured,
+                               const double transmission[MEMS_SPLIT_OUTPUT_COUNT],
+                               double output[MEMS_SPLIT_OUTPUT_COUNT]);
+
 /**
  * @brief Initialize a MEMS switch object and configure its two GPIO outputs inactive.
  *

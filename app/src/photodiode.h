@@ -115,6 +115,16 @@ void photodiode_thread(void *p1, void *p2, void *p3);
 /** @brief Copy latest sample, calibration, and moving-window status. */
 void photodiode_get_status(struct photodiode_status *out);
 
+struct photodiode_sample_snapshot {
+    double mv, net_mv, power_uw;
+    int64_t sample_ms;
+    bool dark_pending;
+};
+
+/** Copy the latest two samples under the short sampler lock. No settings, I/O,
+ * window changes, power changes, or timer rearming. Missing samples are NaN. */
+void photodiode_snapshot(struct photodiode_sample_snapshot out[PHOTODIODE_CHANNEL_COUNT]);
+
 /** Wait for ADC completion (binary wakeup only, no queued readings). */
 int photodiode_wait_for_sample(k_timeout_t timeout);
 
@@ -143,39 +153,23 @@ void photodiode_noise_change_end(void);
 double photodiode_power_uw_from_mv(double net_mv,
 				   const struct app_pd_channel_settings *settings);
 
-/** Nearest nominal-laser power correction factor for a positive finite
- * wavelength in nm. Pure table lookup; currently all coefficients are unity.
- * A source-independent PD acquisition does not select a wavelength.
+/** Nearest nominal-laser power multiplier for this detector and wavelength.
+ * Uses typical vendor response curves, normalized to the compiled reference
+ * responsivity. Pure lookup; invalid channel/wavelength returns NaN. The sampler
+ * has no source identity and does not choose a wavelength itself.
  */
-double photodiode_wavelength_coefficient(double wavelength_nm);
+double photodiode_wavelength_coefficient(enum photodiode_channel channel, double wavelength_nm);
 
-/**
- * @brief Convert dark-subtracted ADC millivolts to wavelength-corrected power.
- *
- * Uses the nearest nominal laser wavelength's photodiode correction coefficient
- * plus app-owned response settings. The current coefficient table is fixed in
- * firmware, performs no I/O, and uses unity coefficients until lab values are
- * installed. Requires a positive finite wavelength in nm and the same validated
- * settings as photodiode_power_uw_from_mv; returns uW, clips negatives to zero,
- * and propagates NaN input voltage.
+/** Convert net ADC mV to wavelength-corrected incident PD power in uW.
+ * Uses the channel's fixed response multiplier and validated app gain/settings.
+ * The effective gain already includes the PCB divider. Clips negative voltage
+ * to zero, propagates NaN, and performs no I/O or state changes.
  */
 double photodiode_power_uw_from_mv_at_wavelength(
-	double net_mv,
-	double wavelength_nm,
-	const struct app_pd_channel_settings *settings);
-
-/**
- * @brief Convert dark-subtracted ADC millivolts to photon flux.
- *
- * Requires the same validated settings as the power helper and a positive finite
- * wavelength in nm supplied by the caller. Returns photons/s using P*lambda/(h*c)
- * with nearest nominal-laser response correction. Negative net voltage clips to
- * zero; NaN propagates. No I/O or source-ownership assumptions. A broadband source
- * requires a caller-chosen effective wavelength to interpret this conversion.
- */
-double photodiode_photon_flux_from_mv(double net_mv,
-				      double wavelength_nm,
-				      const struct app_pd_channel_settings *settings);
+    enum photodiode_channel channel,
+    double net_mv,
+    double wavelength_nm,
+    const struct app_pd_channel_settings *settings);
 
 /** @brief Validate app-owned photodiode response/dark settings. Performs no I/O. */
 bool photodiode_settings_valid(const struct app_pd_channel_settings *settings);

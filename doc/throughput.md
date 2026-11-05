@@ -128,7 +128,8 @@ model's supported range, the 55 dB per-device ceiling, and reachable DAC drive.
 Laser current is bounded by `min_autolevel_current_ma` and
 `max_autolevel_current_ma`; manual engineering current commands keep their full
 range through `max_current_ma`.
-`max_flux_ph_s` limits modeled flux after FVOAs, before static launch loss; it is
+`max_flux_nw` limits modeled optical power in nW after FVOAs, before static launch
+loss. Omitted or zero disables the cap. It is
 not a measured transient peak guarantee. See [attenuator allocation](attenuator.md)
 for why the pair is balanced without reversing ordinary moves.
 

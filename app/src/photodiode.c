@@ -100,8 +100,6 @@ int photodiode_wait_for_sample(k_timeout_t timeout)
 #define PD_STEP_MIN_UV 5000U
 #define PD_STEP_MIN_MV ((double)PD_STEP_MIN_UV / 1000.0)
 #define PD_STEP_RMS_MULT 8.0
-#define PLANCK_J_S 6.62607015e-34
-#define LIGHT_M_PER_S 299792458.0
 
 BUILD_ASSERT(PD_WINDOW_MAX_SAMPLES > 0U &&
 	     PD_WINDOW_MAX_SAMPLES <= UINT16_MAX,
@@ -111,12 +109,14 @@ struct photodiode_wavelength_coefficient {
     double coefficient;
 };
 
-static const struct photodiode_wavelength_coefficient wavelength_coefficients[] = {
-    { 1028.01, 1.0 },
-    { 1270.0, 1.0 },
-    { 1430.0, 1.0 },
-    { 1510.0, 1.0 },
-    { 2329.81, 1.0 },
+/* Typical-response graphs: FWPR-20-IN p4; PDA10DT Rev N p13, -10 C.
+ * Multipliers normalize to our existing 0.93 / 0.60971 A/W reference settings.
+ * Detector channel matters at 1430 nm. The divider is already in the gain.
+ * These rounded graph readings are not an installed-detector calibration.
+ */
+static const struct photodiode_wavelength_coefficient wavelength_coefficients[PHOTODIODE_CHANNEL_COUNT][3] = {
+    [PHOTODIODE_CHANNEL_YJ] = {{1028.01, 1.42}, {1270.0, 1.11}, {1430.0, 0.997}},
+    [PHOTODIODE_CHANNEL_HK] = {{1430.0, 1.16}, {1510.0, 1.00}, {2329.81, 0.494}},
 };
 
 
@@ -427,42 +427,27 @@ double photodiode_power_uw_from_mv(double net_mv,
         (settings->transimpedance_v_per_a * settings->responsivity_a_per_w);
 }
 
-double photodiode_wavelength_coefficient(double wavelength_nm)
+double photodiode_wavelength_coefficient(enum photodiode_channel channel, double wavelength_nm)
 {
-    double best_delta;
-    double best_coeff;
-
-    best_delta = fabs(wavelength_nm - wavelength_coefficients[0].wavelength_nm);
-    best_coeff = wavelength_coefficients[0].coefficient;
-    for (size_t i = 1U; i < ARRAY_SIZE(wavelength_coefficients); ++i) {
-        double delta = fabs(wavelength_nm - wavelength_coefficients[i].wavelength_nm);
-
-        if (delta < best_delta) {
-            best_delta = delta;
-            best_coeff = wavelength_coefficients[i].coefficient;
-        }
+    if ((unsigned)channel >= PHOTODIODE_CHANNEL_COUNT ||
+        !isfinite(wavelength_nm) || wavelength_nm <= 0.0) return NAN;
+    const struct photodiode_wavelength_coefficient *table = wavelength_coefficients[channel];
+    size_t best = 0;
+    for (size_t i = 1; i < ARRAY_SIZE(wavelength_coefficients[channel]); ++i) {
+        if (fabs(wavelength_nm - table[i].wavelength_nm) <
+            fabs(wavelength_nm - table[best].wavelength_nm)) best = i;
     }
-
-    return best_coeff;
+    return table[best].coefficient;
 }
 
 double photodiode_power_uw_from_mv_at_wavelength(
+    enum photodiode_channel channel,
     double net_mv,
     double wavelength_nm,
     const struct app_pd_channel_settings *settings)
 {
-    double coefficient = photodiode_wavelength_coefficient(wavelength_nm);
-
-    return photodiode_power_uw_from_mv(net_mv, settings) * coefficient;
-}
-
-double photodiode_photon_flux_from_mv(double net_mv,
-                                      double wavelength_nm,
-                                      const struct app_pd_channel_settings *settings)
-{
-    double power_w = photodiode_power_uw_from_mv_at_wavelength(
-        net_mv, wavelength_nm, settings) * 1.0e-6;
-    return power_w * (wavelength_nm * 1.0e-9) / (PLANCK_J_S * LIGHT_M_PER_S);
+    return photodiode_power_uw_from_mv(net_mv, settings) *
+        photodiode_wavelength_coefficient(channel, wavelength_nm);
 }
 
 static bool pd_dark_result_valid(const struct app_pd_dark_result *dark)
@@ -1068,6 +1053,22 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 			.context = context,
 		});
 	}
+}
+
+void photodiode_snapshot(struct photodiode_sample_snapshot out[PHOTODIODE_CHANNEL_COUNT])
+{
+    k_mutex_lock(&pd_runtime_lock, K_FOREVER);
+    for (size_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+        const struct photodiode_runtime_channel *src = &pd_runtime[i];
+        out[i] = (struct photodiode_sample_snapshot){
+            .mv = src->sample_ms > 0 ? src->mv : (double)NAN,
+            .net_mv = src->sample_ms > 0 ? src->net_mv : (double)NAN,
+            .power_uw = src->sample_ms > 0 ? src->power_uw : (double)NAN,
+            .sample_ms = src->sample_ms,
+            .dark_pending = src->dark_action.pending,
+        };
+    }
+    k_mutex_unlock(&pd_runtime_lock);
 }
 
 void photodiode_get_status(struct photodiode_status *out)

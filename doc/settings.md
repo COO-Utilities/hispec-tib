@@ -13,8 +13,8 @@ machinery when they need app-owned intent, calibration, or counters restored.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
-Command dispatch owns the separate last-command NVS record used for boot/status
-visibility.
+Command dispatch keeps last-command diagnostics in RAM for the current boot;
+command traffic does not write a history record to flash.
 
 ## Stored NVS Records
 
@@ -25,7 +25,6 @@ Current app NVS records include:
 - Boot count.
 - IP settings as one record.
 - MQTT broker host/port as one record.
-- Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel, including `rms_db`
   for each physical FVOA. Coefficients and RMS are restored as one record.
 - One photodiode settings record per photodiode channel, including active dark
@@ -191,6 +190,11 @@ app records, not just route losses. Reapply needed settings from reviewed lab
 records; there is no migration. Maiman EEPROM is separate and is not cleared.
 
 ## Intentionally Not Persisted
+
+- Last-command diagnostics are boot-local; retired NVS ID `0x0009` is reserved.
+  External command logs and watchdog boot telemetry provide cross-boot history.
+- `status` uses RAM snapshots only; it adds no NVS record or writes and does not
+  refresh relay deadlines. A busy settings writer yields null status values.
 
 - Active routes are derived from current MEMS switch state and route tables.
   Applying a route persists the affected switch states as static switch intent,

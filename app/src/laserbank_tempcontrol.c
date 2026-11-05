@@ -114,9 +114,9 @@ static void copy_status_locked(struct laserbank_tempcontrol_status *out)
 void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out)
 {
 	k_mutex_lock(&control_lock, K_FOREVER);
-	control.status.bank_powered = hispec_laser_bank_power_is_enabled();
 	copy_status_locked(out);
 	k_mutex_unlock(&control_lock);
+	out->bank_powered = hispec_laser_bank_power_is_enabled();
 }
 
 int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,

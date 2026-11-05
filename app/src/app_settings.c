@@ -44,7 +44,7 @@ enum app_nvs_id {
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
 	APP_NVS_ID_LAST_KNOWN_UTC_UNUSED = 0x0008, /* Reserved for OTA rollback. */
-	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
+	APP_NVS_ID_LAST_COMMAND_UNUSED = 0x0009, /* Command history is boot-local. */
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_ATTEN_OPEN_CH0 = 0x0180,
@@ -1134,7 +1134,6 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
 	}
 	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_UNUSED, &first_rc);
-	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
 	if (!keep_ip) {
 		delete_setting_record(APP_NVS_ID_IP, &first_rc);
 	}
@@ -1634,6 +1633,46 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 	return 0;
 }
 
+bool app_settings_try_get_status(struct app_status_settings *out)
+{
+    struct app_route_loss_settings losses;
+    if (k_mutex_lock(&g_settings.lock, K_NO_WAIT) != 0) return false;
+    out->boot_count = g_settings.snapshot.boot_count;
+    out->mqtt = g_settings.snapshot.mqtt;
+    losses = g_settings.snapshot.route_loss;
+    for (size_t ch = 0; ch < APP_MEMS_SPLIT_CHANNEL_COUNT; ++ch)
+        out->split_configured[ch] = g_settings.snapshot.mems.split[ch].configured != 0;
+    k_mutex_unlock(&g_settings.lock);
+
+    /* Resolve the fixed status paths on the private copy, not while holding
+     * the settings lock. Public forward names share the existing 1430 mapping.
+     */
+    for (size_t i = 0; i < APP_LASER_CHANNEL_COUNT + APP_MEMS_SPLIT_CHANNEL_COUNT; ++i) {
+        bool split = i >= APP_LASER_CHANNEL_COUNT;
+        size_t ch = split ? i - APP_LASER_CHANNEL_COUNT : (i < 3 ? 0 : 1);
+        const char *channel = ch == 0 ? "yj" : "hk";
+        for (size_t j = 0; j < (split ? 3 : 2); ++j) {
+            char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
+            const char *source = split ? (const char *const[]){"split1", "split2", "split3"}[j] :
+                hispec_laser_name(i);
+            if (split) snprintk(route, sizeof(route), "%s_calin_to_%s_split", channel, channel);
+            else snprintk(route, sizeof(route), "%s_laser_to_%s_%s", channel, channel, j == 0 ? "ao" : "fei");
+            const char *stored_route = route_loss_storage_route(route, source);
+            double tx = devices_route_loss_default(stored_route, source);
+            for (size_t k = 0; k < APP_ROUTE_LOSS_RECORD_COUNT; ++k) {
+                const struct app_route_loss_record *r = &losses.record[k];
+                if (r->configured && strcmp(r->route, stored_route) == 0 && strcmp(r->laser, source) == 0) {
+                    tx = r->transmission;
+                    break;
+                }
+            }
+            if (split) out->split_tx[ch][j] = tx;
+            else out->launch_tx[i][j] = tx;
+        }
+    }
+    return true;
+}
+
 int app_settings_set_route_loss(const char *route, const char *laser,
 				double transmission, bool persist)
 {
@@ -1778,9 +1817,4 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
-}
-
-struct nvs_fs *app_settings_nvs_fs(void)
-{
-	return app_nvs_ready ? &app_nvs : NULL;
 }

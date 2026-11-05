@@ -220,15 +220,15 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
             # image can also be temporarily unreachable while MQTT reconnects.
             time.sleep(1)
             continue
-        if board.boots == old_boots:
+        if board.boots is None or board.boots == old_boots:
             time.sleep(1)
             continue
         try:
             if ota.image_hash != digest.hex():
                 raise RuntimeError("reboot returned another image (rollback or rejected candidate)")
-            if not board.board_ok:
+            if board.device == "hsfib-unknown":
                 raise RuntimeError("candidate reports board setup failure; leaving it unconfirmed")
-            if board.board == "tib":
+            if board.device == "hsfib-tib":
                 bank = pcb.laser_bankpower()
                 if bank.mode != "override_off" or bank.powered:
                     raise RuntimeError("candidate did not keep the laser bank off; refusing confirmation")
@@ -243,11 +243,11 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
                 print(f'  pcb.confirm_image("{digest.hex()}")')
                 print(f"  MQTT topic: cmd/{pcb.device}/req/ota")
                 print("  MQTT payload: " + json.dumps({"confirm": True, "image_hash": digest.hex()}))
-                if board.board == "tib":
+                if board.device == "hsfib-tib":
                     print("TIB bank remains override_off; restore auto after accepting the image.")
                 return
             print("Confirming because --auto-confirm was requested: a fresh boot reports the exact "
-                  "candidate hash, board_ok=true, an open trial window, and "
+                  "candidate hash, a recognized board identity, an open trial window, and "
                   + ("the TIB laser bank is override_off and unpowered."
                      if board.board == "tib" else "no TIB laser-bank check is required."), flush=True)
             # If the ACK is lost, the next loop reads confirmed state before
@@ -280,11 +280,14 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
     with HispecFibPcb(args.broker, port=args.broker_port, device=args.device) as pcb:
         if pcb.help().device != args.device:
             raise RuntimeError("MQTT device identity mismatch")
-        board = pcb.status(ip=True)
+        board = pcb.status()
+        network = pcb.ip()
         ota = pcb.ota()
-        if not board.board_ok or board.ip is None or not board.ip.active.ready:
+        if board.boots is None:
+            raise RuntimeError("boot count is temporarily unavailable; retry the update")
+        if board.device == "hsfib-unknown" or not network.active.ready:
             raise RuntimeError("target board or network is not ready")
-        ip = str(ipaddress.IPv4Address(board.ip.active.ip))
+        ip = str(ipaddress.IPv4Address(network.active.ip))
         if args.ip is not None and ip != args.ip:
             raise RuntimeError(f"MQTT target reports {ip}, not --ip {args.ip}")
         if layout.max_image_size != ota.max_image_size or len(data) > ota.max_image_size:
@@ -294,7 +297,7 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
         if ota.image_hash == digest.hex():
             print("This exact image is already running and confirmed.")
             return
-        if board.board == "tib":
+        if board.device == "hsfib-tib":
             bank = pcb.laser_bankpower()
             if bank.mode != "override_off" or bank.powered:
                 raise RuntimeError("operator must first stop experiments and set laser/bankpower override_off")

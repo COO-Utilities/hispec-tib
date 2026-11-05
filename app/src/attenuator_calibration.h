@@ -48,6 +48,7 @@ struct attenuator_calibration_fit_metrics {
 };
 
 struct attenuator_calibration_status {
+	bool shutdown_pending; /* Failed source stop; retained until an explicit retry succeeds. */
 	const char *state;
 	const char *mode;
 	const char *physical;
