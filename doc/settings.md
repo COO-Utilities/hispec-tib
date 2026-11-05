@@ -13,8 +13,8 @@ machinery when they need app-owned intent, calibration, or counters restored.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
-Command dispatch owns the separate last-command NVS record used for boot/status
-visibility.
+Command dispatch keeps last-command diagnostics in RAM for the current boot;
+command traffic does not write a history record to flash.
 
 ## Stored NVS Records
 
@@ -25,7 +25,6 @@ Current app NVS records include:
 - Boot count.
 - IP settings as one record.
 - MQTT broker host/port as one record.
-- Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel, including `rms_db`
   for each physical FVOA. Coefficients and RMS are restored as one record.
 - One photodiode settings record per photodiode channel, including active dark
@@ -70,6 +69,73 @@ Before preparation, readbacks can differ from configuration. The coefficient
 uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
 is unused.
 
+## Capacity and endurance
+
+The [shared flash layout](ota.md#flash-layout) assigns NVS 192 KiB in bank 2:
+24 erase sectors of 8192 bytes, with 16-byte programming alignment. Zephyr NVS
+rotates garbage collection through these sectors and keeps one sector available
+for copying live records. It does not require the STM32 high-cycle-data area.
+Payload CRC and the optional lookup cache are disabled; NVS metadata retains its
+CRC and the flash controller supplies hardware ECC.
+
+The maximum live inventory for schema 14, with every record slot populated, is:
+
+| Records | Count | Payload bytes | Aligned bytes including NVS metadata |
+|---|---:|---:|---:|
+| Schema, identity, boot count, IP, MQTT, heater policy | 6 | 246 | 400 |
+| Attenuator coefficients, fit policies, operational opens | 18 | 1008 | 1344 |
+| PD calibration/settings and last relay states | 4 | 274 | 384 |
+| Laser policies, runtime totals, NTC, references, upper bounds | 30 | 1296 | 2016 |
+| Route-loss overrides | 32 | 1792 | 2560 |
+| MEMS intent | 1 | 272 | 288 |
+| **Total** | **91** | **4888** | **6992** |
+
+Live records therefore occupy about 3.6% of the partition, or 3.7% after the
+spare sector and fixed sector metadata are excluded. Obsolete records and
+garbage-collection markers occupy additional space until sectors are reclaimed;
+the live-record total is not an instantaneous free-space measurement.
+
+The seven-year design budget uses 2557 days at the following daily workload:
+
+- TIB: 1000 changed eight-byte laser-runtime saves and 50 changed route intents.
+  This charges every ordinary laser/attenuator command as a runtime save, even
+  though ordinary attenuator changes and many laser operations do not save one.
+- AS: 100 changed split intents. CAL: 100 changed route intents.
+- Every profile: one boot-count increment, 200 actual relay transitions per PD
+  channel, and a daily rewrite reserve for all remaining configuration records.
+  Explicit calibration/settings saves must fit within that reserve.
+
+A host simulation using the workspace's actual NVS implementation, the full
+91-record inventory, and the target erase/program geometry gives:
+
+| Profile | Maximum erases on any sector in seven years | Margin against 10000 cycles |
+|---|---:|---:|
+| TIB | 864 | 11.6× |
+| AS / CAL | 636 | 15.7× |
+
+The acceptance limit is fewer than 1000 erases on every sector under this
+workload, giving at least tenfold margin against the normal-flash endurance
+rating in the [STM32H563 datasheet, flash memory characteristics](https://www.st.com/resource/en/datasheet/stm32h563vi.pdf).
+This is a workload projection, not a measurement of existing flash wear or a
+substitute for the datasheet's temperature and retention conditions.
+
+Reads do not consume program/erase cycles. Settings getters use RAM snapshots;
+NVS reads occur during restoration, saved-value comparisons and garbage
+collection. Repeated `pd` queries while a relay remains on do not write flash.
+An AUTO query that turns it on saves one one-byte state record, and a later
+auto-off saves another. Identical records are not programmed again. Command
+history and runtime MEMS toggle progress never write flash.
+
+## Attenuator default selection
+
+TIB uses the twelve November 4 installed-device models and operational opens
+listed in [calibration closeout](calibration_closeout.md#compiled-attenuator-defaults-adopted-november-4).
+The stored board identity selects defaults before coefficient/open records load;
+first detection and board-type resets select them through the existing hook.
+Saved valid coefficient, open and fit-policy records independently override their
+defaults. CAL keeps the nominal model and 1250 mV opens, including its shared
+logical index with TIB 1510. The NVS schema and record formats are unchanged.
+
 ## Board-Type Reset Policy
 
 The detected board type is treated as immutable hardware identity. If a stored
@@ -100,12 +166,13 @@ silently reused on another.
   RMS. Manual replacement without RMS returns to that default.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
-- Laser optical-power uncertainty defaults to `fractional_noise=0.001` and
-  `constant_noise_mw=0.0031 * (max_current_ma - threshold_current_ma) * efficiency_mw_per_ma`,
-  using `default_laser_props` from the compiled table, never mutable settings.
-  The resulting floors are 0.13505925 mW (1028), 0.041912 mW (1270),
-  0.038688 mW (1430yj), 0.039432 mW (1430hk), 0.040176 mW (1510), and
-  0.00913911 mW (2330). These app-only fields do not program Maiman.
+- Laser power models default to vendor-only reference-anchored quadratic fits.
+  Optical-power uncertainty defaults to the per-laser fractional RMS adopted
+  from the November 4 active calibration and `constant_noise_mw=0` for all six
+  lasers. Startup and explicit calibration restore use the same defaults;
+  valid saved overrides still replace them at boot. See the coefficients,
+  noise values and provenance in [laser calibration](laser_calibration.md#compiled-defaults-adopted-november-4-2026).
+  These app-only fields do not program Maiman.
 - Laser `ld_serial` is the compiled manufacturer diode identity, distinct from
   the numeric expected Maiman driver serial. It is read-only and not persisted.
 - Laser NTC defaults use vendor values: −4.4 %/°C for FLC and B=3900 K for Aero.
@@ -159,7 +226,10 @@ it does not update or report dark summaries. `persist:true` on `pd/dark` writes
 that dark settings snapshot to NVS.
 
 MEMS static state requests and route applications update the persisted
-per-switch intent once per command. Toggle and split commands persist the
+per-switch intent once per command, including all accepted steps of a partially
+failed route. A save error does not undo queued switch changes; it is returned
+unless an earlier route-step error takes precedence. NVS logs the storage error
+in either case. Identical records do not program flash. Toggle and split commands persist the
 commanded request metadata once per command. Runtime toggle/split progress is
 not written back to NVS, so reboot resume, when enabled by
 `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT`, restarts the original commanded duration
@@ -181,6 +251,8 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 
 ## Intentionally Not Persisted
 
+- Last-command diagnostics are boot-local; retired NVS ID `0x0009` is reserved.
+  External command logs and watchdog boot telemetry provide cross-boot history.
 - Active routes are derived from current MEMS switch state and route tables.
   Applying a route persists the affected switch states as static switch intent,
   not as a named active-route object.
@@ -205,7 +277,7 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 ## Scoped laser calibration restore
 
 `laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
-compiled threshold/efficiency/curve reference/zero correction/maximum/nominal/autolevel bounds/datasheet reference/noise
+compiled threshold/efficiency/curve reference/quadratic correction/maximum/nominal/autolevel bounds/datasheet reference/noise
 settings and removes only that exact named outbound route override. Independent wavelength references,
 driver identity and current calibration, other TEC policy, return loss and other-output overrides
 remain. Optional persistence writes the laser records and deletes the route's NVS

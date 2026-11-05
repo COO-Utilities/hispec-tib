@@ -1,6 +1,8 @@
 /* Match the HISPEC PCB's HSE-not-used wiring and PB2 bank-off polarity.
  * See doc/hardware.md and app/boards/nucleo_h563zi.overlay.
  */
+#include "../boards/hispec_partitions.dtsi"
+
 / {
 	chosen {
 		zephyr,code-partition = &boot_partition;

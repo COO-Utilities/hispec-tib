@@ -1789,7 +1789,7 @@ int laser_calibration_start(const struct laser_calibration_request *request,
 	double return_tx;
 	rc = app_settings_get_route_loss(key, hispec_laser_name(request->laser), &return_tx);
 	double wavelength = hispec_laser_estimate_wavelength_nm(p, p->ref_temp_c, p->ref_ma);
-	double gain = 1000.0 / photodiode_power_uw_from_mv_at_wavelength(1.0, wavelength, pd);
+	double gain = 1000.0 / photodiode_power_uw_from_mv_at_wavelength(channel, 1.0, wavelength, pd);
 	if (rc != 0 || !isfinite(gain) || !(gain > 0.0) || !(return_tx > 0.0) || return_tx > 1.0) {
 		return CAL_PD_GAIN_INVALID;
 	}
@@ -2410,7 +2410,7 @@ int laser_calibration_restore_defaults(enum hispec_laser_id laser, const char *o
 	if (out->laser_error == 0) {
 		s.properties.max_current_ma = p->max_current_ma;
 		s.properties.nominal_current_ma = p->nominal_current_ma;
-		s.properties.efficiency_mw_per_ma2 = 0.0f;
+		s.properties.efficiency_mw_per_ma2 = p->efficiency_mw_per_ma2;
 		s.properties.threshold_current_ma = p->threshold_current_ma;
 		s.properties.efficiency_mw_per_ma = p->efficiency_mw_per_ma;
 		s.properties.efficiency_ref_ma = p->efficiency_ref_ma;
@@ -2419,9 +2419,8 @@ int laser_calibration_restore_defaults(enum hispec_laser_id laser, const char *o
 		s.properties.ref_temp_c = p->ref_temp_c;
 		s.min_autolevel_current_ma = p->threshold_current_ma + 0.1;
 		s.max_autolevel_current_ma = p->nominal_current_ma;
-		s.constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
-			(p->max_current_ma - p->threshold_current_ma) * p->efficiency_mw_per_ma;
-		s.fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
+		s.constant_noise_mw = 0.0;
+		s.fractional_noise = hispec_laser_default_fractional_noise[laser];
 
 		out->laser_error = hispec_laser_validate_channel_settings(laser, &s);
 		if (out->laser_error == 0) {

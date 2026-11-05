@@ -23,13 +23,6 @@
 struct app_laser_channel_settings;
 struct k_work_q;
 
-// based on a quick test of 1028 into the PD with a ton of stattic attens
-// 0.1% fractional: leaves a few times margin above your brightest measured fractional RMS.
-// 0.003 mW constant: rounds tp ~0.0014–0.0021 mW scatter upward.
-// Together, approximately 0.70% uncertainty at level 0.01, 0.12% at 0.10, and 0.11% at 0.15.
-#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.001
-#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.0031
-
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
 
@@ -42,6 +35,20 @@ enum hispec_laser_id {
 	HISPEC_LASER_2330_K,
 	HISPEC_LASER_COUNT,
 	HISPEC_LASER_UNKNOWN = -1,
+};
+
+/** Active November 4 calibration readback: effective illuminated-path RMS
+ * fractions, not intrinsic diode noise. Startup and restore share this table.
+ * Constant noise defaults to zero by owner policy; fitted constants are not
+ * adopted. Provenance: doc/laser_calibration.md.
+ * @hideinitializer */
+static const double hispec_laser_default_fractional_noise[HISPEC_LASER_COUNT] = {
+	[HISPEC_LASER_1028_Y] = 0.00898166511,
+	[HISPEC_LASER_1270_J] = 0.0424917488,
+	[HISPEC_LASER_1430_YJ] = 0.0139060581,
+	[HISPEC_LASER_1430_HK] = 0.0151791845,
+	[HISPEC_LASER_1510_H] = 0.0577663351,
+	[HISPEC_LASER_2330_K] = 0.00234274023,
 };
 
 enum hispec_laser_bank_power_mode {
@@ -141,13 +148,18 @@ struct hispec_laser_tune_result {
 };
 
 struct hispec_laser_flux_estimate {
+	const char *output_state;
+	bool control_fault;
+	bool communication_fault;
+	uint32_t off_in_s;
+	double nominal_wavelength_nm;
 	double current_ma;
 	double tec_temperature_c;
 	double power_mw;
 	double power_err_mw;
 	double wavelength_nm;
-	double flux_ph_s;
-	double flux_err_ph_s;
+	double flux_nw;
+	double flux_err_nw;
 };
 
 struct hispec_laser_channel_temperature {
@@ -397,7 +409,7 @@ double hispec_laser_estimate_power_mw(const laserprops_t *properties, double cur
 double hispec_laser_current_for_power_mw(const laserprops_t *properties, double power_mw);
 
 /**
- * @brief Estimate emitted photon flux from the laser module's operating state.
+ * @brief Estimate emitted optical flux in nW from the laser module's operating state.
  *
  * The laser module owns the current/TEC setpoints used for this estimate. This
  * reads the same cached per-laser fractional_noise and constant_noise_mw as
@@ -405,7 +417,9 @@ double hispec_laser_current_for_power_mw(const laserprops_t *properties, double 
  * constant_noise_mw). This is model/calibration uncertainty, not independent
  * sample noise. Waits only for a short state copy, never for the I/O mutex.
  * Returns -EINVAL before owner initialization or for invalid arguments, and
- * never returns an operational I/O fault. Pending I/O leaves confirmed setpoints readable.
+ * returns cached output state, health and a positive remaining auto-off count.
+ * Invalid model inputs return -EINVAL with numeric estimates left NaN. Pending
+ * I/O leaves applied setpoints readable; operational faults are separate fields.
  * Does not perform Modbus I/O, change GPIO, enqueue, publish, or persist.
  */
 int laser_estimate_flux(enum hispec_laser_id id,

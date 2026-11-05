@@ -9,7 +9,11 @@
  * during existing profile preparation, without boot-time programming.
  * These values are compile-time defaults. Maiman EEPROM owns driver-side
  * persisted parameters; app settings persist accepted property overrides and
- * optical-power uncertainty. Noise-floor defaults always use this fixed table.
+ * optical-power uncertainty. Noise defaults are separate in lasers.h.
+ * Power defaults fit only the digitized vendor traces through ref_ma, with
+ * current-spacing weights and ref_mw fixed at ref_ma (November 4, 2026).
+ * Threshold is the fitted extrapolated zero, not a measured turn-on current.
+ * Reproduction and residuals: commissioning notebook and laser_calibration.md.
  */
 
 #ifndef LASER_PROPERTIES_H
@@ -34,9 +38,9 @@ typedef struct laserprops_t {
     const char *model_number;
     const char *ld_serial; /* Manufacturer diode serial, distinct from Maiman driver serial. */
     /* P = x*(efficiency + q*(I-efficiency_ref_ma)), x=I-threshold.
-     * Calibration retains the uncorrected linear fit's efficiency; its
-     * reference coordinate makes the correction reproduce the fitted curve.
-     * Compiled defaults use q=0. Placing the float here uses the MCU's
+     * Calibration and compiled defaults anchor efficiency at ref_ma; the
+     * correction is zero there, preserving the independent vendor power scale.
+     * Placing the float here uses the MCU's
      * alignment gap before the doubles instead of enlarging every profile. */
     float efficiency_mw_per_ma2;
     double nominal_current_ma;
@@ -75,7 +79,7 @@ static const laserprops_t LASER_1028 = {
     .name = "1028",
     .model_number = "FLPD-1028-50-DFB-BTF",
     .ld_serial = "BF69016",
-    .threshold_current_ma = 14.5,
+    .threshold_current_ma = 16.6083487737,
     .nominal_current_ma = 250.0,
     .max_current_ma = 250.0,
     .dne_current_ma = 275.0,
@@ -86,7 +90,8 @@ static const laserprops_t LASER_1028 = {
     .wave_ref_ma = 125.0,
     .wave_ref_temp_c = 20.0,
     .test_monitor_current_ua = 23.3,
-    .efficiency_mw_per_ma = 0.185,
+    .efficiency_mw_per_ma = 0.1876673812875,
+    .efficiency_mw_per_ma2 = -6.06411690252e-5f,
     .ref_mw = 43.8,
     .ref_ma = 250,
     .efficiency_ref_ma = 250,
@@ -105,7 +110,7 @@ static const laserprops_t LASER_2330 = {
     .name = "2330",
     .model_number = "FLPD-2330-03-DFB-BTF",
     .ld_serial = "D4520009",
-    .threshold_current_ma = 24.9,
+    .threshold_current_ma = 20.60959567841,
     .nominal_current_ma = 120.0,
     .max_current_ma = 120.0,
     .dne_current_ma = 137.0,
@@ -116,7 +121,8 @@ static const laserprops_t LASER_2330 = {
     .wave_ref_ma = 100.0,
     .wave_ref_temp_c = 40.0,
     .test_monitor_current_ua = LASERPROP_NA,
-    .efficiency_mw_per_ma = 0.031,
+    .efficiency_mw_per_ma = 0.03199504038348,
+    .efficiency_mw_per_ma2 = -8.911153979743e-5f,
     .ref_mw = 3.18,
     .ref_ma = 120,
     .efficiency_ref_ma = 120,
@@ -135,7 +141,7 @@ static const laserprops_t LASER_1270 = {
     .name = "1270",
     .model_number = "1270LD-1-0-0-1",
     .ld_serial = "8881AFR",
-    .threshold_current_ma = 13.0,
+    .threshold_current_ma = 9.784031814486,
     .nominal_current_ma = 52.0,
     .max_current_ma = 65.0,
     .dne_current_ma = 75.0,
@@ -145,7 +151,8 @@ static const laserprops_t LASER_1270 = {
     .wave_ref_ma = 52.0,
     .wave_ref_temp_c = 25.0,
     .test_monitor_current_ua = 90,
-    .efficiency_mw_per_ma = 0.26,
+    .efficiency_mw_per_ma = 0.2368771919681,
+    .efficiency_mw_per_ma2 = -4.188985980908e-5f,
     .ref_mw = 10,
     .ref_ma = 52,
     .efficiency_ref_ma = 52,
@@ -164,7 +171,7 @@ static const laserprops_t LASER_1430YJ = {
     .name = "1430yj",
     .model_number = "1430LD-1-0-0-1",
     .ld_serial = "8897ACR",
-    .threshold_current_ma = 8.0, //8897ACR=8mA 8895ACR=7mA
+    .threshold_current_ma = 3.592432600386, // Fitted zero; report threshold: 8897ACR=8mA, 8895ACR=7mA.
     .nominal_current_ma = 49.0, // 10 mW at 25 C in the unit report.
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
@@ -174,7 +181,8 @@ static const laserprops_t LASER_1430YJ = {
     .wave_ref_ma = 49.0,
     .wave_ref_temp_c = 25.0,
     .test_monitor_current_ua = 143, //8897ACR=143 8895ACR=159
-    .efficiency_mw_per_ma = 0.24,
+    .efficiency_mw_per_ma = 0.2202276090237,
+    .efficiency_mw_per_ma2 = -7.876910936396e-5f,
     .ref_mw = 10,
     .ref_ma = 49,
     .efficiency_ref_ma = 49,
@@ -193,7 +201,7 @@ static const laserprops_t LASER_1430HK = {
     .name = "1430hk",
     .model_number = "1430LD-1-0-0-1",
     .ld_serial = "8895ACR",
-    .threshold_current_ma = 7.0, //8897ACR=8mA 8895ACR=7mA
+    .threshold_current_ma = 3.43502055322, // Fitted zero; report threshold: 8897ACR=8mA, 8895ACR=7mA.
     .nominal_current_ma = 49,
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
@@ -203,7 +211,8 @@ static const laserprops_t LASER_1430HK = {
     .wave_ref_ma = 49.0,
     .wave_ref_temp_c = 25.0,
     .test_monitor_current_ua = 159, //8897ACR=143 8895ACR=159
-    .efficiency_mw_per_ma = 0.24,
+    .efficiency_mw_per_ma = 0.2194667949248,
+    .efficiency_mw_per_ma2 = -2.581978567103e-4f,
     .ref_mw = 10,
     .ref_ma = 49,
     .efficiency_ref_ma = 49,
@@ -222,7 +231,7 @@ static const laserprops_t LASER_1510 = {
     .name = "1510",
     .model_number = "1510LD-1-0-0-1",
     .ld_serial = "8882ACT",
-    .threshold_current_ma = 6.0,
+    .threshold_current_ma = 4.095546033222,
     .nominal_current_ma = 47.0,
     .max_current_ma = 60.0,
     .dne_current_ma = 72.0,
@@ -232,7 +241,8 @@ static const laserprops_t LASER_1510 = {
     .wave_ref_ma = 47.0,
     .wave_ref_temp_c = 25.0,
     .test_monitor_current_ua = 475,
-    .efficiency_mw_per_ma = 0.24,
+    .efficiency_mw_per_ma = 0.233076034664,
+    .efficiency_mw_per_ma2 = -2.424936267747e-4f,
     .ref_mw = 10,
     .ref_ma = 47,
     .efficiency_ref_ma = 47,

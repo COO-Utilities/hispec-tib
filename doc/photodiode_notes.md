@@ -197,10 +197,51 @@ tabulated ranges; they do not establish an installed-channel calibration.
 | 1510 | — | 0.60971 |
 | 2330 | — | 1.23378 |
 
-The firmware uses the configured nominal responsivity per channel (0.93 for YJ,
-0.60971 for HK); it does not interpolate these files. The known-source wavelength
-correction table remains unity. Keep that distinction when comparing modeled
-optical power at different wavelengths with reported nW.
+(wavelength-correction)=
+### Wavelength correction
+
+Known-source conversions apply a dimensionless wavelength correction coefficient,
+not a quantum-efficiency parameter. The compiled nominal responsivities remain
+0.93 A/W for YJ and 0.60971 A/W for HK. For detector voltage $V$, effective gain
+$G$ (including the PCB divider), configured nominal responsivity $R_0$, and
+coefficient $c$, power is $P=V c/(G R_0)$. The coefficient is applied once to
+power and its uncertainty. A nominal-responsivity calibration therefore scales
+the whole curve; the coefficient table supplies its wavelength shape.
+
+The values below were read from the supplied manufacturer graphs at the nominal
+laser wavelengths, rounded to the precision supported by the plots. They are
+typical detector response, not per-device calibration. Firmware chooses the
+nearest installed wavelength in that detector's table; small laser tuning shifts
+do not change the coefficient. It does not interpolate the reference CSV files.
+
+| Detector / channel | Wavelength (nm) | Approximate graph response (A/W) | `wavelength_coeff` |
+|---|---:|---:|---:|
+| FWPR-20-IN / YJ | 1028.01 | 0.653 | 1.42 |
+| FWPR-20-IN / YJ | 1270 | 0.841 | 1.11 |
+| FWPR-20-IN / YJ | 1430 | 0.933 | 0.997 |
+| PDA10DT / HK | 1430 | 0.527 | 1.16 |
+| PDA10DT / HK | 1510 | 0.609 | 1.00 |
+| PDA10DT / HK | 2329.81 | 1.234 | 0.494 |
+
+YJ uses the blue InGaAs curve on page 4 of the
+{download}`FWPR datasheet, May 6 2024 <datasheets/de-fwpr-20-in-1.pdf>`,
+normalized as $0.93/R(\lambda)$. HK uses the blue −10 °C curve in Figure 8,
+printed page 13 (PDF page 15), of the
+{download}`PDA10DT manual, Rev N January 2024 <datasheets/PDA10DT-Manual.pdf>`,
+normalized as $0.60971/R(\lambda)$. The latter's printed page 8 specifies the
+fixed −10 °C detector temperature. Its 70 dB high-impedance gain is
+$4.75\times10^6$ V/A; the PCB's 100 kΩ load does not use the 50 Ω half-gain value.
+The configured effective gains include the 0.2 PCB divider (YJ $2\times10^{10}$,
+HK $9.5\times10^5$ V/A).
+
+Throughput with a named laser and laser/atten calibration use these coefficients.
+`status.pd` reports detector-incident `power_nw` before any return loss and the
+coefficient already applied. Without a named active operation, its power and
+coefficient are null; `net_mv` remains useful. The general `pd` endpoint retains
+its reference-responsivity conversion because an arbitrary detector signal does
+not identify a wavelength. An ADC reading at or above the 2000 mV usable limit
+has null optical power in status and an overrange error, rather than a finite
+value that appears quantitatively trustworthy.
 
 ### Sensitivity and noise bandwidth
 

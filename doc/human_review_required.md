@@ -45,6 +45,23 @@ LLMs Agents: Do NOT change heading names in this file.
   Check manual-default confirmation, explicit `--auto-confirm` reasoning, and
   both renamed CLion profiles' flash/debug/reset flows with ST-Link attached.
   See [firmware updates and OTA](ota.md).
+  - 2026-11-05 TIB: merged firmware `b1c6aeb1311a` passed paired MCUboot/app
+    USB installation with the 192 KiB NVS layout and exact 2 MiB flash readback.
+    All 84 retained saved records matched the original board payloads; only
+    retired command history was omitted. Subsequent NVS readback after OTA
+    preserved every record except the expected boot-count increments.
+    An 835584-byte maximum-size candidate booted unconfirmed and automatically
+    reverted to the exact baseline after its five-minute deadline. Timing and
+    normal images then passed manual exact-hash confirmation; normal is installed.
+    Wrong-hash confirmation and a bank-mode write during trial were rejected.
+    On-target 1000 PD polls and 100 unchanged three-step routes caused no NVS
+    writes: the full partition matched after accounting for one debug-reset
+    boot-count save. That burst also logged four DS18B20 sample-fetch errors
+    (`-EIO`); later status reported a valid temperature, but the cause under load
+    remains unresolved. Normal/timing builds, strict docs, temporary actual-C route
+    checks and 1610 simulated NVS interruption cases passed. Physical cold-start,
+    matching-ELF debug, other profiles, power cuts and measured IWDG timing
+    remain unverified.
 - [ ] Resolve the drawing/as-built differences exposed by the documentation
   audit against the PCB evidence committed in `2fd8e87`. Record the assembly
   revision and measured result before changing firmware assumptions:
@@ -263,8 +280,10 @@ LLMs Agents: Do NOT change heading names in this file.
     See [laser calibration](laser_calibration.md) for the next bench workflow.
 - [ ] After flashing the generic TIB loss correction, verify schema 14's full
   app NVS reset, reapply needed settings, and bench-check generic CAL/return
-  overrides and persistence. YJ 34.5/41/62/1 dB whole-route defaults remain
-  provisional; equal AO/FEI loss needs optical validation. The Nucleo build,
+  overrides and persistence. The November 4 loopbacks now provide distinct
+  AO/FEI defaults and separate YJ/HK MM/SM means under SM = 1; independent
+  absolute path-loss validation remains outstanding. YJ CAL remains a 1 dB estimate.
+  The Nucleo build,
   temporary C/host checks, and saved noise/failed-hold replay passed offline;
   no flashing, hardware commands, or physical persistence checks were performed.
 
@@ -326,6 +345,14 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ### LLM Resolved; Human Review Requested
+
+- [ ] Validate cached `status` while throughput/autolevel, calibration and MEMS
+  toggling run: poll at 1 Hz and check timing/queue behavior on the PCB. The
+  placeholder is replaced, all profiles and views have bounded payload checks,
+  and normal MCUboot firmware plus strict documentation builds pass. Status
+  performs no hardware refresh, timer rearming or persistence. Vendor-derived
+  wavelength coefficients and retro power before unrecorded route loss are
+  documented; their absolute optical accuracy remains a bench measurement.
 
 
 ## Decisions To Make
@@ -408,7 +435,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor 
   autoranging notices) should be going to console AND mqtt and that was the whole point 
   of a combined dispatch helper. this needs an app-wide reevaluation.
-- Status needs to gain things we actually want.
 - Lab-investigate safe laser-bank and external-relay shutdown on fatal faults.
   The current fatal path halts and relies on watchdog reset; formal shutdown
   safety is deferred pending hardware exploration.

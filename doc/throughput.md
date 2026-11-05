@@ -87,6 +87,9 @@ Route lookup selects an exact saved override, then compiled named-source loss,
 then compiled generic loss, then unity. A saved generic override is used for a
 generic measurement; it is not inherited by a named source. The command latches
 losses at start. Restart the measurement after editing a route loss.
+Configure all forward laser losses through the channel's shared
+`*_laser_to_*_ao/fei` names, including 1430. Settings resolve these to the same
+records as the dedicated physical 1430 routes; physical routing is unchanged.
 
 ## Autolevel control
 
@@ -125,7 +128,8 @@ model's supported range, the 55 dB per-device ceiling, and reachable DAC drive.
 Laser current is bounded by `min_autolevel_current_ma` and
 `max_autolevel_current_ma`; manual engineering current commands keep their full
 range through `max_current_ma`.
-`max_flux_ph_s` limits modeled flux after FVOAs, before static launch loss; it is
+`max_flux_nw` limits modeled optical power in nW after FVOAs, before static launch
+loss. Omitted or zero disables the cap. It is
 not a measured transient peak guarantee. See [attenuator allocation](attenuator.md)
 for why the pair is balanced without reversing ordinary moves.
 

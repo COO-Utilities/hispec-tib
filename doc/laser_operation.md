@@ -7,7 +7,7 @@ wire fields and call these owners. This page explains estimates and behavior;
 defines inference from measurements, and [C reference](api/maiman_laser.md)
 provides callable contracts.
 
-## Power and photon estimates
+## Optical power estimates
 
 For current $I$ in mA, threshold $I_t$, efficiency $\eta$ in mW/mA and quadratic coefficient
 $q$ in mW/mA², let $x=\max(0,I-I_t)$ and $x_{ref}=I_e-I_t$,
@@ -16,14 +16,15 @@ where $I_e$ is the installed `efficiency_ref_ma`, independent of datasheet `ref_
 ```{math}
 P[\mathrm{mW}]=\eta x+q x(x-x_{ref}),\qquad
 \sigma_P=\sqrt{(fP)^2+C^2},\qquad
-\Phi[\mathrm{s}^{-1}]=\frac{10^{-3}P\lambda}{hc}.
+\mathrm{flux\_nw}=10^6 P.
 ```
 
-The correction defaults to zero. Settings validation requires an increasing curve
-from threshold to maximum. Calibration chooses the true modeled zero and preserves the uncorrected
-straight-line fit slope as `efficiency_mw_per_ma`. It derives `efficiency_ref_ma`
-to express the corrected curve with that slope; this is not another fitted degree
-of freedom. Automatic current is confined to the independently validated
+The [compiled curves](laser_calibration.md#compiled-defaults-adopted-november-4-2026)
+fit the vendor traces and include nonzero curvature. In-situ calibration estimates
+the local extrapolated zero and uses vendor-supported curvature. Both anchor
+`efficiency_mw_per_ma` at the independent vendor reference power/current, with
+`efficiency_ref_ma=ref_ma`. Settings validation requires an increasing curve
+from threshold to maximum. Automatic current is confined to the adopted
 `min_autolevel_current_ma` / `max_autolevel_current_ma` support interval. The lower
 bound is above threshold and rounds upward to a register code; the upper bound
 rounds downward and cannot exceed `max_current_ma`. Nominal current still defines
@@ -34,11 +35,13 @@ $I=I_t+2P/[a+\sqrt{a^2+4qP}]$, where $a=\eta-qx_{ref}$.
 Zero requested power means zero current. An unreachable/nonfinite power fails;
 the existing bounds and 0.1 mA quantization still apply.
 
-Here $f$ is `fractional_noise`, $C$ is `constant_noise_mw`, and $\lambda$ is in
-metres. Photon error uses the same power-to-flux scale. For example, 1 mW at
-1000 nm is approximately $5.0341\times10^{15}$ photons/s. These are cached,
-current-based estimates, not measured emitted power. Operational health is checked
-separately; computing a finite estimate does not prove a laser is emitting.
+Here $f$ is `fractional_noise` and $C$ is `constant_noise_mw`. Power
+uncertainty uses the same mW-to-nW scale: 1 mW is 1,000,000 nW, independently
+of wavelength. These are cached, current-based estimates, not measured emitted
+power. Operational health is checked separately; computing a finite estimate
+does not prove a laser is emitting. Status combines this model with output
+state, both atten devices and source-specific routing loss. Retro power stops
+at the atten pair because no retro-path loss has been recorded.
 
 `laser.value_ma` commands engineering current directly from zero through
 `max_current_ma`, independently of the fitted support and stored tune request.

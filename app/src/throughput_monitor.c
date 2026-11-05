@@ -85,7 +85,7 @@ struct throughput_state {
 	char fiber;
 	int64_t started_ms;
 	uint32_t off_in_s;
-	double max_flux_ph_s;
+	double max_flux_nw;
 	double autolevel_response_hz;
 	/* Filter a signed need to re-range, never a continuously tracked setpoint. */
 	double range_need;
@@ -122,6 +122,28 @@ static K_MUTEX_DEFINE(monitors_lock);
  */
 static struct photodiode_status throughput_pd_status;
 static struct coo_cmd_response throughput_sample_msg;
+
+bool throughput_monitor_snapshot(const struct photodiode_sample_snapshot pd[PHOTODIODE_CHANNEL_COUNT],
+                                 struct throughput_monitor_status out[PHOTODIODE_CHANNEL_COUNT])
+{
+    if (k_mutex_lock(&monitors_lock, K_NO_WAIT) != 0) return false;
+    for (size_t i = 0; i < PHOTODIODE_CHANNEL_COUNT; ++i) {
+        const struct throughput_state *state = &monitors[i];
+        const struct throughput_source_reference *source = pd[i].sample_ms <= state->input_changed_ms ?
+            &state->previous_source : &state->source;
+        out[i] = (struct throughput_monitor_status){
+            .active = state->phase != TP_INACTIVE,
+            .preparing = state->phase == TP_PREPARING,
+            .stopping = state->phase == TP_INACTIVE && state->stop_laser,
+            .channel = i, .autolevel = state->autolevel,
+            .laser_name = state->has_laser ? hispec_laser_name(state->laser) : NULL,
+            .wavelength_coeff = state->phase == TP_RUNNING && state->has_laser ?
+                photodiode_wavelength_coefficient(i, source->wavelength_nm) : (double)NAN,
+        };
+    }
+    k_mutex_unlock(&monitors_lock);
+    return true;
+}
 
 static enum housekeeping_power_output pd_power_output(enum photodiode_channel channel)
 {
@@ -372,8 +394,7 @@ static int autolevel_adjust(struct throughput_state *state,
 	bool high = multiplier < 1.0;
 	bool low = multiplier > 1.0;
 	double max_tx = pow(10.0, -attenuator_min_db(atten) / 10.0);
-	double laser_flux = source->laser_output_power_uw * 1.0e-6 *
-		(source->wavelength_nm * 1.0e-9) / (6.62607015e-34 * 299792458.0);
+	double laser_flux = source->laser_output_power_uw * 1000.0;
 	struct app_laser_channel_settings settings;
 
 	if ((!high && !low) || !isfinite(source->atten_tx)) {
@@ -390,8 +411,8 @@ static int autolevel_adjust(struct throughput_state *state,
 	/* Preserve the command's cap on flux AFTER dynamic attenuation but BEFORE
 	 * static route losses. Optical power is used everywhere else in the stream.
 	 */
-	if (state->max_flux_ph_s > 0.0 && laser_flux > 0.0) {
-		max_tx = MIN(max_tx, state->max_flux_ph_s / laser_flux);
+	if (state->max_flux_nw > 0.0 && laser_flux > 0.0) {
+		max_tx = MIN(max_tx, state->max_flux_nw / laser_flux);
 	}
 	/* Try each actuator once; a clamped/quantized no-op yields to the other.
 	 * The same actuator code serves both build-time priority choices.
@@ -419,9 +440,9 @@ static int autolevel_adjust(struct throughput_state *state,
 		double max_ma = settings.max_autolevel_current_ma;
 		double power = hispec_laser_estimate_power_mw(props, source->laser_current_ma);
 		double max_power = hispec_laser_estimate_power_mw(props, max_ma);
-		if (low && state->max_flux_ph_s > 0.0 && laser_flux * source->atten_tx > 0.0) {
+		if (low && state->max_flux_nw > 0.0 && laser_flux * source->atten_tx > 0.0) {
 			max_power = MIN(max_power, power *
-				state->max_flux_ph_s / (laser_flux * source->atten_tx));
+				state->max_flux_nw / (laser_flux * source->atten_tx));
 			max_ma = hispec_laser_current_for_power_mw(props, max_power);
 		}
 		/* Optical steps and the flux cap must use the corrected
@@ -471,7 +492,7 @@ static void publish_sample(const struct throughput_state *state,
 	size_t off = 0U;
 	bool overrange = pd->mv >= PHOTODIODE_ADC_USABLE_MV;
 	uint8_t flags = (overrange ? TP_FLAG_OVERRANGE : 0U) | (state->autolevel ? TP_FLAG_AUTOLEVEL : 0U);
-	double response = state->has_laser ? photodiode_wavelength_coefficient(source->wavelength_nm) : 1.0;
+	double response = state->has_laser ? photodiode_wavelength_coefficient(state->channel, source->wavelength_nm) : 1.0;
 	double pd_power = pd->power_uw * response * 1000.0 / state->pd_route_tx;
 	double pd_error = overrange ? (double)NAN : pd->power_err_uw * response * 1000.0 / state->pd_route_tx;
 	double tp = NAN, tp_pd_err = NAN, tp_err = NAN;
@@ -762,7 +783,7 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
 	next.attenuator_index = attenuator_index;
 	next.fiber = request->fiber;
 	next.off_in_s = request->off_in_s;
-	next.max_flux_ph_s = request->max_flux_ph_s;
+	next.max_flux_nw = request->max_flux_nw;
 	next.autolevel_response_hz = request->autolevel_response_hz;
 	next.started_ms = k_uptime_get();
 	/* Continuing the same source with adjustments disabled retains its shutdown. */

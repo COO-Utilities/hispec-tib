@@ -13,8 +13,6 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/sys/atomic.h>
 
-struct nvs_fs;
-
 /**
  * @file command_dispatch.h
  * @brief Fixed-buffer command request, dispatch, and response helpers.
@@ -22,7 +20,7 @@ struct nvs_fs;
  * This utility is intentionally small. Applications own their command table and
  * domain handlers. The helper owns reusable fixed-buffer MQTT/serial topic
  * handling, built-in command execution, bounded serial payload normalization,
- * optional lastcommand persistence, warning publication, and transport-shaped
+ * boot-local lastcommand reporting, warning publication, and transport-shaped
  * response handling. Library built-ins run before the application command table.
  */
 
@@ -37,7 +35,6 @@ struct nvs_fs;
 #define COO_CMD_HELP_EFFECT (1u << 1)
 #define COO_CMD_HELP_SERIAL_GUARD_QUERY (1u << 2)
 #define COO_CMD_HELP_BUILTIN (1u << 3)
-#define COO_CMD_LASTCOMMAND_NVS_OVERHEAD 16U
 
 #if defined(CONFIG_CONSOLE_INPUT_MAX_LINE_LEN)
 #define COO_CMD_SERIAL_LINE_MAX CONFIG_CONSOLE_INPUT_MAX_LINE_LEN
@@ -154,6 +151,7 @@ typedef bool (*coo_cmd_supported_fn)(const struct coo_cmd_spec *spec,
 typedef void (*coo_cmd_reboot_prepare_fn)(bool erase_non_ip_settings,
 					  void *user_data);
 
+/** Latest effect request during this boot; never written to flash. */
 struct coo_cmd_lastcommand {
 	bool valid;
 	int64_t time_ms;
@@ -200,10 +198,12 @@ struct coo_cmd_spec {
 	const struct coo_cmd_help_entry *help;
 	bool mqtt_query_allowed_during_serial_guard;
 	/* Default false: OTA admits only explicitly permitted operations, checked
-	 * after dequeue and before the handler or last-command persistence.
+	 * after dequeue and before the handler or boot-local last-command update.
 	 */
 	bool ota_query_allowed;
 	bool ota_effect_allowed;
+	/* Default false: permit only cached, side-effect-free queries during reboot. */
+	bool reboot_query_allowed;
 };
 
 /**
@@ -213,8 +213,8 @@ struct coo_cmd_spec {
  * MQTT message-id storage. The runtime owns the copied device identity, topic
  * formatting derived from it, library built-ins, and scratch buffers used to
  * keep large command payload storage off thread stacks. The runtime helpers do
- * not allocate memory; they block only in the executor queue wait, optional NVS
- * lastcommand persistence, reboot prepare callback, and MQTT publish path used
+ * not allocate memory; they block only in the executor queue wait,
+ * reboot prepare callback, and MQTT publish path used
  * by the outbound drain.
  */
 struct coo_cmd_runtime {
@@ -229,8 +229,6 @@ struct coo_cmd_runtime {
 	void *user_data;
 	const struct coo_cmd_spec *command_specs;
 	size_t command_spec_count;
-	struct nvs_fs *lastcommand_nvs;
-	uint16_t lastcommand_nvs_id;
 	struct coo_cmd_lastcommand lastcommand;
 	struct k_work_delayable reboot_work;
 	atomic_t reboot_pending;
@@ -279,8 +277,6 @@ struct coo_cmd_runtime_config {
 	uint16_t serial_wrap_column;
 	const struct coo_cmd_spec *command_specs;
 	size_t command_spec_count;
-	struct nvs_fs *lastcommand_nvs;
-	uint16_t lastcommand_nvs_id;
 	uint32_t reboot_delay_ms;
 	coo_cmd_reboot_prepare_fn reboot_prepare;
 	struct k_work_q *reboot_work_q; /* App-owned queue: prepare may block on I/O. */
@@ -310,9 +306,9 @@ bool coo_cmd_runtime_spec_supported(const struct coo_cmd_runtime *runtime,
 /**
  * @brief Copy the last effect command recorded by the runtime.
  *
- * The record is loaded from NVS during runtime configuration when an NVS
- * backend and ID are supplied. Dispatch records only commands that resolve to a
- * supported effect handler or accepted built-in effect.
+ * Returns false until the first effect in this boot. Dispatch records only
+ * commands that resolve to a supported effect handler or accepted built-in
+ * effect. Reads RAM only; no flash I/O or publishing.
  */
 bool coo_cmd_runtime_get_lastcommand(const struct coo_cmd_runtime *runtime,
 				     struct coo_cmd_lastcommand *out);

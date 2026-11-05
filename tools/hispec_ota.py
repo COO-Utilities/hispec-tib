@@ -201,11 +201,14 @@ async def upload_test(ip: str, data: bytes, digest: bytes, running_hash: str,
                 print(f"SMP transport retry {attempt + 1}/2: {exc}", file=sys.stderr)
 
 
-def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
+def wait_for_trial(pcb: HispecFibPcb, digest: bytes, running_hash: str,
                    timeout_s: int, auto_confirm: bool) -> None:
     """Verify a new boot; confirm its exact hash only with explicit opt-in.
 
-    Requires board readiness and TIB bank off. A lost confirmation ACK is
+    The candidate differs from running_hash, so its boot-captured OTA hash
+    establishes a new boot without depending on the application status schema.
+    Firmware owns OTA entry prerequisites and trial hardware preparation.
+    A lost confirmation ACK is
     recoverable by querying again. By default, print manual confirmation
     instructions; a timeout does not prove rollback has already occurred. Sleeps
     between retries and leaves hardware/bank mode to the operator.
@@ -213,25 +216,20 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            board = pcb.status()
             ota = pcb.ota()
         except HispecFibError:
             # The old image rejects commands during the delayed reboot. A new
             # image can also be temporarily unreachable while MQTT reconnects.
             time.sleep(1)
             continue
-        if board.boots == old_boots:
+        if ota.image_hash == running_hash:
+            if not ota.active:
+                raise RuntimeError("device returned to the previous image (rollback or rejected candidate)")
             time.sleep(1)
             continue
         try:
             if ota.image_hash != digest.hex():
                 raise RuntimeError("reboot returned another image (rollback or rejected candidate)")
-            if not board.board_ok:
-                raise RuntimeError("candidate reports board setup failure; leaving it unconfirmed")
-            if board.board == "tib":
-                bank = pcb.laser_bankpower()
-                if bank.mode != "override_off" or bank.powered:
-                    raise RuntimeError("candidate did not keep the laser bank off; refusing confirmation")
             if ota.confirmed:
                 print(f"Verified {digest.hex()} is already confirmed; no further confirmation needed.")
                 return
@@ -243,13 +241,11 @@ def wait_for_trial(pcb: HispecFibPcb, digest: bytes, old_boots: int,
                 print(f'  pcb.confirm_image("{digest.hex()}")')
                 print(f"  MQTT topic: cmd/{pcb.device}/req/ota")
                 print("  MQTT payload: " + json.dumps({"confirm": True, "image_hash": digest.hex()}))
-                if board.board == "tib":
+                if pcb.device == "hsfib-tib":
                     print("TIB bank remains override_off; restore auto after accepting the image.")
                 return
             print("Confirming because --auto-confirm was requested: a fresh boot reports the exact "
-                  "candidate hash, board_ok=true, an open trial window, and "
-                  + ("the TIB laser bank is override_off and unpowered."
-                     if board.board == "tib" else "no TIB laser-bank check is required."), flush=True)
+                  "candidate hash and an open trial window.", flush=True)
             # If the ACK is lost, the next loop reads confirmed state before
             # deciding whether an identical confirmation must be retried.
             pcb.confirm_image(digest.hex())
@@ -278,13 +274,13 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
                               if args.auto_confirm else "manual; this script will leave the trial unconfirmed."),
           flush=True)
     with HispecFibPcb(args.broker, port=args.broker_port, device=args.device) as pcb:
-        if pcb.help().device != args.device:
-            raise RuntimeError("MQTT device identity mismatch")
-        board = pcb.status(ip=True)
+        # Only OTA state and the UDP address belong to this flow. Firmware owns
+        # hardware entry prerequisites; application status/help may change.
+        network = pcb.ip()
         ota = pcb.ota()
-        if not board.board_ok or board.ip is None or not board.ip.active.ready:
-            raise RuntimeError("target board or network is not ready")
-        ip = str(ipaddress.IPv4Address(board.ip.active.ip))
+        if not network.active.ready:
+            raise RuntimeError("target network is not ready")
+        ip = str(ipaddress.IPv4Address(network.active.ip))
         if args.ip is not None and ip != args.ip:
             raise RuntimeError(f"MQTT target reports {ip}, not --ip {args.ip}")
         if layout.max_image_size != ota.max_image_size or len(data) > ota.max_image_size:
@@ -294,10 +290,6 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
         if ota.image_hash == digest.hex():
             print("This exact image is already running and confirmed.")
             return
-        if board.board == "tib":
-            bank = pcb.laser_bankpower()
-            if bank.mode != "override_off" or bank.powered:
-                raise RuntimeError("operator must first stop experiments and set laser/bankpower override_off")
         try:
             pcb.set_ota_window(True, duration_s=args.duration_s)
             asyncio.run(upload_test(ip, data, digest, ota.image_hash, args.duration_s))
@@ -314,7 +306,7 @@ def update(args: argparse.Namespace, layout: BuildLayout) -> None:
             raise
         except HispecFibError:
             print("Reboot ACK lost; checking fresh boot state.", file=sys.stderr)
-        wait_for_trial(pcb, digest, board.boots, args.boot_timeout_s, args.auto_confirm)
+        wait_for_trial(pcb, digest, ota.image_hash, args.boot_timeout_s, args.auto_confirm)
 
 
 def main() -> int:
@@ -328,14 +320,14 @@ def main() -> int:
     upload.add_argument("--broker", help="MQTT broker host/IP; required except with --dry-run")
     upload.add_argument("--broker-port", type=int, default=1883, help="MQTT port (default: 1883)")
     upload.add_argument("--device", default="hsfib-tib", help="MQTT namespace (default: hsfib-tib)")
-    upload.add_argument("--ip", help="optional IPv4 cross-check against fresh MQTT status")
+    upload.add_argument("--ip", help="optional IPv4 cross-check against the MQTT ip reply")
     upload.add_argument("--duration-s", type=int, default=600,
                         help="upload window, 30..1800 seconds (default: 600); does not extend trial")
     upload.add_argument("--boot-timeout-s", type=int, default=180,
                         help="host boot/confirmation wait, 1..300 seconds (default: 180)")
     upload.add_argument("--dry-run", action="store_true", help="validate locally without connecting")
     upload.add_argument("--auto-confirm", action="store_true",
-                        help="confirm after exact-hash, fresh-boot, board-ready and TIB-bank-off checks; prints the reason")
+                        help="confirm after exact candidate hash and live trial-window checks; prints the reason")
     fixtures = sub.add_parser("fixtures", help="generate maximum, oversized and corrupt lab images")
     fixtures.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD,
                           help="matching sysbuild directory (default: workspace/hispec-tib/app/build-ota)")

@@ -570,6 +570,7 @@ static void publish_status_locked(struct attenuator_calibration_status *out)
 	k_mutex_lock(&cal_status_lock, K_FOREVER);
 	memset(status, 0, sizeof(*status));
 	status->state = state_name(cal.state);
+	status->shutdown_pending = cal.shutdown_pending;
 	status->mode = mode_name(cal.mode);
 	status->physical = physical_name(cal.physical_index);
 	if (cal.fit[0].accepted && cal.fit[1].accepted) {

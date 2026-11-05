@@ -127,15 +127,9 @@ bool coo_ota_active(void)
     return active;
 }
 
-void coo_ota_get_status(struct coo_ota_status *out)
+/* Caller owns ota_lock; formatting a snapshot has no maintenance side effects. */
+static void ota_copy_status(struct coo_ota_status *out, int64_t now)
 {
-    int64_t now;
-
-    k_mutex_lock(&ota_lock, K_FOREVER);
-    now = k_uptime_get();
-    if (ota_enabled && now >= ota_window_deadline_ms) {
-        ota_close();
-    }
     *out = (struct coo_ota_status){
         .enabled = ota_enabled,
         .active = ota_active_locked(),
@@ -148,6 +142,22 @@ void coo_ota_get_status(struct coo_ota_status *out)
         .max_image_size = PARTITION_SIZE(slot1_partition) - CONFIG_MCUBOOT_UPDATE_FOOTER_SIZE,
     };
     memcpy(out->image_hash, ota_image_hash, sizeof(out->image_hash));
+}
+
+bool coo_ota_try_get_status(struct coo_ota_status *out)
+{
+    if (k_mutex_lock(&ota_lock, K_NO_WAIT) != 0) return false;
+    ota_copy_status(out, k_uptime_get());
+    k_mutex_unlock(&ota_lock);
+    return true;
+}
+
+void coo_ota_get_status(struct coo_ota_status *out)
+{
+    k_mutex_lock(&ota_lock, K_FOREVER);
+    int64_t now = k_uptime_get();
+    if (ota_enabled && now >= ota_window_deadline_ms) ota_close();
+    ota_copy_status(out, now);
     k_mutex_unlock(&ota_lock);
 }
 

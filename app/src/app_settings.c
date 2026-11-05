@@ -44,7 +44,7 @@ enum app_nvs_id {
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
 	APP_NVS_ID_LAST_KNOWN_UTC_UNUSED = 0x0008, /* Reserved for OTA rollback. */
-	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
+	APP_NVS_ID_LAST_COMMAND_UNUSED = 0x0009, /* Command history is boot-local. */
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_ATTEN_OPEN_CH0 = 0x0180,
@@ -235,6 +235,105 @@ static bool double_in_range(double value, double min_value, double max_value)
 	return value >= min_value && value <= max_value;
 }
 
+/* TIB commissioning defaults adopted November 4, 2026; provenance and limits
+ * are recorded in doc/calibration_closeout.md. These are installed-device
+ * estimates, not a generic FVOA specification. 1028 FVOA2 (DAC2) is a suspected
+ * partially defective SM980: its valid residual-rejected fit was owner-adopted.
+ * Keep each physical model, measured support, RMS and operational open together.
+ * CAL uses the nominal model below, even though its index overlaps TIB 1510. */
+static const struct {
+	struct app_attenuator_channel_settings coefficients;
+	struct app_attenuator_open_settings open;
+} tib_attenuator_defaults[APP_ATTENUATOR_CHANNEL_COUNT] = {
+	[HISPEC_LASER_1028_Y] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 3267.58709769, .slope_inv_fvoa_mv = 0.00291613889902,
+		  .max_atten_db = 78.6815745036, .max_calibrated_db = 55.0,
+		  .gain = 1.533, .rms_db = 0.157107,
+		  .correction_coeff = {-35.4575806f, -8.20566654f, -47.8860016f, 13.433301f, -3.19593811f, 8.80530834f} },
+		{ .fvoa_50pct_mv = 3081.94537248, .slope_inv_fvoa_mv = 0.00244188220422,
+		  .max_atten_db = 77.5730895996, .max_calibrated_db = 55.0,
+		  .gain = 1.533, .rms_db = 1.16084,
+		  .correction_coeff = {-25.4668446f, -12.3096495f, -36.9585686f, 3.61601472f, 8.17603397f, 0.0f} },
+	}, .open.mv = {2200.2685546875f, 1946.484375f} },
+	[HISPEC_LASER_1270_J] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 2451.86063822, .slope_inv_fvoa_mv = 0.00176207270219,
+		  .max_atten_db = 71.3910420736, .max_calibrated_db = 49.107145,
+		  .gain = 1.533, .rms_db = 0.370472,
+		  .correction_coeff = {-132.764404f, -268.12381f, -186.41777f, -137.26062f, -54.5727539f, -25.1429424f} },
+		{ .fvoa_50pct_mv = 2974.83389956, .slope_inv_fvoa_mv = 0.00208512922125,
+		  .max_atten_db = 65.0, .max_calibrated_db = 46.2900502,
+		  .gain = 1.533, .rms_db = 0.311365,
+		  .correction_coeff = {-52.7308044f, -110.589073f, -74.6008301f, -59.038456f, -20.9809341f, -13.8418264f} },
+	}, .open.mv = {1064.2822265625f, 1550.9033203125f} },
+	[HISPEC_LASER_1430_YJ] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 2509.71305074, .slope_inv_fvoa_mv = 0.00158560327333,
+		  .max_atten_db = 65.0, .max_calibrated_db = 39.2999218,
+		  .gain = 1.533, .rms_db = 0.496393,
+		  .correction_coeff = {46.9840889f, 72.9479065f, 61.1570473f, 24.4725075f, 15.0455141f, 0.0f} },
+		{ .fvoa_50pct_mv = 2609.22926199, .slope_inv_fvoa_mv = 0.00161651587979,
+		  .max_atten_db = 65.0, .max_calibrated_db = 41.8378934,
+		  .gain = 1.533, .rms_db = 0.168888,
+		  .correction_coeff = {-53.6330338f, -101.508453f, -71.6782227f, -45.5498734f, -17.246769f, -6.57673454f} },
+	}, .open.mv = {1129.541015625f, 1106.1767578125f} },
+	[HISPEC_LASER_1430_HK] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 3033.94736564, .slope_inv_fvoa_mv = 0.00192345464227,
+		  .max_atten_db = 65.0, .max_calibrated_db = 23.4327544,
+		  .gain = 1.533, .rms_db = 0.0854788,
+		  .correction_coeff = {625.920044f, 1063.35681f, 652.318909f, 262.374634f, 61.0879402f, 0.0f} },
+		{ .fvoa_50pct_mv = 2806.67131921, .slope_inv_fvoa_mv = 0.00180117158801,
+		  .max_atten_db = 65.0, .max_calibrated_db = 26.1613334,
+		  .gain = 1.533, .rms_db = 0.131623,
+		  .correction_coeff = {438.154419f, 750.448669f, 479.965668f, 204.605667f, 54.5648003f, 0.0f} },
+	}, .open.mv = {1465.5029296875f, 1253.61328125f} },
+	[HISPEC_LASER_1510_H] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 2982.14792957, .slope_inv_fvoa_mv = 0.00264308415227,
+		  .max_atten_db = 65.0, .max_calibrated_db = 23.3990529,
+		  .gain = 1.533, .rms_db = 0.0748628,
+		  .correction_coeff = {-825.457153f, -1412.4231f, -894.704041f, -377.211792f, -96.2924042f, 0.0f} },
+		{ .fvoa_50pct_mv = 2530.25645898, .slope_inv_fvoa_mv = 0.0016937314027,
+		  .max_atten_db = 65.0, .max_calibrated_db = 30.3510789,
+		  .gain = 1.533, .rms_db = 0.220064,
+		  .correction_coeff = {-1426.29175f, -2544.18604f, -1758.30408f, -932.092041f, -337.762115f, -76.131897f} },
+	}, .open.mv = {1801.46484375f, 1266.50390625f} },
+	[HISPEC_LASER_2330_K] = { .coefficients.physical = {
+		{ .fvoa_50pct_mv = 2565.73732958, .slope_inv_fvoa_mv = 0.00107511774954,
+		  .max_atten_db = 65.0, .max_calibrated_db = 22.1636632,
+		  .gain = 1.533, .rms_db = 0.10974,
+		  .correction_coeff = {431.258392f, 739.282837f, 467.325714f, 197.530975f, 49.6572304f, 0.0f} },
+		{ .fvoa_50pct_mv = 2893.81873549, .slope_inv_fvoa_mv = 0.00114684028293,
+		  .max_atten_db = 65.0, .max_calibrated_db = 17.9806207,
+		  .gain = 1.533, .rms_db = 0.0898274,
+		  .correction_coeff = {4171.396f, 7021.07666f, 4113.32764f, 1545.52319f, 299.686249f, 0.0f} },
+	}, .open.mv = {641.30859375f, 978.8818359375f} },
+};
+
+/* Seed a board's attenuator defaults before loading coefficient/open overrides.
+ * Pure snapshot updates; callers own initialization or the settings mutex. */
+static void attenuator_defaults(struct app_settings_snapshot *s, const char *board)
+{
+	for (uint8_t ch = 0; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
+		for (uint8_t physical = 0; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
+			s->attenuator_fit[ch].max_fit_residual_db[physical] = 2.0;
+			/* Nominal 0-3300 mV DAC span centers the half-shutter point
+			 * until device-specific defaults or a saved calibration apply. */
+			s->attenuator.channel[ch].physical[physical] =
+				(struct app_attenuator_physical_settings){
+					.fvoa_50pct_mv = 0.5 * (double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN,
+					.slope_inv_fvoa_mv = 8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV * ATTENUATOR_DEFAULT_GAIN),
+					.max_atten_db = FVOA_DEFAULT_MAX_ATTEN_DB,
+					.max_calibrated_db = MIN(ATTENUATOR_CALIBRATED_MAX_DB, FVOA_DEFAULT_MAX_ATTEN_DB),
+					.gain = ATTENUATOR_DEFAULT_GAIN,
+					.rms_db = ATTENUATOR_DEFAULT_RMS_DB,
+				};
+			s->attenuator_open[ch].mv[physical] = ATTENUATOR_DEFAULT_OPEN_MV;
+		}
+		if (strcmp(board, "tib") == 0) {
+			s->attenuator.channel[ch] = tib_attenuator_defaults[ch].coefficients;
+			s->attenuator_open[ch] = tib_attenuator_defaults[ch].open;
+		}
+	}
+}
+
 static void settings_defaults(struct app_settings_snapshot *s)
 {
 	unsigned long broker_port = 1883UL;
@@ -258,30 +357,7 @@ static void settings_defaults(struct app_settings_snapshot *s)
 	}
 	str_set(s->mqtt.broker_host, sizeof(s->mqtt.broker_host), CONFIG_COO_MQTT_BROKER_HOSTNAME);
 	s->mqtt.broker_port = (uint16_t)broker_port;
-	for (uint8_t ch = 0U; ch < APP_ATTENUATOR_CHANNEL_COUNT; ++ch) {
-		for (uint8_t physical = 0U; physical < APP_ATTENUATOR_PHYSICAL_COUNT; ++physical) {
-				s->attenuator_fit[ch].max_fit_residual_db[physical] = 2.0;
-				s->attenuator_open[ch].mv[physical] = ATTENUATOR_DEFAULT_OPEN_MV;
-				/* Default centers the nominal 0-3300 mV DAC span near the
-				 * FVOA half-shutter point until lab-measured coefficients
-				 * are stored.
-				 */
-				s->attenuator.channel[ch].physical[physical].fvoa_50pct_mv =
-					0.5 * (double)ATTENUATOR_DRIVE_MAX_MV *
-					ATTENUATOR_DEFAULT_GAIN;
-				s->attenuator.channel[ch].physical[physical].slope_inv_fvoa_mv =
-					8.0 / ((double)ATTENUATOR_DRIVE_MAX_MV *
-					       ATTENUATOR_DEFAULT_GAIN);
-				s->attenuator.channel[ch].physical[physical].max_atten_db =
-					FVOA_DEFAULT_MAX_ATTEN_DB;
-				s->attenuator.channel[ch].physical[physical].max_calibrated_db =
-					MIN(ATTENUATOR_CALIBRATED_MAX_DB, FVOA_DEFAULT_MAX_ATTEN_DB);
-				s->attenuator.channel[ch].physical[physical].gain =
-					ATTENUATOR_DEFAULT_GAIN;
-				s->attenuator.channel[ch].physical[physical].rms_db =
-					ATTENUATOR_DEFAULT_RMS_DB;
-		}
-	}
+	attenuator_defaults(s, "");
 	s->photodiode.channel[PHOTODIODE_CHANNEL_YJ].dark =
 		(struct app_pd_dark_result){
 			.mean_mv = PHOTODIODE_DEFAULT_DARK_MV,
@@ -336,11 +412,9 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			minimum, minimum, default_laser_props[i]->nominal_current_ma);
 		s->laser.channel[i].max_autolevel_current_ma = default_laser_props[i]->nominal_current_ma;
 		s->laser.channel[i].current_cal_pct = 100.0;
-		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
-		/* Use the immutable diode table, not user settings or current output. */
-		s->laser.channel[i].constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
-			(default_laser_props[i]->max_current_ma - default_laser_props[i]->threshold_current_ma) *
-			default_laser_props[i]->efficiency_mw_per_ma;
+		s->laser.channel[i].fractional_noise = hispec_laser_default_fractional_noise[i];
+		/* Owner policy adopts only fractional calibration noise as a default. */
+		s->laser.channel[i].constant_noise_mw = 0.0;
 		s->laser.channel[i].expected_serial = default_laser_expected_serial[i];
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;
@@ -650,15 +724,6 @@ static int app_nvs_persist_route_loss_index(uint8_t index,
 	return app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
 }
 
-static void app_nvs_persist_mems(const struct app_mems_settings *mems)
-{
-	if (mems == NULL) {
-		return;
-	}
-
-	(void)app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems));
-}
-
 static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
 {
 	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
@@ -819,19 +884,29 @@ static void app_nvs_load_mqtt(struct app_settings_snapshot *s)
 
 static void app_nvs_load_attenuator(struct app_settings_snapshot *s)
 {
-	for (uint8_t channel = 0U; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
+	for (uint8_t channel = 0; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
 		struct app_attenuator_channel_settings stored;
-
-		if (!app_nvs_read_exact(attenuator_nvs_id(channel), &stored,
-					sizeof(stored), "attenuator")) {
-			continue;
+		if (app_nvs_read_exact(attenuator_nvs_id(channel), &stored, sizeof(stored), "attenuator")) {
+			if (attenuator_channel_valid(&stored)) {
+				s->attenuator.channel[channel] = stored;
+			} else {
+				LOG_WRN("Ignoring invalid stored attenuator channel %u", channel);
+			}
 		}
-		if (!attenuator_channel_valid(&stored)) {
-			LOG_WRN("Ignoring invalid stored attenuator channel %u", channel);
-			continue;
+		struct app_attenuator_fit_policy policy;
+		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &policy,
+				      sizeof(policy), "attenuator fit policy") &&
+		    isfinite(policy.max_fit_residual_db[0]) && policy.max_fit_residual_db[0] > 0.0 &&
+		    isfinite(policy.max_fit_residual_db[1]) && policy.max_fit_residual_db[1] > 0.0) {
+			s->attenuator_fit[channel] = policy;
 		}
-
-		s->attenuator.channel[channel] = stored;
+		struct app_attenuator_open_settings open;
+		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_OPEN_CH0 + channel, &open,
+				      sizeof(open), "attenuator open") &&
+		    isfinite(open.mv[0]) && open.mv[0] >= 0.0f && open.mv[0] <= ATTENUATOR_DRIVE_MAX_MV &&
+		    isfinite(open.mv[1]) && open.mv[1] >= 0.0f && open.mv[1] <= ATTENUATOR_DRIVE_MAX_MV) {
+			s->attenuator_open[channel] = open;
+		}
 	}
 }
 
@@ -1017,28 +1092,13 @@ static void app_nvs_load_all(struct app_settings_snapshot *s)
 	uint32_t value;
 
 	app_nvs_load_board_type(s);
+	attenuator_defaults(s, s->board_type);
 	if (app_nvs_read_exact(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value), "boot count")) {
 		s->boot_count = value;
 	}
 	app_nvs_load_ip(s);
 	app_nvs_load_mqtt(s);
 	app_nvs_load_attenuator(s);
-	for (uint8_t channel = 0; channel < APP_ATTENUATOR_CHANNEL_COUNT; ++channel) {
-		struct app_attenuator_fit_policy policy;
-		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_FIT_CH0 + channel, &policy,
-				      sizeof(policy), "attenuator fit policy") &&
-		    isfinite(policy.max_fit_residual_db[0]) && policy.max_fit_residual_db[0] > 0.0 &&
-		    isfinite(policy.max_fit_residual_db[1]) && policy.max_fit_residual_db[1] > 0.0) {
-			s->attenuator_fit[channel] = policy;
-		}
-		struct app_attenuator_open_settings open;
-		if (app_nvs_read_exact(APP_NVS_ID_ATTEN_OPEN_CH0 + channel, &open,
-				      sizeof(open), "attenuator open") &&
-		    isfinite(open.mv[0]) && open.mv[0] >= 0.0f && open.mv[0] <= ATTENUATOR_DRIVE_MAX_MV &&
-		    isfinite(open.mv[1]) && open.mv[1] >= 0.0f && open.mv[1] <= ATTENUATOR_DRIVE_MAX_MV) {
-			s->attenuator_open[channel] = open;
-		}
-	}
 	app_nvs_load_photodiode(s);
 	app_nvs_load_laserbank(s);
 	app_nvs_load_laser(s);
@@ -1065,7 +1125,6 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
 	}
 	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_UNUSED, &first_rc);
-	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
 	if (!keep_ip) {
 		delete_setting_record(APP_NVS_ID_IP, &first_rc);
 	}
@@ -1172,6 +1231,9 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 		str_set(g_settings.snapshot.board_type,
 			sizeof(g_settings.snapshot.board_type),
 			board_type);
+		attenuator_defaults(&g_settings.snapshot, board_type);
+		/* A first detection must still honor any saved coefficient/open records. */
+		app_nvs_load_attenuator(&g_settings.snapshot);
 		persist_needed = true;
 	} else if (strcmp(g_settings.snapshot.board_type, board_type) != 0) {
 		char previous[APP_SETTINGS_BOARD_TYPE_MAX_LEN];
@@ -1186,6 +1248,7 @@ int app_settings_note_board_type(const char *board_type, bool *changed)
 			board_type);
 		persist_needed = true;
 		reset_needed = true;
+		attenuator_defaults(&g_settings.snapshot, board_type);
 	}
 	k_mutex_unlock(&g_settings.lock);
 
@@ -1216,6 +1279,7 @@ int app_settings_erase_non_ip_settings(void)
 	ip = g_settings.snapshot.ip;
 	boot_count = g_settings.snapshot.boot_count;
 	settings_defaults(&g_settings.snapshot);
+	attenuator_defaults(&g_settings.snapshot, devices_board_type_name());
 	memset(g_settings.pd_power_saved, 0, sizeof(g_settings.pd_power_saved));
 	g_settings.snapshot.ip = ip;
 	g_settings.snapshot.boot_count = boot_count;
@@ -1518,6 +1582,22 @@ int app_settings_update_laser_total_emitting(uint8_t channel,
 	return 0;
 }
 
+/* Shared forward-launch loss names resolve to the existing physical 1430
+ * records. Keep switch sequencing and saved records unchanged; every settings
+ * operation uses the same identity, including calibration/default restoration.
+ * Pure name resolution: no lock, hardware I/O or persistence. */
+static const char *route_loss_storage_route(const char *route, const char *laser)
+{
+	if (strcmp(laser, "1430yj") == 0) {
+		if (strcmp(route, "yj_laser_to_yj_ao") == 0) return "yj_1430_to_yj_ao";
+		if (strcmp(route, "yj_laser_to_yj_fei") == 0) return "yj_1430_to_yj_fei";
+	} else if (strcmp(laser, "1430hk") == 0) {
+		if (strcmp(route, "hk_laser_to_hk_ao") == 0) return "hk_1430_to_hk_ao";
+		if (strcmp(route, "hk_laser_to_hk_fei") == 0) return "hk_1430_to_hk_fei";
+	}
+	return route;
+}
+
 int app_settings_get_route_loss(const char *route, const char *laser,
 				double *transmission)
 {
@@ -1532,6 +1612,7 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	*transmission = devices_route_loss_default(route, laser);
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	index = route_loss_record_index_locked(route, laser, false);
@@ -1541,6 +1622,46 @@ int app_settings_get_route_loss(const char *route, const char *laser,
 	k_mutex_unlock(&g_settings.lock);
 
 	return 0;
+}
+
+bool app_settings_try_get_status(struct app_status_settings *out)
+{
+    struct app_route_loss_settings losses;
+    if (k_mutex_lock(&g_settings.lock, K_NO_WAIT) != 0) return false;
+    out->boot_count = g_settings.snapshot.boot_count;
+    out->mqtt = g_settings.snapshot.mqtt;
+    losses = g_settings.snapshot.route_loss;
+    for (size_t ch = 0; ch < APP_MEMS_SPLIT_CHANNEL_COUNT; ++ch)
+        out->split_configured[ch] = g_settings.snapshot.mems.split[ch].configured != 0;
+    k_mutex_unlock(&g_settings.lock);
+
+    /* Resolve the fixed status paths on the private copy, not while holding
+     * the settings lock. Public forward names share the existing 1430 mapping.
+     */
+    for (size_t i = 0; i < APP_LASER_CHANNEL_COUNT + APP_MEMS_SPLIT_CHANNEL_COUNT; ++i) {
+        bool split = i >= APP_LASER_CHANNEL_COUNT;
+        size_t ch = split ? i - APP_LASER_CHANNEL_COUNT : (i < 3 ? 0 : 1);
+        const char *channel = ch == 0 ? "yj" : "hk";
+        for (size_t j = 0; j < (split ? 3 : 2); ++j) {
+            char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
+            const char *source = split ? (const char *const[]){"split1", "split2", "split3"}[j] :
+                hispec_laser_name(i);
+            if (split) snprintk(route, sizeof(route), "%s_calin_to_%s_split", channel, channel);
+            else snprintk(route, sizeof(route), "%s_laser_to_%s_%s", channel, channel, j == 0 ? "ao" : "fei");
+            const char *stored_route = route_loss_storage_route(route, source);
+            double tx = devices_route_loss_default(stored_route, source);
+            for (size_t k = 0; k < APP_ROUTE_LOSS_RECORD_COUNT; ++k) {
+                const struct app_route_loss_record *r = &losses.record[k];
+                if (r->configured && strcmp(r->route, stored_route) == 0 && strcmp(r->laser, source) == 0) {
+                    tx = r->transmission;
+                    break;
+                }
+            }
+            if (split) out->split_tx[ch][j] = tx;
+            else out->launch_tx[i][j] = tx;
+        }
+    }
+    return true;
 }
 
 int app_settings_set_route_loss(const char *route, const char *laser,
@@ -1557,6 +1678,7 @@ int app_settings_set_route_loss(const char *route, const char *laser,
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	memset(&record, 0, sizeof(record));
 	record.configured = true;
 	str_set(record.route, sizeof(record.route), route);
@@ -1594,6 +1716,7 @@ int app_settings_reset_route_loss(const char *route, const char *laser, bool per
 		return -EINVAL;
 	}
 
+	route = route_loss_storage_route(route, laser);
 	int first = 0;
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	for (uint8_t i = 0; i < APP_ROUTE_LOSS_RECORD_COUNT; ++i) {
@@ -1638,19 +1761,17 @@ void app_settings_get_mems(struct app_mems_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
+int app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
 {
 	if (mems == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.mems = *mems;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_mems(mems);
-	}
+	return persist ? app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems)) : 0;
 }
 
 uint32_t app_settings_get_mqtt_revision(void)
@@ -1685,9 +1806,4 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
-}
-
-struct nvs_fs *app_settings_nvs_fs(void)
-{
-	return app_nvs_ready ? &app_nvs : NULL;
 }

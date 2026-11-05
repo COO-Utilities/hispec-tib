@@ -7,6 +7,8 @@
  * - zephyr,modbus-serial node for modbus_iface_get_by_name()
  */
 
+#include "hispec_partitions.dtsi"
+
 / {
 	chosen {
 		/* Explicitly bind Zephyr settings/NVS backend to on-chip flash storage partition. */

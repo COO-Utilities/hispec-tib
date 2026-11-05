@@ -18,6 +18,7 @@
 
 #include "app_settings.h"
 #include "app_output.h"
+#include "devices.h"
 #include "mems_switching.h"
 
 #include <coo_commons/command_dispatch.h>
@@ -220,7 +221,7 @@ static int route_loss_extract_field_transmission(const struct coo_cmd_request *c
 }
 
 static int route_loss_extract_value(const struct coo_cmd_request *cmd,
-                                    char *laser, size_t laser_len,
+                                    uint8_t *source,
                                     double *transmission)
 {
     bool found = false;
@@ -234,7 +235,7 @@ static int route_loss_extract_value(const struct coo_cmd_request *cmd,
             if (found) {
                 return -EALREADY;
             }
-            snprintk(laser, laser_len, "%s", candidate);
+            *source = i;
             found = true;
         } else if (rc != -ENOENT) {
             return rc;
@@ -293,19 +294,27 @@ static bool route_loss_route_is_split(const char *route)
     return false;
 }
 
-/* Generic losses describe TIB CAL launch and PD return paths. AS/CAL boards
- * retain their existing named-source storage and AS split-output calibration.
- */
-static bool route_loss_supports_generic(const char *route)
+/* One public loss name per path: shared laser launches include 1430. Physical
+ * 1430 route names still belong to switch sequencing, not this loss interface.
+ * Return zero for unknown/retired names. AS/CAL keep their named-source policy;
+ * TIB exposes only its channel's three lasers, plus generic on passive paths. */
+static uint8_t route_loss_sources(const char *route)
 {
-    return strcmp(route, "yj_cal_to_yj_ao") == 0 ||
-           strcmp(route, "yj_cal_to_yj_fei") == 0 ||
-           strcmp(route, "hk_cal_to_hk_ao") == 0 ||
-           strcmp(route, "hk_cal_to_hk_fei") == 0 ||
-           strcmp(route, "yj_mm_to_yj_pd") == 0 ||
-           strcmp(route, "yj_sm_to_yj_pd") == 0 ||
-           strcmp(route, "hk_mm_to_hk_pd") == 0 ||
-           strcmp(route, "hk_sm_to_hk_pd") == 0;
+    for (uint8_t i = 0; i < router.num_routes; ++i) {
+        const struct mems_route_key *key = &router.routes[i].key;
+        char name[APP_ROUTE_LOSS_ROUTE_MAX_LEN];
+
+        if (strcmp(key->input_name, "yj_1430") == 0 ||
+            strcmp(key->input_name, "hk_1430") == 0) continue;
+        snprintk(name, sizeof(name), "%s_to_%s", key->input_name, key->output_name);
+        if (strcmp(name, route) != 0) continue;
+        if (devices_board_type() != HISPEC_BOARD_TIB) return 0x3f;
+
+        uint8_t sources = strncmp(key->input_name, "yj_", 3) == 0 ? 0x07 : 0x38;
+        if (strcmp(key->input_name + 3, "laser") != 0) sources |= BIT(6);
+        return sources;
+    }
+    return 0;
 }
 
 static int route_loss_append_loss(char *payload, size_t payload_len, size_t *offset,
@@ -318,7 +327,7 @@ static int route_loss_append_loss(char *payload, size_t payload_len, size_t *off
 }
 
 static int route_loss_query_response(const struct coo_cmd_request *cmd,
-				     const char *route,
+				     const char *route, uint8_t sources,
 				     struct coo_cmd_response *out)
 {
     char payload[COO_CMD_PAYLOAD_MAX] = {0};
@@ -355,18 +364,19 @@ static int route_loss_query_response(const struct coo_cmd_request *cmd,
     if (coo_json_append(payload, sizeof(payload), &offset, "\"lasers\":{") != 0) {
         return coo_cmd_error(out, cmd, "route_loss response too large");
     }
+    bool first = true;
     for (uint8_t i = 0U; i < ARRAY_SIZE(route_loss_laser_names); ++i) {
         double tx = 1.0;
 
-        if (strcmp(route_loss_laser_names[i], "generic") == 0 &&
-            !route_loss_supports_generic(route)) {
+        if (!(sources & BIT(i))) {
             continue;
         }
         (void)app_settings_get_route_loss(route, route_loss_laser_names[i], &tx);
-        if (i > 0U &&
+        if (!first &&
             coo_json_append(payload, sizeof(payload), &offset, ",") != 0) {
             return coo_cmd_error(out, cmd, "route_loss response too large");
         }
+        first = false;
         if (coo_json_append(payload, sizeof(payload), &offset, "\"%s\":",
                             route_loss_laser_names[i]) != 0 ||
             route_loss_append_loss(payload, sizeof(payload), &offset, tx) != 0) {
@@ -384,7 +394,7 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
 			     struct coo_cmd_response *out)
 {
     char route[APP_ROUTE_LOSS_ROUTE_MAX_LEN] = {0};
-    char laser[APP_ROUTE_LOSS_LASER_MAX_LEN] = {0};
+    uint8_t source = 0;
     double split_tx[MEMS_SPLIT_OUTPUT_COUNT] = {0};
     double tx = 1.0;
     bool persist = false;
@@ -396,6 +406,10 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
     if (parse_rc != COO_JSON_EXTRACT_OK) {
         return coo_cmd_error(out, cmd, "missing or invalid route");
     }
+    uint8_t sources = route_loss_sources(route);
+    if (sources == 0 && !route_loss_route_is_split(route)) {
+        return coo_cmd_error(out, cmd, "unknown loss route; use shared laser names for forward launch");
+    }
 
     parse_rc = coo_json_extract_bool(cmd->payload, "persist", &persist);
     if (parse_rc == COO_JSON_EXTRACT_ERR) {
@@ -403,14 +417,14 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
     }
 
     split_rc = route_loss_extract_split_tuple(cmd, split_tx);
-    laser_rc = route_loss_extract_value(cmd, laser, sizeof(laser), &tx);
+    laser_rc = route_loss_extract_value(cmd, &source, &tx);
 
     if (!set_request) {
         if (split_rc != -ENOENT || laser_rc != -ENOENT ||
             parse_rc == COO_JSON_EXTRACT_OK) {
             return coo_cmd_error(out, cmd, "route_loss query uses route only");
         }
-        return route_loss_query_response(cmd, route, out);
+        return route_loss_query_response(cmd, route, sources, out);
     }
 
     if (split_rc == 0 && laser_rc == 0) {
@@ -450,10 +464,10 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
     if (laser_rc == -ENOENT) {
         return coo_cmd_error(out, cmd, "missing route_loss value");
     }
-    if (strcmp(laser, "generic") == 0 && !route_loss_supports_generic(route)) {
-        return coo_cmd_error(out, cmd, "generic loss requires TIB CAL launch or PD return");
+    if (!(sources & BIT(source))) {
+        return coo_cmd_error(out, cmd, "source not supported for loss route");
     }
-    parse_rc = app_settings_set_route_loss(route, laser, tx, persist);
+    parse_rc = app_settings_set_route_loss(route, route_loss_laser_names[source], tx, persist);
     if (parse_rc == -ENOSPC) {
         return coo_cmd_error(out, cmd, "route_loss table full");
     }
@@ -739,7 +753,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                      "{\"error\":\"failed setting %s\"}", failed_switch);
             return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
         }
-        return coo_cmd_error(out, cmd, "split route unavailable");
+        return coo_cmd_error(out, cmd, "split request or restart-intent save failed");
     }
 
     split_emit_quantization_warning(channel_index, &state);
@@ -803,10 +817,12 @@ int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     if (rc != 0) {
         char payload[COO_CMD_PAYLOAD_MAX] = {0};
 
+        if (failed_switch == NULL) {
+            return coo_cmd_error(out, cmd, "route applied but restart intent was not saved");
+        }
         snprintk(payload, sizeof(payload),
                  "{\"error\":\"Setting switch %s to %c failed\"}",
-                 failed_switch == NULL ? "unknown" : failed_switch,
-                 failed_state == '\0' ? '?' : failed_state);
+                 failed_switch, failed_state);
         return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
     }
 
@@ -1093,8 +1109,11 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (rc == -ERANGE) {
         return coo_cmd_error(out, cmd, "MEMS setting out of range");
     }
-    if (rc != 0) {
+    if (rc == -EINVAL) {
         return coo_cmd_error(out, cmd, "Invalid MEMS setting");
+    }
+    if (rc != 0) {
+        return coo_cmd_error(out, cmd, "MEMS state applied but restart intent was not saved");
     }
 
     if (has_cycle_ms) {

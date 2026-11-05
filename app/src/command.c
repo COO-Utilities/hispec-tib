@@ -32,6 +32,10 @@
 #include "mems_command.h"
 #include "mems_switching.h"
 #include "photodiode_command.h"
+#include "photodiode.h"
+#include "laser_calibration.h"
+#include "attenuator_calibration.h"
+#include <coo_commons/ota.h>
 #include "throughput_command.h"
 #include "throughput_monitor.h"
 #if defined(CONFIG_SNTP)
@@ -95,7 +99,7 @@ static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 static int time_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 /** Set UTC through the shared RTC guard; may perform RTC I/O, never persists a last-time NVS value. */
 static int time_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
-/** Assemble bounded status; optional laser/DAC sections can block on hardware reads. */
+/** Format bounded owner snapshots without hardware I/O or persistence. */
 static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
 /** Read available temperatures without powering the bank; idle TECs alone define bank temperature. */
 static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out);
@@ -193,13 +197,13 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
                  .ota_query_allowed = true),
     CMD_SPEC("status", status_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true,
-             "ip,lasers,attens",
-             "status [ip=<bool> lasers=<bool> attens=<bool>]",
-             "all fields optional",
-             "bool: true|false|on|off|yes|no",
-             "query-only firmware and subsystem status",
+             "view,channel",
+             "status [view=<emission|mems|system> channel=<yj|hk>]",
+             "channel required only for emission",
+             "TIB: emission, mems, system; AS/CAL: system",
+             "cached status; default includes all activity and emitted output power",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
-                 .ota_query_allowed = true),
+                 .ota_query_allowed = true, .reboot_query_allowed = true),
     CMD_SPEC("help/options", help_options_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
              "help/options",
              "none",
@@ -244,8 +248,8 @@ static const struct coo_cmd_spec command_specs[] = {
              COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB("measure_throughput", NULL, measure_throughput_set,
                  COO_CMD_CLASS_DEFAULT, false,
-                 "laser,channel,fiber,input,output,autolevel,autolevel_response_hz,initial_level,max_flux_ph_s,off_in_s,format,stop",
-                 "measure_throughput laser=<laser|none> [channel=<yj|hk> input=<name> output=<name> fiber=<M|S> autolevel=<bool> autolevel_response_hz=<Hz> initial_level=<0..1> max_flux_ph_s=<value> off_in_s=<s> format=<json|binary>]",
+                 "laser,channel,fiber,input,output,autolevel,autolevel_response_hz,initial_level,max_flux_nw,off_in_s,format,stop",
+                 "measure_throughput laser=<laser|none> [channel=<yj|hk> input=<name> output=<name> fiber=<M|S> autolevel=<bool> autolevel_response_hz=<Hz> initial_level=<0..1> max_flux_nw=<value> off_in_s=<s> format=<json|binary>]",
                  "stop=<yj|hk|all>; known laser requires output; none requires channel and autolevel=false, with optional input/output pair",
                  "format: json,binary",
                  "TIB-only; autolevel requires positive off_in_s; zero is unlimited passive measurement",
@@ -556,8 +560,6 @@ int command_runtime_init(struct k_work_q *blocking_work_q)
         .mqtt_msg_id = &mqtt_msg_id,
         .command_specs = command_specs,
         .command_spec_count = ARRAY_SIZE(command_specs),
-        .lastcommand_nvs = app_settings_nvs_fs(),
-        .lastcommand_nvs_id = APP_SETTINGS_NVS_ID_LAST_COMMAND,
         .reboot_prepare = command_prepare_reboot,
         .reboot_work_q = blocking_work_q,
     };
@@ -1101,150 +1103,644 @@ static int help_options_get(const struct coo_cmd_request *cmd,
     return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
 
+/* Status is executor-owned formatting of owner snapshots. No hardware refresh,
+ * persistence, deadline maintenance or publication belongs in this path.
+ * Keep floats bounded even for damaged calibration; finite values use %.6g.
+ */
+BUILD_ASSERT(sizeof(HISPEC_BUILD_VERSION) <= 65, "status firmware identity exceeds its payload budget");
+
+#define STATUS_ADD(...) do { int rc_ = coo_json_append(b, COO_CMD_PAYLOAD_MAX, o, __VA_ARGS__); if (rc_ != 0) return rc_; } while (0)
+#define STATUS_CALL(expr) do { int rc_ = (expr); if (rc_ != 0) return rc_; } while (0)
+#define STATUS_NUM(value) STATUS_CALL(status_number(b, o, (value)))
+#define STATUS_STR(value) STATUS_CALL(status_string(b, o, (value)))
+
+static int status_number(char *b, size_t *o, double value)
+{
+    if (isfinite(value)) STATUS_ADD("%.6g", value);
+    else STATUS_ADD("null");
+    return 0;
+}
+
+/* Unlike the JSON-safe literal helper, identity/configuration need escaping. */
+static int status_string(char *b, size_t *o, const char *value)
+{
+    if (value == NULL) { STATUS_ADD("null"); return 0; }
+    STATUS_ADD("\"");
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p) {
+        if (*p == '"' || *p == '\\') STATUS_ADD("\\%c", *p);
+        else if (*p < 0x20) STATUS_ADD("\\u%04x", *p);
+        else STATUS_ADD("%c", *p);
+    }
+    STATUS_ADD("\"");
+    return 0;
+}
+
+static int status_flux(char *b, size_t *o, double value, bool split, bool external)
+{
+    if (isfinite(value) && (split || external)) {
+        STATUS_ADD("\"%.6g (%snot including split)\"", value, external ? "laser(s) only; " : "");
+    } else STATUS_NUM(value);
+    return 0;
+}
+
+struct status_atten {
+    double mv[2], open_mv[2], loss_db[2], linear;
+    bool valid;
+};
+
+struct status_optics {
+    struct app_status_settings settings;
+    struct mems_switch_snapshot mems[MEMS_ROUTER_MAX_SWITCHES];
+    struct hispec_laser_flux_estimate laser[HISPEC_LASER_COUNT];
+    struct status_atten atten[NUM_ATTENUATORS];
+    bool settings_valid, mems_valid;
+};
+
+/* Cached per-DAC losses already belong to attenuator.c; no model fit/readback. */
+static void status_atten_snapshot(uint8_t index, struct status_atten *out)
+{
+    struct attenuator cached;
+    attenuator_snapshot(&attenuators[index], &cached);
+    const struct attenuator_dac_cfg *dac[] = {&cached.dac_cfg1, &cached.dac_cfg2};
+    out->valid = true;
+    for (size_t i = 0; i < 2; ++i) {
+        out->mv[i] = dac[i]->valid ? (double)dac[i]->voltage : (double)NAN;
+        out->loss_db[i] = dac[i]->valid ? dac[i]->attenuation_db : (double)NAN;
+        out->open_mv[i] = attenuator_open_voltage(dac[i]);
+        out->valid &= dac[i]->valid && isfinite(out->loss_db[i]);
+    }
+    out->linear = out->valid ? pow(10.0, -(out->loss_db[0] + out->loss_db[1]) / 10.0) : (double)NAN;
+}
+
+/* Called once per response; these copies live only for this request. */
+static void status_optics_snapshot(struct status_optics *s, bool emission)
+{
+    memset(s, 0, sizeof(*s));
+    s->settings_valid = app_settings_try_get_status(&s->settings);
+    s->mems_valid = mems_router_snapshot(&router, s->mems);
+    if (!emission) return;
+    if (devices_board_type() == HISPEC_BOARD_TIB) {
+        for (size_t i = 0; i < HISPEC_LASER_COUNT; ++i) {
+            uint8_t index;
+            (void)laser_estimate_flux(i, &s->laser[i]);
+            if (attenuator_index_from_laser_id(i, &index) == 0)
+                status_atten_snapshot(index, &s->atten[i]);
+        }
+    } else if (devices_board_type() == HISPEC_BOARD_CAL_YJ || devices_board_type() == HISPEC_BOARD_CAL_HK) {
+        status_atten_snapshot(HISPEC_ATTENUATOR_LFC_INDEX, &s->atten[0]);
+    }
+}
+
+static const struct mems_switch_snapshot *status_switch(const struct status_optics *s, const char *name)
+{
+    if (!s->mems_valid) return NULL;
+    for (size_t i = 0; i < router.num_switches; ++i)
+        if (strcmp(router.switches[i]->name, name) == 0) return &s->mems[i];
+    return NULL;
+}
+
+/* A single selected branch, independent of instantaneous toggle phase. */
+static int status_branch(const struct mems_switch_snapshot *sw, char state)
+{
+    if (sw == NULL || !sw->known) return -1;
+    double duty = state == 'A' ? sw->a_duty : 1.0 - sw->a_duty;
+    return duty == 0.0 ? 0 : (sw->toggling && duty < 1.0 ? 2 : 1);
+}
+
+static int status_route(const struct status_optics *s, const char *input, const char *output)
+{
+    if (!s->mems_valid) return -1;
+    const struct mems_route *route = mems_router_get_route(&router, input, output);
+    return route != NULL ? mems_route_snapshot_state(&router, s->mems, route) : 0;
+}
+
+static double status_laser_flux(const struct status_optics *s, size_t i)
+{
+    const struct hispec_laser_flux_estimate *laser = &s->laser[i];
+    if (strcmp(laser->output_state, "stopped") == 0 || strcmp(laser->output_state, "unexpected stop") == 0)
+        return 0.0;
+    if (strcmp(laser->output_state, "running") != 0 || laser->control_fault || laser->communication_fault)
+        return (double)NAN;
+    return laser->flux_nw * s->atten[i].linear;
+}
+
+/* 1430's forward switch belongs only to that source, not the combined lasers. */
+static int status_laser_route(const struct status_optics *s, size_t i, const char *output, bool retro)
+{
+    const char *ch = i < 3 ? "yj" : "hk";
+    bool is1430 = i == HISPEC_LASER_1430_YJ || i == HISPEC_LASER_1430_HK;
+    char input[24];
+    if (retro) {
+        if (!is1430) return 0;
+        snprintk(input, sizeof(input), "%s_forward_retro", ch);
+        return status_branch(status_switch(s, input), 'B');
+    }
+    snprintk(input, sizeof(input), "%s_%s", ch, is1430 ? "1430" : "laser");
+    return status_route(s, input, output);
+}
+
+static int status_atten_fields(char *b, size_t *o, const struct status_atten *a)
+{
+    STATUS_ADD("{\"mv1\":"); STATUS_NUM(a->mv[0]);
+    STATUS_ADD(",\"mv2\":"); STATUS_NUM(a->mv[1]);
+    STATUS_ADD(",\"open1_mv\":"); STATUS_NUM(a->open_mv[0]);
+    STATUS_ADD(",\"open2_mv\":"); STATUS_NUM(a->open_mv[1]);
+    STATUS_ADD(",\"loss1_db\":"); STATUS_NUM(a->loss_db[0]);
+    STATUS_ADD(",\"loss2_db\":"); STATUS_NUM(a->loss_db[1]);
+    STATUS_ADD(",\"loss_db\":"); STATUS_NUM(a->loss_db[0] + a->loss_db[1]);
+    STATUS_ADD(",\"linear\":"); STATUS_NUM(a->linear);
+    return 0; /* Caller appends optional flux and closes the object. */
+}
+
+static int status_tib_outputs(char *b, size_t *o, const struct status_optics *s)
+{
+    STATUS_ADD(",\"outputs\":{");
+    for (size_t ch = 0; ch < 2; ++ch) {
+        const char *channel = ch == 0 ? "yj" : "hk";
+        for (size_t port = 0; port < 3; ++port) {
+            bool retro = port == 2, unknown = false, split = false, local = false;
+            char output[16], cal[16];
+            int paths[3];
+            double flux = 0.0;
+            snprintk(output, sizeof(output), "%s_%s", channel, port == 0 ? "ao" : port == 1 ? "fei" : "retro");
+            snprintk(cal, sizeof(cal), "%s_cal", channel);
+            int external = retro ? 0 : status_route(s, cal, output);
+            unknown = external < 0;
+            split = external == 2;
+            for (size_t j = 0; j < 3; ++j) {
+                size_t i = ch * 3 + j;
+                paths[j] = status_laser_route(s, i, output, retro);
+                unknown |= paths[j] < 0;
+                split |= paths[j] == 2;
+                if (paths[j] <= 0) continue;
+                local = true;
+                double source = status_laser_flux(s, i);
+                /* Zero emission stays zero even without a route calibration. */
+                if (!retro && source != 0.0)
+                    source *= s->settings_valid ? s->settings.launch_tx[i][port] : (double)NAN;
+                flux += source;
+            }
+            if (unknown || (external > 0 && !local)) flux = (double)NAN;
+            STATUS_ADD("%s\"%s\":{\"from\":", ch || port ? "," : "", output);
+            if (unknown) STATUS_ADD("null");
+            else {
+                bool first = true;
+                STATUS_ADD("[");
+                for (size_t j = 0; j < 3; ++j) if (paths[j] > 0) {
+                    STATUS_ADD("%s\"%s\"", first ? "" : ",", hispec_laser_name(ch * 3 + j));
+                    first = false;
+                }
+                if (external > 0) STATUS_ADD("%s\"%s\"", first ? "" : ",", cal);
+                STATUS_ADD("]");
+            }
+            STATUS_ADD(",\"flux_nw\":");
+            STATUS_CALL(status_flux(b, o, flux, split && flux != 0.0, external > 0));
+            if (retro) STATUS_ADD(",\"light\":\"%s\"", !isfinite(flux) ? "unknown" :
+                                  flux == 0.0 ? "off" : split ? "split" : "on");
+            STATUS_ADD("}");
+        }
+    }
+    STATUS_ADD("}");
+    return 0;
+}
+
+static int status_mems(char *b, size_t *o, const struct status_optics *s)
+{
+    static const char *const tib_labels[4][2] = {
+        {"forward", "retro"}, {"laser", "cal"}, {"ao", "fei"}, {"sm", "mm"},
+    };
+    static const char *const as_labels[3][2] = {
+        {"cal/split1", "split2/split3"}, {"cal", "split1"}, {"split2", "split3"},
+    };
+    static const char *const cal_labels[7][2] = {
+        {"lfc", "etalon"}, {"cathgas", "bb"}, {"bb to cal2", "bb to is"},
+        {"lfc/etalon", "bb/cathgas"}, {"nm", "selected source"}, {"bb", "nm"}, {"spec", "tib"},
+    };
+    STATUS_ADD(",\"mems\":");
+    if (!s->mems_valid) { STATUS_ADD("null"); return 0; }
+    STATUS_ADD("{");
+    for (size_t i = 0; i < router.num_switches; ++i) {
+        const struct mems_switch_snapshot *sw = &s->mems[i];
+        STATUS_ADD("%s\"%s\":", i ? "," : "", router.switches[i]->name);
+        if (!sw->known) STATUS_ADD("null");
+        else if (sw->toggling) {
+            STATUS_ADD("{\"a_duty_pct\":"); STATUS_NUM(sw->a_duty * 100.0);
+            STATUS_ADD(",\"cycle_hz\":"); STATUS_NUM(sw->cycle_ms ? 1000.0 / sw->cycle_ms : (double)NAN);
+            STATUS_ADD("}");
+        } else {
+            size_t side = sw->state == 'A' ? 0 : 1;
+            const char *label = devices_board_type() == HISPEC_BOARD_TIB ? tib_labels[i < 6 ? i % 3 : 3][side] :
+                devices_board_type() == HISPEC_BOARD_AS ? as_labels[i % 3][side] : cal_labels[i][side];
+            STATUS_ADD("\"%c (%s)\"", sw->state, label);
+        }
+    }
+    STATUS_ADD("}");
+    return 0;
+}
+
+static int status_external_outputs(char *b, size_t *o, const struct status_optics *s)
+{
+    const bool as = devices_board_type() == HISPEC_BOARD_AS;
+    const char *const cal_outputs[] = {"spec", "tib", "is"};
+    const char *const as_outputs[] = {"yj_cal", "yj_split", "hk_cal", "hk_split"};
+    STATUS_ADD(",\"outputs\":{");
+    for (size_t port = 0; port < (as ? 4 : 3); ++port) {
+        const char *output = as ? as_outputs[port] : cal_outputs[port];
+        STATUS_ADD("%s\"%s\":{\"from\":", port ? "," : "", output);
+        bool unknown = !s->mems_valid;
+        if (as) {
+            const char *ch = port < 2 ? "yj" : "hk";
+            char input[16], first[16], middle[16];
+            snprintk(input, sizeof(input), "%s_calin", ch);
+            snprintk(first, sizeof(first), "%s_as1", ch);
+            snprintk(middle, sizeof(middle), "%s_as2", ch);
+            int a = status_branch(status_switch(s, first), 'A');
+            int branch = status_branch(status_switch(s, first), 'B');
+            int mid = status_branch(status_switch(s, middle), port % 2 ? 'B' : 'A');
+            unknown |= a < 0 || mid < 0;
+            bool connected = (port % 2 && branch > 0) || (a > 0 && mid > 0);
+            if (unknown) STATUS_ADD("null");
+            else STATUS_ADD(connected ? "[\"%s\"]" : "[]", input);
+        } else {
+            for (size_t i = 0; i < router.num_routes && !unknown; ++i)
+                if (strcmp(router.routes[i].key.output_name, output) == 0)
+                    unknown |= mems_route_snapshot_state(&router, s->mems, &router.routes[i]) < 0;
+            if (unknown) STATUS_ADD("null");
+            else {
+                bool first = true;
+                STATUS_ADD("[");
+                for (size_t i = 0; i < router.num_routes; ++i) {
+                    const struct mems_route *r = &router.routes[i];
+                    if (strcmp(r->key.output_name, output) != 0 ||
+                        mems_route_snapshot_state(&router, s->mems, r) <= 0) continue;
+                    STATUS_ADD("%s\"%s\"", first ? "" : ",", r->key.input_name);
+                    first = false;
+                }
+                STATUS_ADD("]");
+            }
+        }
+        STATUS_ADD("}");
+    }
+    STATUS_ADD("}");
+    if (as) {
+        STATUS_ADD(",\"split\":{");
+        for (size_t ch = 0; ch < 2; ++ch) {
+            double ratio[3];
+            bool known = s->settings_valid && s->mems_valid &&
+                mems_split_ratio_snapshot(&router, s->mems, ch, s->settings.split_configured[ch],
+                                          s->settings.split_tx[ch], ratio);
+            STATUS_ADD("%s\"%s\":{\"ratio_out\":", ch ? "," : "", ch ? "hk" : "yj");
+            if (known) {
+                STATUS_ADD("["); STATUS_NUM(ratio[0]); STATUS_ADD(",");
+                STATUS_NUM(ratio[1]); STATUS_ADD(","); STATUS_NUM(ratio[2]); STATUS_ADD("]");
+            } else STATUS_ADD("null");
+            uint32_t remaining = 0;
+            for (size_t i = 0; i < router.num_switches; ++i)
+                if (s->mems_valid && strncmp(router.switches[i]->name, ch ? "hk_" : "yj_", 3) == 0)
+                    remaining = MAX(remaining, s->mems[i].off_in_s);
+            if (remaining) STATUS_ADD(",\"off_in_s\":%u", remaining);
+            STATUS_ADD("}");
+        }
+        STATUS_ADD("}");
+    } else {
+        STATUS_ADD(",\"atten\":{\"lfc\":");
+        STATUS_CALL(status_atten_fields(b, o, &s->atten[0]));
+        STATUS_ADD("}}");
+    }
+    return status_mems(b, o, s);
+}
+
+static int status_emission(char *b, size_t *o, const struct status_optics *s, size_t channel)
+{
+    const char *ch = channel ? "hk" : "yj";
+    STATUS_ADD(",\"channel\":\"%s\",\"emission\":{", ch);
+    for (size_t j = 0; j < 3; ++j) {
+        size_t i = channel * 3 + j;
+        const struct hispec_laser_flux_estimate *l = &s->laser[i];
+        STATUS_ADD("%s\"%s\":{\"output_state\":", j ? "," : "", hispec_laser_name(i));
+        STATUS_STR(l->output_state);
+        STATUS_ADD(",\"i_mA\":"); STATUS_NUM(l->current_ma);
+        STATUS_ADD(",\"power_mw\":"); STATUS_NUM(l->power_mw);
+        STATUS_ADD(",\"tuned_nm\":"); STATUS_NUM(l->wavelength_nm);
+        if (l->off_in_s) STATUS_ADD(",\"off_in_s\":%u", l->off_in_s);
+        STATUS_ADD(",\"atten\":");
+        STATUS_CALL(status_atten_fields(b, o, &s->atten[i]));
+        double source = status_laser_flux(s, i);
+        STATUS_ADD(",\"flux_nw\":"); STATUS_NUM(source);
+        STATUS_ADD("},\"routes\":");
+        if (!s->mems_valid) STATUS_ADD("null");
+        else {
+            bool first = true;
+            STATUS_ADD("{");
+            for (size_t port = 0; port < 3; ++port) {
+                bool retro = port == 2;
+                char output[16];
+                snprintk(output, sizeof(output), "%s_%s", ch, port == 0 ? "ao" : port == 1 ? "fei" : "retro");
+                int path = status_laser_route(s, i, output, retro);
+                if (path == 0) continue;
+                STATUS_ADD("%s\"%s\":{", first ? "" : ",", output);
+                first = false;
+                double tx = s->settings_valid && !retro ? s->settings.launch_tx[i][port] : (double)NAN;
+                if (!retro) {
+                    STATUS_ADD("\"loss_db\":"); STATUS_NUM(tx > 0.0 ? -10.0 * log10(tx) : (double)NAN);
+                    STATUS_ADD(",");
+                }
+                double flux = path < 0 ? (double)NAN : retro || source == 0.0 ? source : source * tx;
+                STATUS_ADD("\"flux_nw\":"); STATUS_CALL(status_flux(b, o, flux, path == 2 && flux != 0.0, false));
+                if (retro) STATUS_ADD(",\"light\":\"%s\"", !isfinite(flux) ? "unknown" :
+                                      flux == 0.0 ? "off" : path == 2 ? "split" : "on");
+                STATUS_ADD("}");
+            }
+            STATUS_ADD("}");
+        }
+        STATUS_ADD("}");
+    }
+    STATUS_ADD("}");
+    return 0;
+}
+
+enum status_error {
+    STATUS_RESET_ERROR = BIT(0), STATUS_RELAY_ERROR = BIT(1), STATUS_BANK_ERROR = BIT(2),
+    STATUS_PD_YJ_ERROR = BIT(3), STATUS_PD_HK_ERROR = BIT(4), STATUS_BOARD_ERROR = BIT(5),
+    STATUS_NTP_ERROR = BIT(6),
+};
+
+/* Shared active work on every profile; append to the caller's activity list. */
+static int status_activity_end(char *b, size_t *o, const struct status_optics *s,
+                               const struct coo_ota_status *ota, bool ota_valid, bool first)
+{
+    for (size_t i = 0; s->mems_valid && i < router.num_switches; ++i) if (s->mems[i].toggling) {
+        STATUS_ADD("%s\"mems: toggling\"", first ? "" : ","); first = false;
+        break;
+    }
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+    if (atomic_get(&command_runtime.serial_guard_active)) {
+        STATUS_ADD("%s\"serial guard active\"", first ? "" : ","); first = false;
+    }
+#endif
+    if (atomic_get(&command_runtime.reboot_pending)) {
+        STATUS_ADD("%s\"reboot requested\"", first ? "" : ","); first = false;
+    }
+    if (!ota_valid || ota->active)
+        STATUS_ADD("%s\"ota: %s\"", first ? "" : ",", ota_valid ? "active" : "status busy");
+    STATUS_ADD("]");
+    return 0;
+}
+
+static int status_tib_main(char *b, size_t *o, const struct status_optics *s,
+                           const struct coo_ota_status *ota, bool ota_valid, unsigned *errors)
+{
+    struct laserbank_tempcontrol_status bank;
+    laserbank_tempcontrol_get_status(&bank);
+    bool heater = false;
+    int relay_error = housekeeping_power_get_confirmed(HOUSEKEEPING_POWER_BANK_HEATER, &heater);
+    if (relay_error) *errors |= STATUS_RELAY_ERROR;
+    if (bank.last_error != 0 && bank.last_error != -EBUSY) *errors |= STATUS_BANK_ERROR;
+    STATUS_ADD(",\"bank\":{\"power\":\"%s (%s)\",\"heater\":\"%s (%s)\",\"idle_tec_avg_c\":",
+               bank.bank_powered ? "on" : "off", hispec_laser_bank_power_mode_name(hispec_laser_bank_power_mode_get()),
+               relay_error ? "unknown" : heater ? "on" : "off", laserbank_heater_mode_name(bank.heater_mode));
+    STATUS_NUM(bank.idle_tec_temp_avg_c);
+    STATUS_ADD("},\"lasers\":{");
+    for (size_t i = 0; i < HISPEC_LASER_COUNT; ++i) {
+        const struct hispec_laser_flux_estimate *l = &s->laser[i];
+        STATUS_ADD("%s\"%s\":\"%s%s%s%s\"", i ? "," : "", hispec_laser_name(i), l->output_state,
+                   l->control_fault ? "; operation failed" : "",
+                   l->communication_fault ? "; no response" : "",
+                   s->atten[i].valid ? "" : "; atten unknown");
+    }
+    STATUS_ADD("}");
+    STATUS_CALL(status_tib_outputs(b, o, s));
+
+    struct photodiode_sample_snapshot pd[PHOTODIODE_CHANNEL_COUNT];
+    struct throughput_monitor_status monitor[PHOTODIODE_CHANNEL_COUNT];
+    struct laser_calibration_status laser_cal;
+    struct attenuator_calibration_status atten_cal;
+    photodiode_snapshot(pd);
+    bool monitor_valid = throughput_monitor_snapshot(pd, monitor);
+    laser_calibration_get_status(&laser_cal);
+    attenuator_calibration_get_status(&atten_cal);
+    const char *laser_activity = laser_cal.shutdown_pending ? "stop failed" :
+        laser_cal.state == LASER_CAL_RUNNING ? "running" :
+        laser_cal.state == LASER_CAL_FITTING ? "fitting" :
+        laser_cal.state == LASER_CAL_AWAITING_OUTPUT ? "awaiting_output" : NULL;
+    int atten_laser = -1;
+    if (atten_cal.shutdown_pending || (atten_cal.state && strcmp(atten_cal.state, "running") == 0)) {
+        for (size_t i = 0; i < HISPEC_LASER_COUNT; ++i) {
+            uint8_t index;
+            if (attenuator_index_from_laser_id(i, &index) == 0 && index == atten_cal.attenuator_index) atten_laser = i;
+        }
+    }
+    STATUS_ADD(",\"pd\":{");
+    for (size_t ch = 0; ch < 2; ++ch) {
+        const char *channel = ch ? "hk" : "yj";
+        bool power = false;
+        int rc = housekeeping_power_get_confirmed(ch, &power);
+        if (rc) *errors |= STATUS_RELAY_ERROR;
+        double coeff = monitor_valid ? monitor[ch].wavelength_coeff : (double)NAN;
+        int cal_laser = laser_activity != NULL ? (int)laser_cal.laser : atten_laser;
+        if (cal_laser >= 0 && (cal_laser < 3 ? 0U : 1U) == ch)
+            coeff = photodiode_wavelength_coefficient(ch, s->laser[cal_laser].nominal_wavelength_nm);
+        if (!power || rc) coeff = (double)NAN;
+        bool overrange = power && rc == 0 && pd[ch].mv >= PHOTODIODE_ADC_USABLE_MV;
+        if (overrange) *errors |= ch ? STATUS_PD_HK_ERROR : STATUS_PD_YJ_ERROR;
+        char name[24], from[16];
+        snprintk(name, sizeof(name), "%s_sm_mm", channel);
+        const struct mems_switch_snapshot *sw = status_switch(s, name);
+        snprintk(from, sizeof(from), "%s_%s", channel, sw != NULL && sw->state == 'B' ? "mm" : "sm");
+        STATUS_ADD("%s\"%s\":{\"power\":\"%s\",\"from\":", ch ? "," : "", channel, rc ? "unknown" : power ? "on" : "off");
+        STATUS_STR(sw != NULL && sw->known ? from : NULL);
+        STATUS_ADD(",\"net_mv\":"); STATUS_NUM(power && rc == 0 ? pd[ch].net_mv : (double)NAN);
+        STATUS_ADD(",\"power_nw\":"); STATUS_NUM(!overrange ? pd[ch].power_uw * 1000.0 * coeff : (double)NAN);
+        STATUS_ADD(",\"wavelength_coeff\":"); STATUS_NUM(coeff);
+        STATUS_ADD("}");
+    }
+    STATUS_ADD("},\"activity\":");
+    /* Keep other activity visible when the monitor's I/O owner holds its lock. */
+    bool first = monitor_valid;
+    STATUS_ADD("[");
+    if (!monitor_valid) STATUS_ADD("\"measure_throughput: status busy\"");
+    for (size_t ch = 0; monitor_valid && ch < 2; ++ch) if (monitor[ch].active || monitor[ch].stopping) {
+        STATUS_ADD("%s\"measure_throughput %s: %s", first ? "" : ",", ch ? "hk" : "yj",
+                   monitor[ch].stopping ? "stopping" : monitor[ch].preparing ? "preparing" :
+                   monitor[ch].autolevel ? "autolevel" : "passive");
+        if (monitor[ch].laser_name) STATUS_ADD(" (%s)", monitor[ch].laser_name);
+        STATUS_ADD("\""); first = false;
+    }
+    if (laser_activity) {
+        STATUS_ADD("%s\"laser/calibrate %s: %s\"", first ? "" : ",", hispec_laser_name(laser_cal.laser), laser_activity);
+        first = false;
+    }
+    if (atten_laser >= 0) {
+        STATUS_ADD("%s\"atten/calibrate %s: %s\"", first ? "" : ",", hispec_laser_name(atten_laser),
+                   atten_cal.shutdown_pending ? "stop failed" : "running");
+        first = false;
+    }
+    for (size_t ch = 0; ch < 2; ++ch) if (pd[ch].dark_pending) {
+        STATUS_ADD("%s\"pd/dark %s: running\"", first ? "" : ",", ch ? "hk" : "yj"); first = false;
+    }
+    return status_activity_end(b, o, s, ota, ota_valid, first);
+}
+
+static int status_system(char *b, size_t *o, const struct status_optics *s,
+                         const struct coo_ota_status *ota, bool ota_valid, unsigned *errors)
+{
+    struct network_ipv4_info net;
+    (void)network_get_ipv4_info(&net);
+    STATUS_ADD(",\"ip\":{\"src\":"); STATUS_STR(network_ipv4_source_str(net.source));
+    STATUS_ADD(",\"active\":{\"ip\":"); STATUS_STR(net.has_ipv4 ? net.ip : NULL);
+    STATUS_ADD(",\"subnet\":"); STATUS_STR(net.has_ipv4 ? net.netmask : NULL);
+    STATUS_ADD(",\"gateway\":"); STATUS_STR(net.has_ipv4 ? net.gateway : NULL);
+    STATUS_ADD("}},\"mqtt\":");
+    if (s->settings_valid) {
+        char endpoint[160];
+        snprintk(endpoint, sizeof(endpoint), "%s:%u", s->settings.mqtt.broker_host, s->settings.mqtt.broker_port);
+        STATUS_ADD("{\"broker\":"); STATUS_STR(endpoint); STATUS_ADD("}");
+    } else STATUS_ADD("null");
+#if defined(CONFIG_SNTP)
+    struct sntp_sync_status ntp;
+    sntp_sync_get_status(&ntp);
+    STATUS_ADD(",\"ntp\":{\"src\":"); STATUS_STR(sntp_sync_source_str(ntp.source));
+    STATUS_ADD(",\"server\":"); STATUS_STR(ntp.server[0] ? ntp.server : NULL);
+    STATUS_ADD(",\"last_sync_utc_ms\":");
+    if (ntp.last_sync_utc_ms) STATUS_ADD("%llu", (unsigned long long)ntp.last_sync_utc_ms);
+    else STATUS_ADD("null");
+    STATUS_ADD("}");
+    if (ntp.enabled && ntp.last_error) *errors |= STATUS_NTP_ERROR;
+#endif
+    /* Executor is the sole writer; do not copy the payload-sized request. */
+    const struct coo_cmd_lastcommand *last = &command_runtime.lastcommand;
+    STATUS_ADD(",\"lastcmd\":");
+    if (last->valid) {
+        STATUS_ADD("{\"name\":"); STATUS_STR(last->request.key);
+        STATUS_ADD(",\"src\":\"%s\",\"t_ms\":%lld}", coo_cmd_source_name(last->request.source), (long long)last->time_ms);
+    } else STATUS_ADD("null");
+    STATUS_ADD(",\"queues\":{\"inbound\":%u,\"replies\":%u,\"best_effort\":%u}",
+               k_msgq_num_used_get(&inbound_queue), k_msgq_num_used_get(&reply_queue), k_msgq_num_used_get(&outbound_queue));
+    const atomic_t *counters[] = {&command_runtime.dropped_best_effort, &command_runtime.dropped_replies,
+                                 &command_runtime.publish_failures};
+    const char *const names[] = {"dropped_best_effort", "dropped_replies", "publish_failures"};
+    for (size_t i = 0; i < ARRAY_SIZE(counters); ++i) {
+        atomic_val_t n = atomic_get(counters[i]);
+        if (n) STATUS_ADD(",\"%s\":%lu", names[i], (unsigned long)n);
+    }
+    STATUS_ADD(",\"ota\":");
+    if (!ota_valid) STATUS_ADD("null");
+    else {
+        STATUS_ADD("{\"image\":\"%s\",\"image_hash\":\"", ota->confirmed ? "permanent" : "trial");
+        for (size_t i = 0; i < sizeof(ota->image_hash); ++i) STATUS_ADD("%02x", ota->image_hash[i]);
+        STATUS_ADD("\"");
+        if (ota->enabled) STATUS_ADD(",\"enabled\":true");
+        if (ota->pending) STATUS_ADD(",\"pending\":true");
+        if (ota->remaining_s) STATUS_ADD(",\"remaining_s\":%u", ota->remaining_s);
+        if (ota->trial_remaining_s) STATUS_ADD(",\"trial_remaining_s\":%u", ota->trial_remaining_s);
+        STATUS_ADD("}");
+    }
+#if defined(CONFIG_COO_CMD_SERIAL_GUARD)
+    int64_t guard = k_ticks_to_ms_ceil64(k_work_delayable_remaining_get(&command_runtime.serial_guard_work));
+    if (atomic_get(&command_runtime.serial_guard_active) && guard > 0)
+        STATUS_ADD(",\"serial_guard_s\":%lld", (long long)((guard + 999) / 1000));
+#endif
+    int64_t reboot = k_ticks_to_ms_ceil64(k_work_delayable_remaining_get(&command_runtime.reboot_work));
+    if (atomic_get(&command_runtime.reboot_pending) && reboot > 0)
+        STATUS_ADD(",\"reboot_in_s\":%lld", (long long)((reboot + 999) / 1000));
+    return 0;
+}
+
+static int status_payload(char *b, size_t *o, int view, int channel)
+{
+    struct status_optics optics;
+    struct coo_ota_status ota;
+    unsigned errors = 0;
+    bool ota_valid = coo_ota_try_get_status(&ota);
+    status_optics_snapshot(&optics, view == 0 || view == 1);
+    struct timespec utc;
+    bool utc_valid = sys_clock_gettime(SYS_CLOCK_REALTIME, &utc) == 0;
+    char reset[192];
+    bool reset_valid = devices_boot_reset_cause(reset, sizeof(reset));
+    if (!reset_valid) errors |= STATUS_RESET_ERROR;
+    STATUS_ADD("{\"device\":"); STATUS_STR(app_mqtt_device_id());
+    if (view) STATUS_ADD(",\"view\":\"%s\"", view == 1 ? "emission" : view == 2 ? "mems" : "system");
+    if (!view) {
+        STATUS_ADD(",\"fw\":"); STATUS_STR(HISPEC_BUILD_VERSION);
+        STATUS_ADD(",\"boots\":");
+        if (optics.settings_valid) STATUS_ADD("%u", optics.settings.boot_count);
+        else STATUS_ADD("null");
+    }
+    STATUS_ADD(",\"utc\":");
+    if (utc_valid) STATUS_ADD("%llu", (unsigned long long)((uint64_t)utc.tv_sec * 1000U + utc.tv_nsec / 1000000U));
+    else STATUS_ADD("null");
+    STATUS_ADD(",\"uptime_s\":%lld,\"reset_cause\":", (long long)(k_uptime_get() / 1000));
+    STATUS_STR(reset_valid ? reset : NULL);
+    if (view == 1) STATUS_CALL(status_emission(b, o, &optics, channel));
+    else if (view == 2) STATUS_CALL(status_mems(b, o, &optics));
+    else if (view == 3) STATUS_CALL(status_system(b, o, &optics, &ota, ota_valid, &errors));
+    else {
+        struct housekeeping_temperature_status temp;
+        housekeeping_get_temperature_status(&temp);
+        if (housekeeping_relay_error()) errors |= STATUS_RELAY_ERROR;
+        STATUS_ADD(",\"ambient_c\":");
+        if (temp.valid) STATUS_NUM(temp.ambient_c);
+        else if (temp.last_error == -ENODEV) STATUS_STR("sensor not available (ENODEV)");
+        else if (temp.last_error == -ETIMEDOUT) STATUS_STR("sensor did not respond (ETIMEDOUT)");
+        else if (temp.last_error == -EIO) STATUS_STR("sensor read failed (EIO)");
+        else if (temp.last_error) STATUS_STR("sensor read failed");
+        else STATUS_ADD("null");
+        if (devices_board_type() == HISPEC_BOARD_TIB)
+            STATUS_CALL(status_tib_main(b, o, &optics, &ota, ota_valid, &errors));
+        else {
+            if (devices_board_type() != HISPEC_BOARD_UNKNOWN) STATUS_CALL(status_external_outputs(b, o, &optics));
+            else errors |= STATUS_BOARD_ERROR;
+            STATUS_ADD(",\"activity\":[");
+            STATUS_CALL(status_activity_end(b, o, &optics, &ota, ota_valid, true));
+        }
+    }
+    bool first = true;
+    int relay_error = errors & STATUS_RELAY_ERROR ? housekeeping_relay_error() : 0;
+    const char *const error_text[] = {
+        "reset cause read failed", relay_error == -ETIMEDOUT ? "relay controller did not respond" :
+        relay_error == -ENODEV ? "relay controller unavailable" : "relay initialization failed",
+        "bank temperature control failed",
+        "pd yj: ADC overrange", "pd hk: ADC overrange", "board identity unavailable", "NTP synchronization failed",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(error_text); ++i) if (errors & BIT(i)) {
+        STATUS_ADD("%s", first ? ",\"errors\":[" : ","); STATUS_STR(error_text[i]); first = false;
+    }
+    if (view == 1) for (size_t i = channel * 3; i < (channel + 1) * 3; ++i) {
+        const struct hispec_laser_flux_estimate *l = &optics.laser[i];
+        if (!l->control_fault && !l->communication_fault && optics.atten[i].valid) continue;
+        STATUS_ADD("%s\"%s:%s%s%s\"", first ? ",\"errors\":[" : ",", hispec_laser_name(i),
+                   l->control_fault ? " operation failed" : "",
+                   l->communication_fault ? " no response" : "", optics.atten[i].valid ? "" : " atten unknown");
+        first = false;
+    }
+    if (!first) STATUS_ADD("]");
+    STATUS_ADD("}");
+    return 0;
+}
+
+#undef STATUS_STR
+#undef STATUS_NUM
+#undef STATUS_CALL
+#undef STATUS_ADD
+
 static int status_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
 {
-    struct housekeeping_temperature_status ts = {0};
-    bool include_ip = false;
-    bool include_lasers = false;
-    bool include_attens = false;
-    struct coo_cmd_lastcommand lastcommand;
-    bool has_lastcommand;
-    /* Reply storage belongs to the executor; do not duplicate it on this stack. */
-    char *payload = out->payload;
-    size_t off = 0U;
-    uint64_t pd_on_s;
-
-    if (coo_json_extract_optional_bool(cmd->payload, "ip",
-                                       &include_ip, NULL) != 0) {
-        return coo_cmd_error(out, cmd, "invalid ip");
-    }
-    if (coo_json_extract_optional_bool(cmd->payload, "lasers",
-                                       &include_lasers, NULL) != 0) {
-        return coo_cmd_error(out, cmd, "invalid lasers");
-    }
-    if (coo_json_extract_optional_bool(cmd->payload, "attens",
-                                       &include_attens, NULL) != 0) {
-        return coo_cmd_error(out, cmd, "invalid attens");
-    }
-
-    housekeeping_get_temperature_status(&ts);
-    has_lastcommand = coo_cmd_runtime_get_lastcommand(&command_runtime, &lastcommand);
-    pd_on_s = (uint64_t)MAX(housekeeping_power_on_time_s(HOUSEKEEPING_POWER_YJ_PHOTODIODE),
-                            housekeeping_power_on_time_s(HOUSEKEEPING_POWER_HK_PHOTODIODE));
-    if (coo_json_append(payload, sizeof(out->payload), &off,
-                        "{\"fw\":\"%s\",\"boots\":%u,"
-                        "\"board\":\"%s\",\"board_ok\":%s,"
-                        "\"mems_switches\":%u,\"relay_err\":%d,"
-                        "\"amb_c\":",
-                        HISPEC_BUILD_VERSION,
-                        app_settings_get_boot_count(),
-                        devices_board_type_name(),
-                        devices_board_type() != HISPEC_BOARD_UNKNOWN ? "true" : "false",
-                        router.num_switches,
-                        housekeeping_relay_error()) != 0 ||
-        coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
-                                      ts.valid ? ts.ambient_c : (double)NAN, 3) != 0 ||
-        coo_json_append(payload, sizeof(out->payload), &off,
-                        ",\"pd_on_s\":%llu,"
-                        "\"laserbank_on_s\":%u",
-                        (unsigned long long)pd_on_s,
-                        hispec_laser_bank_power_on_duration_s()) != 0) {
+    static const struct coo_json_string_choice views[] = {{"emission", 1}, {"mems", 2}, {"system", 3}};
+    static const struct coo_json_string_choice channels[] = {{"yj", 0}, {"hk", 1}};
+    int view = 0, channel = 0;
+    int v = coo_json_extract_string_choice(cmd->payload, "view", views, ARRAY_SIZE(views), &view);
+    int c = coo_json_extract_string_choice(cmd->payload, "channel", channels, ARRAY_SIZE(channels), &channel);
+    if (v == COO_JSON_EXTRACT_ERR) return coo_cmd_error(out, cmd, "invalid status view");
+    if (view != 1 && c != COO_JSON_EXTRACT_MISSING)
+        return coo_cmd_error(out, cmd, "channel is only used with emission");
+    if (view == 1 && c != COO_JSON_EXTRACT_OK)
+        return coo_cmd_error(out, cmd, "emission requires channel yj or hk");
+    if (devices_board_type() != HISPEC_BOARD_TIB && (view == 1 || view == 2))
+        return coo_cmd_error(out, cmd, view == 2 ? "mems is included in status" : "emission requires TIB");
+    size_t offset = 0;
+    if (status_payload(out->payload, &offset, view, channel) != 0)
         return coo_cmd_error(out, cmd, "status response too large");
-    }
-
-    if (include_ip) {
-        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"ip\":") != 0 ||
-            ip_status_payload(payload + off, sizeof(out->payload) - off) != 0) {
-            return coo_cmd_error(out, cmd, "status response too large");
-        }
-        off += strlen(payload + off);
-    }
-
-    if (include_lasers) {
-        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"lasers\":{") != 0) {
-            return coo_cmd_error(out, cmd, "status response too large");
-        }
-        for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-            struct hispec_laser_status laser = {0};
-            int rc = hispec_laser_get_status((enum hispec_laser_id)i, false, &laser);
-
-            if (coo_json_append(payload, sizeof(out->payload), &off,
-                                "%s\"%s\":{\"power_mw\":",
-                                i == 0U ? "" : ",",
-                                hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
-                coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
-                                              rc == 0 ? laser.estimated_power_mw : (double)NAN, 3) != 0 ||
-                coo_json_append(payload, sizeof(out->payload), &off,
-                                ",\"ready\":%s,\"tec_on_s\":",
-                                rc == 0 && laser.ready_to_operate ? "true" : "false") != 0 ||
-                coo_json_append_seconds_or_null(payload, sizeof(out->payload), &off,
-                                                rc == 0 && laser.tec_runtime_active,
-                                                laser.tec_on_time_s) != 0 ||
-                coo_json_append(payload, sizeof(out->payload), &off,
-                                ",\"off_in_s\":") != 0 ||
-                coo_json_append_i64_or_null(payload, sizeof(out->payload), &off,
-                                            rc == 0 && laser.autooff_active,
-                                            laser.off_in_s) != 0 ||
-                coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
-                return coo_cmd_error(out, cmd, "status response too large");
-            }
-        }
-        if (coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
-            return coo_cmd_error(out, cmd, "status response too large");
-        }
-    }
-
-    if (include_attens) {
-        bool first = true;
-
-        if (coo_json_append(payload, sizeof(out->payload), &off, ",\"attens\":{") != 0) {
-            return coo_cmd_error(out, cmd, "status response too large");
-        }
-        for (uint8_t i = 0U; i < HISPEC_LASER_COUNT; ++i) {
-            uint8_t atten_index;
-            struct attenuator_status atten = {0};
-            bool valid;
-
-            if (attenuator_index_from_laser_id((enum hispec_laser_id)i, &atten_index) != 0 ||
-                !devices_attenuator_channel_available(atten_index)) {
-                continue;
-            }
-
-            valid = attenuator_get(&attenuators[atten_index], &atten);
-
-            if (coo_json_append(payload, sizeof(out->payload), &off,
-                                "%s\"%s\":{\"value_db\":",
-                                first ? "" : ",",
-                                hispec_laser_name((enum hispec_laser_id)i)) != 0 ||
-                coo_json_append_float_or_null(payload, sizeof(out->payload), &off,
-                                              valid ? atten.attenuation_db : (double)NAN, 3) != 0 ||
-                coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
-                return coo_cmd_error(out, cmd, "status response too large");
-            }
-            first = false;
-        }
-        if (coo_json_append(payload, sizeof(out->payload), &off, "}") != 0) {
-            return coo_cmd_error(out, cmd, "status response too large");
-        }
-    }
-
-    if (has_lastcommand &&
-        coo_json_append(payload, sizeof(out->payload), &off,
-                        ",\"lastcmd\":{\"name\":\"%s\",\"src\":\"%s\","
-                        "\"t_ms\":%lld}}",
-                        lastcommand.request.key,
-                        coo_cmd_source_name(lastcommand.request.source),
-                        (long long)lastcommand.time_ms) != 0) {
-        return coo_cmd_error(out, cmd, "status response too large");
-    }
-    if (!has_lastcommand &&
-        coo_json_append(payload, sizeof(out->payload), &off,
-                        ",\"lastcmd\":{\"name\":\"\",\"src\":\"unknown\","
-                        "\"t_ms\":0}}") != 0) {
-        return coo_cmd_error(out, cmd, "status response too large");
-    }
-
-    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
+    return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, out->payload);
 }
 
 static int temps_get(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)

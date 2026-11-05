@@ -31,13 +31,16 @@ struct throughput_monitor_request {
 	bool binary;
 	char fiber;
 	uint32_t off_in_s;
-	double max_flux_ph_s;
+	double max_flux_nw;
 	double initial_level;
 	/* Zero retains band control; positive Hz filters only the need to re-range. */
 	double autolevel_response_hz;
 };
 
 struct throughput_monitor_status {
+	bool preparing;
+	bool stopping;
+	double wavelength_coeff;
 	bool active;
 	enum photodiode_channel channel;
 	const char *laser_name;
@@ -73,6 +76,12 @@ int throughput_monitor_start(const struct throughput_monitor_request *request,
  * Pass PHOTODIODE_CHANNEL_COUNT for all. Returns the first shutdown error.
  */
 int throughput_monitor_stop(uint8_t channel, struct throughput_monitor_status *status);
+
+/** Try copying both activities and their sample-aligned wavelength multipliers.
+ * False means the owner is busy; never waits for hardware work, publishes or
+ * changes monitor state. Unknown source gives a NaN multiplier. */
+bool throughput_monitor_snapshot(const struct photodiode_sample_snapshot pd[PHOTODIODE_CHANNEL_COUNT],
+                                 struct throughput_monitor_status out[PHOTODIODE_CHANNEL_COUNT]);
 
 /** Return true if either photodiode monitor is currently active. */
 bool throughput_monitor_any_active(void);

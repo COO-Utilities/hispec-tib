@@ -77,7 +77,7 @@ Project-local wrappers under `lib/coo_commons` are intentionally small:
   and subscription helpers around Zephyr MQTT.
 - `command_dispatch.c`: fixed-buffer MQTT/serial command request, built-in
   help/serialguard/reboot and optional OTA commands, exact-match spec lookup with explicitly enabled suffix families, default
-  request classification/execution, serial guard policy, persisted
+  request classification/execution, serial guard policy, boot-local
   lastcommand, topic formatting, response metadata, warning JSON, serial
   payload normalization, and serial response printing helpers. Built-ins are
   executor-owned and run before the app command table. Table entries also own
@@ -156,11 +156,11 @@ convention is not part of current ingress classification.
 The command executor runs exactly one request at a time from `inbound_queue`.
 Command dispatch handles library built-ins first, then the static spec-table
 executor for app commands. OTA admission is checked after dequeue, before the
-handler or lastcommand write, so it also covers requests queued before entry.
+handler or lastcommand update, so it also covers requests queued before entry.
 Handlers may block on I/O, sleep, enqueue warnings, update settings, and return
 one response. Pure queries are not recorded as `lastcommand`; supported
 effect-capable requests are recorded before handler execution in
-command-dispatch-owned runtime state and NVS storage.
+command-dispatch-owned RAM. Command history never writes flash.
 App support predicates reject unsupported command families before they reach
 laser, photodiode, throughput, or laser-bank command handlers on other board
 profiles. Serial help marks those entries as unsupported instead of encoding
@@ -172,13 +172,28 @@ and then `sys_reboot(SYS_REBOOT_COLD)`. The delayed reboot runs on the existing
 app blocking workqueue, so laser STOP can wait for Modbus completion on the system
 workqueue. System priority is 2, command 6 and app blocking 7.
 
-Command dispatch can persist one lastcommand record through Zephyr NVS when the
-app supplies a mounted `struct nvs_fs *` and numeric NVS ID. The record stores a
-fixed header plus the full `struct coo_cmd_request`, requiring
-`sizeof(struct coo_cmd_request) + COO_CMD_LASTCOMMAND_NVS_OVERHEAD` bytes. The
-payload portion is sized by `CONFIG_COO_CMD_PAYLOAD_SIZE`, which is constrained
+Lastcommand is empty after boot and retains the latest effect request in RAM.
+Watchdog reset telemetry and external command logging provide cross-boot
+diagnostics. The request payload is sized by `CONFIG_COO_CMD_PAYLOAD_SIZE`, which is constrained
 to fit within `CONFIG_COO_MQTT_PAYLOAD_SIZE` but can be tuned independently
 because command queues store complete request and response objects.
+
+## Cached operating status
+
+`status` formats short owner snapshots directly into the existing response
+buffer. Settings, MEMS, throughput and OTA use nonblocking acquisition when an
+owner may be doing I/O. Other locks protect only short RAM copies; no status
+path refreshes hardware, takes an ADC window, starts power, rearms a deadline,
+writes settings or reads flash. All profiles have routing and MEMS; AS/CAL
+include them directly, while TIB exposes MEMS and one channel of emission as
+explicit detail views to keep the 2047-byte JSON limit. No persistent status
+object, new worker, history record or counter is introduced.
+
+Optical output follows route-table connectivity and existing source-specific
+losses. Toggling reports conditional path power without duty averaging; only AS
+uses the existing managed split-ratio calculation. PD correction uses a named
+measurement/calibration context and the detector's wavelength curve. See the
+[wire contract](commands.md#status) for null, split and retro meanings.
 
 ## Serial polling
 
@@ -294,8 +309,8 @@ status in place, avoiding two payload-sized stack copies. Throughput binary is
 227 bytes; even a pessimistic JSON frame with 24 worst-length double strings and
 uint64 timestamps is below 1152 bytes. Eventfd capacity 2 and fd capacity 10 allow
 the existing socket service plus output wakeup, MQTT/DNS/SNTP and OTA SMP resources.
-The lastcommand record includes the request buffer, so its storage size depends
-on the configured payload size. App settings own calibration/dark schema reset.
+The boot-local lastcommand snapshot includes the request buffer, so its RAM size
+depends on the configured payload size. App settings own calibration/dark schema reset.
 
 ## Hardware Control
 
@@ -490,7 +505,8 @@ these cases. Serial `help` prints directly, bypassing both queues.
 The MEMS and PD timer callbacks only give semaphores; hardware I/O runs in their
 threads. Dispatcher serial-guard expiration is short system work. Dispatcher
 reboot work runs on the app blocking queue, invokes the app prepare hook after
-the response window, then cold-reboots. Later app commands are rejected while
+the response window, then cold-reboots. Only the cached `status` query is admitted
+through the spec table's `reboot_query_allowed` flag; other later app commands are rejected while
 reboot is pending. Auto-off, ambient/relay checks and heater work share that queue;
 a slow DS18B20 conversion can delay other work on it. Never put a blocking
 Modbus caller on the system queue that must parse its response.

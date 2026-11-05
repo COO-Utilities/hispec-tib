@@ -314,6 +314,13 @@ static void format_reset_cause_list(uint32_t cause, char *buf, size_t buf_len)
 	}
 }
 
+bool devices_boot_reset_cause(char *out, size_t len)
+{
+    if (!boot_reset_cause_valid) return false;
+    format_reset_cause_list(boot_reset_cause, out, len);
+    return true;
+}
+
 void devices_capture_boot_reset_cause(void)
 {
 	uint32_t cause = 0U;
@@ -466,50 +473,46 @@ static const struct mems_route tib_routes[] = {
 /* TIB path defaults are transmission, not the API's fraction lost. These
  * constants stay in flash; only explicit overrides occupy RAM/NVS records.
  * AO and FEI traverse the same switches, selecting different B3/R3 outputs.
- * Static laser attenuation is included once here, never in the FVOA model.
+ * November 4, 2026 loopbacks: SM return is normalized to unity. Static laser
+ * attenuation, actual SM-return loss and external patch loss are absorbed here;
+ * calibrated FVOA transmission is divided out and applied separately at runtime.
  */
 static const struct {
 	const char *route;
 	const char *laser;
 	double transmission;
 } default_route_losses[] = {
-	/* Provisional YJ whole-route losses: 34.5 / 41 / 62 dB. Saved power scans
-	 * already exclude external loopback loss; 1430 uses the current source model.
-	 * Equal AO/FEI totals are an approximation, not an independent FEI calibration.
-	 */
-	{"yj_laser_to_yj_ao", "1028y", 3.54813389234e-4},
-	{"yj_laser_to_yj_fei", "1028y", 3.54813389234e-4},
-	{"yj_laser_to_yj_ao", "1270j", 7.94328234724e-5},
-	{"yj_laser_to_yj_fei", "1270j", 7.94328234724e-5},
-	{"yj_1430_to_yj_ao", "1430yj", 6.30957344480e-7},
-	{"yj_1430_to_yj_fei", "1430yj", 6.30957344480e-7},
+	/* S154C set to 1028 nm: correction factors 1 / 0.7314 / 0.6507.
+	 * Effective AO and FEI losses are independently measured; extra digits
+	 * preserve the calculation, not the typical response graph's accuracy. */
+	{"yj_laser_to_yj_ao", "1028y", 0.000256297034072},
+	{"yj_laser_to_yj_fei", "1028y", 0.000257217310675},
+	{"yj_laser_to_yj_ao", "1270j", 0.000101861861862},
+	{"yj_laser_to_yj_fei", "1270j", 9.94744744745e-05},
+	{"yj_1430_to_yj_ao", "1430yj", 6.65208548554e-07},
+	{"yj_1430_to_yj_fei", "1430yj", 6.51204158058e-07},
 	/* External CAL: approximately 1 dB from component measurements. */
 	{"yj_cal_to_yj_ao", "generic", 0.794328234724},
 	{"yj_cal_to_yj_fei", "generic", 0.794328234724},
 
-	/* HK R1 * R2 * R3 = 0.83^3 = 0.571787; 1430 adds 50 dB:
-	 * 0.571787 * 10^(-50/10) = 5.71787e-6.
-	 */
-	{"hk_1430_to_hk_ao", "1430hk", 5.71787e-6},
-	{"hk_1430_to_hk_fei", "1430hk", 5.71787e-6},
+	/* HK S154C set to 1430 nm: factors 1 (1430hk), 0.9714 (1510h). */
+	{"hk_1430_to_hk_ao", "1430hk", 8.34892314352e-05},
+	{"hk_1430_to_hk_fei", "1430hk", 9.29719589563e-05},
 
-	/* HK R2 * R3 = 0.83 * 0.83 = 0.6889; 1510 adds 33 dB:
-	 * 0.6889 * 10^(-33/10) = 3.45267885246e-4.
-	 */
-	{"hk_laser_to_hk_ao", "1510h", 3.45267885246e-4},
-	{"hk_laser_to_hk_fei", "1510h", 3.45267885246e-4},
-	/* Same R2/R3 path; 2330 adds 3 dB:
-	 * 0.6889 * 10^(-3/10) = 0.345267885246.
-	 */
-	{"hk_laser_to_hk_ao", "2330k", 0.345267885246},
-	{"hk_laser_to_hk_fei", "2330k", 0.345267885246},
-	/* Complete FFLS return paths: MM -> PD = 0.98; SM -> PD = 0.60.
+	/* 1510h uses the same SM-unity normalization and separate FVOA model. */
+	{"hk_laser_to_hk_ao", "1510h", 0.00129983419147},
+	{"hk_laser_to_hk_fei", "1510h", 0.00138717482884},
+	/* 2330k: S148C set to 2330 nm, correction factor 1. */
+	{"hk_laser_to_hk_ao", "2330k", 0.00025298010467},
+	{"hk_laser_to_hk_fei", "2330k", 0.000254232004693},
+	/* Separate equal-weight means of three MM/SM ratios per channel.
+	 * Complete FFLS return paths use provisional SM transmission = 1.
 	 * These do not traverse the outbound blue/red FFSW switches.
 	 */
-	{"yj_mm_to_yj_pd", "generic", 0.98},
-	{"yj_sm_to_yj_pd", "generic", 0.60},
-	{"hk_mm_to_hk_pd", "generic", 0.98},
-	{"hk_sm_to_hk_pd", "generic", 0.60},
+	{"yj_mm_to_yj_pd", "generic", 0.389741142978},
+	{"yj_sm_to_yj_pd", "generic", 1.0},
+	{"hk_mm_to_hk_pd", "generic", 0.830050505051},
+	{"hk_sm_to_hk_pd", "generic", 1.0},
 };
 
 /* Pure lookup: an exact source default takes precedence over the route's generic

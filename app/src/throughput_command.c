@@ -191,11 +191,11 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		return coo_cmd_error(out, cmd, "autolevel requires positive off_in_s");
 	}
 
-	if (coo_json_extract_optional_double_range(cmd->payload, "max_flux_ph_s",
-						   &request.max_flux_ph_s,
+	if (coo_json_extract_optional_double_range(cmd->payload, "max_flux_nw",
+						   &request.max_flux_nw,
 						   &max_flux_present,
-						   0.0, 1.0e30) != 0) {
-		return coo_cmd_error(out, cmd, "invalid max_flux_ph_s");
+						   0.0, DBL_MAX) != 0) {
+		return coo_cmd_error(out, cmd, "invalid max_flux_nw");
 	}
 
 	parse_rc = coo_json_extract_string_choice(cmd->payload, "format",
@@ -230,7 +230,7 @@ int measure_throughput_set(const struct coo_cmd_request *cmd, struct coo_cmd_res
 		request.channel = (enum photodiode_channel)choice_value;
 	}
 	if (max_flux_present && !autolevel) {
-		return coo_cmd_error(out, cmd, "max_flux_ph_s requires autolevel");
+		return coo_cmd_error(out, cmd, "max_flux_nw requires autolevel");
 	}
 
 	/* Optional input replaces the inferred launch input only when present. */

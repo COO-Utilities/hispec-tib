@@ -74,6 +74,9 @@ flowchart LR
 select laser/CAL and AO/FEI, leaving forward/retro unchanged. Named routes exist
 from each `*_1430`, `*_laser`, `*_cal` to its AO and FEI outputs, and each MM/SM
 return to its PD. Retro branches have a direct switch control but no named route.
+The loss-setting interface uses shared `*_laser_to_*_ao/fei` names for all three
+channel lasers. Its 1430 entries resolve to the physical forward-route records;
+this presentation does not change the switch behavior above or add retro losses.
 Passive combiners, fiber connectors and fixed losses are condensed in this view;
 WDM port-to-wavelength assignments and external return cabling need the installed
 patch record. AO/FEI labels here express firmware interpretation of the output

@@ -235,43 +235,46 @@ commands use **positive loss in dB**; do not send these signed values directly.
 
 ### TIB route-loss defaults
 
-The compiled YJ values in `devices.c` are provisional **whole-route** losses,
-shared by AO and FEI. They include the internal static loss; external test-path
-attenuation, dynamic FVOA attenuation, and the separate return are excluded.
+The November 4, 2026 loopbacks supply provisional **effective whole-route**
+launch losses. SM return transmission is normalized to 1. Static attenuators,
+actual SM-return loss and external patch loss are absorbed in the launch
+estimate. The reported calibrated FVOA transmission is divided out; firmware
+applies it separately. Do not add static attenuation or subtract FVOA loss again.
 
-| Source | Outbound route input | Total loss (AO and FEI) | Total transmission |
-|---|---|---|---|
-| 1028y | yj_laser | 34.5 dB | 3.54813389234e-4 |
-| 1270j | yj_laser | 41 dB | 7.94328234724e-5 |
-| 1430yj | yj_1430 | 62 dB | 6.30957344480e-7 |
-| generic | yj_cal | 1 dB | 0.794328234724 |
+| Source | FEI loss (dB) | AO loss (dB) | FEI transmission | AO transmission |
+|---|---:|---:|---:|---:|
+| 1028y | 35.896998 | 35.912564 | 0.000257217310675 | 0.000256297034072 |
+| 1270j | 40.022883 | 39.919884 | 9.94744744745e-05 | 0.000101861861862 |
+| 1430yj | 61.862828 | 61.770422 | 6.51204158058e-07 | 6.65208548554e-07 |
+| 1430hk | 40.316480 | 40.783695 | 9.29719589563e-05 | 8.34892314352e-05 |
+| 1510h | 28.578688 | 28.861120 | 0.00138717482884 | 0.00129983419147 |
+| 2330k | 35.947698 | 35.969136 | 0.000254232004693 | 0.00025298010467 |
 
-The saved October 3 power captures, after removing the external 3 dB and MM
-return, give recorded-model median losses of about 34.45, 41.03, and 60.69 dB.
-For 1430yj, the current 0.24 mW/mA efficiency versus the older 0.192 adds about
-0.97 dB; mid/high-current data and the entered source-meter attenuation support
-rounding to 62 dB. Do not subtract the external 3 dB again. Current dependence
-and source-model uncertainty remain; these are not accepted optical calibrations.
-FEI equality is an assumption: the saved FEI captures did not establish an
-independent loss. The 1 dB CAL value is a component estimate.
+Use the shared `yj_laser_to_yj_ao/fei` or `hk_laser_to_hk_ao/fei` loss names,
+including 1430. Internal 1430 records retain their physical route identity.
+YJ used an S154C head set to 1028 nm, with factors 1, 0.7314 and 0.6507 for
+1028/1270/1430. HK 1430/1510 used the same head set to 1430 nm, with factors 1
+and 0.9714. The 2330 measurement used an S148C set to 2330 nm, factor 1.
+S154C factors come from its typical response graph; retained digits are
+calculation precision, not measurement accuracy. AO/FEI and MM/SM ratios do not
+depend on these wavelength corrections.
 
-HK retains its nominal 0.83 transmission per red FFSW and existing static losses.
-AO and FEI use the same switch count. HK CAL has no measured default and uses
-unity. These defaults do not certify the installed attenuation or fiber patch.
+| Channel | SM transmission | MM transmission | Additional MM loss (dB) |
+|---|---:|---:|---:|
+| YJ | 1.0 | 0.389741142978 | 4.092237455 |
+| HK | 1.0 | 0.830050505051 | 0.808954818 |
 
-| Laser | Outbound route input | Switch product | Static loss | Total transmission |
-|---|---|---|---|---|
-| 1430hk | hk_1430 | R1 × R2 × R3 = 0.83³ | 50 dB | 5.71787e-6 |
-| 1510h | hk_laser | R2 × R3 = 0.83² | 33 dB | 3.45267885246e-4 |
-| 2330k | hk_laser | R2 × R3 = 0.83² | 3 dB | 0.345267885246 |
+Each MM value is the equally weighted arithmetic mean of the three measured
+MM/SM ratios in that channel. These useful broadband estimates do not establish
+achromatic returns. They replace the former MM 0.98 / SM 0.60 component estimates.
+The launch values replace the October 3 YJ 34.5/41/62 dB estimates and nominal
+HK switch/static-loss products; the notebook retains that measurement history.
 
-For HK, `total_tx = switch_product * 10^(-static_loss_db / 10)`. Complete FFLS
-return transmission is 0.98 for MM and 0.60 for SM on both channels: these are
-the compiled `generic` defaults, separate from launch losses. Explicit
-`mems/route/loss` records replace the whole route. Named-source overrides are
-independent of stored generic overrides. Passive capture selects `generic`.
-Dynamic FVOA attenuation is applied separately; static loss must not also be
-folded into its fit.
+YJ CAL launch remains the 1 dB component estimate (transmission 0.794328234724);
+HK CAL has no measured default and uses unity. Retro estimates remain notebook
+references. Explicit `mems/route/loss` records replace the whole default.
+Named-source overrides are independent of stored generic overrides; passive
+capture selects `generic`. Saved settings take precedence after firmware updates.
 
 
 ## Laser control and switched power
