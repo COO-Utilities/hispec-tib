@@ -238,22 +238,30 @@ USB flash/debug/reset still requires bench validation with an attached board.
 
 ### Flash layout
 
-The Nucleo STM32H563 layout is shared by the application and MCUboot. This is
-implementation reference; the programming commands select the image addresses.
+The Nucleo STM32H563 layout in `app/boards/hispec_partitions.dtsi` is included by
+both application and MCUboot overlays. This is implementation reference; the
+programming commands select the image addresses.
 
 | Area | Inclusive addresses | Size |
 |---|---|---|
 | MCUboot | `0x08000000`–`0x0800ffff` | 64 KiB |
-| Primary application | `0x08010000`–`0x080fffff` | 960 KiB |
-| Secondary application | `0x08100000`–`0x081effff` | 960 KiB |
-| Settings/NVS | `0x081f0000`–`0x081fffff` | 64 KiB |
+| Primary application | `0x08010000`–`0x080dffff` | 832 KiB |
+| Reserved bank-1 space | `0x080e0000`–`0x080fffff` | 128 KiB |
+| Secondary application | `0x08100000`–`0x081cffff` | 832 KiB |
+| Settings/NVS | `0x081d0000`–`0x081fffff` | 192 KiB |
+
+The equal application slots support MCUboot offset swap. Secondary reception and
+NVS programming remain in bank 2 while application code runs from bank 1. The
+16 KiB update footer reserve leaves `max_image_size=835584` bytes. Settings use
+24 ordinary 8 KiB flash sectors with Zephyr NVS wear leveling; see the
+[settings endurance budget](settings.md#capacity-and-endurance).
 
 ```{mermaid}
 flowchart TD
   Reset[Reset] --> Boot[MCUboot: 64 KiB at 0x08000000]
-  Boot --> Primary[Primary application: 960 KiB at 0x08010000]
-  Secondary[Secondary candidate or rollback image: 960 KiB at 0x08100000] <-->|offset swap / revert| Primary
-  Primary --> NVS[Settings and calibration: 64 KiB at 0x081f0000]
+  Boot --> Primary[Primary application: 832 KiB at 0x08010000]
+  Secondary[Secondary candidate or rollback image: 832 KiB at 0x08100000] <-->|offset swap / revert| Primary
+  Primary --> NVS[Settings and calibration: 192 KiB at 0x081d0000]
 ```
 
 MCUboot's overlay uses HSI clocks and the same PB2 bank-off GPIO hog as the app.

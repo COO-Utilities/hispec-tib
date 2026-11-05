@@ -1,0 +1,28 @@
+/* Shared application/MCUboot layout for the 2 MiB STM32H563.
+ * Keep OTA reception and NVS writes in bank 2 while the app runs from bank 1.
+ * Equal 832 KiB slots leave 128 KiB unused at the end of bank 1 and give NVS
+ * 24 normal-flash erase sectors; no high-cycle-data option bytes are required.
+ */
+&boot_partition {
+	reg = <0x00000000 DT_SIZE_K(64)>;
+};
+
+&slot0_partition {
+	reg = <0x00010000 DT_SIZE_K(832)>;
+};
+
+&slot1_partition {
+	reg = <0x00100000 DT_SIZE_K(832)>;
+};
+
+&flash0 {
+	partitions {
+		/delete-node/ partition@1f0000;
+
+		storage_partition: partition@1d0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "storage";
+			reg = <0x001d0000 DT_SIZE_K(192)>;
+		};
+	};
+};

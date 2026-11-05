@@ -560,7 +560,7 @@ See [firmware updates](ota.md) for network and USB installation.
 
 - **No payload:** query running MCUboot identity and maintenance/trial state.
   ```json
-  {"enabled":false,"active":false,"remaining_s":0,"image_hash":"<64 hex digits>","confirmed":true,"pending":false,"trial_remaining_s":0,"max_image_size":966656}
+  {"enabled":false,"active":false,"remaining_s":0,"image_hash":"<64 hex digits>","confirmed":true,"pending":false,"trial_remaining_s":0,"max_image_size":835584}
   ```
   `enabled` means the UDP maintenance window is open. `active` additionally
   includes an operation finishing after close, a pending candidate, or an

@@ -69,6 +69,63 @@ Before preparation, readbacks can differ from configuration. The coefficient
 uses internal LD NTC 0x007F for programming and readback. External NTC 0x008A
 is unused.
 
+## Capacity and endurance
+
+The [shared flash layout](ota.md#flash-layout) assigns NVS 192 KiB in bank 2:
+24 erase sectors of 8192 bytes, with 16-byte programming alignment. Zephyr NVS
+rotates garbage collection through these sectors and keeps one sector available
+for copying live records. It does not require the STM32 high-cycle-data area.
+Payload CRC and the optional lookup cache are disabled; NVS metadata retains its
+CRC and the flash controller supplies hardware ECC.
+
+The maximum live inventory for schema 14, with every record slot populated, is:
+
+| Records | Count | Payload bytes | Aligned bytes including NVS metadata |
+|---|---:|---:|---:|
+| Schema, identity, boot count, IP, MQTT, heater policy | 6 | 246 | 400 |
+| Attenuator coefficients, fit policies, operational opens | 18 | 1008 | 1344 |
+| PD calibration/settings and last relay states | 4 | 274 | 384 |
+| Laser policies, runtime totals, NTC, references, upper bounds | 30 | 1296 | 2016 |
+| Route-loss overrides | 32 | 1792 | 2560 |
+| MEMS intent | 1 | 272 | 288 |
+| **Total** | **91** | **4888** | **6992** |
+
+Live records therefore occupy about 3.6% of the partition, or 3.7% after the
+spare sector and fixed sector metadata are excluded. Obsolete records and
+garbage-collection markers occupy additional space until sectors are reclaimed;
+the live-record total is not an instantaneous free-space measurement.
+
+The seven-year design budget uses 2557 days at the following daily workload:
+
+- TIB: 1000 changed eight-byte laser-runtime saves and 50 changed route intents.
+  This charges every ordinary laser/attenuator command as a runtime save, even
+  though ordinary attenuator changes and many laser operations do not save one.
+- AS: 100 changed split intents. CAL: 100 changed route intents.
+- Every profile: one boot-count increment, 200 actual relay transitions per PD
+  channel, and a daily rewrite reserve for all remaining configuration records.
+  Explicit calibration/settings saves must fit within that reserve.
+
+A host simulation using the workspace's actual NVS implementation, the full
+91-record inventory, and the target erase/program geometry gives:
+
+| Profile | Maximum erases on any sector in seven years | Margin against 10000 cycles |
+|---|---:|---:|
+| TIB | 864 | 11.6× |
+| AS / CAL | 636 | 15.7× |
+
+The acceptance limit is fewer than 1000 erases on every sector under this
+workload, giving at least tenfold margin against the normal-flash endurance
+rating in the [STM32H563 datasheet, flash memory characteristics](https://www.st.com/resource/en/datasheet/stm32h563vi.pdf).
+This is a workload projection, not a measurement of existing flash wear or a
+substitute for the datasheet's temperature and retention conditions.
+
+Reads do not consume program/erase cycles. Settings getters use RAM snapshots;
+NVS reads occur during restoration, saved-value comparisons and garbage
+collection. Repeated `pd` queries while a relay remains on do not write flash.
+An AUTO query that turns it on saves one one-byte state record, and a later
+auto-off saves another. Identical records are not programmed again. Command
+history and runtime MEMS toggle progress never write flash.
+
 ## Attenuator default selection
 
 TIB uses the twelve November 4 installed-device models and operational opens
