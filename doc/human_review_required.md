@@ -56,7 +56,9 @@ LLMs Agents: Do NOT change heading names in this file.
     Wrong-hash confirmation and a bank-mode write during trial were rejected.
     On-target 1000 PD polls and 100 unchanged three-step routes caused no NVS
     writes: the full partition matched after accounting for one debug-reset
-    boot-count save. Normal/timing builds, strict docs, temporary actual-C route
+    boot-count save. That burst also logged four DS18B20 sample-fetch errors
+    (`-EIO`); later status reported a valid temperature, but the cause under load
+    remains unresolved. Normal/timing builds, strict docs, temporary actual-C route
     checks and 1610 simulated NVS interruption cases passed. Physical cold-start,
     matching-ELF debug, other profiles, power cuts and measured IWDG timing
     remain unverified.
