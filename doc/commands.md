@@ -676,7 +676,8 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
   before reboot it calls the app reboot-prepare hook so firmware can put
   hardware into a safer state and, when requested, erase non-IP persisted
   settings. The erase preserves IP settings, boot count, and storage schema
-  metadata. Once a reboot is pending, later commands are rejected before app
+  metadata. Once a reboot is pending, cached `status` queries remain available;
+  other later commands are rejected before app
   handlers run.
 
 (ota)=

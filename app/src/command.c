@@ -203,7 +203,7 @@ static const struct coo_cmd_spec command_specs[] = {
              "TIB: emission, mems, system; AS/CAL: system",
              "cached status; default includes all activity and emitted output power",
              COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY,
-                 .ota_query_allowed = true),
+                 .ota_query_allowed = true, .reboot_query_allowed = true),
     CMD_SPEC("help/options", help_options_get, NULL, COO_CMD_CLASS_ALWAYS_QUERY, true, "",
              "help/options",
              "none",

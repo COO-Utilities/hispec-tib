@@ -505,7 +505,8 @@ these cases. Serial `help` prints directly, bypassing both queues.
 The MEMS and PD timer callbacks only give semaphores; hardware I/O runs in their
 threads. Dispatcher serial-guard expiration is short system work. Dispatcher
 reboot work runs on the app blocking queue, invokes the app prepare hook after
-the response window, then cold-reboots. Later app commands are rejected while
+the response window, then cold-reboots. Only the cached `status` query is admitted
+through the spec table's `reboot_query_allowed` flag; other later app commands are rejected while
 reboot is pending. Auto-off, ambient/relay checks and heater work share that queue;
 a slow DS18B20 conversion can delay other work on it. Never put a blocking
 Modbus caller on the system queue that must parse its response.
