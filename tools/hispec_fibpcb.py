@@ -12,6 +12,7 @@ and exported as NumPy record arrays or pandas DataFrames for live plotting.
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import logging
 import math
@@ -24,8 +25,9 @@ import warnings
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Deque, Iterable, Literal, Mapping, Sequence
+from typing import Any, Callable, Deque, Iterable, Literal, Mapping, Sequence, overload
 
 import numpy as np
 import paho.mqtt.client as mqtt
@@ -4638,14 +4640,26 @@ class HispecFibPcb:
             routes=tuple((str(route[0]), str(route[1])) for route in data.get("routes", ())),
         )
 
+    @overload
     def status(self, *, view: Literal["emission", "mems", "system"] | None = None,
-               channel: Literal["yj", "hk"] | None = None) -> Status:
+               channel: Literal["yj", "hk"] | None = None, print: Literal[False] = False) -> Status: ...
+
+    @overload
+    def status(self, *, view: Literal["emission", "mems", "system"] | None = None,
+               channel: Literal["yj", "hk"] | None = None, print: bool) -> Status | None: ...
+
+    def status(self, *, view: Literal["emission", "mems", "system"] | None = None,
+               channel: Literal["yj", "hk"] | None = None, print: bool = False) -> Status | None:
         """Read cached operating status without hardware I/O or persistence.
 
         The default includes outputs, PD levels and all active work. TIB emission
         requires a channel; mems has no selector. AS/CAL include MEMS details in
         the default reply. System contains network/queue/OTA diagnostics.
         No automatic sequence of requests or compatibility options is issued.
+
+        print=True writes an aligned text report and returns None (no duplicate
+        IPython repr). Otherwise return Status. Printing uses only this reply;
+        UTC timestamps become ISO dates, with field names/units kept intact.
         """
         if view not in (None, "emission", "mems", "system"):
             raise ValueError("invalid status view")
@@ -4654,6 +4668,63 @@ class HispecFibPcb:
         if view != "emission" and channel is not None:
             raise ValueError("channel is only used with emission")
         data = self._request_json("status", _optional_payload(view=view, channel=channel))
+        if print:
+            lines = []
+
+            def value_text(value, name=""):
+                if value is None:
+                    return "null"
+                if name in ("utc", "last_sync_utc_ms"):
+                    try:
+                        return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat(timespec="milliseconds")
+                    except (OverflowError, OSError, ValueError):
+                        return str(value)  # Keep an out-of-range board clock visible.
+                if isinstance(value, Mapping):
+                    return "; ".join(f"{key}={value_text(item, key)}" for key, item in value.items())
+                if isinstance(value, (list, tuple)):
+                    return "[" + ", ".join(value_text(item) for item in value) + "]"
+                return value if isinstance(value, str) else _format_scalar(value)
+
+            def section(title, values):
+                if isinstance(values, Mapping):
+                    nested = [(key, value) for key, value in values.items() if isinstance(value, Mapping)]
+                    if nested and len(nested) == len(values):
+                        columns = list(dict.fromkeys(key for _, row in nested for key in row))
+                        rows = [["", *columns]] + [
+                            [key, *(value_text(row[col], col) if col in row else "" for col in columns)]
+                            for key, row in nested]
+                    else:
+                        rows = [[key, value_text(value, key)] for key, value in values.items()] or [["{}"]]
+                elif isinstance(values, (list, tuple)):
+                    rows = [[f"- {value_text(value)}"] for value in values] or [["[]"]]
+                else:
+                    rows = [[value_text(values, title)]]
+                widths = [max(map(len, column)) for column in zip(*rows)]
+                lines.extend((title, "-" * len(title)))
+                lines.extend("  " + "  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()
+                             for row in rows)
+                lines.append("")
+
+            identity = ("device", "view", "channel", "utc", "uptime_s", "reset_cause", "fw", "boots")
+            section(" / ".join(str(data[key]) for key in ("device", "view", "channel") if key in data),
+                    {key: data[key] for key in identity[3:] if key in data})
+            if data.get("errors"):
+                section("errors", data["errors"])
+            if "activity" in data:
+                section("activity", data["activity"])
+            for key, value in data.items():
+                if key == "emission" and isinstance(value, Mapping):
+                    section("emission", {laser: {field: item for field, item in row.items()
+                                               if field not in ("atten", "routes")}
+                                         for laser, row in value.items()})
+                    section("emission.atten", {laser: row["atten"] for laser, row in value.items() if "atten" in row})
+                    for laser, row in value.items():
+                        if "routes" in row:
+                            section(f"emission.{laser}.routes", row["routes"])
+                elif key not in (*identity, "errors", "activity"):
+                    section(key, value)
+            builtins.print("\n".join(lines).rstrip())
+            return None
         return _dataclass_from(Status, data,
             lastcmd=_dataclass_from(LastCommand, data["lastcmd"]) if data.get("lastcmd") else None,
             activity=tuple(data["activity"]) if data.get("activity") is not None else None,

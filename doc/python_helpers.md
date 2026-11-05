@@ -74,6 +74,21 @@ semantics, or `CommandOk` for data-less success; updates do not automatically
 query again. Read a method's return annotation when an endpoint has distinct
 query/update responses (`ip()` can also return `PartialSupport`).
 
+For a readable IPython, notebook or terminal report, use `print=True`:
+
+```python
+pcb.status(print=True)
+pcb.status(view="emission", channel="yj", print=True)
+pcb.status(view="mems", print=True)
+pcb.status(view="system", print=True)
+```
+
+This prints aligned sections/tables from that one reply and returns `None`, so
+IPython does not append another object representation. Errors and activity appear
+near the top. Field names, units, nulls and split annotations are retained;
+UTC timestamps display as ISO dates with `+00:00`. Without `print=True`, the
+method still returns a `Status` object for programmatic use.
+
 Laser `value` and attenuator `value` are **fractions**: `0.25` is 25%, not 0.25%.
 Laser `value_ma` instead requests engineering current from zero through the
 configured `max_current_ma`; it bypasses the optical inverse, automatic current
