@@ -193,9 +193,6 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 
 - Last-command diagnostics are boot-local; retired NVS ID `0x0009` is reserved.
   External command logs and watchdog boot telemetry provide cross-boot history.
-- `status` uses RAM snapshots only; it adds no NVS record or writes and does not
-  refresh relay deadlines. A busy settings writer yields null status values.
-
 - Active routes are derived from current MEMS switch state and route tables.
   Applying a route persists the affected switch states as static switch intent,
   not as a named active-route object.
