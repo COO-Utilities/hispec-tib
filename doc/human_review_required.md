@@ -45,6 +45,21 @@ LLMs Agents: Do NOT change heading names in this file.
   Check manual-default confirmation, explicit `--auto-confirm` reasoning, and
   both renamed CLion profiles' flash/debug/reset flows with ST-Link attached.
   See [firmware updates and OTA](ota.md).
+  - 2026-11-05 TIB: merged firmware `b1c6aeb1311a` passed paired MCUboot/app
+    USB installation with the 192 KiB NVS layout and exact 2 MiB flash readback.
+    All 84 retained saved records matched the original board payloads; only
+    retired command history was omitted. Subsequent NVS readback after OTA
+    preserved every record except the expected boot-count increments.
+    An 835584-byte maximum-size candidate booted unconfirmed and automatically
+    reverted to the exact baseline after its five-minute deadline. Timing and
+    normal images then passed manual exact-hash confirmation; normal is installed.
+    Wrong-hash confirmation and a bank-mode write during trial were rejected.
+    On-target 1000 PD polls and 100 unchanged three-step routes caused no NVS
+    writes: the full partition matched after accounting for one debug-reset
+    boot-count save. Normal/timing builds, strict docs, temporary actual-C route
+    checks and 1610 simulated NVS interruption cases passed. Physical cold-start,
+    matching-ELF debug, other profiles, power cuts and measured IWDG timing
+    remain unverified.
 - [ ] Resolve the drawing/as-built differences exposed by the documentation
   audit against the PCB evidence committed in `2fd8e87`. Record the assembly
   revision and measured result before changing firmware assumptions:
