@@ -2226,8 +2226,8 @@ static int validate_laser_settings(const struct hispec_laser_driver_profile *pro
 	}
 
 	/* The derivative is affine in current, so checking its two endpoints
-	 * proves monotonicity throughout the operating interval. q=0 retains the
-	 * compiled linear model even when the independent reference differs. */
+	 * proves monotonicity throughout the operating interval. q=0 selects a
+	 * linear model even when the independent reference differs. */
 	double q = props->efficiency_mw_per_ma2;
 	double slope_at_threshold = props->efficiency_mw_per_ma -
 		q * (props->efficiency_ref_ma - props->threshold_current_ma);

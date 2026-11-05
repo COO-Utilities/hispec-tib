@@ -23,13 +23,6 @@
 struct app_laser_channel_settings;
 struct k_work_q;
 
-// based on a quick test of 1028 into the PD with a ton of stattic attens
-// 0.1% fractional: leaves a few times margin above your brightest measured fractional RMS.
-// 0.003 mW constant: rounds tp ~0.0014–0.0021 mW scatter upward.
-// Together, approximately 0.70% uncertainty at level 0.01, 0.12% at 0.10, and 0.11% at 0.15.
-#define HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE 0.001
-#define HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION 0.0031
-
 #define HISPEC_LASER_BANK_BOOT_DELAY_MS 1000U
 #define HISPEC_LASER_BANK_FAULT_CLEAR_OFF_MS 250U
 
@@ -42,6 +35,20 @@ enum hispec_laser_id {
 	HISPEC_LASER_2330_K,
 	HISPEC_LASER_COUNT,
 	HISPEC_LASER_UNKNOWN = -1,
+};
+
+/** Active November 4 calibration readback: effective illuminated-path RMS
+ * fractions, not intrinsic diode noise. Startup and restore share this table.
+ * Constant noise defaults to zero by owner policy; fitted constants are not
+ * adopted. Provenance: doc/laser_calibration.md.
+ * @hideinitializer */
+static const double hispec_laser_default_fractional_noise[HISPEC_LASER_COUNT] = {
+	[HISPEC_LASER_1028_Y] = 0.00898166511,
+	[HISPEC_LASER_1270_J] = 0.0424917488,
+	[HISPEC_LASER_1430_YJ] = 0.0139060581,
+	[HISPEC_LASER_1430_HK] = 0.0151791845,
+	[HISPEC_LASER_1510_H] = 0.0577663351,
+	[HISPEC_LASER_2330_K] = 0.00234274023,
 };
 
 enum hispec_laser_bank_power_mode {

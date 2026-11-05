@@ -412,11 +412,9 @@ static void settings_defaults(struct app_settings_snapshot *s)
 			minimum, minimum, default_laser_props[i]->nominal_current_ma);
 		s->laser.channel[i].max_autolevel_current_ma = default_laser_props[i]->nominal_current_ma;
 		s->laser.channel[i].current_cal_pct = 100.0;
-		s->laser.channel[i].fractional_noise = HISPEC_LASER_DEFAULT_FRACTIONAL_NOISE;
-		/* Use the immutable diode table, not user settings or current output. */
-		s->laser.channel[i].constant_noise_mw = HISPEC_LASER_DEFAULT_NOISE_FLOOR_FRACTION *
-			(default_laser_props[i]->max_current_ma - default_laser_props[i]->threshold_current_ma) *
-			default_laser_props[i]->efficiency_mw_per_ma;
+		s->laser.channel[i].fractional_noise = hispec_laser_default_fractional_noise[i];
+		/* Owner policy adopts only fractional calibration noise as a default. */
+		s->laser.channel[i].constant_noise_mw = 0.0;
 		s->laser.channel[i].expected_serial = default_laser_expected_serial[i];
 		s->laser.channel[i].disable_tec_at_autooff = true;
 		s->laser.channel[i].autooff_s = 3U * 3600U;

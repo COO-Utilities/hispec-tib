@@ -110,12 +110,13 @@ silently reused on another.
   RMS. Manual replacement without RMS returns to that default.
 - Photodiode dark windows default to 0 mV with 0 mV RMS. YJ and HK have
   different default gain/noise warning values.
-- Laser optical-power uncertainty defaults to `fractional_noise=0.001` and
-  `constant_noise_mw=0.0031 * (max_current_ma - threshold_current_ma) * efficiency_mw_per_ma`,
-  using `default_laser_props` from the compiled table, never mutable settings.
-  The resulting floors are 0.13505925 mW (1028), 0.041912 mW (1270),
-  0.038688 mW (1430yj), 0.039432 mW (1430hk), 0.040176 mW (1510), and
-  0.00913911 mW (2330). These app-only fields do not program Maiman.
+- Laser power models default to vendor-only reference-anchored quadratic fits.
+  Optical-power uncertainty defaults to the per-laser fractional RMS adopted
+  from the November 4 active calibration and `constant_noise_mw=0` for all six
+  lasers. Startup and explicit calibration restore use the same defaults;
+  valid saved overrides still replace them at boot. See the coefficients,
+  noise values and provenance in [laser calibration](laser_calibration.md#compiled-defaults-adopted-november-4-2026).
+  These app-only fields do not program Maiman.
 - Laser `ld_serial` is the compiled manufacturer diode identity, distinct from
   the numeric expected Maiman driver serial. It is read-only and not persisted.
 - Laser NTC defaults use vendor values: −4.4 %/°C for FLC and B=3900 K for Aero.
@@ -215,7 +216,7 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 ## Scoped laser calibration restore
 
 `laser/calibrate` with `restore_defaults:true`, `laser` and `output` restores
-compiled threshold/efficiency/curve reference/zero correction/maximum/nominal/autolevel bounds/datasheet reference/noise
+compiled threshold/efficiency/curve reference/quadratic correction/maximum/nominal/autolevel bounds/datasheet reference/noise
 settings and removes only that exact named outbound route override. Independent wavelength references,
 driver identity and current calibration, other TEC policy, return loss and other-output overrides
 remain. Optional persistence writes the laser records and deletes the route's NVS

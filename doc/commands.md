@@ -1129,8 +1129,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
       "nominal_current_ma": 0.0,
       "max_current_ma": 0.0,
       "current_cal_pct": 0.0,
-      "fractional_noise": 0.001,
-      "constant_noise_mw": 0.13505925,
+      "fractional_noise": 0.0424917488,
+      "constant_noise_mw": 0.0,
       "threshold_current_ma": 0.0,
       "min_autolevel_current_ma": 0.0,
       "max_autolevel_current_ma": 52.0,
@@ -1211,12 +1211,11 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     These fields do not program Maiman or stop emission by themselves; the
     settings command disables feedback while retaining streaming, its deadline
     and any owned-source shutdown responsibility.
-  - Defaults are 0.1% fractional plus a constant 0.31% of each diode's **compiled**
-    maximum modeled power. Constant defaults in mW: 1028 = 0.13505925;
-    1270 = 0.041912; 1430yj = 0.038688; 1430hk = 0.039432;
-    1510 = 0.040176; 2330 = 0.00913911.
-    The baseline does not change when current output or user property settings
-    change. `persist:true` saves both fields with that laser's policy.
+  - Defaults use the November 4 calibrated fractional RMS for each laser and
+    **zero constant noise**. The [default table](laser_calibration.md#compiled-defaults-adopted-november-4-2026)
+    records the values and sources. Noise defaults do not change when current
+    output or user property settings change. `persist:true` saves both fields
+    with that laser's policy; existing saved values take precedence at boot.
   - `wave_ref_nm`, `wave_ref_ma`, `wave_ref_temp_c` describe an independent
     wavelength measurement. Replace all three together. Wavelength is
     `wave_ref_nm + (I-wave_ref_ma)*dlambda_dA_nm_per_ma + (T-wave_ref_temp_c)*dlambda_dT_nm_per_k`.

@@ -19,11 +19,12 @@ P[\mathrm{mW}]=\eta x+q x(x-x_{ref}),\qquad
 \Phi[\mathrm{s}^{-1}]=\frac{10^{-3}P\lambda}{hc}.
 ```
 
-The correction defaults to zero. Settings validation requires an increasing curve
-from threshold to maximum. Calibration chooses the true modeled zero and preserves the uncorrected
-straight-line fit slope as `efficiency_mw_per_ma`. It derives `efficiency_ref_ma`
-to express the corrected curve with that slope; this is not another fitted degree
-of freedom. Automatic current is confined to the independently validated
+The [compiled curves](laser_calibration.md#compiled-defaults-adopted-november-4-2026)
+fit the vendor traces and include nonzero curvature. In-situ calibration estimates
+the local extrapolated zero and uses vendor-supported curvature. Both anchor
+`efficiency_mw_per_ma` at the independent vendor reference power/current, with
+`efficiency_ref_ma=ref_ma`. Settings validation requires an increasing curve
+from threshold to maximum. Automatic current is confined to the adopted
 `min_autolevel_current_ma` / `max_autolevel_current_ma` support interval. The lower
 bound is above threshold and rounds upward to a register code; the upper bound
 rounds downward and cannot exceed `max_current_ma`. Nominal current still defines

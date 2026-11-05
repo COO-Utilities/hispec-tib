@@ -5,6 +5,55 @@ FVOA calibration, on the existing throughput thread. There is no new thread or
 heap allocation. See [commands](commands.md#lasercalibrate) for prerequisites and
 payloads. A field call can acquire, accept and install a calibration without Python.
 
+## Compiled defaults adopted November 4, 2026
+
+The default power models in `laser_properties.h` use only the six digitized
+vendor traces in `doc/datasheets/*_power_vs_current.txt`, not the current in-situ
+calibration curves. For each diode, fit the extrapolated zero $t$ and quadratic
+coefficient $q$ to all digitized points at or below the unchanged vendor reference
+current. Trapezoidal current-spacing weights prevent dense digitization from
+dominating the least-squares fit. Fix $I_e=I_{ref}$ and
+$\eta=P_{ref}/(I_{ref}-t)$ so the curve passes through the vendor reference.
+The commissioning notebook's offline `vendor_defaults` cell reproduces the fit.
+
+| Laser / report | $t$, mA | $\eta$, mW/mA | $q$, mW/mA² | $I_e$, mA | Weighted RMS / maximum residual, mW |
+|---|---:|---:|---:|---:|---:|
+| 1028y / BF69016 | 16.6083487737 | 0.1876673812875 | −6.06411690252e−5 | 250 | 0.20630 / 0.60604 |
+| 1270j / 8881AFR | 9.784031814486 | 0.2368771919681 | −4.188985980908e−5 | 52 | 0.02144 / 0.07699 |
+| 1430yj / 8897ACR | 3.592432600386 | 0.2202276090237 | −7.876910936396e−5 | 49 | 0.01965 / 0.05804 |
+| 1430hk / 8895ACR | 3.43502055322 | 0.2194667949248 | −2.581978567103e−4 | 49 | 0.02062 / 0.06180 |
+| 1510h / 8882ACT | 4.095546033222 | 0.233076034664 | −2.424936267747e−4 | 47 | 0.03396 / 0.10645 |
+| 2330k / D4520009 | 20.60959567841 | 0.03199504038348 | −8.911153979743e−5 | 120 | 0.02688 / 0.08343 |
+
+All six stored curves have positive slope from their fitted zero through the
+unchanged engineering maximum. The zeros are model coordinates, not new
+turn-on measurements. Plot digitization and the imposed reference limit their
+physical accuracy; the extra digits preserve the calculation. The vendor
+reference powers remain 43.8, 10, 10, 10, 10 and 3.18 mW, respectively. Safety
+limits, nominal currents, diode identities, temperature and wavelength references
+are unchanged. Startup automatic floors still use threshold plus 0.1 mA rounded
+up to the driver grid, and ceilings remain nominal current.
+
+Noise defaults are independent of these vendor fits. The active calibration
+readback frozen at 22:41:58 UTC on November 4 supplies **fractional noise only**:
+
+| Laser | Fractional RMS default | Source capture in `tools/commissioning_data/` |
+|---|---:|---|
+| 1028y | 0.00898166511 | `laser_cal_1028y_20261104T160820_958998Z.pkl` |
+| 1270j | 0.0424917488 | `laser_cal_1270j_20261104T161251_981668Z.pkl` |
+| 1430yj | 0.0139060581 | `laser_cal_1430yj_20261104T161726_641001Z.pkl` |
+| 1430hk | 0.0151791845 | `laser_cal_1430hk_20261104T162132_374295Z.pkl` |
+| 1510h | 0.0577663351 | `laser_cal_1510h_20261104T162544_320364Z.pkl` |
+| 2330k | 0.00234274023 | `laser_cal_2330k_20261104T163052_064646Z.pkl` |
+
+These are effective illuminated-path variability estimates, not intrinsic diode
+noise. The associated apply/readback captures agree with the frozen values.
+By owner choice, **`constant_noise_mw=0` for every compiled default**; fitted
+constant terms are not adopted. Startup and explicit calibration restore share
+the fractional-noise table. Restore copies all four compiled curve coefficients,
+including nonzero curvature. Valid saved overrides still take precedence on
+boot; changing compiled defaults does not rewrite the live board or its NVS.
+
 ## Acquisition and evidence
 
 The experiment measures every sampled positive current at two fixed DAC pairs:
