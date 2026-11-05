@@ -972,6 +972,42 @@ int mems_switch_set_state_ticks(struct mems_switch *sw, char state,
     return rc;
 }
 
+bool mems_router_snapshot(const struct mems_router *router,
+                          struct mems_switch_snapshot out[MEMS_ROUTER_MAX_SWITCHES])
+{
+    if (k_mutex_lock((struct k_mutex *)&router->lock, K_NO_WAIT) != 0) return false;
+    for (size_t i = 0; i < router->num_switches; ++i) {
+        const struct mems_switch *sw = router->switches[i];
+        bool toggling = sw->remaining_toggle_cycles > 0;
+        out[i] = (struct mems_switch_snapshot){
+            .state = sw->state, .known = sw->state_known_this_boot, .toggling = toggling,
+            .a_duty = toggling && sw->switching_period_cycles > 0 ?
+                (double)sw->a_state_cycles / sw->switching_period_cycles : (sw->state == 'A' ? 1.0 : 0.0),
+            .cycle_ms = toggling ? cycles_to_ms(sw, sw->switching_period_cycles) : 0,
+            .off_in_s = toggling ? (sw->remaining_toggle_cycles * mems_switch_pulse_ms(sw) + 999U) / 1000U : 0,
+        };
+    }
+    k_mutex_unlock((struct k_mutex *)&router->lock);
+    return true;
+}
+
+int mems_route_snapshot_state(const struct mems_router *router,
+                              const struct mems_switch_snapshot *state,
+                              const struct mems_route *route)
+{
+    bool unknown = false, split = false;
+    for (size_t i = 0; i < route->num_steps; ++i) {
+        const struct mems_route_step *step = &route->steps[i];
+        int index = mems_switch_index_by_name(router, step->switch_name);
+        if (index < 0 || !state[index].known) { unknown = true; continue; }
+        const struct mems_switch_snapshot *sw = &state[index];
+        double duty = step->state == 'A' ? sw->a_duty : 1.0 - sw->a_duty;
+        if (duty == 0.0) return 0;
+        split |= sw->toggling && duty < 1.0;
+    }
+    return unknown ? -1 : (split ? 2 : 1);
+}
+
 void mems_switch_get_status(const struct mems_switch *sw, struct mems_switch_status *out)
 {
     if (sw == NULL || out == NULL) {
@@ -1473,6 +1509,37 @@ static void split_clamp_actual(double actual[MEMS_SPLIT_OUTPUT_COUNT])
         used = 1.0;
     }
     actual[2] = 1.0 - used;
+}
+
+bool mems_split_ratio_snapshot(const struct mems_router *router,
+                               const struct mems_switch_snapshot *state,
+                               uint8_t channel, bool configured,
+                               const double transmission[MEMS_SPLIT_OUTPUT_COUNT],
+                               double output[MEMS_SPLIT_OUTPUT_COUNT])
+{
+    const struct mems_route *route = split_route_for_channel(router, channel);
+    if (route == NULL) return false;
+    const struct mems_switch_snapshot *sw[MEMS_SPLIT_ROUTE_SWITCH_COUNT];
+    bool toggling = false;
+    for (size_t i = 0; i < MEMS_SPLIT_ROUTE_SWITCH_COUNT; ++i) {
+        int index = mems_switch_index_by_name(router, route->steps[i].switch_name);
+        if (index < 0 || !state[index].known) return false;
+        sw[i] = &state[index];
+        toggling |= sw[i]->toggling;
+    }
+    double actual[MEMS_SPLIT_OUTPUT_COUNT] = {0};
+    if (!toggling) {
+        if (sw[0]->state == 'A') {
+            if (sw[1]->state == 'B') actual[0] = 1.0;
+        } else actual[sw[2]->state == 'A' ? 1 : 2] = 1.0;
+    } else {
+        if (!configured || sw[1]->toggling || sw[1]->state != 'B') return false;
+        actual[0] = sw[0]->a_duty;
+        actual[1] = MAX(0.0, sw[2]->a_duty - actual[0]);
+        split_clamp_actual(actual);
+    }
+    split_output_ratio_from_actual(actual, transmission, output);
+    return true;
 }
 
 int mems_split_read_channel_state(const struct mems_router *router,

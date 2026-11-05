@@ -178,6 +178,23 @@ diagnostics. The request payload is sized by `CONFIG_COO_CMD_PAYLOAD_SIZE`, whic
 to fit within `CONFIG_COO_MQTT_PAYLOAD_SIZE` but can be tuned independently
 because command queues store complete request and response objects.
 
+## Cached operating status
+
+`status` formats short owner snapshots directly into the existing response
+buffer. Settings, MEMS, throughput and OTA use nonblocking acquisition when an
+owner may be doing I/O. Other locks protect only short RAM copies; no status
+path refreshes hardware, takes an ADC window, starts power, rearms a deadline,
+writes settings or reads flash. All profiles have routing and MEMS; AS/CAL
+include them directly, while TIB exposes MEMS and one channel of emission as
+explicit detail views to keep the 2047-byte JSON limit. No persistent status
+object, new worker, history record or counter is introduced.
+
+Optical output follows route-table connectivity and existing source-specific
+losses. Toggling reports conditional path power without duty averaging; only AS
+uses the existing managed split-ratio calculation. PD correction uses a named
+measurement/calibration context and the detector's wavelength curve. See the
+[wire contract](commands.md#status) for null, split and retro meanings.
+
 ## Serial polling
 
 Main consumes at most 64 console characters per pass without waiting. The
@@ -488,7 +505,8 @@ these cases. Serial `help` prints directly, bypassing both queues.
 The MEMS and PD timer callbacks only give semaphores; hardware I/O runs in their
 threads. Dispatcher serial-guard expiration is short system work. Dispatcher
 reboot work runs on the app blocking queue, invokes the app prepare hook after
-the response window, then cold-reboots. Later app commands are rejected while
+the response window, then cold-reboots. Only the cached `status` query is admitted
+through the spec table's `reboot_query_allowed` flag; other later app commands are rejected while
 reboot is pending. Auto-off, ambient/relay checks and heater work share that queue;
 a slow DS18B20 conversion can delay other work on it. Never put a blocking
 Modbus caller on the system queue that must parse its response.

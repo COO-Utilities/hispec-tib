@@ -202,6 +202,8 @@ struct coo_cmd_spec {
 	 */
 	bool ota_query_allowed;
 	bool ota_effect_allowed;
+	/* Default false: permit only cached, side-effect-free queries during reboot. */
+	bool reboot_query_allowed;
 };
 
 /**

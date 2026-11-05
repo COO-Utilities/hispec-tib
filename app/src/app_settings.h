@@ -203,6 +203,19 @@ struct app_settings_snapshot {
 	uint32_t mqtt_revision;
 };
 
+/** Small read-only status projection; this is never stored in NVS. */
+struct app_status_settings {
+    uint32_t boot_count;
+    struct app_mqtt_settings mqtt;
+    double launch_tx[APP_LASER_CHANNEL_COUNT][2]; /* AO, FEI; includes source-specific overrides. */
+    double split_tx[APP_MEMS_SPLIT_CHANNEL_COUNT][APP_MEMS_SPLIT_OUTPUT_COUNT];
+    bool split_configured[APP_MEMS_SPLIT_CHANNEL_COUNT];
+};
+
+/** Try copying status inputs from RAM. False leaves out untouched. Copies under
+ * K_NO_WAIT, then resolves losses after unlocking; no flash, writes or logging. */
+bool app_settings_try_get_status(struct app_status_settings *out);
+
 /**
  * @brief Mount app NVS storage, load persisted values, and keep defaults on failure.
  *

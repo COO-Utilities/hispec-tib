@@ -71,6 +71,9 @@ int coo_ota_init(coo_ota_ready_fn ready, void *user_data);
 /** Snapshot OTA state; closes an expired window. Does not perform hardware I/O. */
 void coo_ota_get_status(struct coo_ota_status *out);
 
+/** Nonblocking RAM snapshot; never closes sockets or acts on deadlines. */
+bool coo_ota_try_get_status(struct coo_ota_status *out);
+
 /** Admission snapshot including open/in-flight/pending/trial/reverting states. */
 bool coo_ota_active(void);
 

@@ -311,12 +311,15 @@ static int laser_append_compact_status(char *payload, size_t payload_len,
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"emit_total_s\":") != 0 ||
 	    coo_json_append_seconds_or_null(payload, payload_len, &off,
-					    status->current_runtime_active,
+					    true,
 					    status->total_emitting_s) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"temp_c\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,
 					  status->tec_temperature_measured_c, 2) != 0 ||
+	    coo_json_append(payload, payload_len, &off, ",\"tec_temp_set_c\":") != 0 ||
+	    coo_json_append_float_or_null(payload, payload_len, &off,
+					  status->tec_temperature_set_c, 2) != 0 ||
 	    coo_json_append(payload, payload_len, &off,
 			    ",\"i_mA\":") != 0 ||
 	    coo_json_append_float_or_null(payload, payload_len, &off,

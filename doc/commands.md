@@ -319,56 +319,184 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (status)=
 ### `status`
-- **No payload or payload -> firmware status.**
 
-  Optional payload:
-  ```json
-  {
-    "ip": true,
-    "lasers": true,
-    "attens": true
-  }
-  ```
+`{}` (or no payload) reports the board's operating state, outputs, detector levels
+and active work. It reads cached state: no device transactions, ADC windows,
+power changes, timer rearming, settings writes or flash reads. Other operations
+continue while snapshots are taken, so this is not an atomic snapshot of the
+whole board. An unavailable value is `null`; faults are included only when
+present. Neither measurement ages nor expired countdowns are returned.
 
-  Response:
-  ```json
-  {
-    "fw": "<tag-or-short-git-hash>",
-    "boots": 0,
-    "board": "tib|cal_yj|cal_hk|as|unknown",
-    "board_ok": true,
-    "mems_switches": 8,
-    "relay_err": 0,
-    "ip": "<response of ip command query>",
-    "amb_c": 0.0,
-    "pd_on_s": 0,
-    "laserbank_on_s": 0,
-    "lasers": {
-      "<lasername>": {
-        "power_mw": 0.0,
-        "ready": false,
-        "tec_on_s": null,
-        "off_in_s": null
-      }
-    },
-    "attens": {
-      "<attenname>": {
-        "value_db": 0.0
-      }
-    },
-    "lastcmd": {
-      "name": "<cmdname>",
-      "src": "mqtt",
-      "t_ms": 0
-    }
-  }
-  ```
-- **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
-  Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
-  when inactive or unavailable. `ready` has the public-start blocker meaning documented under `laser`.
-  `lastcmd` reports the latest effect request during this boot and is never
-  written to flash. Before the first effect it is
-  `{"name":"","src":"unknown","t_ms":0}`. Watchdog boot telemetry is independent.
+The command uses the existing 2048-byte response buffer (2047 bytes of JSON).
+Additional detail has these explicit selectors; the host does not fetch them
+automatically:
+
+| Request | Profiles | Additional detail |
+|---|---|---|
+| `{}` | All | Operating state described below |
+| `{"view":"emission","channel":"yj"}` | TIB | Three YJ lasers, their atten pairs and routed output power |
+| `{"view":"emission","channel":"hk"}` | TIB | Three HK lasers, their atten pairs and routed output power |
+| `{"view":"mems"}` | TIB | All eight MEMS switches |
+| `{"view":"system"}` | All | Network configuration, command queues, OTA and pending actions |
+
+`channel` is required for `emission` and rejected elsewhere. AS and CAL already
+include all their MEMS in the default reply, so they reject the `mems` view.
+There are no `ip`, `lasers` or `attens` request flags.
+
+Every reply contains `device`, `utc` (Unix milliseconds, as in `time`),
+`uptime_s`, and `reset_cause`. Views also contain `view`; emission includes
+`channel`. The default additionally contains `fw` and `boots`. Device identity
+is `hsfib-tib`, `hsfib-as`, `hsfib-bcal`, `hsfib-rcal`, or `hsfib-unknown`.
+Reset flags captured at boot remain visible in every view, including `watchdog`,
+`cpu_lockup`, `brownout` and `software`, as a comma-separated string. A failed
+reset-cause read gives `null` and an error. This exposes the MCU's recorded
+cause; it does not invent a pre-reset software diagnosis.
+
+**TIB default example** (values illustrate a single running YJ source):
+
+```json
+{
+  "device":"hsfib-tib","fw":"<build>","boots":42,
+  "utc":1793900000000,"uptime_s":120,"reset_cause":"software",
+  "ambient_c":23.1,
+  "bank":{"power":"on (auto)","heater":"off (auto)","idle_tec_avg_c":23.2},
+  "lasers":{"1028y":"running","1270j":"stopped","1430yj":"stopped","1430hk":"stopped","1510h":"stopped","2330k":"stopped"},
+  "outputs":{
+    "yj_ao":{"from":["1028y","1270j","1430yj"],"flux_nw":125},
+    "yj_fei":{"from":[],"flux_nw":0},
+    "yj_retro":{"from":[],"flux_nw":0,"light":"off"},
+    "hk_ao":{"from":["1430hk","1510h","2330k"],"flux_nw":0},
+    "hk_fei":{"from":[],"flux_nw":0},
+    "hk_retro":{"from":[],"flux_nw":0,"light":"off"}
+  },
+  "pd":{
+    "yj":{"power":"on","from":"yj_mm","net_mv":1320,"power_nw":0.100774,"wavelength_coeff":1.42},
+    "hk":{"power":"off","from":"hk_sm","net_mv":null,"power_nw":null,"wavelength_coeff":null}
+  },
+  "activity":["measure_throughput yj: passive (1028y)"]
+}
+```
+
+- `ambient_c` is a number, `null` before a reading, or a specific sensor error
+  string. `bank.power` and `bank.heater` combine on/off state and the existing
+  `auto`, `override_on` or `override_off` mode. Heater state can be `unknown`.
+  `idle_tec_avg_c` is the heater controller's cached idle-TEC average, or `null`.
+- Each laser is `running`, `stopped`, `unexpected stop`, or `unknown`.
+  Retained problems append `; operation failed`, `; no response`, or
+  `; atten unknown`. These owners do not retain a more specific stop cause.
+  Running refers to controller operation; optical power is modeled.
+- Output `from` lists connected sources, including stopped lasers. It is `[]`
+  for a disconnected output and `null` when routing is unknown. AO/FEI
+  `flux_nw` sums running laser power after both atten devices and each source's
+  static launch loss. A known stopped source contributes zero. An external CAL
+  source has unknown power; selecting it alone gives `null`.
+- Retro is supplied only by that channel's 1430 source. Its `flux_nw` is the
+  1430 power after its atten pair, **before unrecorded retro-path loss**.
+  `light` is `on`, `off`, `split`, or `unknown`. There is no permanently null
+  retro loss field.
+- When MEMS toggling can connect an output, its power is the conditional power
+  through that path: `"125 (not including split)"`. **No duty-cycle factor is
+  applied.** If toggling also admits external CAL light, a finite local sum is
+  `"125 (laser(s) only; not including split)"`. This excludes the unknown CAL
+  contribution as well as the split. Values do not follow the last pulsed phase.
+  Known zero emission remains numeric zero unless an external contribution is
+  also possible.
+- PD `from` is the current `yj_sm`/`yj_mm` or `hk_sm`/`hk_mm` selection, not a
+  sample acquisition tag. `net_mv` is the latest dark-subtracted ADC reading.
+  `power_nw` is incident power at the detector, before return-path loss;
+  `wavelength_coeff` is **already applied**. A named active throughput or
+  calibration operation supplies the wavelength. Without that context, power
+  and coefficient are `null`; a running laser alone does not establish the
+  detector's source. An off detector has null levels. Overrange retains voltage
+  but returns null power and an error. See [detector coefficients](photodiode_notes.md#wavelength-correction).
+- `activity` lists all active operator work, without selectors: throughput
+  `passive`/`autolevel`/`preparing`/`stopping`, laser calibration
+  `running`/`fitting`/`awaiting_output`/`stop failed`, atten calibration
+  (`running` or `stop failed`), PD dark
+  capture, MEMS toggling, serial guard, requested reboot and active OTA. Calibration results
+  remain at their own endpoints. An empty array means none of these is active.
+  If the throughput owner is busy, its entry says
+  `measure_throughput: status busy`; OTA uses `ota: status busy` if its snapshot
+  is busy. Other available activity is still listed.
+
+**Emission:** each of the selected channel's three entries has this shape:
+
+```json
+{
+  "output_state":"running","i_mA":100,"power_mw":10,"tuned_nm":1028.01,
+  "off_in_s":240,
+  "atten":{"mv1":1800,"mv2":1900,"open1_mv":1200,"open2_mv":1250,
+           "loss1_db":20,"loss2_db":30,"loss_db":50,"linear":0.00001,"flux_nw":100},
+  "routes":{"yj_ao":{"loss_db":1,"flux_nw":79.4328}}
+}
+```
+
+Entries live under `emission.<lasername>`. `i_mA` is the cached applied current
+setting, not the driver's separate measured-current register. `power_mw` and
+`tuned_nm` use the existing laser model. `off_in_s` appears only while positive.
+Atten fields use the same names as `atten/<laser>`; `mv1`/`mv2` are cached
+DAC-output drive values and `open1_mv`/`open2_mv` are operational open settings.
+`atten.flux_nw` is power after the pair, before launch loss. `routes` contains
+selected/conditional outputs, with the same power and split meanings as the
+default reply. A selected retro entry contains `flux_nw` and `light`, without
+`loss_db`. Detailed driver registers, TEC setpoint/measurement and lifetime
+emission time remain at `laser` and `laser/status`.
+
+**MEMS:** static entries combine state and the meaning of that branch, for
+example `"yj_forward_retro":"A (forward)"` or `"yj_ao_fei":"B (fei)"`.
+A toggling entry contains only `{"a_duty_pct":40,"cycle_hz":10}`: percentage in
+A and full A–B–A cycles per second. Unknown state is `null`. If the router is
+busy, the entire `mems` value is `null`.
+
+**AS default:** common fields, `ambient_c`, `activity`, `mems`, plus:
+
+```json
+{
+  "outputs":{"yj_cal":{"from":[]},"yj_split":{"from":["yj_calin"]},
+             "hk_cal":{"from":[]},"hk_split":{"from":["hk_calin"]}},
+  "split":{"yj":{"ratio_out":[0.2,0.3,0.5],"off_in_s":240},
+           "hk":{"ratio_out":[1,0,0]}}
+}
+```
+
+`ratio_out` follows `mems/split`: output proportions after static losses, ordered
+split1/2/3. Static routing gives a one-hot ratio, or all zeros for the CAL
+bypass. Arbitrary independent toggles have `ratio_out:null`; status does not
+introduce another split model. `off_in_s` is included only while positive.
+
+**CAL default:** common fields, `ambient_c`, `activity`, all seven switches in
+`mems`, `outputs.spec`, `outputs.tib`, and `outputs.is`, each with `from` listing
+connected source names. `atten.lfc` contains `mv1`, `mv2`, `open1_mv`, `open2_mv`,
+`loss1_db`, `loss2_db`, `loss_db`, and `linear`. No external-source power is
+invented. AS/CAL have no emission view.
+
+**System:** common fields and:
+
+```json
+{
+  "ip":{"src":"dhcp","active":{"ip":"192.0.2.10","subnet":"255.255.255.0","gateway":"192.0.2.1"}},
+  "mqtt":{"broker":"broker.example:1883"},
+  "ntp":{"src":"dhcp","server":"192.0.2.2","last_sync_utc_ms":1793900000000},
+  "lastcmd":{"name":"laser","src":"mqtt","t_ms":115000},
+  "queues":{"inbound":0,"replies":0,"best_effort":0},
+  "ota":{"image":"permanent","image_hash":"<64 hex characters>"}
+}
+```
+
+`lastcmd` is the latest effect-capable request in this boot, or `null`. Its
+`t_ms` is boot uptime in milliseconds, matching the command runtime. Queries
+neither replace it nor write history to flash. OTA image is `permanent` or
+`trial`; `enabled:true`, `pending:true`, positive `remaining_s` and positive
+`trial_remaining_s` appear only when applicable. Positive `serial_guard_s` and
+`reboot_in_s` appear at top level. Existing counters `dropped_best_effort`,
+`dropped_replies`, and `publish_failures` appear only when nonzero. Settings or
+OTA snapshots held by a writer are `null`; no query waits for flash/socket work.
+
+All profiles/views may contain `errors`, a list of current problems with
+specific text and no opaque numeric return codes. Healthy error fields are
+omitted. A reset-cause read failure is included in every view. Temperature,
+relay, bank-control, detector-overrange and board-identity problems are reported
+in the default; NTP failures in system; laser/atten problems accompany emission.
 
 
 (temps)=
@@ -549,7 +677,8 @@ while serial guard is active and attenuator DAC-range clamping.
   before reboot it calls the app reboot-prepare hook so firmware can put
   hardware into a safer state and, when requested, erase non-IP persisted
   settings. The erase preserves IP settings, boot count, and storage schema
-  metadata. Once a reboot is pending, later commands are rejected before app
+  metadata. Once a reboot is pending, cached `status` queries remain available;
+  other later commands are rejected before app
   handlers run.
 
 (ota)=
@@ -962,11 +1091,13 @@ these values feed the existing throughput and splitting calculations.
     "name": "<lasername>",
     "powered": true,
     "ready": true,
+    "output_state": "stopped",
     "blocked_reason": null,
     "tec_on_s": null,
     "emit_on_s": null,
     "emit_total_s": null,
     "temp_c": 0.0,
+    "tec_temp_set_c": 0.0,
     "i_mA": 0.0,
     "value": 0.0,
     "power_mw": 0.0,
@@ -1026,16 +1157,17 @@ these values feed the existing throughput and splitting calculations.
   priority order). An unprepared start programs the firmware-owned interlock
   policy; a lock it resolves is not a public-start blocker. Engineering raw
   state/lock fields remain available. Readiness does not guarantee start success.
-  Compact `output_state` is `stopped`, `running`, `stopped_fault` or `unknown`.
+  Compact `output_state` is `stopped`, `running`, `unexpected stop` or `unknown`.
   Stopped includes acknowledged zero current, STOP or bank power-off; running
   means established nonzero controller operation, not measured optical output.
-  Stopped-fault requires an observed unexpected output stop; failed writes are
+  Unexpected stop requires an observed unexpected output stop; failed writes are
   uncertain rather than evidence of running. A ready laser may be stopped by
   a past fault. Acknowledged intentional shutdown and explicit successful recovery
   update output state without changing existing safety-latch clearing rules.
   `i_mA` and `power_mw` retain their setpoint/model-estimate meanings. Active time fields are integer seconds while active and `null`
-  when inactive. The persisted lifetime
-  total remains available through `laser/settings`. `off_in_s` is optional and
+  when inactive. `tec_temp_set_c` is the driver TEC target; `temp_c` is its
+  measured temperature. Lifetime `emit_total_s` remains available while off,
+  including current-boot emission, and is also available through `laser/settings`. `off_in_s` is optional and
   non-persistent and must be positive if supplied. It overrides
   `laser/settings.autooff_s` for this operation; omission uses that positive default
   for a positive-current start. A saved zero default must be corrected or overridden
@@ -1212,7 +1344,7 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   - `fractional_noise` and `constant_noise_mw` are finite, nonnegative
     app-owned optical-power uncertainty settings. The estimator reads its
     existing per-laser cache and computes `hypot(power_mw * fractional_noise,
-    constant_noise_mw)` before converting power and uncertainty to photon flux.
+    constant_noise_mw)` before converting power and uncertainty to nW (multiply mW by 1e6).
     These fields do not program Maiman or stop emission by themselves; the
     settings command disables feedback while retaining streaming, its deadline
     and any owned-source shutdown responsibility.
@@ -1615,14 +1747,16 @@ command wait budget, this command returns `{"error":"busy"}`.
 - **No payload to `atten/<laser>` -> attenuator setting:**
   ```json
   {
-    "db": 12.5,
+    "loss_db": 12.5,
     "linear": 0.0562,
-    "v1_mv": 1234.0,
-    "v2_mv": 0.0,
-    "db1": 12.5,
-    "db2": 0.0,
+    "mv1": 1234.0,
+    "mv2": 0.0,
+    "loss1_db": 12.5,
+    "loss2_db": 0.0,
     "linear1": 0.0562,
-    "linear2": 1.0
+    "linear2": 1.0,
+    "open1_mv": 1200.0,
+    "open2_mv": 1250.0
   }
   ```
 - **Payload to `atten/<laser>`:** set total attenuation or one or both physical
@@ -1714,10 +1848,12 @@ command wait budget, this command returns `{"error":"busy"}`.
     failure during a pair update can still leave an earlier write applied.
   - Compact value requests reject coefficient fields and `persist`;
     coefficient requests accept only `dac1`, `dac2`, and optional `persist`.
-  - `v1_mv` and `v2_mv` are DAC-output setpoints in the firmware 0-3300 mV
+  - `mv1` and `mv2` are DAC-output setpoints in the firmware 0-3300 mV
     drive span. The firmware converts them to DAC codes using the
     board-configured DAC reference transfer, then responses report the applied
     DAC-side millivolts after code quantization and output-rail clipping.
+  - `open1_mv` and `open2_mv` report the operational open setting of each
+    physical attenuator, in the same DAC-side mV coordinates.
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define the erf coordinate
     `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
@@ -2200,7 +2336,7 @@ uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings us
     "laser": "<lasername>",
     "fiber": "M",
     "output": "yj_ao",
-    "max_flux_ph_s": 1.0e12,
+    "max_flux_nw": 193.232,
     "off_in_s": 300,
     "format": "binary"
   }
@@ -2332,8 +2468,11 @@ route-loss storage uses `generic`. A return-only example:
 Dark capture or active attenuator calibration rejects all starts. Taking a dark
 or starting calibration stops existing throughput; there is no automatic resume.
 
-`max_flux_ph_s` remains an optional autolevel limit in photons/s, after the
-dynamic attenuator pair and **before** static route losses. Stream quantities
+`max_flux_nw` is an optional finite nonnegative autolevel limit in nW, after the
+dynamic attenuator pair and **before** static route losses. Omitted or zero
+disables this cap. For reference, the former 1e12 photons/s example at
+1028.01 nm corresponds to 193.232 nW; old values must not be copied numerically.
+Stream quantities
 use power: nW for detected/delivered light and µW for the estimated laser output
 before attenuation. No actual laser power readback exists.
 

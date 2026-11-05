@@ -288,7 +288,8 @@ laser/bankpower
 ota
 ```
 
-The helper checks this prerequisite but never changes bank mode for you. CAL/AS
+The firmware checks this prerequisite when opening the OTA window; the helper
+does not query or change bank mode. CAL/AS
 have no TIB bank prerequisite; their experiments still need to be stopped.
 Serial activity can activate serial guard, which rejects MQTT effects including
 OTA entry/confirmation. Let it expire or use `serialguard off` before starting
@@ -314,6 +315,14 @@ Then update, replacing `broker.example` and the device namespace:
 Use `hsfib-bcal` for CAL YJ, `hsfib-rcal` for CAL HK, and `hsfib-as` for AS.
 The helper obtains the board's IPv4 address from a fresh MQTT reply. Optional
 `--ip` checks that address against your expectation; it does not override it.
+Its only queries are `ip` for the upload address and `ota` for image identity
+and trial state. It does not parse `status`, human-oriented `help`, or laser
+state. A candidate can change those schemas without preventing its own update.
+Firmware owns hardware entry checks and trial preparation: TIB rejects OTA
+entry unless its bank is off in `override_off`, and a trial sets that mode
+before starting workers or accepting commands. A failed trial bank shutdown
+prevents firmware startup. The helper still sends the explicit `reboot` action
+after uploading and marking the candidate for a test boot.
 
 ```{mermaid}
 sequenceDiagram
@@ -321,7 +330,7 @@ sequenceDiagram
   participant A as Running application
   participant B as MCUboot
   H->>H: Check image<br/>and size limit
-  H->>A: MQTT identity, readiness,<br/>image and bank queries
+  H->>A: MQTT IP and OTA queries
   H->>A: MQTT open window
   H->>A: UDP verify running hash,<br/>upload secondary image
   H->>A: UDP verify candidate hash,<br/>request test boot
@@ -329,7 +338,7 @@ sequenceDiagram
   A->>B: Reset
   B->>B: Validate body hash,<br/>swap candidate into primary
   B->>A: Start unconfirmed trial<br/>UDP closed, TIB bank off
-  H->>A: Fresh MQTT boot count,<br/>exact hash and readiness
+  H->>A: MQTT running hash<br/>and trial state
   alt Operator accepts, or explicit --auto-confirm passes checks
     H->>A: MQTT confirm exact hash
     Note over H,A: Operator explicitly<br/>restores TIB bank mode
@@ -343,8 +352,12 @@ The helper requires a confirmed, inactive baseline and matching host/device
 upload limits. It compares the SMP running hash against MQTT identity before
 uploading, verifies the secondary image's reported hash, and requests a **test**
 boot rather than permanent installation. Upload transport failures have at most
-three attempts, using transfer SHA/offset recovery. After reboot, it requires a
-new boot count, the exact candidate hash, board readiness, and TIB bank off.
+three attempts, using transfer SHA/offset recovery. After reboot, it requires
+the exact candidate hash and an open trial window before confirmation. The
+candidate hash differs from the baseline and the firmware captures its running
+hash at startup; that change establishes a new boot without a `status` boot
+counter. A baseline still awaiting the test boot is polled; a return to the
+baseline with no active OTA operation reports rollback or candidate rejection.
 The default leaves the candidate **unconfirmed** and prints its remaining trial
 time plus copyable Python and MQTT confirmation commands. Inspect the candidate
 and accept that exact hash before the five-minute trial expires:
@@ -359,11 +372,11 @@ remaining time and verify the hash before accepting. A successful upload alone
 does not accept the new image.
 
 For unattended acceptance, add `--auto-confirm`. Before sending confirmation the
-helper prints why: explicit opt-in, a new boot, matching hash, board readiness,
-a live trial window, and (on TIB) an unpowered bank in `override_off`. It then
+helper prints why: explicit opt-in, a new boot, matching hash, and a live trial
+window. It then
 queries and reports confirmed state. A lost confirmation acknowledgment is
-recovered by querying state. These checks establish identity and reported
-readiness, not optical or electrical acceptance.
+recovered by querying state. These checks establish the running image and OTA
+state; optical and electrical acceptance remain the operator's work.
 
 Progress reports image size/hash, upload percentages, and whether the trial was
 left unconfirmed, explicitly confirmed, or was already confirmed. An identical
@@ -484,8 +497,8 @@ with compatible settings schemas:
 ```
 
 The helper reads the generated DTS and app/MCUboot configuration. The current
-983,040-byte slot reserves 16,384 bytes for offset swapping/trailer space, leaving
-**966,656 bytes** for an unpadded image. It extends `zephyr.bin` with deterministic
+851,968-byte slot reserves 16,384 bytes for offset swapping/trailer space, leaving
+**835,584 bytes** for an unpadded image. It extends `zephyr.bin` with deterministic
 non-erased bytes *before* constructing the hash. The declared body includes those
 bytes, so they participate in upload, validation, swap and rollback without
 changing linked code or RAM use. Merely padding a finished image would not test this.

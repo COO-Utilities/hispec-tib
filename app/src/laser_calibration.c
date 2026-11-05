@@ -1789,7 +1789,7 @@ int laser_calibration_start(const struct laser_calibration_request *request,
 	double return_tx;
 	rc = app_settings_get_route_loss(key, hispec_laser_name(request->laser), &return_tx);
 	double wavelength = hispec_laser_estimate_wavelength_nm(p, p->ref_temp_c, p->ref_ma);
-	double gain = 1000.0 / photodiode_power_uw_from_mv_at_wavelength(1.0, wavelength, pd);
+	double gain = 1000.0 / photodiode_power_uw_from_mv_at_wavelength(channel, 1.0, wavelength, pd);
 	if (rc != 0 || !isfinite(gain) || !(gain > 0.0) || !(return_tx > 0.0) || return_tx > 1.0) {
 		return CAL_PD_GAIN_INVALID;
 	}

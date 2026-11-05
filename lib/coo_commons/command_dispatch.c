@@ -1887,13 +1887,13 @@ static bool runtime_handle_builtin_request(struct coo_cmd_runtime *runtime,
 		return false;
 	}
 
+	spec = runtime_find_builtin(cmd->key);
+	if (spec == NULL) {
+		return false; /* App queries have their own explicit reboot admission below. */
+	}
 	if (runtime_reboot_pending(runtime) && !runtime_key_is_reboot(cmd->key)) {
 		(void)coo_cmd_error(out, cmd, "reboot pending");
 		return true;
-	}
-	spec = runtime_find_builtin(cmd->key);
-	if (spec == NULL) {
-		return false;
 	}
 	if (runtime_validate_payload_keys(spec->allowed_payload_keys, cmd, out) != 0) {
 		return true;
@@ -1968,11 +1968,11 @@ static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 		return coo_cmd_invalid_response(out, cmd);
 	}
 
-	if (runtime_reboot_pending(runtime)) {
+	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
+	if (runtime_reboot_pending(runtime) &&
+	    (cmd->msg_type != COO_CMD_QUERY || spec == NULL || !spec->reboot_query_allowed)) {
 		return coo_cmd_error(out, cmd, "reboot pending");
 	}
-
-	spec = coo_cmd_runtime_find_spec(runtime, cmd->key);
 	LOG_INF("Dispatching: %s", cmd->key);
 	if (spec == NULL) {
 		return coo_cmd_unknown_response(out, cmd);

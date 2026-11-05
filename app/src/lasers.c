@@ -29,8 +29,6 @@
 
 LOG_MODULE_REGISTER(lasers, CONFIG_LASERS_LOG_LEVEL);
 
-#define PLANCK_J_S 6.62607015e-34
-#define LIGHT_M_PER_S 299792458.0
 
 #define LASER_AUTOFF_NO_DEADLINE 0LL
 #define LASER_COMMAND_LOCK_TIMEOUT_MS 250U
@@ -81,7 +79,7 @@ enum laser_output_state {
 };
 
 static const char *const laser_output_state_names[] = {
-	"stopped", "running", "stopped_fault", "unknown",
+	"stopped", "running", "unexpected stop", "unknown",
 };
 
 struct laser_output_estimate_state {
@@ -2598,9 +2596,6 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	double current_ma;
 	double tec_temperature_c;
 	double power_mw;
-	double power_w;
-	double photon_j;
-	double wavelength_m;
 	double power_err_mw;
 	double fractional_noise;
 	double constant_noise_mw;
@@ -2609,6 +2604,11 @@ int laser_estimate_flux(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
+	*out = (struct hispec_laser_flux_estimate){
+        .output_state = "unknown", .current_ma = NAN, .tec_temperature_c = NAN,
+        .power_mw = NAN, .power_err_mw = NAN, .wavelength_nm = NAN,
+        .flux_nw = NAN, .flux_err_nw = NAN, .nominal_wavelength_nm = NAN,
+    };
 	k_mutex_lock(&laser_state_lock, K_FOREVER);
 	if (!laser_runtime_initialized) {
 		k_mutex_unlock(&laser_state_lock);
@@ -2619,6 +2619,15 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	constant_noise_mw = laser_settings[id].constant_noise_mw;
 	current_ma = laser_output_estimate[id].current_ma;
 	tec_temperature_c = laser_output_estimate[id].tec_temperature_c;
+    const struct laser_output_estimate_state *state = &laser_output_estimate[id];
+    out->output_state = laser_output_state_names[state->output_state];
+    out->control_fault = state->control == LASER_CONTROL_FAULT;
+    out->communication_fault = state->communication_fault ||
+        (state->started && state->control != LASER_CONTROL_UNCONFIRMED &&
+         k_uptime_get() >= state->response_deadline_ms);
+    int64_t remaining = laser_autooff_deadline_ms[id] - k_uptime_get();
+    out->off_in_s = remaining > 0 ? (uint32_t)((remaining + 999) / 1000) : 0;
+    out->nominal_wavelength_nm = properties.wave_ref_nm;
 	k_mutex_unlock(&laser_state_lock);
 
 	if (!float_is_valid(current_ma) ||
@@ -2631,7 +2640,6 @@ int laser_estimate_flux(enum hispec_laser_id id,
 		return -EINVAL;
 	}
 
-	memset(out, 0, sizeof(*out));
 	power_mw = hispec_laser_estimate_power_mw(&properties, current_ma);
 	out->current_ma = current_ma;
 	out->tec_temperature_c = tec_temperature_c;
@@ -2641,15 +2649,12 @@ int laser_estimate_flux(enum hispec_laser_id id,
 	if (!(out->wavelength_nm > 0.0)) {
 		return -EINVAL;
 	}
-	wavelength_m = out->wavelength_nm * 1.0e-9;
-	photon_j = PLANCK_J_S * LIGHT_M_PER_S / wavelength_m;
-	power_w = power_mw * 1.0e-3;
 	power_err_mw = hypot(power_mw * fractional_noise, constant_noise_mw);
 
 	out->power_mw = power_mw;
 	out->power_err_mw = power_err_mw;
-	out->flux_ph_s = power_w / photon_j;
-	out->flux_err_ph_s = (power_err_mw * 1.0e-3) / photon_j;
+	out->flux_nw = power_mw * 1.0e6;
+	out->flux_err_nw = power_err_mw * 1.0e6;
 	return 0;
 }
 

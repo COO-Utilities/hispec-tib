@@ -329,6 +329,14 @@ LLMs Agents: Do NOT change heading names in this file.
 
 ### LLM Resolved; Human Review Requested
 
+- [ ] Validate cached `status` while throughput/autolevel, calibration and MEMS
+  toggling run: poll at 1 Hz and check timing/queue behavior on the PCB. The
+  placeholder is replaced, all profiles and views have bounded payload checks,
+  and normal MCUboot firmware plus strict documentation builds pass. Status
+  performs no hardware refresh, timer rearming or persistence. Vendor-derived
+  wavelength coefficients and retro power before unrecorded route loss are
+  documented; their absolute optical accuracy remains a bench measurement.
+
 
 ## Decisions To Make
 - [ ] Confirm the attenuator leakage-floor constraint. The previous calibration
@@ -410,7 +418,6 @@ LLMs Agents: Do NOT change heading names in this file.
 - algorithmic/proceedural status (e.g. atten aotocalibration or throughput monitor 
   autoranging notices) should be going to console AND mqtt and that was the whole point 
   of a combined dispatch helper. this needs an app-wide reevaluation.
-- Status needs to gain things we actually want.
 - Lab-investigate safe laser-bank and external-relay shutdown on fatal faults.
   The current fatal path halts and relies on watchdog reset; formal shutdown
   safety is deferred pending hardware exploration.

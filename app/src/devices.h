@@ -94,6 +94,9 @@ int devices_relay_gpio_last_error(void);
  */
 void devices_capture_boot_reset_cause(void);
 
+/** Format this boot's captured reset flags; false if capture failed. No I/O. */
+bool devices_boot_reset_cause(char *out, size_t len);
+
 /**
  * @brief Queue retained watchdog boot telemetry for MQTT retry.
  *

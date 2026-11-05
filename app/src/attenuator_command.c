@@ -186,13 +186,15 @@ static int attenuator_status_reply(const struct coo_cmd_request *cmd,
 				     "{\"error\":\"Failed to read attenuator\"}");
 	}
 
+	struct attenuator cached;
+	attenuator_snapshot(&attenuators[attenuator_index], &cached);
 	linear1 = pow(10.0, -status.attenuation_db1 / 10.0);
 	linear2 = pow(10.0, -status.attenuation_db2 / 10.0);
 	snprintk(payload, sizeof(payload),
-		 "{\"db\":%.6f,\"linear\":%.12g,"
-		 "\"v1_mv\":%.6f,\"v2_mv\":%.6f,"
-		 "\"db1\":%.6f,\"db2\":%.6f,"
-		 "\"linear1\":%.12g,\"linear2\":%.12g}",
+		 "{\"loss_db\":%.6f,\"linear\":%.12g,"
+		 "\"mv1\":%.6f,\"mv2\":%.6f,"
+		 "\"loss1_db\":%.6f,\"loss2_db\":%.6f,"
+		 "\"linear1\":%.12g,\"linear2\":%.12g,\"open1_mv\":%.6g,\"open2_mv\":%.6g}",
 		 status.attenuation_db,
 		 status.linear,
 		 (double)status.voltage1,
@@ -200,7 +202,8 @@ static int attenuator_status_reply(const struct coo_cmd_request *cmd,
 		 status.attenuation_db1,
 		 status.attenuation_db2,
 		 linear1,
-		 linear2);
+		 linear2, (double)attenuator_open_voltage(&cached.dac_cfg1),
+		 (double)attenuator_open_voltage(&cached.dac_cfg2));
 
 	return coo_cmd_reply(out, cmd, COO_CMD_RESP_OK, payload);
 }
