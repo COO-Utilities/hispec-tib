@@ -388,27 +388,22 @@ static void mems_clear_toggle_requests_for_route(struct app_mems_settings *setti
     }
 }
 
-static void mems_persist_static_intent(const struct mems_router *router,
-                                       uint8_t switch_index,
-                                       char state)
+/* Update a caller-owned snapshot so a whole route needs only one NVS save.
+ * Accepted static intent replaces conflicting toggle/split restart requests.
+ * No locking, hardware I/O or persistence here.
+ */
+static void mems_update_static_intent(struct app_mems_settings *settings,
+                                      const struct mems_router *router,
+                                      uint8_t switch_index, char state)
 {
-    struct app_mems_settings settings;
-
-    if (router == NULL || switch_index >= APP_MEMS_SWITCH_COUNT ||
-        switch_index >= router->num_switches) {
-        return;
-    }
-
-    app_settings_get_mems(&settings);
-    settings.switch_state[switch_index].static_configured = 1U;
-    settings.switch_state[switch_index].static_state = state;
-    settings.switch_state[switch_index].toggle_configured = 0U;
-    mems_clear_split_requests_for_switch(&settings, router,
+    settings->switch_state[switch_index].static_configured = 1U;
+    settings->switch_state[switch_index].static_state = state;
+    settings->switch_state[switch_index].toggle_configured = 0U;
+    mems_clear_split_requests_for_switch(settings, router,
                                          router->switches[switch_index]->name);
-    app_settings_update_mems(&settings, true);
 }
 
-static void mems_persist_toggle_request(const struct mems_router *router,
+static int mems_persist_toggle_request(const struct mems_router *router,
                                         uint8_t switch_index,
                                         char state,
                                         double duty_cycle,
@@ -420,7 +415,7 @@ static void mems_persist_toggle_request(const struct mems_router *router,
 
     if (router == NULL || switch_index >= APP_MEMS_SWITCH_COUNT ||
         switch_index >= router->num_switches) {
-        return;
+        return -EINVAL;
     }
 
     app_settings_get_mems(&settings);
@@ -432,10 +427,10 @@ static void mems_persist_toggle_request(const struct mems_router *router,
     sw_settings->toggle_duration_s = duration_s;
     mems_clear_split_requests_for_switch(&settings, router,
                                          router->switches[switch_index]->name);
-    app_settings_update_mems(&settings, true);
+    return app_settings_update_mems(&settings, true);
 }
 
-static void mems_persist_split_request(const struct mems_router *router,
+static int mems_persist_split_request(const struct mems_router *router,
                                        uint8_t channel_index,
                                        const double requested[MEMS_SPLIT_OUTPUT_COUNT],
                                        uint32_t cycle_ms,
@@ -447,7 +442,7 @@ static void mems_persist_split_request(const struct mems_router *router,
 
     if (router == NULL || requested == NULL ||
         channel_index >= APP_MEMS_SPLIT_CHANNEL_COUNT) {
-        return;
+        return -EINVAL;
     }
 
     route = split_route_for_channel(router, channel_index);
@@ -458,7 +453,7 @@ static void mems_persist_split_request(const struct mems_router *router,
     split->cycle_ms = cycle_ms;
     split->duration_s = duration_s;
     mems_clear_toggle_requests_for_route(&settings, router, route);
-    app_settings_update_mems(&settings, true);
+    return app_settings_update_mems(&settings, true);
 }
 
 
@@ -611,12 +606,16 @@ static int mems_switch_set_state_internal(struct mems_switch *sw, char state,
     }
     if (persist && rc == 0 && switch_index >= 0) {
         if (mixed_profile) {
-            mems_persist_toggle_request(router, (uint8_t)switch_index,
-                                        'A', duty_cycle,
-                                        requested_cycle_ms_u32, off_in_s);
+            rc = mems_persist_toggle_request(router, (uint8_t)switch_index,
+                                             'A', duty_cycle,
+                                             requested_cycle_ms_u32, off_in_s);
         } else {
-            mems_persist_static_intent(router, (uint8_t)switch_index,
+            struct app_mems_settings settings;
+
+            app_settings_get_mems(&settings);
+            mems_update_static_intent(&settings, router, (uint8_t)switch_index,
                                        a_cycles == 0U ? 'B' : 'A');
+            rc = app_settings_update_mems(&settings, true);
         }
     }
     return rc;
@@ -1106,26 +1105,28 @@ int mems_router_apply_route(const struct mems_router *router,
                             const char **failed_switch,
                             char *failed_state)
 {
+    struct app_mems_settings settings;
+    bool accepted = false;
+    int rc = 0;
+
+    if (failed_switch != NULL) *failed_switch = NULL;
+    if (failed_state != NULL) *failed_state = '\0';
     if (router == NULL || route == NULL) {
         return -EINVAL;
     }
 
+    app_settings_get_mems(&settings);
     for (uint8_t i = 0U; i < route->num_steps; ++i) {
         const struct mems_route_step *step = &route->steps[i];
-        struct mems_switch *sw = mems_router_find_switch(router, step->switch_name);
-        int rc;
+        int index = mems_switch_index_by_name(router, step->switch_name);
 
-        if (sw == NULL) {
-            if (failed_switch != NULL) {
-                *failed_switch = step->switch_name;
-            }
-            if (failed_state != NULL) {
-                *failed_state = step->state;
-            }
-            return -ENOENT;
+        if (index < 0) {
+            rc = index;
+        } else {
+            rc = mems_switch_set_state_internal(router->switches[index],
+                                                 step->state, 1.0, 0U, 0.0,
+                                                 force, false);
         }
-
-        rc = mems_switch_set_state(sw, step->state, 1.0, 0U, 0.0, force);
         if (rc != 0) {
             if (failed_switch != NULL) {
                 *failed_switch = step->switch_name;
@@ -1133,11 +1134,22 @@ int mems_router_apply_route(const struct mems_router *router,
             if (failed_state != NULL) {
                 *failed_state = step->state;
             }
-            return rc;
+            break;
         }
+        mems_update_static_intent(&settings, router, (uint8_t)index,
+                                   (char)toupper((unsigned char)step->state));
+        accepted = true;
     }
 
-    return 0;
+    /* Save accepted steps even on a partial failure, after releasing the router
+     * mutex. NVS logs save errors; preserve the original step error if both fail.
+     */
+    if (accepted) {
+        int saved = app_settings_update_mems(&settings, true);
+
+        if (rc == 0) rc = saved;
+    }
+    return rc;
 }
 
 int mems_router_apply_named_route(const struct mems_router *router,
@@ -1567,6 +1579,7 @@ static int mems_split_apply_channel_internal(const struct mems_router *router,
     uint32_t min_split_ticks;
     int rc;
 
+    if (failed_switch != NULL) *failed_switch = NULL;
     if (router == NULL || requested == NULL ||
         channel_index >= MEMS_SPLIT_CHANNEL_COUNT) {
         return -EINVAL;
@@ -1659,8 +1672,8 @@ static int mems_split_apply_channel_internal(const struct mems_router *router,
 
     rc = mems_split_read_channel_state(router, channel_index, requested, out);
     if (rc == 0 && persist) {
-        mems_persist_split_request(router, channel_index, requested,
-                                   cycle_ms, off_in_s);
+        rc = mems_persist_split_request(router, channel_index, requested,
+                                        cycle_ms, off_in_s);
     }
 
     return rc;

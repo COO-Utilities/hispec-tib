@@ -44,7 +44,7 @@ enum app_nvs_id {
 	APP_NVS_ID_MQTT = 0x0006,
 	APP_NVS_ID_LASERBANK = 0x0007,
 	APP_NVS_ID_LAST_KNOWN_UTC_UNUSED = 0x0008, /* Reserved for OTA rollback. */
-	APP_NVS_ID_LAST_COMMAND = APP_SETTINGS_NVS_ID_LAST_COMMAND,
+	APP_NVS_ID_LAST_COMMAND_UNUSED = 0x0009, /* Command history is boot-local. */
 	APP_NVS_ID_ATTEN_CH0 = 0x0100,
 	APP_NVS_ID_ATTEN_FIT_CH0 = 0x0140,
 	APP_NVS_ID_ATTEN_OPEN_CH0 = 0x0180,
@@ -724,15 +724,6 @@ static int app_nvs_persist_route_loss_index(uint8_t index,
 	return app_nvs_write(route_loss_nvs_id(index), record, sizeof(*record));
 }
 
-static void app_nvs_persist_mems(const struct app_mems_settings *mems)
-{
-	if (mems == NULL) {
-		return;
-	}
-
-	(void)app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems));
-}
-
 static bool attenuator_channel_valid(const struct app_attenuator_channel_settings *atten)
 {
 	struct attenuator_model_coeffs physical[ATTENUATOR_PHYSICAL_COUNT];
@@ -1134,7 +1125,6 @@ static int delete_resettable_settings(bool keep_ip, bool keep_boot_count)
 		delete_setting_record(APP_NVS_ID_BOOT_COUNT, &first_rc);
 	}
 	delete_setting_record(APP_NVS_ID_LAST_KNOWN_UTC_UNUSED, &first_rc);
-	delete_setting_record(APP_NVS_ID_LAST_COMMAND, &first_rc);
 	if (!keep_ip) {
 		delete_setting_record(APP_NVS_ID_IP, &first_rc);
 	}
@@ -1731,19 +1721,17 @@ void app_settings_get_mems(struct app_mems_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
+int app_settings_update_mems(const struct app_mems_settings *mems, bool persist)
 {
 	if (mems == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.mems = *mems;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_mems(mems);
-	}
+	return persist ? app_nvs_write(APP_NVS_ID_MEMS, mems, sizeof(*mems)) : 0;
 }
 
 uint32_t app_settings_get_mqtt_revision(void)
@@ -1778,9 +1766,4 @@ void app_settings_increment_boot_count(void)
 	k_mutex_unlock(&g_settings.lock);
 
 	(void)app_nvs_write(APP_NVS_ID_BOOT_COUNT, &value, sizeof(value));
-}
-
-struct nvs_fs *app_settings_nvs_fs(void)
-{
-	return app_nvs_ready ? &app_nvs : NULL;
 }

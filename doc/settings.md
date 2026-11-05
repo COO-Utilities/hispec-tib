@@ -13,8 +13,8 @@ machinery when they need app-owned intent, calibration, or counters restored.
 
 Maiman modules own their EEPROM-backed driver parameters. Laser diode property
 tables in `laser_properties.h` are compile-time defaults and estimates.
-Command dispatch owns the separate last-command NVS record used for boot/status
-visibility.
+Command dispatch keeps last-command diagnostics in RAM for the current boot;
+command traffic does not write a history record to flash.
 
 ## Stored NVS Records
 
@@ -25,7 +25,6 @@ Current app NVS records include:
 - Boot count.
 - IP settings as one record.
 - MQTT broker host/port as one record.
-- Last command metadata as one command-dispatch record.
 - One attenuator coefficient record per logical channel, including `rms_db`
   for each physical FVOA. Coefficients and RMS are restored as one record.
 - One photodiode settings record per photodiode channel, including active dark
@@ -170,7 +169,10 @@ it does not update or report dark summaries. `persist:true` on `pd/dark` writes
 that dark settings snapshot to NVS.
 
 MEMS static state requests and route applications update the persisted
-per-switch intent once per command. Toggle and split commands persist the
+per-switch intent once per command, including all accepted steps of a partially
+failed route. A save error does not undo queued switch changes; it is returned
+unless an earlier route-step error takes precedence. NVS logs the storage error
+in either case. Identical records do not program flash. Toggle and split commands persist the
 commanded request metadata once per command. Runtime toggle/split progress is
 not written back to NVS, so reboot resume, when enabled by
 `CONFIG_RESUME_TOGGLE_STATE_AT_BOOT`, restarts the original commanded duration
@@ -192,6 +194,8 @@ records; there is no migration. Maiman EEPROM is separate and is not cleared.
 
 ## Intentionally Not Persisted
 
+- Last-command diagnostics are boot-local; retired NVS ID `0x0009` is reserved.
+  External command logs and watchdog boot telemetry provide cross-boot history.
 - Active routes are derived from current MEMS switch state and route tables.
   Applying a route persists the affected switch states as static switch intent,
   not as a named active-route object.

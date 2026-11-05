@@ -148,7 +148,9 @@ void mems_switch_init(struct mems_switch *sw,
  * satisfy the datasheet spacing limit. A zero value selects the fastest safe
  * cycle for the requested duty. @p force queues one same-state actuation pulse
  * for static profiles; repeated force requests coalesce until the pulse fires.
- * Successful public calls persist the user request as MEMS boot intent.
+ * Public calls save accepted user intent once after releasing the router mutex.
+ * May block on NVS; save errors are returned without undoing the queued change.
+ * Does not publish.
  */
 int mems_switch_set_state(struct mems_switch *sw, char state,
                           double duty_cycle, uint32_t off_in_s,
@@ -195,12 +197,14 @@ const struct mems_route *mems_router_get_route(const struct mems_router *router,
 /**
  * @brief Apply every switch step in one static route.
  *
- * This queues switch state changes through mems_switch_set_state() and can
- * sleep on the router mutex. The caller owns route lookup and command response
+ * This queues switch state changes and can sleep on the router mutex and NVS.
+ * The caller owns route lookup and command response
  * formatting. On a per-switch failure, @p failed_switch and @p failed_state
  * identify the route step that failed when non-NULL. @p force queues one
- * same-state actuation pulse for each route step. Successful switch steps
- * persist as per-switch static intent.
+ * same-state actuation pulse for each route step. Accepted steps are saved once
+ * as static intent, including a partial route before failure. No NVS I/O holds
+ * the router mutex. A save error is returned with no failed switch when all
+ * steps were accepted; otherwise the original step error wins. Does not publish.
  */
 int mems_router_apply_route(const struct mems_router *router,
                             const struct mems_route *route,
@@ -211,7 +215,7 @@ int mems_router_apply_route(const struct mems_router *router,
 /**
  * @brief Look up and apply a named input/output route.
  *
- * This can sleep on the router mutex through MEMS switch operations. It keeps
+ * This can sleep on the router mutex and NVS through route application. It keeps
  * command modules from duplicating route lookup before setting a simple static
  * route. @p force is passed through to every route step.
  */
@@ -261,8 +265,9 @@ int mems_split_read_channel_state(const struct mems_router *router,
  * explicit cycle is not stretched; output dwell ticks are solved within the
  * fixed PCB switch-boundary order. It can sleep on the router mutex through
  * MEMS switch operations and on settings while reading split transmissions. It
- * persists the split restart request, but does not publish warnings or parse
- * command payloads.
+ * saves the split restart request once after releasing the router mutex. NVS
+ * errors are returned without undoing queued changes. Does not publish warnings
+ * or parse command payloads.
  */
 int mems_split_apply_channel(const struct mems_router *router,
                              uint8_t channel_index,

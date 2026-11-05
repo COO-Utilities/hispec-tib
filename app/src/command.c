@@ -556,8 +556,6 @@ int command_runtime_init(struct k_work_q *blocking_work_q)
         .mqtt_msg_id = &mqtt_msg_id,
         .command_specs = command_specs,
         .command_spec_count = ARRAY_SIZE(command_specs),
-        .lastcommand_nvs = app_settings_nvs_fs(),
-        .lastcommand_nvs_id = APP_SETTINGS_NVS_ID_LAST_COMMAND,
         .reboot_prepare = command_prepare_reboot,
         .reboot_work_q = blocking_work_q,
     };

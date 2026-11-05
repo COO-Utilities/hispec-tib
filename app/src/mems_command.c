@@ -753,7 +753,7 @@ int splitting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
                      "{\"error\":\"failed setting %s\"}", failed_switch);
             return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
         }
-        return coo_cmd_error(out, cmd, "split route unavailable");
+        return coo_cmd_error(out, cmd, "split request or restart-intent save failed");
     }
 
     split_emit_quantization_warning(channel_index, &state);
@@ -817,10 +817,12 @@ int memsroute_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     if (rc != 0) {
         char payload[COO_CMD_PAYLOAD_MAX] = {0};
 
+        if (failed_switch == NULL) {
+            return coo_cmd_error(out, cmd, "route applied but restart intent was not saved");
+        }
         snprintk(payload, sizeof(payload),
                  "{\"error\":\"Setting switch %s to %c failed\"}",
-                 failed_switch == NULL ? "unknown" : failed_switch,
-                 failed_state == '\0' ? '?' : failed_state);
+                 failed_switch, failed_state);
         return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR, payload);
     }
 
@@ -1107,8 +1109,11 @@ int mems_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *out)
     if (rc == -ERANGE) {
         return coo_cmd_error(out, cmd, "MEMS setting out of range");
     }
-    if (rc != 0) {
+    if (rc == -EINVAL) {
         return coo_cmd_error(out, cmd, "Invalid MEMS setting");
+    }
+    if (rc != 0) {
+        return coo_cmd_error(out, cmd, "MEMS state applied but restart intent was not saved");
     }
 
     if (has_cycle_ms) {

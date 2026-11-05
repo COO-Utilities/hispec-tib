@@ -18,7 +18,6 @@
 #include <string.h>
 #include <strings.h>
 #include <zephyr/console/console.h>
-#include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/util.h>
@@ -30,15 +29,12 @@ LOG_MODULE_REGISTER(coo_command_dispatch, LOG_LEVEL_INF);
 
 #define SERIAL_POLL_CHAR_BUDGET 64
 #define COO_CMD_SERIAL_LINE_END "\n"
-#define COO_CMD_LASTCOMMAND_MAGIC 0x434c4344U /* "CLCD" */
-#define COO_CMD_LASTCOMMAND_VERSION 1U
 #define COO_CMD_REBOOT_DEFAULT_DELAY_MS 3000U
 
 static void serial_reset_line(struct coo_cmd_runtime *runtime);
 static int runtime_init_serial_console(struct coo_cmd_runtime *runtime);
 static void runtime_enqueue_response(struct coo_cmd_runtime *runtime,
 				     struct coo_cmd_response *out);
-static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime);
 static int runtime_execute_default(struct coo_cmd_runtime *runtime,
 				   const struct coo_cmd_request *cmd,
 				   struct coo_cmd_response *out);
@@ -46,14 +42,6 @@ static void reboot_work_handler(struct k_work *work);
 #if defined(CONFIG_COO_CMD_SERIAL_GUARD)
 static void serial_guard_expire_work_handler(struct k_work *work);
 #endif
-
-struct coo_cmd_lastcommand_nvs_record {
-	uint32_t magic;
-	uint16_t version;
-	uint16_t size;
-	int64_t time_ms;
-	struct coo_cmd_request request;
-};
 
 int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      const struct coo_cmd_runtime_config *cfg)
@@ -94,8 +82,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 				      COO_CMD_SERIAL_WRAP_COLUMN;
 	runtime->command_specs = cfg->command_specs;
 	runtime->command_spec_count = cfg->command_spec_count;
-	runtime->lastcommand_nvs = cfg->lastcommand_nvs;
-	runtime->lastcommand_nvs_id = cfg->lastcommand_nvs_id;
 	runtime->user_data = cfg->user_data;
 	runtime->reboot_delay_ms = cfg->reboot_delay_ms != 0U ?
 				   cfg->reboot_delay_ms :
@@ -110,7 +96,6 @@ int coo_cmd_runtime_configure(struct coo_cmd_runtime *runtime,
 			      serial_guard_expire_work_handler);
 	(void)atomic_clear(&runtime->serial_guard_active);
 #endif
-	runtime_load_lastcommand(runtime);
 
 	return runtime_init_serial_console(runtime);
 }
@@ -180,85 +165,17 @@ const char *coo_cmd_source_name(enum coo_cmd_source source)
 	}
 }
 
-static bool fixed_string_terminated(const char *text, size_t text_len)
-{
-	return text != NULL && memchr(text, '\0', text_len) != NULL;
-}
-
-static bool lastcommand_record_valid(const struct coo_cmd_lastcommand_nvs_record *record)
-{
-	const struct coo_cmd_request *request;
-
-	if (record == NULL ||
-	    record->magic != COO_CMD_LASTCOMMAND_MAGIC ||
-	    record->version != COO_CMD_LASTCOMMAND_VERSION ||
-	    record->size != sizeof(*record)) {
-		return false;
-	}
-
-	request = &record->request;
-	return request->payload_len < sizeof(request->payload) &&
-	       request->corr_len <= sizeof(request->correlation_data) &&
-	       fixed_string_terminated(request->key, sizeof(request->key)) &&
-	       fixed_string_terminated(request->session_id, sizeof(request->session_id)) &&
-	       fixed_string_terminated(request->response_topic, sizeof(request->response_topic)) &&
-	       fixed_string_terminated(request->payload, sizeof(request->payload));
-}
-
-static void runtime_load_lastcommand(struct coo_cmd_runtime *runtime)
-{
-	struct coo_cmd_lastcommand_nvs_record record;
-	int rc;
-
-	if (runtime == NULL || runtime->lastcommand_nvs == NULL ||
-	    runtime->lastcommand_nvs_id == 0U) {
-		return;
-	}
-
-	rc = nvs_read(runtime->lastcommand_nvs, runtime->lastcommand_nvs_id,
-		      &record, sizeof(record));
-	if (rc == -ENOENT) {
-		return;
-	}
-	if (rc != (int)sizeof(record) || !lastcommand_record_valid(&record)) {
-		LOG_WRN("Ignoring invalid persisted command lastcommand (%d)", rc);
-		return;
-	}
-
-	runtime->lastcommand.valid = true;
-	runtime->lastcommand.time_ms = record.time_ms;
-	runtime->lastcommand.request = record.request;
-}
-
+/* Boot-local diagnostics only: command traffic must not consume flash endurance. */
 static void runtime_record_lastcommand(struct coo_cmd_runtime *runtime,
 				       const struct coo_cmd_request *cmd)
 {
-	struct coo_cmd_lastcommand_nvs_record record = {
-		.magic = COO_CMD_LASTCOMMAND_MAGIC,
-		.version = COO_CMD_LASTCOMMAND_VERSION,
-		.size = sizeof(record),
-	};
-	int rc;
-
 	if (runtime == NULL || cmd == NULL || cmd->msg_type != COO_CMD_EFFECT) {
 		return;
 	}
 
-	record.time_ms = k_uptime_get();
-	record.request = *cmd;
 	runtime->lastcommand.valid = true;
-	runtime->lastcommand.time_ms = record.time_ms;
-	runtime->lastcommand.request = record.request;
-
-	if (runtime->lastcommand_nvs == NULL || runtime->lastcommand_nvs_id == 0U) {
-		return;
-	}
-
-	rc = nvs_write(runtime->lastcommand_nvs, runtime->lastcommand_nvs_id,
-		       &record, sizeof(record));
-	if (rc < 0) {
-		LOG_WRN("NVS lastcommand write failed (%d)", rc);
-	}
+	runtime->lastcommand.time_ms = k_uptime_get();
+	runtime->lastcommand.request = *cmd;
 }
 
 bool coo_cmd_runtime_get_lastcommand(const struct coo_cmd_runtime *runtime,

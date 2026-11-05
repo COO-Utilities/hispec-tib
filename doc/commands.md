@@ -366,7 +366,9 @@ while serial guard is active and attenuator DAC-range clamping.
 - **Notes:** `ip`, `lasers`, and `attens` are omitted unless requested.
   Laser `tec_on_s` and `off_in_s` are integer seconds while active and `null`
   when inactive or unavailable. `ready` has the public-start blocker meaning documented under `laser`.
-  `lastcmd` is restored from command-dispatch NVS storage when available.
+  `lastcmd` reports the latest effect request during this boot and is never
+  written to flash. Before the first effect it is
+  `{"name":"","src":"unknown","t_ms":0}`. Watchdog boot telemetry is independent.
 
 
 (temps)=
@@ -730,7 +732,10 @@ See [firmware updates](ota.md) for network and USB installation.
   A destination with no currently active source reports `["no source"]`. Active
   routes are read from current switch state and are not persisted as named
   route objects. Applying a route persists the resulting per-switch static
-  intent. `force:true` queues one static actuation pulse for every switch step
+  intent in one NVS save for the whole route. If a step fails, accepted earlier
+  steps are still saved once. Save failures return an error without undoing
+  queued switch changes. Identical saved intent does not program flash.
+  `force:true` queues one static actuation pulse for every switch step
   in the route, including steps that already report the requested state.
 
 (route-loss)=

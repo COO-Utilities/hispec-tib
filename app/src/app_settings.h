@@ -21,10 +21,6 @@
 #include "laser_properties.h"
 #include "laserbank_tempcontrol.h"
 
-#define APP_SETTINGS_NVS_ID_LAST_COMMAND 0x0009U
-
-struct nvs_fs;
-
 struct app_ip_settings {
 	bool try_dhcp_first;
 	bool prefer_dhcp_dns;
@@ -345,16 +341,16 @@ int app_settings_reset_route_loss(const char *route, const char *laser, bool per
 
 /** @brief Copy MEMS user intent and optional restart metadata. */
 void app_settings_get_mems(struct app_mems_settings *out);
-/** @brief Replace MEMS user intent and optionally persist the MEMS NVS record. */
-void app_settings_update_mems(const struct app_mems_settings *mems, bool persist);
+/** @brief Replace MEMS intent, optionally saving once through NVS.
+ * May block on flash I/O; returns save errors without undoing the RAM update.
+ * No hardware actuation or publishing. Identical records do not program flash.
+ */
+int app_settings_update_mems(const struct app_mems_settings *mems, bool persist);
 /** @brief Monotonic runtime counter used by main.c to reconnect MQTT. */
 uint32_t app_settings_get_mqtt_revision(void);
 /** @brief Get persisted boot count. */
 uint32_t app_settings_get_boot_count(void);
 /** @brief Increment and persist boot count. */
 void app_settings_increment_boot_count(void);
-
-/** @brief Return app NVS storage for command-dispatch owned records, or NULL if unavailable. */
-struct nvs_fs *app_settings_nvs_fs(void);
 
 #endif /* HISPEC_APP_SETTINGS_H */
