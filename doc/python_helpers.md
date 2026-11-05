@@ -162,6 +162,9 @@ connecting; a real update writes firmware and reboots the target. The default
 leaves the trial unconfirmed and prints `pcb.confirm_image(hash)`, the MQTT
 equivalent and remaining time. `--auto-confirm` explicitly opts into confirmation
 and prints the checks that justify it before accepting the image.
+The updater queries only `ip` and `ota`; firmware owns hardware entry checks.
+It can therefore install firmware that changes the operating-status schema;
+the running-image hash change establishes the new boot.
 
 ## Throughput collection and plotting
 
