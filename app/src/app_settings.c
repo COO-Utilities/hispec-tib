@@ -554,12 +554,12 @@ static void app_nvs_persist_board_type(const char *board_type)
 	(void)app_nvs_write(APP_NVS_ID_BOARD_TYPE, value, sizeof(value));
 }
 
-static void app_nvs_persist_ip(const struct app_ip_settings *ip)
+static int app_nvs_persist_ip(const struct app_ip_settings *ip)
 {
 	struct app_nvs_ip_settings stored = {0};
 
 	if (ip == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	stored.try_dhcp_first = ip->try_dhcp_first ? 1U : 0U;
@@ -570,39 +570,39 @@ static void app_nvs_persist_ip(const struct app_ip_settings *ip)
 	str_set(stored.gateway, sizeof(stored.gateway), ip->gateway);
 	str_set(stored.dns, sizeof(stored.dns), ip->dns);
 	str_set(stored.ntp, sizeof(stored.ntp), ip->ntp);
-	(void)app_nvs_write(APP_NVS_ID_IP, &stored, sizeof(stored));
+	return app_nvs_write(APP_NVS_ID_IP, &stored, sizeof(stored));
 }
 
-static void app_nvs_persist_mqtt(const struct app_mqtt_settings *mqtt)
+static int app_nvs_persist_mqtt(const struct app_mqtt_settings *mqtt)
 {
 	struct app_mqtt_settings stored = {0};
 
 	if (mqtt == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	str_set(stored.broker_host, sizeof(stored.broker_host), mqtt->broker_host);
 	stored.broker_port = mqtt->broker_port;
-	(void)app_nvs_write(APP_NVS_ID_MQTT, &stored, sizeof(stored));
+	return app_nvs_write(APP_NVS_ID_MQTT, &stored, sizeof(stored));
 }
 
-static void app_nvs_persist_attenuator_channel(uint8_t channel,
+static int app_nvs_persist_attenuator_channel(uint8_t channel,
 					       const struct app_attenuator_channel_settings *atten)
 {
 	if (atten == NULL || channel >= APP_ATTENUATOR_CHANNEL_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
-	(void)app_nvs_write(attenuator_nvs_id(channel), atten, sizeof(*atten));
+	return app_nvs_write(attenuator_nvs_id(channel), atten, sizeof(*atten));
 }
 
-static void app_nvs_persist_pd_channel(uint8_t channel,
+static int app_nvs_persist_pd_channel(uint8_t channel,
 				       const struct app_pd_channel_settings *pd)
 {
 	struct app_nvs_pd_channel stored = {0};
 
 	if (pd == NULL || channel >= APP_PD_CHANNEL_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
 	stored.dark = pd->dark;
@@ -613,7 +613,7 @@ static void app_nvs_persist_pd_channel(uint8_t channel,
 	stored.transimpedance_v_per_a = pd->transimpedance_v_per_a;
 	stored.power = (uint8_t)pd->power;
 	stored.autooff_s = pd->autooff_s;
-	(void)app_nvs_write(pd_nvs_id(channel), &stored, sizeof(stored));
+	return app_nvs_write(pd_nvs_id(channel), &stored, sizeof(stored));
 }
 
 static void laser_policy_from_settings(struct app_nvs_laser_policy *stored,
@@ -700,16 +700,16 @@ static void app_nvs_persist_laser_total(uint8_t channel, double total_emitting_s
 			    sizeof(total_emitting_s));
 }
 
-static void app_nvs_persist_laserbank(const struct app_laserbank_settings *laserbank)
+static int app_nvs_persist_laserbank(const struct app_laserbank_settings *laserbank)
 {
 	uint32_t mode;
 
 	if (laserbank == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	mode = (uint32_t)laserbank->heater_mode;
-	(void)app_nvs_write(APP_NVS_ID_LASERBANK, &mode, sizeof(mode));
+	return app_nvs_write(APP_NVS_ID_LASERBANK, &mode, sizeof(mode));
 }
 
 /* Persist the already-applied route override in its assigned slot. May block
@@ -1306,19 +1306,17 @@ void app_settings_get_ip(struct app_ip_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_ip(const struct app_ip_settings *ip, bool persist)
+int app_settings_update_ip(const struct app_ip_settings *ip, bool persist)
 {
 	if (ip == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.ip = *ip;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_ip(ip);
-	}
+	return persist ? app_nvs_persist_ip(ip) : 0;
 }
 
 void app_settings_get_mqtt(struct app_mqtt_settings *out)
@@ -1332,10 +1330,10 @@ void app_settings_get_mqtt(struct app_mqtt_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist)
+int app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist)
 {
 	if (mqtt == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
@@ -1343,9 +1341,7 @@ void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist
 	g_settings.snapshot.mqtt_revision++;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_mqtt(mqtt);
-	}
+	return persist ? app_nvs_persist_mqtt(mqtt) : 0;
 }
 
 void app_settings_get_attenuator_open(uint8_t channel, struct app_attenuator_open_settings *out)
@@ -1401,21 +1397,19 @@ void app_settings_get_attenuator(struct app_attenuator_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_attenuator_channel(uint8_t channel,
+int app_settings_update_attenuator_channel(uint8_t channel,
 					    const struct app_attenuator_channel_settings *atten,
 					    bool persist)
 {
 	if (atten == NULL || channel >= APP_ATTENUATOR_CHANNEL_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.attenuator.channel[channel] = *atten;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_attenuator_channel(channel, atten);
-	}
+	return persist ? app_nvs_persist_attenuator_channel(channel, atten) : 0;
 }
 
 bool app_settings_photodiode_power_at_boot(uint8_t channel)
@@ -1471,37 +1465,19 @@ bool app_settings_try_get_photodiode(struct app_photodiode_settings *out)
 	return true;
 }
 
-void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist)
-{
-	if (pd == NULL) {
-		return;
-	}
-
-	k_mutex_lock(&g_settings.lock, K_FOREVER);
-	g_settings.snapshot.photodiode = *pd;
-	k_mutex_unlock(&g_settings.lock);
-
-	if (persist) {
-		app_nvs_persist_pd_channel(0U, &pd->channel[0]);
-		app_nvs_persist_pd_channel(1U, &pd->channel[1]);
-	}
-}
-
-void app_settings_update_photodiode_channel(uint8_t channel,
+int app_settings_update_photodiode_channel(uint8_t channel,
 					    const struct app_pd_channel_settings *pd,
 					    bool persist)
 {
 	if (pd == NULL || channel >= APP_PD_CHANNEL_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.photodiode.channel[channel] = *pd;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_pd_channel(channel, pd);
-	}
+	return persist ? app_nvs_persist_pd_channel(channel, pd) : 0;
 }
 
 void app_settings_get_laserbank(struct app_laserbank_settings *out)
@@ -1515,20 +1491,18 @@ void app_settings_get_laserbank(struct app_laserbank_settings *out)
 	k_mutex_unlock(&g_settings.lock);
 }
 
-void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
+int app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist)
 {
 	if (laserbank == NULL) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&g_settings.lock, K_FOREVER);
 	g_settings.snapshot.laserbank = *laserbank;
 	k_mutex_unlock(&g_settings.lock);
 
-	if (persist) {
-		app_nvs_persist_laserbank(laserbank);
-	}
+	return persist ? app_nvs_persist_laserbank(laserbank) : 0;
 }
 
 int app_settings_get_laser_channel(uint8_t channel,

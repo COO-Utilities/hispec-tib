@@ -1870,9 +1870,12 @@ static int fit_one_physical(uint8_t physical,
 /** Apply accepted pair fits and their final residual RMS together.
  * May block on DAC I/O and optional NVS persistence. Rejected fits leave both
  * the previous coefficients and their uncertainty untouched; no extra sweep.
+ * Report RAM installation separately from saving: a flash failure retains the
+ * accepted fit and records, and emits a best-effort warning naming both saves.
  */
-static int apply_fit_to_settings_locked(void)
+static int apply_fit_to_settings_locked(bool *applied)
 {
+	*applied = false;
 	struct attenuator snapshot;
 	attenuator_snapshot(&attenuators[cal.attenuator_index], &snapshot);
 	const struct attenuator *atten = &snapshot;
@@ -1928,8 +1931,22 @@ static int apply_fit_to_settings_locked(void)
 	       sizeof(stored.physical[1].correction_coeff));
 	struct app_attenuator_open_settings open = {.mv = {cal.fit[0].open_mv, cal.fit[1].open_mv}};
 	(void)attenuator_set_open_voltages(&attenuators[cal.attenuator_index], open.mv);
-	app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);
-	return app_settings_update_attenuator_open(cal.attenuator_index, &open, cal.persistent);
+	int coeff_rc = app_settings_update_attenuator_channel(cal.attenuator_index, &stored, cal.persistent);
+	int open_rc = app_settings_update_attenuator_open(cal.attenuator_index, &open, cal.persistent);
+	*applied = true;
+	if (coeff_rc != 0 || open_rc != 0) {
+		char context[80];
+		snprintk(context, sizeof(context), "attenuator=%u coefficients_rc=%d opens_rc=%d",
+			 cal.attenuator_index, coeff_rc, open_rc);
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "atten_cal_persist_failed",
+			.msg = "accepted attenuator fit applied in RAM; saving failed",
+			.context = context,
+		});
+	}
+	return coeff_rc != 0 ? coeff_rc : open_rc;
 }
 
 /** Fit immutable records on the existing throughput thread, without cal_lock.
@@ -1976,11 +1993,12 @@ static __noinline void auto_fit(void)
 		/* Cancellation and installation serialize here. A later stop cannot
 		 * undo coefficients that have already been installed.
 		 */
-		int rc = apply_fit_to_settings_locked();
+		bool applied;
+		int rc = apply_fit_to_settings_locked(&applied);
 
 		cal.last_error = rc;
-		cal.state = rc == 0 ? ATTEN_CAL_STATE_COMPLETE : ATTEN_CAL_STATE_ERROR;
-		atten_cal_emit_simple(rc == 0 ? "complete" : "error");
+		cal.state = applied ? ATTEN_CAL_STATE_COMPLETE : ATTEN_CAL_STATE_ERROR;
+		atten_cal_emit_simple(applied ? "complete" : "error");
 	}
 	cal.phase = ATTEN_CAL_PHASE_NONE;
 	publish_status_locked(NULL);

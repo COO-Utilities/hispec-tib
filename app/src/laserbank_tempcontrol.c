@@ -133,9 +133,10 @@ int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 
 	app_settings_get_laserbank(&settings);
 	settings.heater_mode = mode;
-	app_settings_update_laserbank(&settings, persist);
+	int rc = app_settings_update_laserbank(&settings, persist);
+	/* RAM intent still takes effect when saving it fails. */
 	(void)tempcontrol_reschedule(K_NO_WAIT);
-	return 0;
+	return rc;
 }
 
 static void summarize_temperature_state(int64_t now_ms)

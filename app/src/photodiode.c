@@ -797,7 +797,9 @@ static void pd_update_lowest_dark(struct app_pd_channel_settings *ch,
 	}
 }
 
-static void pd_commit_dark_result(enum photodiode_channel channel,
+/* Install a measured/forced dark in RAM, then optionally save it. Flash may
+ * block; an error leaves the new dark available to readers. No publishing. */
+static int pd_commit_dark_result(enum photodiode_channel channel,
 				  const struct app_pd_dark_result *dark,
 				  bool persist,
 				  bool reset_lowest,
@@ -806,14 +808,14 @@ static void pd_commit_dark_result(enum photodiode_channel channel,
 	struct app_photodiode_settings settings;
 
 	if (dark == NULL || channel < 0 || channel >= PHOTODIODE_CHANNEL_COUNT) {
-		return;
+		return -EINVAL;
 	}
 
 	app_settings_get_photodiode(&settings);
 	settings.channel[channel].dark = *dark;
 	if (!forced)
 		pd_update_lowest_dark(&settings.channel[channel], reset_lowest);
-	app_settings_update_photodiode_channel((uint8_t)channel,
+	return app_settings_update_photodiode_channel((uint8_t)channel,
 					       &settings.channel[channel],
 					       persist);
 }
@@ -1025,7 +1027,19 @@ static void pd_update_channel(enum photodiode_channel channel, int rc, int16_t r
 	k_mutex_unlock(&pd_runtime_lock);
 
 	if (commit_dark) {
-		pd_commit_dark_result(channel, &completed_dark, dark_persist, dark_reset_lowest, false);
+		int save_rc = pd_commit_dark_result(channel, &completed_dark, dark_persist, dark_reset_lowest, false);
+		if (save_rc != 0) {
+			char context[64];
+			snprintk(context, sizeof(context), "channel=%s rc=%d",
+				 photodiode_channel_names[channel], save_rc);
+			app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+				.type = COO_CMD_RUNTIME_EMIT_WARNING,
+				.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+				.code = "photodiode_dark_persist_failed",
+				.msg = "measured dark applied in RAM; saving failed",
+				.context = context,
+			});
+		}
 	} else if (dark_failed) {
 		pd_emit_dark_failed_warning(channel);
 	}
@@ -1229,8 +1243,7 @@ int photodiode_force_dark(enum photodiode_channel channel,
 		.min_mv = mean_mv,
 		.max_mv = mean_mv,
 	};
-	pd_commit_dark_result(channel, &dark, persist, reset_lowest, true);
-	return 0;
+	return pd_commit_dark_result(channel, &dark, persist, reset_lowest, true);
 }
 
 int photodiode_reset_lowest_dark(enum photodiode_channel channel,
@@ -1245,10 +1258,9 @@ int photodiode_reset_lowest_dark(enum photodiode_channel channel,
 	app_settings_get_photodiode(&settings);
 	if (settings.channel[channel].dark.duration_ms == 0U) return -EINVAL;
 	pd_update_lowest_dark(&settings.channel[channel], true);
-	app_settings_update_photodiode_channel((uint8_t)channel,
+	return app_settings_update_photodiode_channel((uint8_t)channel,
 					       &settings.channel[channel],
 					       persist);
-	return 0;
 }
 
 void photodiode_thread(void *p1, void *p2, void *p3)

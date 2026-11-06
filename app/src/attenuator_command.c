@@ -646,9 +646,13 @@ int atten_setting_set(const struct coo_cmd_request *cmd, struct coo_cmd_response
 			return coo_cmd_reply(out, cmd, COO_CMD_RESP_ERROR,
 						  "{\"error\":\"Failed to apply coefficients\"}");
 		}
-		app_settings_update_attenuator_channel(attenuator_index,
+		rc = app_settings_update_attenuator_channel(attenuator_index,
 						       &stored_coeffs,
 						       persist);
+		if (rc != 0) {
+			throughput_monitor_note_attenuator_changed(attenuator_index);
+			return coo_cmd_error_rc(out, cmd, "attenuator coefficients applied; persistence failed", rc);
+		}
 		break;
 	}
 	case ATTENUATOR_SETTING_COMPACT:

@@ -854,12 +854,15 @@ static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
 
     if (changed) {
-        app_settings_update_ip(&ip_cfg, persist);
+        int save_rc = app_settings_update_ip(&ip_cfg, persist);
 #if defined(CONFIG_SNTP)
         if (ntp_changed) {
             sntp_sync_schedule_now();
         }
 #endif
+        if (save_rc != 0) {
+            return coo_cmd_error_rc(out, cmd, "IP settings applied; persistence failed", save_rc);
+        }
     }
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
@@ -936,7 +939,10 @@ static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
         return coo_cmd_error(out, cmd, "invalid persist");
     }
 
-    app_settings_update_mqtt(&mqtt_cfg, persist);
+    rc = app_settings_update_mqtt(&mqtt_cfg, persist);
+    if (rc != 0) {
+        return coo_cmd_error_rc(out, cmd, "MQTT settings applied; persistence failed", rc);
+    }
     return coo_cmd_ok(out, cmd);
 }
 

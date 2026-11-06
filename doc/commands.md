@@ -58,6 +58,19 @@ the firmware's allowed values or argument rules.
   Error responses may include extra diagnostic fields such as `rc` or
   `context` when the command documents them.
 
+- Persistence is separate from applying runtime settings. IP, MQTT, laser,
+  attenuator, photodiode and heater updates can apply in RAM or hardware before
+  an NVS write fails. Such failures return an error with `rc`; they do not roll
+  back applied changes. Separate NVS records may save independently. Query the
+  endpoint after a failure and retry saving the intended configuration.
+  Asynchronous measured-dark save failures emit `photodiode_dark_persist_failed`
+  warnings while retaining the measured dark in RAM. Attenuator calibration
+  retains its accepted fit and raw records when saving fails: status is
+  `complete` with a nonzero `error`, and `atten_cal_persist_failed` identifies
+  the coefficient and open-setting write results. An automatic MQTT broker
+  revert that cannot save emits `mqtt_revert_persist_failed`; the prior broker
+  remains selected in RAM.
+
 - Endpoint sections use request-shape wording:
   - **Request with no payload**
   - **Request with payload**

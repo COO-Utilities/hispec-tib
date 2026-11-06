@@ -53,7 +53,8 @@ void laserbank_tempcontrol_get_status(struct laserbank_tempcontrol_status *out);
 
 /** Set heater mode. Auto runs warmup; overrides force the relay before the
  * existing opportunistic observation of an already-powered bank. Overrides do
- * not power the bank. May reschedule the same work and persist when requested. */
+ * not power the bank. Reschedules the same work even if an optional blocking
+ * NVS save fails; returns the save error without rolling back RAM intent. */
 int laserbank_tempcontrol_set_heater_mode(enum laserbank_heater_mode mode,
 					  bool persist);
 
