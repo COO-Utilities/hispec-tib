@@ -55,15 +55,21 @@ the firmware's allowed values or argument rules.
   {"status":"ok"}
   ```
 
-- Successful requests with response data return only the response data. They do
-  not include a top-level transport `status` key.
+- Most successful requests with response data return only that data. Reboot is
+  an explicit exception: it includes `status:"ok"` and `rebooting_in_ms`.
 
-- Failures are indicated by the presence of an `error` key:
-  ```json
-  {"error":"<error message>"}
+- Ordinary command failures have a nonempty string `error`, for example:
+  ```text
+  {
+    "error": "<error message>",
+    "rc": -5  #optional; included when a numeric failure code is available
+  }
   ```
-  Error responses may include extra diagnostic fields such as `rc` or
-  `context` when the command documents them.
+  Extra diagnostics such as `rc` are optional. Calibration status embeds
+  outcome fields even in a successful status query: attenuator `error:0` and
+  laser `error:null` mean no reported error. A nonzero/non-null calibration
+  error describes that run or fit; use its state and per-result flags to assess
+  acquisition, application and persistence. Do not treat key presence as failure.
 
 - Persistence is separate from applying runtime settings. IP, MQTT, laser,
   attenuator, photodiode and heater updates can apply in RAM or hardware before
@@ -160,7 +166,7 @@ Payload rules:
 - A payload beginning with `{` is copied unchanged into `Command.payload`; it is
   not parsed and rebuilt by the serial layer.
 - Payloads containing `=` use `serial_payload_from_key_values()`, for example
-  `state=A off_in_s=30`.
+  `state=A off_in_s=30`. These tokens are scalar values without embedded spaces.
 - Known compact forms use `serial_payload_from_shorthand()`, for example
   `serialguard off`, `serialguard 60`, or `mems/yj_laser_cal A 0.5 30`.
 - Handlers parse and validate the normalized JSON exactly as they do for MQTT.
@@ -183,8 +189,18 @@ Any non-empty serial command refreshes serial override when
 rejected before dispatch and receive an error response when MQTT is available.
 The override expires after `serialguard_s` seconds without another serial
 command; `serialguard off`, `serialguard 0`, or `serialguard seconds=0`
-disables the override. JSON payloads are accepted for MQTT parity, but should
-not be needed for normal serial operation.
+disables the override. Scalar `key=value` covers basic operations. Nested
+objects, arrays, and strings containing spaces require a full JSON payload;
+`settings={...}` and `dac1={...}` are not supported shorthand.
+
+The normal build has `CONFIG_CONSOLE_INPUT_MAX_LINE_LEN=128`: at most **127
+characters for the complete serial line**, including key and spaces. The
+receive ring is also 128 bytes; avoid unattended bursts. `COO_CMD_PAYLOAD_MAX`
+is 2048, allowing at most **2047 JSON payload bytes** after normalization; the
+command key buffer is 48 bytes and the topic buffer is 96 bytes (each includes
+the terminating NUL). Correlation data is at most 16 bytes. Complete nested
+settings usually require MQTT. A long JSON example in this document is not an
+instruction to paste it into the smaller serial console.
 
 ---
 
@@ -244,7 +260,10 @@ suffix form. After successful confirmation the operator must select `auto`.
 - [`atten/<laser>/settings`](#atten-settings)
 - [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
+- [`pd/dark/<yj|hk>`](#pd-dark)
 - [`pd/settings/<yj|hk>`](#pd-settings)
+- [`laser/calibrate/records[/<chunk>]`](#laser-calibrate-records)
+- [`atten/calibrate/records/<dac1|dac2>[/<chunk>]`](#atten-calibrate-records)
 - [`measure_throughput`](#measure-throughput)
 - Telemetry: `yj_tput`, `hk_tput`
 - Warnings: [`dt/<device>/warning`](#warning-publication)
@@ -300,6 +319,8 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (help)=
 ### `help`
+- **Topic:** `cmd/<device>/req/help`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **Serial no payload -> full command help.**
   - Prints directly from command dispatch instead of using the inbound or
     outbound queues.
@@ -322,6 +343,8 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (help-options)=
 ### `help/options`
+- **Topic:** `cmd/<device>/req/help/options`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> static name catalog for the selected board profile:**
   ```json
   {
@@ -339,6 +362,8 @@ while serial guard is active and attenuator DAC-range clamping.
 
 (status)=
 ### `status`
+- **Topic:** `cmd/<device>/req/status`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 
 `{}` (or no payload) reports the board's operating state, outputs, detector levels
 and active work. It reads cached state: no device transactions, ADC windows,
@@ -358,6 +383,15 @@ automatically:
 | `{"view":"emission","channel":"hk"}` | TIB | Three HK lasers, their atten pairs and routed output power |
 | `{"view":"mems"}` | TIB | All eight MEMS switches |
 | `{"view":"system"}` | All | Network configuration, command queues, OTA and pending actions |
+
+Annotated selector example:
+
+```text
+{
+  "view": "emission",  #optional; omit with channel for the default operating view
+  "channel": "yj"  #optional; required for emission; forbidden in other views
+}
+```
 
 `channel` is required for `emission` and rejected elsewhere. AS and CAL already
 include all their MEMS in the default reply, so they reject the `mems` view.
@@ -441,13 +475,30 @@ cause; it does not invent a pre-reset software diagnosis.
 
 **Emission:** each of the selected channel's three entries has this shape:
 
-```json
+```text
 {
-  "output_state":"running","i_mA":100,"power_mw":10,"tuned_nm":1028.01,
-  "off_in_s":240,
-  "atten":{"mv1":1800,"mv2":1900,"open1_mv":1200,"open2_mv":1250,
-           "loss1_db":20,"loss2_db":30,"loss_db":50,"linear":0.00001,"flux_nw":100},
-  "routes":{"yj_ao":{"loss_db":1,"flux_nw":79.4328}}
+  "output_state": "running",
+  "i_mA": 100,
+  "power_mw": 10,
+  "tuned_nm": 1028.01,
+  "off_in_s": 240,  #optional; present while the laser has an active countdown
+  "atten": {
+    "mv1": 1800,
+    "mv2": 1900,
+    "open1_mv": 1200,
+    "open2_mv": 1250,
+    "loss1_db": 20,
+    "loss2_db": 30,
+    "loss_db": 50,
+    "linear": 1e-05,
+    "flux_nw": 100
+  },
+  "routes": {
+    "yj_ao": {
+      "loss_db": 1,
+      "flux_nw": 79.4328
+    }
+  }
 }
 ```
 
@@ -470,12 +521,31 @@ busy, the entire `mems` value is `null`.
 
 **AS default:** common fields, `ambient_c`, `activity`, `mems`, plus:
 
-```json
+```text
 {
-  "outputs":{"yj_cal":{"from":[]},"yj_split":{"from":["yj_calin"]},
-             "hk_cal":{"from":[]},"hk_split":{"from":["hk_calin"]}},
-  "split":{"yj":{"ratio_out":[0.2,0.3,0.5],"off_in_s":240},
-           "hk":{"ratio_out":[1,0,0]}}
+  "outputs": {
+    "yj_cal": {
+      "from": []
+    },
+    "yj_split": {
+      "from": ["yj_calin"]
+    },
+    "hk_cal": {
+      "from": []
+    },
+    "hk_split": {
+      "from": ["hk_calin"]
+    }
+  },
+  "split": {
+    "yj": {
+      "ratio_out": [0.2, 0.3, 0.5],
+      "off_in_s": 240  #optional; present while the channel is switching
+    },
+    "hk": {
+      "ratio_out": [1, 0, 0]
+    }
+  }
 }
 ```
 
@@ -490,16 +560,53 @@ connected source names. `atten.lfc` contains `mv1`, `mv2`, `open1_mv`, `open2_mv
 `loss1_db`, `loss2_db`, `loss_db`, and `linear`. No external-source power is
 invented. AS/CAL have no emission view.
 
-**System:** common fields and:
+**System:** common fields and the following fields. Optional examples illustrate
+independent conditions; they need not occur together:
 
-```json
+```text
 {
-  "ip":{"src":"dhcp","active":{"ip":"192.0.2.10","subnet":"255.255.255.0","gateway":"192.0.2.1"}},
-  "mqtt":{"broker":"broker.example:1883"},
-  "ntp":{"src":"dhcp","server":"192.0.2.2","last_sync_utc_ms":1793900000000},
-  "lastcmd":{"name":"laser","src":"mqtt","t_ms":115000},
-  "queues":{"inbound":0,"replies":0,"best_effort":0},
-  "ota":{"image":"permanent","image_hash":"<64 hex characters>"}
+  "ip": {
+    "src": "dhcp",
+    "active": {
+      "ip": "192.0.2.10",
+      "subnet": "255.255.255.0",
+      "gateway": "192.0.2.1"
+    }
+  },
+  "mqtt": {
+    "broker": "broker.example:1883"
+  },
+  "ntp": {  #optional; present when SNTP is compiled
+    "src": "dhcp",
+    "server": "192.0.2.2",
+    "last_sync_utc_ms": 1793900000000
+  },
+  "lastcmd": {
+    "name": "laser",
+    "src": "mqtt",
+    "t_ms": 115000
+  },
+  "queues": {
+    "inbound": 0,
+    "replies": 0,
+    "best_effort": 0
+  },
+  "ota": {
+    "image": "permanent",
+    "image_hash": "<64 hex characters>",
+    "enabled": true,  #optional; present only while the upload window is enabled
+    "pending": true,  #optional; present only with a pending image
+    "remaining_s": 120,  #optional; present only while nonzero
+    "trial_remaining_s": 240  #optional; present only during an unconfirmed trial
+  },
+  "dropped_best_effort": 1,  #optional; present only when nonzero
+  "dropped_replies": 1,  #optional; present only when nonzero
+  "publish_failures": 1,  #optional; present only when nonzero
+  "serial_guard_s": 12,  #optional; present while serial guard is active
+  "reboot_in_s": 3,  #optional; present while reboot is pending
+  "errors": [  #optional; present only when problems are reported
+    "NTP synchronization failed"
+  ]
 }
 ```
 
@@ -521,12 +628,14 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
 
 (temps)=
 ### `temps`
+- **Topic:** `cmd/<device>/req/temps`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> temperature status:**
-  ```json
+  ```text
   {
     "ambient_c": 0.0,
-    "laserbank_c": 0.0,
-    "lasers": {
+    "laserbank_c": 0.0,  #optional; TIB only
+    "lasers": {  #optional; TIB only
       "<lasername>": 0.0
     }
   }
@@ -544,6 +653,8 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
 
 (time)=
 ### `time`
+- **Topic:** `cmd/<device>/req/time`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> firmware time:**
   ```json
   {
@@ -571,8 +682,13 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
   host issue/receipt bracket by more than the tolerance; round-trip latency is
   therefore not mistaken for clock error. `None` disables this host warning.
 
+Successful sets return `{"status":"ok"}`. The clock is runtime state; SNTP
+may subsequently update it and no clock value is saved in app settings.
+
 (ip)=
 ### `ip`
+- **Topic:** `cmd/<device>/req/ip`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> IP configuration:**
   ```json
   {
@@ -598,17 +714,17 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
   }
   ```
 - **Payload:** update IP configuration.
-  ```json
+  ```text
   {
-    "ip": "<ip>",
-    "ntp": "<ip>",
-    "dns": "<ip>",
-    "subnet": "<subnet>",
-    "gateway": "<gateway>",
-    "try_dhcp_first": true,
-    "prefer_dhcpntp": true,
-    "prefer_dhcpdns": true,
-    "persist": true
+    "ip": "<ip>",  #optional; retain current value
+    "ntp": "<ip>",  #optional; retain current value
+    "dns": "<ip>",  #optional; retain current value
+    "subnet": "<subnet>",  #optional; retain current value
+    "gateway": "<gateway>",  #optional; retain current value
+    "try_dhcp_first": true,  #optional; retain current value
+    "prefer_dhcpntp": true,  #optional; retain current value
+    "prefer_dhcpdns": true,  #optional; retain current value
+    "persist": true  #optional; default false
   }
   ```
 
@@ -628,17 +744,24 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
     require reboot.
   - source names are: `unknown`, `compiled`, `static`, `fallback`, `dhcp`.
 
+Successful sets return `{"status":"ok"}`. Unsupported compiled features
+return per-feature `dhcp`, `dns`, `ntp` values of `"ok"` or `"unsupported"` after
+applying supported changes. `persist` defaults false; at least one IP setting
+is required. A settings-save failure returns an error after runtime application.
+
 (mqtt)=
 ### `mqtt`
+- **Topic:** `cmd/<device>/req/mqtt`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> MQTT broker configuration:**
   ```json
   {"broker":"<value>:<port>","dns_supported":true}
   ```
 - **Payload:** update MQTT broker configuration.
-  ```json
+  ```text
   {
     "broker": "<ipv4-or-hostname>:<port>",
-    "persist": true
+    "persist": true  #optional; default false
   }
   ```
 
@@ -651,8 +774,15 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
     behavior. If the new broker cannot connect, firmware restores the prior
     broker and emits a best-effort `mqtt_broker_revert` warning.
 
+Successful sets return `{"status":"ok"}` before the reconnect attempt.
+`broker` is required for a set and `persist` defaults false. Saving failure can
+leave the new reconnect target active; reversion to the previous broker also
+attempts to save that broker and warns if saving fails.
+
 (serialguard)=
 ### `serialguard`
+- **Topic:** `cmd/<device>/req/serialguard`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload -> serial guard configuration and current state:**
   ```json
   {"serialguard_s":30,"active":true,"remaining_s":12}
@@ -678,16 +808,23 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
     dispatcher-owned `k_work_delayable` item.
   - `seconds:0` disables serial override.
 
+Successful sets return the same configuration/state shape. The guard duration
+is runtime-only and resets to its compiled default after reboot.
+
 (reboot)=
 ### `reboot`
+- **Topic:** `cmd/<device>/req/reboot`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 - **No payload:** schedule a non-cancelable reboot after the response window.
   ```json
   {"status":"ok","rebooting_in_ms":3000}
   ```
 - **Payload:** erase persisted app settings except IP settings and boot count
   immediately before reboot.
-  ```json
-  {"erase_non_ip_settings":true}
+  ```text
+  {
+    "erase_non_ip_settings": true  #optional; default false; normal reboot preserves settings
+  }
   ```
 - **Serial form:**
   ```text
@@ -703,6 +840,8 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
 
 (ota)=
 ### `ota`
+- **Topic:** `cmd/<device>/req/ota`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles in the normal build.
 
 Every HISPEC build includes MCUboot and `CONFIG_COO_OTA`.
 See [firmware updates](ota.md) for network and USB installation.
@@ -732,6 +871,21 @@ See [firmware updates](ota.md) for network and USB installation.
   hash, or confirmation at/after the five-minute trial deadline, is rejected.
   Repeating confirmation for an already confirmed matching image is harmless.
   Confirmation leaves bank mode `override_off`; the operator restores `auto`.
+- **Payload examples:**
+  ```text
+  {
+    "enable": true,
+    "duration_s": 600  #optional; default 600; opening only
+  }
+  ```
+  ```json
+  {"enable":false}
+  ```
+  ```json
+  {"confirm":true,"image_hash":"<exact running hash>"}
+  ```
+  Enable/close and confirm are separate request forms. Successful effects return
+  the same OTA status shape as a query.
 - **Serial:** `ota`, `ota enable=true duration_s=600`, `ota enable=false`,
   `ota confirm=true image_hash=<hash>`. MQTT effects obey serial guard.
 - **Transfer:** image state/test and upload use SMP on IPv4 UDP port 1337 while
@@ -747,6 +901,8 @@ See [firmware updates](ota.md) for network and USB installation.
 
 (mems)=
 ### `mems`
+- **Topic:** `cmd/<device>/req/mems`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles; names follow the selected profile.
 - **No payload -> all MEMS switch states:**
   ```json
   {
@@ -763,24 +919,28 @@ See [firmware updates](ota.md) for network and USB installation.
 
 (mems-switchname)=
 ### `mems/<switchname>`
+- **Availability:** all board profiles; names follow the selected profile.
 - **Topic:** `cmd/<device>/req/mems/<switchname>`
 - **No payload or payload -> one MEMS switch state.**
 
   Static payload:
-  ```json
-  {"state":"A","force":false}
+  ```text
+  {
+    "state": "A",
+    "force": false  #optional; default false; static A/B only
+  }
   ```
   or:
   ```json
   {"state":"B"}
   ```
   Toggle:
-  ```json
+  ```text
   {
     "state": "A",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "off_in_s": 30
+    "duty_cycle": 0.5,  #optional; omit for static A; 0 selects static B
+    "cycle_ms": 400,  #optional; fastest safe cycle when omitted; mixed duty only
+    "off_in_s": 30  #optional; default 14400; positive for mixed duty
   }
   ```
 
@@ -799,14 +959,14 @@ See [firmware updates](ota.md) for network and USB installation.
   {"state":"A"}
   ```
   Response while configured with a non-constant duty request:
-  ```json
+  ```text
   {
     "state": "A|B|?",
-    "duty_cycle": 0.5,
-    "cycle_ms": 400,
-    "a_ms": 200,
-    "b_ms": 200,
-    "off_in_s": 30
+    "duty_cycle": 0.5,  #optional; present only for mixed-duty requests
+    "cycle_ms": 400,  #optional; present only for mixed-duty requests
+    "a_ms": 200,  #optional; present only for mixed-duty requests
+    "b_ms": 200,  #optional; present only for mixed-duty requests
+    "off_in_s": 30  #optional; present only for mixed-duty requests
   }
   ```
 - **Notes:**
@@ -859,6 +1019,8 @@ See [firmware updates](ota.md) for network and USB installation.
 
 (mems-route)=
 ### `mems/route`
+- **Topic:** `cmd/<device>/req/mems/route`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles; names follow the selected profile.
 - **No payload -> active routes:**
   ```json
   {
@@ -868,11 +1030,11 @@ See [firmware updates](ota.md) for network and USB installation.
   }
   ```
 - **Payload:** set one route.
-  ```json
+  ```text
   {
     "input": "<source>",
     "output": "<dest>",
-    "force": false
+    "force": false  #optional; default false
   }
   ```
 - **Notes:** The no-payload response lists every destination present in the active
@@ -889,28 +1051,30 @@ See [firmware updates](ota.md) for network and USB installation.
 
 (route-loss)=
 ### `mems/route/loss`
+- **Topic:** `cmd/<device>/req/mems/route/loss`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** all board profiles; names follow the selected profile.
 - **Payload:** set one route-loss record.
-  ```json
+  ```text
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": 0.07,
-    "persist": true
+    "persist": true  #optional; default false
   }
   ```
   or:
-  ```json
+  ```text
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": "0.32 dB",
-    "persist": false
+    "persist": false  #optional; default false
   }
   ```
   or:
-  ```json
+  ```text
   {
     "route": "yj_calin_to_yj_split",
     "split": ["0.32 dB", "0.32 dB", 0.07],
-    "persist": true
+    "persist": true  #optional; default false
   }
   ```
 - **Payload -> route-loss records for one route:**
@@ -945,8 +1109,12 @@ On TIB, YJ paths expose only `1028y`, `1270j`, and `1430yj`; HK paths expose
 only `1430hk`, `1510h`, and `2330k`. Cross-channel writes are rejected. Forward
 launch losses use `yj_laser_to_yj_ao/fei` or `hk_laser_to_hk_ao/fei` for all
 three lasers in the channel. For example:
-```json
-{"route":"yj_laser_to_yj_fei","1430yj":"61.862828 dB","persist":true}
+```text
+{
+  "route": "yj_laser_to_yj_fei",
+  "1430yj": "61.862828 dB",
+  "persist": true  #optional; default false
+}
 ```
 The settings layer resolves 1430 to the same physical loss record used by
 throughput, calibration and default restoration, preserving existing overrides.
@@ -993,6 +1161,10 @@ pair with `_to_`. The return path uses keys such as
 these values feed the existing throughput and splitting calculations.
 
 
+Successful sets return `{"status":"ok"}`; `persist` defaults false. Saving
+errors can leave runtime values applied, and a split tuple can be partially
+applied/saved if a later entry fails. These edits do not actuate MEMS switches.
+
 (mems-split)=
 ### `mems/split`
 - **Topics:**
@@ -1001,13 +1173,13 @@ these values feed the existing throughput and splitting calculations.
   - Responses use the same key under `cmd/<device>/resp/...`.
   
 - **Payload to `mems/split` -> set splitter state:**
-  ```json
+  ```text
   {
     "channel": "yj",
     "ratio1": 0.25,
     "ratio2": 0.25,
-    "cycle_ms": 800,
-    "off_in_s": 0
+    "cycle_ms": 800,  #optional; fastest safe cycle when omitted
+    "off_in_s": 0  #optional; default 14400; zero also selects the default
   }
   ```
 - **No payload to `mems/split/yj` or `mems/split/hk` -> get splitter state.**
@@ -1102,6 +1274,8 @@ these values feed the existing throughput and splitting calculations.
 
 (laser)=
 ### `laser`
+- **Topic:** `cmd/<device>/req/laser`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **Payload -> laser status:**
   ```json
   {"name":"<lasername>"}
@@ -1132,13 +1306,26 @@ these values feed the existing throughput and splitting calculations.
   }
   ```
 - **Payload:** set one laser output level.
-  ```json
+  ```text
   {
     "name": "<lasername>",
     "value": 0.5,
-    "off_in_s": 600
+    "off_in_s": 600  #optional; default from this laser's settings.autooff_s; must be positive
   }
   ```
+
+- **Alternative drive/stop payloads:**
+  ```text
+  {
+    "name": "1270j",
+    "value_ma": 30.0,
+    "off_in_s": 600  #optional; default from settings.autooff_s
+  }
+  ```
+  ```json
+  {"name":"1028y","stop":true}
+  ```
+  Successful output/stop commands return the compact laser status shape above.
 
 - **Engineering current:** `{"name":"1270j","value_ma":30.0}` requests 30 mA,
   rounded to the driver's 0.1 mA grid within `0..max_current_ma`. `value_ma` and
@@ -1198,6 +1385,8 @@ these values feed the existing throughput and splitting calculations.
 
 (laser-tune)=
 ### `laser/tune`
+- **Topic:** `cmd/<device>/req/laser/tune`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **Payload -> stored tuning request:**
   ```json
   {"name":"<lasername>"}
@@ -1216,12 +1405,15 @@ these values feed the existing throughput and splitting calculations.
   }
   ```
 - **Notes:** Sets the wavelength tuning request used when running the laser.
-  The request is stored by firmware; it does not immediately write TEC
+  The command always saves the current laser policy, including the new tune
+  request and any earlier RAM-only policy edits; there is no `persist` option.
+  A save failure returns an error after the RAM request is updated. Successful
+  sets return `{"status":"ok"}`. It does not immediately write TEC
   temperature or laser current. Future positive `laser` value commands apply
   the stored offset relative to `laser/settings.wave_ref_nm`. Reissuing a
   positive `laser` value after changing value does not require retuning because
   firmware reapplies the stored offset. Setting `laser` value 0 zeros current without issuing STOP
-  without clearing the stored tune request. Tuning is best-effort: large shifts
+  and retains the stored tune request. Tuning is best-effort: large shifts
   are clamped by the TEC temperature range and allowed current adjustment.
 
 
@@ -1248,6 +1440,8 @@ sustained communication loss faults operation separately from numerical estimate
 
 (laser-status)=
 ### `laser/status`
+- **Topic:** `cmd/<device>/req/laser/status`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **Payload -> detailed engineering status:**
   ```json
   {"name":"<lasername>"}
@@ -1272,6 +1466,8 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
 
 (laser-settings)=
 ### `laser/settings`
+- **Topic:** `cmd/<device>/req/laser/settings`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **Payload -> laser settings:**
   ```json
   {"name":"<lasername>"}
@@ -1319,25 +1515,125 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   }
   ```
 - **Payload:** replace the complete power curve (example for a linear model).
-  ```json
+  ```text
   {
     "name": "1270j",
     "settings": {
-      "threshold_current_ma": 13.0,
-      "efficiency_mw_per_ma": 0.26,
-      "efficiency_mw_per_ma2": 0.0,
-      "efficiency_ref_ma": 52.0
+      "threshold_current_ma": 13.0,  #optional; omit all four curve fields together; otherwise all required
+      "efficiency_mw_per_ma": 0.26,  #optional; omit all four curve fields together; otherwise all required
+      "efficiency_mw_per_ma2": 0.0,  #optional; omit all four curve fields together; otherwise all required
+      "efficiency_ref_ma": 52.0  #optional; omit all four curve fields together; otherwise all required
     },
-    "persist": false
+    "persist": false  #optional; default false
   }
   ```
   Sending any curve coefficient requires all four. Other writable settings remain
   independent partial updates, for example:
-  ```json
-  {"name":"1270j","settings":{"min_autolevel_current_ma":15.0},"persist":false}
+  ```text
+  {
+    "name": "1270j",
+    "settings": {
+      "min_autolevel_current_ma": 15.0  #optional; retain current value
+    },
+    "persist": false  #optional; default false
+  }
   ```
   A complete curve can be installed without a calibration run or retained dataset.
 
+- **Complete writable-field reference:** choose only the fields to change.
+  `name` and a nonempty `settings` object are required for a set. The curve and
+  wavelength groups are optional as groups, but incomplete groups are rejected.
+  Numbers below are illustrative; query the installed laser before editing.
+  ```text
+  {
+    "name": "1270j",
+    "settings": {
+      "expected_serial": 8228,  #optional; retain current value
+      "nominal_current_ma": 52.0,  #optional; retain current value
+      "max_current_ma": 65.0,  #optional; retain current value
+      "current_cal_pct": 100.0,  #optional; retain current value
+      "fractional_noise": 0.0424917488,  #optional; retain current value
+      "constant_noise_mw": 0,  #optional; retain current value
+      "threshold_current_ma": 9.7877655,  #optional; omit the entire four-field curve group or supply all four
+      "efficiency_mw_per_ma": 0.236898144,  #optional; omit the entire four-field curve group or supply all four
+      "efficiency_mw_per_ma2": 0,  #optional; omit the entire four-field curve group or supply all four
+      "efficiency_ref_ma": 52,  #optional; omit the entire four-field curve group or supply all four
+      "ref_mw": 10,  #optional; retain current value
+      "ref_ma": 52.0,  #optional; retain current value
+      "ref_temp_c": 25.0,  #optional; retain current value
+      "min_autolevel_current_ma": 11.7,  #optional; retain current value
+      "max_autolevel_current_ma": 65.0,  #optional; retain current value
+      "wave_ref_nm": 1270.52,  #optional; omit the entire wavelength triplet or supply all three
+      "wave_ref_ma": 52.0,  #optional; omit the entire wavelength triplet or supply all three
+      "wave_ref_temp_c": 25.0,  #optional; omit the entire wavelength triplet or supply all three
+      "operating_temp_range_c": [17.0, 38.0],  #optional; retain current value
+      "default_operating_temp_c": 25.0,  #optional; retain current value
+      "tec_curr_lim_a": 1.0,  #optional; retain current value
+      "tec_pid": {  #optional; retain current value
+        "p": 100,  #optional; retain current value
+        "i": 1000,  #optional; retain current value
+        "d": 0  #optional; retain current value
+      },
+      "disable_tec_at_autooff": true,  #optional; retain current value
+      "ntc_coeff_pct_per_c": -4.387276,  #optional; retain current value
+      "dlambda_dT_nm_per_k": 0.08,  #optional; retain current value
+      "dlambda_dA_nm_per_ma": 0.003,  #optional; retain current value
+      "autooff_s": 10800  #optional; retain current value
+    },
+    "persist": false  #optional; default false
+  }
+  ```
+  Successful sets return `{"status":"ok"}`. Queries return the settings object
+  above, including the read-only fields.
+
+- **Response shape** (bank-off example; unavailable measurements remain `null`):
+  ```json
+  {
+    "name": "1270j",
+    "read_rc": 0,
+    "powered": false,
+    "dev_id": 0,
+    "serial": 0,
+    "expected_serial": 8228,
+    "serial_ok": false,
+    "raw_state": 0,
+    "raw_lock": 0,
+    "raw_tec": 0,
+    "blocking_lock": 0,
+    "blocked_reason": "bank_off",
+    "op_started": false,
+    "ready": false,
+    "curr_set_internal": false,
+    "enable_internal": false,
+    "ext_ntc_denied": false,
+    "interlock_denied": false,
+    "interlock": false,
+    "ext_ntc_interlock": false,
+    "ld_overcurrent": false,
+    "ld_overheat": false,
+    "tec_started": false,
+    "tec_set_internal": false,
+    "tec_enable_internal": false,
+    "tec_error": false,
+    "tec_selfheat": false,
+    "i_mA": null,
+    "curr_meas_ma": null,
+    "curr_min_ma": null,
+    "max_current_ma": null,
+    "drv_max_ma": null,
+    "ocp_ma": null,
+    "current_cal_pct": null,
+    "diode_v": null,
+    "tec_temp_set_c": null,
+    "tec_temp_c": null,
+    "pcb_temp_c": null,
+    "tec_ma": null,
+    "tec_curr_lim_a": null,
+    "tec_v": null,
+    "pid": null,
+    "ntc_coeff_pct_per_c": null
+  }
+  ```
 - **Notes:**
   - `ref_mw`, `ref_ma`, `ref_temp_c` are the independent vendor power anchor.
     Power must be positive/finite, reference current must be positive, <=1000 mA
@@ -1447,9 +1743,9 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     `disable_tec_at_autooff`. Failed shutdown rejects the update and preserves
     any measurement-owned shutdown obligation for retry. No-op updates and
     changes only to noise, default auto-off, or TEC auto-off policy do not stop
-    emission. Successful settings updates still relinquish the measurement;
-    that behavior for non-stopping edits and tuning remains a deferred ownership
-    audit in `human_review_required.md`.
+    emission. Successful settings updates disable automatic feedback while
+    retaining streaming, its deadline and any owned-source shutdown obligation.
+    A settings edit that stops the source does not discard that responsibility.
   - Failures before driver programming completes leave settings unchanged
     in app settings and report an error; partially written driver registers are
     reprogrammed at the next preparation. If programming succeeds but
@@ -1474,20 +1770,6 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
     or old-key alias is exposed.
     Changes follow ordinary stop-before-profile-update and optional app NVS
     persistence. No new EEPROM SAVE or MCU-startup programming is added.
-  - Non-Driver settings:
-    - `min_autolevel_current_ma`
-    - `nominal_current_ma`
-    - `autooff_s`
-    - `dlambda_dT_nm_per_k`
-    - `dlambda_dA_nm_per_ma`
-    - `disable_tec_at_autooff`
-    - `wave_ref_nm`, `wave_ref_ma`, `wave_ref_temp_c`
-    - `threshold_current_ma`
-    - `efficiency_mw_per_ma`
-    - `efficiency_mw_per_ma2`
-    - `efficiency_ref_ma`
-  - Settings that are informational only (included for datasheet posterity):
-    - `isolation_db`
   - Ranges:
     - Operating temp range: limited to [15,40] strong advice to limit to 17,38
     - `current_cal_pct`: 95 - 105 in steps of .01
@@ -1496,9 +1778,70 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
 
 (laser-calibrate)=
 ### `laser/calibrate`
+- **Topic:** `cmd/<device>/req/laser/calibrate`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 
 - **No payload -> current calibration status.** Acquisition runs asynchronously;
   query again or watch `dt/<device>/laser/calibrate` for progress.
+  Example inactive status; fields remain present with null diagnostics when unavailable:
+  ```json
+  {
+    "state": "inactive",
+    "laser": "1028y",
+    "output": "yj_ao",
+    "records": 0,
+    "dwell_ms": 0,
+    "settle_ms": 0,
+    "current_ma": 0.0,
+    "acquisition_complete": false,
+    "overflow": false,
+    "shutdown_pending": false,
+    "error": null,
+    "fit": {
+      "valid": false,
+      "accepted": false,
+      "top_supported": false,
+      "applied": false,
+      "persisted": false,
+      "n": 0,
+      "error": null,
+      "apply_error": null,
+      "persist_error": null,
+      "threshold_ma": null,
+      "efficiency_mw_per_ma": null,
+      "efficiency_mw_per_ma2": null,
+      "efficiency_ref_ma": null,
+      "floor_ma": null,
+      "max_ma": null,
+      "baseline_mv": null,
+      "rms_fraction": null,
+      "max_residual_fraction": null,
+      "median_fraction": null
+    },
+    "repeat": {
+      "matched": 0,
+      "usable": 0,
+      "in_range": 0,
+      "worst_fraction": null,
+      "current_ma": null,
+      "dac1_code": null,
+      "dac2_code": null,
+      "before_mv": null,
+      "after_mv": null,
+      "elapsed_ms": null,
+      "worst_in_range": null
+    },
+    "noise": {
+      "valid": false,
+      "applied": false,
+      "persisted": false,
+      "error": null,
+      "constant_mw": null,
+      "fractional": null
+    },
+    "routes": [{"accepted": false, "applied": false, "persisted": false, "error": null, "apply_error": null, "persist_error": null, "combined_db": null, "outbound_db": null}, {"accepted": false, "applied": false, "persisted": false, "error": null, "apply_error": null, "persist_error": null, "combined_db": null, "outbound_db": null}]
+  }
+  ```
 - **Prerequisites:** review the FVOA calibration, physically connect the selected
   outbound output to the selected SM/MM PD return, power that **specific PD**, and
   acquire a valid dark with light blocked. Neither channel may have a dark pending.
@@ -1507,23 +1850,25 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   must be inside configured limits. Firmware sets `ref_temp_c` and qualifies
   temperature after start. A stored dark alone does not mean the PD is on.
 - **Payload -> start and return status:**
-  ```json
+  ```text
   {
     "laser": "1270j",
     "output": "yj_ao",
-    "fiber": "S",
-    "dwell_ms": 1000,
-    "settle_ms": 2000,
-    "apply": true,
-    "max_fit_residual_pct": 5.0,
-    "pd_target_mv": 1500.0,
-    "determine_static_loss": false,
-    "update_noise": false,
-    "other_output": false,
-    "persist": false
+    "fiber": "S",  #optional; default S
+    "dwell_ms": 1000,  #optional; default 1000; 100..2000
+    "settle_ms": 2000,  #optional; default 2000; 100..10000
+    "apply": true,  #optional; default true
+    "max_fit_residual_pct": 5.0,  #optional; default 5; strictly between 0 and 100
+    "pd_target_mv": 1500.0,  #optional; default 1500; strictly between 0 and 1850
+    "determine_static_loss": false,  #optional; default false
+    "update_noise": false,  #optional; default false
+    "other_output": false,  #optional; default false; requires determine_static_loss=true
+    "persist": false,  #optional; default false; true requires apply=true
+    "loopback_loss_db": 10.0  #optional; required when determine_static_loss=true; finite and nonnegative
   }
   ```
-  `laser` and same-band `output` are required. Other values shown are defaults.
+  `laser` and same-band `output` are required. The annotations give defaults; the 10 dB external loopback value is only an example,
+  not a firmware default.
   `fiber` is `S` or `M`; dwell is 100–2000 ms and settling is 100–10000 ms.
   Each current receives high/low PD conditions (plus a middle level in the upper
   block), with one early and two late windows per condition. Only late windows fit. Residual tolerance is strictly
@@ -1537,11 +1882,19 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   ```json
   {"stop":true}
   ```
-  ```json
-  {"continue":true,"loopback_loss_db":10.0}
+  ```text
+  {
+    "continue": true,
+    "loopback_loss_db": 10.0  #optional; retain the original external loopback loss
+  }
   ```
-  ```json
-  {"restore_defaults":true,"laser":"1270j","output":"yj_ao","persist":false}
+  ```text
+  {
+    "restore_defaults": true,
+    "laser": "1270j",
+    "output": "yj_ao",
+    "persist": false  #optional; default false
+  }
   ```
   STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
   loss replaces the external loss for the second output. Restore stops the owned
@@ -1561,6 +1914,20 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   Restore reports `laser_applied`, `route_applied`, `laser_persisted`,
   `route_persisted` and independent text/null errors. See the
   [status and data layout](laser_calibration.md#status-and-retained-data) for fields.
+- **Restore-defaults response:** separate apply/save results remain available on partial failure.
+  ```json
+  {
+    "laser_applied": true,
+    "route_applied": true,
+    "laser_persisted": false,
+    "route_persisted": false,
+    "error": null,
+    "laser_error": null,
+    "route_error": null,
+    "laser_persist_error": null,
+    "route_persist_error": null
+  }
+  ```
 - **Notes:**
   - `apply:true` automatically installs an accepted threshold, reference-normalized
     efficiency, quadratic coefficient, curve reference and automatic floor/ceiling. Engineering maximum
@@ -1638,8 +2005,19 @@ A reviewed candidate can be installed directly; there is no separate "accept"
 command or notebook token. For example, send a complete candidate to
 `cmd/<device>/req/laser/settings` (values below illustrate the payload):
 
-```json
-{"name":"1430hk","settings":{"threshold_current_ma":4.0,"efficiency_mw_per_ma":0.22,"efficiency_mw_per_ma2":0.0,"efficiency_ref_ma":49.0,"min_autolevel_current_ma":5.3,"max_autolevel_current_ma":60.0},"persist":false}
+```text
+{
+  "name": "1430hk",
+  "settings": {
+    "threshold_current_ma": 4.0,  #optional; omit all four curve fields together; otherwise all required
+    "efficiency_mw_per_ma": 0.22,  #optional; omit all four curve fields together; otherwise all required
+    "efficiency_mw_per_ma2": 0.0,  #optional; omit all four curve fields together; otherwise all required
+    "efficiency_ref_ma": 49.0,  #optional; omit all four curve fields together; otherwise all required
+    "min_autolevel_current_ma": 5.3,  #optional; retain current value
+    "max_autolevel_current_ma": 60.0  #optional; retain current value
+  },
+  "persist": false  #optional; default false
+}
 ```
 
 This stops emission and updates RAM. Read back with `{"name":"1430hk"}` on the
@@ -1650,8 +2028,23 @@ validation still applies. Noise and route loss require their own chosen fields
 or command. The Python equivalent is
 `pcb.laser_settings(name, **dataset.status.fit.settings(), persist=False)`.
 
+(laser-calibrate-records)=
+### `laser/calibrate/records[/<chunk>]`
+- **Availability:** TIB, MQTT only.
+- **Topic:** `cmd/<device>/req/laser/calibrate/records[/<chunk>]`; responses use
+  the same key under `cmd/<device>/resp/`.
+- **Payload:** none; writes are unsupported. No suffix queries binary HLC1
+  metadata; a zero-based chunk suffix queries headerless raw records. Read the
+  metadata's record/chunk counts before fetching. See the exact
+  [binary layout](laser_calibration.md#status-and-retained-data).
+- **Side effects and persistence:** none; queries copy retained acquisition
+  data. Laser and attenuator calibrations share dataset storage; starting a new
+  calibration replaces the retained dataset. Errors use ordinary JSON replies.
+
 (laserbank-power)=
 ### `laser/bankpower`
+- **Topic:** `cmd/<device>/req/laser/bankpower`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **No payload -> laser-bank power state:**
   ```json
   {
@@ -1683,6 +2076,8 @@ or command. The Python equivalent is
 
 (laserbank-heater)=
 ### `laser/bankheater`
+- **Topic:** `cmd/<device>/req/laser/bankheater`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **No payload -> laser-bank heater state:**
   ```json
   {
@@ -1706,7 +2101,11 @@ or command. The Python equivalent is
   `cmd/<device>/req/laser/bankheater/override_on`, or
   `cmd/<device>/req/laser/bankheater/override_off`.
 
-- **Notes:** `auto` is the default at boot. In `auto`, laser-bank
+- **Notes:** heater mode is saved automatically on every set; there is no
+  `persist` key. Compiled default is `auto`; a saved override wins at boot.
+  The command schedules policy work, so its immediate cached response may
+  still show the preceding mode/relay state. Query again after work runs. A
+  failed save returns an error while the runtime intent still applies. In `auto`, laser-bank
   temperature-control work powers the bank so the Maiman temperature monitors
   can initialize, polls TEC temperatures at a fixed interval, and drives the
   laser-bank heater through housekeeping relay-power helpers.
@@ -1743,21 +2142,36 @@ or command. The Python equivalent is
 
 (laserbank-clearfaults)=
 ### `laser/clearfaults`
+- **Topic:** `cmd/<device>/req/laser/clearfaults`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **No payload -> clear result:**
   ```json
   {"off_ms":250}
   ```
 
-This command performs an off-on cycle iff the bank is powered and at least one of the drivers reports an overcurrent
-fault. It is a convenience command that has no effect when the bank is not powered or is powered and without fault. 
-The return indicates if the bank was power cycled. `off_ms` is the time that the bank was turned off (0 if bank was 
-off or no faults).
-If another laser-bank operation occupies the shared Maiman Modbus bus past the
-command wait budget, this command returns `{"error":"busy"}`.
+An explicit clear request takes precedence over an active **laser calibration**:
+the handler requests cancellation before checking bank faults, including when
+no overcurrent is reported or the bank is off. This is intentional command
+behavior. It is not a blanket cancellation of every measurement or attenuator
+calibration.
+
+The bank performs an off-on cycle only when powered and at least one driver
+reports an overcurrent latch. `off_ms` is 250 when cycled and 0 when no cycle was
+needed. A shared-bus timeout can return `{"error":"busy"}` after calibration
+cancellation has already been requested. Cancellation/shutdown errors from that
+initial stop are not reflected in `off_ms`; inspect calibration status if needed.
+
+For an unconditional operator-requested cycle, send bank modes
+`override_off`, then `override_on`, then `auto`. Wait for the off reply before
+requesting on. `override_off` followed by `auto` releases the override, allowing
+the heater policy or a later driver command to power up; `auto` alone does not
+synchronously guarantee the on transition. These commands may interrupt ongoing
+work, consistent with their documented effects.
 
 
 (atten)=
 ### `atten`
+- **Availability:** TIB laser channels and CAL YJ/HK `lfc`.
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
 - **Topics:**
   - `cmd/<device>/req/atten/<laser>`
@@ -1782,10 +2196,32 @@ command wait budget, this command returns `{"error":"busy"}`.
   attenuation in dB. The total fields are mutually exclusive with the physical
   `value1*` and `value2*` fields.
   ```json
-  {"value":0.25}
-  {"value_db":12.5}
-  {"value1":0.25,"value2_db":6.0}
-  {"value1_mv":1234.0,"value2":1.0}
+  {
+    "value": 0.25
+  }
+  ```
+  ```json
+  {
+    "value_db": 12.5
+  }
+  ```
+  ```text
+  {
+    "value1": 0.25,  #optional; retain this DAC when omitted; supply at least one physical value
+    "value2_db": 6.0  #optional; retain this DAC when omitted; supply at least one physical value
+  }
+  ```
+  ```text
+  {
+    "value1_mv": 1234.0,  #optional; retain this DAC when omitted; supply at least one physical value
+    "value2": 1.0  #optional; retain this DAC when omitted; supply at least one physical value
+  }
+  ```
+  ```text
+  {
+    "value1_db": 12.0,  #optional; retain DAC1 when omitted
+    "value2_mv": 2200.0  #optional; retain DAC2 when omitted; supply at least one value
+  }
   ```
   Each physical attenuator may use a different unit, but a single physical
   attenuator may only use one unit per request. For example, `value1` and
@@ -1963,6 +2399,8 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 (atten-calibrate)=
 ### `atten/calibrate`
+- **Topic:** `cmd/<device>/req/atten/calibrate`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 The implementation flow, bridge-normalization sequence, and retained-record
 ownership are documented in `attenuator_calibration.md`.
 Status queries return a coherent snapshot without waiting for numerical fitting.
@@ -1975,86 +2413,58 @@ operating ceiling; the first measured point above 55 dB may anchor that boundary
 The retained support does not establish physical extinction.
 
 - **No payload -> compact calibration state:**
-  ```json
+  ```text
   {
-    "state": "inactive",
+    "state": "running",
     "mode": "none",
     "physical": "dac1",
     "fit": "none",
     "n": 128,
-    "t_ms": 300,
+    "t_ms": 400,
     "complete_pct": 0,
     "point": "1/128",
     "mv": 0.0,
     "other_mv": 3300.0,
     "error": 0,
     "dac1": {
+      "reason": "accepted",
+      "open_mv": 1250.0,
+      "open_loss_db": 0.02,
       "valid": true,
-      "accepted": true,
-      "points": 12,
-      "fvoa_50pct_mv": 3144.95,
-      "slope_inv_fvoa_mv": 0.00303104,
-      "max_atten_db": 48.36,
-      "max_calibrated_db": 45.0,
-      "max_atten_sigma_db": 0.29,
-      "corr": 0.999,
-      "rms_db": 0.1,
-      "max_abs_db": 0.2,
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
+      "accepted": true,  #optional; present when dac1.valid=true
+      "points": 12,  #optional; present when dac1.valid=true
+      "fvoa_50pct_mv": 3144.95,  #optional; present when dac1.valid=true
+      "slope_inv_fvoa_mv": 0.00303104,  #optional; present when dac1.valid=true
+      "max_atten_db": 48.36,  #optional; present when dac1.valid=true
+      "max_calibrated_db": 45.0,  #optional; present when dac1.valid=true
+      "max_atten_sigma_db": 0.29,  #optional; present when dac1.valid=true
+      "corr": 0.999,  #optional; present when dac1.valid=true
+      "rms_db": 0.1,  #optional; present when dac1.valid=true
+      "max_abs_db": 0.2,  #optional; present when dac1.valid=true
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]  #optional; present when dac1.valid=true
     },
-    "dac2": {"valid": false}
+    "dac2": {
+      "reason": "pending",
+      "open_mv": 0.0,
+      "open_loss_db": 0.0,
+      "valid": false
+    }
   }
   ```
-- **Record data query:** retained calibration acquisition records are available
-  as metadata plus fixed binary MQTT record chunks, independent of best-effort
-  telemetry:
-  ```
-  atten/calibrate/records/<dac1|dac2>
-  atten/calibrate/records/<dac1|dac2>/<chunk>
-  ```
-  The metadata query has no chunk suffix. The response is not JSON and is
-  MQTT-only because the serial response printer is string-oriented. The
-  metadata response has a 52-byte header `<4s 15B 4f B 16s>`: magic `HAC4`,
-  version `4`, kind
-  (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
-  overflow, record-size, records-per-chunk, record-count, record-chunk-count,
-  reference-valid, reference-record, bridge-count, `background_mv`,
-  `background_err_mv`, `open_mv`, `open_loss_db`, rejection-reason byte, and
-  16-byte fit-support bitmap (bit `i % 8` of byte `i / 8` names raw record `i`).
-  Reason codes are `0=pending`, `1=background`, `2=bridge`, `3=peak`, `4=support`,
-  `5=model`, `6=residual`, `7=accepted`, and `8=range`. The header is followed by
-  `bridge-count` little-endian `<2B>` bridge entries containing
-  `before_record` and `after_record` indices. The reference and bridge entries
-  name roles for retained raw records; they are not separate copied records.
-
-  Each numbered chunk response contains only raw records and no header. Chunk
-  `0` starts at record `0`; subsequent chunks use the fixed
-  `records-per-chunk` value reported by metadata. Version 4 uses record size
-  27 bytes, and each raw record has little-endian layout `<6f 3B>`:
-  `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
-  `event`, `classification`, and `segment`. Event codes are `0=point`,
-  `1=initial_probe` (reserved; no longer emitted), `2=bridge_probe`,
-  `3=dark_before`, and `4=dark_after`; classification codes are `0=ok`,
-  `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
-  `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
-  `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
-  NumPy raw record array with those firmware names. It also adds convenience
-  `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
-  default FVOA drive gain; those columns are host-side coordinates, not
-  additional firmware measurements. Bridge scale, scaled signal, transmission,
-  dB attenuation, fit inclusion, and residuals are derived from the raw records
-  and the accepted bridge boundaries after acquisition.
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
-  ```json
+  ```text
   {
     "laser": "1430yj",
     "output": "yj_ao",
-    "fiber": "M",
-    "dwell_ms": 300,
-    "persist": true
+    "fiber": "M",  #optional; default M
+    "dwell_ms": 400,  #optional; default 400; normalization described below
+    "persist": false  #optional; default false
   }
   ```
+  `dwell_ms` defaults to 400 ms. Values below 100 ms select that default;
+  values above 2000 ms clamp to 2000, and accepted durations round to the nearest
+  50 ms sample grid (half-way values round up). Status `t_ms` is this effective dwell, not an elapsed timestamp.
 - **Payload:** stop/cancel any calibration.
   ```json
   {"stop": true}
@@ -2151,8 +2561,57 @@ validation. The [attenuator model](attenuator.md) defines runtime conversion and
 uncertainty; the [Python guide](python_helpers.md#calibration-datasets-and-manual-grids)
 explains retained-record inspection and fitting tools.
 
+(atten-calibrate-records)=
+### `atten/calibrate/records/<dac1|dac2>[/<chunk>]`
+- **Availability:** TIB, MQTT only.
+- **Topic:** `cmd/<device>/req/atten/calibrate/records/<dac1|dac2>[/<chunk>]`;
+  responses use the same key under `cmd/<device>/resp/`.
+- **Payload:** none; writes are unsupported. Query metadata first, then its
+  zero-based numbered chunks. Replies retain the latest attenuator dataset;
+  no acquisition, output movement or persistence is started by reading it.
+- **Record data query:** retained calibration acquisition records are available
+  as metadata plus fixed binary MQTT record chunks, independent of best-effort
+  telemetry:
+  ```
+  atten/calibrate/records/<dac1|dac2>
+  atten/calibrate/records/<dac1|dac2>/<chunk>
+  ```
+  The metadata query has no chunk suffix. The response is not JSON and is
+  MQTT-only because the serial response printer is string-oriented. The
+  metadata response has a 52-byte header `<4s 15B 4f B 16s>`: magic `HAC4`,
+  version `4`, kind
+  (`0=metadata`), physical index, state, mode, fit-valid, fit-accepted,
+  overflow, record-size, records-per-chunk, record-count, record-chunk-count,
+  reference-valid, reference-record, bridge-count, `background_mv`,
+  `background_err_mv`, `open_mv`, `open_loss_db`, rejection-reason byte, and
+  16-byte fit-support bitmap (bit `i % 8` of byte `i / 8` names raw record `i`).
+  Reason codes are `0=pending`, `1=background`, `2=bridge`, `3=peak`, `4=support`,
+  `5=model`, `6=residual`, `7=accepted`, and `8=range`. The header is followed by
+  `bridge-count` little-endian `<2B>` bridge entries containing
+  `before_record` and `after_record` indices. The reference and bridge entries
+  name roles for retained raw records; they are not separate copied records.
+
+  Each numbered chunk response contains only raw records and no header. Chunk
+  `0` starts at record `0`; subsequent chunks use the fixed
+  `records-per-chunk` value reported by metadata. Version 4 uses record size
+  27 bytes, and each raw record has little-endian layout `<6f 3B>`:
+  `sweep_mv`, `other_mv`, `laser_pct`, `signal_mv`, `signal_err_mv`, `max_mv`,
+  `event`, `classification`, and `segment`. Event codes are `0=point`,
+  `1=initial_probe` (reserved; no longer emitted), `2=bridge_probe`,
+  `3=dark_before`, and `4=dark_after`; classification codes are `0=ok`,
+  `1=saturated`, `2=below_snr`, and `3=adc_error`. State codes are
+  `0=inactive`, `1=running`, `2=complete`, `3=error`; mode codes are
+  `0=none`, `1=tib_auto`. The Python tool decodes records directly into a
+  NumPy raw record array with those firmware names. It also adds convenience
+  `fvoa_mv` and `other_fvoa_mv` columns derived from DAC millivolts and the
+  default FVOA drive gain; those columns are host-side coordinates, not
+  additional firmware measurements. Bridge scale, scaled signal, transmission,
+  dB attenuation, fit inclusion, and residuals are derived from the raw records
+  and the accepted bridge boundaries after acquisition.
+
 (pd)=
 ### `pd`
+- **Availability:** TIB only.
 - **Topic:** `cmd/<device>/req/pd` or `cmd/<device>/req/pd/<yj|hk>`
 - **No payload -> photodiode values and the public monitoring window:**
   ```json
@@ -2182,13 +2641,36 @@ explains retained-record inspection and fitting tools.
       "pd_on_s": 0,
       "off_in_s": 300
     },
-    "hk": {}
+    "hk": {
+      "raw": 0,
+      "mv": 0.0,
+      "net_mv": 0.0,
+      "net_err_mv": 0.0,
+      "power_uw": 0.0,
+      "power_err_uw": 0.0,
+      "dark_mv": 0.0,
+      "dark_err_mv": 0.0,
+      "window": {
+        "duration_ms": 0,
+        "failed_samples": 0,
+        "mean_mv": 0.0,
+        "mean_net_mv": 0.0,
+        "rms_mv": 0.0,
+        "mean_net_err_mv": 0.0,
+        "min_mv": 0.0,
+        "max_mv": 0.0,
+        "power_uw": 0.0,
+        "power_err_uw": 0.0
+      },
+      "pd_powered": true,
+      "pd_on_s": 0,
+      "off_in_s": 300
+    }
   }
   ```
 - **Single-channel query:** `pd/yj` returns only the selected channel:
-  ```json
-  {"yj": {}}
-  ```
+  The selected channel has the same field set shown above.
+
 
 - **Notes:**
   - `pd` queries both channels. `pd/yj` and `pd/hk` query only one channel.
@@ -2208,7 +2690,9 @@ explains retained-record inspection and fitting tools.
     `pd/dark/<channel>`, not through `pd` or `pd/settings`.
 
 (pddark)=
+(pd-dark)=
 ### `pd/dark`
+- **Availability:** TIB only.
 - **Topic:** `cmd/<device>/req/pd/dark/<yj|hk>`
 - **No payload -> active and lowest dark windows:**
   ```json
@@ -2228,18 +2712,31 @@ explains retained-record inspection and fitting tools.
       "power_uw": 0.0,
       "power_err_uw": 0.0
     },
-    "lowest_dark": {}
+    "lowest_dark": null
   }
   ```
+  `lowest_dark` is null when no measured minimum exists; otherwise it has the
+  same field set as `dark`.
 - **Payload:** measure, force, or reset one channel's dark.
-  ```json
-  {"duration_ms": 1000, "persist": false}
+  ```text
+  {
+    "duration_ms": 1000,
+    "persist": false,  #optional; default false
+    "reset_lowest": false  #optional; default false; promote the completed measured dark
+  }
   ```
-  ```json
-  {"dark_mv": 0.0, "rms_mv": 1.5, "persist": true}
+  ```text
+  {
+    "dark_mv": 0.0,
+    "rms_mv": 1.5,  #optional; default 1.5; only valid with dark_mv
+    "persist": true  #optional; default false
+  }
   ```
-  ```json
-  {"reset_lowest": true}
+  ```text
+  {
+    "reset_lowest": true,
+    "persist": false  #optional; default false
+  }
   ```
 
 - **Notes:**
@@ -2253,7 +2750,7 @@ explains retained-record inspection and fitting tools.
     captures are rejected without replacing the previous dark.
   - `dark_mv` forces a user-specified dark. `rms_mv` may be included with
     `dark_mv`; if omitted, firmware uses
-    `PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV` from `app/src/photodiode.h`.
+    1.5 mV (`PHOTODIODE_FORCED_DARK_RMS_DEFAULT_MV`).
   - `duration_ms` and `dark_mv` are mutually exclusive. Durations must be
     greater than zero and no larger than `APP_PD_DARK_DURATION_MAX_MS` in
     `app/src/app_settings.h`.
@@ -2274,28 +2771,29 @@ explains retained-record inspection and fitting tools.
 
 (pd-settings)=
 ### `pd/settings`
+- **Availability:** TIB only.
 - **Topic:** `cmd/<device>/req/pd/settings/<yj|hk>`
 - **No payload -> one channel's photodiode settings:**
   ```json
   {
     "channel": "yj",
-    "noisewarn_mv": 3.0,
+    "noisewarn_mv": 10.0,
     "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 2.0e10,
+    "transimpedance_v_per_a": 20000000000.0,
     "power": "auto",
     "powered": false,
-    "autooff_s": 300
+    "autooff_s": 36000
   }
   ```
 - **Payload:** update one channel's photodiode settings.
-  ```json
+  ```text
   {
-    "noisewarn_mv": 3.0,
-    "responsivity_a_per_w": 0.93,
-    "transimpedance_v_per_a": 2.0e10,
-    "power": "auto",
-    "autooff_s": 300,
-    "persist": true
+    "noisewarn_mv": 10.0,  #optional; retain current value
+    "responsivity_a_per_w": 0.93,  #optional; retain current value
+    "transimpedance_v_per_a": 20000000000.0,  #optional; retain current value
+    "power": "auto",  #optional; retain current value
+    "autooff_s": 36000,  #optional; retain current value
+    "persist": true  #optional; default false
   }
   ```
 
@@ -2307,8 +2805,10 @@ explains retained-record inspection and fitting tools.
   - `autooff_s`
   - `persist`
 
-- **Notes:** not all settings need to be included when setting; failure on any
-  settable setting results in none being set. YJ and HK settings use separate
+- **Notes:** omitted settings retain their current values; at least one
+  setting is required, so `persist` alone is invalid. Validation errors occur
+  before application. Later power, timer or NVS failures can leave prior steps
+  applied; a persistence error leaves the new RAM settings in use. YJ and HK settings use separate
   command keys and separate app NVS records. `power` is the relay intent for
   this channel: `auto`, `override_on`, or `override_off`. The compiled `autooff_s`
   default is 36000 seconds (ten hours); saved policies keep their configured value.
@@ -2356,31 +2856,41 @@ explains retained-record inspection and fitting tools.
   throughput, and the separate ten-second dark-capture rule continue normally.
   Dark bounds are +/-2048 mV and noise RMS bounds are 0-2048 mV.
 
+Successful sets return `{"status":"ok"}`. Queries report settings and actual
+power without enabling the detector or rearming its timer; `off_in_s` is only
+in the `pd` response.
+
 (measure-throughput)=
 ### `measure_throughput`
+- **Topic:** `cmd/<device>/req/measure_throughput`; response uses the same key under `cmd/<device>/resp/`.
+- **Availability:** TIB only.
 - **Payload:** start monitoring.
-  ```json
+  ```text
   {
-    "autolevel": true,
-    "initial_level": 0.5,
-    "laser": "<lasername>",
-    "fiber": "M",
+    "autolevel": true,  #optional; default true
+    "initial_level": 0.5,  #optional; default 0.5; requires autolevel=true
+    "laser": "1028y",
+    "fiber": "M",  #optional; default M
     "output": "yj_ao",
-    "max_flux_nw": 193.232,
+    "max_flux_nw": 193.232,  #optional; default 0 (no cap); requires autolevel=true
     "off_in_s": 300,
-    "format": "binary"
+    "format": "binary",  #optional; firmware default json; Python default binary
+    "channel": "yj",  #optional; inferred from laser; supplied value must match
+    "input": "yj_laser",  #optional; inferred from laser
+    "autolevel_response_hz": 0.1  #optional; default 0; requires autolevel=true
   }
   ```
 - **Payload:** start monitoring an externally supplied/calibration input.
-  ```json
+  ```text
   {
     "autolevel": false,
     "laser": "none",
     "channel": "yj",
-    "input": "yj_cal",
-    "output": "yj_ao",
-    "fiber": "M",
-    "format": "binary"
+    "input": "yj_cal",  #optional; omit together with output to leave launch routing unchanged
+    "output": "yj_ao",  #optional; omit together with input
+    "fiber": "M",  #optional; default M
+    "format": "binary",  #optional; firmware default json; Python default binary
+    "off_in_s": 0  #optional; default 0 (unlimited passive run)
   }
   ```
 - **Payload:** stop monitoring.
@@ -2491,8 +3001,14 @@ throughput are NaN/null because emission is unknown. `launch_route_tx` reports
 the resolved transmission for an explicitly selected launch; it is NaN/null for a
 return-only capture. The acquisition selector remains `laser:"none"`; only
 route-loss storage uses `generic`. A return-only example:
-```json
-{"laser":"none","channel":"hk","fiber":"S","autolevel":false,"format":"binary"}
+```text
+{
+  "laser": "none",
+  "channel": "hk",
+  "fiber": "S",  #optional; default M
+  "autolevel": false,
+  "format": "binary"  #optional; firmware default json; Python default binary
+}
 ```
 
 Dark capture or active attenuator calibration rejects all starts. Taking a dark
@@ -2623,3 +3139,6 @@ See [throughput and autolevel operation](throughput.md) for the equations,
 route-loss selection, timestamp association, feedback decisions and ownership.
 [Mathematics and uncertainty](mathematics.md) distinguishes reported errors,
 window RMS and temporal noise, including correlated and omitted terms.
+Successful start/stop requests return `{"status":"ok"}`; measurements arrive
+on the telemetry topic. Run configuration is runtime-only. Detector relay state
+is saved by its existing power owner; the command has no `persist` key.

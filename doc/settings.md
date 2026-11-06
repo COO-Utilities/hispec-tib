@@ -198,7 +198,8 @@ silently reused on another.
   Calibration rejects timer writes but permits power-only overrides.
   Finite throughput owns its `off_in_s` deadline. Laser settings writes disable
   feedback while retaining collection and owned-source shutdown. PD read-only
-  `off_in_s` is available through `pd` and `pd/settings`; only `pd` queries rearm it.
+  `off_in_s` is available through `pd`; `pd/settings` reports policy without
+  that countdown or rearming. `pd` queries can enable AUTO power and rearm it.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)

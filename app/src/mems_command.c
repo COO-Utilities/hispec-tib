@@ -455,7 +455,7 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
                 return coo_cmd_error(out, cmd, "route_loss table full");
             }
             if (parse_rc != 0) {
-                return coo_cmd_error(out, cmd, "invalid route_loss key");
+                return coo_cmd_error_rc(out, cmd, "route loss update/save failed; earlier changes may be applied", parse_rc);
             }
         }
         return coo_cmd_ok(out, cmd);
@@ -472,7 +472,7 @@ static int route_loss_handle(const struct coo_cmd_request *cmd, bool set_request
         return coo_cmd_error(out, cmd, "route_loss table full");
     }
     if (parse_rc != 0) {
-        return coo_cmd_error(out, cmd, "invalid route_loss key");
+        return coo_cmd_error_rc(out, cmd, "route loss update/save failed; runtime value may be applied", parse_rc);
     }
 
     return coo_cmd_ok(out, cmd);
