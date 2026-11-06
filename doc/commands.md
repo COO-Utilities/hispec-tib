@@ -38,9 +38,10 @@ the firmware's allowed values or argument rules.
 
 ### Global (applies to all commands)
 
-- Request examples use same-line `#optional` annotations for omittable keys.
-  These are **annotated JSON**, displayed as text because JSON does not allow
-  comments. Remove the comments before sending a payload. An annotation states
+- Request examples use same-line `// #optional` annotations for omittable keys.
+  These are **annotated JSON**, with syntax highlighting for keys, values and
+  comments. JSON payloads do not allow comments: remove each `//` and the rest
+  of its line before sending a payload. An annotation states
   the default, retained value, or condition; sample values are illustrative.
   Response fields are always present unless marked optional. A present field
   whose value may be `null` is nullable, not optional.
@@ -59,10 +60,10 @@ the firmware's allowed values or argument rules.
   an explicit exception: it includes `status:"ok"` and `rebooting_in_ms`.
 
 - Ordinary command failures have a nonempty string `error`, for example:
-  ```text
+  ```json
   {
     "error": "<error message>",
-    "rc": -5  #optional; included when a numeric failure code is available
+    "rc": -5  // #optional; included when a numeric failure code is available
   }
   ```
   Extra diagnostics such as `rc` are optional. Calibration status embeds
@@ -386,10 +387,10 @@ automatically:
 
 Annotated selector example:
 
-```text
+```json
 {
-  "view": "emission",  #optional; omit with channel for the default operating view
-  "channel": "yj"  #optional; required for emission; forbidden in other views
+  "view": "emission",  // #optional; omit with channel for the default operating view
+  "channel": "yj"  // #optional; required for emission; forbidden in other views
 }
 ```
 
@@ -475,13 +476,13 @@ cause; it does not invent a pre-reset software diagnosis.
 
 **Emission:** each of the selected channel's three entries has this shape:
 
-```text
+```json
 {
   "output_state": "running",
   "i_mA": 100,
   "power_mw": 10,
   "tuned_nm": 1028.01,
-  "off_in_s": 240,  #optional; present while the laser has an active countdown
+  "off_in_s": 240,  // #optional; present while the laser has an active countdown
   "atten": {
     "mv1": 1800,
     "mv2": 1900,
@@ -521,7 +522,7 @@ busy, the entire `mems` value is `null`.
 
 **AS default:** common fields, `ambient_c`, `activity`, `mems`, plus:
 
-```text
+```json
 {
   "outputs": {
     "yj_cal": {
@@ -540,7 +541,7 @@ busy, the entire `mems` value is `null`.
   "split": {
     "yj": {
       "ratio_out": [0.2, 0.3, 0.5],
-      "off_in_s": 240  #optional; present while the channel is switching
+      "off_in_s": 240  // #optional; present while the channel is switching
     },
     "hk": {
       "ratio_out": [1, 0, 0]
@@ -563,7 +564,7 @@ invented. AS/CAL have no emission view.
 **System:** common fields and the following fields. Optional examples illustrate
 independent conditions; they need not occur together:
 
-```text
+```json
 {
   "ip": {
     "src": "dhcp",
@@ -576,7 +577,7 @@ independent conditions; they need not occur together:
   "mqtt": {
     "broker": "broker.example:1883"
   },
-  "ntp": {  #optional; present when SNTP is compiled
+  "ntp": {  // #optional; present when SNTP is compiled
     "src": "dhcp",
     "server": "192.0.2.2",
     "last_sync_utc_ms": 1793900000000
@@ -594,17 +595,17 @@ independent conditions; they need not occur together:
   "ota": {
     "image": "permanent",
     "image_hash": "<64 hex characters>",
-    "enabled": true,  #optional; present only while the upload window is enabled
-    "pending": true,  #optional; present only with a pending image
-    "remaining_s": 120,  #optional; present only while nonzero
-    "trial_remaining_s": 240  #optional; present only during an unconfirmed trial
+    "enabled": true,  // #optional; present only while the upload window is enabled
+    "pending": true,  // #optional; present only with a pending image
+    "remaining_s": 120,  // #optional; present only while nonzero
+    "trial_remaining_s": 240  // #optional; present only during an unconfirmed trial
   },
-  "dropped_best_effort": 1,  #optional; present only when nonzero
-  "dropped_replies": 1,  #optional; present only when nonzero
-  "publish_failures": 1,  #optional; present only when nonzero
-  "serial_guard_s": 12,  #optional; present while serial guard is active
-  "reboot_in_s": 3,  #optional; present while reboot is pending
-  "errors": [  #optional; present only when problems are reported
+  "dropped_best_effort": 1,  // #optional; present only when nonzero
+  "dropped_replies": 1,  // #optional; present only when nonzero
+  "publish_failures": 1,  // #optional; present only when nonzero
+  "serial_guard_s": 12,  // #optional; present while serial guard is active
+  "reboot_in_s": 3,  // #optional; present while reboot is pending
+  "errors": [  // #optional; present only when problems are reported
     "NTP synchronization failed"
   ]
 }
@@ -631,11 +632,11 @@ in the default; NTP failures in system; laser/atten problems accompany emission.
 - **Topic:** `cmd/<device>/req/temps`; response uses the same key under `cmd/<device>/resp/`.
 - **Availability:** all board profiles in the normal build.
 - **No payload -> temperature status:**
-  ```text
+  ```json
   {
     "ambient_c": 0.0,
-    "laserbank_c": 0.0,  #optional; TIB only
-    "lasers": {  #optional; TIB only
+    "laserbank_c": 0.0,  // #optional; TIB only
+    "lasers": {  // #optional; TIB only
       "<lasername>": 0.0
     }
   }
@@ -714,17 +715,17 @@ may subsequently update it and no clock value is saved in app settings.
   }
   ```
 - **Payload:** update IP configuration.
-  ```text
+  ```json
   {
-    "ip": "<ip>",  #optional; retain current value
-    "ntp": "<ip>",  #optional; retain current value
-    "dns": "<ip>",  #optional; retain current value
-    "subnet": "<subnet>",  #optional; retain current value
-    "gateway": "<gateway>",  #optional; retain current value
-    "try_dhcp_first": true,  #optional; retain current value
-    "prefer_dhcpntp": true,  #optional; retain current value
-    "prefer_dhcpdns": true,  #optional; retain current value
-    "persist": true  #optional; default false
+    "ip": "<ip>",  // #optional; retain current value
+    "ntp": "<ip>",  // #optional; retain current value
+    "dns": "<ip>",  // #optional; retain current value
+    "subnet": "<subnet>",  // #optional; retain current value
+    "gateway": "<gateway>",  // #optional; retain current value
+    "try_dhcp_first": true,  // #optional; retain current value
+    "prefer_dhcpntp": true,  // #optional; retain current value
+    "prefer_dhcpdns": true,  // #optional; retain current value
+    "persist": true  // #optional; default false
   }
   ```
 
@@ -758,10 +759,10 @@ is required. A settings-save failure returns an error after runtime application.
   {"broker":"<value>:<port>","dns_supported":true}
   ```
 - **Payload:** update MQTT broker configuration.
-  ```text
+  ```json
   {
     "broker": "<ipv4-or-hostname>:<port>",
-    "persist": true  #optional; default false
+    "persist": true  // #optional; default false
   }
   ```
 
@@ -821,9 +822,9 @@ is runtime-only and resets to its compiled default after reboot.
   ```
 - **Payload:** erase persisted app settings except IP settings and boot count
   immediately before reboot.
-  ```text
+  ```json
   {
-    "erase_non_ip_settings": true  #optional; default false; normal reboot preserves settings
+    "erase_non_ip_settings": true  // #optional; default false; normal reboot preserves settings
   }
   ```
 - **Serial form:**
@@ -872,10 +873,10 @@ See [firmware updates](ota.md) for network and USB installation.
   Repeating confirmation for an already confirmed matching image is harmless.
   Confirmation leaves bank mode `override_off`; the operator restores `auto`.
 - **Payload examples:**
-  ```text
+  ```json
   {
     "enable": true,
-    "duration_s": 600  #optional; default 600; opening only
+    "duration_s": 600  // #optional; default 600; opening only
   }
   ```
   ```json
@@ -924,10 +925,10 @@ See [firmware updates](ota.md) for network and USB installation.
 - **No payload or payload -> one MEMS switch state.**
 
   Static payload:
-  ```text
+  ```json
   {
     "state": "A",
-    "force": false  #optional; default false; static A/B only
+    "force": false  // #optional; default false; static A/B only
   }
   ```
   or:
@@ -935,12 +936,12 @@ See [firmware updates](ota.md) for network and USB installation.
   {"state":"B"}
   ```
   Toggle:
-  ```text
+  ```json
   {
     "state": "A",
-    "duty_cycle": 0.5,  #optional; omit for static A; 0 selects static B
-    "cycle_ms": 400,  #optional; fastest safe cycle when omitted; mixed duty only
-    "off_in_s": 30  #optional; default 14400; positive for mixed duty
+    "duty_cycle": 0.5,  // #optional; omit for static A; 0 selects static B
+    "cycle_ms": 400,  // #optional; fastest safe cycle when omitted; mixed duty only
+    "off_in_s": 30  // #optional; default 14400; positive for mixed duty
   }
   ```
 
@@ -959,14 +960,14 @@ See [firmware updates](ota.md) for network and USB installation.
   {"state":"A"}
   ```
   Response while configured with a non-constant duty request:
-  ```text
+  ```json
   {
     "state": "A|B|?",
-    "duty_cycle": 0.5,  #optional; present only for mixed-duty requests
-    "cycle_ms": 400,  #optional; present only for mixed-duty requests
-    "a_ms": 200,  #optional; present only for mixed-duty requests
-    "b_ms": 200,  #optional; present only for mixed-duty requests
-    "off_in_s": 30  #optional; present only for mixed-duty requests
+    "duty_cycle": 0.5,  // #optional; present only for mixed-duty requests
+    "cycle_ms": 400,  // #optional; present only for mixed-duty requests
+    "a_ms": 200,  // #optional; present only for mixed-duty requests
+    "b_ms": 200,  // #optional; present only for mixed-duty requests
+    "off_in_s": 30  // #optional; present only for mixed-duty requests
   }
   ```
 - **Notes:**
@@ -1030,11 +1031,11 @@ See [firmware updates](ota.md) for network and USB installation.
   }
   ```
 - **Payload:** set one route.
-  ```text
+  ```json
   {
     "input": "<source>",
     "output": "<dest>",
-    "force": false  #optional; default false
+    "force": false  // #optional; default false
   }
   ```
 - **Notes:** The no-payload response lists every destination present in the active
@@ -1054,27 +1055,27 @@ See [firmware updates](ota.md) for network and USB installation.
 - **Topic:** `cmd/<device>/req/mems/route/loss`; response uses the same key under `cmd/<device>/resp/`.
 - **Availability:** all board profiles; names follow the selected profile.
 - **Payload:** set one route-loss record.
-  ```text
+  ```json
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": 0.07,
-    "persist": true  #optional; default false
+    "persist": true  // #optional; default false
   }
   ```
   or:
-  ```text
+  ```json
   {
     "route": "yj_sm_to_yj_pd",
     "1430yj": "0.32 dB",
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
   or:
-  ```text
+  ```json
   {
     "route": "yj_calin_to_yj_split",
     "split": ["0.32 dB", "0.32 dB", 0.07],
-    "persist": true  #optional; default false
+    "persist": true  // #optional; default false
   }
   ```
 - **Payload -> route-loss records for one route:**
@@ -1109,11 +1110,11 @@ On TIB, YJ paths expose only `1028y`, `1270j`, and `1430yj`; HK paths expose
 only `1430hk`, `1510h`, and `2330k`. Cross-channel writes are rejected. Forward
 launch losses use `yj_laser_to_yj_ao/fei` or `hk_laser_to_hk_ao/fei` for all
 three lasers in the channel. For example:
-```text
+```json
 {
   "route": "yj_laser_to_yj_fei",
   "1430yj": "61.862828 dB",
-  "persist": true  #optional; default false
+  "persist": true  // #optional; default false
 }
 ```
 The settings layer resolves 1430 to the same physical loss record used by
@@ -1173,13 +1174,13 @@ applied/saved if a later entry fails. These edits do not actuate MEMS switches.
   - Responses use the same key under `cmd/<device>/resp/...`.
   
 - **Payload to `mems/split` -> set splitter state:**
-  ```text
+  ```json
   {
     "channel": "yj",
     "ratio1": 0.25,
     "ratio2": 0.25,
-    "cycle_ms": 800,  #optional; fastest safe cycle when omitted
-    "off_in_s": 0  #optional; default 14400; zero also selects the default
+    "cycle_ms": 800,  // #optional; fastest safe cycle when omitted
+    "off_in_s": 0  // #optional; default 14400; zero also selects the default
   }
   ```
 - **No payload to `mems/split/yj` or `mems/split/hk` -> get splitter state.**
@@ -1306,20 +1307,20 @@ applied/saved if a later entry fails. These edits do not actuate MEMS switches.
   }
   ```
 - **Payload:** set one laser output level.
-  ```text
+  ```json
   {
     "name": "<lasername>",
     "value": 0.5,
-    "off_in_s": 600  #optional; default from this laser's settings.autooff_s; must be positive
+    "off_in_s": 600  // #optional; default from this laser's settings.autooff_s; must be positive
   }
   ```
 
 - **Alternative drive/stop payloads:**
-  ```text
+  ```json
   {
     "name": "1270j",
     "value_ma": 30.0,
-    "off_in_s": 600  #optional; default from settings.autooff_s
+    "off_in_s": 600  // #optional; default from settings.autooff_s
   }
   ```
   ```json
@@ -1515,27 +1516,27 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   }
   ```
 - **Payload:** replace the complete power curve (example for a linear model).
-  ```text
+  ```json
   {
     "name": "1270j",
     "settings": {
-      "threshold_current_ma": 13.0,  #optional; omit all four curve fields together; otherwise all required
-      "efficiency_mw_per_ma": 0.26,  #optional; omit all four curve fields together; otherwise all required
-      "efficiency_mw_per_ma2": 0.0,  #optional; omit all four curve fields together; otherwise all required
-      "efficiency_ref_ma": 52.0  #optional; omit all four curve fields together; otherwise all required
+      "threshold_current_ma": 13.0,  // #optional; omit all four curve fields together; otherwise all required
+      "efficiency_mw_per_ma": 0.26,  // #optional; omit all four curve fields together; otherwise all required
+      "efficiency_mw_per_ma2": 0.0,  // #optional; omit all four curve fields together; otherwise all required
+      "efficiency_ref_ma": 52.0  // #optional; omit all four curve fields together; otherwise all required
     },
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
   Sending any curve coefficient requires all four. Other writable settings remain
   independent partial updates, for example:
-  ```text
+  ```json
   {
     "name": "1270j",
     "settings": {
-      "min_autolevel_current_ma": 15.0  #optional; retain current value
+      "min_autolevel_current_ma": 15.0  // #optional; retain current value
     },
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
   A complete curve can be installed without a calibration run or retained dataset.
@@ -1544,43 +1545,43 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   `name` and a nonempty `settings` object are required for a set. The curve and
   wavelength groups are optional as groups, but incomplete groups are rejected.
   Numbers below are illustrative; query the installed laser before editing.
-  ```text
+  ```json
   {
     "name": "1270j",
     "settings": {
-      "expected_serial": 8228,  #optional; retain current value
-      "nominal_current_ma": 52.0,  #optional; retain current value
-      "max_current_ma": 65.0,  #optional; retain current value
-      "current_cal_pct": 100.0,  #optional; retain current value
-      "fractional_noise": 0.0424917488,  #optional; retain current value
-      "constant_noise_mw": 0,  #optional; retain current value
-      "threshold_current_ma": 9.7877655,  #optional; omit the entire four-field curve group or supply all four
-      "efficiency_mw_per_ma": 0.236898144,  #optional; omit the entire four-field curve group or supply all four
-      "efficiency_mw_per_ma2": 0,  #optional; omit the entire four-field curve group or supply all four
-      "efficiency_ref_ma": 52,  #optional; omit the entire four-field curve group or supply all four
-      "ref_mw": 10,  #optional; retain current value
-      "ref_ma": 52.0,  #optional; retain current value
-      "ref_temp_c": 25.0,  #optional; retain current value
-      "min_autolevel_current_ma": 11.7,  #optional; retain current value
-      "max_autolevel_current_ma": 65.0,  #optional; retain current value
-      "wave_ref_nm": 1270.52,  #optional; omit the entire wavelength triplet or supply all three
-      "wave_ref_ma": 52.0,  #optional; omit the entire wavelength triplet or supply all three
-      "wave_ref_temp_c": 25.0,  #optional; omit the entire wavelength triplet or supply all three
-      "operating_temp_range_c": [17.0, 38.0],  #optional; retain current value
-      "default_operating_temp_c": 25.0,  #optional; retain current value
-      "tec_curr_lim_a": 1.0,  #optional; retain current value
-      "tec_pid": {  #optional; retain current value
-        "p": 100,  #optional; retain current value
-        "i": 1000,  #optional; retain current value
-        "d": 0  #optional; retain current value
+      "expected_serial": 8228,  // #optional; retain current value
+      "nominal_current_ma": 52.0,  // #optional; retain current value
+      "max_current_ma": 65.0,  // #optional; retain current value
+      "current_cal_pct": 100.0,  // #optional; retain current value
+      "fractional_noise": 0.0424917488,  // #optional; retain current value
+      "constant_noise_mw": 0,  // #optional; retain current value
+      "threshold_current_ma": 9.7877655,  // #optional; omit the entire four-field curve group or supply all four
+      "efficiency_mw_per_ma": 0.236898144,  // #optional; omit the entire four-field curve group or supply all four
+      "efficiency_mw_per_ma2": 0,  // #optional; omit the entire four-field curve group or supply all four
+      "efficiency_ref_ma": 52,  // #optional; omit the entire four-field curve group or supply all four
+      "ref_mw": 10,  // #optional; retain current value
+      "ref_ma": 52.0,  // #optional; retain current value
+      "ref_temp_c": 25.0,  // #optional; retain current value
+      "min_autolevel_current_ma": 11.7,  // #optional; retain current value
+      "max_autolevel_current_ma": 65.0,  // #optional; retain current value
+      "wave_ref_nm": 1270.52,  // #optional; omit the entire wavelength triplet or supply all three
+      "wave_ref_ma": 52.0,  // #optional; omit the entire wavelength triplet or supply all three
+      "wave_ref_temp_c": 25.0,  // #optional; omit the entire wavelength triplet or supply all three
+      "operating_temp_range_c": [17.0, 38.0],  // #optional; retain current value
+      "default_operating_temp_c": 25.0,  // #optional; retain current value
+      "tec_curr_lim_a": 1.0,  // #optional; retain current value
+      "tec_pid": {  // #optional; retain current value
+        "p": 100,  // #optional; retain current value
+        "i": 1000,  // #optional; retain current value
+        "d": 0  // #optional; retain current value
       },
-      "disable_tec_at_autooff": true,  #optional; retain current value
-      "ntc_coeff_pct_per_c": -4.387276,  #optional; retain current value
-      "dlambda_dT_nm_per_k": 0.08,  #optional; retain current value
-      "dlambda_dA_nm_per_ma": 0.003,  #optional; retain current value
-      "autooff_s": 10800  #optional; retain current value
+      "disable_tec_at_autooff": true,  // #optional; retain current value
+      "ntc_coeff_pct_per_c": -4.387276,  // #optional; retain current value
+      "dlambda_dT_nm_per_k": 0.08,  // #optional; retain current value
+      "dlambda_dA_nm_per_ma": 0.003,  // #optional; retain current value
+      "autooff_s": 10800  // #optional; retain current value
     },
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
   Successful sets return `{"status":"ok"}`. Queries return the settings object
@@ -1850,21 +1851,21 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   must be inside configured limits. Firmware sets `ref_temp_c` and qualifies
   temperature after start. A stored dark alone does not mean the PD is on.
 - **Payload -> start and return status:**
-  ```text
+  ```json
   {
     "laser": "1270j",
     "output": "yj_ao",
-    "fiber": "S",  #optional; default S
-    "dwell_ms": 1000,  #optional; default 1000; 100..2000
-    "settle_ms": 2000,  #optional; default 2000; 100..10000
-    "apply": true,  #optional; default true
-    "max_fit_residual_pct": 5.0,  #optional; default 5; strictly between 0 and 100
-    "pd_target_mv": 1500.0,  #optional; default 1500; strictly between 0 and 1850
-    "determine_static_loss": false,  #optional; default false
-    "update_noise": false,  #optional; default false
-    "other_output": false,  #optional; default false; requires determine_static_loss=true
-    "persist": false,  #optional; default false; true requires apply=true
-    "loopback_loss_db": 10.0  #optional; required when determine_static_loss=true; finite and nonnegative
+    "fiber": "S",  // #optional; default S
+    "dwell_ms": 1000,  // #optional; default 1000; 100..2000
+    "settle_ms": 2000,  // #optional; default 2000; 100..10000
+    "apply": true,  // #optional; default true
+    "max_fit_residual_pct": 5.0,  // #optional; default 5; strictly between 0 and 100
+    "pd_target_mv": 1500.0,  // #optional; default 1500; strictly between 0 and 1850
+    "determine_static_loss": false,  // #optional; default false
+    "update_noise": false,  // #optional; default false
+    "other_output": false,  // #optional; default false; requires determine_static_loss=true
+    "persist": false,  // #optional; default false; true requires apply=true
+    "loopback_loss_db": 10.0  // #optional; required when determine_static_loss=true; finite and nonnegative
   }
   ```
   `laser` and same-band `output` are required. The annotations give defaults; the 10 dB external loopback value is only an example,
@@ -1882,18 +1883,18 @@ With `powered:false`, raw zeros/false are placeholders. Failed reads return erro
   ```json
   {"stop":true}
   ```
-  ```text
+  ```json
   {
     "continue": true,
-    "loopback_loss_db": 10.0  #optional; retain the original external loopback loss
+    "loopback_loss_db": 10.0  // #optional; retain the original external loopback loss
   }
   ```
-  ```text
+  ```json
   {
     "restore_defaults": true,
     "laser": "1270j",
     "output": "yj_ao",
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
   STOP retains raw data. Continue is valid only at `awaiting_output`; the optional
@@ -2005,18 +2006,18 @@ A reviewed candidate can be installed directly; there is no separate "accept"
 command or notebook token. For example, send a complete candidate to
 `cmd/<device>/req/laser/settings` (values below illustrate the payload):
 
-```text
+```json
 {
   "name": "1430hk",
   "settings": {
-    "threshold_current_ma": 4.0,  #optional; omit all four curve fields together; otherwise all required
-    "efficiency_mw_per_ma": 0.22,  #optional; omit all four curve fields together; otherwise all required
-    "efficiency_mw_per_ma2": 0.0,  #optional; omit all four curve fields together; otherwise all required
-    "efficiency_ref_ma": 49.0,  #optional; omit all four curve fields together; otherwise all required
-    "min_autolevel_current_ma": 5.3,  #optional; retain current value
-    "max_autolevel_current_ma": 60.0  #optional; retain current value
+    "threshold_current_ma": 4.0,  // #optional; omit all four curve fields together; otherwise all required
+    "efficiency_mw_per_ma": 0.22,  // #optional; omit all four curve fields together; otherwise all required
+    "efficiency_mw_per_ma2": 0.0,  // #optional; omit all four curve fields together; otherwise all required
+    "efficiency_ref_ma": 49.0,  // #optional; omit all four curve fields together; otherwise all required
+    "min_autolevel_current_ma": 5.3,  // #optional; retain current value
+    "max_autolevel_current_ma": 60.0  // #optional; retain current value
   },
-  "persist": false  #optional; default false
+  "persist": false  // #optional; default false
 }
 ```
 
@@ -2205,22 +2206,22 @@ work, consistent with their documented effects.
     "value_db": 12.5
   }
   ```
-  ```text
+  ```json
   {
-    "value1": 0.25,  #optional; retain this DAC when omitted; supply at least one physical value
-    "value2_db": 6.0  #optional; retain this DAC when omitted; supply at least one physical value
+    "value1": 0.25,  // #optional; retain this DAC when omitted; supply at least one physical value
+    "value2_db": 6.0  // #optional; retain this DAC when omitted; supply at least one physical value
   }
   ```
-  ```text
+  ```json
   {
-    "value1_mv": 1234.0,  #optional; retain this DAC when omitted; supply at least one physical value
-    "value2": 1.0  #optional; retain this DAC when omitted; supply at least one physical value
+    "value1_mv": 1234.0,  // #optional; retain this DAC when omitted; supply at least one physical value
+    "value2": 1.0  // #optional; retain this DAC when omitted; supply at least one physical value
   }
   ```
-  ```text
+  ```json
   {
-    "value1_db": 12.0,  #optional; retain DAC1 when omitted
-    "value2_mv": 2200.0  #optional; retain DAC2 when omitted; supply at least one value
+    "value1_db": 12.0,  // #optional; retain DAC1 when omitted
+    "value2_mv": 2200.0  // #optional; retain DAC2 when omitted; supply at least one value
   }
   ```
   Each physical attenuator may use a different unit, but a single physical
@@ -2288,24 +2289,24 @@ work, consistent with their documented effects.
   ```
   Values illustrate the schema, not calibration for a particular installed device.
 - **Payload -> partial update; response has the same complete shape:**
-  ```text
+  ```json
   {
-    "open1_mv": 1250.0,  #optional; retain current value
-    "open2_mv": 1250.0,  #optional; retain current value
-    "dac1": {  #optional; retain omitted fields and the other DAC
-      "fvoa_50pct_mv": 3144.95,  #optional; retain current value
-      "slope_inv_fvoa_mv": 0.00303104,  #optional; retain current value
-      "max_atten_db": 65.0,  #optional; retain current value
-      "max_calibrated_db": 55.0,  #optional; retain current value
-      "gain": 1.533,  #optional; retain current value
-      "rms_db": 0.75,  #optional; retain current uncertainty
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0],  #optional; retain all six terms
-      "max_fit_residual_db": 2.0  #optional; retain current acceptance threshold
+    "open1_mv": 1250.0,  // #optional; retain current value
+    "open2_mv": 1250.0,  // #optional; retain current value
+    "dac1": {  // #optional; retain omitted fields and the other DAC
+      "fvoa_50pct_mv": 3144.95,  // #optional; retain current value
+      "slope_inv_fvoa_mv": 0.00303104,  // #optional; retain current value
+      "max_atten_db": 65.0,  // #optional; retain current value
+      "max_calibrated_db": 55.0,  // #optional; retain current value
+      "gain": 1.533,  // #optional; retain current value
+      "rms_db": 0.75,  // #optional; retain current uncertainty
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0],  // #optional; retain all six terms
+      "max_fit_residual_db": 2.0  // #optional; retain current acceptance threshold
     },
-    "dac2": {  #optional; same accepted fields as dac1
-      "rms_db": 0.8  #optional; retain current uncertainty
+    "dac2": {  // #optional; same accepted fields as dac1
+      "rms_db": 0.8  // #optional; retain current uncertainty
     },
-    "persist": false  #optional; default false; true saves complete current settings
+    "persist": false  // #optional; default false; true saves complete current settings
   }
   ```
   Send any subset, for example one model coefficient, only correction terms,
@@ -2413,7 +2414,7 @@ operating ceiling; the first measured point above 55 dB may anchor that boundary
 The retained support does not establish physical extinction.
 
 - **No payload -> compact calibration state:**
-  ```text
+  ```json
   {
     "state": "running",
     "mode": "none",
@@ -2431,17 +2432,17 @@ The retained support does not establish physical extinction.
       "open_mv": 1250.0,
       "open_loss_db": 0.02,
       "valid": true,
-      "accepted": true,  #optional; present when dac1.valid=true
-      "points": 12,  #optional; present when dac1.valid=true
-      "fvoa_50pct_mv": 3144.95,  #optional; present when dac1.valid=true
-      "slope_inv_fvoa_mv": 0.00303104,  #optional; present when dac1.valid=true
-      "max_atten_db": 48.36,  #optional; present when dac1.valid=true
-      "max_calibrated_db": 45.0,  #optional; present when dac1.valid=true
-      "max_atten_sigma_db": 0.29,  #optional; present when dac1.valid=true
-      "corr": 0.999,  #optional; present when dac1.valid=true
-      "rms_db": 0.1,  #optional; present when dac1.valid=true
-      "max_abs_db": 0.2,  #optional; present when dac1.valid=true
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]  #optional; present when dac1.valid=true
+      "accepted": true,  // #optional; present when dac1.valid=true
+      "points": 12,  // #optional; present when dac1.valid=true
+      "fvoa_50pct_mv": 3144.95,  // #optional; present when dac1.valid=true
+      "slope_inv_fvoa_mv": 0.00303104,  // #optional; present when dac1.valid=true
+      "max_atten_db": 48.36,  // #optional; present when dac1.valid=true
+      "max_calibrated_db": 45.0,  // #optional; present when dac1.valid=true
+      "max_atten_sigma_db": 0.29,  // #optional; present when dac1.valid=true
+      "corr": 0.999,  // #optional; present when dac1.valid=true
+      "rms_db": 0.1,  // #optional; present when dac1.valid=true
+      "max_abs_db": 0.2,  // #optional; present when dac1.valid=true
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]  // #optional; present when dac1.valid=true
     },
     "dac2": {
       "reason": "pending",
@@ -2453,13 +2454,13 @@ The retained support does not establish physical extinction.
   ```
 - **Payload:** start automatic TIB calibration for the logical pair belonging to
   a laser.
-  ```text
+  ```json
   {
     "laser": "1430yj",
     "output": "yj_ao",
-    "fiber": "M",  #optional; default M
-    "dwell_ms": 400,  #optional; default 400; normalization described below
-    "persist": false  #optional; default false
+    "fiber": "M",  // #optional; default M
+    "dwell_ms": 400,  // #optional; default 400; normalization described below
+    "persist": false  // #optional; default false
   }
   ```
   `dwell_ms` defaults to 400 ms. Values below 100 ms select that default;
@@ -2729,24 +2730,24 @@ explains retained-record inspection and fitting tools.
   `lowest_dark` always has the same field set as `dark`. When no measured
   minimum exists, its duration/count are zero and measurement values are null.
 - **Payload:** measure, force, or reset one channel's dark.
-  ```text
+  ```json
   {
     "duration_ms": 1000,
-    "persist": false,  #optional; default false
-    "reset_lowest": false  #optional; default false; promote the completed measured dark
+    "persist": false,  // #optional; default false
+    "reset_lowest": false  // #optional; default false; promote the completed measured dark
   }
   ```
-  ```text
+  ```json
   {
     "dark_mv": 0.0,
-    "rms_mv": 1.5,  #optional; default 1.5; only valid with dark_mv
-    "persist": true  #optional; default false
+    "rms_mv": 1.5,  // #optional; default 1.5; only valid with dark_mv
+    "persist": true  // #optional; default false
   }
   ```
-  ```text
+  ```json
   {
     "reset_lowest": true,
-    "persist": false  #optional; default false
+    "persist": false  // #optional; default false
   }
   ```
 
@@ -2797,14 +2798,14 @@ explains retained-record inspection and fitting tools.
   }
   ```
 - **Payload:** update one channel's photodiode settings.
-  ```text
+  ```json
   {
-    "noisewarn_mv": 10.0,  #optional; retain current value
-    "responsivity_a_per_w": 0.93,  #optional; retain current value
-    "transimpedance_v_per_a": 20000000000.0,  #optional; retain current value
-    "power": "auto",  #optional; retain current value
-    "autooff_s": 36000,  #optional; retain current value
-    "persist": true  #optional; default false
+    "noisewarn_mv": 10.0,  // #optional; retain current value
+    "responsivity_a_per_w": 0.93,  // #optional; retain current value
+    "transimpedance_v_per_a": 20000000000.0,  // #optional; retain current value
+    "power": "auto",  // #optional; retain current value
+    "autooff_s": 36000,  // #optional; retain current value
+    "persist": true  // #optional; default false
   }
   ```
 
@@ -2878,32 +2879,32 @@ in the `pd` response.
 - **Topic:** `cmd/<device>/req/measure_throughput`; response uses the same key under `cmd/<device>/resp/`.
 - **Availability:** TIB only.
 - **Payload:** start monitoring.
-  ```text
+  ```json
   {
-    "autolevel": true,  #optional; default true
-    "initial_level": 0.5,  #optional; default 0.5; requires autolevel=true
+    "autolevel": true,  // #optional; default true
+    "initial_level": 0.5,  // #optional; default 0.5; requires autolevel=true
     "laser": "1028y",
-    "fiber": "M",  #optional; default M
+    "fiber": "M",  // #optional; default M
     "output": "yj_ao",
-    "max_flux_nw": 193.232,  #optional; default 0 (no cap); requires autolevel=true
+    "max_flux_nw": 193.232,  // #optional; default 0 (no cap); requires autolevel=true
     "off_in_s": 300,
-    "format": "binary",  #optional; firmware default json; Python default binary
-    "channel": "yj",  #optional; inferred from laser; supplied value must match
-    "input": "yj_laser",  #optional; inferred from laser
-    "autolevel_response_hz": 0.1  #optional; default 0; requires autolevel=true
+    "format": "binary",  // #optional; firmware default json; Python default binary
+    "channel": "yj",  // #optional; inferred from laser; supplied value must match
+    "input": "yj_laser",  // #optional; inferred from laser
+    "autolevel_response_hz": 0.1  // #optional; default 0; requires autolevel=true
   }
   ```
 - **Payload:** start monitoring an externally supplied/calibration input.
-  ```text
+  ```json
   {
     "autolevel": false,
     "laser": "none",
     "channel": "yj",
-    "input": "yj_cal",  #optional; omit together with output to leave launch routing unchanged
-    "output": "yj_ao",  #optional; omit together with input
-    "fiber": "M",  #optional; default M
-    "format": "binary",  #optional; firmware default json; Python default binary
-    "off_in_s": 0  #optional; default 0 (unlimited passive run)
+    "input": "yj_cal",  // #optional; omit together with output to leave launch routing unchanged
+    "output": "yj_ao",  // #optional; omit together with input
+    "fiber": "M",  // #optional; default M
+    "format": "binary",  // #optional; firmware default json; Python default binary
+    "off_in_s": 0  // #optional; default 0 (unlimited passive run)
   }
   ```
 - **Payload:** stop monitoring.
@@ -3014,13 +3015,13 @@ throughput are NaN/null because emission is unknown. `launch_route_tx` reports
 the resolved transmission for an explicitly selected launch; it is NaN/null for a
 return-only capture. The acquisition selector remains `laser:"none"`; only
 route-loss storage uses `generic`. A return-only example:
-```text
+```json
 {
   "laser": "none",
   "channel": "hk",
-  "fiber": "S",  #optional; default M
+  "fiber": "S",  // #optional; default M
   "autolevel": false,
-  "format": "binary"  #optional; firmware default json; Python default binary
+  "format": "binary"  // #optional; firmware default json; Python default binary
 }
 ```
 
