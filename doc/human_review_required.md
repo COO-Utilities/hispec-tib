@@ -353,6 +353,16 @@ LLMs Agents: Do NOT change heading names in this file.
   performs no hardware refresh, timer rearming or persistence. Vendor-derived
   wavelength coefficients and retro power before unrecorded route loss are
   documented; their absolute optical accuracy remains a bench measurement.
+  - 2026-11-05: notebook consumers missed by `015a0b8` now use `device`,
+    `ambient_c` and `loss1_db`/`loss2_db`. Inventory, acquisition and review no
+    longer use the removed fields. Raw temperature diagnostics remain in captures;
+    numeric analysis and plots show unavailable temperatures as gaps. The older
+    temperature notebook's `LOAD_LASERS` definition now precedes its first use.
+    Temporary offline replays passed inventory/archive, acquisition success and
+    failure cleanup, calibration setup/`asdict`, and numeric/null/error analysis.
+    All 12 local notebooks' 311 code cells compile; 445 PCB-call signatures match.
+    Captured outputs and metadata were preserved. Strict docs pass; physical
+    acquisition and the broader status-load validation above remain unverified.
 
 
 ## Decisions To Make
