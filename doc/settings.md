@@ -218,13 +218,16 @@ NVS writes happen synchronously through Zephyr NVS and may block the caller.
 Command handlers that set `persist:true` can therefore block in the executor
 thread.
 
-Photodiode active dark windows, forced dark values, lowest-dark records, and
-persisted dark updates happen only through `pd/dark/<channel>`. Duration-based
+Photodiode active dark windows, forced dark values and lowest-dark records are
+changed through `pd/dark/<channel>`. Duration-based
 dark captures are armed by the command and committed later by the photodiode
 sampler thread.
 `pd/settings/<channel>` owns photodiode response settings and relay power intent;
-it does not update or report dark summaries. `persist:true` on `pd/dark` writes
-that dark settings snapshot to NVS.
+it does not replace or report dark summaries. Both `pd/dark` and `pd/settings`
+with `persist:true` save the complete channel record, including its current dark,
+lowest-dark, response and power policy. A save failure leaves applied RAM values
+in place and is reported by the synchronous command or, for a completed measured
+dark, the `photodiode_dark_persist_failed` warning.
 
 MEMS static state requests and route applications update the persisted
 per-switch intent once per command, including all accepted steps of a partially

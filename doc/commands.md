@@ -2712,11 +2712,22 @@ explains retained-record inspection and fitting tools.
       "power_uw": 0.0,
       "power_err_uw": 0.0
     },
-    "lowest_dark": null
+    "lowest_dark": {
+      "duration_ms": 0,
+      "failed_samples": 0,
+      "mean_mv": null,
+      "mean_net_mv": null,
+      "rms_mv": null,
+      "mean_net_err_mv": null,
+      "min_mv": null,
+      "max_mv": null,
+      "power_uw": null,
+      "power_err_uw": null
+    }
   }
   ```
-  `lowest_dark` is null when no measured minimum exists; otherwise it has the
-  same field set as `dark`.
+  `lowest_dark` always has the same field set as `dark`. When no measured
+  minimum exists, its duration/count are zero and measurement values are null.
 - **Payload:** measure, force, or reset one channel's dark.
   ```text
   {
@@ -2809,7 +2820,9 @@ explains retained-record inspection and fitting tools.
   setting is required, so `persist` alone is invalid. Validation errors occur
   before application. Later power, timer or NVS failures can leave prior steps
   applied; a persistence error leaves the new RAM settings in use. YJ and HK settings use separate
-  command keys and separate app NVS records. `power` is the relay intent for
+  command keys and separate app NVS records. `persist:true` saves the entire
+  channel record, including current dark/lowest-dark values and response/power
+  settings, even when only one setting was supplied. `power` is the relay intent for
   this channel: `auto`, `override_on`, or `override_off`. The compiled `autooff_s`
   default is 36000 seconds (ten hours); saved policies keep their configured value.
   `autooff_s` is the
