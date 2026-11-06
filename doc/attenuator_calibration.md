@@ -585,7 +585,7 @@ this flow. It has two intentionally separate paths:
 The manual path supports both the firmware-style weighted fit and a SciPy
 least-squares exploratory fit. Its plots show propagated photodiode and
 normalization uncertainty; coefficients should be reviewed before any
-`atten_coeff(..., persist=True)` command is used.
+`atten_settings(..., persist=True)` command is used.
 
 A coefficient object has this shape (illustrative values, not a calibration
 for an installed device):

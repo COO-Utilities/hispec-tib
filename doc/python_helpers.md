@@ -129,7 +129,7 @@ nonfinite numbers and objects without a JSON representation fail locally.
 A reported partial board error can leave successful hardware writes applied;
 query confirmed state before deciding the next action.
 
-`atten_coeff()` accepts an `AttenuatorPhysicalCoeff`, a mapping with wire field
+`atten_settings()` accepts an `AttenuatorPhysicalCoeff`, a mapping with wire field
 names, or a flat sequence for each physical drive. The sequence has **five or
 eleven values**, in this order:
 
@@ -141,7 +141,12 @@ fvoa_50pct_mv, slope_inv_fvoa_mv, max_atten_db, gain, max_calibrated_db
 The six optional terms form `correction_coeff`. Use a mapping or dataclass to
 include `rms_db`; it has no positional slot. Named fields are easier to review
 than a long sequence. The helper checks sequence length to assign those names;
-the PCB checks the coefficient values, completeness and model validity.
+the PCB checks the resulting model after merging omitted fields with the current
+settings. RMS and correction terms are retained when omitted. `atten_settings()`
+returns `AttenuatorSettings` for queries and updates, including `open1_mv`,
+`open2_mv` and each DAC's model and `max_fit_residual_db`. `persist=True` alone
+saves the complete current configuration. The coefficient-only dataclasses
+remain useful for offline calculations; queried settings are usable there too.
 
 ## Included tools and their side effects
 
@@ -385,12 +390,13 @@ completion, `.wait(timeout_s=...)` returns the dataset or rethrows failure, and
 `.save()` waits then writes the NPZ. A wait timeout does not cancel acquisition.
 Grid `.fit()`/`.fit_slice()` are exploratory host fits, not the firmware's bridge
 calibration or proof of absolute optical accuracy. Saturated/censored points are
-handled separately; inspect fit acceptance before an explicit `atten_coeff()`.
+handled separately; inspect fit acceptance before an explicit `atten_settings()`.
 
 The manual grid fitter uses a simpler erf surface than the firmware's normalized,
 finite-floor, corrected model. `fit.coeff_args()` returns only shape/gain terms;
-`atten_coeff()` additionally requires a leakage floor and calibrated limit for
-each drive. Treat the grid result as a diagnostic, not a directly installable
+An intentionally complete replacement additionally supplies a leakage floor,
+calibrated limit and RMS for each drive; partial `atten_settings()` updates retain
+the existing values. Treat the grid result as a diagnostic, not a directly installable
 replacement for firmware calibration.
 
 The commissioning notebook keeps YJ/HK attenuator sections and all six laser

@@ -343,7 +343,7 @@ int coo_cmd_key_suffix_segment_copy(const char *key,
 /**
  * Copy two slash-delimited suffix segments after a command-key prefix.
  *
- * Returns 0 for keys like `atten/1028y/coeff` with prefix `atten`. Exact
+ * Returns 0 for keys like `atten/1028y/settings` with prefix `atten`. Exact
  * matches, missing segments, extra nested segments, missing inputs, and
  * too-small output buffers fail with a negative errno value.
  */

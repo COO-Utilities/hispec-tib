@@ -38,6 +38,13 @@ the firmware's allowed values or argument rules.
 
 ### Global (applies to all commands)
 
+- Request examples use same-line `#optional` annotations for omittable keys.
+  These are **annotated JSON**, displayed as text because JSON does not allow
+  comments. Remove the comments before sending a payload. An annotation states
+  the default, retained value, or condition; sample values are illustrative.
+  Response fields are always present unless marked optional. A present field
+  whose value may be `null` is nullable, not optional.
+
 - Command request topics use `cmd/<device>/req/<command-key>` and response
   topics use `cmd/<device>/resp/<command-key>` unless the endpoint documents a
   different topic shape. For example, request `cmd/<device>/req/status`
@@ -97,7 +104,7 @@ the firmware's allowed values or argument rules.
 - Board-specific commands are rejected before their domain handler runs when
   the selected board strap does not provide that hardware.
 - Command keys are exact-match by default. Only endpoint families documented
-  with topic suffixes, such as `atten/<laser>/coeff`, `mems/split/yj`, or
+  with topic suffixes, such as `atten/<laser>/settings`, `mems/split/yj`, or
   `laser/bankpower/<mode>`, opt into prefix matching. Unknown top-level payload
   keys are rejected before the domain handler runs.
 - Invalid arguments return an informative `error`; where useful, the message
@@ -234,7 +241,7 @@ suffix form. After successful confirmation the operator must select `auto`.
 - [`laser/bankheater`](#laserbank-heater)
 - [`laser/clearfaults`](#laserbank-clearfaults)
 - [`atten/<laser>`](#atten)
-- [`atten/<laser>/coeff`](#atten-coeff)
+- [`atten/<laser>/settings`](#atten-settings)
 - [`atten/calibrate`](#atten-calibrate)
 - [`pd`](#pd)
 - [`pd/settings/<yj|hk>`](#pd-settings)
@@ -1750,12 +1757,10 @@ command wait budget, this command returns `{"error":"busy"}`.
 
 
 (atten)=
-(atten-coeff)=
 ### `atten`
 - **Top-level handlers:** `atten_setting_get()`, `atten_setting_set()`
 - **Topics:**
   - `cmd/<device>/req/atten/<laser>`
-  - `cmd/<device>/req/atten/<laser>/coeff`
   - Responses use the same key under `cmd/<device>/resp/...`.
 - **No payload to `atten/<laser>` -> attenuator setting:**
   ```json
@@ -1788,65 +1793,10 @@ command wait budget, this command returns `{"error":"busy"}`.
   rejected. Millivolt inputs are clamped to the firmware drive span, quantized
   through the board-configured DAC transfer, and responses report the applied
   DAC-side millivolts read back from the DAC.
-- **No payload to `coeff` -> model coefficients:**
-  ```json
-  {
-    "dac1": {
-      "fvoa_50pct_mv": 2529.45,
-      "slope_inv_fvoa_mv": 0.00158137,
-      "max_atten_db": 55.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    },
-    "dac2": {
-      "fvoa_50pct_mv": 2529.45,
-      "slope_inv_fvoa_mv": 0.00158137,
-      "max_atten_db": 55.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    }
-  }
-  ```
-- **Payload to `coeff`:** set the model coefficients for the two physical
-  attenuators that make up the logical attenuator. Both `dac1` and `dac2`
-  objects are required.
-  ```json
-  {
-    "dac1": {
-      "fvoa_50pct_mv": 3144.95,
-      "slope_inv_fvoa_mv": 0.00303104,
-      "max_atten_db": 48.36,
-      "max_calibrated_db": 45.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
-    },
-    "dac2": {
-      "fvoa_50pct_mv": 3456.12,
-      "slope_inv_fvoa_mv": 0.00247498,
-      "max_atten_db": 61.95,
-      "max_calibrated_db": 55.0,
-      "gain": 1.533,
-      "rms_db": 2.0,
-      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    },
-    "persist": true
-  }
-  ```
-- **Serial form for `coeff`:** send the JSON object after the key. The default
-  serial shorthand only builds a `value` payload, so it is not useful for
-  coefficient objects. The MQTT payload is the same JSON object without the
-  serial key prefix.
-  ```text
-  atten/1028y/coeff {"dac1":{"fvoa_50pct_mv":3144.95,"slope_inv_fvoa_mv":0.00303104,"max_atten_db":48.36,"max_calibrated_db":45.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.12,-0.03,0.01,0.0,0.0,0.0]},"dac2":{"fvoa_50pct_mv":3456.12,"slope_inv_fvoa_mv":0.00247498,"max_atten_db":61.95,"max_calibrated_db":55.0,"gain":1.533,"rms_db":2.0,"correction_coeff":[0.0,0.0,0.0,0.0,0.0,0.0]},"persist":true}
-  ```
-
 - **Notes:**
   - On TIB, `<laser>` is one of `1028y`, `1270j`, `1430yj`, `1430hk`, `1510h`,
     or `2330k`. On calibration boards only, the LFC attenuator is addressed as
-    `atten/lfc` and `atten/lfc/coeff`.
+    `atten/lfc` and `atten/lfc/settings`.
   - Laser aliases accepted by the laser profile table, such as `1028`, also
     resolve to the matching TIB attenuator channel, but canonical command docs
     use the full logical laser names.
@@ -1859,14 +1809,102 @@ command wait budget, this command returns `{"error":"busy"}`.
     The same range applies to `value1` and `value2`; dB values must be nonnegative.
     Both physical values are validated before either device is written. Hardware
     failure during a pair update can still leave an earlier write applied.
-  - Compact value requests reject coefficient fields and `persist`;
-    coefficient requests accept only `dac1`, `dac2`, and optional `persist`.
+  - Compact value requests reject settings fields and `persist`. Use
+    [`atten/<laser>/settings`](#atten-settings) for models, opens and fit limits.
   - `mv1` and `mv2` are DAC-output setpoints in the firmware 0-3300 mV
     drive span. The firmware converts them to DAC codes using the
     board-configured DAC reference transfer, then responses report the applied
     DAC-side millivolts after code quantization and output-rail clipping.
   - `open1_mv` and `open2_mv` report the operational open setting of each
     physical attenuator, in the same DAC-side mV coordinates.
+
+(atten-settings)=
+### `atten/<laser>/settings`
+- **Availability:** TIB laser channels; `atten/lfc/settings` on CAL YJ/HK.
+- **Topic:** `cmd/<device>/req/atten/<laser>/settings`; response uses the same key
+  under `cmd/<device>/resp/`.
+- **No payload -> complete current settings:**
+  ```json
+  {
+    "open1_mv": 1250.0,
+    "open2_mv": 1250.0,
+    "dac1": {
+      "fvoa_50pct_mv": 3144.95,
+      "slope_inv_fvoa_mv": 0.00303104,
+      "max_atten_db": 65.0,
+      "max_calibrated_db": 55.0,
+      "gain": 1.533,
+      "rms_db": 0.75,
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0],
+      "max_fit_residual_db": 2.0
+    },
+    "dac2": {
+      "fvoa_50pct_mv": 3456.12,
+      "slope_inv_fvoa_mv": 0.00247498,
+      "max_atten_db": 65.0,
+      "max_calibrated_db": 55.0,
+      "gain": 1.533,
+      "rms_db": 0.8,
+      "correction_coeff": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "max_fit_residual_db": 2.0
+    }
+  }
+  ```
+  Values illustrate the schema, not calibration for a particular installed device.
+- **Payload -> partial update; response has the same complete shape:**
+  ```text
+  {
+    "open1_mv": 1250.0,  #optional; retain current value
+    "open2_mv": 1250.0,  #optional; retain current value
+    "dac1": {  #optional; retain omitted fields and the other DAC
+      "fvoa_50pct_mv": 3144.95,  #optional; retain current value
+      "slope_inv_fvoa_mv": 0.00303104,  #optional; retain current value
+      "max_atten_db": 65.0,  #optional; retain current value
+      "max_calibrated_db": 55.0,  #optional; retain current value
+      "gain": 1.533,  #optional; retain current value
+      "rms_db": 0.75,  #optional; retain current uncertainty
+      "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0],  #optional; retain all six terms
+      "max_fit_residual_db": 2.0  #optional; retain current acceptance threshold
+    },
+    "dac2": {  #optional; same accepted fields as dac1
+      "rms_db": 0.8  #optional; retain current uncertainty
+    },
+    "persist": false  #optional; default false; true saves complete current settings
+  }
+  ```
+  Send any subset, for example one model coefficient, only correction terms,
+  only open levels, or one DAC. `{"persist":true}` saves the current complete
+  configuration without changing DAC outputs.
+- **Validation and defaults:** all supplied numbers must be finite. Slope,
+  gain and attenuation limits must be positive; `rms_db` is nonnegative and
+  `max_calibrated_db` cannot exceed `max_atten_db`.
+  `correction_coeff`, when supplied, must contain exactly six finite float-range
+  values. The resulting pair must pass the domain model-validity checks;
+  an invalid field rejects the entire request before applying anything.
+  `open1_mv`/`open2_mv` are DAC-side mV in 0–3300. Fit thresholds are strictly
+  positive maximum absolute residuals in dB, nominally 2. TIB compiled models
+  and opens are channel-specific; CAL nominal opens are 1250 mV. Saved NVS
+  values supersede compiled defaults. Unknown fields are rejected.
+- **Side effects:** model changes use the existing total-dB-preserving apply
+  operation, which may move DACs. A pair parked fully closed stays closed.
+  A hardware failure can leave an earlier DAC write applied. Open/policy-only
+  updates do not move outputs; opens take effect on later modeled value commands.
+  The settings reply reports configured opens; `atten/<laser>` reports their
+  effective DAC-quantized values. Model changes disable throughput feedback
+  while retaining the stream and its source shutdown responsibility. Updates
+  are rejected during either calibration; queries remain available.
+- **Serial:** small scalar or full-JSON partial updates fit the current console:
+  ```text
+  atten/1028y/settings open1_mv=1250
+  atten/1028y/settings {"dac1":{"rms_db":0.75}}
+  atten/1028y/settings persist=true
+  ```
+  Send complete configurations over MQTT; nested `dac1={...}` shorthand is not
+  supported. See the [serial limits](#serial-command-form).
+- **Python:** `pcb.atten_settings(name, dac1={"rms_db":0.75}, persist=False)`
+  returns typed `AttenuatorSettings` on both query and set; use
+  `dataclasses.asdict(result)` for a dictionary.
+- **Model and persistence notes:**
   - Coefficients are loaded from persistent app NVS during
     `setup_attenuators()`. They define the erf coordinate
     `delta = slope_inv_fvoa_mv * (gain * dac_mv - fvoa_50pct_mv)` and
@@ -1878,8 +1916,8 @@ command wait budget, this command returns `{"error":"busy"}`.
     always include it. In set payloads, omitting `correction_coeff` leaves the
     currently active correction unchanged; include `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` to
     clear it intentionally.
-  - `max_calibrated_db` is required in each replacement coefficient object and
-    returned by coefficient queries. It is the corrected-curve operating endpoint,
+  - `max_calibrated_db` is retained when omitted and is returned in settings
+    queries. It is the corrected-curve operating endpoint,
     separate from the leakage-floor parameter `max_atten_db`. Automatic fitting
     uses the usable measured prefix through the first point above
     `ATTENUATOR_CALIBRATED_MAX_DB` (55 dB). The operating limit follows the fitted
@@ -1897,14 +1935,16 @@ command wait budget, this command returns `{"error":"busy"}`.
   - Schema 14 clears the app NVS store when the schema marker differs; see
     [settings reset policy](settings.md#schema-reset).
 
-  - `persist` is optional and defaults to false. A non-persistent coefficient
-    update changes runtime behavior until reboot or a later coefficient command.
+  - `persist` defaults to false. Runtime-only settings last until reboot or a
+    later update. `persist:true` saves coefficients, opens and fit policy in
+    their existing independent NVS records, including values omitted from the
+    payload. No NVS schema change or migration is involved.
   - Each physical model includes finite, nonnegative `rms_db`, the RMS residual
     in attenuation dB for fitting-support measurements at or below
-    `max_calibrated_db`, including negative reference-relative measurements. It defaults
-    to `ATTENUATOR_DEFAULT_RMS_DB` (2.0 dB).
-    A manual model replacement omitting `rms_db` uses that default, rather than
-    inheriting confidence from the previous fit. An explicit zero is allowed.
+    `max_calibrated_db`, including negative reference-relative measurements. Omitted
+    `rms_db` retains the current value. Supply the intended uncertainty when
+    installing a new model; an explicit zero is allowed. Compiled TIB calibration
+    defaults include measured RMS; the nominal uncalibrated model uses 2 dB.
   - Accepted autocalibration installs the final model's unweighted residual RMS
     with its coefficients and saves both when persistence is requested. Rejected
     fits replace neither. No extra sweep or offline analysis is required.
@@ -1920,8 +1960,6 @@ command wait budget, this command returns `{"error":"busy"}`.
     uncertainty is not temporal RMS. No bandwidth or averaging correction is
     inferred from electrical RMS. Throughput includes this and laser uncertainty
     in `tp_err`; `tp_pd_err` remains PD-only. The error propagation does not alter nominal transmission.
-  - There is no separate `attensettings` command; calibration coefficients live
-    on `atten/<laser>/coeff`.
 
 (atten-calibrate)=
 ### `atten/calibrate`
@@ -2112,27 +2150,6 @@ bridge normalization, fit weighting, the 65 dB floor constraint and model
 validation. The [attenuator model](attenuator.md) defines runtime conversion and
 uncertainty; the [Python guide](python_helpers.md#calibration-datasets-and-manual-grids)
 explains retained-record inspection and fitting tools.
-
-### `atten/<laser>/settings`
-
-Query operational open voltages and physical fit acceptance limits with no payload.
-Set either or both, optionally persisting:
-
-```json
-{"open1_mv":1250,"open2_mv":1250,"dac1":{"max_fit_residual_db":2.0},"dac2":{"max_fit_residual_db":2.0},"persist":false}
-```
-
-`open1_mv` and `open2_mv` are finite DAC millivolts in 0–3300, default 1250.
-They define modeled full open, rounded upward to a representable DAC code.
-Updates do not move outputs; engineering-voltage commands can still select any
-0–3300 mV value. The open point need not have zero modeled loss.
-
-Each fit limit is finite and strictly positive; defaults are 2 dB. Unknown fields
-are errors. Updates are rejected during calibration. Replies contain `open1_mv`,
-`open2_mv`, and the `dac1`/`dac2` policy objects. Omitted values are retained.
-`pcb.atten_settings(laser, open1_mv=1400, dac1={"max_fit_residual_db":1.0}, persist=False)`
-uses this schema. Fit policies use NVS records 0x0140–0x0145, open settings use
-0x0180–0x0185, and the settings schema remains 14.
 
 (pd)=
 ### `pd`
