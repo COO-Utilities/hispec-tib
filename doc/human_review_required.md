@@ -324,6 +324,42 @@ LLMs Agents: Do NOT change heading names in this file.
 
 
 ## Command/API Mismatches
+- [x] 2026-11-05 command API audit: consolidated manual attenuator models,
+  correction/RMS, opens and fit policy under `atten/<laser>/settings`; removed
+  `/coeff` and the host `atten_coeff()` method. Partial updates retain omitted
+  fields and `persist:true` alone saves the complete configuration. The command
+  catalog now marks optional keys inline, documents conditional/nullable replies,
+  serial limits and persistence/partial-failure behavior. `clearfaults` retains
+  intentional laser-calibration cancellation before its conditional bank cycle.
+  - Normal MCUboot build, strict Sphinx, all 96 JSON examples and rendered local
+    links pass. Temporary actual-C probes cover five settings/NVS error paths,
+    partial attenuator parsing/application, independent coefficient/open save
+    failures and clearfaults ordering, including failed STOP. Python encoding,
+    decoding and offline model checks pass; all 311 code cells in 12 local
+    notebooks compile, and captured outputs/metadata are unchanged. The
+    untracked FEI notebook's obsolete method call was also
+    updated in place, without adding it to version control.
+  - TIB OTA installed and manually confirmed `1ee5bfea36fb-dirty`, image hash
+    `c7292ba240156ceea15719b9e9bab709d7781ea5b272d9b04e0c97f93eabd1cc`.
+    The dirty marker includes existing local notebook work. Live checks passed
+    23 representative queries, save-only settings, all six model scalars,
+    correction replacement, unchanged DACs for open/policy updates, closed-pair
+    preservation and 12 invalid attenuator requests without mutation. Removed
+    endpoint, laser grouped-field and throughput conditional-field errors match
+    the catalog. A normal reboot retained the confirmed image; all six attenuator
+    and laser configurations plus both PD settings/darks matched the pre-OTA
+    baseline within wire float precision. Temporary model edits were restored
+    and never persisted. Final bank is powered in `auto`, with no active work.
+  - Physical flash failures, active-calibration interruption, optical performance
+    and non-TIB profiles were not exercised. Existing bench items below remain.
+  - Build, documentation and upload commands, from the parent Zephyr workspace:
+    ```bash
+    ./.venv/bin/west build --sysbuild --board=nucleo_h563zi/stm32h563xx --build-dir ./hispec-tib/app/build-ota ./hispec-tib/app
+    ./.venv/bin/python -m sphinx -b html -n -W --keep-going hispec-tib/doc /private/tmp/hispec-command-api-html
+    ./.venv/bin/python hispec-tib/tools/hispec_ota.py update hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin --dry-run
+    ./.venv/bin/python -u hispec-tib/tools/hispec_ota.py update hispec-tib/app/build-ota/app/zephyr/zephyr.signed.bin --broker hispec.caltech.edu --device hsfib-tib
+    ```
+
 - [x] Python CLI `atten-db` calls `atten()` and prints the full `AttenuatorState`,
   including dB loss. Offline CLI dispatch and request/response checks pass.
 
@@ -353,6 +389,16 @@ LLMs Agents: Do NOT change heading names in this file.
   performs no hardware refresh, timer rearming or persistence. Vendor-derived
   wavelength coefficients and retro power before unrecorded route loss are
   documented; their absolute optical accuracy remains a bench measurement.
+  - 2026-11-05: notebook consumers missed by `015a0b8` now use `device`,
+    `ambient_c` and `loss1_db`/`loss2_db`. Inventory, acquisition and review no
+    longer use the removed fields. Raw temperature diagnostics remain in captures;
+    numeric analysis and plots show unavailable temperatures as gaps. The older
+    temperature notebook's `LOAD_LASERS` definition now precedes its first use.
+    Temporary offline replays passed inventory/archive, acquisition success and
+    failure cleanup, calibration setup/`asdict`, and numeric/null/error analysis.
+    All 12 local notebooks' 311 code cells compile; 445 PCB-call signatures match.
+    Captured outputs and metadata were preserved. Strict docs pass; physical
+    acquisition and the broader status-load validation above remain unverified.
 
 
 ## Decisions To Make

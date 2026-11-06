@@ -183,7 +183,19 @@ static void restore_mqtt_config(const struct coo_mqtt_broker_config *cfg)
 	/* Revert persistent settings too so a resolvable but unreachable broker
 	 * does not strand the next boot on the rejected endpoint.
 	 */
-	app_settings_update_mqtt(&mqtt_cfg, true);
+	int rc = app_settings_update_mqtt(&mqtt_cfg, true);
+	if (rc != 0) {
+		char context[32];
+		snprintk(context, sizeof(context), "rc=%d", rc);
+		app_output_emit(&(const struct coo_cmd_runtime_emit_args){
+			.type = COO_CMD_RUNTIME_EMIT_WARNING,
+			.delivery = COO_CMD_RUNTIME_EMIT_BEST_EFFORT,
+			.code = "mqtt_revert_persist_failed",
+			.msg = "prior MQTT broker restored in RAM; saving failed",
+			.context = context,
+		});
+		LOG_WRN("MQTT broker restored in RAM; persistence failed (%d)", rc);
+	}
 }
 
 

@@ -256,7 +256,7 @@ int laserbank_heater(const struct coo_cmd_request *cmd, struct coo_cmd_response 
 		mode = (enum laserbank_heater_mode)mode_value;
 		int rc = laserbank_tempcontrol_set_heater_mode(mode, true);
 		if (rc != 0) {
-			return coo_cmd_error_rc(out, cmd, "laser bank heater relay unavailable", rc);
+			return coo_cmd_error_rc(out, cmd, "heater mode update/save failed; runtime mode may be applied", rc);
 		}
 	}
 

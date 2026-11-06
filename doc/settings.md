@@ -198,7 +198,8 @@ silently reused on another.
   Calibration rejects timer writes but permits power-only overrides.
   Finite throughput owns its `off_in_s` deadline. Laser settings writes disable
   feedback while retaining collection and owned-source shutdown. PD read-only
-  `off_in_s` is available through `pd` and `pd/settings`; only `pd` queries rearm it.
+  `off_in_s` is available through `pd`; `pd/settings` reports policy without
+  that countdown or rearming. `pd` queries can enable AUTO power and rearm it.
 - Route-loss records default to absent. Lookup uses an exact route/source
   override, then a compiled source default, then that route's compiled generic
   default, then unity. [Hardware defaults](hardware.md#tib-route-loss-defaults)
@@ -217,13 +218,16 @@ NVS writes happen synchronously through Zephyr NVS and may block the caller.
 Command handlers that set `persist:true` can therefore block in the executor
 thread.
 
-Photodiode active dark windows, forced dark values, lowest-dark records, and
-persisted dark updates happen only through `pd/dark/<channel>`. Duration-based
+Photodiode active dark windows, forced dark values and lowest-dark records are
+changed through `pd/dark/<channel>`. Duration-based
 dark captures are armed by the command and committed later by the photodiode
 sampler thread.
 `pd/settings/<channel>` owns photodiode response settings and relay power intent;
-it does not update or report dark summaries. `persist:true` on `pd/dark` writes
-that dark settings snapshot to NVS.
+it does not replace or report dark summaries. Both `pd/dark` and `pd/settings`
+with `persist:true` save the complete channel record, including its current dark,
+lowest-dark, response and power policy. A save failure leaves applied RAM values
+in place and is reported by the synchronous command or, for a completed measured
+dark, the `photodiode_dark_persist_failed` warning.
 
 MEMS static state requests and route applications update the persisted
 per-switch intent once per command, including all accepted steps of a partially

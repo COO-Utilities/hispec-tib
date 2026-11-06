@@ -28,7 +28,7 @@ Runtime ownership is:
 - `attenuator.c`: DAC channel setup/read/write, coefficient application, and
   transmission uncertainty from stored physical-model residual RMS.
 - `attenuator_command.c`: command-schema validation for `atten` value and
-  coefficient requests.
+  combined model/open/fit settings requests.
 - `laser_calibration.c`: paired high/low PD acquisition across the current range,
   observed dark knots, independently selected lasing support, and a broad central
   source curve with one profiled gain per exact DAC pair. Numerical scratch uses

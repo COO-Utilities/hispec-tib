@@ -244,12 +244,14 @@ int app_settings_note_board_type(const char *board_type, bool *changed);
 int app_settings_erase_non_ip_settings(void);
 /** @brief Copy current IP settings. */
 void app_settings_get_ip(struct app_ip_settings *out);
-/** @brief Replace IP settings and optionally persist each IP key. */
-void app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
+/** Replace the IP snapshot; optional NVS write may block. Return save errors
+ * after RAM application, without rollback. No network I/O or publishing. */
+int app_settings_update_ip(const struct app_ip_settings *ip, bool persist);
 /** @brief Copy current MQTT broker settings. */
 void app_settings_get_mqtt(struct app_mqtt_settings *out);
-/** @brief Replace MQTT settings, increment reconnect revision, and optionally persist. */
-void app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
+/** Replace MQTT settings and increment reconnect revision. Optional NVS write
+ * may block; save errors leave RAM/reconnect intent applied. No publishing. */
+int app_settings_update_mqtt(const struct app_mqtt_settings *mqtt, bool persist);
 /** Copy acceptance policy under the settings mutex; no I/O. */
 void app_settings_get_attenuator_fit(uint8_t channel, struct app_attenuator_fit_policy *out);
 /** Copy operational open settings; neither function performs DAC I/O. */
@@ -267,8 +269,10 @@ void app_settings_get_attenuator(struct app_attenuator_settings *out);
  * @param channel Zero-based logical attenuator channel index.
  * @param atten Channel coefficient settings copied into the runtime snapshot.
  * @param persist If true, save this channel's coefficients through Zephyr NVS.
+ * May block on the mutex and flash I/O. Returns save errors after RAM update;
+ * no DAC I/O, publishing or rollback.
  */
-void app_settings_update_attenuator_channel(uint8_t channel,
+int app_settings_update_attenuator_channel(uint8_t channel,
 					    const struct app_attenuator_channel_settings *atten,
 					    bool persist);
 /** @brief Boot relay intent: saved override, or last confirmed state in AUTO.
@@ -289,22 +293,23 @@ void app_settings_get_photodiode(struct app_photodiode_settings *out);
  * caller's prior snapshot authoritative until a later refresh succeeds.
  */
 bool app_settings_try_get_photodiode(struct app_photodiode_settings *out);
-/** @brief Replace all photodiode settings and optionally persist both channels. */
-void app_settings_update_photodiode(const struct app_photodiode_settings *pd, bool persist);
 /**
  * @brief Update one photodiode channel's calibration/settings.
  *
  * @param channel Zero-based photodiode channel index.
  * @param pd Channel settings to copy into the runtime snapshot.
  * @param persist If true, save only this channel's NVS record.
+ * May block on the mutex and flash I/O. Returns save errors after RAM update;
+ * no relay/ADC I/O, publishing or rollback.
  */
-void app_settings_update_photodiode_channel(uint8_t channel,
+int app_settings_update_photodiode_channel(uint8_t channel,
 					    const struct app_pd_channel_settings *pd,
 					    bool persist);
 /** @brief Copy current laser-bank heater mode setting. */
 void app_settings_get_laserbank(struct app_laserbank_settings *out);
-/** @brief Replace laser-bank heater mode setting. */
-void app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
+/** Replace heater mode in RAM; optional NVS write may block. Returns save
+ * errors without rollback; no relay I/O or publishing. */
+int app_settings_update_laserbank(const struct app_laserbank_settings *laserbank,
 				   bool persist);
 /** @brief Copy one app-owned laser channel's settings. */
 int app_settings_get_laser_channel(uint8_t channel,

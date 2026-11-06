@@ -664,6 +664,23 @@ class AttenuatorCoeff(ResponseRepr):
     dac2: AttenuatorPhysicalCoeff
 
 
+@dataclass(frozen=True, repr=False, kw_only=True)
+class AttenuatorPhysicalSettings(AttenuatorPhysicalCoeff):
+    """Physical model plus its automatic-fit acceptance threshold."""
+
+    max_fit_residual_db: float
+
+
+@dataclass(frozen=True, repr=False)
+class AttenuatorSettings(AttenuatorCoeff):
+    """Complete logical settings; coefficient-only calculations use the base fields."""
+
+    dac1: AttenuatorPhysicalSettings
+    dac2: AttenuatorPhysicalSettings
+    open1_mv: float
+    open2_mv: float
+
+
 @dataclass(frozen=True, repr=False)
 class AttenuatorFitMetrics(ResponseRepr):
     valid: bool
@@ -1234,7 +1251,7 @@ def attenuator_noise(
     correction. The derivative step is fixed at 0.1 FVOA-side mV.
     """
     if not isinstance(coeff, AttenuatorCoeff):
-        raise HispecFibError("coeff must be an AttenuatorCoeff from atten_coeff()")
+        raise HispecFibError("coeff must be an AttenuatorCoeff from atten_settings()")
     try:
         mean = np.asarray(mean_fvoa_mv, dtype=float)
         rms = np.asarray(noise_rms_mv, dtype=float)
@@ -3690,9 +3707,10 @@ def _as_tuple3(value: Sequence[float], name: str) -> tuple[float, float, float]:
     return (float(value[0]), float(value[1]), float(value[2]))
 
 
-def _decode_atten_physical_coeff(data: Mapping[str, Any], name: str) -> AttenuatorPhysicalCoeff:
+def _decode_atten_physical_settings(data: Mapping[str, Any], name: str) -> AttenuatorPhysicalSettings:
     try:
-        return AttenuatorPhysicalCoeff(
+        return AttenuatorPhysicalSettings(
+            max_fit_residual_db=float(data["max_fit_residual_db"]),
             fvoa_50pct_mv=float(data["fvoa_50pct_mv"]),
             slope_inv_fvoa_mv=float(data["slope_inv_fvoa_mv"]),
             max_atten_db=float(data["max_atten_db"]),
@@ -5273,56 +5291,38 @@ class HispecFibPcb:
         """Start attenuator_grid_probe in a worker; its handle provides wait/save, not automatic shutdown."""
         return AttenuatorGridProbe(self, (laser,), kwargs).start()
 
-    def atten_settings(self, laser: str, *, dac1: Mapping[str, float] | None = None,
-                       dac2: Mapping[str, float] | None = None, open1_mv: float | None = None,
-                       open2_mv: float | None = None, persist: bool = False) -> dict[str, Any]:
-        """Query/update per-FVOA open voltage and fit policy without moving outputs.
-
-        Open voltages define modeled full open; engineering value1_mv/value2_mv
-        still accept the full 0–3300 mV span. Defaults are 1250 mV.
-
-        Example: atten_settings('1430yj', dac1={'max_fit_residual_db': 1.5}).
-        Thresholds are finite positive maximum absolute calibrated-region
-        residuals in dB; defaults are 2.0. Either physical device may be omitted.
-        """
-        payload: dict[str, Any] = {}
-        for name, value in (("open1_mv", open1_mv), ("open2_mv", open2_mv)):
-            if value is not None:
-                payload[name] = _require_float(name, value, 0.0, ATTENUATOR_DRIVE_MAX_MV)
-        for name, policy in (("dac1", dac1), ("dac2", dac2)):
-            if policy is not None:
-                payload[name] = policy
-        if payload or persist is not False:
-            payload["persist"] = persist
-        return self._request_json(f"atten/{laser}/settings", payload or None)
-
-    def atten_coeff(
+    def atten_settings(
         self,
         laser: str,
         dac1: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         dac2: AttenuatorPhysicalCoeff | Mapping[str, Any] | Sequence[float] | None = None,
         *,
+        open1_mv: float | None = None,
+        open2_mv: float | None = None,
         persist: bool = False,
-    ) -> AttenuatorCoeff | CommandOk:
-        """Query or replace both physical models, optionally persisting them together.
+    ) -> AttenuatorSettings:
+        """Query or partially update models, correction/RMS, opens and fit limits.
 
-        ``rms_db`` in a mapping or AttenuatorPhysicalCoeff is the per-device
-        model uncertainty. Omitting it uses the firmware's 2 dB default rather
-        than the prior fit's RMS. Embedded autocalibration supplies its final
-        accepted RMS automatically; no offline fit is required.
+        Omitted fields retain their current values. Model changes can move DACs
+        to preserve total dB; open/fit-policy-only edits do not move outputs.
+        persist=True saves the complete current settings, even without edits.
+        Both query and set decode the single combined firmware reply.
         """
-        if dac1 is None and dac2 is None and persist is False:
-            data = self._request_json(f"atten/{laser}/coeff")
-            return AttenuatorCoeff(
-                dac1=_decode_atten_physical_coeff(data["dac1"], "dac1"),
-                dac2=_decode_atten_physical_coeff(data["dac2"], "dac2"),
-            )
-        payload: dict[str, Any] = {"persist": persist}
+        payload: dict[str, Any] = {}
+        for name, value in (("open1_mv", open1_mv), ("open2_mv", open2_mv)):
+            if value is not None:
+                payload[name] = value
         for name, coeff in (("dac1", dac1), ("dac2", dac2)):
             if coeff is not None:
                 payload[name] = _atten_physical_coeff_payload(name, coeff)
-        return self._request_ok(
-            f"atten/{laser}/coeff", payload,
+        if payload or persist is not False:
+            payload["persist"] = persist
+        data = self._request_json(f"atten/{laser}/settings", payload or None)
+        return AttenuatorSettings(
+            dac1=_decode_atten_physical_settings(data["dac1"], "dac1"),
+            dac2=_decode_atten_physical_settings(data["dac2"], "dac2"),
+            open1_mv=float(data["open1_mv"]),
+            open2_mv=float(data["open2_mv"]),
         )
 
     def _atten_calibration_metadata(
@@ -5846,7 +5846,7 @@ class HispecFibPcb:
         display_limits = {}
         try:
             if collect and laser != "none":
-                laser_policy, coeff = self.laser_settings(laser), self.atten_coeff(laser)
+                laser_policy, coeff = self.laser_settings(laser), self.atten_settings(laser)
                 display_limits = dict(laser_current_max_ma=laser_policy.max_current_ma,
                     attenuation_limits_db=(coeff.dac1.max_atten_db, coeff.dac2.max_atten_db))
             self._request_ok("measure_throughput", payload)
@@ -5929,7 +5929,7 @@ class HispecFibPcb:
                 (settings.nominal_current_ma-settings.efficiency_ref_ma))
             minimum = minimum_power/nominal_power
             level = max(minimum, initial_level)
-            coeff = self.atten_coeff(laser) if use_atten_db else None
+            coeff = self.atten_settings(laser) if use_atten_db else None
             limits = {i: getattr(coeff, f"dac{i}").max_calibrated_db if use_atten_db
                       else ATTENUATOR_DRIVE_MAX_MV for i in attenuators}
             if any(limit <= 0 for limit in limits.values()):

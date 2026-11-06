@@ -585,20 +585,20 @@ this flow. It has two intentionally separate paths:
 The manual path supports both the firmware-style weighted fit and a SciPy
 least-squares exploratory fit. Its plots show propagated photodiode and
 normalization uncertainty; coefficients should be reviewed before any
-`atten_coeff(..., persist=True)` command is used.
+`atten_settings(..., persist=True)` command is used.
 
 A coefficient object has this shape (illustrative values, not a calibration
 for an installed device):
 
-```json
+```text
 {
-  "fvoa_50pct_mv": 3144.95,
-  "slope_inv_fvoa_mv": 0.00303104,
-  "max_atten_db": 65.0,
-  "max_calibrated_db": 55.0,
-  "gain": 1.533,
-  "rms_db": 0.75,
-  "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]
+  "fvoa_50pct_mv": 3144.95,  #optional; retain current value when omitted
+  "slope_inv_fvoa_mv": 0.00303104,  #optional; retain current value when omitted
+  "max_atten_db": 65.0,  #optional; retain current value when omitted
+  "max_calibrated_db": 55.0,  #optional; retain current value when omitted
+  "gain": 1.533,  #optional; retain current value when omitted
+  "rms_db": 0.75,  #optional; retain current value when omitted
+  "correction_coeff": [0.12, -0.03, 0.01, 0.0, 0.0, 0.0]  #optional; retain current value when omitted
 }
 ```
 

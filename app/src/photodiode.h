@@ -195,20 +195,24 @@ int photodiode_set_configurable_window_duration(enum photodiode_channel channel,
  * reached, after 10 continuous seconds with PD power on and relevant lasers
  * off. No settling samples enter the capture. A state interruption discards
  * the window and restarts settling. Manual emitters reject the request.
+ * Optional saving happens in the sampler; failures warn without discarding
+ * the new RAM dark.
  */
 int photodiode_start_dark_capture(enum photodiode_channel channel,
 				  uint32_t duration_ms,
 				  bool persist,
 				  bool reset_lowest);
 
-/** @brief Force a dark value; reset_lowest is rejected without mutation. */
+/** Force a dark value; reset_lowest is rejected without mutation. Optional NVS
+ * writes may block and return errors after RAM application, without rollback. */
 int photodiode_force_dark(enum photodiode_channel channel,
 			  double mean_mv,
 			  double rms_mv,
 			  bool persist,
 			  bool reset_lowest);
 
-/** Reset lowest dark to the active measured dark; forced/default darks fail. */
+/** Reset lowest dark to the active measured dark; forced/default darks fail.
+ * Optional NVS writes may block; save failures leave the RAM reset applied. */
 int photodiode_reset_lowest_dark(enum photodiode_channel channel,
 				 bool persist);
 

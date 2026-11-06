@@ -217,7 +217,7 @@ static const struct coo_cmd_spec command_specs[] = {
                     "mems/route/loss route=<route> [<laser|generic>=<loss> persist=<bool>]",
                     "route required; set exactly one source loss or a split tuple",
                     "source fields: 1028y,1270j,1430yj,1430hk,1510h,2330k,generic (TIB CAL/return)",
-                    "loss: fraction lost 0 <= loss < 1, or a quoted nonnegative dB value",
+                    "loss: fraction lost 0 <= loss < 1; dB strings and split arrays require full JSON",
                     COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC("mems/route", memsroute_get, memsroute_set,
              COO_CMD_CLASS_DEFAULT, true, "input,output,force",
@@ -288,7 +288,7 @@ static const struct coo_cmd_spec command_specs[] = {
                  COO_CMD_HELP_QUERY | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_SPEC_TIB_CUSTOM("laser/settings", laser_settings_get, laser_settings_set,
                         classify_laser_request, true, "name,settings,persist",
-                        "laser/settings name=<laser> [settings={...} persist=<bool>]",
+                        "laser/settings name=<laser> (query); set with full JSON, e.g. {\"name\":\"1270j\",\"settings\":{\"autooff_s\":600}}",
                         "name required; settings object required for effect",
                         "laser: 1028y,1270j,1430yj,1430hk,1510h,2330k",
                         "TIB-only app-owned laser policy/settings wrapper",
@@ -305,7 +305,7 @@ static const struct coo_cmd_spec command_specs[] = {
                  COO_CMD_CLASS_ALWAYS_EFFECT, false, "",
                  "laser/clearfaults",
                  "none", NULL,
-                 "TIB-only checks LD overcurrent latches and power-cycles the bank only when one is set",
+                 "TIB-only cancels laser calibration first; power-cycles only a powered bank with reported LD overcurrent",
                  COO_CMD_HELP_EFFECT),
     CMD_SPEC_TIB_PREFIX("laser/bankheater", laserbank_heater, laserbank_heater,
                  COO_CMD_CLASS_SUFFIX_OR_PAYLOAD_EFFECT, true, "mode",
@@ -342,16 +342,10 @@ static const struct coo_cmd_spec command_specs[] = {
                   "sets or queries total or per-physical attenuator transmission",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     CMD_HELP_ONLY("atten/<name>/settings", NULL,
-                  "atten/<name>/settings [open1_mv=<mV> open2_mv=<mV> dac1={max_fit_residual_db} dac2={max_fit_residual_db} persist=<bool>]",
-                  "partial per-FVOA updates; finite positive maximum absolute calibrated-region residual in dB",
-                  "defaults: open 1250 mV, residual 2 dB per FVOA; persist defaults false",
-                  "policy only; no DAC writes; rejected while calibration is active",
-                  COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
-    CMD_HELP_ONLY("atten/<name>/coeff", NULL,
-	                  "atten/<name>/coeff [dac1={fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,max_calibrated_db,gain,correction_coeff} dac2={...} persist=<bool>]",
-	                  "dac1 and dac2 coefficient objects are required for effect",
-                  "name: 1028y,1270j,1430yj,1430hk,1510h,2330k,lfc",
-                  "send JSON for coeff updates; key=value shorthand cannot express arrays",
+                  "atten/<name>/settings [open1_mv=<mV> open2_mv=<mV> persist=<bool>] or full JSON with dac1/dac2 objects",
+                  "all fields optional; omitted values retained; persist=true saves complete current settings",
+                  "dac1/dac2: fvoa_50pct_mv,slope_inv_fvoa_mv,max_atten_db,max_calibrated_db,gain,rms_db,correction_coeff,max_fit_residual_db",
+                  "model changes may move DACs to retain total dB; opens/policy alone do not; persist defaults false; rejected during calibration",
                   COO_CMD_HELP_QUERY | COO_CMD_HELP_EFFECT | COO_CMD_HELP_SERIAL_GUARD_QUERY),
     { .key = "pd/dark", .query_handler = pd_dark_get, .effect_handler = pd_dark_set,
       .class_policy = COO_CMD_CLASS_DEFAULT,
@@ -854,12 +848,15 @@ static int ip_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *ou
     }
 
     if (changed) {
-        app_settings_update_ip(&ip_cfg, persist);
+        int save_rc = app_settings_update_ip(&ip_cfg, persist);
 #if defined(CONFIG_SNTP)
         if (ntp_changed) {
             sntp_sync_schedule_now();
         }
 #endif
+        if (save_rc != 0) {
+            return coo_cmd_error_rc(out, cmd, "IP settings applied; persistence failed", save_rc);
+        }
     }
 
     if (unsupported_dhcp || unsupported_dns || unsupported_ntp) {
@@ -936,7 +933,10 @@ static int mqtt_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
         return coo_cmd_error(out, cmd, "invalid persist");
     }
 
-    app_settings_update_mqtt(&mqtt_cfg, persist);
+    rc = app_settings_update_mqtt(&mqtt_cfg, persist);
+    if (rc != 0) {
+        return coo_cmd_error_rc(out, cmd, "MQTT settings applied; persistence failed", rc);
+    }
     return coo_cmd_ok(out, cmd);
 }
 

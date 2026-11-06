@@ -575,8 +575,11 @@ int pd_settings_set(const struct coo_cmd_request *cmd, struct coo_cmd_response *
 			return coo_cmd_error_rc(out, cmd, "photodiode auto-off update failed", rc);
 		}
 	}
-	app_settings_update_photodiode_channel((uint8_t)channel,
+	rc = app_settings_update_photodiode_channel((uint8_t)channel,
 					       &channel_settings,
 					       persist);
+	if (rc != 0) {
+		return coo_cmd_error_rc(out, cmd, "PD settings applied; persistence failed", rc);
+	}
 	return coo_cmd_ok(out, cmd);
 }
